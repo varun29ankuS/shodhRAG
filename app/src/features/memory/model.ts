@@ -16,7 +16,7 @@ export interface MemoryRecord {
   properties: Record<string, unknown>;
   /** Property values in canonical text form, for display. */
   values: Record<string, string[]>;
-  /** `global` or `workspace:<source id>`. */
+  /** `global` or `workspace:<workspace id>`. */
   scope: string;
   /** `settings://memory` or `conversation://<conversation>/turn/<run>`. */
   source: string;

@@ -16,7 +16,7 @@ import type { FocusExtras, FocusTarget, FocusThread, ThreadAnchor, ThreadTurn } 
 import { canPush, initialStack, stackReducer } from './focusStack';
 import type { StackState } from './focusStack';
 import { splitFollowups } from './followups';
-import { cleanSummary, composeSummaryRequest } from './summary';
+import { cleanSummary, composeSummaryRequest, summaryWithHeldCitations } from './summary';
 import type { SummaryDestination } from './summary';
 import {
   alternateTurns,
@@ -672,7 +672,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         : scope;
       // The question is the user's own words (learning and "Remember that ..." use them);
       // the context composed around it is not.
-      await api.send(sessionId, message, live.runId, history, withPassages, 'composed', text);
+      await api.send(sessionId, message, live.runId, history, { scope: withPassages, textOrigin: 'composed', typedText: text });
     } catch (error) {
       const failure = toAgentError(error);
       enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
@@ -685,7 +685,16 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     if (!thread || !thread.turns.some(t => t.role === 'assistant' && t.content.trim())) {
       return Promise.resolve({ ok: false, reason: 'failed', message: 'There is no answer to summarise yet.' });
     }
-    return new Promise<SummaryResult>(resolve => {
+    return new Promise<SummaryResult>(settleSummary => {
+      // The summary's own citation markers go when they cite no passage the discussion holds.
+      const resolve = (result: SummaryResult) => {
+        if (!('text' in result)) {
+          settleSummary(result);
+          return;
+        }
+        const text = summaryWithHeldCitations(result.text, thread).trim();
+        settleSummary(text ? { ok: true, text } : { ok: false, reason: 'failed' });
+      };
       const live = beginRun(level, 'summary', `summary of ${level.target.label}`, resolve);
       if (!live) {
         resolve({ ok: false, reason: 'busy' });
@@ -700,7 +709,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
-          await api.send(sessionId, composeSummaryRequest(thread, destination), live.runId, [], answerScope(null, workspaceOf(level.conversationId), false));
+          await api.send(sessionId, composeSummaryRequest(thread, destination), live.runId, [], { scope: answerScope(null, workspaceOf(level.conversationId), false) });
         } catch (error) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
@@ -744,7 +753,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
-          await api.send(sessionId, request, live.runId, [], answerScope(null, workspaceOf(level.conversationId), false));
+          await api.send(sessionId, request, live.runId, [], { scope: answerScope(null, workspaceOf(level.conversationId), false) });
         } catch (error) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);

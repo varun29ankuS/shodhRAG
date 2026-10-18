@@ -132,6 +132,8 @@ pub struct FormStats {
 pub struct FormExtraction {
     pub fields: Vec<FormField>,
     pub stats: FormStats,
+    /// Pages of the document.
+    pub pages: usize,
 }
 
 /// Bytes of the PDF itself: a header found after leading junk (some portals wrap
@@ -209,7 +211,10 @@ impl<'a> Extractor<'a> {
             page_numbers,
             annot_pages,
             visited: HashSet::new(),
-            out: FormExtraction::default(),
+            out: FormExtraction {
+                pages: pages.len(),
+                ..FormExtraction::default()
+            },
         }
     }
 

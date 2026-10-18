@@ -63,7 +63,10 @@ interface FileViewerProps {
   path: string;
   /** Called once the first page of a PDF is on screen (prefetch neighbours then). */
   onFirstPageVisible?: () => void;
-  /** Workspace (source id) snippets made in this file belong to. */
+  /**
+   * Workspace id snippets made in this file belong to; none (the Library, an answer's
+   * source) keeps them global, so every workspace holding the file sees them.
+   */
   workspace?: string | null;
   /** A place to show with its box outlined (a result cell, a snippet); PDFs only. */
   highlight?: FileHighlight | null;

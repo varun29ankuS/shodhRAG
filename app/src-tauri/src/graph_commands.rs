@@ -26,7 +26,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent_tools::web_block_reason;
 use crate::inbox_commands;
 use crate::research_commands::{
-    broadcast_change, indexed_pdfs, ResearchCommandError, ResearchCommandResult, ResearchState,
+    broadcast_change, disk_spelling, indexed_pdfs, ResearchCommandError, ResearchCommandResult,
+    ResearchState,
 };
 
 /// Emitted with a [`BuildProgress`] while the graph builds.
@@ -203,18 +204,6 @@ pub fn resolver_for(
     }
 }
 
-/// The file as spelled on disk (the index stores a lower-cased spelling on Windows).
-pub fn disk_spelling(path: &str) -> String {
-    std::fs::canonicalize(path)
-        .map(|real| {
-            let text = real.display().to_string();
-            text.strip_prefix(r"\\?\")
-                .map(str::to_string)
-                .unwrap_or(text)
-        })
-        .unwrap_or_else(|_| path.to_string())
-}
-
 #[tauri::command]
 pub async fn paper_graph_view(state: State<'_, ResearchState>) -> ResearchCommandResult<GraphView> {
     let services = state.services().await?;
@@ -261,6 +250,7 @@ pub async fn paper_detail(
                     file_path: Some(file.clone()),
                     text: None,
                     scopes: Vec::new(),
+                    within: None,
                     limit: Some(100),
                 })
                 .await?;

@@ -46,7 +46,7 @@ export interface Snippet {
   latex: string | null;
   /** Model that transcribed `latex`. */
   latexModel: string | null;
-  /** `global` or `workspace:<source id>`. */
+  /** `global` or `workspace:<workspace id>`. */
   scope: string;
   createdAt: string;
   updatedAt: string;

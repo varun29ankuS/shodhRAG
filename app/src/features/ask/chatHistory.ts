@@ -6,6 +6,8 @@
 import { answerAsContext } from '../agent/grounding.ts';
 import { summaryPrompt } from '../focus/summary.ts';
 import type { SideSummaryRef } from '../focus/summary.ts';
+import { composeQuestion } from './imageAttachments.ts';
+import type { AttachedContext } from './imageAttachments.ts';
 
 /** The parts of a chat message the replay reads. */
 export interface ReplayedMessage {
@@ -14,6 +16,8 @@ export interface ReplayedMessage {
   /** An answer's agent transcript: its grounding report decides which citations travel. */
   transcript?: unknown;
   sideSummary?: SideSummaryRef;
+  /** Text the user attached to a question (read from images): replayed after it, as sent. */
+  attachedContext?: AttachedContext[];
 }
 
 /**
@@ -22,5 +26,8 @@ export interface ReplayedMessage {
  */
 export function replayedContent(message: ReplayedMessage): string {
   if (message.sideSummary) return summaryPrompt(message.sideSummary, message.content);
-  return message.role === 'assistant' ? answerAsContext(message.content, message.transcript) : message.content;
+  if (message.role === 'assistant') return answerAsContext(message.content, message.transcript);
+  return message.attachedContext && message.attachedContext.length > 0
+    ? composeQuestion(message.content, message.attachedContext)
+    : message.content;
 }

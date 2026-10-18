@@ -43,8 +43,6 @@ pub const RESULT_CLASS: &str = "Result";
 pub const ACCEPT_THRESHOLD: f64 = 0.8;
 /// Version of the deterministic rules, recorded as the extractor version.
 pub const RULES_VERSION: &str = "results-rules/1";
-/// Most result statements read for one listing or comparison.
-const MAX_READ: usize = 5_000;
 /// Most method rows in one comparison.
 pub const MAX_COMPARISON_ROWS: usize = 200;
 /// Most papers named in one coverage note.
@@ -981,7 +979,8 @@ impl ResultService {
         Ok(report)
     }
 
-    /// Current result statements reported in the paper at `path` (any spelling of it).
+    /// Current result statements reported in the paper at `path` (any spelling of it), in
+    /// every scope: all of them, however many the store holds.
     async fn current_of(&self, path: &str) -> ResearchResult<Vec<ResultRecord>> {
         let query = StatementQuery {
             classes: vec![RESULT_CLASS.to_string()],
@@ -989,11 +988,10 @@ impl ResultService {
                 property: "reportedIn".to_string(),
                 equals: format!("@{}", document_entity(path).id),
             }],
-            limit: Some(MAX_READ),
             ..StatementQuery::default()
         };
         let mut out = Vec::new();
-        for row in self.store.query(&query).await? {
+        for row in self.store.query_all(&query).await? {
             match record_from(&row) {
                 Ok(r) => out.push(r),
                 Err(e) => {
@@ -1004,15 +1002,15 @@ impl ResultService {
         Ok(out)
     }
 
+    /// Every current result statement of `scopes` (empty: every scope), however many.
     async fn all(&self, scopes: &[Scope]) -> ResearchResult<Vec<ResultRecord>> {
         let query = StatementQuery {
             classes: vec![RESULT_CLASS.to_string()],
             scopes: scopes.to_vec(),
-            limit: Some(MAX_READ),
             ..StatementQuery::default()
         };
         let mut out = Vec::new();
-        for row in self.store.query(&query).await? {
+        for row in self.store.query_all(&query).await? {
             match record_from(&row) {
                 Ok(r) => out.push(r),
                 Err(e) => {
@@ -1094,7 +1092,15 @@ impl ResultService {
 
     /// A comparison of accepted results matching `filter`, with coverage notes.
     pub async fn query(&self, filter: &ResultFilter) -> ResearchResult<Comparison> {
-        let records = self.all(&filter.scopes).await?;
+        // Read across scopes once: the values of the scopes searched, and which papers have
+        // values only elsewhere (another workspace's), which the notes must not name.
+        let (records, elsewhere): (Vec<ResultRecord>, Vec<ResultRecord>) = self
+            .all(&[])
+            .await?
+            .into_iter()
+            .partition(|r| filter.scopes.is_empty() || filter.scopes.contains(&r.scope));
+        let in_scope: HashSet<String> = records.iter().map(|r| path_key(&r.file_path)).collect();
+        let elsewhere: HashSet<String> = elsewhere.iter().map(|r| path_key(&r.file_path)).collect();
         let papers_filter: HashSet<String> = filter.papers.iter().map(|p| path_key(p)).collect();
         let want = |kind: &str, value: &Option<String>| -> Option<(String, String)> {
             value
@@ -1120,6 +1126,12 @@ impl ResultService {
                 && (papers_filter.is_empty() || papers_filter.contains(&path_key(&r.file_path)))
         };
         let matching: Vec<&ResultRecord> = records.iter().filter(|r| matches(r)).collect();
+        // Papers whose matching values all await review are named by the review note.
+        let reviewing: BTreeSet<String> = matching
+            .iter()
+            .filter(|r| r.status == ResultStatus::Review)
+            .map(|r| path_key(&r.file_path))
+            .collect();
         let pending_review = matching
             .iter()
             .filter(|r| r.status == ResultStatus::Review)
@@ -1243,16 +1255,23 @@ impl ResultService {
         let reports: Vec<(String, String)> = blocking(move || db.reports()).await?;
         let known: HashSet<String> = filter.known_papers.iter().map(|p| path_key(p)).collect();
         // Papers in scope that were scanned: every extracted paper, limited to the papers
-        // asked for and, when the caller knows the papers in scope, to those.
+        // asked for, to the papers the caller knows are in scope (when it knows them), and
+        // to papers with values in the scopes searched (or with none anywhere): a paper
+        // whose values all lie in another scope was not searched, so it is never said to
+        // report nothing.
         let scanned: BTreeSet<String> = reports
             .iter()
             .map(|(p, _)| p.clone())
             .filter(|p| papers_filter.is_empty() || papers_filter.contains(p))
             .filter(|p| known.is_empty() || known.contains(p))
+            .filter(|p| in_scope.contains(p) || !elsewhere.contains(p))
             .collect();
         let contributing: BTreeSet<String> = papers.keys().map(|p| path_key(p)).collect();
         if metric.is_some() || dataset.is_some() || method.is_some() {
-            let silent: Vec<&String> = scanned.difference(&contributing).collect();
+            let silent: Vec<&String> = scanned
+                .difference(&contributing)
+                .filter(|p| !reviewing.contains(*p))
+                .collect();
             if !silent.is_empty() {
                 let what = describe(&method, &dataset, &metric);
                 notes.push(format!(

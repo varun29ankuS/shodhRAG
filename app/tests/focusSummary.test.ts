@@ -13,11 +13,14 @@ import {
   composeSummaryRequest,
   discussionText,
   hardBreaks,
+  heldPassageNumbers,
   metadataWithSummary,
   readSideSummary,
+  summaryPrompt,
+  summaryWithHeldCitations,
   wantsMarkdown,
 } from '../src/features/focus/summary.ts';
-import { METADATA_KEY, metadataWithThreads, metadataWithoutThreads } from '../src/features/focus/threadStore.ts';
+import { METADATA_KEY, metadataWithThreads, metadataWithoutThreads, threadSummary } from '../src/features/focus/threadStore.ts';
 import type { FocusThread } from '../src/features/focus/focusTypes.ts';
 
 /** Every $, $$ and fence in `text` is balanced. */
@@ -110,6 +113,70 @@ test('summary request: rules, no followups, discussion fenced and capped', () =>
 
 test('cleanSummary strips followups and caps safely', () => {
   assert.equal(cleanSummary('  Sum $x$.\n```followups\n["a"]\n```  '), 'Sum $x$.');
+});
+
+test('a summary names the passages the discussion holds and drops made-up citations', () => {
+  const passage = (n: number, file: string, page: string | null) => ({ n, file, path: `c:/papers/${file}`, page, heading: null, score: 0.9, text: 'Passage text.' });
+  const answer = (id: string, passages: unknown[]): FocusThread['turns'][number] => ({
+    id,
+    role: 'assistant',
+    content: 'An answer that cites its passages [1].',
+    timestamp: id,
+    transcript: { passages },
+  });
+  const t = thread([
+    { id: '1', role: 'user', content: 'Why a spline?', timestamp: '1' },
+    answer('2', [passage(1, 'splines.pdf', '3'), passage(2, 'knots.pdf', '7'), passage(4, 'a.pdf', '1')]),
+    { id: '3', role: 'user', content: 'And the knots?', timestamp: '3' },
+    // Numbers restart in each answer: 4 names another passage here, so it names none.
+    answer('4', [passage(3, 'knots.pdf', null), passage(4, 'b.pdf', '2')]),
+    // A question's turn holds no passages, whatever it carries.
+    { id: '5', role: 'user', content: 'Thanks', timestamp: '5', transcript: { passages: [passage(9, 'x.pdf', '1')] } },
+  ]);
+  assert.deepEqual([...heldPassageNumbers(t)].sort(), [1, 2, 3, 4]);
+  assert.equal(
+    summaryWithHeldCitations('Splines are smooth [1]. Knots set the pieces [3], see [7]. Both [1, 2, 9] and [8-9], not [4].', t),
+    'Splines are smooth (side-discussion source: splines.pdf, p. 3). Knots set the pieces (side-discussion source: knots.pdf), see.'
+      + ' Both (side-discussion sources: splines.pdf, p. 3; knots.pdf, p. 7) and, not.',
+  );
+  // Code and math are not citations: an index, an interval, a matrix.
+  for (const text of [
+    'Index `a[7]` is read.',
+    'For $x \\in [1, 5]$ the spline is cubic.',
+    'Pick $[2]$ here.',
+    'Display $$x \\in [1, 5] \\cup [7]$$ holds.',
+    '```\nv = a[1]\n```',
+    'No citations here.',
+  ]) {
+    assert.equal(summaryWithHeldCitations(text, t), text, text);
+  }
+  // A citation next to math is still one.
+  assert.equal(summaryWithHeldCitations('On $[0, 1]$ it is smooth [1].', t), 'On $[0, 1]$ it is smooth (side-discussion source: splines.pdf, p. 3).');
+  // A discussion whose answers kept no passages (older transcripts): every marker goes.
+  assert.equal(summaryWithHeldCitations('Smooth [1].', thread([answer('a', [])])), 'Smooth.');
+  assert.equal(summaryWithHeldCitations('Smooth [1].', thread([{ id: 'b', role: 'assistant', content: 'x', timestamp: 'b' }])), 'Smooth.');
+});
+
+test('the agent reads a posted summary without citation markers', () => {
+  const ref = { label: 'Spline' };
+  assert.equal(
+    summaryPrompt(ref, 'Typed later [2]. From splines.pdf (side-discussion source: splines.pdf, p. 3). For $x \\in [1, 5]$.'),
+    'From a side discussion about "Spline":\n\nTyped later. From splines.pdf (side-discussion source: splines.pdf, p. 3). For $x \\in [1, 5]$.',
+  );
+});
+
+test('the fallback summary names the passages of its own answer', () => {
+  const t = thread([
+    { id: '1', role: 'user', content: 'Why?', timestamp: '1' },
+    {
+      id: '2',
+      role: 'assistant',
+      content: 'Splines are smooth [1] and local [5].',
+      timestamp: '2',
+      transcript: { passages: [{ n: 1, file: 'splines.pdf', path: 'c:/papers/splines.pdf', page: '3' }] },
+    },
+  ]);
+  assert.equal(threadSummary(t), '**Asked:** Why?\n\nSplines are smooth (side-discussion source: splines.pdf, p. 3) and local.');
 });
 
 test('summary marker round-trips through metadata alongside threads', () => {

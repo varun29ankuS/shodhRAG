@@ -13,6 +13,7 @@ import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ConversationMode } from '../../hooks/useConversations';
 import type { CarriedPassageWire } from '../focus/carriedPassages';
+import type { AttachedContext } from '../ask/imageAttachments';
 
 export const AGENT_EVENT = 'agent_event';
 export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
@@ -107,6 +108,25 @@ export interface CodeSettings {
   allowlist: string[];
 }
 
+/** The optional parts of `agentApi.send`. */
+export interface SendExtras {
+  /** What the answer may search (selected sources, or files for "Ask about this file"). */
+  scope?: AnswerScope | null;
+  /**
+   * `typed` only when `text` is exactly what the user typed in the main conversation;
+   * default `composed`. Only the user's own words may be learned from (Settings → Memory)
+   * or kept when they ask Shodh to remember something.
+   */
+  textOrigin?: 'typed' | 'composed';
+  /** The question the user typed when `text` is a side-thread message composed around it. */
+  typedText?: string | null;
+  /**
+   * Text the user attached (read from images): the backend appends it, fenced, to the
+   * message to the model only, never to what is learned or recorded as the question.
+   */
+  attachedContext?: AttachedContext[] | null;
+}
+
 export interface HistoryTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -173,21 +193,25 @@ export const agentApi = {
   setCodeSettings: (workspaceId: string, settings: CodeSettings) =>
     call<CodeSettings>('code_settings_set', { workspaceId, settings }),
   /**
-   * `scope` limits what the answer may search (selected sources, or files for "Ask about this file").
-   * `textOrigin` is `typed` only when `text` is exactly what the user typed in the main
-   * conversation. `typedText` is the question the user typed when `text` is a side-thread
-   * message composed around it. Only the user's own words may be learned from
-   * (Settings → Memory) or kept when they ask Shodh to remember something.
+   * Ask a question in `sessionId`. The optional parts (`SendExtras`) are named, never
+   * positional: `scope`, `textOrigin`, `typedText` and `attachedContext`.
    */
   send: (
     sessionId: string,
     text: string,
     requestId: string,
     history: HistoryTurn[],
-    scope: AnswerScope | null = null,
-    textOrigin: 'typed' | 'composed' = 'composed',
-    typedText: string | null = null,
-  ) => call<string>('agent_send', { sessionId, text, requestId, history, scope, textOrigin, typedText }),
+    extras: SendExtras = {},
+  ) => call<string>('agent_send', {
+    sessionId,
+    text,
+    requestId,
+    history,
+    scope: extras.scope ?? null,
+    textOrigin: extras.textOrigin ?? 'composed',
+    typedText: extras.typedText ?? null,
+    attachedContext: extras.attachedContext && extras.attachedContext.length > 0 ? extras.attachedContext : null,
+  }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   /** `forConversation`: also allow what the prompt offered for the rest of the session. */

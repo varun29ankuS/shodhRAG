@@ -15,10 +15,12 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::json;
-use shodh_rag::audit::AuditKey;
+use shodh_rag::audit::{AuditKey, AuditLog, AuditRecord};
 use shodh_rag::harness::tools::sources::{load_sources, SourceKind as IndexKind};
 use shodh_rag::harness::tools::ScopedSnippet;
+use shodh_rag::research::scopes::{move_to_global, settle_scopes, MoveReason, SettledScopes};
 use shodh_rag::research::ResearchError;
+use shodh_rag::statements::Scope;
 use shodh_rag::workspaces::{
     AddReport, InstructionVersion, NewSource, NewWorkspace, SourceKind, Workspace, WorkspaceAuthor,
     WorkspaceDetail, WorkspaceError, WorkspacePatch, WorkspaceResult, WorkspaceSource,
@@ -30,6 +32,7 @@ use tokio::sync::{OnceCell, RwLock};
 
 use crate::audit_commands::AuditState;
 use crate::conversation_commands::{ConversationRecord, ConversationStore};
+use crate::memory_commands::MemoryState;
 use crate::research_commands::ResearchState;
 
 /// Emitted with `{ "workspaceId": ... }` (null when several changed) after a workspace was
@@ -41,6 +44,14 @@ const INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `workspace_state` key of the one-time import of legacy spaces.
 const LEGACY_IMPORT_KEY: &str = "legacy_spaces_v1";
+
+/// `workspace_state` key of the one-time repair of workspaces an earlier import left
+/// without their folder ([`repair_legacy_folders`]).
+const LEGACY_REPAIR_KEY: &str = "legacy_spaces_repair_v1";
+
+/// Description of a workspace imported from a legacy space.
+const LEGACY_DESCRIPTION: &str =
+    "Chats that were asked about this folder before workspaces existed.";
 
 /// Error of a workspace command. `code` lets the UI pick its message without parsing text:
 /// `not_found`, `invalid`, `stale`, `unavailable` or `storage`.
@@ -384,12 +395,14 @@ pub async fn workspaces_remove_source(
 
 /// Deletes a workspace (its instructions history and source list; never the sources).
 /// Its chats and tasks are kept and move to "No workspace", and so do the files added in
-/// its chats ([`keep_workspace_uploads`]).
+/// its chats ([`keep_workspace_uploads`]); its memories, snippets and results are kept and
+/// become global ([`release_workspace_statements`]).
 #[tauri::command]
 pub async fn workspaces_delete(
     app: AppHandle,
     state: State<'_, WorkspaceState>,
     rag: State<'_, crate::rag_commands::RagState>,
+    memory: State<'_, MemoryState>,
     id: String,
 ) -> WorkspaceCommandResult<bool> {
     let dir = data_dir(&app)?;
@@ -407,6 +420,18 @@ pub async fn workspaces_delete(
     if removed {
         crate::mcp_commands::forget_workspace(&app, &workspace_id);
     }
+    // In the background (opening the memory store may wait for the index), and not fatal:
+    // the workspace is gone either way, and what is left in its scope becomes global at
+    // the next start (`settle_statement_scopes`).
+    if removed {
+        let memory = memory.inner().clone();
+        let released = workspace_id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(message) = release_workspace_statements(&memory, &released).await {
+                tracing::warn!(target: "shodh::workspaces", workspace_id = %released, %message, "the workspace's memories, snippets and results were not made global");
+            }
+        });
+    }
     let detached = detach_conversations(&dir, &workspace_id);
     // Whatever happened to the chats: not fatal, the workspace is gone either
     // way, and uploads left behind go to the main Ask at the next start (see
@@ -419,6 +444,137 @@ pub async fn workspaces_delete(
         broadcast_change(&app, Some(&workspace_id));
     }
     Ok(removed)
+}
+
+/// Moves the statements of `workspace_id`, a workspace being deleted, to global: its
+/// memories, the snippets made in its chats and any results, with their history. Deleting
+/// a workspace keeps its chats and tasks, and so keeps what was learned and saved in them;
+/// they are then recalled and listed everywhere, like everything outside a workspace.
+/// Returns the statements moved.
+pub(crate) async fn release_workspace_statements(
+    memory: &MemoryState,
+    workspace_id: &str,
+) -> Result<u64, String> {
+    let scope = Scope::for_workspace(Some(workspace_id));
+    if scope == Scope::Global {
+        return Ok(0);
+    }
+    let service = memory.service().await?;
+    let moved = move_to_global(service.store(), &scope)
+        .await
+        .map_err(|e| e.to_string())?;
+    record_scope_moves(
+        service.audit_log(),
+        moved.audit_record(MoveReason::WorkspaceDeleted),
+    )
+    .await;
+    let total = moved.moved.total();
+    if total > 0 {
+        tracing::info!(target: "shodh::workspaces", workspace_id, moved = total, "a deleted workspace's statements moved to global");
+    }
+    Ok(total)
+}
+
+/// Appends `records` (scope moves) to the audit log, waiting until each is written. The
+/// statements have moved already; a record that cannot be written is logged.
+async fn record_scope_moves(
+    log: Option<&Arc<AuditLog>>,
+    records: impl IntoIterator<Item = AuditRecord>,
+) {
+    let records: Vec<AuditRecord> = records.into_iter().collect();
+    if records.is_empty() {
+        return;
+    }
+    let Some(log) = log.cloned() else {
+        tracing::warn!(target: "shodh::audit", events = records.len(), "no audit log: scope moves not recorded");
+        return;
+    };
+    let written = tokio::task::spawn_blocking(move || {
+        records
+            .into_iter()
+            .try_for_each(|record| log.append(record).map(|_| ()))
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(target: "shodh::audit", error = %e, "a scope move was not recorded")
+        }
+        Err(e) => {
+            tracing::error!(target: "shodh::audit", error = %e, "a scope move was not recorded")
+        }
+    }
+}
+
+/// `workspace_state` key of the one-time move of the snippets and results the Library made
+/// (filed under a Library source id by older versions) to global.
+const LIBRARY_RESEARCH_KEY: &str = "library_research_global_v1";
+
+/// Settles where statements are visible (see [`shodh_rag::research::scopes`]): the
+/// snippets and results the Library made become global (once), and so do the statements
+/// of scopes that name no workspace (on every call: a Library source id, a workspace
+/// deleted by an older version or whose statements could not be moved when it was).
+/// Called after the legacy import, whose workspaces keep the Library source ids they were
+/// made from. Fails, changing nothing more, when the workspaces cannot be read.
+pub async fn settle_statement_scopes(
+    state: &WorkspaceState,
+    memory: &MemoryState,
+) -> Result<SettledScopes, String> {
+    let service = memory.service().await?;
+    let store = service.store();
+    // The scopes before the workspaces: a workspace created in between is then listed.
+    let scopes = store.scopes().await.map_err(|e| e.to_string())?;
+    let workspaces: HashSet<String> = state
+        .run(|s| s.list(true))
+        .await
+        .map_err(|e| e.message)?
+        .into_iter()
+        .map(|w| w.id)
+        .collect();
+    let library = state
+        .run(|s| s.state(LIBRARY_RESEARCH_KEY))
+        .await
+        .map_err(|e| e.message)?
+        .is_none();
+    let (settled, outcome) = settle_scopes(store, &scopes, &workspaces, library).await;
+    // What moved before a failure is recorded too: it is global now either way.
+    record_scope_moves(service.audit_log(), settled.audit_records()).await;
+    outcome.map_err(|e| e.to_string())?;
+    if settled.sweep_skipped {
+        return Ok(settled);
+    }
+    if library {
+        let note = format!("{} statements", settled.library.moved.total());
+        state
+            .run(move |s| s.set_state(LIBRARY_RESEARCH_KEY, &note))
+            .await
+            .map_err(|e| e.message)?;
+    }
+    if library || settled.moved() > 0 {
+        tracing::info!(
+            target: "shodh::workspaces",
+            library = settled.library.moved.total(),
+            orphaned = settled.orphaned.moved.total(),
+            "statements no workspace run could see moved to global"
+        );
+    }
+    Ok(settled)
+}
+
+/// [`settle_statement_scopes`] once per run of the app, in the background (opening the
+/// memory store may wait for the index). A failure is logged and retried on the next call.
+pub fn settle_statement_scopes_in_background(state: WorkspaceState, memory: MemoryState) {
+    static SETTLED: OnceCell<()> = OnceCell::const_new();
+    tauri::async_runtime::spawn(async move {
+        let settled = SETTLED
+            .get_or_try_init(|| async {
+                settle_statement_scopes(&state, &memory).await.map(|_| ())
+            })
+            .await;
+        if let Err(message) = settled {
+            tracing::warn!(target: "shodh::workspaces", %message, "statement scopes not settled yet");
+        }
+    });
 }
 
 /// The files added in the chats of `workspace_id`, a workspace being deleted, go to the main
@@ -769,10 +925,51 @@ pub fn plan_legacy_import(
     plan
 }
 
+/// The Library's indexed folders, as the index lists them. Indexing may hold the index for
+/// a while: the conversations load without waiting for it, and the caller is retried on
+/// the next load.
+async fn known_folders(rag: &RwLock<RAGEngine>) -> WorkspaceCommandResult<Vec<KnownFolder>> {
+    let engine = tokio::time::timeout(INDEX_WAIT, rag.read())
+        .await
+        .map_err(|_| WorkspaceCommandError::unavailable("the index is busy"))?;
+    Ok(load_sources(&engine)
+        .await
+        .map_err(|e| WorkspaceCommandError::unavailable(e.to_string()))?
+        .into_iter()
+        .filter(|s| s.kind == IndexKind::Folder)
+        .filter_map(|s| {
+            s.folder.map(|folder| KnownFolder {
+                source_id: s.source_id,
+                folder,
+            })
+        })
+        .collect())
+}
+
 /// Runs the import once: creates a workspace per legacy space that is still an indexed
 /// folder and assigns its conversations. Idempotent and resumable (a partial run is
-/// completed by the next call); marked done only after the conversations were saved.
+/// completed by the next call); marked done only after the conversations were saved. Then,
+/// once, gives back their folders to workspaces an earlier import left without them
+/// ([`repair_legacy_folders`]).
 pub async fn import_legacy_spaces(
+    state: &WorkspaceState,
+    data_dir: &Path,
+    rag: &RwLock<RAGEngine>,
+) -> WorkspaceCommandResult<usize> {
+    let imported = import_legacy_spaces_once(state, data_dir, rag).await?;
+    // Retried on the next load; what the import changed is reported either way.
+    let repaired = match repair_legacy_folders(state, rag).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(target: "shodh::workspaces", error = %e, "legacy workspaces not repaired yet");
+            0
+        }
+    };
+    Ok(imported + repaired)
+}
+
+/// The import itself, run until it is marked done.
+async fn import_legacy_spaces_once(
     state: &WorkspaceState,
     data_dir: &Path,
     rag: &RwLock<RAGEngine>,
@@ -795,25 +992,7 @@ pub async fn import_legacy_spaces(
             .await?;
         return Ok(0);
     }
-    let folders: Vec<KnownFolder> = {
-        // Indexing may hold the index for a while; the conversations load without
-        // waiting for it, and the import is retried on the next load.
-        let engine = tokio::time::timeout(INDEX_WAIT, rag.read())
-            .await
-            .map_err(|_| WorkspaceCommandError::unavailable("the index is busy"))?;
-        load_sources(&engine)
-            .await
-            .map_err(|e| WorkspaceCommandError::unavailable(e.to_string()))?
-            .into_iter()
-            .filter(|s| s.kind == IndexKind::Folder)
-            .filter_map(|s| {
-                s.folder.map(|folder| KnownFolder {
-                    source_id: s.source_id,
-                    folder,
-                })
-            })
-            .collect()
-    };
+    let folders = known_folders(rag).await?;
     let existing: HashSet<String> = state
         .run(|s| s.list(true))
         .await?
@@ -824,49 +1003,57 @@ pub async fn import_legacy_spaces(
     apply_legacy_plan(state, data_dir, &plan).await
 }
 
-/// Applies an import plan: creates each workspace (keeping the space id; one that already
-/// exists, from an interrupted run, is kept as it is), assigns the conversations that are
-/// still in no workspace, and marks the import done. Returns the workspaces planned plus the
-/// conversations moved (non-zero: open views should refresh).
+/// Applies an import plan: creates each workspace with its folder in one transaction
+/// (keeping the space id; one that already exists, from an interrupted run, is kept as it
+/// is), assigns the conversations that are still in no workspace, and marks the import
+/// done. A space whose workspace cannot be made from what it holds (an invalid folder or
+/// name) is skipped and logged, and its conversations stay in no workspace: it never
+/// blocks the others. Returns the workspaces created plus the conversations moved
+/// (non-zero: open views should refresh).
 pub async fn apply_legacy_plan(
     state: &WorkspaceState,
     data_dir: &Path,
     plan: &LegacyPlan,
 ) -> WorkspaceCommandResult<usize> {
     let create = plan.create.clone();
-    state
+    let (created, skipped) = state
         .run(move |s| {
+            let mut created = 0usize;
+            let mut skipped: HashSet<String> = HashSet::new();
             for space in &create {
-                match s.get(&space.id) {
-                    Ok(_) => continue,
-                    Err(WorkspaceError::NotFound(_)) => {}
-                    Err(e) => return Err(e),
+                if workspace_exists(s, &space.id)? {
+                    continue;
                 }
-                s.create_with_id(
+                let made = s.create_with_sources(
                     &space.id,
                     &NewWorkspace {
                         name: space.name.clone(),
-                        description: "Chats that were asked about this folder before                                       workspaces existed."
-                            .to_string(),
+                        description: LEGACY_DESCRIPTION.to_string(),
                         ..NewWorkspace::default()
                     },
+                    &[legacy_folder(&space.id, &space.name, &space.folder)],
                     WorkspaceAuthor::Migration,
-                )?;
-                s.add_sources(
-                    &space.id,
-                    &[NewSource {
-                        kind: SourceKind::Folder,
-                        reference: space.id.clone(),
-                        label: space.name.clone(),
-                        path: Some(space.folder.clone()),
-                    }],
-                    WorkspaceAuthor::Migration,
-                )?;
+                );
+                match made {
+                    Ok(_) => created += 1,
+                    Err(WorkspaceError::Invalid(reason)) => {
+                        // Made meanwhile (its id was taken): kept as it is, like one an
+                        // interrupted run made.
+                        if workspace_exists(s, &space.id)? {
+                            continue;
+                        }
+                        // Retrying cannot fix what the space holds: skip it, import the rest.
+                        tracing::warn!(target: "shodh::workspaces", space = %space.id, %reason, "legacy space not imported as a workspace");
+                        skipped.insert(space.id.clone());
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            Ok(())
+            Ok((created, skipped))
         })
         .await?;
-    let assign = plan.assign.clone();
+    let mut assign = plan.assign.clone();
+    assign.retain(|_, workspace| !skipped.contains(workspace));
     let assigned = ConversationStore::in_dir(data_dir)
         .update(move |conversations| {
             let mut n = 0;
@@ -885,12 +1072,98 @@ pub async fn apply_legacy_plan(
             code: "storage",
             message,
         })?;
-    let note = format!("{} workspaces, {assigned} conversations", plan.create.len());
+    let note = format!("{created} workspaces, {assigned} conversations");
     state
         .run(move |s| s.set_state(LEGACY_IMPORT_KEY, &note))
         .await?;
-    tracing::info!(target: "shodh::workspaces", workspaces = plan.create.len(), conversations = assigned, "legacy spaces imported as workspaces");
-    Ok(assigned + plan.create.len())
+    tracing::info!(target: "shodh::workspaces", workspaces = created, skipped = skipped.len(), conversations = assigned, "legacy spaces imported as workspaces");
+    Ok(assigned + created)
+}
+
+/// Whether workspace `id` exists.
+fn workspace_exists(store: &WorkspaceStore, id: &str) -> WorkspaceResult<bool> {
+    match store.get(id) {
+        Ok(_) => Ok(true),
+        Err(WorkspaceError::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// The folder source of a workspace made from a legacy space (its id is the space id, the
+/// folder source's id).
+fn legacy_folder(id: &str, name: &str, folder: &str) -> NewSource {
+    NewSource {
+        kind: SourceKind::Folder,
+        reference: id.to_string(),
+        label: name.to_string(),
+        path: Some(folder.to_string()),
+    }
+}
+
+/// Gives back its folder, once, to each workspace an earlier import left without it: before
+/// a workspace and its folder were created together, a run that stopped between the two
+/// left the workspace with no source, and the next run kept it as it was and marked the
+/// import done. Only a workspace with no source at all whose id is an indexed folder's
+/// source id (the legacy space id it was made from) is given that folder. Marked done once
+/// it ran; a workspace whose folder cannot be added is logged and left as it is. Returns
+/// the workspaces given their folder.
+async fn repair_legacy_folders(
+    state: &WorkspaceState,
+    rag: &RwLock<RAGEngine>,
+) -> WorkspaceCommandResult<usize> {
+    if state.run(|s| s.state(LEGACY_REPAIR_KEY)).await?.is_some() {
+        return Ok(0);
+    }
+    let any_empty = state
+        .run(|s| s.list(true))
+        .await?
+        .iter()
+        .any(|w| w.source_counts.total() == 0);
+    // Without a workspace to repair, the index is not read.
+    let folders = if any_empty {
+        known_folders(rag).await?
+    } else {
+        Vec::new()
+    };
+    apply_legacy_repair(state, folders).await
+}
+
+/// [`repair_legacy_folders`] with the indexed `folders`, and marked done.
+pub async fn apply_legacy_repair(
+    state: &WorkspaceState,
+    folders: Vec<KnownFolder>,
+) -> WorkspaceCommandResult<usize> {
+    let repaired = state
+        .run(move |s| {
+            let mut repaired = 0usize;
+            for workspace in s.list(true)? {
+                if workspace.source_counts.total() != 0 {
+                    continue;
+                }
+                let Some(folder) = folders.iter().find(|f| f.source_id == workspace.id) else {
+                    continue;
+                };
+                let source = legacy_folder(&workspace.id, &workspace.name, &folder.folder);
+                match s.add_sources(&workspace.id, &[source], WorkspaceAuthor::Migration) {
+                    Ok(report) if report.added > 0 => repaired += 1,
+                    Ok(_) => {}
+                    Err(WorkspaceError::Invalid(reason)) => {
+                        tracing::warn!(target: "shodh::workspaces", workspace = %workspace.id, %reason, "legacy workspace not given its folder");
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(repaired)
+        })
+        .await?;
+    let note = format!("{repaired} workspaces given their folder");
+    state
+        .run(move |s| s.set_state(LEGACY_REPAIR_KEY, &note))
+        .await?;
+    if repaired > 0 {
+        tracing::info!(target: "shodh::workspaces", workspaces = repaired, "legacy workspaces given back their folders");
+    }
+    Ok(repaired)
 }
 
 #[cfg(test)]
@@ -972,6 +1245,161 @@ The {name} notes describe the river, the bridge and the mill at dawn.
             source_id: id.into(),
             folder: folder.into(),
         }
+    }
+
+    fn saved_snippet(
+        scope: Scope,
+        author: shodh_rag::research::snippets::SnippetAuthor,
+        text: &str,
+    ) -> shodh_rag::research::snippets::NewSnippet {
+        shodh_rag::research::snippets::NewSnippet {
+            file_path: "C:/papers/ann.pdf".into(),
+            page: 2,
+            rect: shodh_rag::research::pdf_text::PageRect {
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 40.0,
+            },
+            text: text.into(),
+            image_png: None,
+            title: None,
+            note: None,
+            tags: Vec::new(),
+            kind: shodh_rag::research::snippets::SnippetKind::Passage,
+            scope,
+            author,
+        }
+    }
+
+    /// Deleting a workspace makes its memories, snippets and results global, so nothing
+    /// it held is lost or stranded. At the next start, what older versions filed under a
+    /// Library source id (or a workspace deleted before) becomes global too, while a live
+    /// workspace keeps the assistant's snippets; the one-time step runs once.
+    #[tokio::test]
+    async fn statements_no_workspace_run_could_see_become_global() {
+        use shodh_rag::research::snippets::SnippetAuthor;
+        let t = crate::agent_tools::testing::host().await;
+        let services = t.host.research.services().await.unwrap();
+        let store = t.host.memory.service().await.unwrap().store().clone();
+        let create = |name: &str| {
+            let new = NewWorkspace {
+                name: name.to_string(),
+                ..NewWorkspace::default()
+            };
+            move |s: &WorkspaceStore| s.create(&new, WorkspaceAuthor::User)
+        };
+        let thesis = t.host.workspaces.run(create("Thesis")).await.unwrap();
+        let draft = t.host.workspaces.run(create("Draft")).await.unwrap();
+        let agent = || SnippetAuthor::Agent {
+            model: "assistant".into(),
+        };
+        let from_library = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace("src-papers".into()),
+                SnippetAuthor::User,
+                "Graph indexes reach a recall of 95 percent on SIFT1M at ten neighbours.",
+            ))
+            .await
+            .unwrap();
+        let in_thesis = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace(thesis.id.clone()),
+                agent(),
+                "Quantisation trades recall for memory: IVF-PQ keeps 71 percent at ten.",
+            ))
+            .await
+            .unwrap();
+        let in_draft = services
+            .snippets
+            .create(saved_snippet(
+                Scope::Workspace(draft.id.clone()),
+                agent(),
+                "The draft compares graph and quantisation indexes on two datasets.",
+            ))
+            .await
+            .unwrap();
+        let scope_of = |id: String| {
+            let store = store.clone();
+            async move { store.get(&id).await.unwrap().scope }
+        };
+
+        // Deleting Draft: its snippet becomes global.
+        let draft_id = draft.id.clone();
+        assert!(t
+            .host
+            .workspaces
+            .run(move |s| s.delete(&draft_id))
+            .await
+            .unwrap());
+        assert_eq!(
+            release_workspace_statements(&t.host.memory, &draft.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(scope_of(in_draft.statement_id.clone()).await, Scope::Global);
+
+        // The next start: the Library-made snippet becomes global, Thesis keeps its own.
+        let settled = settle_statement_scopes(&t.host.workspaces, &t.host.memory)
+            .await
+            .unwrap();
+        assert_eq!(settled.moved(), 1, "{settled:?}");
+        assert_eq!(
+            scope_of(from_library.statement_id.clone()).await,
+            Scope::Global
+        );
+        assert_eq!(
+            scope_of(in_thesis.statement_id.clone()).await,
+            Scope::Workspace(thesis.id.clone())
+        );
+        assert!(t
+            .host
+            .workspaces
+            .run(|s| s.state(LIBRARY_RESEARCH_KEY))
+            .await
+            .unwrap()
+            .is_some());
+        let again = settle_statement_scopes(&t.host.workspaces, &t.host.memory)
+            .await
+            .unwrap();
+        assert_eq!(again.moved(), 0);
+        // Each move that moved something is one audit event: scopes and counts, no text.
+        let log = t.host.audit.clone().unwrap();
+        let mut events = log
+            .query(&shodh_rag::audit::AuditQuery {
+                types: vec![shodh_rag::audit::AuditEventType::ScopeChange],
+                ..Default::default()
+            })
+            .unwrap();
+        events.reverse();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].principal, shodh_rag::audit::LOCAL_OWNER);
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "reason": "workspace deleted",
+                "from": [format!("workspace:{}", draft.id)],
+                "to": "global",
+                "moved": {"memories": 0, "snippets": 1, "results": 0, "others": 0},
+                "total": 1,
+            })
+        );
+        assert_eq!(events[1].principal, shodh_rag::audit::SYSTEM_PRINCIPAL);
+        assert_eq!(events[1].payload["reason"], "orphan scope sweep");
+        assert_eq!(events[1].payload["from"], json!(["workspace:src-papers"]));
+        assert!(!events
+            .iter()
+            .any(|e| e.payload.to_string().contains("recall")));
+        // Releasing the global scope moves nothing.
+        assert_eq!(
+            release_workspace_statements(&t.host.memory, " ")
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1106,6 +1534,10 @@ The {name} notes describe the river, the bridge and the mill at dawn.
         );
         let detail = state.run(|s| s.detail("src-1")).await.unwrap();
         assert_eq!(detail.workspace.name, "Contracts");
+        assert_eq!(
+            detail.workspace.description,
+            "Chats that were asked about this folder before workspaces existed."
+        );
         assert_eq!(detail.sources.len(), 1);
         assert_eq!(detail.sources[0].kind, SourceKind::Folder);
         assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
@@ -1127,10 +1559,11 @@ The {name} notes describe the river, the bridge and the mill at dawn.
             .await
             .unwrap()
             .is_some());
-        // Applying again (an interrupted run resumed) neither duplicates nor fails.
+        // Applying again (an interrupted run resumed) neither duplicates nor fails, and
+        // creates and moves nothing.
         assert_eq!(
             apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
-            1
+            0
         );
         assert_eq!(state.run(|s| s.list(true)).await.unwrap().len(), 1);
         assert_eq!(
@@ -1142,6 +1575,124 @@ The {name} notes describe the river, the bridge and the mill at dawn.
                 .len(),
             1
         );
+    }
+
+    /// A space whose folder is invalid is skipped (its chats stay in no workspace) and the
+    /// others are imported; the import completes instead of failing on every load.
+    #[tokio::test]
+    async fn an_invalid_legacy_space_is_skipped_and_the_rest_imported() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = WorkspaceState::at(Some((dir.path().join("shodh.db"), None)));
+        let store = ConversationStore::in_dir(dir.path());
+        let saved = vec![
+            conversation("a", Some(("src-1", "Contracts")), None),
+            conversation("bb", Some(("src-bad", "Broken")), None),
+        ];
+        store
+            .update(|all| {
+                all.extend(saved.clone());
+                Ok(())
+            })
+            .unwrap();
+        // A folder without a path cannot be a workspace source.
+        let folders = vec![known("src-1", "C:/Docs/Contracts"), known("src-bad", "  ")];
+        let plan = plan_legacy_import(&saved, &folders, &HashSet::new());
+        assert_eq!(plan.create.len(), 2);
+        // One workspace created, one conversation moved.
+        assert_eq!(
+            apply_legacy_plan(&state, dir.path(), &plan).await.unwrap(),
+            2
+        );
+        assert!(matches!(
+            state.run(|s| s.get("src-bad")).await,
+            Err(WorkspaceCommandError {
+                code: "not_found",
+                ..
+            })
+        ));
+        assert_eq!(
+            state
+                .run(|s| s.detail("src-1"))
+                .await
+                .unwrap()
+                .sources
+                .len(),
+            1
+        );
+        let after = store.load().unwrap();
+        let workspace_of = |id: &str| {
+            after
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.workspace_id.clone())
+        };
+        assert_eq!(workspace_of("a").as_deref(), Some("src-1"));
+        assert_eq!(workspace_of("bb"), None);
+        assert!(state
+            .run(|s| s.state(LEGACY_IMPORT_KEY))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// An import that stopped between creating a workspace and adding its folder, before the
+    /// two were created together, and was then marked done: the one-time repair gives that
+    /// workspace its folder, and only a workspace with no source whose id is an indexed
+    /// folder's source id.
+    #[tokio::test]
+    async fn the_repair_gives_a_folder_only_to_an_empty_legacy_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = WorkspaceState::at(Some((dir.path().join("shodh.db"), None)));
+        let named = |name: &str| NewWorkspace {
+            name: name.into(),
+            ..NewWorkspace::default()
+        };
+        let broken = named("Contracts");
+        let mine = named("Mine");
+        let kept = named("Tax");
+        state
+            .run(move |s| {
+                // Left without its folder by an interrupted import, now marked done.
+                s.create_with_id("src-1", &broken, WorkspaceAuthor::Migration)?;
+                // The user's own workspace, empty: its id is no folder's.
+                s.create_with_id("ws-mine", &mine, WorkspaceAuthor::User)?;
+                // A legacy workspace that has a source: left as it is.
+                s.create_with_sources(
+                    "src-2",
+                    &kept,
+                    &[NewSource {
+                        kind: SourceKind::File,
+                        reference: "C:/Docs/Tax 2026/return.pdf".into(),
+                        label: String::new(),
+                        path: None,
+                    }],
+                    WorkspaceAuthor::Migration,
+                )?;
+                s.set_state(LEGACY_IMPORT_KEY, "1 workspaces, 1 conversations")
+            })
+            .await
+            .unwrap();
+        let folders = vec![
+            known("src-1", "C:/Docs/Contracts"),
+            known("src-2", "C:/Docs/Tax 2026"),
+        ];
+        assert_eq!(apply_legacy_repair(&state, folders).await.unwrap(), 1);
+        let detail = state.run(|s| s.detail("src-1")).await.unwrap();
+        assert_eq!(detail.sources.len(), 1);
+        assert_eq!(detail.sources[0].kind, SourceKind::Folder);
+        assert_eq!(detail.sources[0].reference, "src-1");
+        assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
+        assert_eq!(detail.sources[0].path.as_deref(), Some("C:/Docs/Contracts"));
+        let mine = state.run(|s| s.detail("ws-mine")).await.unwrap();
+        assert!(mine.sources.is_empty());
+        let tax = state.run(|s| s.detail("src-2")).await.unwrap().sources;
+        assert_eq!(tax.len(), 1);
+        assert_eq!(tax[0].kind, SourceKind::File);
+        assert!(state
+            .run(|s| s.state(LEGACY_REPAIR_KEY))
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[test]

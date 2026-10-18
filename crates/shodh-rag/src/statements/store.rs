@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -53,6 +54,10 @@ pub struct StatementStore {
     /// Serialises writes: supersede decisions read, then write; two writers must not
     /// interleave between the two.
     write_lock: tokio::sync::Mutex<()>,
+    /// A purge of erased rows was asked for since the background purge last started.
+    purge_requested: AtomicBool,
+    /// The background purge is running ([`StatementStore::schedule_purge`]).
+    purge_running: AtomicBool,
 }
 
 impl std::fmt::Debug for StatementStore {
@@ -195,6 +200,8 @@ impl StatementStore {
             embedder,
             clock,
             write_lock: tokio::sync::Mutex::new(()),
+            purge_requested: AtomicBool::new(false),
+            purge_running: AtomicBool::new(false),
         })
     }
 
@@ -207,6 +214,12 @@ impl StatementStore {
     #[cfg(test)]
     pub(crate) async fn table_version(&self) -> StatementResult<u64> {
         self.table.version().await
+    }
+
+    /// The statement table's versions on disk, oldest first.
+    #[cfg(test)]
+    pub(crate) async fn table_versions(&self) -> StatementResult<Vec<u64>> {
+        self.table.versions().await
     }
 
     /// The dynamics store (strength, use, links).
@@ -958,6 +971,144 @@ impl StatementStore {
         Ok(before)
     }
 
+    /// Erases statements `ids`: their dynamics and links are deleted, then their rows are
+    /// deleted from the table (not only marked forgotten). The table's earlier versions
+    /// and data files still hold the rows until [`StatementStore::purge_history`] (which
+    /// [`StatementStore::schedule_purge`] runs in the background). Unknown ids are
+    /// skipped. Returns the ids that were stored, in the given order.
+    pub async fn erase(&self, ids: &[String]) -> StatementResult<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _guard = self.write_lock.lock().await;
+        let mut stored: HashSet<String> = HashSet::new();
+        for chunk in ids.chunks(100) {
+            let predicate = id_list_predicate(chunk);
+            stored.extend(
+                self.table
+                    .scan(Some(&predicate), chunk.len())
+                    .await?
+                    .into_iter()
+                    .map(|row| row.id),
+            );
+        }
+        // Dynamics first: a failure after it leaves the rows, so the erase can be retried.
+        self.dynamics.remove_statements(ids)?;
+        for chunk in ids.chunks(100) {
+            if chunk.iter().any(|id| stored.contains(id)) {
+                self.table.delete(&id_list_predicate(chunk)).await?;
+            }
+        }
+        Ok(ids
+            .iter()
+            .filter(|id| stored.contains(*id))
+            .cloned()
+            .collect())
+    }
+
+    /// Erases statements that were only forgotten (soft-deleted by
+    /// [`StatementStore::forget`] or [`StatementStore::revert`], or forgotten before
+    /// erasing existed) whose source starts with one of `source_prefixes` or whose class
+    /// is one of `classes`, as [`StatementStore::erase`] does. At most 5,000 a call.
+    /// Returns how many were erased.
+    pub async fn erase_forgotten(
+        &self,
+        source_prefixes: &[String],
+        classes: &[&str],
+    ) -> StatementResult<usize> {
+        let mut any: Vec<String> = source_prefixes
+            .iter()
+            .map(|prefix| {
+                format!(
+                    "source LIKE {}",
+                    quote(&format!("{}%", like_escape(prefix)))
+                )
+            })
+            .collect();
+        if !classes.is_empty() {
+            any.push(format!(
+                "class IN ({})",
+                classes
+                    .iter()
+                    .map(|c| quote(c))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if any.is_empty() {
+            return Ok(0);
+        }
+        let predicate = format!("forgotten_at IS NOT NULL AND ({})", any.join(" OR "));
+        let _guard = self.write_lock.lock().await;
+        let ids: Vec<String> = self
+            .table
+            .scan(Some(&predicate), MAX_LIMIT)
+            .await?
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        self.dynamics.remove_statements(&ids)?;
+        for chunk in ids.chunks(100) {
+            self.table.delete(&id_list_predicate(chunk)).await?;
+        }
+        Ok(ids.len())
+    }
+
+    /// Removes erased rows from disk: the table's data files are rewritten without them
+    /// and every earlier table version is deleted (see
+    /// `StatementTable::purge_old_versions` for what LanceDB guarantees). Writes wait
+    /// while it runs; reads wait only while the old files are deleted.
+    pub async fn purge_history(&self) -> StatementResult<()> {
+        let _guard = self.write_lock.lock().await;
+        let stats = self.table.purge_old_versions().await?;
+        tracing::info!(
+            target: "shodh::statements",
+            fragments = stats.fragments_rewritten,
+            versions = stats.versions_removed,
+            bytes = stats.bytes_removed,
+            "erased statements removed from the table's files and history"
+        );
+        Ok(())
+    }
+
+    /// Runs [`StatementStore::purge_history`] in the background, so whoever erased
+    /// statements does not wait for it. One purge runs at a time; requests made while it
+    /// runs are served by one more run after it, so the work stays bounded however often
+    /// this is called. A failed purge is logged; the next request runs it again. Without
+    /// a Tokio runtime (never in the app) it is logged and skipped.
+    pub fn schedule_purge(self: &Arc<Self>) {
+        self.purge_requested.store(true, Ordering::SeqCst);
+        if self.purge_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            self.purge_running.store(false, Ordering::SeqCst);
+            tracing::warn!(target: "shodh::statements", "no runtime: erased statements stay in the table's history until the next purge");
+            return;
+        };
+        let store = Arc::clone(self);
+        runtime.spawn(async move {
+            loop {
+                while store.purge_requested.swap(false, Ordering::SeqCst) {
+                    if let Err(e) = store.purge_history().await {
+                        tracing::warn!(target: "shodh::statements", error = %e, "erased statements are still in the table's history; the next erase retries");
+                    }
+                }
+                store.purge_running.store(false, Ordering::SeqCst);
+                // A request between the last check and clearing the flag: run again,
+                // unless another call already started a purge for it.
+                if !store.purge_requested.load(Ordering::SeqCst)
+                    || store.purge_running.swap(true, Ordering::SeqCst)
+                {
+                    break;
+                }
+            }
+        });
+    }
+
     /// Undoes the write that stored `id`: soft-forgets it and reopens every statement it
     /// superseded, so the fact is as it was before. Refused when `id` has since been
     /// superseded by a newer version (an edit after the write): undoing it would silently
@@ -1150,6 +1301,17 @@ impl StatementStore {
                 .any(|v| v.to_string() == filter.equals)
         })
     }
+}
+
+/// `id IN (...)` over `ids`.
+fn id_list_predicate(ids: &[String]) -> String {
+    format!(
+        "id IN ({})",
+        ids.iter()
+            .map(|id| quote(id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Rows current at `at`: started, not superseded, not expired.

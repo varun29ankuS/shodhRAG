@@ -209,3 +209,26 @@ pub(crate) fn preference(id: &str, topic: &str, value: &str, at: DateTime<Utc>) 
 pub(crate) fn note(id: &str, text: &str, at: DateTime<Utc>) -> Statement {
     statement(id, "Note", &[("noteText", RawValue::text(text))], at)
 }
+
+/// Files under `dir` (recursively) whose bytes contain `needle`: where a text is still on
+/// disk.
+pub(crate) fn files_containing(dir: &std::path::Path, needle: &str) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if std::fs::read(&path)
+                .is_ok_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found
+}

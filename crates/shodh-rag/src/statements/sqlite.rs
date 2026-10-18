@@ -295,6 +295,35 @@ impl DynamicsStore {
             params![id],
         )?)
     }
+
+    /// Deletes the dynamics (strength, use count, pin) and every link of statements `ids`
+    /// (they were erased), in one transaction. Deleted rows are zeroed in the database
+    /// file (`secure_delete`). Returns the dynamics rows deleted.
+    pub fn remove_statements(&self, ids: &[String]) -> StatementResult<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self.lock();
+        conn.execute_batch("PRAGMA secure_delete = ON;")?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut removed = 0;
+        for chunk in ids.chunks(LOOKUP_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            removed += tx.execute(
+                &format!("DELETE FROM statement_dynamics WHERE statement_id IN ({placeholders})"),
+                params_from_iter(chunk.iter()),
+            )?;
+            tx.execute(
+                &format!(
+                    "DELETE FROM statement_links
+                     WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})"
+                ),
+                params_from_iter(chunk.iter().chain(chunk.iter())),
+            )?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
 }
 
 fn write_state(

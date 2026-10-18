@@ -1417,6 +1417,12 @@ mod tests {
         assert!(plan.limited);
         assert!(plan.space_ids.is_empty());
         assert!(plan.notes[0].contains("outside the workspace \"Thesis\""));
+        assert!(
+            plan.notes[0].contains("only uses the workspace's sources; the user can add"),
+            "{}",
+            plan.notes[0]
+        );
+        assert!(!plan.notes[0].contains("  "), "{:?}", plan.notes[0]);
         let plan = plan_search(&scope, &ids(&["space-a", "space-b"]));
         assert_eq!(plan.space_ids, vec!["space-a"]);
         // An empty workspace is still limited: it finds nothing, not everything.

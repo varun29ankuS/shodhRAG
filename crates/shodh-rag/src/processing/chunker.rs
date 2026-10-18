@@ -439,6 +439,8 @@ impl TextChunker {
                         // Very large form — split by groups of lines, keeping all fields visible
                         let lines: Vec<&str> = body.lines().collect();
                         let mut chunk_start = 0;
+                        // Parts are numbered within this form, whatever came before it.
+                        let mut part = 0usize;
                         while chunk_start < lines.len() {
                             let mut char_count = 0;
                             let mut chunk_end = chunk_start;
@@ -452,12 +454,13 @@ impl TextChunker {
                                 chunk_end = chunk_start + 1;
                             }
                             let chunk_text = lines[chunk_start..chunk_end].join("\n");
+                            part += 1;
                             let context_prefix = format!(
                                 "{} Source: {}. Form Data{} (part {}). ",
                                 doc.header(),
                                 doc_source,
                                 page_label,
-                                results.len() + 1
+                                part
                             );
                             results.push(ContextualChunkResult {
                                 id: Uuid::new_v4(),
@@ -995,6 +998,34 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].page, None);
         assert_eq!(chunks[0].text, "Name: Asha");
+    }
+
+    #[test]
+    fn a_large_form_numbers_only_its_own_parts() {
+        let chunker = TextChunker::new(100, 0, 10);
+        let large: Vec<(String, String)> = (1..=12)
+            .map(|i| (format!("Field number {i}"), format!("value of field {i}")))
+            .collect();
+        let sections = vec![
+            DocumentSection::FormFields {
+                fields: vec![("Name".to_string(), "Asha".to_string())],
+                page: 1,
+            },
+            DocumentSection::FormFields {
+                fields: large,
+                page: 2,
+            },
+        ];
+        let chunks =
+            chunker.chunk_structured(&sections, &DocumentContext::titled("Form"), "form.pdf");
+        let parts: Vec<&str> = chunks[1..].iter().map(|c| c.context.as_str()).collect();
+        assert!(parts.len() > 1, "{parts:?}");
+        for (i, context) in parts.iter().enumerate() {
+            assert!(
+                context.contains(&format!("(Page 2) (part {})", i + 1)),
+                "{context}"
+            );
+        }
     }
 
     fn words(text: &str) -> usize {

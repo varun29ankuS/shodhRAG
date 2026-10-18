@@ -287,6 +287,64 @@ fn a_legacy_space_keeps_its_id_and_ids_are_unique() {
 }
 
 #[test]
+fn a_workspace_and_its_first_sources_are_created_together_or_not_at_all() {
+    let (dir, store) = store();
+    // A folder without its path is invalid: nothing is created.
+    let invalid = NewSource {
+        kind: SourceKind::Folder,
+        reference: "src-2".into(),
+        label: "Broken".into(),
+        path: None,
+    };
+    assert!(store
+        .create_with_sources(
+            "src-legacy",
+            &named("Contracts"),
+            &[folder("src-legacy", "C:/Docs/Contracts"), invalid],
+            WorkspaceAuthor::Migration,
+        )
+        .is_err());
+    assert!(matches!(
+        store.get("src-legacy"),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    // The source insert fails in the database: the workspace row is rolled back with it.
+    let raw = rusqlite::Connection::open(dir.path().join("shodh.db")).unwrap();
+    raw.execute_batch(
+        "CREATE TRIGGER fail_source BEFORE INSERT ON workspace_sources
+         BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+    )
+    .unwrap();
+    assert!(store
+        .create_with_sources(
+            "src-legacy",
+            &named("Contracts"),
+            &[folder("src-legacy", "C:/Docs/Contracts")],
+            WorkspaceAuthor::Migration,
+        )
+        .is_err());
+    assert!(matches!(
+        store.get("src-legacy"),
+        Err(WorkspaceError::NotFound(_))
+    ));
+    raw.execute_batch("DROP TRIGGER fail_source;").unwrap();
+
+    let ws = store
+        .create_with_sources(
+            "src-legacy",
+            &named("Contracts"),
+            &[folder("src-legacy", "C:/Docs/Contracts")],
+            WorkspaceAuthor::Migration,
+        )
+        .unwrap();
+    assert_eq!(ws.source_counts.folders, 1);
+    let detail = store.detail("src-legacy").unwrap();
+    assert_eq!(detail.sources.len(), 1);
+    assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);
+    assert_eq!(detail.sources[0].path.as_deref(), Some("C:/Docs/Contracts"));
+}
+
+#[test]
 fn line_diff_marks_added_and_removed_lines() {
     let lines = line_diff("a\nb\nc", "a\nc\nd");
     let ops: Vec<(DiffOp, &str)> = lines.iter().map(|l| (l.op, l.text.as_str())).collect();

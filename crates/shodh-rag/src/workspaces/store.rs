@@ -130,9 +130,7 @@ fn current_instructions(conn: &Connection, id: &str) -> WorkspaceResult<(u32, St
 
 /// A source as stored: kind, reference (paths normalised so one file is one source),
 /// label and path.
-fn clean_source(
-    source: &NewSource,
-) -> WorkspaceResult<(SourceKind, String, String, Option<String>)> {
+fn clean_source(source: &NewSource) -> WorkspaceResult<CleanSource> {
     let reference = source.reference.trim();
     if reference.is_empty() || reference.chars().count() > MAX_REF_CHARS {
         return Err(WorkspaceError::Invalid(format!(
@@ -187,6 +185,54 @@ fn clean_source(
     };
     let label: String = label.chars().take(MAX_LABEL_CHARS).collect();
     Ok((source.kind, reference, label, path))
+}
+
+/// A source as it is stored: kind, reference, label and path.
+type CleanSource = (SourceKind, String, String, Option<String>);
+
+/// Validates and normalises `sources` (at most [`MAX_SOURCES_PER_CALL`] in one call).
+fn clean_sources(sources: &[NewSource]) -> WorkspaceResult<Vec<CleanSource>> {
+    if sources.len() > MAX_SOURCES_PER_CALL {
+        return Err(WorkspaceError::Invalid(format!(
+            "{} sources in one call; add at most {MAX_SOURCES_PER_CALL} at a time",
+            sources.len()
+        )));
+    }
+    sources.iter().map(clean_source).collect()
+}
+
+/// Inserts cleaned sources of workspace `id` inside `tx`; ones it already has are
+/// counted, not duplicated.
+fn insert_sources(
+    tx: &Transaction<'_>,
+    id: &str,
+    sources: Vec<CleanSource>,
+    added_by: WorkspaceAuthor,
+    at: &str,
+) -> WorkspaceResult<AddReport> {
+    let mut report = AddReport::default();
+    for (kind, reference, label, path) in sources {
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO workspace_sources
+                (workspace_id, kind, ref, label, path, added_by, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                kind.as_str(),
+                reference,
+                label,
+                path,
+                added_by.as_str(),
+                at
+            ],
+        )?;
+        if inserted == 1 {
+            report.added += 1;
+        } else {
+            report.already += 1;
+        }
+    }
+    Ok(report)
 }
 
 fn insert_version(
@@ -280,7 +326,21 @@ impl WorkspaceStore {
         new: &NewWorkspace,
         author: WorkspaceAuthor,
     ) -> WorkspaceResult<Workspace> {
+        self.create_with_sources(id, new, &[], author)
+    }
+
+    /// [`create_with_id`](Self::create_with_id) together with its first sources, added by
+    /// `author`, in one transaction: either the workspace exists with every source or it
+    /// does not exist at all. Fails when the id is taken or a source is invalid.
+    pub fn create_with_sources(
+        &self,
+        id: &str,
+        new: &NewWorkspace,
+        sources: &[NewSource],
+        author: WorkspaceAuthor,
+    ) -> WorkspaceResult<Workspace> {
         let id = check_id(id)?;
+        let cleaned = clean_sources(sources)?;
         let template_id = new
             .template
             .as_deref()
@@ -322,6 +382,7 @@ impl WorkspaceStore {
         if !instructions.is_empty() {
             insert_version(&tx, id, 1, &instructions, instructions_author, None, &at)?;
         }
+        insert_sources(&tx, id, cleaned, author, &at)?;
         tx.commit()?;
         workspace_in(&conn, id)
     }
@@ -463,42 +524,12 @@ impl WorkspaceStore {
         if sources.is_empty() {
             return Err(WorkspaceError::Invalid("no sources to add".into()));
         }
-        if sources.len() > MAX_SOURCES_PER_CALL {
-            return Err(WorkspaceError::Invalid(format!(
-                "{} sources in one call; add at most {MAX_SOURCES_PER_CALL} at a time",
-                sources.len()
-            )));
-        }
-        let cleaned = sources
-            .iter()
-            .map(clean_source)
-            .collect::<WorkspaceResult<Vec<_>>>()?;
+        let cleaned = clean_sources(sources)?;
         let at = now();
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         workspace_in(&tx, id)?;
-        let mut report = AddReport::default();
-        for (kind, reference, label, path) in cleaned {
-            let inserted = tx.execute(
-                "INSERT OR IGNORE INTO workspace_sources
-                    (workspace_id, kind, ref, label, path, added_by, added_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    id,
-                    kind.as_str(),
-                    reference,
-                    label,
-                    path,
-                    added_by.as_str(),
-                    at
-                ],
-            )?;
-            if inserted == 1 {
-                report.added += 1;
-            } else {
-                report.already += 1;
-            }
-        }
+        let report = insert_sources(&tx, id, cleaned, added_by, &at)?;
         if report.added > 0 {
             tx.execute(
                 "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",

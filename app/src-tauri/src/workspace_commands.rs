@@ -42,6 +42,10 @@ const INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// `workspace_state` key of the one-time import of legacy spaces.
 const LEGACY_IMPORT_KEY: &str = "legacy_spaces_v1";
 
+/// Description of a workspace imported from a legacy space.
+const LEGACY_DESCRIPTION: &str =
+    "Chats that were asked about this folder before workspaces existed.";
+
 /// Error of a workspace command. `code` lets the UI pick its message without parsing text:
 /// `not_found`, `invalid`, `stale`, `unavailable` or `storage`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -842,18 +846,15 @@ pub async fn apply_legacy_plan(
                     Err(WorkspaceError::NotFound(_)) => {}
                     Err(e) => return Err(e),
                 }
-                s.create_with_id(
+                // The workspace and its folder are created together: a run that fails
+                // part way leaves no workspace without its folder for the next run to skip.
+                s.create_with_sources(
                     &space.id,
                     &NewWorkspace {
                         name: space.name.clone(),
-                        description: "Chats that were asked about this folder before                                       workspaces existed."
-                            .to_string(),
+                        description: LEGACY_DESCRIPTION.to_string(),
                         ..NewWorkspace::default()
                     },
-                    WorkspaceAuthor::Migration,
-                )?;
-                s.add_sources(
-                    &space.id,
                     &[NewSource {
                         kind: SourceKind::Folder,
                         reference: space.id.clone(),
@@ -1106,6 +1107,10 @@ The {name} notes describe the river, the bridge and the mill at dawn.
         );
         let detail = state.run(|s| s.detail("src-1")).await.unwrap();
         assert_eq!(detail.workspace.name, "Contracts");
+        assert_eq!(
+            detail.workspace.description,
+            "Chats that were asked about this folder before workspaces existed."
+        );
         assert_eq!(detail.sources.len(), 1);
         assert_eq!(detail.sources[0].kind, SourceKind::Folder);
         assert_eq!(detail.sources[0].added_by, WorkspaceAuthor::Migration);

@@ -209,6 +209,15 @@ async fn an_approved_memory_carries_the_users_turn_as_provenance_and_is_audited(
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0]["approval"], "step-3");
     assert_eq!(writes[0]["via"], "agent");
+    // The tool call is audited with the class and property names, not the values.
+    let calls = h.events(AuditEventType::ToolCall);
+    let call = calls.iter().find(|c| c["tool"] == "remember").unwrap();
+    assert_eq!(call["args"]["class"], "Preference");
+    let call = call.to_string();
+    assert!(
+        !call.contains("11am") && !call.contains("Meeting time"),
+        "{call}"
+    );
 }
 
 #[tokio::test]
@@ -396,9 +405,11 @@ async fn recall_update_and_forget_respect_the_workspace() {
         .unwrap()
         .contains("without its words"));
     assert_eq!(h.events(AuditEventType::MemoryForget).len(), 1);
-    // Approval events (their labels are recorded) and memory events hold no memory's words.
+    // Approval events (their labels are recorded), tool calls (their arguments are) and
+    // memory events hold no memory's words.
     for kind in [
         AuditEventType::Approval,
+        AuditEventType::ToolCall,
         AuditEventType::MemoryWrite,
         AuditEventType::MemoryForget,
     ] {

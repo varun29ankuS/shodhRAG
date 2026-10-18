@@ -59,12 +59,28 @@ fn s<'a>(payload: &'a Value, key: &str) -> &'a str {
     payload.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
-/// `: <text>` when an event has a text, nothing otherwise.
-fn worded(text: &str) -> String {
-    if text.trim().is_empty() {
-        String::new()
-    } else {
-        format!(": {text}")
+/// The memory an event is about: its `id`, else its `ids` joined.
+fn memory_ids(payload: &Value) -> String {
+    match payload.get("id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        None => payload
+            .get("ids")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// ` (<class>)` when an event names a class, nothing otherwise.
+fn of_class(payload: &Value) -> String {
+    match payload.get("class").and_then(Value::as_str) {
+        Some(class) if !class.is_empty() => format!(" ({class})"),
+        _ => String::new(),
     }
 }
 
@@ -114,22 +130,25 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
         }
         "runtime_install" => format!("Agent runtime {} installed", s(p, "version")),
         "retention_checkpoint" => "Older events removed by retention".to_string(),
-        // Memory events carry ids and the text's length; only events written before that
-        // have the words.
+        // Memory events are described by action, class and ids, never by their words:
+        // events written before memory events stopped carrying the text still have it,
+        // and a forgotten memory's words must not reach the model from here.
         "memory_write" => format!(
-            "Memory {} ({}) via {}{}",
+            "Memory {} {} ({}) via {}{}",
             s(p, "action"),
+            memory_ids(p),
             p.get("outcome")
                 .and_then(Value::as_str)
                 .unwrap_or("changed"),
             s(p, "via"),
-            worded(s(p, "text"))
+            of_class(p)
         ),
         "memory_forget" => format!(
-            "Memory forgotten via {} ({} versions){}",
+            "Memory {} forgotten via {} ({} versions){}",
+            s(p, "id"),
             s(p, "via"),
             p.get("ids").and_then(Value::as_array).map_or(1, Vec::len),
-            worded(s(p, "text"))
+            of_class(p)
         ),
         "memory_use" => {
             let count = p
@@ -395,5 +414,27 @@ mod tests {
             hash: String::new(),
         };
         assert_eq!(summarize(&row).chars().count(), MAX_SUMMARY_CHARS);
+        // Memory events written before they stopped carrying words: the words stay out.
+        let forget = AuditRow {
+            event_type: "memory_forget".into(),
+            payload: json!({"id": "mem-1", "ids": ["mem-0", "mem-1"], "class": "Note",
+                            "text": "My locker code is 4411", "via": "ui"}),
+            ..row.clone()
+        };
+        assert_eq!(
+            summarize(&forget),
+            "Memory mem-1 forgotten via ui (2 versions) (Note)"
+        );
+        let write = AuditRow {
+            event_type: "memory_write".into(),
+            payload: json!({"action": "remember", "id": "mem-1", "outcome": "added",
+                            "class": "Note", "text": "My locker code is 4411", "via": "ui"}),
+            ..row.clone()
+        };
+        assert!(
+            !summarize(&write).contains("locker"),
+            "{}",
+            summarize(&write)
+        );
     }
 }

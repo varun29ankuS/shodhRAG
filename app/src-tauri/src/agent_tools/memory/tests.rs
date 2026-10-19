@@ -503,3 +503,149 @@ async fn remember_and_recall_are_always_in_the_models_context() {
     );
     assert_eq!(mode(app_tools::FORGET), Some(ToolLoadMode::Discoverable));
 }
+
+/// No model: saving what the user asked to remember never calls one.
+struct NoModel;
+
+impl shodh_rag::user_memory::learn::engine::ModelSource for NoModel {
+    fn model(&self) -> Result<Arc<dyn shodh_rag::user_memory::learn::LearnModel>, String> {
+        Err("no model in this test".to_string())
+    }
+}
+
+#[tokio::test]
+async fn remember_of_a_note_the_user_asked_for_in_this_answer_is_done_without_a_prompt() {
+    use shodh_rag::user_memory::learn::{memory_request, LearnPolicy, Learner, RequestedOutcome};
+    let h = harness().await;
+    let service = h.service().await;
+    let learner = Learner::new(
+        service.clone(),
+        service.inbox().unwrap().clone(),
+        Arc::new(LearnPolicy::default()),
+        Arc::new(NoModel),
+    );
+    // `agent_send` saved the request of run-7 before the answer started.
+    let request = memory_request("Remember that I use DiskANN").unwrap();
+    let saved = learner
+        .file_user_note(
+            &request,
+            "conv-42",
+            "run-7",
+            service.store().now(),
+            shodh_rag::statements::Scope::Global,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(saved, RequestedOutcome::Saved(_)), "{saved:?}");
+
+    // The model calls remember for the same words anyway: no prompt, no second memory.
+    let (ctx, rx) = h.ctx("step-1", None);
+    let (outcome, preview) = h
+        .call(
+            "remember",
+            json!({"text": "i use DiskANN."}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(preview.is_none(), "the user is not asked again");
+    assert!(!outcome.ok);
+    assert_eq!(outcome.text_for_model, super::ALREADY_SAVED);
+    assert_eq!(
+        service.list(&ListRequest::default()).await.unwrap().len(),
+        1
+    );
+
+    // Other words are a new memory, and ask as always.
+    let (ctx, rx) = h.ctx("step-2", None);
+    let (outcome, preview) = h
+        .call(
+            "remember",
+            json!({"text": "I use SPANN too"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(preview.is_some());
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert_eq!(
+        service.list(&ListRequest::default()).await.unwrap().len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn forgetting_or_editing_a_memory_tells_the_open_chats() {
+    let h = harness().await;
+    let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let told = told.clone();
+        h.t.host.memory.on_change(move || {
+            told.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    let service = h.service().await;
+    let id = service
+        .remember(
+            shodh_rag::user_memory::MemoryContent::Note {
+                text: "I use DiskANN".into(),
+            },
+            shodh_rag::statements::Scope::Global,
+            &shodh_rag::user_memory::Origin::user_interface("test"),
+            &shodh_rag::user_memory::Actor::ui(),
+        )
+        .await
+        .unwrap()
+        .memory
+        .unwrap()
+        .id;
+    let count = || told.load(std::sync::atomic::Ordering::SeqCst);
+
+    // Refused (nothing changed): nobody is told.
+    let (ctx, rx) = h.ctx("s1", None);
+    let (outcome, _) = h
+        .call(
+            "forget",
+            json!({"id": id}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            false,
+        )
+        .await;
+    assert!(!outcome.ok);
+    assert_eq!(count(), 0);
+
+    let (ctx, rx) = h.ctx("s2", None);
+    let (outcome, _) = h
+        .call(
+            "update_memory",
+            json!({"id": id, "text": "I use DiskANN and SPANN"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert_eq!(count(), 1, "an edit is told");
+
+    let current = service.list(&ListRequest::default()).await.unwrap();
+    let (ctx, rx) = h.ctx("s3", None);
+    let (outcome, _) = h
+        .call(
+            "forget",
+            json!({"id": current[0].id}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert_eq!(count(), 2, "a forget is told");
+}

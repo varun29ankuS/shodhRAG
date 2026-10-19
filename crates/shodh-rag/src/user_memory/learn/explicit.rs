@@ -1,6 +1,6 @@
 //! Explicit memory requests: "Remember that I'm writing my thesis on ...", "From now on,
-//! cite page numbers". The user's own words are filed as a note suggestion by the host
-//! when the message arrives, before and without any model call
+//! cite page numbers". The user's own words are saved as a note by the host when the
+//! message arrives (a sensitive one waits for approval), before and without any model call
 //! ([`super::Learner::file_user_note`]), so an unambiguous request never depends on the
 //! answering model choosing to call `remember`.
 //!

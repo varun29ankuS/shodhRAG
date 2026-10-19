@@ -43,7 +43,7 @@ export const DEFAULT_AUTO_MIN_CONFIDENCE = 0.85;
 export interface MemoryPrefs {
   /** Recall relevant memories into each answer. */
   injectMemories: boolean;
-  /** Learn from conversations: off, ask (suggestions wait for you) or auto. */
+  /** Learn from conversations: off, ask (suggestions wait for you) or auto (the default). */
   learnMode: LearnMode;
   /** Cheaper model id of the configured provider for learning; `null` uses the configured model. */
   learnModel: string | null;
@@ -54,7 +54,7 @@ export interface MemoryPrefs {
 
 export const DEFAULT_MEMORY_PREFS: MemoryPrefs = {
   injectMemories: true,
-  learnMode: 'ask',
+  learnMode: 'auto',
   learnModel: null,
   autoMinConfidence: DEFAULT_AUTO_MIN_CONFIDENCE,
   learnCaps: DEFAULT_LEARN_CAPS,
@@ -78,7 +78,7 @@ export function parseMemoryPrefs(value: unknown): MemoryPrefs | null {
   if (!isRecord(value)) return null;
   const injectMemories = value.injectMemories === undefined ? true : value.injectMemories;
   if (typeof injectMemories !== 'boolean') return null;
-  const learnMode = value.learnMode === undefined ? 'ask' : value.learnMode;
+  const learnMode = value.learnMode === undefined ? DEFAULT_MEMORY_PREFS.learnMode : value.learnMode;
   if (learnMode !== 'off' && learnMode !== 'ask' && learnMode !== 'auto') return null;
   const rawModel = value.learnModel;
   if (rawModel !== undefined && rawModel !== null && typeof rawModel !== 'string') return null;

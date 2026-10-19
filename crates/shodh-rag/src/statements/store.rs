@@ -435,8 +435,10 @@ impl StatementStore {
         let text = render_text(&self.ontology, &valid);
         let current = current_predicate(now);
         let family = self.family(valid.class());
+        // A forgotten statement (forgotten, or a learned one undone) is no fact to match:
+        // the same words written again are a new memory.
         let base = format!(
-            "scope = {} AND class IN ({}) AND {current}",
+            "scope = {} AND forgotten_at IS NULL AND class IN ({}) AND {current}",
             quote(&scope.as_key()),
             family
                 .iter()

@@ -8,6 +8,8 @@ import { parseMemories, parseMemory } from './model';
 import type { MemoryContent, MemoryRecord } from './model';
 import { parseLearnStatus, parseSuggestion, parseSuggestions } from './suggestions';
 import type { LearnStatus, Suggestion, SuggestionStatus } from './suggestions';
+import { turnsChanged } from './turnMemories';
+import type { TurnsChanged } from './turnMemories';
 
 export interface ListOptions {
   /** Include superseded and expired versions. */
@@ -68,7 +70,11 @@ export function errorText(error: unknown): string {
 
 // -- Learning from conversations (`memory_learn.rs`) --
 
-/** Emitted with `{ pending }` when suggestions change. */
+/**
+ * Emitted with `{ pending }` when suggestions change; when they changed for turns of one
+ * conversation (a request to remember saved, a turn learned from) also with
+ * `{ conversationId, turnIds, proposalIds }`. Ids only, never a memory's words.
+ */
 export const SUGGESTIONS_CHANGED = 'memory-suggestions-changed';
 
 export async function learnStatus(): Promise<LearnStatus | null> {
@@ -78,6 +84,16 @@ export async function learnStatus(): Promise<LearnStatus | null> {
 /** Suggestions with these statuses (all when empty), newest first. */
 export async function listSuggestions(statuses: SuggestionStatus[] = [], limit = 200): Promise<Suggestion[]> {
   return parseSuggestions(await invoke<unknown>('memory_suggestions_list', { statuses, limit }));
+}
+
+/**
+ * The "remember" suggestions of turns `turnIds` (run ids) of a conversation, oldest first:
+ * what the chat shows under each turn. Read live, so an undone or forgotten memory shows
+ * as such and no memory's words are kept in the conversation.
+ */
+export async function suggestionsForTurns(conversationId: string, turnIds: string[]): Promise<Suggestion[]> {
+  if (turnIds.length === 0) return [];
+  return parseSuggestions(await invoke<unknown>('memory_suggestions_for_turns', { conversationId, turnIds }));
 }
 
 /** Accept a suggestion; `edit` replaces the memory with the user's version. */
@@ -114,14 +130,17 @@ export async function consolidateNow(): Promise<void> {
   await invoke<unknown>('memory_consolidate_now');
 }
 
-/** Listen for suggestion changes. Returns the unsubscribe function. */
-export function onSuggestionsChanged(handler: (pending: number) => void): () => void {
+/**
+ * Listen for suggestion changes: how many wait, and the turns the change was about when
+ * it named them. Returns the unsubscribe function.
+ */
+export function onSuggestionsChanged(handler: (pending: number, turns: TurnsChanged | null) => void): () => void {
   let disposed = false;
   let unlisten: (() => void) | null = null;
   listen<unknown>(SUGGESTIONS_CHANGED, event => {
     const p = event.payload;
     if (typeof p === 'object' && p !== null && typeof (p as { pending?: unknown }).pending === 'number') {
-      handler((p as { pending: number }).pending);
+      handler((p as { pending: number }).pending, turnsChanged(p));
     }
   })
     .then(fn => {

@@ -14,7 +14,8 @@ use super::decide::{self, DecidedBy, Decision, DecisionRecord, Deterministic, Ju
 use super::extract::{self, Candidate, SourceText, TurnInput, MAX_SOURCE_CHARS};
 use super::inbox::{
     AppliedOutcome, Inbox, NewProposal, Proposal, ProposalAction, ProposalOrigin, ProposalStatus,
-    ProposalView, PutOutcomeView, Rejection, RequestedOutcome, StatusEvent, Undo, UsageCounter,
+    ProposalView, PutOutcomeView, Rejection, RequestedFiling, RequestedOutcome, StatusEvent, Undo,
+    UsageCounter,
 };
 use super::{explicit, sensitivity};
 use super::{
@@ -419,14 +420,18 @@ impl Learner {
         self.file(new, proposed, learned, suppressed).await
     }
 
-    /// Files what the user explicitly asked Shodh to remember (`request`, matched by
-    /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note
-    /// suggestion, without a model. It is the user's own words, so it is stored with
-    /// extractor `user`, and only when the user accepts it. Asking is not learning: it is
-    /// filed whatever the learning mode, is never applied automatically, and the daily caps
-    /// do not hold it back. A note the user already rejected (or undid) is not offered
-    /// again, whether they asked for it or the learner suggested it
-    /// ([`Inbox::insert_requested`]).
+    /// Saves what the user explicitly asked Shodh to remember (`request`, matched by
+    /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note in their
+    /// own words, without a model: it is stored with extractor `user` and authorised by
+    /// the request itself, as an Accept of the note's suggestion ([`Self::accept`]), so the
+    /// suggestion reads as accepted and Undo works as for any accepted suggestion. Asking
+    /// is not learning: the learning mode does not apply (Off included) and the daily caps
+    /// do not hold it back. A sensitive note ([`sensitivity::classify_text`]) is filed as a
+    /// suggestion and waits for the user. A note already saved is not saved again; one the
+    /// user rejected or undid before is saved again, since they asked again
+    /// ([`Inbox::insert_requested`]). A suggestion of the same note that waits (the
+    /// learner's, or a save of the user's that failed) is replaced by this one, so the
+    /// note is the user's own words of this turn; a sensitive one waiting keeps waiting.
     pub async fn file_user_note(
         &self,
         request: &explicit::MemoryRequest,
@@ -481,7 +486,44 @@ impl Learner {
             confidence: 1.0,
             sensitive,
         };
-        self.inbox.insert_requested(new, self.now(), applied_kept)
+        let proposal = match self.inbox.insert_requested(new, self.now(), applied_kept)? {
+            RequestedFiling::Kept => return Ok(RequestedOutcome::AlreadyKept),
+            // It waits for the user's approval already.
+            RequestedFiling::Waiting(_) => return Ok(RequestedOutcome::AlreadyKept),
+            RequestedFiling::Inserted(proposal) if !proposal.sensitive.is_empty() => {
+                return Ok(RequestedOutcome::Filed(proposal))
+            }
+            RequestedFiling::Inserted(proposal) => proposal,
+        };
+        let actor = request_actor(conversation_id, turn_id);
+        match self.accept(&proposal.id, None, &actor).await {
+            // A memory of the same words was already stored (entered in Settings, or by
+            // the assistant): nothing new was saved and there is nothing to undo.
+            Ok(view) if !view.undoable => Ok(RequestedOutcome::AlreadyKept),
+            Ok(view) => Ok(RequestedOutcome::Saved(Box::new(view))),
+            Err(e) => {
+                // Said by what the suggestion is now: saved meanwhile (accepted in another
+                // window), waiting for the user (the write failed and it can be accepted
+                // again), or neither (it no longer applies): then the request is left to
+                // the assistant.
+                let now: ProposalView = self.inbox.get(&proposal.id)?.into();
+                match now.status {
+                    ProposalStatus::Accepted | ProposalStatus::Learned if now.undoable => {
+                        Ok(RequestedOutcome::Saved(Box::new(now)))
+                    }
+                    ProposalStatus::Accepted | ProposalStatus::Learned => {
+                        Ok(RequestedOutcome::AlreadyKept)
+                    }
+                    ProposalStatus::Pending | ProposalStatus::Failed => {
+                        tracing::warn!(target: "shodh::memory", error = %e, "the note the user asked for was not saved; it waits for them");
+                        Ok(RequestedOutcome::Filed(Box::new(
+                            self.inbox.get(&proposal.id)?,
+                        )))
+                    }
+                    _ => Err(e),
+                }
+            }
+        }
     }
 
     /// Stores a suggestion and applies it automatically when eligible.
@@ -821,6 +863,21 @@ impl Learner {
         };
         let result: LearnResult<()> = async {
             match &undo {
+                // The user's own note: Undo means "I did not mean that", so its words are
+                // erased as a forget erases them (a note is never a change of another
+                // memory, so there is nothing to reopen). Not once it was edited: erasing
+                // every version would drop the edit too, so it is refused as a revert is.
+                Undo::Revert { id } if is_users_note(&proposal) => {
+                    if let Some(newer) = self.edited_since(id).await? {
+                        return Err(LearnError::Memory(MemoryError::Statement(
+                            StatementError::InvalidSupersede {
+                                target: id.clone(),
+                                reason: format!("it was changed again since (by `{newer}`)"),
+                            },
+                        )));
+                    }
+                    self.service.forget(id, None, actor).await?;
+                }
                 Undo::Revert { id } => {
                     self.service.revert_learned(id, actor).await?;
                 }
@@ -1073,6 +1130,39 @@ impl Learner {
         }
     }
 
+    /// The newer version written since memory `id` (an edit of it), if any: undoing the
+    /// suggestion that stored `id` would then drop that edit, so it cannot be undone.
+    async fn edited_since(&self, id: &str) -> LearnResult<Option<String>> {
+        let memory = self.service.get(id).await?;
+        let Some(successor) = memory.superseded_by else {
+            return Ok(None);
+        };
+        // A historical write points at the older current memory; an edit at a newer one.
+        Ok(match self.service.get(&successor).await {
+            Ok(newer) if newer.created_at > memory.created_at => Some(successor),
+            _ => None,
+        })
+    }
+
+    /// `views` with `undoable` cleared for suggestions whose memory was edited since
+    /// ([`Self::edited_since`]): Undo would be refused, so it is not offered. A memory
+    /// that cannot be read leaves the view as it is (Undo then says what happened).
+    pub async fn with_current_undo(&self, mut views: Vec<ProposalView>) -> Vec<ProposalView> {
+        for view in &mut views {
+            let Some(Undo::Revert { id }) = view.outcome.as_ref().and_then(|o| o.undo.as_ref())
+            else {
+                continue;
+            };
+            if !view.undoable {
+                continue;
+            }
+            if matches!(self.edited_since(id).await, Ok(Some(_))) {
+                view.undoable = false;
+            }
+        }
+        views
+    }
+
     /// Suggestions for the inbox: waiting ones, and recently decided ones.
     pub fn list(
         &self,
@@ -1192,6 +1282,31 @@ pub(crate) fn llm_origin(source: &str, model: &str, confidence: f64, step: &str)
     }
 }
 
+/// Whether `proposal` stores a note in the user's own words (they asked Shodh to remember
+/// it): Undo erases it as a forget does.
+fn is_users_note(proposal: &Proposal) -> bool {
+    matches!(
+        &proposal.action,
+        ProposalAction::Remember {
+            by_user: true,
+            content: MemoryContent::Note { .. },
+            decision: Decision::Add,
+            ..
+        }
+    )
+}
+
+/// The actor of a note the user asked for in run `turn_id` of `conversation_id`.
+fn request_actor(conversation_id: &str, turn_id: &str) -> Actor {
+    Actor {
+        via: "chat",
+        principal: LOCAL_OWNER.to_string(),
+        conversation_id: Some(conversation_id.to_string()),
+        profile_id: None,
+        run_id: Some(turn_id.to_string()),
+    }
+}
+
 /// The actor of an automatic application.
 fn learn_actor(proposal: &Proposal) -> Actor {
     Actor {
@@ -1207,8 +1322,8 @@ fn learn_actor(proposal: &Proposal) -> Actor {
 /// automatic mode; confidence at or above the threshold; nothing sensitive; decided by
 /// the ontology's rules (an ADD, a reinforcement, an extension or a temporal supersede —
 /// never a contradiction the model judged or a non-temporal value change); or a link or
-/// an archive (reversible, no new content). Revisions, contradiction resolutions and
-/// anything undecided always ask.
+/// an archive (reversible, no new content). A new memory consolidation found, revisions,
+/// contradiction resolutions and anything undecided always ask.
 pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
     if policy.mode != LearnMode::Auto
         || proposal.status != ProposalStatus::Pending
@@ -1217,8 +1332,13 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
         return false;
     }
     match &proposal.action {
-        // What the user asked to remember is theirs to accept: it always asks.
+        // What the user asked to remember is saved as their own approved note
+        // (`file_user_note`), or waits for them when sensitive: never by the policy.
         ProposalAction::Remember { by_user: true, .. } => false,
+        // A memory consolidation found is not from a turn the chat shows: applied it would
+        // be new content saved out of sight, so it waits for the user. (Its archives and
+        // links add nothing and are reversible: they apply as before.)
+        ProposalAction::Remember { .. } if proposal.origin == ProposalOrigin::Consolidate => false,
         ProposalAction::Remember {
             decision,
             decided_by,

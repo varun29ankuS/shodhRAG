@@ -533,6 +533,43 @@ async fn forgotten_statements_disappear_but_are_kept() {
 }
 
 #[tokio::test]
+async fn the_same_words_after_a_forget_or_an_undo_are_a_new_statement() {
+    let f = fixture().await;
+    for (first, again) in [("n1", "n2"), ("n3", "n4")] {
+        f.store
+            .put(
+                note(first, "I use DiskANN", t0()),
+                Scope::Global,
+                PutIntent::Auto,
+            )
+            .await
+            .unwrap();
+        if first == "n1" {
+            f.store.forget(first).await.unwrap();
+        } else {
+            // A learned write undone.
+            f.store.revert(first).await.unwrap();
+        }
+        assert_eq!(
+            f.store
+                .put(
+                    note(again, "I use DiskANN", t0()),
+                    Scope::Global,
+                    PutIntent::Auto
+                )
+                .await
+                .unwrap(),
+            PutOutcome::Added { id: again.into() },
+            "not the forgotten {first}"
+        );
+        if first == "n1" {
+            // Gone again before the next round.
+            f.store.forget(again).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn expiry_ends_tasks_after_their_deadline_and_grace() {
     let f = fixture().await;
     let task = statement(

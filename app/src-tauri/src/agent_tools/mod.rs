@@ -587,13 +587,16 @@ pub(crate) mod testing {
         }
     }
 
-    /// A memory service over `dir` (its own LanceDB folder and `dir/shodh.db`).
+    /// A memory service over `dir` (its own LanceDB folder and `dir/shodh.db`), with its
+    /// suggestions inbox in `dir/shodh.db`, as the app opens it (`MemoryState::service`).
     pub async fn memory_state(
         dir: &std::path::Path,
         audit: Option<Arc<AuditLog>>,
     ) -> crate::memory_commands::MemoryState {
         use shodh_rag::statements::{DynamicsStore, StatementStore, SystemClock};
         let dynamics = DynamicsStore::open(&dir.join("shodh.db"), None).unwrap();
+        let inbox =
+            shodh_rag::user_memory::learn::Inbox::open(&dir.join("shodh.db"), None).unwrap();
         let store = StatementStore::open(
             &dir.join("memory_lance"),
             WORD_DIM,
@@ -605,7 +608,8 @@ pub(crate) mod testing {
         .await
         .unwrap();
         crate::memory_commands::MemoryState::ready(Arc::new(
-            shodh_rag::user_memory::MemoryService::new(Arc::new(store), audit, "test"),
+            shodh_rag::user_memory::MemoryService::new(Arc::new(store), audit, "test")
+                .with_inbox(Arc::new(inbox)),
         ))
     }
 

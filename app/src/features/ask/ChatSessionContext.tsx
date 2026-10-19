@@ -545,14 +545,18 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     textOrigin: 'typed' | 'composed',
     fallback: FallbackRun | null = null,
     attachedContext: AttachedContext[] = [],
+    priorRunIds: string[] = [],
   ) => {
     const runId = newId('run');
     const startedAtMs = Date.now();
-    const transcript = initialTranscript(
-      runId,
-      startedAtMs,
-      fallback ? { from: fallback.from, kind: fallback.override.failure ?? 'other', automatic: fallback.override.automatic } : null,
-    );
+    const transcript: TranscriptState = {
+      ...initialTranscript(
+        runId,
+        startedAtMs,
+        fallback ? { from: fallback.from, kind: fallback.override.failure ?? 'other', automatic: fallback.override.automatic } : null,
+      ),
+      ...(priorRunIds.length > 0 ? { priorRunIds } : {}),
+    };
     const message: ChatMessage = {
       id: newId('msg'),
       role: 'assistant',
@@ -636,9 +640,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const prompt = asked.sideSummary ? summaryPrompt(asked.sideSummary, asked.content) : asked.content;
 
     if (index === messages.length - 1) {
-      // Latest answer: replace it in place and re-run the same prompt.
+      // Latest answer: replace it in place and re-run the same prompt. The replaced
+      // tries' run ids stay with the answer, so what they saved (a request to remember,
+      // which the retry finds kept) is still shown under the question.
+      const replaced = messages[index].transcript;
+      const priorRunIds = replaced ? [...(replaced.priorRunIds ?? []), replaced.runId] : [];
       setView(v => changeMessages(v, conversationId, ms => ms.filter(m => m.id !== assistantMessageId), 'debounced'));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback, asked.attachedContext ?? []);
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback, asked.attachedContext ?? [], priorRunIds);
     } else {
       send(asked.content, options, {
         ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}),

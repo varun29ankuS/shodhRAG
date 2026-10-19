@@ -108,16 +108,23 @@ fn save_legacy_progress(path: &Path, done: usize) -> std::io::Result<()> {
 /// What became of the user's request to remember something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestHandled {
-    /// Filed as a suggestion waiting for the user.
+    /// Saved as the user's memory (they can undo it from the chat).
+    Saved,
+    /// Filed as a suggestion waiting for the user (a sensitive note, or one whose save
+    /// failed).
     Filed,
-    /// The same note is already waiting or saved.
+    /// The same note is already saved, or waiting for the user's approval.
     AlreadyKept,
-    /// The user rejected the same note before: it is not offered again.
-    Declined,
 }
 
-/// Emitted with `{ pending }` whenever suggestions change.
+/// Emitted whenever suggestions change, with `{ pending }`, and when they changed for
+/// turns of one conversation (a request saved, a turn learned from) also with
+/// `{ conversationId, turnIds, proposalIds }` so the open chat can show what was saved
+/// under those turns. Ids only: never a memory's words.
 pub const SUGGESTIONS_CHANGED_EVENT: &str = "memory-suggestions-changed";
+
+/// Most turns the chat asks about at once ([`memory_suggestions_for_turns`]).
+const MAX_CHAT_TURNS: usize = shodh_rag::user_memory::learn::inbox::MAX_TURNS_LISTED;
 
 /// Environment kill switch: `off` disables learning whatever the settings say.
 pub const KILL_SWITCH_VAR: &str = "SHODH_MEMORY_LEARNING";
@@ -618,11 +625,13 @@ impl LearnState {
         }
     }
 
-    /// Files what the user explicitly asked Shodh to remember in run `run_id` (`request`,
-    /// matched on their typed words) as a note suggestion for them to approve, before the
-    /// answer starts and without a model. Asking is not learning: the learning mode does
-    /// not apply. Returns what became of it, so the answering model can be told; `None`
-    /// when it could not be filed (the request is then left to the assistant).
+    /// Saves what the user explicitly asked Shodh to remember in run `run_id` (`request`,
+    /// matched on their typed words) as their note, before the answer starts and without
+    /// a model; a sensitive note is filed for them to approve. Asking is not learning: the
+    /// learning mode does not apply (Off included). The chat is told with the suggestion's
+    /// id ([`SUGGESTIONS_CHANGED_EVENT`]) and shows "Remembered · Undo" under the message.
+    /// Returns what became of it, so the answering model can be told; `None` when it could
+    /// not be filed (the request is then left to the assistant).
     pub async fn file_memory_request(
         &self,
         request: &MemoryRequest,
@@ -649,12 +658,22 @@ impl LearnState {
             )
             .await
         {
-            Ok(RequestedOutcome::Filed(_)) => {
-                self.notify(&learner);
+            Ok(RequestedOutcome::Saved(view)) => {
+                self.notify_turns(&learner, conversation_id, &[run_id], &[view.id.as_str()]);
+                // As after an Accept in Settings: neighbouring memories may be linked.
+                spawn_evolve(self, learner.clone(), view.id.clone());
+                Some(RequestHandled::Saved)
+            }
+            Ok(RequestedOutcome::Filed(proposal)) => {
+                self.notify_turns(
+                    &learner,
+                    conversation_id,
+                    &[run_id],
+                    &[proposal.id.as_str()],
+                );
                 Some(RequestHandled::Filed)
             }
             Ok(RequestedOutcome::AlreadyKept) => Some(RequestHandled::AlreadyKept),
-            Ok(RequestedOutcome::Declined) => Some(RequestHandled::Declined),
             Err(e) => {
                 tracing::warn!(target: "shodh::memory", error = %e, "the request to remember was not filed; left to the assistant");
                 None
@@ -705,6 +724,10 @@ impl LearnState {
     }
 
     async fn learn(&self, turns: Vec<TurnInput>) {
+        let Some(conversation_id) = turns.first().map(|t| t.conversation_id.clone()) else {
+            return;
+        };
+        let turn_ids: Vec<&str> = turns.iter().map(|t| t.turn_id.as_str()).collect();
         let learner = match self.learner().await {
             Ok(learner) => learner,
             Err(e) => {
@@ -723,7 +746,8 @@ impl LearnState {
                         "learned from a conversation"
                     );
                 }
-                self.notify(&learner);
+                let proposed: Vec<&str> = report.proposed.iter().map(String::as_str).collect();
+                self.notify_turns(&learner, &conversation_id, &turn_ids, &proposed);
                 crate::notifications::memory_suggestions(
                     &self.inner.app,
                     report.proposed.len().saturating_sub(report.learned.len()),
@@ -740,14 +764,45 @@ impl LearnState {
         }
     }
 
+    /// A memory was forgotten or edited: tells the windows (the chat re-reads its lines).
+    fn memory_changed(&self) {
+        let state = self.clone();
+        tauri::async_runtime::spawn(async move {
+            match state.learner().await {
+                Ok(learner) => state.notify(&learner),
+                Err(e) => {
+                    tracing::debug!(target: "shodh::memory", error = %e, "suggestions unavailable; no change told")
+                }
+            }
+        });
+    }
+
     /// Tells the windows how many suggestions wait.
     fn notify(&self, learner: &Learner) {
         let pending = learner.inbox().pending_count().unwrap_or(0);
-        if let Err(e) = self
-            .inner
-            .app
-            .emit(SUGGESTIONS_CHANGED_EVENT, json!({ "pending": pending }))
-        {
+        self.emit_change(json!({ "pending": pending }));
+    }
+
+    /// [`Self::notify`] for suggestions `proposal_ids` filed for turns `turn_ids` of
+    /// `conversation_id`, so the open chat shows them under those turns.
+    fn notify_turns(
+        &self,
+        learner: &Learner,
+        conversation_id: &str,
+        turn_ids: &[&str],
+        proposal_ids: &[&str],
+    ) {
+        let pending = learner.inbox().pending_count().unwrap_or(0);
+        self.emit_change(json!({
+            "pending": pending,
+            "conversationId": conversation_id,
+            "turnIds": turn_ids,
+            "proposalIds": proposal_ids,
+        }));
+    }
+
+    fn emit_change(&self, payload: serde_json::Value) {
+        if let Err(e) = self.inner.app.emit(SUGGESTIONS_CHANGED_EVENT, payload) {
             tracing::debug!(target: "shodh::memory", error = %e, "emitting suggestions change failed");
         }
     }
@@ -944,9 +999,34 @@ pub async fn memory_suggestions_list(
 ) -> Result<Vec<ProposalView>, String> {
     let statuses = parse_statuses(statuses)?;
     let learner = learn.learner().await?;
-    learner
+    let views = learner
         .list(&statuses, limit.unwrap_or(200))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(learner.with_current_undo(views).await)
+}
+
+/// The "remember" suggestions of turns `turn_ids` (run ids) of conversation
+/// `conversation_id`, oldest first: what the chat shows under each turn ("Remembered",
+/// "Learned", "Shodh suggests remembering"). Read live, so a memory undone or forgotten
+/// since shows as such and its words are never kept in the conversation.
+#[tauri::command]
+pub async fn memory_suggestions_for_turns(
+    conversation_id: String,
+    turn_ids: Vec<String>,
+    learn: State<'_, LearnState>,
+) -> Result<Vec<ProposalView>, String> {
+    if turn_ids.len() > MAX_CHAT_TURNS {
+        return Err(format!("Ask about at most {MAX_CHAT_TURNS} turns at once"));
+    }
+    let learner = learn.learner().await?;
+    let proposals = learner
+        .inbox()
+        .list_for_turns(&conversation_id, &turn_ids)
+        .map_err(|e| e.to_string())?;
+    // A memory edited since cannot be undone from its line.
+    Ok(learner
+        .with_current_undo(proposals.into_iter().map(ProposalView::from).collect())
+        .await)
 }
 
 /// Accept a suggestion (optionally edited). The user's own decision: the write is
@@ -1100,11 +1180,20 @@ pub fn manage(app: &tauri::App, data_dir: &Path) {
     let state = LearnState::new(
         app.handle().clone(),
         data_dir,
-        memory,
+        memory.clone(),
         &app.state::<LLMState>(),
         &app.state::<AuditState>(),
     );
     state.spawn_sleep();
+    // A forget or an edit (Settings or the assistant) changes what the chat shows under
+    // the turns the memory came from. Held weakly: the memory state holds the learning state's
+    // hook, and the learning state holds the memory state.
+    let weak = Arc::downgrade(&state.inner);
+    memory.on_change(move || {
+        if let Some(inner) = weak.upgrade() {
+            LearnState { inner }.memory_changed();
+        }
+    });
     let legacy = state.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(LEGACY_IMPORT_DELAY).await;
@@ -1209,11 +1298,11 @@ mod tests {
     fn policy_comes_from_settings_and_unreadable_settings_mean_off() {
         assert_eq!(policy_from(None).mode, LearnMode::Off);
         let mut settings = AppSettings::default();
-        assert_eq!(policy_from(Some(&settings)).mode, LearnMode::Ask);
-        settings.memory.learn_mode = LearnMode::Auto;
+        assert_eq!(policy_from(Some(&settings)).mode, LearnMode::Auto);
+        settings.memory.learn_mode = LearnMode::Ask;
         settings.memory.inject_memories = false;
         let policy = policy_from(Some(&settings));
-        assert_eq!(policy.mode, LearnMode::Auto);
+        assert_eq!(policy.mode, LearnMode::Ask);
         assert!(!policy.share_memories_with_model);
     }
 

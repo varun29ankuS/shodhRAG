@@ -17,9 +17,12 @@
 //!    duplicates); the model only judges the ambiguous rest, and only when the user lets
 //!    memories be shared with the model.
 //! 3. **Approve** ([`engine`], [`inbox`]): suggestions wait in the inbox for Accept / Edit /
-//!    Reject. In automatic mode, high-confidence, non-sensitive, deterministically decided
-//!    suggestions are applied under [`super::WriteAuthority::LearnPolicy`] and listed as
-//!    learned, with undo. Sensitive candidates ([`sensitivity`]) always ask.
+//!    Reject. In automatic mode (the default), high-confidence, non-sensitive,
+//!    deterministically decided suggestions are applied under
+//!    [`super::WriteAuthority::LearnPolicy`] and listed as learned, with undo. Sensitive
+//!    candidates ([`sensitivity`]) always ask. What the user explicitly asks Shodh to
+//!    remember ([`explicit`]) is saved at once as their own approved note, in every mode
+//!    ([`Learner::file_user_note`]), unless it is sensitive.
 //! 4. **Evolve** ([`evolve`]): a new memory may link to, or propose new versions of, a few
 //!    neighbouring memories — never silent edits.
 //! 5. **Consolidate** ([`consolidate`]): at most daily, recent episodes become typed facts,
@@ -63,9 +66,11 @@ pub enum LearnMode {
     /// Nothing is extracted; no model is called.
     Off,
     /// Suggestions wait for the user's decision.
-    #[default]
     Ask,
     /// High-confidence, non-sensitive suggestions are applied (with undo); the rest ask.
+    /// The default: the user cannot be expected to approve every memory, and every saved
+    /// memory is shown in the chat with Undo.
+    #[default]
     Auto,
 }
 
@@ -134,7 +139,7 @@ pub struct LearnPolicy {
 impl Default for LearnPolicy {
     fn default() -> Self {
         Self {
-            mode: LearnMode::Ask,
+            mode: LearnMode::default(),
             auto_min_confidence: DEFAULT_AUTO_MIN_CONFIDENCE,
             share_memories_with_model: true,
             caps: LearnCaps::default(),

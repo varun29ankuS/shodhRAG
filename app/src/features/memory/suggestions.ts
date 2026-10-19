@@ -50,6 +50,8 @@ export type SuggestionAction =
       decided_by: 'rule' | 'model' | 'undecided';
       target_text: string | null;
       evidence: string;
+      /** The user's own words, saved because they asked Shodh to remember them. */
+      by_user: boolean;
     }
   | { kind: 'revise'; target: string; target_text: string; content: RawFact; text: string; reason: string }
   | { kind: 'link'; a: string; b: string; a_text: string; b_text: string; reason: string }
@@ -70,6 +72,11 @@ export interface Suggestion {
   scope: string;
   error: string | null;
   undoable: boolean;
+  /**
+   * Applying it changed something that could be undone (it stored a memory), even if Undo
+   * is no longer offered (the memory was edited since); false for a reinforcement.
+   */
+  changed: boolean;
   /** The memory it stored or was about was forgotten: its words are erased, nothing to undo. */
   forgotten: boolean;
   createdAt: string;
@@ -156,6 +163,8 @@ function parseAction(value: unknown): SuggestionAction | null {
         decided_by: decidedBy,
         target_text: str(v.target_text) ? v.target_text : null,
         evidence: v.evidence,
+        // Suggestions filed before the user's own notes existed have none.
+        by_user: v.by_user === true,
       };
     }
     case 'revise': {
@@ -210,6 +219,7 @@ export function parseSuggestion(value: unknown): Suggestion | null {
     scope: str(v.scope) && v.scope.length > 0 ? v.scope : 'global',
     error: error ?? null,
     undoable: v.undoable === true && v.forgotten !== true,
+    changed: isRecord(v.outcome) && isRecord(v.outcome.undo),
     forgotten: v.forgotten === true,
     createdAt: v.createdAt,
     decidedAt: decidedAt ?? null,

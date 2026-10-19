@@ -164,7 +164,8 @@ pub struct MemoryPrefs {
     /// At the start of each answer, recall memories relevant to the question and give
     /// them to the model.
     pub inject_memories: bool,
-    /// Learn from conversations: off, ask (suggestions wait for the user) or auto.
+    /// Learn from conversations: off, ask (suggestions wait for the user) or auto (the
+    /// default; every memory saved is shown in the chat with Undo).
     pub learn_mode: LearnMode,
     /// Model used for learning (a cheaper one of the configured provider); `None` uses the
     /// configured model.
@@ -179,7 +180,7 @@ impl Default for MemoryPrefs {
     fn default() -> Self {
         Self {
             inject_memories: true,
-            learn_mode: LearnMode::Ask,
+            learn_mode: LearnMode::Auto,
             learn_model: None,
             auto_min_confidence: DEFAULT_AUTO_MIN_CONFIDENCE,
             learn_caps: LearnCaps::default(),
@@ -338,6 +339,24 @@ pub struct AppSettings {
     pub notifications: NotificationPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
+    /// Learning from conversations was moved, once, from Ask (the earlier default) to
+    /// Automatic ([`with_automatic_learning`]). Kept outside `memory`, which the UI saves
+    /// whole, so a user who chooses Ask afterwards is never moved again.
+    pub learn_auto_migrated: bool,
+}
+
+/// The one-time move to automatic learning: settings that still say Ask (the default every
+/// build wrote before automatic learning became the default, when every saved memory began
+/// to be shown in the chat with Undo) read as Automatic, once; Off is never changed. Marks
+/// the move done whatever the mode, so a later choice of Ask is kept.
+fn with_automatic_learning(mut settings: AppSettings) -> AppSettings {
+    if !settings.learn_auto_migrated {
+        if settings.memory.learn_mode == LearnMode::Ask {
+            settings.memory.learn_mode = LearnMode::Auto;
+        }
+        settings.learn_auto_migrated = true;
+    }
+    settings
 }
 
 /// A preference the agent may change. Everything else is either policy
@@ -452,11 +471,12 @@ impl SettingsStore {
                 serde_json::from_str::<AppSettings>(text)
                     .map(|mut settings| {
                         settings.memory = settings.memory.with_current_default_caps();
-                        settings
+                        with_automatic_learning(settings)
                     })
                     .map_err(|e| e.to_string())
             },
-            AppSettings::default,
+            // Marked moved, so the first save of a new profile records it.
+            || with_automatic_learning(AppSettings::default()),
         );
         match read {
             Ok(Loaded {
@@ -501,7 +521,7 @@ impl SettingsStore {
                     ),
                 ));
                 Ok(Loaded {
-                    value: recovered(AppSettings::default()),
+                    value: recovered(with_automatic_learning(AppSettings::default())),
                     origin: Origin::Damaged { problem },
                 })
             }
@@ -850,6 +870,61 @@ mod tests {
     }
 
     #[test]
+    fn asking_moves_to_automatic_learning_once_and_a_later_choice_of_ask_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        let store = SettingsStore::in_dir(dir.path());
+        // Written by a build whose default was Ask (no marker).
+        std::fs::write(
+            &path,
+            json!({"memory": {"learnMode": "ask", "injectMemories": false}}).to_string(),
+        )
+        .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.memory.learn_mode, LearnMode::Auto);
+        assert!(!loaded.memory.inject_memories, "the rest is kept");
+        assert!(loaded.learn_auto_migrated);
+        // The user chooses Ask again (Settings saves the memory section whole).
+        let mut prefs = loaded.memory.clone();
+        prefs.learn_mode = LearnMode::Ask;
+        store
+            .update(|s| {
+                s.memory = prefs;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap().memory.learn_mode, LearnMode::Ask);
+        assert_eq!(
+            SettingsStore::in_dir(dir.path())
+                .load()
+                .unwrap()
+                .memory
+                .learn_mode,
+            LearnMode::Ask,
+            "never moved again"
+        );
+
+        // Off is never changed, and the move is marked done.
+        std::fs::write(&path, json!({"memory": {"learnMode": "off"}}).to_string()).unwrap();
+        let off = store.load().unwrap();
+        assert_eq!(off.memory.learn_mode, LearnMode::Off);
+        assert!(off.learn_auto_migrated);
+
+        // A new profile: automatic, and its first save records the move, so choosing Ask
+        // then is kept too.
+        let fresh = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(fresh.path());
+        assert_eq!(store.load().unwrap().memory.learn_mode, LearnMode::Auto);
+        store
+            .update(|s| {
+                s.memory.learn_mode = LearnMode::Ask;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.load().unwrap().memory.learn_mode, LearnMode::Ask);
+    }
+
+    #[test]
     fn defaults_and_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = SettingsStore::in_dir(dir.path());
@@ -963,19 +1038,21 @@ mod tests {
             Ok(())
         });
         assert!(bad.is_err());
+        assert!(!dir.path().join(SETTINGS_FILE).exists(), "nothing saved");
         assert_eq!(
             store.load().unwrap(),
-            AppSettings::default(),
-            "nothing saved"
+            with_automatic_learning(AppSettings::default()),
+            "the settings of a new profile"
         );
     }
 
     #[test]
-    fn memory_preferences_default_to_asking_and_validate_their_bounds() {
+    fn memory_preferences_default_to_automatic_learning_and_validate_their_bounds() {
         let old: AppSettings =
             serde_json::from_str(r#"{"memory": {"injectMemories": false}}"#).unwrap();
         assert!(!old.memory.inject_memories);
-        assert_eq!(old.memory.learn_mode, LearnMode::Ask);
+        assert_eq!(old.memory.learn_mode, LearnMode::Auto);
+        assert_eq!(MemoryPrefs::default().learn_mode, LearnMode::Auto);
         assert!(old.memory.validate().is_ok());
         let mut prefs = MemoryPrefs::default();
         prefs.auto_min_confidence = 0.2;

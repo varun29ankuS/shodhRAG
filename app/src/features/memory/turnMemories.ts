@@ -130,13 +130,42 @@ export function lineText(line: TurnMemoryLine): LineText {
   }
 }
 
-/** "Learned 3 things", "Learned 2 things, 1 to review": several lines summed up. */
+/**
+ * Several lines summed up: "Learned 3 things", "Remembered 2 things" (what the user asked
+ * for), "Learned 2 things, 1 to review", "Learned 1 thing, 2 undone or forgotten". Only
+ * memories still saved count as learned or remembered.
+ */
 export function summaryText(lines: readonly TurnMemoryLine[]): string {
-  const learned = lines.filter(l => l.kind !== 'suggested').length;
-  const suggested = lines.length - learned;
+  const asked = lines.length > 0 && lines.every(l => l.asked);
+  const saved = lines.filter(l => l.kind === 'learned' || l.kind === 'remembered').length;
+  const suggested = lines.filter(l => l.kind === 'suggested').length;
+  const gone = lines.length - saved - suggested;
   const things = (n: number) => `${n} ${n === 1 ? 'thing' : 'things'}`;
-  if (learned === 0) return `Shodh suggests remembering ${things(suggested)}`;
-  return suggested === 0 ? `Learned ${things(learned)}` : `Learned ${things(learned)}, ${suggested} to review`;
+  const parts: string[] = [];
+  if (saved > 0) parts.push(`${asked ? 'Remembered' : 'Learned'} ${things(saved)}`);
+  if (suggested > 0) parts.push(parts.length > 0 ? `${suggested} to review` : `Shodh suggests remembering ${things(suggested)}`);
+  if (gone > 0) parts.push(`${parts.length > 0 ? gone : things(gone)} undone or forgotten`);
+  const text = parts.join(', ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * The run ids of a transcript: its own and those of earlier tries of the same answer
+ * (Retry), whose saves are shown with it.
+ */
+export function runIdsOf(transcript: { runId: string; priorRunIds?: string[] } | null | undefined): string[] {
+  if (!transcript) return [];
+  return [...(transcript.priorRunIds ?? []), transcript.runId];
+}
+
+/** The lines of `kind` of every run of a transcript ([`runIdsOf`]), in run order. */
+export function linesOfRuns(
+  byTurn: ReadonlyMap<string, TurnMemories>,
+  runIds: readonly string[],
+  kind: keyof TurnMemories,
+): TurnMemoryLine[] | undefined {
+  const lines = runIds.flatMap(id => byTurn.get(id)?.[kind] ?? []);
+  return lines.length > 0 ? lines : undefined;
 }
 
 /** The run ids of a conversation's answers, newest last, at most [`MAX_TURNS`]. */

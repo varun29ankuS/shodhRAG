@@ -38,7 +38,8 @@ export function TurnMemoryLines({ lines, onReview, align }: TurnMemoryLinesProps
     setBusy(line.id);
     try {
       const after = await undoSuggestion(line.id);
-      if (after?.forgotten) {
+      // Undone: the user's own note is erased as it goes, which is the undo, not "nothing to do".
+      if (after?.status !== 'undone' && after?.forgotten) {
         notify.info('Nothing to undo', { description: 'You forgot this memory, so its words are already erased.' });
       } else {
         notify.success('Undone', { description: 'Shodh no longer remembers it.' });

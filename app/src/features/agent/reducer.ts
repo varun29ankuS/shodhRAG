@@ -111,6 +111,11 @@ export type FailureCode =
 export interface TranscriptState {
   /** Run id (equals the request id the UI sent). */
   runId: string;
+  /**
+   * Run ids of the earlier tries of this answer it replaced (Retry), oldest first: what
+   * they saved to memory is shown with it (features/memory/turnMemories). Ids only.
+   */
+  priorRunIds?: string[];
   sessionId: string | null;
   model: string | null;
   /** Data-handling warning for the model, shown for the whole run. */
@@ -764,6 +769,7 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     plan: Array.isArray(state.plan) ? state.plan.map(planItem) : null,
     groundings: Array.isArray(state.groundings) ? state.groundings : [],
     interimIds: Array.isArray(state.interimIds) ? state.interimIds.filter(id => typeof id === 'string') : [],
+    ...(Array.isArray(state.priorRunIds) ? { priorRunIds: state.priorRunIds.filter(id => typeof id === 'string') } : {}),
     checking: false,
     thinking: '',
     interrupting: false,

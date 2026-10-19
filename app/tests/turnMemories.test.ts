@@ -15,6 +15,8 @@ import {
   groupByTurn,
   lineOf,
   lineText,
+  linesOfRuns,
+  runIdsOf,
   summaryText,
   turnIdsOf,
   turnsChanged,
@@ -128,16 +130,32 @@ test('unchanged turns keep their lines, so their answers are not re-rendered', (
   assert.equal(second.get('run-2')!.asked[0].kind, 'undone');
 });
 
-test('several learned memories are summed up', () => {
-  const lines = [
-    lineOf(suggestion({ id: 'a', status: 'learned' }, { by_user: false }))!,
-    lineOf(suggestion({ id: 'b', status: 'learned' }, { by_user: false }))!,
-    lineOf(suggestion({ id: 'c', status: 'learned' }, { by_user: false }))!,
-  ];
+test('several memories are summed up by what is still saved', () => {
+  const learned = (id: string, status = 'learned') =>
+    lineOf(suggestion({ id, status, undoable: status === 'learned' }, { by_user: false }))!;
+  const lines = [learned('a'), learned('b'), learned('c')];
   assert.equal(summaryText(lines), 'Learned 3 things');
   const pending = lineOf(suggestion({ id: 'd', status: 'pending', undoable: false }, { by_user: false }))!;
   assert.equal(summaryText([...lines.slice(0, 2), pending]), 'Learned 2 things, 1 to review');
   assert.equal(summaryText([pending, pending]), 'Shodh suggests remembering 2 things');
+  // Undone and forgotten ones are not counted as learned.
+  const undone = [learned('a'), learned('b', 'undone'), learned('c', 'undone')];
+  assert.equal(summaryText(undone), 'Learned 1 thing, 2 undone or forgotten');
+  assert.equal(summaryText([learned('b', 'undone'), learned('c', 'undone'), learned('e', 'undone')]), '3 things undone or forgotten');
+  // What the user asked for is remembered, not learned.
+  const asked = ['a', 'b', 'c'].map(id => lineOf(suggestion({ id }))!);
+  assert.equal(summaryText(asked), 'Remembered 3 things');
+});
+
+test('a retried answer keeps the lines of the tries it replaced', () => {
+  assert.deepEqual(runIdsOf({ runId: 'run-3', priorRunIds: ['run-1', 'run-2'] }), ['run-1', 'run-2', 'run-3']);
+  assert.deepEqual(runIdsOf({ runId: 'run-1' }), ['run-1']);
+  assert.deepEqual(runIdsOf(null), []);
+  // The request was saved in the first try; the retry found it kept.
+  const turns = groupByTurn([suggestion({ id: 'a', turnId: 'run-1' }), suggestion({ id: 'b', turnId: 'run-3', status: 'learned' }, { by_user: false })]);
+  assert.deepEqual(linesOfRuns(turns, ['run-1', 'run-3'], 'asked')?.map(l => l.id), ['a']);
+  assert.deepEqual(linesOfRuns(turns, ['run-1', 'run-3'], 'learned')?.map(l => l.id), ['b']);
+  assert.equal(linesOfRuns(turns, ['run-9'], 'asked'), undefined);
 });
 
 test('the turns asked about are the answers’ run ids, newest last and bounded', () => {

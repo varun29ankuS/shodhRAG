@@ -21,7 +21,7 @@ import { StatusLine } from '../agent/StatusLine';
 import { SuggestionsBadge } from '../memory/SuggestionsBadge';
 import { requestSettingsSection } from '../memory/navigation';
 import { TurnMemoryLines } from '../memory/TurnMemoryLines';
-import { turnIdsOf } from '../memory/turnMemories';
+import { linesOfRuns, runIdsOf, turnIdsOf } from '../memory/turnMemories';
 import { useTurnMemories } from '../memory/useTurnMemories';
 import { Transcript } from '../agent/Transcript';
 import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
@@ -835,7 +835,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const latest = useMemo(() => latestTranscript(messages), [messages]);
   const liveTranscript = isStreaming && latest && isLive(latest) ? latest : null;
   // What was remembered or learned from each turn, read live by the answer's run id.
-  const turnIds = useMemo(() => turnIdsOf(messages.map(m => m.transcript?.runId)), [messages]);
+  const turnIds = useMemo(() => turnIdsOf(messages.flatMap(m => runIdsOf(m.transcript))), [messages]);
   const turnMemories = useTurnMemories(conversationId, turnIds);
   const waitingStep = liveTranscript ? pendingApproval(liveTranscript) : null;
   const waitingStepId = waitingStep?.id ?? null;
@@ -1149,9 +1149,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
           />
         );
       }
-      // What the message asked Shodh to remember, saved with its answer's run.
+      // What the message asked Shodh to remember, saved with its answer's run (or an
+      // earlier try of it, before a Retry).
       const next = messages[index + 1];
-      const asked = next?.role === 'assistant' && next.transcript ? turnMemories.get(next.transcript.runId)?.asked : undefined;
+      const asked = next?.role === 'assistant' ? linesOfRuns(turnMemories, runIdsOf(next.transcript), 'asked') : undefined;
       const bubble = (
         <div className="flex justify-end">
           <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
@@ -1186,7 +1187,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     }
     const isPreviewed = preview?.messageId === message.id;
     // What was learned from this turn (after the answer), or suggested from it.
-    const learned = message.transcript ? turnMemories.get(message.transcript.runId)?.learned : undefined;
+    const learned = linesOfRuns(turnMemories, runIdsOf(message.transcript), 'learned');
     const answer = (
       <AssistantMessage
         conversationId={conversationId}

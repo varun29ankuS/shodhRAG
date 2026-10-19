@@ -67,7 +67,8 @@ const MODES: { id: LearnMode; label: string; description: string }[] = [
 ];
 
 /** Shown under every mode: no memory is saved out of sight. */
-const SAVED_IN_CHAT = 'Every memory Shodh saves is shown in the chat, under the message it came from, with Undo.';
+const SAVED_IN_CHAT =
+  'Every memory Shodh saves from a conversation is shown in that chat, under the message it came from, with Undo; what Shodh finds when it reviews your memories always waits for you.';
 
 interface LearningControlsProps {
   prefs: MemoryPrefs;
@@ -405,7 +406,7 @@ function SuggestionItem({
             onClick={() =>
               void run(async () => {
                 const after = await undoSuggestion(suggestion.id);
-                if (after?.forgotten) {
+                if (after?.status !== 'undone' && after?.forgotten) {
                   notify.info('Nothing to undo', { description: 'You forgot this memory, so its words are already erased.' });
                 } else {
                   notify.success('Undone');

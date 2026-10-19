@@ -22,6 +22,10 @@ import type { OpenFocus, SummaryResult } from './FocusContext';
 import { splitFollowups, stripFollowups } from './followups';
 import { threadSummary } from './threadStore';
 import { exportPdf } from '../print/exportPdf';
+import { requestSettingsSection } from '../memory/navigation';
+import { TurnMemoryLines } from '../memory/TurnMemoryLines';
+import { linesOfRuns, runIdsOf, turnIdsOf } from '../memory/turnMemories';
+import { useTurnMemories } from '../memory/useTurnMemories';
 import { buildPrintDocument } from '../print/printModel';
 
 const FOCUS_RING =
@@ -208,6 +212,22 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
   const turns = useMemo(() => thread?.turns ?? [], [thread]);
   // Restored once per thread change, not on every keystroke in the composer.
   const restored = useMemo(() => new Map(turns.map(t => [t.id, fromPersisted(t.transcript)])), [turns]);
+  // What was remembered or learned from this discussion's turns: saved under the
+  // conversation it belongs to, with the side answers' run ids.
+  const liveRunId = live?.runId ?? null;
+  const sideTurnIds = useMemo(
+    () => turnIdsOf([...turns.flatMap(t => (t.role === 'assistant' ? runIdsOf(restored.get(t.id)) : [])), liveRunId]),
+    [turns, restored, liveRunId],
+  );
+  const sideMemories = useTurnMemories(open.conversationId, sideTurnIds);
+  // Under a question: what it asked Shodh to remember, saved with its answer's run (the
+  // live one while it runs). Under an answer: what was learned from it.
+  const askedLines = (index: number) => {
+    const next = turns[index + 1];
+    const runs = next ? (next.role === 'assistant' ? runIdsOf(restored.get(next.id)) : []) : liveRunId ? [liveRunId] : [];
+    return linesOfRuns(sideMemories, runs, 'asked');
+  };
+  const learnedLines = (turnId: string) => linesOfRuns(sideMemories, runIdsOf(restored.get(turnId)), 'learned');
   const label = open.target.label;
   const nested = depth > 0;
   const parentName = parentLabel ?? 'the level above';
@@ -366,6 +386,10 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
     window.dispatchEvent(new CustomEvent('switchTab', { detail: 'settings' }));
     onDone();
   }, [onDone]);
+  const openMemorySettings = useCallback(() => {
+    requestSettingsSection('memory');
+    openSettings();
+  }, [openSettings]);
   const openThread = useCallback((threadId: string) => focus?.jumpToThread(threadId), [focus]);
   // "Cite N instead" on a stored answer of this discussion; the user acts, the app never does.
   // Read through refs: the pop-out's context changes on every streamed frame, and a new
@@ -525,9 +549,16 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
             </ul>
           </div>
         )}
-        {turns.map(turn =>
+        {turns.map((turn, index) =>
           turn.role === 'user' ? (
-            <UserTurn key={turn.id} turn={turn} onOpenThread={openThread} />
+            <React.Fragment key={turn.id}>
+              <UserTurn turn={turn} onOpenThread={openThread} />
+              {askedLines(index) && (
+                <div className="self-end max-w-[92%]">
+                  <TurnMemoryLines lines={askedLines(index)} align="end" onReview={openMemorySettings} />
+                </div>
+              )}
+            </React.Fragment>
           ) : (
             <FocusDrillProvider key={turn.id} value={thread ? { parentThreadId: thread.id, parentTurnId: turn.id } : null}>
               {/* Visuals and selected text in this answer open as a nested level. */}
@@ -546,6 +577,11 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                   onOpenSettings={openSettings}
                   onCiteInstead={thread ? citeInstead : undefined}
                 />
+                {learnedLines(turn.id) && (
+                  <div className="mt-2">
+                    <TurnMemoryLines lines={learnedLines(turn.id)} align="start" onReview={openMemorySettings} />
+                  </div>
+                )}
               </div>
             </FocusDrillProvider>
           ),

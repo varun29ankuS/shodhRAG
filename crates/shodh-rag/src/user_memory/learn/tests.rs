@@ -988,8 +988,8 @@ async fn consolidation_resolves_contradictions_and_archives_faded_episodes() {
             ..LearnPolicy::default()
         }
     ));
-    // What consolidation finds is never applied silently, an archive included.
-    assert!(!auto_eligible(
+    // An archive adds nothing and is reversible: it still applies automatically.
+    assert!(auto_eligible(
         &e.learner.inbox().get(&archive.id).unwrap(),
         &LearnPolicy {
             mode: LearnMode::Auto,
@@ -1109,6 +1109,23 @@ async fn consolidation_turns_episode_clusters_and_recurring_tool_use_into_sugges
         .unwrap();
     assert_eq!(procedure.conversation_id.as_deref(), Some("c2"));
     assert!(all.iter().all(|p| p.origin == ProposalOrigin::Consolidate));
+    // A new memory consolidation found waits for the user even in automatic mode, where
+    // the same suggestion learned from a turn would be applied.
+    let auto = LearnPolicy {
+        mode: LearnMode::Auto,
+        auto_min_confidence: 0.5,
+        ..LearnPolicy::default()
+    };
+    let found = e.learner.inbox().get(&procedure.id).unwrap();
+    assert!(!auto_eligible(&found, &auto));
+    let from_a_turn = inbox::Proposal {
+        origin: ProposalOrigin::Turn,
+        ..found
+    };
+    assert!(
+        auto_eligible(&from_a_turn, &auto),
+        "control: {from_a_turn:?}"
+    );
 }
 
 fn coffee_like_spreadsheets() -> serde_json::Value {

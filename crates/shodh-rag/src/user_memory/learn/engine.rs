@@ -1277,18 +1277,15 @@ fn learn_actor(proposal: &Proposal) -> Actor {
 }
 
 /// Whether the automatic-learning policy may apply `proposal` without asking:
-/// automatic mode; not found by consolidation; confidence at or above the threshold; nothing sensitive; decided by
+/// automatic mode; confidence at or above the threshold; nothing sensitive; decided by
 /// the ontology's rules (an ADD, a reinforcement, an extension or a temporal supersede —
 /// never a contradiction the model judged or a non-temporal value change); or a link or
-/// an archive (reversible, no new content). Revisions, contradiction resolutions and
-/// anything undecided always ask.
+/// an archive (reversible, no new content). A new memory consolidation found, revisions,
+/// contradiction resolutions and anything undecided always ask.
 pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
     if policy.mode != LearnMode::Auto
         || proposal.status != ProposalStatus::Pending
         || !proposal.sensitive.is_empty()
-        // What consolidation finds is not from a turn the chat shows: applied silently it
-        // would be a memory saved out of sight, so it always waits for the user.
-        || proposal.origin == ProposalOrigin::Consolidate
     {
         return false;
     }
@@ -1296,6 +1293,10 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
         // What the user asked to remember is saved as their own approved note
         // (`file_user_note`), or waits for them when sensitive: never by the policy.
         ProposalAction::Remember { by_user: true, .. } => false,
+        // A memory consolidation found is not from a turn the chat shows: applied it would
+        // be new content saved out of sight, so it waits for the user. (Its archives and
+        // links add nothing and are reversible: they apply as before.)
+        ProposalAction::Remember { .. } if proposal.origin == ProposalOrigin::Consolidate => false,
         ProposalAction::Remember {
             decision,
             decided_by,

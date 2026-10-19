@@ -380,7 +380,8 @@ pub enum ProposalAction {
         source: String,
         /// The user formulated it: their own words, filed when they asked Shodh to
         /// remember something (`model` is then the app version). Stored with extractor
-        /// `user`, and only on the user's Accept.
+        /// `user`, accepted at once on their request (their approval), or on their Accept
+        /// when it is sensitive; never by the automatic-learning policy.
         #[serde(default)]
         by_user: bool,
     },
@@ -970,60 +971,101 @@ impl Inbox {
     }
 
     /// Stores a suggestion the user asked for in their own words ("Remember that ..."),
-    /// unless the same note is already waiting or saved, or the user rejected or undid it
-    /// in the last [`REJECTION_MEMORY_DAYS`] days: the same fingerprint, or a remembered
-    /// text that reads the same ([`same_note`]; a suggestion of the learner included).
-    /// Today's suggestion cap (a cap on what the model suggests) does not hold it back; it
-    /// is counted in today's suggestions. `applied_kept`: whether a memory an applied
-    /// suggestion of the same note stored still exists ([`Self::applied_memories`]); when
-    /// the user forgot it, asking again files the note again.
+    /// unless the same note is already saved or waiting. `applied_kept`: whether a memory
+    /// an applied suggestion of the same note stored still exists
+    /// ([`Self::applied_memories`]); when the user forgot it, asking again files the note
+    /// again. A note waiting for the user (the same fingerprint, a suggestion of the
+    /// learner included) is returned instead of a second one. A note the user rejected or
+    /// undid before is filed again: asking again is the user's own decision, which a past
+    /// rejection does not overrule (the learner itself still does not suggest it again,
+    /// [`Self::insert`]). Today's suggestion cap (a cap on what the model suggests) does
+    /// not hold it back; it is counted in today's suggestions.
     pub fn insert_requested(
         &self,
         new: NewProposal,
         now: DateTime<Utc>,
         applied_kept: bool,
-    ) -> LearnResult<RequestedOutcome> {
+    ) -> LearnResult<RequestedFiling> {
+        if applied_kept {
+            return Ok(RequestedFiling::Kept);
+        }
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let waiting: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1
-                AND status IN ('pending', 'failed'))",
-            params![new.fingerprint],
-            |r| r.get(0),
-        )?;
-        let kept = waiting || applied_kept;
-        if kept {
-            return Ok(RequestedOutcome::AlreadyKept);
-        }
-        let text = match &new.action {
-            ProposalAction::Remember { text, .. } => text.clone(),
-            _ => String::new(),
-        };
-        let since = ts(now - Duration::days(REJECTION_MEMORY_DAYS));
-        let declined = {
-            let mut stmt = tx.prepare(
-                "SELECT fingerprint, payload_json FROM memory_proposals
-                 WHERE kind = 'remember' AND status IN ('rejected', 'undone') AND decided_at >= ?1",
-            )?;
-            let rows = stmt
-                .query_map(params![since], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows.iter().any(|(fingerprint, payload)| {
-                *fingerprint == new.fingerprint
-                    || serde_json::from_str::<serde_json::Value>(payload)
-                        .ok()
-                        .and_then(|v| v["text"].as_str().map(|t| same_note(t, &text)))
-                        .unwrap_or(false)
-            })
-        };
-        if declined {
-            return Ok(RequestedOutcome::Declined);
+        let waiting = tx
+            .query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM memory_proposals WHERE fingerprint = ?1
+                     AND status IN ('pending', 'failed') ORDER BY created_at, id LIMIT 1"
+                ),
+                params![new.fingerprint],
+                read_proposal,
+            )
+            .optional()?;
+        if let Some(waiting) = waiting {
+            return Ok(RequestedFiling::Waiting(Box::new(waiting)));
         }
         let proposal = write_proposal(&tx, new, now)?;
         tx.commit()?;
-        Ok(RequestedOutcome::Filed(Box::new(proposal)))
+        Ok(RequestedFiling::Inserted(Box::new(proposal)))
+    }
+
+    /// The memory a note suggestion applied in turn `turn_id` (accepted or learned, and
+    /// not forgotten) stored, when its text reads the same as `text` ([`same_note`]): the
+    /// note the user asked Shodh to remember in that turn, so the assistant's own
+    /// `remember` of the same words in the same answer is recognised as done.
+    pub fn saved_note_in_turn(&self, turn_id: &str, text: &str) -> LearnResult<Option<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM memory_proposals
+             WHERE turn_id = ?1 AND kind = 'remember' AND status IN ('accepted', 'learned')
+                AND forgotten_at IS NULL
+             ORDER BY created_at, id"
+        ))?;
+        let rows = stmt
+            .query_map(params![turn_id], read_proposal)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().find_map(|proposal| {
+            let ProposalAction::Remember { text: saved, .. } = &proposal.action else {
+                return None;
+            };
+            if !same_note(saved, text) {
+                return None;
+            }
+            proposal.outcome.and_then(|outcome| outcome.memory_id)
+        }))
+    }
+
+    /// The "remember" suggestions learned from (or asked for in) turns `turn_ids` of
+    /// conversation `conversation_id`, oldest first, whatever their status: what the chat
+    /// shows under each turn ("Remembered", "Learned", "Shodh suggests remembering").
+    /// At most [`MAX_TURNS_LISTED`] turns.
+    pub fn list_for_turns(
+        &self,
+        conversation_id: &str,
+        turn_ids: &[String],
+    ) -> LearnResult<Vec<Proposal>> {
+        if turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let turns = &turn_ids[..turn_ids.len().min(MAX_TURNS_LISTED)];
+        let conn = self.lock();
+        let placeholders = (2..turns.len() + 2)
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM memory_proposals
+             WHERE conversation_id = ?1 AND kind = 'remember' AND origin = 'turn'
+                AND turn_id IN ({placeholders})
+             ORDER BY created_at, id"
+        ))?;
+        let values: Vec<&str> = std::iter::once(conversation_id)
+            .chain(turns.iter().map(String::as_str))
+            .collect();
+        let rows = stmt
+            .query_map(params_from_iter(values), read_proposal)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// One suggestion.
@@ -1565,16 +1607,32 @@ fn legacy_calls(conn: &Connection) -> LearnResult<u32> {
     Ok(value.and_then(|v| v.parse().ok()).unwrap_or(0))
 }
 
-/// What filing the user's own request to remember something did.
+/// What became of the user's own request to remember something
+/// ([`super::Learner::file_user_note`]).
 #[derive(Debug, Clone, PartialEq)]
 pub enum RequestedOutcome {
-    /// Stored, waiting for the user.
+    /// Saved now as the user's own memory (the request is their approval), with undo.
+    Saved(Box<ProposalView>),
+    /// Stored as a suggestion waiting for the user: the note is sensitive, or saving it
+    /// failed (it can be accepted again).
     Filed(Box<Proposal>),
-    /// The same note is already waiting or saved.
+    /// The same note is already saved or waiting for the user's approval.
     AlreadyKept,
-    /// The user rejected or undid the same note recently: it is not offered again.
-    Declined,
 }
+
+/// What [`Inbox::insert_requested`] found or stored.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RequestedFiling {
+    /// A memory of the same note is saved.
+    Kept,
+    /// The same note waits for the user (this suggestion).
+    Waiting(Box<Proposal>),
+    /// Stored now, waiting.
+    Inserted(Box<Proposal>),
+}
+
+/// Most turns [`Inbox::list_for_turns`] lists at once.
+pub const MAX_TURNS_LISTED: usize = 200;
 
 /// Whether two remembered texts say the same: compared case-folded, with whitespace
 /// collapsed and without the closing punctuation or quotes a sentence may carry.

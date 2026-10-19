@@ -14,7 +14,8 @@ use super::decide::{self, DecidedBy, Decision, DecisionRecord, Deterministic, Ju
 use super::extract::{self, Candidate, SourceText, TurnInput, MAX_SOURCE_CHARS};
 use super::inbox::{
     AppliedOutcome, Inbox, NewProposal, Proposal, ProposalAction, ProposalOrigin, ProposalStatus,
-    ProposalView, PutOutcomeView, Rejection, RequestedOutcome, StatusEvent, Undo, UsageCounter,
+    ProposalView, PutOutcomeView, Rejection, RequestedFiling, RequestedOutcome, StatusEvent, Undo,
+    UsageCounter,
 };
 use super::{explicit, sensitivity};
 use super::{
@@ -419,14 +420,17 @@ impl Learner {
         self.file(new, proposed, learned, suppressed).await
     }
 
-    /// Files what the user explicitly asked Shodh to remember (`request`, matched by
-    /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note
-    /// suggestion, without a model. It is the user's own words, so it is stored with
-    /// extractor `user`, and only when the user accepts it. Asking is not learning: it is
-    /// filed whatever the learning mode, is never applied automatically, and the daily caps
-    /// do not hold it back. A note the user already rejected (or undid) is not offered
-    /// again, whether they asked for it or the learner suggested it
-    /// ([`Inbox::insert_requested`]).
+    /// Saves what the user explicitly asked Shodh to remember (`request`, matched by
+    /// [`explicit::memory_request`] on their message of turn `turn_id`) as a note in their
+    /// own words, without a model: it is stored with extractor `user` and authorised by
+    /// the request itself, as an Accept of the note's suggestion ([`Self::accept`]), so the
+    /// suggestion reads as accepted and Undo works as for any accepted suggestion. Asking
+    /// is not learning: the learning mode does not apply (Off included) and the daily caps
+    /// do not hold it back. A sensitive note ([`sensitivity::classify_text`]) is filed as a
+    /// suggestion and waits for the user. A note already saved is not saved again; one the
+    /// user rejected or undid before is saved again, since they asked again
+    /// ([`Inbox::insert_requested`]). A suggestion of the same note already waiting (the
+    /// learner's included) is the one accepted.
     pub async fn file_user_note(
         &self,
         request: &explicit::MemoryRequest,
@@ -481,7 +485,38 @@ impl Learner {
             confidence: 1.0,
             sensitive,
         };
-        self.inbox.insert_requested(new, self.now(), applied_kept)
+        let asked_sensitive = !new.sensitive.is_empty();
+        let proposal = match self.inbox.insert_requested(new, self.now(), applied_kept)? {
+            RequestedFiling::Kept => return Ok(RequestedOutcome::AlreadyKept),
+            RequestedFiling::Waiting(waiting) => {
+                if asked_sensitive || !waiting.sensitive.is_empty() {
+                    // It waits for the user's approval already.
+                    return Ok(RequestedOutcome::AlreadyKept);
+                }
+                waiting
+            }
+            RequestedFiling::Inserted(proposal) => {
+                if asked_sensitive {
+                    return Ok(RequestedOutcome::Filed(proposal));
+                }
+                proposal
+            }
+        };
+        let actor = request_actor(conversation_id, turn_id);
+        match self.accept(&proposal.id, None, &actor).await {
+            // A memory of the same words was already stored (entered in Settings, or by
+            // the assistant): nothing new was saved and there is nothing to undo.
+            Ok(view) if !view.undoable => Ok(RequestedOutcome::AlreadyKept),
+            Ok(view) => Ok(RequestedOutcome::Saved(Box::new(view))),
+            Err(e) => {
+                // Marked failed (`record_accept`): it waits for the user, who can accept
+                // it again.
+                tracing::warn!(target: "shodh::memory", error = %e, "the note the user asked for was not saved; it waits for them");
+                Ok(RequestedOutcome::Filed(Box::new(
+                    self.inbox.get(&proposal.id)?,
+                )))
+            }
+        }
     }
 
     /// Stores a suggestion and applies it automatically when eligible.
@@ -1192,6 +1227,17 @@ pub(crate) fn llm_origin(source: &str, model: &str, confidence: f64, step: &str)
     }
 }
 
+/// The actor of a note the user asked for in run `turn_id` of `conversation_id`.
+fn request_actor(conversation_id: &str, turn_id: &str) -> Actor {
+    Actor {
+        via: "chat",
+        principal: LOCAL_OWNER.to_string(),
+        conversation_id: Some(conversation_id.to_string()),
+        profile_id: None,
+        run_id: Some(turn_id.to_string()),
+    }
+}
+
 /// The actor of an automatic application.
 fn learn_actor(proposal: &Proposal) -> Actor {
     Actor {
@@ -1217,7 +1263,8 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
         return false;
     }
     match &proposal.action {
-        // What the user asked to remember is theirs to accept: it always asks.
+        // What the user asked to remember is saved as their own approved note
+        // (`file_user_note`), or waits for them when sensitive: never by the policy.
         ProposalAction::Remember { by_user: true, .. } => false,
         ProposalAction::Remember {
             decision,

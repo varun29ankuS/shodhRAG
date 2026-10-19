@@ -999,9 +999,10 @@ pub async fn memory_suggestions_list(
 ) -> Result<Vec<ProposalView>, String> {
     let statuses = parse_statuses(statuses)?;
     let learner = learn.learner().await?;
-    learner
+    let views = learner
         .list(&statuses, limit.unwrap_or(200))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(learner.with_current_undo(views).await)
 }
 
 /// The "remember" suggestions of turns `turn_ids` (run ids) of conversation
@@ -1022,7 +1023,10 @@ pub async fn memory_suggestions_for_turns(
         .inbox()
         .list_for_turns(&conversation_id, &turn_ids)
         .map_err(|e| e.to_string())?;
-    Ok(proposals.into_iter().map(ProposalView::from).collect())
+    // A memory edited since cannot be undone from its line.
+    Ok(learner
+        .with_current_undo(proposals.into_iter().map(ProposalView::from).collect())
+        .await)
 }
 
 /// Accept a suggestion (optionally edited). The user's own decision: the write is

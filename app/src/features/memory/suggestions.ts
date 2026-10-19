@@ -72,6 +72,11 @@ export interface Suggestion {
   scope: string;
   error: string | null;
   undoable: boolean;
+  /**
+   * Applying it changed something that could be undone (it stored a memory), even if Undo
+   * is no longer offered (the memory was edited since); false for a reinforcement.
+   */
+  changed: boolean;
   /** The memory it stored or was about was forgotten: its words are erased, nothing to undo. */
   forgotten: boolean;
   createdAt: string;
@@ -214,6 +219,7 @@ export function parseSuggestion(value: unknown): Suggestion | null {
     scope: str(v.scope) && v.scope.length > 0 ? v.scope : 'global',
     error: error ?? null,
     undoable: v.undoable === true && v.forgotten !== true,
+    changed: isRecord(v.outcome) && isRecord(v.outcome.undo),
     forgotten: v.forgotten === true,
     createdAt: v.createdAt,
     decidedAt: decidedAt ?? null,

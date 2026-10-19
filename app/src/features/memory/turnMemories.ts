@@ -47,9 +47,10 @@ export function lineOf(s: Suggestion): TurnMemoryLine | null {
     case 'learned':
       // Its words were erased with the memory.
       if (s.forgotten) return { ...base, kind: 'forgotten' };
-      // A reinforcement, or words already remembered: nothing was saved, nothing to undo.
-      if (!s.undoable) return null;
-      return { ...base, kind: s.status === 'learned' ? 'learned' : 'remembered', text: s.action.text, undoable: true };
+      // A reinforcement, or words already remembered: nothing was saved.
+      if (!s.changed) return null;
+      // Saved; Undo only while it would not drop a later edit of the memory.
+      return { ...base, kind: s.status === 'learned' ? 'learned' : 'remembered', text: s.action.text, undoable: s.undoable };
     case 'pending':
     case 'failed':
       return s.forgotten ? null : { ...base, kind: 'suggested', text: s.action.text };

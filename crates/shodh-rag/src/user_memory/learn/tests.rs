@@ -1590,6 +1590,70 @@ async fn a_request_to_remember_is_saved_at_once_as_the_users_note_in_every_mode(
 }
 
 #[tokio::test]
+async fn a_saved_note_edited_since_is_not_undone_and_offers_no_undo() {
+    let e = env().await;
+    let view = e.saved("Remember that I use DiskANN").await;
+    let original = Env::memory_of(&view);
+    // Edited later (in Settings): a newer version of the memory.
+    e.f.clock.advance_days(1);
+    let edited = e
+        .service
+        .update(
+            &original,
+            MemoryContent::Note {
+                text: "I use DiskANN and SPANN".into(),
+            },
+            false,
+            None,
+            &Origin::user_interface("test"),
+            &Actor::ui(),
+        )
+        .await
+        .unwrap()
+        .memory
+        .unwrap();
+    // Its line offers no Undo, in the chat and in Settings.
+    let views = e
+        .learner
+        .with_current_undo(
+            e.learner
+                .inbox()
+                .list_for_turns("c1", &["r1".to_string()])
+                .unwrap()
+                .into_iter()
+                .map(ProposalView::from)
+                .collect(),
+        )
+        .await;
+    assert_eq!(views.len(), 1);
+    assert!(!views[0].undoable, "an edit since would be dropped");
+    // Undo is refused as a revert is, and the edit survives with its words.
+    let refused = e.learner.undo(&view.id, &Actor::ui()).await;
+    assert!(
+        matches!(
+            refused,
+            Err(LearnError::Memory(
+                crate::user_memory::MemoryError::Statement(
+                    crate::statements::StatementError::InvalidSupersede { .. }
+                )
+            ))
+        ),
+        "{refused:?}"
+    );
+    let kept = e.service.get(&edited.id).await.unwrap();
+    assert_eq!(kept.text, "I use DiskANN and SPANN");
+    assert_eq!(
+        e.learner.inbox().get(&view.id).unwrap().status,
+        ProposalStatus::Accepted,
+        "still accepted"
+    );
+    // A note not edited since can still be undone from its line.
+    let other = e.saved("Remember that I review papers on Fridays").await;
+    let views = e.learner.with_current_undo(vec![other.clone()]).await;
+    assert!(views[0].undoable);
+}
+
+#[tokio::test]
 async fn a_request_to_remember_is_saved_in_ask_and_automatic_mode_too() {
     for mode in [LearnMode::Ask, LearnMode::Auto] {
         let e = env().await;

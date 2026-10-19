@@ -865,8 +865,17 @@ impl Learner {
             match &undo {
                 // The user's own note: Undo means "I did not mean that", so its words are
                 // erased as a forget erases them (a note is never a change of another
-                // memory, so there is nothing to reopen).
+                // memory, so there is nothing to reopen). Not once it was edited: erasing
+                // every version would drop the edit too, so it is refused as a revert is.
                 Undo::Revert { id } if is_users_note(&proposal) => {
+                    if let Some(newer) = self.edited_since(id).await? {
+                        return Err(LearnError::Memory(MemoryError::Statement(
+                            StatementError::InvalidSupersede {
+                                target: id.clone(),
+                                reason: format!("it was changed again since (by `{newer}`)"),
+                            },
+                        )));
+                    }
                     self.service.forget(id, None, actor).await?;
                 }
                 Undo::Revert { id } => {
@@ -1119,6 +1128,39 @@ impl Learner {
                 ))
             }
         }
+    }
+
+    /// The newer version written since memory `id` (an edit of it), if any: undoing the
+    /// suggestion that stored `id` would then drop that edit, so it cannot be undone.
+    async fn edited_since(&self, id: &str) -> LearnResult<Option<String>> {
+        let memory = self.service.get(id).await?;
+        let Some(successor) = memory.superseded_by else {
+            return Ok(None);
+        };
+        // A historical write points at the older current memory; an edit at a newer one.
+        Ok(match self.service.get(&successor).await {
+            Ok(newer) if newer.created_at > memory.created_at => Some(successor),
+            _ => None,
+        })
+    }
+
+    /// `views` with `undoable` cleared for suggestions whose memory was edited since
+    /// ([`Self::edited_since`]): Undo would be refused, so it is not offered. A memory
+    /// that cannot be read leaves the view as it is (Undo then says what happened).
+    pub async fn with_current_undo(&self, mut views: Vec<ProposalView>) -> Vec<ProposalView> {
+        for view in &mut views {
+            let Some(Undo::Revert { id }) = view.outcome.as_ref().and_then(|o| o.undo.as_ref())
+            else {
+                continue;
+            };
+            if !view.undoable {
+                continue;
+            }
+            if matches!(self.edited_since(id).await, Ok(Some(_))) {
+                view.undoable = false;
+            }
+        }
+        views
     }
 
     /// Suggestions for the inbox: waiting ones, and recently decided ones.

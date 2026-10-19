@@ -48,7 +48,7 @@ function suggestion(overrides: Record<string, unknown> = {}, action: Record<stri
     conversationId: 'c1',
     turnId: 'run-1',
     scope: 'global',
-    outcome: null,
+    outcome: { memoryId: 'mem-1', put: null, undo: { kind: 'revert', id: 'mem-1' } },
     error: null,
     undoable: true,
     forgotten: false,
@@ -96,12 +96,19 @@ test('undone and forgotten memories show without their words', () => {
 
 test('nothing shows for what saved nothing, was refused, or is not a turn memory', () => {
   // A reinforcement, or words already remembered: nothing to undo.
-  assert.equal(lineOf(suggestion({ undoable: false })), null);
+  assert.equal(lineOf(suggestion({ undoable: false, outcome: { memoryId: 'mem-1', put: null, undo: null } })), null);
   assert.equal(lineOf(suggestion({ status: 'rejected', undoable: false })), null);
   assert.equal(lineOf(suggestion({ status: 'stale', undoable: false })), null);
   // A waiting suggestion gone stale with a forgotten memory is never shown.
   assert.equal(lineOf(suggestion({ status: 'pending', forgotten: true, undoable: false })), null);
   assert.equal(lineOf(suggestion({ origin: 'consolidate' })), null);
+});
+
+test('a memory edited since stays shown, without Undo', () => {
+  // The backend clears `undoable` when Undo would drop a later edit of the memory.
+  const line = lineOf(suggestion({ undoable: false }));
+  assert.deepEqual(line, { id: 'sug-1', kind: 'remembered', asked: true, text: 'I use DiskANN', undoable: false });
+  assert.deepEqual(lineText(line!), { lead: 'Remembered', quote: 'I use DiskANN', action: null });
 });
 
 test('lines are grouped by turn, the user’s requests apart from what was learned', () => {

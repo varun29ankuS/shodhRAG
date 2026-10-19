@@ -503,3 +503,77 @@ async fn remember_and_recall_are_always_in_the_models_context() {
     );
     assert_eq!(mode(app_tools::FORGET), Some(ToolLoadMode::Discoverable));
 }
+
+/// No model: saving what the user asked to remember never calls one.
+struct NoModel;
+
+impl shodh_rag::user_memory::learn::engine::ModelSource for NoModel {
+    fn model(&self) -> Result<Arc<dyn shodh_rag::user_memory::learn::LearnModel>, String> {
+        Err("no model in this test".to_string())
+    }
+}
+
+#[tokio::test]
+async fn remember_of_a_note_the_user_asked_for_in_this_answer_is_done_without_a_prompt() {
+    use shodh_rag::user_memory::learn::{memory_request, LearnPolicy, Learner, RequestedOutcome};
+    let h = harness().await;
+    let service = h.service().await;
+    let learner = Learner::new(
+        service.clone(),
+        service.inbox().unwrap().clone(),
+        Arc::new(LearnPolicy::default()),
+        Arc::new(NoModel),
+    );
+    // `agent_send` saved the request of run-7 before the answer started.
+    let request = memory_request("Remember that I use DiskANN").unwrap();
+    let saved = learner
+        .file_user_note(
+            &request,
+            "conv-42",
+            "run-7",
+            service.store().now(),
+            shodh_rag::statements::Scope::Global,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(saved, RequestedOutcome::Saved(_)), "{saved:?}");
+
+    // The model calls remember for the same words anyway: no prompt, no second memory.
+    let (ctx, rx) = h.ctx("step-1", None);
+    let (outcome, preview) = h
+        .call(
+            "remember",
+            json!({"text": "i use DiskANN."}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(preview.is_none(), "the user is not asked again");
+    assert!(!outcome.ok);
+    assert_eq!(outcome.text_for_model, super::ALREADY_SAVED);
+    assert_eq!(
+        service.list(&ListRequest::default()).await.unwrap().len(),
+        1
+    );
+
+    // Other words are a new memory, and ask as always.
+    let (ctx, rx) = h.ctx("step-2", None);
+    let (outcome, preview) = h
+        .call(
+            "remember",
+            json!({"text": "I use SPANN too"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(preview.is_some());
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert_eq!(
+        service.list(&ListRequest::default()).await.unwrap().len(),
+        2
+    );
+}

@@ -692,6 +692,7 @@ pub fn run() {
             memory_commands::memory_export,
             memory_learn::memory_learn_status,
             memory_learn::memory_suggestions_list,
+            memory_learn::memory_suggestions_for_turns,
             memory_learn::memory_suggestion_accept,
             memory_learn::memory_suggestions_accept_many,
             memory_learn::memory_suggestion_reject,

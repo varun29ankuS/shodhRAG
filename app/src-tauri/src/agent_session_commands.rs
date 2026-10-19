@@ -964,15 +964,21 @@ pub(crate) fn memory_turn(request: &MemoryRequest, handled: RequestHandled) -> M
         .collect::<Vec<_>>()
         .join(" ");
     let done = match handled {
-        RequestHandled::Filed | RequestHandled::AlreadyKept => format!(
-            "Shodh has already saved what the user asked you to remember (\u{201c}{note}\u{201d}) \
-             as a memory suggestion for them to approve, so do not call remember for it and do \
-             not search the documents for it. Acknowledge it in one short sentence"
+        RequestHandled::Saved => format!(
+            "Shodh has saved what the user asked you to remember (\u{201c}{note}\u{201d}) as a \
+             memory, and the chat shows it with Undo, so do not call remember for it and do not \
+             search the documents for it. Confirm in one short sentence that it is remembered"
         ),
-        RequestHandled::Declined => format!(
-            "The user asked you to remember \u{201c}{note}\u{201d}, which they declined to keep \
-             as a memory before, so it was not saved again: do not call remember for it and do \
-             not search the documents for it. Say so in one short sentence"
+        RequestHandled::Filed => format!(
+            "Shodh has proposed what the user asked you to remember (\u{201c}{note}\u{201d}) as a \
+             memory for them to approve (it looks sensitive), so do not call remember for it and \
+             do not search the documents for it. Say in one short sentence that it waits for \
+             their approval"
+        ),
+        RequestHandled::AlreadyKept => format!(
+            "What the user asked you to remember (\u{201c}{note}\u{201d}) is already remembered or \
+             waiting for their approval, so do not call remember for it and do not search the \
+             documents for it. Acknowledge it in one short sentence"
         ),
     };
     MemoryTurn {
@@ -2027,9 +2033,9 @@ pub async fn agent_send(
         typed_text.as_deref(),
         entry.parent_conversation_id.is_some(),
     );
-    // "Remember that ...": the user's words are filed as a memory suggestion now, so the
-    // request never depends on the model choosing to call `remember`; the model answers
-    // what the message asks besides it.
+    // "Remember that ...": the user's words are saved as a memory now (a sensitive note is
+    // filed for approval), so the request never depends on the model choosing to call
+    // `remember`; the model answers what the message asks besides it.
     let request = own_words.and_then(memory_request);
     let handled = match &request {
         Some(request) => {
@@ -3533,10 +3539,10 @@ mod tests {
     }
 
     #[test]
-    fn a_filed_request_to_remember_is_announced_right_before_the_message() {
+    fn a_saved_request_to_remember_is_announced_right_before_the_message() {
         let text = "Remember that I'm writing my thesis on disk-based vector search, and memory cost matters most to me.";
         let request = memory_request(text).unwrap();
-        let turn = memory_turn(&request, RequestHandled::Filed);
+        let turn = memory_turn(&request, RequestHandled::Saved);
         // Nothing but a statement about the user: no question for the documents.
         assert!(turn.memory_only);
         assert!(
@@ -3581,7 +3587,7 @@ mod tests {
             ),
             (
                 "Remember that the deadline is Friday.",
-                RequestHandled::Declined,
+                RequestHandled::Saved,
             ),
         ] {
             let request = memory_request(text).unwrap();
@@ -3606,19 +3612,30 @@ mod tests {
         ] {
             assert_eq!(memory_request(text), None, "{text}");
         }
-        let declined = memory_turn(
-            &memory_request("Remember that I use DiskANN.").unwrap(),
-            RequestHandled::Declined,
-        );
-        assert!(declined.note.contains("declined"), "{}", declined.note);
-        assert!(declined.note.contains("do not call remember"));
+    }
+
+    #[test]
+    fn the_model_is_told_whether_the_note_was_saved_or_waits_for_approval() {
+        let request = memory_request("Remember that I use DiskANN.").unwrap();
+        let saved = memory_turn(&request, RequestHandled::Saved);
+        assert!(saved.note.contains("has saved"), "{}", saved.note);
+        assert!(!saved.note.contains("approv"), "{}", saved.note);
+        let filed = memory_turn(&request, RequestHandled::Filed);
+        assert!(filed.note.contains("for them to approve"), "{}", filed.note);
+        assert!(!filed.note.contains("has saved"), "{}", filed.note);
+        let kept = memory_turn(&request, RequestHandled::AlreadyKept);
+        assert!(kept.note.contains("already remembered"), "{}", kept.note);
+        for turn in [saved, filed, kept] {
+            assert!(turn.note.contains("do not call remember"), "{}", turn.note);
+            assert!(turn.note.contains(&request.note), "{}", turn.note);
+        }
     }
 
     #[test]
     fn a_turn_whose_request_to_remember_was_handled_is_not_learned_from() {
         let text = "Remember that I use DiskANN.";
         let request = memory_request(text).unwrap();
-        let turn = memory_turn(&request, RequestHandled::Filed);
+        let turn = memory_turn(&request, RequestHandled::Saved);
         assert_eq!(words_to_learn(Some(text), Some(&turn)), None);
         // Not handled (filing failed, or no request): learned from as usual.
         assert_eq!(words_to_learn(Some(text), None), Some(text));

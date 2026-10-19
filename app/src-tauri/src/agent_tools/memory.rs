@@ -60,6 +60,11 @@ pub const FORGET_NOTICE: &str = concat!(
 /// carrying words still show some of this memory's.
 pub const FORGET_OLDER_WORDS: &str = "Older Activity entries may still show the words.";
 
+/// Why `remember` does nothing for a note the user's request already saved in this answer.
+/// It names no memory's words: tool errors are shown and recorded.
+pub const ALREADY_SAVED: &str = "Nothing to do: Shodh already saved this note when the user \
+    asked it to remember it, in this same answer. Do not call remember for it again.";
+
 const MAX_TEXT_CHARS: usize = 2_000;
 const MAX_RECALL: usize = 10;
 
@@ -247,6 +252,31 @@ fn preview_details(text: &str, scope: &Scope, ctx: &ToolContext, extra: Value) -
     details
 }
 
+/// Whether the user's request to remember saved a note of the same words as `content` in
+/// this run (before the answer started, `agent_send`), and it is still kept: the
+/// assistant's own `remember` of it is then done already, without a second memory or an
+/// approval prompt.
+async fn saved_in_this_run(
+    service: &MemoryService,
+    content: &MemoryContent,
+    ctx: &ToolContext,
+) -> bool {
+    let MemoryContent::Note { text } = content else {
+        return false;
+    };
+    let Some(inbox) = service.inbox() else {
+        return false;
+    };
+    match inbox.saved_note_in_turn(&ctx.run_id, text) {
+        Ok(Some(id)) => service.get(&id).await.is_ok(),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::debug!(target: "shodh::memory", error = %e, "the notes saved in this run could not be read");
+            false
+        }
+    }
+}
+
 fn describe(memory: &MemoryRecord) -> String {
     format!(
         "[{}] {} (id: {}, since {})",
@@ -307,6 +337,11 @@ impl HostTool for RememberTool {
         let tool = app_tools::REMEMBER;
         let content = content(tool, args, true)?;
         let service = service(&self.host).await?;
+        // Refused before the approval prompt (which `remember` always shows, so `execute`
+        // never runs without this check): the user already asked for it to be saved.
+        if saved_in_this_run(&service, &content, ctx).await {
+            return Err(ToolError::Failed(ALREADY_SAVED.to_string()));
+        }
         let text = service
             .preview(content, &origin(ctx))
             .map_err(|e| tool_error(tool, e))?;

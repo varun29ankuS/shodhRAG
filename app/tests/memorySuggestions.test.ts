@@ -158,7 +158,8 @@ test('memory settings keep every field and default the learning ones', () => {
   assert.deepEqual(parseMemoryPrefs(undefined), DEFAULT_MEMORY_PREFS);
   const old = parseMemoryPrefs({ injectMemories: false });
   assert.equal(old?.injectMemories, false);
-  assert.equal(old?.learnMode, 'ask');
+  assert.equal(old?.learnMode, 'auto', 'automatic learning is the default');
+  assert.equal(DEFAULT_MEMORY_PREFS.learnMode, 'auto');
   assert.equal(parseMemoryPrefs({ learnMode: 'always' }), null);
   assert.equal(parseMemoryPrefs({ autoMinConfidence: 'high' }), null);
   const full = parseMemoryPrefs({

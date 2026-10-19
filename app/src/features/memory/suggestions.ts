@@ -50,6 +50,8 @@ export type SuggestionAction =
       decided_by: 'rule' | 'model' | 'undecided';
       target_text: string | null;
       evidence: string;
+      /** The user's own words, saved because they asked Shodh to remember them. */
+      by_user: boolean;
     }
   | { kind: 'revise'; target: string; target_text: string; content: RawFact; text: string; reason: string }
   | { kind: 'link'; a: string; b: string; a_text: string; b_text: string; reason: string }
@@ -156,6 +158,8 @@ function parseAction(value: unknown): SuggestionAction | null {
         decided_by: decidedBy,
         target_text: str(v.target_text) ? v.target_text : null,
         evidence: v.evidence,
+        // Suggestions filed before the user's own notes existed have none.
+        by_user: v.by_user === true,
       };
     }
     case 'revise': {

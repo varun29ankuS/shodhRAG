@@ -47,15 +47,27 @@ const ICON_BUTTON = cn(
 );
 
 const MODES: { id: LearnMode; label: string; description: string }[] = [
-  { id: 'off', label: 'Off', description: 'Nothing is learned from conversations.' },
-  { id: 'ask', label: 'Ask', description: 'Shodh suggests memories from what you say; nothing is saved until you accept.' },
+  {
+    id: 'off',
+    label: 'Off',
+    description: 'Nothing is learned from conversations. What you ask Shodh to remember (“Remember that …”) is still saved.',
+  },
+  {
+    id: 'ask',
+    label: 'Ask',
+    description:
+      'Shodh suggests memories from what you say; they are saved only when you accept. What you ask Shodh to remember is saved at once.',
+  },
   {
     id: 'auto',
     label: 'Automatic',
     description:
-      'Confident, non-sensitive suggestions are saved and listed under “Learned”, where you can undo them. Anything sensitive or uncertain still asks.',
+      'Confident, non-sensitive memories are saved and listed under “Recently learned”, where you can undo them. Anything sensitive or uncertain still asks.',
   },
 ];
+
+/** Shown under every mode: no memory is saved out of sight. */
+const SAVED_IN_CHAT = 'Every memory Shodh saves is shown in the chat, under the message it came from, with Undo.';
 
 interface LearningControlsProps {
   prefs: MemoryPrefs;
@@ -155,7 +167,9 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
           );
         })}
       </div>
-      <p className="m-0 text-[12px] text-shodh-text-muted">{MODES.find(m => m.id === prefs.learnMode)?.description}</p>
+      <p className="m-0 text-[12px] text-shodh-text-muted">
+        {MODES.find(m => m.id === prefs.learnMode)?.description} {SAVED_IN_CHAT}
+      </p>
       {status?.killSwitch && (
         <p role="status" className="m-0 text-[12.5px] text-shodh-warning">
           Learning is turned off on this computer by its administrator (SHODH_MEMORY_LEARNING=off).

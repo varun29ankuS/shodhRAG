@@ -20,6 +20,9 @@ import { SearchSetupCard } from '../setup/SearchSetupCard';
 import { StatusLine } from '../agent/StatusLine';
 import { SuggestionsBadge } from '../memory/SuggestionsBadge';
 import { requestSettingsSection } from '../memory/navigation';
+import { TurnMemoryLines } from '../memory/TurnMemoryLines';
+import { turnIdsOf } from '../memory/turnMemories';
+import { useTurnMemories } from '../memory/useTurnMemories';
 import { Transcript } from '../agent/Transcript';
 import { FocusAnchorProvider, useFocus } from '../focus/FocusContext';
 import type { FocusThread } from '../focus/focusTypes';
@@ -831,6 +834,9 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
 
   const latest = useMemo(() => latestTranscript(messages), [messages]);
   const liveTranscript = isStreaming && latest && isLive(latest) ? latest : null;
+  // What was remembered or learned from each turn, read live by the answer's run id.
+  const turnIds = useMemo(() => turnIdsOf(messages.map(m => m.transcript?.runId)), [messages]);
+  const turnMemories = useTurnMemories(conversationId, turnIds);
   const waitingStep = liveTranscript ? pendingApproval(liveTranscript) : null;
   const waitingStepId = waitingStep?.id ?? null;
 
@@ -1143,7 +1149,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
           />
         );
       }
-      return (
+      // What the message asked Shodh to remember, saved with its answer's run.
+      const next = messages[index + 1];
+      const asked = next?.role === 'assistant' && next.transcript ? turnMemories.get(next.transcript.runId)?.asked : undefined;
+      const bubble = (
         <div className="flex justify-end">
           <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
             <UserText text={message.content} />
@@ -1164,12 +1173,21 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
           </div>
         </div>
       );
+      if (!asked || asked.length === 0) return bubble;
+      return (
+        <div className="flex flex-col gap-1.5">
+          {bubble}
+          <TurnMemoryLines lines={asked} align="end" onReview={openMemorySettings} />
+        </div>
+      );
     }
     if (message.role === 'system') {
       return <SystemNotice message={message} />;
     }
     const isPreviewed = preview?.messageId === message.id;
-    return (
+    // What was learned from this turn (after the answer), or suggested from it.
+    const learned = message.transcript ? turnMemories.get(message.transcript.runId)?.learned : undefined;
+    const answer = (
       <AssistantMessage
         conversationId={conversationId}
         message={message}
@@ -1188,6 +1206,13 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onOpenThread={openThread}
         onCiteInstead={citeInstead}
       />
+    );
+    if (!learned || learned.length === 0) return answer;
+    return (
+      <div className="flex flex-col gap-2">
+        {answer}
+        <TurnMemoryLines lines={learned} align="start" onReview={openMemorySettings} />
+      </div>
     );
   };
 

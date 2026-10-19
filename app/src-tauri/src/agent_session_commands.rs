@@ -971,9 +971,8 @@ pub(crate) fn memory_turn(request: &MemoryRequest, handled: RequestHandled) -> M
         ),
         RequestHandled::Filed => format!(
             "Shodh has proposed what the user asked you to remember (\u{201c}{note}\u{201d}) as a \
-             memory for them to approve (it looks sensitive), so do not call remember for it and \
-             do not search the documents for it. Say in one short sentence that it waits for \
-             their approval"
+             memory for them to approve, so do not call remember for it and do not search the \
+             documents for it. Say in one short sentence that it waits for their approval"
         ),
         RequestHandled::AlreadyKept => format!(
             "What the user asked you to remember (\u{201c}{note}\u{201d}) is already remembered or \

@@ -70,7 +70,12 @@ pub struct MemoryState {
 struct Inner {
     service: OnceCell<Arc<MemoryService>>,
     deps: Option<Deps>,
+    /// Told after a memory is forgotten or edited ([`MemoryState::changed`]).
+    on_change: std::sync::OnceLock<ChangeHook>,
 }
+
+/// What [`MemoryState::on_change`] runs.
+type ChangeHook = Arc<dyn Fn() + Send + Sync>;
 
 impl MemoryState {
     /// State that opens the store under `app_data_dir` on first use.
@@ -84,6 +89,7 @@ impl MemoryState {
                     audit: audit.log(),
                     database: audit.database(),
                 }),
+                on_change: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -95,7 +101,24 @@ impl MemoryState {
             inner: Arc::new(Inner {
                 service: OnceCell::new_with(Some(service)),
                 deps: None,
+                on_change: std::sync::OnceLock::new(),
             }),
+        }
+    }
+
+    /// Runs `hook` after every forget or edit of a memory, from Settings or the assistant
+    /// (set once, at start): the open chats re-read their memory lines, so a forgotten
+    /// memory's words do not stay on screen (#72). Later calls are ignored.
+    pub fn on_change(&self, hook: impl Fn() + Send + Sync + 'static) {
+        if self.inner.on_change.set(Arc::new(hook)).is_err() {
+            tracing::debug!(target: "shodh::memory", "the memory change hook is set already");
+        }
+    }
+
+    /// A memory was forgotten or edited.
+    pub fn changed(&self) {
+        if let Some(hook) = self.inner.on_change.get() {
+            hook();
         }
     }
 
@@ -262,7 +285,7 @@ pub async fn memory_update(
     memory: State<'_, MemoryState>,
 ) -> Result<RememberOutcome, String> {
     let service = memory.service().await?;
-    service
+    let outcome = service
         .update(
             &id,
             content,
@@ -272,7 +295,9 @@ pub async fn memory_update(
             &Actor::ui(),
         )
         .await
-        .map_err(error_text)
+        .map_err(error_text)?;
+    memory.changed();
+    Ok(outcome)
 }
 
 /// Pin (exempt from decay) or unpin a memory. Audited as `memory_write`.
@@ -296,10 +321,12 @@ pub async fn memory_forget(
     memory: State<'_, MemoryState>,
 ) -> Result<Vec<String>, String> {
     let service = memory.service().await?;
-    service
+    let forgotten = service
         .forget(&id, None, &Actor::ui())
         .await
-        .map_err(error_text)
+        .map_err(error_text)?;
+    memory.changed();
+    Ok(forgotten)
 }
 
 /// What the forget confirmation tells about the audit log.

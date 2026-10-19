@@ -553,6 +553,7 @@ impl HostTool for UpdateMemoryTool {
             .update(id, content, true, Some(&scope), &origin(ctx), &actor(ctx))
             .await
             .map_err(|e| tool_error(tool, e))?;
+        self.host.memory.changed();
         write_output(&outcome.outcome, outcome.memory.as_ref())
     }
 }
@@ -671,6 +672,8 @@ impl HostTool for ForgetTool {
             .forget(id, Some(&scope), &actor(ctx))
             .await
             .map_err(|e| tool_error(tool, e))?;
+        // Open chats show its line as a forgotten memory, without its words.
+        self.host.memory.changed();
         Ok(ToolOutput {
             text_for_model: format!("Forgot memory {id} ({} version(s)).", forgotten.len()),
             summary_for_ui: "Forgotten".to_string(),

@@ -577,3 +577,75 @@ async fn remember_of_a_note_the_user_asked_for_in_this_answer_is_done_without_a_
         2
     );
 }
+
+#[tokio::test]
+async fn forgetting_or_editing_a_memory_tells_the_open_chats() {
+    let h = harness().await;
+    let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let told = told.clone();
+        h.t.host.memory.on_change(move || {
+            told.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    let service = h.service().await;
+    let id = service
+        .remember(
+            shodh_rag::user_memory::MemoryContent::Note {
+                text: "I use DiskANN".into(),
+            },
+            shodh_rag::statements::Scope::Global,
+            &shodh_rag::user_memory::Origin::user_interface("test"),
+            &shodh_rag::user_memory::Actor::ui(),
+        )
+        .await
+        .unwrap()
+        .memory
+        .unwrap()
+        .id;
+    let count = || told.load(std::sync::atomic::Ordering::SeqCst);
+
+    // Refused (nothing changed): nobody is told.
+    let (ctx, rx) = h.ctx("s1", None);
+    let (outcome, _) = h
+        .call(
+            "forget",
+            json!({"id": id}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            false,
+        )
+        .await;
+    assert!(!outcome.ok);
+    assert_eq!(count(), 0);
+
+    let (ctx, rx) = h.ctx("s2", None);
+    let (outcome, _) = h
+        .call(
+            "update_memory",
+            json!({"id": id, "text": "I use DiskANN and SPANN"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert_eq!(count(), 1, "an edit is told");
+
+    let current = service.list(&ListRequest::default()).await.unwrap();
+    let (ctx, rx) = h.ctx("s3", None);
+    let (outcome, _) = h
+        .call(
+            "forget",
+            json!({"id": current[0].id}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert_eq!(count(), 2, "a forget is told");
+}

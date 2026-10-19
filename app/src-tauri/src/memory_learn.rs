@@ -764,6 +764,19 @@ impl LearnState {
         }
     }
 
+    /// A memory was forgotten or edited: tells the windows (the chat re-reads its lines).
+    fn memory_changed(&self) {
+        let state = self.clone();
+        tauri::async_runtime::spawn(async move {
+            match state.learner().await {
+                Ok(learner) => state.notify(&learner),
+                Err(e) => {
+                    tracing::debug!(target: "shodh::memory", error = %e, "suggestions unavailable; no change told")
+                }
+            }
+        });
+    }
+
     /// Tells the windows how many suggestions wait.
     fn notify(&self, learner: &Learner) {
         let pending = learner.inbox().pending_count().unwrap_or(0);
@@ -1163,11 +1176,20 @@ pub fn manage(app: &tauri::App, data_dir: &Path) {
     let state = LearnState::new(
         app.handle().clone(),
         data_dir,
-        memory,
+        memory.clone(),
         &app.state::<LLMState>(),
         &app.state::<AuditState>(),
     );
     state.spawn_sleep();
+    // A forget or an edit (Settings or the assistant) changes what the chat shows under
+    // the turns the memory came from. Held weakly: the memory state holds the learning state's
+    // hook, and the learning state holds the memory state.
+    let weak = Arc::downgrade(&state.inner);
+    memory.on_change(move || {
+        if let Some(inner) = weak.upgrade() {
+            LearnState { inner }.memory_changed();
+        }
+    });
     let legacy = state.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(LEGACY_IMPORT_DELAY).await;

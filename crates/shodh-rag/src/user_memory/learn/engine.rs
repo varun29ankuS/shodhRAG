@@ -429,8 +429,9 @@ impl Learner {
     /// do not hold it back. A sensitive note ([`sensitivity::classify_text`]) is filed as a
     /// suggestion and waits for the user. A note already saved is not saved again; one the
     /// user rejected or undid before is saved again, since they asked again
-    /// ([`Inbox::insert_requested`]). A suggestion of the same note already waiting (the
-    /// learner's included) is the one accepted.
+    /// ([`Inbox::insert_requested`]). A suggestion of the same note that waits (the
+    /// learner's, or a save of the user's that failed) is replaced by this one, so the
+    /// note is the user's own words of this turn; a sensitive one waiting keeps waiting.
     pub async fn file_user_note(
         &self,
         request: &explicit::MemoryRequest,
@@ -485,22 +486,14 @@ impl Learner {
             confidence: 1.0,
             sensitive,
         };
-        let asked_sensitive = !new.sensitive.is_empty();
         let proposal = match self.inbox.insert_requested(new, self.now(), applied_kept)? {
             RequestedFiling::Kept => return Ok(RequestedOutcome::AlreadyKept),
-            RequestedFiling::Waiting(waiting) => {
-                if asked_sensitive || !waiting.sensitive.is_empty() {
-                    // It waits for the user's approval already.
-                    return Ok(RequestedOutcome::AlreadyKept);
-                }
-                waiting
+            // It waits for the user's approval already.
+            RequestedFiling::Waiting(_) => return Ok(RequestedOutcome::AlreadyKept),
+            RequestedFiling::Inserted(proposal) if !proposal.sensitive.is_empty() => {
+                return Ok(RequestedOutcome::Filed(proposal))
             }
-            RequestedFiling::Inserted(proposal) => {
-                if asked_sensitive {
-                    return Ok(RequestedOutcome::Filed(proposal));
-                }
-                proposal
-            }
+            RequestedFiling::Inserted(proposal) => proposal,
         };
         let actor = request_actor(conversation_id, turn_id);
         match self.accept(&proposal.id, None, &actor).await {
@@ -509,12 +502,26 @@ impl Learner {
             Ok(view) if !view.undoable => Ok(RequestedOutcome::AlreadyKept),
             Ok(view) => Ok(RequestedOutcome::Saved(Box::new(view))),
             Err(e) => {
-                // Marked failed (`record_accept`): it waits for the user, who can accept
-                // it again.
-                tracing::warn!(target: "shodh::memory", error = %e, "the note the user asked for was not saved; it waits for them");
-                Ok(RequestedOutcome::Filed(Box::new(
-                    self.inbox.get(&proposal.id)?,
-                )))
+                // Said by what the suggestion is now: saved meanwhile (accepted in another
+                // window), waiting for the user (the write failed and it can be accepted
+                // again), or neither (it no longer applies): then the request is left to
+                // the assistant.
+                let now: ProposalView = self.inbox.get(&proposal.id)?.into();
+                match now.status {
+                    ProposalStatus::Accepted | ProposalStatus::Learned if now.undoable => {
+                        Ok(RequestedOutcome::Saved(Box::new(now)))
+                    }
+                    ProposalStatus::Accepted | ProposalStatus::Learned => {
+                        Ok(RequestedOutcome::AlreadyKept)
+                    }
+                    ProposalStatus::Pending | ProposalStatus::Failed => {
+                        tracing::warn!(target: "shodh::memory", error = %e, "the note the user asked for was not saved; it waits for them");
+                        Ok(RequestedOutcome::Filed(Box::new(
+                            self.inbox.get(&proposal.id)?,
+                        )))
+                    }
+                    _ => Err(e),
+                }
             }
         }
     }
@@ -856,6 +863,12 @@ impl Learner {
         };
         let result: LearnResult<()> = async {
             match &undo {
+                // The user's own note: Undo means "I did not mean that", so its words are
+                // erased as a forget erases them (a note is never a change of another
+                // memory, so there is nothing to reopen).
+                Undo::Revert { id } if is_users_note(&proposal) => {
+                    self.service.forget(id, None, actor).await?;
+                }
                 Undo::Revert { id } => {
                     self.service.revert_learned(id, actor).await?;
                 }
@@ -1227,6 +1240,20 @@ pub(crate) fn llm_origin(source: &str, model: &str, confidence: f64, step: &str)
     }
 }
 
+/// Whether `proposal` stores a note in the user's own words (they asked Shodh to remember
+/// it): Undo erases it as a forget does.
+fn is_users_note(proposal: &Proposal) -> bool {
+    matches!(
+        &proposal.action,
+        ProposalAction::Remember {
+            by_user: true,
+            content: MemoryContent::Note { .. },
+            decision: Decision::Add,
+            ..
+        }
+    )
+}
+
 /// The actor of a note the user asked for in run `turn_id` of `conversation_id`.
 fn request_actor(conversation_id: &str, turn_id: &str) -> Actor {
     Actor {
@@ -1250,7 +1277,7 @@ fn learn_actor(proposal: &Proposal) -> Actor {
 }
 
 /// Whether the automatic-learning policy may apply `proposal` without asking:
-/// automatic mode; confidence at or above the threshold; nothing sensitive; decided by
+/// automatic mode; not found by consolidation; confidence at or above the threshold; nothing sensitive; decided by
 /// the ontology's rules (an ADD, a reinforcement, an extension or a temporal supersede —
 /// never a contradiction the model judged or a non-temporal value change); or a link or
 /// an archive (reversible, no new content). Revisions, contradiction resolutions and
@@ -1259,6 +1286,9 @@ pub fn auto_eligible(proposal: &Proposal, policy: &LearnPolicy) -> bool {
     if policy.mode != LearnMode::Auto
         || proposal.status != ProposalStatus::Pending
         || !proposal.sensitive.is_empty()
+        // What consolidation finds is not from a turn the chat shows: applied silently it
+        // would be a memory saved out of sight, so it always waits for the user.
+        || proposal.origin == ProposalOrigin::Consolidate
     {
         return false;
     }

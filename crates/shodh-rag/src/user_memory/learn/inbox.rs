@@ -971,15 +971,18 @@ impl Inbox {
     }
 
     /// Stores a suggestion the user asked for in their own words ("Remember that ..."),
-    /// unless the same note is already saved or waiting. `applied_kept`: whether a memory
-    /// an applied suggestion of the same note stored still exists
+    /// unless the same note is already saved or waiting for approval. `applied_kept`:
+    /// whether a memory an applied suggestion of the same note stored still exists
     /// ([`Self::applied_memories`]); when the user forgot it, asking again files the note
-    /// again. A note waiting for the user (the same fingerprint, a suggestion of the
-    /// learner included) is returned instead of a second one. A note the user rejected or
-    /// undid before is filed again: asking again is the user's own decision, which a past
-    /// rejection does not overrule (the learner itself still does not suggest it again,
-    /// [`Self::insert`]). Today's suggestion cap (a cap on what the model suggests) does
-    /// not hold it back; it is counted in today's suggestions.
+    /// again. A suggestion of the same note (the same fingerprint) that waits is returned
+    /// instead when either is sensitive (it waits for the user's approval already);
+    /// otherwise it is replaced: marked stale ([`REPLACED_BY_REQUEST`], no rejection the
+    /// learner would remember) and this one stored, so the note is saved as the user's
+    /// own words of their turn, never as the learner's version. A note the user rejected
+    /// or undid before is filed again: asking again is the user's own decision, which a
+    /// past rejection does not overrule (the learner itself still does not suggest it
+    /// again, [`Self::insert`]). Today's suggestion cap (a cap on what the model suggests)
+    /// does not hold it back; it is counted in today's suggestions.
     pub fn insert_requested(
         &self,
         new: NewProposal,
@@ -991,18 +994,26 @@ impl Inbox {
         }
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let waiting = tx
-            .query_row(
-                &format!(
-                    "SELECT {COLUMNS} FROM memory_proposals WHERE fingerprint = ?1
-                     AND status IN ('pending', 'failed') ORDER BY created_at, id LIMIT 1"
-                ),
-                params![new.fingerprint],
-                read_proposal,
-            )
-            .optional()?;
-        if let Some(waiting) = waiting {
-            return Ok(RequestedFiling::Waiting(Box::new(waiting)));
+        let mut stmt = tx.prepare(&format!(
+            "SELECT {COLUMNS} FROM memory_proposals WHERE fingerprint = ?1
+             AND status IN ('pending', 'failed') ORDER BY created_at, id"
+        ))?;
+        let waiting = stmt
+            .query_map(params![new.fingerprint], read_proposal)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        if let Some(sensitive) = waiting
+            .iter()
+            .find(|w| !w.sensitive.is_empty() || !new.sensitive.is_empty())
+        {
+            return Ok(RequestedFiling::Waiting(Box::new(sensitive.clone())));
+        }
+        for replaced in &waiting {
+            tx.execute(
+                "UPDATE memory_proposals SET status = 'stale', decided_at = ?1, error = ?2
+                 WHERE id = ?3 AND status IN ('pending', 'failed')",
+                params![ts(now), REPLACED_BY_REQUEST, replaced.id],
+            )?;
         }
         let proposal = write_proposal(&tx, new, now)?;
         tx.commit()?;
@@ -1625,11 +1636,16 @@ pub enum RequestedOutcome {
 pub enum RequestedFiling {
     /// A memory of the same note is saved.
     Kept,
-    /// The same note waits for the user (this suggestion).
+    /// The same note waits for the user's approval (this suggestion; it or the request is
+    /// sensitive).
     Waiting(Box<Proposal>),
     /// Stored now, waiting.
     Inserted(Box<Proposal>),
 }
+
+/// Why a waiting suggestion went stale when the user asked for the same note in their own
+/// words ([`Inbox::insert_requested`]).
+pub const REPLACED_BY_REQUEST: &str = "replaced by the same note the user asked Shodh to remember";
 
 /// Most turns [`Inbox::list_for_turns`] lists at once.
 pub const MAX_TURNS_LISTED: usize = 200;

@@ -988,6 +988,14 @@ async fn consolidation_resolves_contradictions_and_archives_faded_episodes() {
             ..LearnPolicy::default()
         }
     ));
+    // What consolidation finds is never applied silently, an archive included.
+    assert!(!auto_eligible(
+        &e.learner.inbox().get(&archive.id).unwrap(),
+        &LearnPolicy {
+            mode: LearnMode::Auto,
+            ..LearnPolicy::default()
+        }
+    ));
 
     e.learner
         .accept(&archive.id, None, &Actor::ui())
@@ -1544,10 +1552,24 @@ async fn a_request_to_remember_is_saved_at_once_as_the_users_note_in_every_mode(
         &e.learner.policy()
     ));
 
-    // Undo is the undo of any accepted suggestion: the memory is forgotten.
+    // Undo is the undo of any accepted suggestion: the memory is gone. The user's own
+    // words are erased as a forget erases them, from the suggestion too.
     let undone = e.learner.undo(&view.id, &Actor::ui()).await.unwrap();
     assert_eq!(undone.status, ProposalStatus::Undone);
+    assert!(undone.forgotten, "its words are erased");
+    assert!(!serde_json::to_string(&undone)
+        .unwrap()
+        .contains("disk-based vector search"));
     assert!(e.service.get(&memory.id).await.is_err());
+    assert!(e
+        .service
+        .list(&crate::user_memory::ListRequest {
+            include_history: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1594,7 +1616,7 @@ async fn asking_again_after_undo_or_reject_saves_again() {
 }
 
 #[tokio::test]
-async fn asking_for_a_note_the_learner_suggested_accepts_that_suggestion() {
+async fn asking_for_a_note_the_learner_suggested_saves_the_users_own_and_replaces_it() {
     let e = env().await;
     // Ask mode: the learner's note of the same words waits for the user.
     e.model.answer(json!({"memories": [
@@ -1603,14 +1625,38 @@ async fn asking_for_a_note_the_learner_suggested_accepts_that_suggestion() {
     ]}));
     let report = e.learn("By the way, I review papers on Fridays").await;
     let waiting = report.proposed[0].clone();
-    let saved = e.saved("Remember that I review papers on Fridays").await;
-    assert_eq!(
-        saved.id, waiting,
-        "the waiting suggestion is accepted, not doubled"
-    );
+    // Asked for in a later turn: saved as the user's own words of that turn.
+    let saved = match e
+        .file_request_in("Remember that I review papers on Fridays", "r9")
+        .await
+    {
+        RequestedOutcome::Saved(view) => *view,
+        other => panic!("not saved: {other:?}"),
+    };
+    assert_ne!(saved.id, waiting, "the learner's version is not accepted");
     assert_eq!(saved.status, ProposalStatus::Accepted);
+    assert_eq!(saved.turn_id.as_deref(), Some("r9"));
+    assert!(matches!(
+        saved.action,
+        ProposalAction::Remember { by_user: true, .. }
+    ));
+    let memory = e.service.get(&Env::memory_of(&saved)).await.unwrap();
+    assert_eq!(memory.extractor, "user");
+    assert_eq!(memory.source, "conversation://c1/turn/r9");
+    // The learner's suggestion is replaced, not rejected (nothing to remember against it).
+    let replaced = e.learner.inbox().get(&waiting).unwrap();
+    assert_eq!(replaced.status, ProposalStatus::Stale);
+    assert_eq!(replaced.error.as_deref(), Some(inbox::REPLACED_BY_REQUEST));
     assert!(e.pending().is_empty());
     assert_eq!(e.service.list(&Default::default()).await.unwrap().len(), 1);
+    // The assistant's own remember of it in that turn is recognised as done.
+    assert_eq!(
+        e.learner
+            .inbox()
+            .saved_note_in_turn("r9", "I review papers on Fridays")
+            .unwrap(),
+        Some(memory.id)
+    );
 }
 
 #[tokio::test]

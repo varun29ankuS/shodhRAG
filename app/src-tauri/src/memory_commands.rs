@@ -737,7 +737,7 @@ mod tests {
     }
 
     /// `memory_use` audit events, after every queued event is written.
-    fn use_events(audit: &AuditLog) -> Vec<shodh_rag::audit::AuditRecord> {
+    fn use_events(audit: &AuditLog) -> Vec<shodh_rag::audit::AuditRow> {
         use shodh_rag::audit::{AuditEventType, AuditQuery, AuditRecord};
         // The writer is FIFO: once this append commits, every earlier submit has too.
         audit

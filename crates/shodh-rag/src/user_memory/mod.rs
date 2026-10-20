@@ -49,7 +49,7 @@ pub use recall::{
     render_injection, render_injection_counted, RecallMode, RecallRequest, RecalledMemory,
     DEFAULT_MIN_SIMILARITY, MAX_INJECTION_CHARS, MEMORY_BLOCK_TITLE,
 };
-pub use usage::DEFAULT_USE_SIMILARITY;
+pub use usage::DEFAULT_USE_CUTOFF;
 
 /// Most memories one "Not relevant" weakens links to (the others of the same answer).
 pub const MAX_FEEDBACK_CO_INJECTED: usize = 32;
@@ -811,7 +811,7 @@ impl MemoryService {
 
     /// The end of an answer that memories `injected` (ids, in injection order) were put in
     /// front of: the ones `answer` used ([`usage::judge_use`] at
-    /// [`DEFAULT_USE_SIMILARITY`]) are reinforced and linked to each other, and the use is
+    /// [`DEFAULT_USE_CUTOFF`]) are reinforced and linked to each other, and the use is
     /// audited as `memory_use` with their ids only. Returns the ids used.
     ///
     /// Fails closed: when the embedder is unavailable or fails, nothing is reinforced (and
@@ -847,7 +847,7 @@ impl MemoryService {
         };
         let answer = answer.to_string();
         let judged = tokio::task::spawn_blocking(move || {
-            usage::judge_use(&*embedder, &memories, &answer, DEFAULT_USE_SIMILARITY)
+            usage::judge_use(&*embedder, &memories, &answer, DEFAULT_USE_CUTOFF)
         })
         .await
         .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?;

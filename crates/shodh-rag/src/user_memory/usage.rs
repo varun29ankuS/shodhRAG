@@ -3,25 +3,136 @@
 //! A memory is reinforced (stronger, linked to the others used with it, audited as
 //! `memory_use`) only when the answer used it, not whenever recall put it in the prompt:
 //! otherwise a memory that matches many questions grows stronger whether or not it helps,
-//! and the strong get stronger. The judgement is local (no model call): the memory's text
-//! and each sentence of the answer are embedded with the search embedder, and a memory
-//! counts as used when its best-matching sentence reaches [`DEFAULT_USE_SIMILARITY`].
+//! and the strong get stronger. The judgement is local (no model call), from two signals:
 //!
 //! ```text
-//! score(memory) = max over answer sentences s of cos(E(memory), E(s))
-//! used          = score ≥ DEFAULT_USE_SIMILARITY
+//! similarity(m) = max over answer sentences s of cos(E(m), E(s))
+//! overlap(m)    = share of m's content words that appear in the answer
+//! score(m)      = (similarity(m) + overlap(m)) / 2
+//! used          = score ≥ DEFAULT_USE_CUTOFF
 //! ```
+//!
+//! Similarity alone does not separate use from topic: an answer about the same subject
+//! scores almost as high as one that relies on the memory (see [`DEFAULT_USE_CUTOFF`]).
+//! An answer that uses a memory usually repeats its specifics (a name, a date, a value),
+//! which the word overlap sees; one that paraphrases it is caught by the similarity. The
+//! two are weighted equally (not tuned), so only the cutoff is fitted.
 //!
 //! Both sides are embedded as queries: this is a comparison of two statements, not a
 //! search of passages, and E5 asks for the same prefix on both sides of a symmetric task.
 
+use std::collections::HashSet;
+
 use crate::embeddings::EmbeddingModel;
 
-/// Cosine similarity at which an answer sentence counts as using a memory. Measured with
-/// multilingual-e5-base on `fixtures/memory_use.json` (48 hand-labelled memory–answer
-/// pairs, half used, half on the same topic but not used; see
-/// `the_use_cutoff_separates_used_from_unused_memories_with_e5`).
-pub const DEFAULT_USE_SIMILARITY: f64 = 0.85;
+/// Score at which an answer counts as using a memory (see the module docs). Measured with
+/// multilingual-e5-base on `fixtures/memory_use.json`: 48 hand-labelled memory–answer
+/// pairs, each memory once used (often paraphrased) and once in an answer on the same
+/// topic that does not use it (`the_use_cutoff_separates_used_from_unused_memories_with_e5`).
+///
+/// Similarity alone: used 0.776–0.930 (median 0.860), not used 0.713–0.866 (median
+/// 0.814); the best cutoff (0.83) classifies only 77% right. The combined score: used
+/// 0.406–0.934 (median 0.790), not used 0.357–0.680 (median 0.530). This cutoff classifies
+/// 43 of 48 (89.6%) right, the best of the sweep; every cutoff from 0.590 to 0.635 gets at
+/// least 87.5%, and choosing the cutoff on 23 memories and testing on the 24th, for each
+/// memory in turn, gets 87.5%. The fixture is small and written by hand: re-measure when
+/// the embedding model or the scoring changes.
+pub const DEFAULT_USE_CUTOFF: f64 = 0.595;
+
+/// Words that say nothing about which memory an answer drew on, left out of
+/// [`content_overlap`]: function words, and the labels facts are rendered with
+/// ("Preference: preference holder the user; preference topic ...").
+const NON_CONTENT_WORDS: &[&str] = &[
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "by",
+    "from",
+    "as",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "am",
+    "i",
+    "im",
+    "i'm",
+    "my",
+    "me",
+    "we",
+    "our",
+    "us",
+    "you",
+    "your",
+    "it",
+    "its",
+    "this",
+    "that",
+    "these",
+    "those",
+    "there",
+    "here",
+    "so",
+    "if",
+    "then",
+    "than",
+    "not",
+    "no",
+    "do",
+    "does",
+    "did",
+    "done",
+    "have",
+    "has",
+    "had",
+    "will",
+    "would",
+    "can",
+    "could",
+    "should",
+    "about",
+    "into",
+    "over",
+    "after",
+    "before",
+    "up",
+    "down",
+    "out",
+    "off",
+    "just",
+    "also",
+    "very",
+    "more",
+    "most",
+    "some",
+    "any",
+    "all",
+    "each",
+    "every",
+    "per",
+    "via",
+    "preference",
+    "holder",
+    "user",
+    "topic",
+    "value",
+];
+
+/// Characters compared of each word for a loose match ("prefer" and "preferred",
+/// "deadline" and "deadlines").
+const STEM_CHARS: usize = 5;
 
 /// Most sentences of an answer compared (the first ones): bounds the work at the end of a
 /// long answer. Memories are used where an answer starts to address the question.
@@ -40,9 +151,47 @@ pub struct UseJudgement {
     /// The memory.
     pub id: String,
     /// Best cosine similarity with any answer sentence, in `[-1, 1]`.
+    pub similarity: f64,
+    /// Share of the memory's content words found in the answer, in `[0, 1]`
+    /// ([`content_overlap`]).
+    pub overlap: f64,
+    /// `(similarity + overlap) / 2`.
     pub score: f64,
     /// `score` reached the cutoff.
     pub used: bool,
+}
+
+/// The content words of `text`, lower-cased: runs of letters, digits, `_`, `:` and `.`
+/// (so "8:15" and "3.5" stay whole) with leading and trailing `:` and `.` removed, at least
+/// two characters long and not in [`NON_CONTENT_WORDS`].
+pub fn content_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':' || c == '.'))
+        .map(|word| word.trim_matches(|c: char| c == ':' || c == '.'))
+        .filter(|word| word.chars().count() >= 2 && !NON_CONTENT_WORDS.contains(word))
+        .map(str::to_string)
+        .collect()
+}
+
+fn stem(word: &str) -> String {
+    word.chars().take(STEM_CHARS).collect()
+}
+
+/// Share of `memory`'s distinct content words ([`content_words`]) that `answer` contains,
+/// as the same word or one with the same first [`STEM_CHARS`] characters. 0 for a memory
+/// without content words.
+pub fn content_overlap(memory: &str, answer: &str) -> f64 {
+    let memory: HashSet<String> = content_words(memory).into_iter().collect();
+    if memory.is_empty() {
+        return 0.0;
+    }
+    let answer: HashSet<String> = content_words(answer).into_iter().collect();
+    let stems: HashSet<String> = answer.iter().map(|w| stem(w)).collect();
+    let found = memory
+        .iter()
+        .filter(|w| answer.contains(*w) || stems.contains(&stem(w)))
+        .count();
+    found as f64 / memory.len() as f64
 }
 
 /// The sentences of `answer` that are compared with memories: Markdown markers, citation
@@ -160,10 +309,10 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     dot / (na.sqrt() * nb.sqrt())
 }
 
-/// Scores each of `memories` (`(id, text)`) against `answer` with `embedder` and judges it
-/// used at `cutoff` (normally [`DEFAULT_USE_SIMILARITY`]). Blocking (it runs the
-/// embedder); call it off the async executor. An answer with no sentence to compare uses
-/// nothing.
+/// Scores each of `memories` (`(id, text)`) against `answer` with `embedder` (see the
+/// module docs) and judges it used at `cutoff` (normally [`DEFAULT_USE_CUTOFF`]). Blocking
+/// (it runs the embedder); call it off the async executor. An answer with no sentence to
+/// compare uses nothing.
 pub fn judge_use(
     embedder: &dyn EmbeddingModel,
     memories: &[(String, String)],
@@ -176,6 +325,8 @@ pub fn judge_use(
             .iter()
             .map(|(id, _)| UseJudgement {
                 id: id.clone(),
+                similarity: 0.0,
+                overlap: 0.0,
                 score: 0.0,
                 used: false,
             })
@@ -189,12 +340,16 @@ pub fn judge_use(
         .iter()
         .map(|(id, text)| {
             let memory = embedder.embed_query(&text.replace(['\n', '\r'], " "))?;
-            let score = sentence_vectors
+            let similarity = sentence_vectors
                 .iter()
                 .map(|s| cosine(&memory, s))
                 .fold(f64::MIN, f64::max);
+            let overlap = content_overlap(text, answer);
+            let score = (similarity + overlap) / 2.0;
             Ok(UseJudgement {
                 id: id.clone(),
+                similarity,
+                overlap,
                 score,
                 used: score >= cutoff,
             })
@@ -338,53 +493,62 @@ mod tests {
         ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
     )]
     fn the_use_cutoff_separates_used_from_unused_memories_with_e5() {
-        /// Share of the fixture the shipped cutoff must classify right.
-        const REQUIRED_ACCURACY: f64 = 0.85;
+        /// Share of the fixture the shipped cutoff must classify right (42 of 48).
+        const REQUIRED_ACCURACY: f64 = 0.875;
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory to run this test");
         let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
             .expect("multilingual-e5-base under SHODH_TEST_MODELS");
         let e5 = crate::embeddings::e5::E5Embeddings::new(config).expect("load E5");
         let mut scores = Vec::new();
+        let mut similarities = Vec::new();
         for p in pairs() {
             let judged = judge_use(
                 &e5,
                 &[("m".to_string(), p.memory.clone())],
                 &p.answer,
-                DEFAULT_USE_SIMILARITY,
+                DEFAULT_USE_CUTOFF,
             )
             .expect("embed");
-            let score = judged[0].score;
+            let j = &judged[0];
             eprintln!(
-                "{:>6} {score:.4} {:60.60} | {:.60}",
+                "{:>6} score {:.4} similarity {:.4} overlap {:.2} {:50.50} | {:.50}",
                 if p.used { "used" } else { "unused" },
+                j.score,
+                j.similarity,
+                j.overlap,
                 p.memory,
                 p.answer
             );
-            scores.push((score, p.used));
+            scores.push((j.score, p.used));
+            similarities.push((j.similarity, p.used));
         }
-        let used = spread(scores.iter().filter(|s| s.1).map(|s| s.0).collect());
-        let unused = spread(scores.iter().filter(|s| !s.1).map(|s| s.0).collect());
-        eprintln!(
-            "used   min {:.4} median {:.4} max {:.4}",
-            used.0, used.1, used.2
-        );
-        eprintln!(
-            "unused min {:.4} median {:.4} max {:.4}",
-            unused.0, unused.1, unused.2
-        );
-        let sweep: Vec<(f64, f64)> = (0..=100)
-            .map(|i| {
-                let cutoff = 0.70 + 0.005 * f64::from(i);
-                (cutoff, accuracy(&scores, cutoff))
-            })
-            .collect();
-        let best = sweep.iter().map(|s| s.1).fold(0.0, f64::max);
-        for (cutoff, acc) in &sweep {
+        for (name, values) in [("score", &scores), ("similarity", &similarities)] {
+            let used = spread(values.iter().filter(|s| s.1).map(|s| s.0).collect());
+            let unused = spread(values.iter().filter(|s| !s.1).map(|s| s.0).collect());
+            eprintln!(
+                "{name}: used min {:.4} median {:.4} max {:.4}; unused min {:.4} median {:.4} max {:.4}",
+                used.0, used.1, used.2, unused.0, unused.1, unused.2
+            );
+        }
+        let sweep = |values: &[(f64, bool)]| -> Vec<(f64, f64)> {
+            (0..=140)
+                .map(|i| {
+                    let cutoff = 0.30 + 0.005 * f64::from(i);
+                    (cutoff, accuracy(values, cutoff))
+                })
+                .collect()
+        };
+        let by_similarity = sweep(&similarities);
+        let similarity_best = by_similarity.iter().map(|s| s.1).fold(0.0, f64::max);
+        eprintln!("similarity alone: best accuracy {similarity_best:.3}");
+        let by_score = sweep(&scores);
+        let best = by_score.iter().map(|s| s.1).fold(0.0, f64::max);
+        for (cutoff, acc) in &by_score {
             eprintln!("cutoff {cutoff:.3} accuracy {acc:.3}");
         }
-        let shipped = accuracy(&scores, DEFAULT_USE_SIMILARITY);
-        eprintln!("shipped {DEFAULT_USE_SIMILARITY:.3} accuracy {shipped:.3}, best {best:.3}");
+        let shipped = accuracy(&scores, DEFAULT_USE_CUTOFF);
+        eprintln!("shipped {DEFAULT_USE_CUTOFF:.3} accuracy {shipped:.3}, best {best:.3}");
         assert!(
             (shipped - best).abs() < 1e-9,
             "the shipped cutoff is not one of the best: {shipped:.3} vs {best:.3}"
@@ -393,5 +557,20 @@ mod tests {
             shipped >= REQUIRED_ACCURACY,
             "accuracy {shipped:.3} below {REQUIRED_ACCURACY}"
         );
+    }
+
+    #[test]
+    fn overlap_counts_the_memorys_specifics_not_its_labels_or_function_words() {
+        let memory = "Preference: preference holder the user; preference topic report format; preference value PDF";
+        assert_eq!(content_words(memory), vec!["report", "format", "pdf"]);
+        assert_eq!(
+            content_words("I take the 8:15 train."),
+            vec!["take", "8:15", "train"]
+        );
+        let answer = "I exported the reports as a PDF.";
+        // "report" matches "reports" by its first five characters; "format" is missing.
+        assert!((content_overlap(memory, answer) - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(content_overlap("I am", answer), 0.0);
+        assert_eq!(content_overlap(memory, ""), 0.0);
     }
 }

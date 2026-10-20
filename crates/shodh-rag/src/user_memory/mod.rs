@@ -3,8 +3,10 @@
 //! Every memory is a validated ontology statement in the [`StatementStore`] (so it has a
 //! class, properties, provenance and a validity interval), written only by the user
 //! (Settings) or with the user's approval (agent tools) — see [`guard`]. Memories:
-//! - **strengthen with use**: a recall that is used reinforces each memory under its class
-//!   dynamics and strengthens Hebbian links between memories recalled together;
+//! - **strengthen with use**: a memory an answer used ([`usage`]) is reinforced under its
+//!   class dynamics, and Hebbian links between the memories used together strengthen; one
+//!   the user marks not relevant loses a little importance and its links to the memories
+//!   it came with ([`MemoryService::record_feedback`]);
 //! - **fade when unused**: strength decays lazily (exponential, then a power-law tail) at
 //!   read time; pinned memories do not decay;
 //! - **update when facts change**: a new value of a temporal property supersedes the old
@@ -19,6 +21,7 @@ pub mod learn;
 mod recall;
 #[cfg(test)]
 mod tests;
+pub mod usage;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -34,8 +37,8 @@ use crate::audit::{
     AuditEventType, AuditLog, AuditQuery, AuditRecord, LOCAL_OWNER, MAX_SNIPPET_CHARS,
 };
 use crate::statements::{
-    DynamicsState, PutIntent, PutOutcome, Scope, StatementError, StatementQuery, StatementStore,
-    StoredStatement, SELF_ENTITY_ID,
+    DynamicsState, PutIntent, PutOutcome, RunMemoryKind, Scope, StatementError, StatementQuery,
+    StatementStore, StoredStatement, SELF_ENTITY_ID,
 };
 
 pub use guard::{
@@ -46,6 +49,30 @@ pub use recall::{
     render_injection, render_injection_counted, RecallMode, RecallRequest, RecalledMemory,
     DEFAULT_MIN_SIMILARITY, MAX_INJECTION_CHARS, MEMORY_BLOCK_TITLE,
 };
+pub use usage::DEFAULT_USE_CUTOFF;
+
+/// Most memories one "Not relevant" weakens links to (the others of the same answer).
+pub const MAX_FEEDBACK_CO_INJECTED: usize = 32;
+
+/// Longest run id accepted with feedback.
+const MAX_RUN_ID_CHARS: usize = 200;
+
+/// `run_id` trimmed, when it is a plausible answer (run) id.
+fn checked_run_id(run_id: &str) -> MemoryResult<&str> {
+    let run_id = run_id.trim();
+    if run_id.is_empty() || run_id.chars().count() > MAX_RUN_ID_CHARS {
+        return Err(MemoryError::InvalidInput("invalid answer id".to_string()));
+    }
+    Ok(run_id)
+}
+
+/// The user's feedback on a memory an answer used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Feedback {
+    /// The memory did not belong in that answer ("Not relevant").
+    Irrelevant,
+}
 
 /// Provenance source prefixes of memories (as opposed to statements extracted from
 /// documents, which share the statement store).
@@ -775,7 +802,8 @@ impl MemoryService {
         if recalled.is_empty() {
             return Ok(());
         }
-        recall::record_use(self, recalled).await?;
+        let ids: Vec<String> = recalled.iter().map(|m| m.memory.id.clone()).collect();
+        recall::record_use(self, &ids).await?;
         self.audit(
             actor,
             AuditEventType::MemoryUse,
@@ -788,6 +816,217 @@ impl MemoryService {
             }),
         );
         Ok(())
+    }
+
+    /// Records that memories `ids` were put in front of the question of run `run_id`, so
+    /// feedback on that answer is accepted for them only ([`MemoryService::record_feedback`]).
+    /// Ids only.
+    pub async fn record_injected(&self, run_id: &str, ids: &[String]) -> MemoryResult<()> {
+        let run_id = checked_run_id(run_id)?;
+        let dynamics = self.store.dynamics().clone();
+        let (run, ids, now) = (run_id.to_string(), ids.to_vec(), self.store.now());
+        blocking(move || dynamics.record_run_memories(&run, RunMemoryKind::Injected, &ids, now))
+            .await
+    }
+
+    /// The end of answer `run_id`, whose question memories `injected` (ids, in injection
+    /// order) were put in front of: the ones `answer` used ([`usage::judge_use`] at
+    /// [`DEFAULT_USE_CUTOFF`]) are reinforced and linked to each other, and the use is
+    /// audited as `memory_use` with their ids only. `prior_run_ids` are earlier tries of the
+    /// same question (Retry): a memory one of them already reinforced is not reinforced
+    /// again, so one question strengthens a memory at most once. Returns the ids reinforced.
+    ///
+    /// Fails closed: when the embedder is unavailable or fails, nothing is reinforced (and
+    /// the failure is only logged), so a missing model never strengthens a memory that did
+    /// not help. Memories forgotten during the answer are skipped.
+    pub async fn record_answer_use(
+        &self,
+        run_id: &str,
+        prior_run_ids: &[String],
+        injected: &[String],
+        answer: &str,
+        scope: &Scope,
+        actor: &Actor,
+    ) -> MemoryResult<Vec<String>> {
+        let run_id = checked_run_id(run_id)?;
+        if injected.is_empty() || answer.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let memories: Vec<(String, String)> = self
+            .store
+            .get_many(injected)
+            .await?
+            .into_iter()
+            .filter(is_memory)
+            .map(|s| (s.id().to_string(), s.text.clone()))
+            .collect();
+        if memories.is_empty() {
+            return Ok(Vec::new());
+        }
+        let embedder = match self.store.embedder().await {
+            Ok(embedder) => embedder,
+            Err(e) => {
+                tracing::debug!(target: "shodh::memory", error = %e, "no embedder at the end of the answer; no memory reinforced");
+                return Ok(Vec::new());
+            }
+        };
+        let answer = answer.to_string();
+        let judged = tokio::task::spawn_blocking(move || {
+            usage::judge_use(&*embedder, &memories, &answer, DEFAULT_USE_CUTOFF)
+        })
+        .await
+        .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?;
+        let judged = match judged {
+            Ok(judged) => judged,
+            Err(e) => {
+                tracing::debug!(target: "shodh::memory", error = %e, "embedding the answer failed; no memory reinforced");
+                return Ok(Vec::new());
+            }
+        };
+        let dynamics = self.store.dynamics().clone();
+        let earlier = {
+            let (dynamics, prior) = (dynamics.clone(), prior_run_ids.to_vec());
+            blocking(move || dynamics.run_memories(&prior, RunMemoryKind::Used)).await?
+        };
+        let used: Vec<String> = judged
+            .into_iter()
+            .filter(|j| j.used && !earlier.contains(&j.id))
+            .map(|j| j.id)
+            .collect();
+        if used.is_empty() {
+            return Ok(used);
+        }
+        recall::record_use(self, &used).await?;
+        {
+            let (run, ids, now) = (run_id.to_string(), used.clone(), self.store.now());
+            blocking(move || dynamics.record_run_memories(&run, RunMemoryKind::Used, &ids, now))
+                .await?;
+        }
+        self.audit(
+            actor,
+            AuditEventType::MemoryUse,
+            json!({
+                "action": "used_in_answer",
+                "ids": used,
+                "considered": injected.len(),
+                "scope": scope.as_key(),
+                "via": actor.via,
+            }),
+        );
+        Ok(used)
+    }
+
+    /// The user's `feedback` on memory `id` in the answer of run `run_id`.
+    /// [`Feedback::Irrelevant`] lowers the memory's importance a little (bounded by the
+    /// importance floor, [`DynamicsState::mark_irrelevant`]) and weakens its links to the
+    /// other memories put in front of the same question; it never edits, hides or deletes
+    /// the memory. Only a memory recorded as given to that answer
+    /// ([`MemoryService::record_injected`]) takes feedback on it; the other memories are
+    /// read from the same record, never from the caller. Applied once per run and memory:
+    /// returns whether this call applied it (`false` when it was recorded before). Audited
+    /// as `memory_write` with ids only.
+    pub async fn record_feedback(
+        &self,
+        run_id: &str,
+        id: &str,
+        feedback: Feedback,
+        actor: &Actor,
+    ) -> MemoryResult<bool> {
+        let run_id = checked_run_id(run_id)?;
+        let target = self.memory_statement(id).await?;
+        let dynamics = self.store.dynamics().clone();
+        let injected = {
+            let (dynamics, runs) = (dynamics.clone(), vec![run_id.to_string()]);
+            blocking(move || dynamics.run_memories(&runs, RunMemoryKind::Injected)).await?
+        };
+        if !injected.contains(id) {
+            return Err(MemoryError::InvalidInput(
+                "this memory was not given to that answer".to_string(),
+            ));
+        }
+        let co: Vec<String> = injected
+            .into_iter()
+            .filter(|other| other.as_str() != id)
+            .take(MAX_FEEDBACK_CO_INJECTED)
+            .collect();
+        let fallback = default_state(&target);
+        let now = self.store.now();
+        let (run, sid, scope, class) = (
+            run_id.to_string(),
+            target.id().to_string(),
+            target.scope.as_key(),
+            target.statement.class.clone(),
+        );
+        let links = co.clone();
+        let applied = match feedback {
+            Feedback::Irrelevant => {
+                blocking(move || {
+                    dynamics.mark_irrelevant(&run, &sid, &scope, &class, &fallback, &links, now)
+                })
+                .await?
+            }
+        };
+        let Some(state) = applied else {
+            return Ok(false);
+        };
+        self.audit(
+            actor,
+            AuditEventType::MemoryWrite,
+            json!({
+                "action": "not_relevant",
+                "id": id,
+                "answer": run_id,
+                "co_injected": co,
+                "importance": state.importance,
+                "class": target.statement.class,
+                "scope": target.scope.as_key(),
+                "via": actor.via,
+            }),
+        );
+        Ok(true)
+    }
+
+    /// Which of `ids` the user marked not relevant in run `run_id`.
+    pub async fn marked_irrelevant(
+        &self,
+        run_id: &str,
+        ids: &[String],
+    ) -> MemoryResult<BTreeSet<String>> {
+        let dynamics = self.store.dynamics().clone();
+        let runs = vec![run_id.to_string()];
+        let marked =
+            blocking(move || dynamics.run_memories(&runs, RunMemoryKind::Irrelevant)).await?;
+        Ok(ids
+            .iter()
+            .filter(|id| marked.contains(*id))
+            .cloned()
+            .collect())
+    }
+
+    /// The memories `ids` as they are now, in order: `None` for one that was forgotten
+    /// (or is not a memory). Reading is not use: nothing is reinforced.
+    pub async fn lookup(&self, ids: &[String]) -> MemoryResult<Vec<Option<MemoryRecord>>> {
+        let stored: Vec<StoredStatement> = self
+            .store
+            .get_many(ids)
+            .await?
+            .into_iter()
+            .filter(is_memory)
+            .collect();
+        let states = self.states_of(&stored).await?;
+        let by_id: HashMap<&str, &StoredStatement> = stored.iter().map(|s| (s.id(), s)).collect();
+        Ok(ids
+            .iter()
+            .map(|id| {
+                by_id.get(id.as_str()).map(|s| {
+                    let state = states
+                        .get(s.id())
+                        .cloned()
+                        .unwrap_or_else(|| default_state(s));
+                    self.record(s, &state)
+                })
+            })
+            .collect())
     }
 
     async fn after_write(

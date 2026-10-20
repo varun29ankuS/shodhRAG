@@ -116,6 +116,12 @@ export interface TranscriptState {
    * they saved to memory is shown with it (features/memory/turnMemories). Ids only.
    */
   priorRunIds?: string[];
+  /**
+   * Ids of the memories put in front of this run's question ("Used 2 memories"). Ids
+   * only: their words are read live (features/memory/usedMemories), so a forgotten
+   * memory's never stay in the conversation. Absent when none were.
+   */
+  memoryIds?: string[];
   sessionId: string | null;
   model: string | null;
   /** Data-handling warning for the model, shown for the whole run. */
@@ -291,6 +297,16 @@ export function isLive(state: TranscriptState): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Most memory ids kept with one answer (the backend injects at most six). */
+export const MAX_MEMORY_IDS = 32;
+
+/** Memory ids from an event or a stored transcript: non-empty strings, once each, bounded. */
+export function memoryIdsOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value.filter((id): id is string => typeof id === 'string' && id.length > 0);
+  return [...new Set(ids)].slice(0, MAX_MEMORY_IDS);
 }
 
 function str(value: unknown): string | null {
@@ -587,6 +603,11 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'navigated':
       return state;
 
+    case 'memories_used': {
+      const memoryIds = memoryIdsOf(action.ids);
+      return memoryIds.length > 0 ? { ...state, memoryIds } : state;
+    }
+
     case 'usage':
       return {
         ...state,
@@ -634,6 +655,8 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'local_failed':
       return {
         ...state,
+        // The request failed before the model got the question: no memory went into it.
+        memoryIds: undefined,
         status: 'error',
         error: action.error,
         errorCode: action.code,
@@ -759,8 +782,9 @@ export function fromPersisted(value: unknown): TranscriptState | null {
   if (!isRecord(value) || typeof value.runId !== 'string' || typeof value.startedAtMs !== 'number') return null;
   if (!STATUSES.includes(value.status as TranscriptStatus)) return null;
   if (!Array.isArray(value.blocks) || !isRecord(value.steps)) return null;
-  const { reasoning: storedReasoning, savedWhileChecking, ...state } = value as unknown as TranscriptState;
+  const { reasoning: storedReasoning, savedWhileChecking, memoryIds: storedMemoryIds, ...state } = value as unknown as TranscriptState;
   const reasoning = readReasoning(storedReasoning);
+  const memoryIds = memoryIdsOf(storedMemoryIds);
   const restored: TranscriptState = {
     ...initialTranscript(state.runId, state.startedAtMs),
     ...state,
@@ -770,6 +794,7 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     groundings: Array.isArray(state.groundings) ? state.groundings : [],
     interimIds: Array.isArray(state.interimIds) ? state.interimIds.filter(id => typeof id === 'string') : [],
     ...(Array.isArray(state.priorRunIds) ? { priorRunIds: state.priorRunIds.filter(id => typeof id === 'string') } : {}),
+    ...(memoryIds.length > 0 ? { memoryIds } : {}),
     checking: false,
     thinking: '',
     interrupting: false,

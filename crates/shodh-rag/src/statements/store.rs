@@ -251,6 +251,19 @@ impl StatementStore {
         &self.dynamics
     }
 
+    /// The embedding model the store searches with, checked against the table's vector
+    /// size. Fails while the search models are not installed.
+    pub async fn embedder(&self) -> StatementResult<Arc<dyn EmbeddingModel>> {
+        let embedder = self.embedder.embedder().await?;
+        if embedder.dimension() != self.table.dimension() {
+            return Err(StatementError::DimensionMismatch {
+                expected: self.table.dimension(),
+                found: embedder.dimension(),
+            });
+        }
+        Ok(embedder)
+    }
+
     /// The store's clock.
     pub fn now(&self) -> DateTime<Utc> {
         self.clock.now()

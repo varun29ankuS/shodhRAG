@@ -216,7 +216,8 @@ impl RunAuditTap {
             | AgentEvent::PlanUpdated { .. }
             | AgentEvent::Navigated { .. }
             | AgentEvent::GroundingStarted { .. }
-            | AgentEvent::RevisionStarted { .. } => None,
+            | AgentEvent::RevisionStarted { .. }
+            | AgentEvent::MemoriesUsed { .. } => None,
         }
     }
 }

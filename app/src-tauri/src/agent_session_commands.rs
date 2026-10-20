@@ -1688,6 +1688,7 @@ async fn start_attempt(
     let forward_app = app.clone();
     let forward_id = session_id.clone();
     let forward_learn = learn.inner().clone();
+    let forward_memory = app.state::<MemoryState>().inner().clone();
     let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
     let forward_used = last_used_ms.clone();
     // Open on an approval shows the chat: a side thread's is its parent conversation.
@@ -1707,6 +1708,8 @@ async fn start_attempt(
             forward_used.store(now_ms(), Ordering::Relaxed);
             // Learning sees only runs `agent_send` registered (the user's own words).
             forward_learn.observe(&event);
+            // The memories a completed answer used are reinforced (in the background).
+            forward_memory.observe(&event);
             // A finished answer shows whether its provider's key works.
             crate::connection_health::observe_answer(&forward_app, answer_provider, &event);
             if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
@@ -1961,6 +1964,7 @@ pub async fn agent_send(
     scope: Option<SendScope>,
     text_origin: Option<TextOrigin>,
     typed_text: Option<String>,
+    prior_run_ids: Option<Vec<String>>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
@@ -2014,7 +2018,25 @@ pub async fn agent_send(
             &entry.profile_id,
             &request_id,
         );
-        recall_for_run(&memory, &text, scope.workspace.as_deref(), &actor).await
+        let recalled = recall_for_run(&memory, &text, scope.workspace.as_deref(), &actor).await;
+        // Registered before prompting, so the run's answer is followed from its first
+        // event: when it completes, the memories it used are reinforced.
+        if let Some(recalled) = &recalled {
+            memory.track_run(
+                &request_id,
+                recalled.ids.clone(),
+                scope.workspace.as_deref(),
+                actor,
+                retried_runs(prior_run_ids.as_deref()),
+            );
+            // Feedback on this answer ("Not relevant") is accepted for these memories only.
+            memory.record_injected(&request_id, &recalled.ids).await;
+            // The chat shows which memories the answer was given ("Used 2 memories"), by
+            // id; the run id is `request_id`. Sent before the prompt so it reaches the chat
+            // before the run's own events; a prompt that fails clears it there.
+            emit_memories_used(&app, &session_id, &request_id, &recalled.ids);
+        }
+        recalled
     } else {
         None
     };
@@ -2060,7 +2082,7 @@ pub async fn agent_send(
     let message = compose_message(
         &text,
         history.as_deref().filter(|_| replay),
-        memories.as_deref(),
+        memories.as_ref().map(|m| m.block.as_str()),
         workspace_block.as_deref(),
         search_all && workspace.is_some(),
         passages_block.as_deref(),
@@ -2098,6 +2120,7 @@ pub async fn agent_send(
         Ok(run_id) => run_id,
         Err(e) => {
             learn.forget_run(&request_id);
+            memory.forget_run(&request_id);
             return Err(e.into());
         }
     };
@@ -2113,6 +2136,39 @@ pub async fn agent_send(
         replay && history.as_ref().is_some_and(|h| !h.is_empty()),
     ));
     Ok(run_id)
+}
+
+/// Most earlier tries of one question carried with a Retry.
+const MAX_PRIOR_RUNS: usize = 16;
+
+/// The earlier tries of a retried question (their run ids), as `agent_send` received them:
+/// plausible ids only, at most [`MAX_PRIOR_RUNS`] (the newest). They only ever keep a
+/// memory from being reinforced twice for one question.
+fn retried_runs(prior: Option<&[String]>) -> Vec<String> {
+    let valid: Vec<String> = prior
+        .unwrap_or_default()
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty() && id.len() <= MAX_ID_LEN)
+        .map(str::to_string)
+        .collect();
+    let skip = valid.len().saturating_sub(MAX_PRIOR_RUNS);
+    valid.into_iter().skip(skip).collect()
+}
+
+/// Tells the chat which memories were put in front of run `run_id`'s question
+/// ([`AgentEvent::MemoriesUsed`], ids only), on the run's event stream.
+fn emit_memories_used(app: &AppHandle, session_id: &str, run_id: &str, ids: &[String]) {
+    let envelope = AgentEventEnvelope {
+        session_id: session_id.to_string(),
+        event: AgentEvent::MemoriesUsed {
+            run_id: run_id.to_string(),
+            ids: ids.to_vec(),
+        },
+    };
+    if let Err(e) = app.emit(AGENT_EVENT, &envelope) {
+        tracing::warn!(target: "shodh::harness", error = %e, "emitting the memories of an answer failed");
+    }
 }
 
 /// The user's own words in a message: all of `text` when it is what they typed in the main
@@ -2746,6 +2802,23 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retry_carries_only_plausible_earlier_runs_and_the_newest_ones() {
+        assert!(retried_runs(None).is_empty());
+        let given = vec![
+            " run-1 ".to_string(),
+            String::new(),
+            "x".repeat(MAX_ID_LEN + 1),
+        ];
+        assert_eq!(retried_runs(Some(&given)), vec!["run-1".to_string()]);
+        let many: Vec<String> = (0..MAX_PRIOR_RUNS + 4)
+            .map(|i| format!("run-{i}"))
+            .collect();
+        let kept = retried_runs(Some(&many));
+        assert_eq!(kept.len(), MAX_PRIOR_RUNS);
+        assert_eq!(kept.last(), many.last());
+    }
 
     #[test]
     fn diagram_paths_resolve_only_inside_the_code_folder() {

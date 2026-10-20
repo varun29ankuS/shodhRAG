@@ -43,9 +43,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// images, Result extraction records and rejections), the citation graph (6: the scholarly
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
-/// the learning model's rejected answers (10), forgotten suggestions (11) and the statement
-/// store's state (12) use one version sequence, so every component that opens it sees the
-/// same schema.
+/// the learning model's rejected answers (10), forgotten suggestions (11), the statement
+/// store's state (12) and what happened to memories in each answer (13) use one
+/// version sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -370,6 +370,22 @@ const MIGRATIONS: &[(i64, &str)] = &[
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );",
+    ),
+    (
+        13,
+        // What happened to a memory in one answer (run): given to it (`injected`),
+        // reinforced because the answer used it (`used`), marked not relevant by the user
+        // (`irrelevant`). One row per run, memory and kind, so feedback is applied once,
+        // only to memories the answer was given, and a retried question reinforces a memory
+        // once. Ids only, never a memory's words; a memory's rows go when it is forgotten.
+        "CREATE TABLE run_memories (
+            run_id TEXT NOT NULL,
+            statement_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, statement_id, kind)
+        );
+        CREATE INDEX run_memories_statement ON run_memories(statement_id);",
     ),
 ];
 
@@ -1826,6 +1842,7 @@ mod tests {
                  DROP TABLE inbox_items;
                  DROP TABLE memory_learn_rejections;
                  DROP TABLE statement_state;
+                 DROP TABLE run_memories;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

@@ -591,6 +591,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         scope: scopeOf(options, workspaceId),
         textOrigin,
         attachedContext,
+        priorRunIds,
       });
     } catch (error) {
       const failure = toAgentError(error);

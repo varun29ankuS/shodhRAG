@@ -1,5 +1,6 @@
 //! Recall: rank memories for a query by relevance, current strength, importance and
-//! spreading activation over Hebbian links; record use.
+//! spreading activation over Hebbian links; record use (for an answer, only of the
+//! memories it used: see [`super::usage`]).
 //!
 //! For each candidate `i` from the hybrid search (vector + full text, reciprocal-rank
 //! fused):
@@ -54,10 +55,13 @@ pub const MEMORY_BLOCK_TITLE: &str = "What you remember about the user (may be o
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecallMode {
-    /// The memories go into an answer: reinforce them, strengthen their links, audit.
+    /// The assistant asked for these memories (its recall tool): reinforce them,
+    /// strengthen their links, audit.
     #[default]
     Use,
-    /// Looking only (Settings search): nothing changes.
+    /// Looking only (Settings search, and the memories put in front of a question, which
+    /// are reinforced at the end of the answer only if it used them,
+    /// [`MemoryService::record_answer_use`]): nothing changes.
     Inspect,
 }
 
@@ -326,16 +330,13 @@ async fn load_adjacency(
     Ok(adjacency)
 }
 
-/// Reinforces every used memory and strengthens links between the co-recalled ones.
-pub(super) async fn record_use(
-    service: &MemoryService,
-    recalled: &[RecalledMemory],
-) -> MemoryResult<()> {
+/// Reinforces every used memory (`ids`) and strengthens links between them: only memories
+/// used together are linked.
+pub(super) async fn record_use(service: &MemoryService, ids: &[String]) -> MemoryResult<()> {
     let store = service.store();
     let now = store.now();
     let ontology = store.ontology();
-    let ids: Vec<String> = recalled.iter().map(|m| m.memory.id.clone()).collect();
-    let stored = store.get_many(&ids).await?;
+    let stored = store.get_many(ids).await?;
     let mut states = service.states_of(&stored).await?;
     let mut rows = Vec::new();
     let mut importance = HashMap::new();
@@ -354,7 +355,7 @@ pub(super) async fn record_use(
             ));
         }
     }
-    let pairs = co_recalled_pairs(&ids);
+    let pairs = co_recalled_pairs(ids);
     let dynamics = store.dynamics().clone();
     blocking(move || {
         dynamics.put_many(&rows, now)?;

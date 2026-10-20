@@ -24,6 +24,8 @@ import { threadSummary } from './threadStore';
 import { exportPdf } from '../print/exportPdf';
 import { requestSettingsSection } from '../memory/navigation';
 import { TurnMemoryLines } from '../memory/TurnMemoryLines';
+import { UsedMemoriesChip } from '../memory/UsedMemoriesChip';
+import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { linesOfRuns, runIdsOf, turnIdsOf } from '../memory/turnMemories';
 import { useTurnMemories } from '../memory/useTurnMemories';
 import { buildPrintDocument } from '../print/printModel';
@@ -390,6 +392,13 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
     requestSettingsSection('memory');
     openSettings();
   }, [openSettings]);
+  const { byId: workspaceById } = useWorkspaces();
+  const workspaceName = useCallback((id: string) => workspaceById(id)?.name, [workspaceById]);
+  // The memories each stored answer was given ("Used 2 memories"), by id.
+  const usedMemories = (turnId: string) => {
+    const transcript = restored.get(turnId);
+    return transcript?.memoryIds && transcript.memoryIds.length > 0 ? transcript : null;
+  };
   const openThread = useCallback((threadId: string) => focus?.jumpToThread(threadId), [focus]);
   // "Cite N instead" on a stored answer of this discussion; the user acts, the app never does.
   // Read through refs: the pop-out's context changes on every streamed frame, and a new
@@ -577,6 +586,16 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                   onOpenSettings={openSettings}
                   onCiteInstead={thread ? citeInstead : undefined}
                 />
+                {usedMemories(turn.id) && (
+                  <div className="mt-2">
+                    <UsedMemoriesChip
+                      runId={usedMemories(turn.id)?.runId ?? turn.id}
+                      ids={usedMemories(turn.id)?.memoryIds ?? []}
+                      workspaceName={workspaceName}
+                      onOpenSettings={openSettings}
+                    />
+                  </div>
+                )}
                 {learnedLines(turn.id) && (
                   <div className="mt-2">
                     <TurnMemoryLines lines={learnedLines(turn.id)} align="start" onReview={openMemorySettings} />

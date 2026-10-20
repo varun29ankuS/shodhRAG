@@ -402,6 +402,10 @@ pub enum AgentEvent {
         /// Information needs still without a covering passage.
         missing_needs: Vec<String>,
     },
+    /// Memories from the user's long-term memory put in front of this run's question,
+    /// by id (the UI reads their words live, so a forgotten memory's never stay in a
+    /// conversation). Sent before the run starts; not sent when none were.
+    MemoriesUsed { run_id: String, ids: Vec<String> },
     RunFinished {
         run_id: String,
         status: RunStatus,
@@ -431,6 +435,7 @@ impl AgentEvent {
             | AgentEvent::GroundingStarted { run_id, .. }
             | AgentEvent::Grounding { run_id, .. }
             | AgentEvent::RevisionStarted { run_id, .. }
+            | AgentEvent::MemoriesUsed { run_id, .. }
             | AgentEvent::RunFinished { run_id, .. } => run_id,
         }
     }
@@ -623,6 +628,14 @@ mod tests {
                 },
                 "revision_started",
                 vec!["runId", "round", "reason", "flagged", "missingNeeds"],
+            ),
+            (
+                AgentEvent::MemoriesUsed {
+                    run_id: "r".into(),
+                    ids: vec!["mem-1".into()],
+                },
+                "memories_used",
+                vec!["runId", "ids"],
             ),
             (
                 AgentEvent::RunFinished {

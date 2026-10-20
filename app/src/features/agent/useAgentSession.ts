@@ -125,6 +125,11 @@ export interface SendExtras {
    * message to the model only, never to what is learned or recorded as the question.
    */
   attachedContext?: AttachedContext[] | null;
+  /**
+   * Run ids of the earlier tries of this question (Retry): a memory one of them already
+   * reinforced is not reinforced again.
+   */
+  priorRunIds?: string[];
 }
 
 export interface HistoryTurn {
@@ -211,6 +216,7 @@ export const agentApi = {
     textOrigin: extras.textOrigin ?? 'composed',
     typedText: extras.typedText ?? null,
     attachedContext: extras.attachedContext && extras.attachedContext.length > 0 ? extras.attachedContext : null,
+    priorRunIds: extras.priorRunIds && extras.priorRunIds.length > 0 ? extras.priorRunIds : null,
   }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),

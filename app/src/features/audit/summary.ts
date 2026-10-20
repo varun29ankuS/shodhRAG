@@ -125,6 +125,7 @@ export function summarise(row: AuditRow): string {
         update: 'Memory edited',
         pin: 'Memory pinned',
         unpin: 'Memory unpinned',
+        not_relevant: 'Memory marked not relevant to an answer',
       };
       const action = str(p.action) ?? 'remember';
       const outcome = str(p.outcome);
@@ -140,8 +141,14 @@ export function summarise(row: AuditRow): string {
     }
     case 'memory_use': {
       const count = Array.isArray(p.ids) ? p.ids.length : 0;
+      const memories = `${count} ${count === 1 ? 'memory' : 'memories'}`;
+      // At the end of an answer: the memories it drew on, of those it was given.
+      if (p.action === 'used_in_answer') {
+        const considered = num(p.considered);
+        return `${memories} used in an answer${considered !== null ? ` (of ${considered} given)` : ''}`;
+      }
       const query = str(p.query);
-      return `${count} ${count === 1 ? 'memory' : 'memories'} recalled${query ? ` for “${clip(query, 80)}”` : ''}`;
+      return `${memories} recalled${query ? ` for “${clip(query, 80)}”` : ''}`;
     }
     case 'code_change': {
       const branch = str(p.branch) ?? 'a branch';

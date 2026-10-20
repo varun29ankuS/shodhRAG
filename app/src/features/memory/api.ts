@@ -10,6 +10,8 @@ import { parseLearnStatus, parseSuggestion, parseSuggestions } from './suggestio
 import type { LearnStatus, Suggestion, SuggestionStatus } from './suggestions';
 import { turnsChanged } from './turnMemories';
 import type { TurnsChanged } from './turnMemories';
+import { parseUsedMemories } from './usedMemories';
+import type { UsedMemory } from './usedMemories';
 
 export interface ListOptions {
   /** Include superseded and expired versions. */
@@ -60,6 +62,24 @@ export async function forgetNotice(id: string): Promise<{ olderEntriesHaveWords:
 /** Write every memory (with history) as JSON to `path`. */
 export async function exportMemories(path: string): Promise<{ path: string; memories: number }> {
   return invoke<{ path: string; memories: number }>('memory_export', { path });
+}
+
+/**
+ * The memories `ids` the answer of run `runId` was given, as they are now (a forgotten one
+ * without its words), and whether each was marked not relevant. Reading is not use.
+ */
+export async function usedMemories(runId: string, ids: string[]): Promise<UsedMemory[]> {
+  if (ids.length === 0) return [];
+  return parseUsedMemories(await invoke<unknown>('memory_used_lookup', { runId, ids }), ids);
+}
+
+/**
+ * "Not relevant": memory `id` did not belong in the answer of run `runId`. It loses a
+ * little importance and its links to `coInjected` (the answer's other memories) weaken;
+ * it is not edited or deleted. Resolves `false` when it was marked before.
+ */
+export async function markNotRelevant(runId: string, id: string, coInjected: string[]): Promise<boolean> {
+  return (await invoke<unknown>('memory_mark_not_relevant', { runId, id, coInjected })) === true;
 }
 
 /** Text of a command error. */

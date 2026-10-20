@@ -17,6 +17,9 @@ use crate::audit::{open_shared_connection, AuditKey};
 /// Rows per `IN (...)` lookup.
 const LOOKUP_CHUNK: usize = 400;
 
+/// `memory_feedback.kind` of "Not relevant".
+const FEEDBACK_IRRELEVANT: &str = "irrelevant";
+
 /// Dynamics and links of statements, in the shared `shodh.db`.
 ///
 /// Transactions that read before they write are `IMMEDIATE`: the audit writer commits to
@@ -308,6 +311,104 @@ impl DynamicsStore {
         Ok(())
     }
 
+    /// Applies the user's "Not relevant" on memory `id` in run `run_id` once, in one
+    /// transaction: records the feedback (`memory_feedback`), lowers the memory's
+    /// importance ([`DynamicsState::mark_irrelevant`]; `fallback` is its state when it has
+    /// no row yet) and weakens its links to `co_injected`, the memories that went into the
+    /// same answer ([`LinkState::weaken`]; links that fall below [`LINK_PRUNE_FLOOR`] are
+    /// removed, missing links are not created). Returns `None` when this feedback was
+    /// recorded before (nothing changes), else the state written.
+    #[allow(clippy::too_many_arguments)] // One transaction over the row it writes.
+    pub fn mark_irrelevant(
+        &self,
+        run_id: &str,
+        id: &str,
+        scope: &str,
+        class: &str,
+        fallback: &DynamicsState,
+        co_injected: &[String],
+        now: DateTime<Utc>,
+    ) -> StatementResult<Option<DynamicsState>> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = tx.execute(
+            "INSERT INTO memory_feedback(run_id, statement_id, kind, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(run_id, statement_id, kind) DO NOTHING",
+            params![run_id, id, FEEDBACK_IRRELEVANT, format_ts(now)],
+        )?;
+        if inserted == 0 {
+            tx.commit()?;
+            return Ok(None);
+        }
+        let mut state = tx
+            .query_row(
+                "SELECT strength, anchor_at, importance, use_count, last_used_at, pinned
+                 FROM statement_dynamics WHERE statement_id = ?1",
+                params![id],
+                read_state,
+            )
+            .optional()?
+            .unwrap_or_else(|| fallback.clone());
+        state.mark_irrelevant();
+        write_state(&tx, id, scope, class, &state, now)?;
+        let others: BTreeSet<&String> = co_injected.iter().filter(|o| o.as_str() != id).collect();
+        for other in others {
+            let (from, to) = super::dynamics::ordered_pair(id, other.as_str());
+            let existing = tx
+                .query_row(
+                    "SELECT from_id, to_id, weight, co_activations, updated_at
+                     FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                    params![from, to],
+                    read_link,
+                )
+                .optional()?;
+            let Some((_, _, link)) = existing else {
+                continue;
+            };
+            let weakened = link.weaken(now);
+            if weakened.weight < LINK_PRUNE_FLOOR {
+                tx.execute(
+                    "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                    params![from, to],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE statement_links SET weight = ?3, updated_at = ?4
+                     WHERE from_id = ?1 AND to_id = ?2",
+                    params![from, to, weakened.weight, format_ts(now)],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(Some(state))
+    }
+
+    /// Which of `ids` the user marked not relevant in run `run_id`.
+    pub fn marked_irrelevant(
+        &self,
+        run_id: &str,
+        ids: &[String],
+    ) -> StatementResult<BTreeSet<String>> {
+        let conn = self.lock();
+        let mut out = BTreeSet::new();
+        for chunk in ids.chunks(LOOKUP_CHUNK) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT statement_id FROM memory_feedback
+                 WHERE run_id = ? AND kind = ? AND statement_id IN ({placeholders})"
+            ))?;
+            let args = [run_id, FEEDBACK_IRRELEVANT]
+                .into_iter()
+                .chain(chunk.iter().map(String::as_str));
+            let rows = stmt.query_map(params_from_iter(args), |r| r.get::<_, String>(0))?;
+            for row in rows {
+                out.insert(row?);
+            }
+        }
+        Ok(out)
+    }
+
     /// Removes every link of a statement (it was forgotten).
     pub fn remove_links(&self, id: &str) -> StatementResult<usize> {
         let conn = self.lock();
@@ -347,8 +448,8 @@ impl DynamicsStore {
         Ok(())
     }
 
-    /// Deletes the dynamics (strength, use count, pin) and every link of statements `ids`
-    /// (they were erased), in one transaction. Deleted rows are zeroed in the database
+    /// Deletes the dynamics (strength, use count, pin), every link and the feedback of
+    /// statements `ids` (they were erased), in one transaction. Deleted rows are zeroed in the database
     /// file (`secure_delete`). Returns the dynamics rows deleted.
     pub fn remove_statements(&self, ids: &[String]) -> StatementResult<usize> {
         if ids.is_empty() {
@@ -371,6 +472,10 @@ impl DynamicsStore {
                      WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})"
                 ),
                 params_from_iter(chunk.iter().chain(chunk.iter())),
+            )?;
+            tx.execute(
+                &format!("DELETE FROM memory_feedback WHERE statement_id IN ({placeholders})"),
+                params_from_iter(chunk.iter()),
             )?;
         }
         tx.commit()?;
@@ -520,5 +625,73 @@ mod tests {
         let hub = store.links_touching(&["hub".to_string()]).unwrap();
         assert_eq!(hub.len(), 1);
         assert_eq!(store.remove_links("hub").unwrap(), 1);
+    }
+
+    #[test]
+    fn not_relevant_applies_once_per_run_and_weakens_only_existing_links() {
+        let (_dir, store) = store();
+        let state = DynamicsState::fresh(t0(), 0.3);
+        store.put("m", "global", "Note", &state, t0()).unwrap();
+        let importance: HashMap<String, f64> = HashMap::new();
+        store
+            .strengthen_links(&[("m".into(), "x".into())], &importance, t0())
+            .unwrap();
+        let before = store.link("m", "x").unwrap().unwrap();
+        let co = ["x".to_string(), "y".to_string(), "m".to_string()];
+
+        let written = store
+            .mark_irrelevant("run-1", "m", "global", "Note", &state, &co, t0())
+            .unwrap()
+            .expect("first mark applies");
+        assert!((written.importance - 0.25).abs() < 1e-12);
+        assert_eq!(
+            store.get("m").unwrap().unwrap().importance,
+            written.importance
+        );
+        let after = store.link("m", "x").unwrap().unwrap();
+        assert!(after.weight < before.weight);
+        assert_eq!(after.co_activations, before.co_activations);
+        // No link is created to a memory it was never linked with.
+        assert!(store.link("m", "y").unwrap().is_none());
+
+        // The same answer's mark again changes nothing.
+        assert!(store
+            .mark_irrelevant("run-1", "m", "global", "Note", &state, &co, t0())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.get("m").unwrap().unwrap().importance,
+            written.importance
+        );
+        assert_eq!(store.link("m", "x").unwrap().unwrap(), after);
+        let marked = store
+            .marked_irrelevant("run-1", &["m".to_string(), "x".to_string()])
+            .unwrap();
+        assert_eq!(
+            marked.into_iter().collect::<Vec<_>>(),
+            vec!["m".to_string()]
+        );
+        assert!(store
+            .marked_irrelevant("run-2", &["m".to_string()])
+            .unwrap()
+            .is_empty());
+
+        // Another answer's mark applies; a memory without dynamics starts from `fallback`.
+        assert!(store
+            .mark_irrelevant("run-2", "m", "global", "Note", &state, &co, t0())
+            .unwrap()
+            .is_some());
+        let fresh = store
+            .mark_irrelevant("run-2", "n", "global", "Note", &state, &[], t0())
+            .unwrap()
+            .unwrap();
+        assert!((fresh.importance - 0.25).abs() < 1e-12);
+
+        // Forgetting erases the feedback rows with the dynamics.
+        store.remove_statements(&["m".to_string()]).unwrap();
+        assert!(store
+            .marked_irrelevant("run-1", &["m".to_string()])
+            .unwrap()
+            .is_empty());
     }
 }

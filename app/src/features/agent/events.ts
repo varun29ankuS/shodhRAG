@@ -317,6 +317,17 @@ export interface RevisionStartedEvent {
   missingNeeds: string[];
 }
 
+/**
+ * Memories from the user's long-term memory put in front of this run's question, by id:
+ * their words are read live (features/memory/usedMemories), never kept with the answer.
+ * Sent before the run starts; absent when none were.
+ */
+export interface MemoriesUsedEvent {
+  type: "memories_used";
+  runId: string;
+  ids: string[];
+}
+
 export interface RunFinishedEvent {
   type: "run_finished";
   runId: string;
@@ -342,6 +353,7 @@ export type AgentEvent =
   | GroundingStartedEvent
   | GroundingEvent
   | RevisionStartedEvent
+  | MemoriesUsedEvent
   | RunFinishedEvent;
 
 /** Payload of the Tauri `agent_event` event. */

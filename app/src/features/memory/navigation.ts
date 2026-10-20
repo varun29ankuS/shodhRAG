@@ -21,3 +21,25 @@ export function takeRequestedSection(): SettingsSection | null {
   requested = null;
   return section;
 }
+
+/** Dispatched when a memory's editor is requested ([`requestMemoryEdit`]). */
+export const OPEN_MEMORY_EDIT = 'shodh:open-memory-edit';
+
+let requestedEdit: string | null = null;
+
+/**
+ * Open Settings → Memory with memory `id`'s editor open ("Outdated" under an answer): the
+ * edit saves a newer version, as any edit there does. Kept until Settings → Memory takes it.
+ */
+export function requestMemoryEdit(id: string): void {
+  requestedEdit = id;
+  requestSettingsSection('memory');
+  window.dispatchEvent(new CustomEvent(OPEN_MEMORY_EDIT));
+}
+
+/** The memory whose editor was requested, once. */
+export function takeRequestedMemoryEdit(): string | null {
+  const id = requestedEdit;
+  requestedEdit = null;
+  return id;
+}

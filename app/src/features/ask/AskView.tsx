@@ -21,6 +21,7 @@ import { StatusLine } from '../agent/StatusLine';
 import { SuggestionsBadge } from '../memory/SuggestionsBadge';
 import { requestSettingsSection } from '../memory/navigation';
 import { TurnMemoryLines } from '../memory/TurnMemoryLines';
+import { UsedMemoriesChip } from '../memory/UsedMemoriesChip';
 import { linesOfRuns, runIdsOf, turnIdsOf } from '../memory/turnMemories';
 import { useTurnMemories } from '../memory/useTurnMemories';
 import { Transcript } from '../agent/Transcript';
@@ -360,6 +361,8 @@ interface AssistantMessageProps {
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;
   /** "Cite N instead" on a miscited claim of this answer. */
   onCiteInstead: (messageId: string, check: ClaimCheck) => Promise<boolean>;
+  /** Name of a workspace, by id (where a memory the answer was given applies). */
+  workspaceName: (id: string) => string | undefined;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -382,6 +385,7 @@ function AssistantMessageView({
   onOpenSettings,
   onOpenThread,
   onCiteInstead,
+  workspaceName,
 }: AssistantMessageProps) {
   const transcript = message.transcript;
   const passages = transcript?.passages;
@@ -495,6 +499,15 @@ function AssistantMessageView({
       )}
 
       {!running && <SourceChips groups={groups} activeFile={activeFile} onOpen={handleOpen} />}
+
+      {!running && transcript?.memoryIds && transcript.memoryIds.length > 0 && (
+        <UsedMemoriesChip
+          runId={transcript.runId}
+          ids={transcript.memoryIds}
+          workspaceName={workspaceName}
+          onOpenSettings={onOpenSettings}
+        />
+      )}
 
       {!running && message.threads && <ThreadChips threads={message.threads} onOpen={openThread} />}
 
@@ -694,6 +707,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // In a workspace chat, answers search only the workspace's sources unless "Search all my
   // library" is on for the next question (it switches off again once that is sent).
   const { byId: workspaceById, openWorkspace } = useWorkspaces();
+  const workspaceName = useCallback((id: string) => workspaceById(id)?.name, [workspaceById]);
   const workspace = workspaceById(session.activeConversation?.workspaceId);
   const [searchAll, setSearchAll] = useState(false);
   const chip = scopeChip(workspace, searchAll, librarySourcesChip(searched));
@@ -1206,6 +1220,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onOpenSettings={openSettings}
         onOpenThread={openThread}
         onCiteInstead={citeInstead}
+        workspaceName={workspaceName}
       />
     );
     if (!learned || learned.length === 0) return answer;

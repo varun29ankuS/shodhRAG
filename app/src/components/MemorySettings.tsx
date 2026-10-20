@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ask, save } from '@tauri-apps/plugin-dialog';
 import { Download, History, Pencil, Pin, PinOff, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -30,6 +30,7 @@ import {
   setMemoryPinned,
   updateMemory,
 } from '../features/memory/api';
+import { OPEN_MEMORY_EDIT, takeRequestedMemoryEdit } from '../features/memory/navigation';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -92,10 +93,25 @@ interface MemoryItemProps extends MemorySettingsProps {
   busy: boolean;
   onChanged: () => void;
   setBusy: (busy: boolean) => void;
+  /** Its editor was asked for ("Outdated" under an answer): open it and bring it into view. */
+  editRequested?: boolean;
+  /** The requested editor was opened. */
+  onEditOpened?: () => void;
 }
 
-function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpenConversation, workspaceName }: MemoryItemProps) {
+function MemoryItem({
+  memory,
+  busy,
+  onChanged,
+  setBusy,
+  conversationTitle,
+  onOpenConversation,
+  workspaceName,
+  editRequested = false,
+  onEditOpened,
+}: MemoryItemProps) {
   const [editing, setEditing] = useState(false);
+  const itemRef = useRef<HTMLLIElement>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<MemoryRecord[] | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -166,11 +182,25 @@ function MemoryItem({ memory, busy, onChanged, setBusy, conversationTitle, onOpe
     }
   };
 
+  // "Outdated" under an answer: the editor opens here, in view, with its first field focused.
+  useEffect(() => {
+    if (!editRequested || !memory.current) return;
+    setDraft({});
+    setEditing(true);
+    onEditOpened?.();
+    requestAnimationFrame(() => {
+      const item = itemRef.current;
+      if (!item) return;
+      item.scrollIntoView({ block: 'center' });
+      item.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus();
+    });
+  }, [editRequested, memory.current, onEditOpened]);
+
   const fromConversation = memory.conversationId;
   const conversationName = fromConversation ? conversationTitle(fromConversation) : undefined;
 
   return (
-    <li className="py-3 flex flex-col gap-2">
+    <li ref={itemRef} className="py-3 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-4">
         <p className="m-0 text-[13.5px] text-shodh-text break-words">{memory.text}</p>
         <StrengthBar memory={memory} />
@@ -320,6 +350,8 @@ export default function MemorySettings(props: MemorySettingsProps) {
   const [prefs, setPrefs] = useState<MemoryPrefs | null>(null);
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // The memory whose editor "Outdated" under an answer asked for (Settings → Memory only).
+  const [editId, setEditId] = useState<string | null>(() => (props.scope ? null : takeRequestedMemoryEdit()));
   const searchId = useId();
 
   const refresh = useCallback(async () => {
@@ -378,6 +410,35 @@ export default function MemorySettings(props: MemorySettingsProps) {
       setExporting(false);
     }
   };
+
+  // Asked for while Settings → Memory is open: read the memories again (the one asked
+  // for may be newer than the list) and clear the search so it is shown.
+  useEffect(() => {
+    if (props.scope) return undefined;
+    const open = () => {
+      const id = takeRequestedMemoryEdit();
+      if (!id) return;
+      setFilter('');
+      setMemories(null);
+      setEditId(id);
+      void refresh();
+    };
+    window.addEventListener(OPEN_MEMORY_EDIT, open);
+    return () => window.removeEventListener(OPEN_MEMORY_EDIT, open);
+  }, [props.scope, refresh]);
+
+  const editOpened = useCallback(() => setEditId(null), []);
+
+  // The memory asked for is no longer current (edited or forgotten since the answer).
+  useEffect(() => {
+    if (editId === null || memories === null) return;
+    if (!memories.some(m => m.id === editId && m.current)) {
+      setEditId(null);
+      notify.info('This memory changed since that answer', {
+        description: 'It was edited or forgotten. The memories Shodh keeps now are listed here.',
+      });
+    }
+  }, [editId, memories]);
 
   const scope = props.scope ?? null;
   const scoped = useMemo(
@@ -484,6 +545,8 @@ export default function MemorySettings(props: MemorySettingsProps) {
                   busy={busy}
                   setBusy={setBusy}
                   onChanged={() => void refresh()}
+                  editRequested={memory.id === editId}
+                  onEditOpened={editOpened}
                   {...props}
                 />
               ))}

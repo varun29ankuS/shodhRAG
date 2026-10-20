@@ -1688,6 +1688,7 @@ async fn start_attempt(
     let forward_app = app.clone();
     let forward_id = session_id.clone();
     let forward_learn = learn.inner().clone();
+    let forward_memory = app.state::<MemoryState>().inner().clone();
     let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
     let forward_used = last_used_ms.clone();
     // Open on an approval shows the chat: a side thread's is its parent conversation.
@@ -1707,6 +1708,8 @@ async fn start_attempt(
             forward_used.store(now_ms(), Ordering::Relaxed);
             // Learning sees only runs `agent_send` registered (the user's own words).
             forward_learn.observe(&event);
+            // The memories a completed answer used are reinforced (in the background).
+            forward_memory.observe(&event);
             // A finished answer shows whether its provider's key works.
             crate::connection_health::observe_answer(&forward_app, answer_provider, &event);
             if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
@@ -2014,7 +2017,18 @@ pub async fn agent_send(
             &entry.profile_id,
             &request_id,
         );
-        recall_for_run(&memory, &text, scope.workspace.as_deref(), &actor).await
+        let recalled = recall_for_run(&memory, &text, scope.workspace.as_deref(), &actor).await;
+        // Registered before prompting, so the run's answer is followed from its first
+        // event: when it completes, the memories it used are reinforced.
+        if let Some(recalled) = &recalled {
+            memory.track_run(
+                &request_id,
+                recalled.ids.clone(),
+                scope.workspace.as_deref(),
+                actor,
+            );
+        }
+        recalled
     } else {
         None
     };
@@ -2060,7 +2074,7 @@ pub async fn agent_send(
     let message = compose_message(
         &text,
         history.as_deref().filter(|_| replay),
-        memories.as_deref(),
+        memories.as_ref().map(|m| m.block.as_str()),
         workspace_block.as_deref(),
         search_all && workspace.is_some(),
         passages_block.as_deref(),
@@ -2098,10 +2112,15 @@ pub async fn agent_send(
         Ok(run_id) => run_id,
         Err(e) => {
             learn.forget_run(&request_id);
+            memory.forget_run(&request_id);
             return Err(e.into());
         }
     };
     entry.primed.store(true, Ordering::SeqCst);
+    // The chat shows which memories the answer was given ("Used 2 memories"), by id.
+    if let Some(memories) = &memories {
+        emit_memories_used(&app, &session_id, &run_id, &memories.ids);
+    }
     if scoped {
         tracing::info!(target: "shodh::harness", run_id = %run_id, sources = scope.source_ids.len(), files = scope.files.len(), pages = scope.pages.len(), "answer limited to a scope");
     }
@@ -2113,6 +2132,21 @@ pub async fn agent_send(
         replay && history.as_ref().is_some_and(|h| !h.is_empty()),
     ));
     Ok(run_id)
+}
+
+/// Tells the chat which memories were put in front of run `run_id`'s question
+/// ([`AgentEvent::MemoriesUsed`], ids only), on the run's event stream.
+fn emit_memories_used(app: &AppHandle, session_id: &str, run_id: &str, ids: &[String]) {
+    let envelope = AgentEventEnvelope {
+        session_id: session_id.to_string(),
+        event: AgentEvent::MemoriesUsed {
+            run_id: run_id.to_string(),
+            ids: ids.to_vec(),
+        },
+    };
+    if let Err(e) = app.emit(AGENT_EVENT, &envelope) {
+        tracing::warn!(target: "shodh::harness", error = %e, "emitting the memories of an answer failed");
+    }
 }
 
 /// The user's own words in a message: all of `text` when it is what they typed in the main

@@ -1,0 +1,245 @@
+{
+  "description": "Memories put in front of a question and the answer that followed, labelled by hand: used when the answer relies on or restates the memory (often in other words), not used when the answer is on the same topic but does not draw on it. Memory texts are as the app renders them (notes as written; facts as 'Class: property value; ...'). Each memory appears once used and once not used.",
+  "pairs": [
+    {
+      "memory": "Preference: preference holder the user; preference topic report format; preference value PDF",
+      "answer": "I've put the quarterly summary together and exported it as a PDF, since that is the format you like for reports. It covers revenue, costs and the hiring plan.",
+      "used": true
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic report format; preference value PDF",
+      "answer": "The quarterly report shows revenue grew 12% over the previous quarter. Costs stayed flat, mostly because the hiring plan was paused until January.",
+      "used": false
+    },
+    {
+      "memory": "Priya Sharma is my accountant and files my GST returns",
+      "answer": "Your accountant, Priya Sharma, normally handles the GST filing, so send her the October invoices. She will also need the purchase register.",
+      "used": true
+    },
+    {
+      "memory": "Priya Sharma is my accountant and files my GST returns",
+      "answer": "GST returns for the quarter are due on the 20th of the following month. Late filing attracts a fee of 50 rupees per day, so it is worth submitting early.",
+      "used": false
+    },
+    {
+      "memory": "The Apollo project deadline is 14 November",
+      "answer": "With the Apollo deadline on 14 November you have about three weeks left. I'd finish the integration tests first and leave the documentation for the last week.",
+      "used": true
+    },
+    {
+      "memory": "The Apollo project deadline is 14 November",
+      "answer": "The Apollo repository has three open pull requests. The largest one refactors the billing module and still needs a review from the platform team.",
+      "used": false
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic coffee; preference value with oat milk",
+      "answer": "For the café order I'd get you a flat white made with oat milk, the way you take your coffee. The pastries there are baked in the morning.",
+      "used": true
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic coffee; preference value with oat milk",
+      "answer": "A cup of brewed coffee contains about 95 mg of caffeine, and the effect peaks roughly 45 minutes after drinking it.",
+      "used": false
+    },
+    {
+      "memory": "I am vegetarian",
+      "answer": "Since you don't eat meat, I'd skip the steakhouse and book the Lebanese place instead; most of its mezze menu is meat-free.",
+      "used": true
+    },
+    {
+      "memory": "I am vegetarian",
+      "answer": "Here are three restaurants near the conference venue: a steakhouse, a Lebanese place known for its mezze, and a sushi bar. All three take reservations online.",
+      "used": false
+    },
+    {
+      "memory": "My daughter Meera's school holidays start on 20 December",
+      "answer": "If you want to travel with Meera, plan the trip for after 20 December, when her school break begins. Flights on the 21st are still reasonably priced.",
+      "used": true
+    },
+    {
+      "memory": "My daughter Meera's school holidays start on 20 December",
+      "answer": "School holidays in many countries run from late December to early January, so flights in that period are usually more expensive. Booking eight weeks ahead helps.",
+      "used": false
+    },
+    {
+      "memory": "I write my papers in LaTeX using Overleaf",
+      "answer": "Since you draft in Overleaf, you can paste this table straight into your LaTeX source; I've formatted it with the booktabs package.",
+      "used": true
+    },
+    {
+      "memory": "I write my papers in LaTeX using Overleaf",
+      "answer": "Here is the table of results. The baseline reaches 71.2% recall at 10 and the new index reaches 78.5%, at about the same query latency.",
+      "used": false
+    },
+    {
+      "memory": "My manager is Daniel Okafor",
+      "answer": "I'd send the draft to Daniel Okafor first: as your manager he will want to see it before it goes to the client.",
+      "used": true
+    },
+    {
+      "memory": "My manager is Daniel Okafor",
+      "answer": "A good status update to a manager states what changed, what is blocked and what decision is needed, in that order. Keep it under half a page.",
+      "used": false
+    },
+    {
+      "memory": "I am allergic to penicillin",
+      "answer": "Because of your penicillin allergy, tell the doctor before they prescribe amoxicillin, which belongs to the same family of antibiotics.",
+      "used": true
+    },
+    {
+      "memory": "I am allergic to penicillin",
+      "answer": "Amoxicillin is usually taken three times a day for five to seven days. Finish the course even if you feel better before it ends.",
+      "used": false
+    },
+    {
+      "memory": "I live in Pune",
+      "answer": "Coming from Pune, the quickest way to the Mumbai office is the Deccan Queen, which takes about three hours and leaves at 7:15.",
+      "used": true
+    },
+    {
+      "memory": "I live in Pune",
+      "answer": "The Mumbai office is in Bandra Kurla Complex. Meetings there usually start at ten, and visitors register at the reception on the ground floor.",
+      "used": false
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic citation style; preference value IEEE",
+      "answer": "I've formatted the references in IEEE style, numbered in the order they are cited, which is how you like them in your papers.",
+      "used": true
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic citation style; preference value IEEE",
+      "answer": "The paper cites twelve works. The most cited is the 2016 HNSW paper by Malkov and Yashunin, which introduced hierarchical navigable small-world graphs.",
+      "used": false
+    },
+    {
+      "memory": "My thesis is on approximate nearest neighbour search for vector databases",
+      "answer": "Given that your thesis is about approximate nearest neighbour search, the DiskANN paper is the most relevant here: it shows how to search billion-scale vector indexes from an SSD.",
+      "used": true
+    },
+    {
+      "memory": "My thesis is on approximate nearest neighbour search for vector databases",
+      "answer": "Vector databases store embeddings and answer similarity queries. Popular open-source ones include Milvus, Weaviate and Qdrant.",
+      "used": false
+    },
+    {
+      "memory": "I run on Tuesday and Thursday mornings",
+      "answer": "I've kept Tuesday and Thursday mornings free for your runs and moved the design review to Wednesday at nine.",
+      "used": true
+    },
+    {
+      "memory": "I run on Tuesday and Thursday mornings",
+      "answer": "The design review is on Thursday at 3 pm in room 4B. Anika will present the new onboarding flow and the open questions about pricing.",
+      "used": false
+    },
+    {
+      "memory": "The Hyderabad client prefers calls after 4 pm IST",
+      "answer": "I'd schedule the call with the Hyderabad client for 4:30 pm IST, since they like to talk late in the afternoon.",
+      "used": true
+    },
+    {
+      "memory": "The Hyderabad client prefers calls after 4 pm IST",
+      "answer": "The Hyderabad client signed the renewal last week. The contract runs for two years and includes a support retainer of 40 hours a month.",
+      "used": false
+    },
+    {
+      "memory": "I use Neovim as my editor",
+      "answer": "In Neovim you can format on save by adding an autocommand for BufWritePre to your init.lua that calls the built-in LSP formatter.",
+      "used": true
+    },
+    {
+      "memory": "I use Neovim as my editor",
+      "answer": "Most editors can format code on save. In VS Code, turn on the editor.formatOnSave setting and pick a default formatter for the language.",
+      "used": false
+    },
+    {
+      "memory": "We chose PostgreSQL over MongoDB for the billing service",
+      "answer": "Because the billing service runs on PostgreSQL, you can enforce this with a foreign key and a check constraint instead of validating it in application code.",
+      "used": true
+    },
+    {
+      "memory": "We chose PostgreSQL over MongoDB for the billing service",
+      "answer": "MongoDB stores documents as BSON and scales horizontally with sharding. It suits data whose shape changes often.",
+      "used": false
+    },
+    {
+      "memory": "I prefer short answers with bullet points",
+      "answer": "Short version, as bullets:\n- Renew the domain by Friday\n- Move DNS to the new provider\n- Keep the old records for a week",
+      "used": true
+    },
+    {
+      "memory": "I prefer short answers with bullet points",
+      "answer": "Domain renewals can be automated at most registrars. Turn on auto-renew and keep the payment card on file up to date, or the domain lapses after the grace period.",
+      "used": false
+    },
+    {
+      "memory": "My partner's name is Ananya and her birthday is 3 March",
+      "answer": "Ananya's birthday is on 3 March, so a dinner on the 3rd works; I've booked a table for two at eight.",
+      "used": true
+    },
+    {
+      "memory": "My partner's name is Ananya and her birthday is 3 March",
+      "answer": "I've booked a table for two at eight on Friday at the Italian place on FC Road. They hold reservations for fifteen minutes.",
+      "used": false
+    },
+    {
+      "memory": "I'm learning Japanese and am at JLPT N4 level",
+      "answer": "At your N4 level this grammar should be familiar; the new points are the passive form and ようにする, which the N3 exam tests.",
+      "used": true
+    },
+    {
+      "memory": "I'm learning Japanese and am at JLPT N4 level",
+      "answer": "The JLPT has five levels, from N5, the easiest, to N1. The test is held in July and December in most countries.",
+      "used": false
+    },
+    {
+      "memory": "Our team uses Linear for issue tracking",
+      "answer": "I've written the bug up as a Linear issue with steps to reproduce, so you can paste it straight into your team's tracker.",
+      "used": true
+    },
+    {
+      "memory": "Our team uses Linear for issue tracking",
+      "answer": "A good bug report gives the steps to reproduce, the expected result, the actual result and the version where it happened.",
+      "used": false
+    },
+    {
+      "memory": "I take the 8:15 train to work",
+      "answer": "If the meeting starts at nine, your usual 8:15 train gets you there with about ten minutes to spare.",
+      "used": true
+    },
+    {
+      "memory": "I take the 8:15 train to work",
+      "answer": "Trains on the line run every twelve minutes during the morning peak, and the journey to the city centre takes about thirty minutes.",
+      "used": false
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic units; preference value metric",
+      "answer": "I've converted everything to metric units for you: the bridge is about 1.3 kilometres long and the deck is 67 metres above the water.",
+      "used": true
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic units; preference value metric",
+      "answer": "The bridge was completed in 1937 and was the longest suspension bridge in the world until 1964.",
+      "used": false
+    },
+    {
+      "memory": "My laptop is a ThinkPad X1 Carbon running Fedora",
+      "answer": "On your Fedora ThinkPad, install it with dnf rather than the .deb package: sudo dnf install ./package.rpm.",
+      "used": true
+    },
+    {
+      "memory": "My laptop is a ThinkPad X1 Carbon running Fedora",
+      "answer": "Debian-based systems install .deb packages with apt, while Red Hat-based systems use .rpm packages with dnf or yum.",
+      "used": false
+    },
+    {
+      "memory": "I'm reviewing for NeurIPS this year and reviews are due 2 July",
+      "answer": "Since your NeurIPS reviews are due on 2 July, I'd read the two longest submissions this week and leave the short ones for the last days.",
+      "used": true
+    },
+    {
+      "memory": "I'm reviewing for NeurIPS this year and reviews are due 2 July",
+      "answer": "NeurIPS accepts around a quarter of its submissions. Reviewers score novelty, soundness and clarity, and the area chair writes the meta-review.",
+      "used": false
+    }
+  ]
+}

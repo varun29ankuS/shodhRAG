@@ -75,6 +75,13 @@ pub const SPREADING_HOPS: usize = 2;
 /// Floor of the importance score (`IMPORTANCE_FLOOR`).
 pub const IMPORTANCE_FLOOR: f64 = 0.05;
 
+/// How much one "Not relevant" from the user lowers a memory's importance (never below
+/// [`IMPORTANCE_FLOOR`]). One step is the gap between neighbouring kinds of fact in
+/// [`importance`] (notes 0.10, tasks 0.15, people 0.20), and importance weighs a recall
+/// score by `0.8 + 0.2·importance`, so one mark costs a memory 1% of its score: it takes
+/// repeated marks, not one misclick, to push a memory out of answers.
+pub const IRRELEVANT_IMPORTANCE_STEP: f64 = 0.05;
+
 const DAY_SECONDS: f64 = 86_400.0;
 
 /// Days from `from` to `to` (negative when `to` is earlier).
@@ -120,7 +127,8 @@ pub struct DynamicsState {
     pub strength: f64,
     /// When `strength` was last set (creation, reinforcement or pinning).
     pub anchor_at: DateTime<Utc>,
-    /// Importance in `[IMPORTANCE_FLOOR, 1]`, fixed at write time.
+    /// Importance in `[IMPORTANCE_FLOOR, 1]`, set at write time and lowered only when
+    /// the user marks the memory not relevant to an answer ([`DynamicsState::mark_irrelevant`]).
     pub importance: f64,
     /// Times the statement was recalled and used.
     pub use_count: u32,
@@ -172,6 +180,14 @@ impl DynamicsState {
         self.reinforce(dynamics, now);
         self.use_count = self.use_count.saturating_add(1);
         self.last_used_at = Some(now);
+    }
+
+    /// The user said the memory was not relevant to an answer it went into: importance
+    /// drops by [`IRRELEVANT_IMPORTANCE_STEP`], never below [`IMPORTANCE_FLOOR`]. Strength,
+    /// uses and the pin are left alone, so nothing is deleted or hidden by one mark.
+    pub fn mark_irrelevant(&mut self) {
+        self.importance =
+            (self.importance - IRRELEVANT_IMPORTANCE_STEP).clamp(IMPORTANCE_FLOOR, 1.0);
     }
 
     /// Pin or unpin at `now`. Pinning restores full strength; unpinning starts decay from
@@ -313,6 +329,20 @@ impl LinkState {
         Self {
             weight,
             co_activations: count.saturating_add(1),
+            updated_at: now,
+        }
+    }
+
+    /// Weaken at `now` because the user said one end was not relevant to an answer the two
+    /// went into together: decay first, then `w ← w·(1 − η)`, the mirror of a full-scale
+    /// co-activation (which closes η of the gap to 1; this gives up η of the weight). The
+    /// co-activation count is kept (it records history, not strength). The result stays
+    /// within `[0, 1]` and never exceeds the decayed weight.
+    pub fn weaken(&self, now: DateTime<Utc>) -> Self {
+        let current = self.weight_at(now);
+        Self {
+            weight: (current * (1.0 - HEBBIAN_LEARNING_RATE)).clamp(0.0, 1.0),
+            co_activations: self.co_activations,
             updated_at: now,
         }
     }
@@ -510,6 +540,61 @@ mod tests {
         // Unused links fade.
         let faded = first.weight_at(t0() + Duration::days(14));
         assert!((faded - first.weight / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn not_relevant_lowers_importance_in_bounded_steps_and_nothing_else() {
+        let d = dyn_(Some(14.0), 0.1);
+        let mut s = DynamicsState::fresh(t0(), 0.2);
+        s.record_use(&d, t0());
+        let before = s.clone();
+        s.mark_irrelevant();
+        assert!((s.importance - (0.2 - IRRELEVANT_IMPORTANCE_STEP)).abs() < 1e-12);
+        assert_eq!(
+            (
+                s.strength,
+                s.anchor_at,
+                s.use_count,
+                s.last_used_at,
+                s.pinned
+            ),
+            (
+                before.strength,
+                before.anchor_at,
+                before.use_count,
+                before.last_used_at,
+                before.pinned
+            )
+        );
+        for _ in 0..100 {
+            s.mark_irrelevant();
+            assert!(s.importance >= IMPORTANCE_FLOOR);
+        }
+        assert_eq!(s.importance, IMPORTANCE_FLOOR);
+    }
+
+    #[test]
+    fn weakening_a_link_decays_it_first_and_stays_bounded() {
+        let link = LinkState {
+            weight: 0.6,
+            co_activations: 4,
+            updated_at: t0(),
+        };
+        let weak = link.weaken(t0());
+        assert!((weak.weight - 0.6 * (1.0 - HEBBIAN_LEARNING_RATE)).abs() < 1e-12);
+        assert_eq!(weak.co_activations, 4);
+        // Decay applies first: a link unused for a half-life is halved, then weakened.
+        let later = t0() + Duration::days(14);
+        let faded = link.weaken(later);
+        assert!((faded.weight - 0.3 * (1.0 - HEBBIAN_LEARNING_RATE)).abs() < 1e-9);
+        assert_eq!(faded.updated_at, later);
+        let mut w = link;
+        for _ in 0..200 {
+            let next = w.weaken(t0());
+            assert!(next.weight <= w.weight && next.weight >= 0.0);
+            w = next;
+        }
+        assert!(w.weight < LINK_PRUNE_FLOOR);
     }
 
     #[test]

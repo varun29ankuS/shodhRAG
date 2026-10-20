@@ -150,6 +150,15 @@ jobs:
       - name: Install search and OCR models
         run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
 
+      # The cutoff at which an answer counts as using a memory, measured on the labelled
+      # fixture (crates/shodh-rag/src/user_memory/fixtures/memory_use.json) with the real
+      # E5 model. SHODH_TEST_MODELS turns the model-backed tests on at compile time; the
+      # name filter runs this one only.
+      - name: Memory use cutoff (E5)
+        env:
+          SHODH_TEST_MODELS: ${{ runner.temp }}/shodh-models
+        run: cargo test --package shodh-rag --lib the_use_cutoff_separates_used_from_unused_memories_with_e5 -- --nocapture
+
       - name: Retrieval eval
         run: >
           cargo run --package shodh-eval -- retrieval

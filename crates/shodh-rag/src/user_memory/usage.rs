@@ -32,16 +32,22 @@ use std::collections::HashSet;
 use crate::embeddings::EmbeddingModel;
 
 /// Score at which an answer counts as using a memory (see the module docs). Measured with
-/// multilingual-e5-base on `fixtures/memory_use.json`: 48 hand-labelled memory–answer
-/// pairs, each memory once used (often paraphrased) and once in an answer on the same
-/// topic that does not use it (`the_use_cutoff_separates_used_from_unused_memories_with_e5`).
+/// multilingual-e5-base on `fixtures/memory_use.json`
+/// (`the_use_cutoff_separates_used_from_unused_memories_with_e5`): 66 hand-labelled
+/// memory–answer pairs, each memory once used (often paraphrased) and once in an answer on
+/// the same topic that does not use it; 18 of them have long answers (166–187 words) that
+/// use the memory in one sentence or not at all.
 ///
-/// Similarity alone: used 0.776–0.930 (median 0.860), not used 0.713–0.866 (median
-/// 0.814); the best cutoff (0.83) classifies only 77% right. The combined score: used
-/// 0.406–0.934 (median 0.790), not used 0.357–0.680 (median 0.530). This cutoff classifies
-/// 43 of 48 (89.6%) right, the best of the sweep; every cutoff from 0.590 to 0.635 gets at
-/// least 87.5%, and choosing the cutoff on 23 memories and testing on the 24th, for each
-/// memory in turn, gets 87.5%. The fixture is small and written by hand: re-measure when
+/// Chosen on the 42 tuning pairs only, as the best of a sweep in steps of 0.005: 40 of 42
+/// right (95.2%); every cutoff from 0.590 to 0.625 is within one pair of that. Tuning
+/// scores: used 0.406–0.942 (median 0.792), not used 0.357–0.633 (median 0.502).
+///
+/// The 24 held-out pairs (8 long), never used to choose it: 19 of 24 right (79.2%); used
+/// 0.586–0.932 (median 0.858), not used 0.377–0.663 (median 0.579). Four of the five
+/// misses are on-topic answers that do not use the memory but score above the cutoff
+/// (two of them long), so the cutoff errs towards reinforcing a memory that did not help.
+/// On all 18 long pairs: 16 right (88.9%). The test requires at least 75% held out (one
+/// pair below the measurement). The fixture is small and written by hand: re-measure when
 /// the embedding model or the scoring changes.
 pub const DEFAULT_USE_CUTOFF: f64 = 0.595;
 

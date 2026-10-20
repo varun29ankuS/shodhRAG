@@ -18,7 +18,6 @@ import {
 import {
   FORGOTTEN_MEMORY,
   chipText,
-  coInjected,
   markedNotRelevant,
   parseUsedMemories,
   rowOf,
@@ -58,6 +57,14 @@ function record(overrides: Record<string, unknown> = {}): Record<string, unknown
 const memoriesUsed = (ids: unknown): AgentEvent => ({ type: 'memories_used', runId: 'run-1', ids } as AgentEvent);
 
 const noWorkspace = () => undefined;
+
+test('a request that failed before the model got it keeps no memories', () => {
+  let state = reduceTranscript(initialTranscript('run-1', 1), memoriesUsed(['mem-1']));
+  assert.deepEqual(state.memoryIds, ['mem-1']);
+  state = reduceTranscript(state, { type: 'local_failed', error: 'busy', code: 'busy', atMs: 2 });
+  assert.equal(state.memoryIds, undefined);
+  assert.equal('memoryIds' in JSON.parse(JSON.stringify(toPersisted(state))), false);
+});
 
 test('the chip counts the memories and is hidden when there are none', () => {
   assert.equal(chipText(0), null);
@@ -164,5 +171,4 @@ test('Not relevant is shown once recorded and weakens links to the other memorie
   assert.equal(marked[0].notRelevant, true);
   assert.equal(marked[1].notRelevant, true);
   assert.equal(used[0].notRelevant, false, 'not changed in place');
-  assert.deepEqual(coInjected(['mem-1', 'mem-2', 'mem-3'], 'mem-2'), ['mem-1', 'mem-3']);
 });

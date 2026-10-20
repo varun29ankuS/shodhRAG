@@ -75,11 +75,11 @@ export async function usedMemories(runId: string, ids: string[]): Promise<UsedMe
 
 /**
  * "Not relevant": memory `id` did not belong in the answer of run `runId`. It loses a
- * little importance and its links to `coInjected` (the answer's other memories) weaken;
- * it is not edited or deleted. Resolves `false` when it was marked before.
+ * little importance and its links to the answer's other memories (as the backend recorded
+ * them) weaken; it is not edited or deleted. Resolves `false` when it was marked before.
  */
-export async function markNotRelevant(runId: string, id: string, coInjected: string[]): Promise<boolean> {
-  return (await invoke<unknown>('memory_mark_not_relevant', { runId, id, coInjected })) === true;
+export async function markNotRelevant(runId: string, id: string): Promise<boolean> {
+  return (await invoke<unknown>('memory_mark_not_relevant', { runId, id })) === true;
 }
 
 /** Text of a command error. */

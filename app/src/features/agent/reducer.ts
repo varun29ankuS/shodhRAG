@@ -655,6 +655,8 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
     case 'local_failed':
       return {
         ...state,
+        // The request failed before the model got the question: no memory went into it.
+        memoryIds: undefined,
         status: 'error',
         error: action.error,
         errorCode: action.code,

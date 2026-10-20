@@ -103,6 +103,9 @@ struct TrackedRun {
     scope: Scope,
     /// Who the use is audited as (the run's conversation, profile and run).
     actor: Actor,
+    /// Earlier tries of the same question (Retry): what they reinforced is not reinforced
+    /// again.
+    prior_run_ids: Vec<String>,
     answer: RunAnswer,
     at: Instant,
 }
@@ -210,9 +213,18 @@ impl MemoryState {
     }
 
     /// `agent_send` put memories `ids` (recalled from `workspace`'s scope) in front of run
-    /// `run_id`: at its end, the ones the answer used are reinforced ([`MemoryState::observe`]).
-    /// Registered before the prompt is sent, so no event of the run is missed.
-    pub fn track_run(&self, run_id: &str, ids: Vec<String>, workspace: Option<&str>, actor: Actor) {
+    /// `run_id`, a try of a question whose earlier tries were `prior_run_ids`: at its end,
+    /// the ones the answer used are reinforced, unless an earlier try reinforced them
+    /// ([`MemoryState::observe`]). Registered before the prompt is sent, so no event of the
+    /// run is missed.
+    pub fn track_run(
+        &self,
+        run_id: &str,
+        ids: Vec<String>,
+        workspace: Option<&str>,
+        actor: Actor,
+        prior_run_ids: Vec<String>,
+    ) {
         if ids.is_empty() {
             return;
         }
@@ -233,10 +245,27 @@ impl MemoryState {
                 ids,
                 scope: Scope::for_workspace(workspace),
                 actor,
+                prior_run_ids,
                 answer: RunAnswer::default(),
                 at: Instant::now(),
             },
         );
+    }
+
+    /// Records that memories `ids` were given to run `run_id`, so the user's feedback on
+    /// that answer is accepted for them ([`MemoryService::record_injected`]). A failure is
+    /// logged; the answer goes on (feedback on it is then refused).
+    pub async fn record_injected(&self, run_id: &str, ids: &[String]) {
+        let recorded = match self.service().await {
+            Ok(service) => service
+                .record_injected(run_id, ids)
+                .await
+                .map_err(error_text),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = recorded {
+            tracing::warn!(target: "shodh::memory", error = %e, "the memories given to an answer were not recorded");
+        }
     }
 
     /// A tracked run whose prompt failed: nothing to reinforce.
@@ -284,8 +313,9 @@ impl MemoryState {
                     return None;
                 }
                 let state = self.clone();
+                let run_id = run_id.clone();
                 Some(tokio::spawn(async move {
-                    state.reinforce_used(run).await;
+                    state.reinforce_used(&run_id, run).await;
                 }))
             }
             _ => None,
@@ -293,7 +323,7 @@ impl MemoryState {
     }
 
     /// Reinforces the memories of a completed run that its answer used.
-    async fn reinforce_used(&self, run: TrackedRun) {
+    async fn reinforce_used(&self, run_id: &str, run: TrackedRun) {
         let service = match self.service().await {
             Ok(service) => service,
             Err(e) => {
@@ -302,7 +332,14 @@ impl MemoryState {
             }
         };
         match service
-            .record_answer_use(&run.ids, &run.answer.text(), &run.scope, &run.actor)
+            .record_answer_use(
+                run_id,
+                &run.prior_run_ids,
+                &run.ids,
+                &run.answer.text(),
+                &run.scope,
+                &run.actor,
+            )
             .await
         {
             Ok(used) => {
@@ -581,28 +618,22 @@ pub async fn memory_used_lookup(
         .collect())
 }
 
-/// "Not relevant" on memory `id` in the answer of run `run_id`, whose other memories were
-/// `co_injected`: the memory loses a little importance and its links to them weaken
-/// ([`MemoryService::record_feedback`]); it is not edited or deleted. Once per answer:
-/// returns `false` when it was marked before. Audited as `memory_write` with ids only.
+/// "Not relevant" on memory `id` in the answer of run `run_id`: the memory loses a little
+/// importance and its links to the answer's other memories weaken
+/// ([`MemoryService::record_feedback`]); it is not edited or deleted. Refused unless the
+/// backend recorded `id` as given to that answer; the other memories are read from that
+/// record, not taken from the caller. Once per answer: returns `false` when it was marked
+/// before. Audited as `memory_write` with ids only.
 #[tauri::command]
 pub async fn memory_mark_not_relevant(
     run_id: String,
     id: String,
-    co_injected: Vec<String>,
     memory: State<'_, MemoryState>,
 ) -> Result<bool, String> {
-    checked_ids(&run_id, &co_injected)?;
     checked_ids(&run_id, std::slice::from_ref(&id))?;
     let service = memory.service().await?;
     service
-        .record_feedback(
-            &run_id,
-            &id,
-            Feedback::Irrelevant,
-            &co_injected,
-            &Actor::ui(),
-        )
+        .record_feedback(&run_id, &id, Feedback::Irrelevant, &Actor::ui())
         .await
         .map_err(error_text)
 }
@@ -811,7 +842,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (memory, audit, invoices, gym) = two_notes(dir.path()).await;
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
-        memory.track_run("run-1", vec![invoices.clone(), gym.clone()], None, actor);
+        memory.track_run(
+            "run-1",
+            vec![invoices.clone(), gym.clone()],
+            None,
+            actor,
+            Vec::new(),
+        );
         // A working note before a tool call is not the answer, even when it restates a
         // memory.
         assert!(memory
@@ -854,13 +891,13 @@ mod tests {
         let (memory, audit, invoices, _) = two_notes(dir.path()).await;
         for (run, status) in [("run-2", RunStatus::Aborted), ("run-3", RunStatus::Error)] {
             let actor = Actor::agent("local-owner", "conv-1", "assistant", run);
-            memory.track_run(run, vec![invoices.clone()], None, actor);
+            memory.track_run(run, vec![invoices.clone()], None, actor, Vec::new());
             memory.observe(&delta(run, "m1", "Invoices go to Priya."));
             assert!(memory.observe(&finished(run, status)).is_none());
         }
         // A run whose prompt failed is forgotten before it ends.
         let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-4");
-        memory.track_run("run-4", vec![invoices.clone()], None, actor);
+        memory.track_run("run-4", vec![invoices.clone()], None, actor, Vec::new());
         memory.forget_run("run-4");
         memory.observe(&delta("run-4", "m1", "Invoices go to Priya."));
         assert!(memory
@@ -880,8 +917,14 @@ mod tests {
         assert!(checked_ids("", &ids).is_err());
         let too_many: Vec<String> = (0..=MAX_IDS_PER_CALL).map(|i| format!("m{i}")).collect();
         assert!(checked_ids("run-1", &too_many).is_err());
+        // Feedback is refused for an answer the memory was not given to.
+        assert!(service
+            .record_feedback("run-1", &gym, Feedback::Irrelevant, &Actor::ui())
+            .await
+            .is_err());
+        memory.record_injected("run-1", &ids).await;
         let applied = service
-            .record_feedback("run-1", &gym, Feedback::Irrelevant, &ids, &Actor::ui())
+            .record_feedback("run-1", &gym, Feedback::Irrelevant, &Actor::ui())
             .await
             .unwrap();
         assert!(applied);

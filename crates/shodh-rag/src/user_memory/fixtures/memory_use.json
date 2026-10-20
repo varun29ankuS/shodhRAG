@@ -1,245 +1,401 @@
 {
-  "description": "Memories put in front of a question and the answer that followed, labelled by hand: used when the answer relies on or restates the memory (often in other words), not used when the answer is on the same topic but does not draw on it. Memory texts are as the app renders them (notes as written; facts as 'Class: property value; ...'). Each memory appears once used and once not used.",
+  "description": "Memories put in front of a question and the answer that followed, labelled by hand: used when the answer relies on or restates the memory (often in other words), not used when the answer is on the same topic but does not draw on it. Memory texts are as the app renders them (notes as written; facts as 'Class: property value; ...'). Each memory appears once used and once not used. The last 18 pairs have long answers (150-400 words) that use the memory in one sentence or not at all, and differ only around that sentence. 'split': the cutoff is chosen on 'tuning' only; 'held_out' pairs (a third, long answers included) only check it.",
   "pairs": [
     {
       "memory": "Preference: preference holder the user; preference topic report format; preference value PDF",
       "answer": "I've put the quarterly summary together and exported it as a PDF, since that is the format you like for reports. It covers revenue, costs and the hiring plan.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "Preference: preference holder the user; preference topic report format; preference value PDF",
       "answer": "The quarterly report shows revenue grew 12% over the previous quarter. Costs stayed flat, mostly because the hiring plan was paused until January.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "Priya Sharma is my accountant and files my GST returns",
       "answer": "Your accountant, Priya Sharma, normally handles the GST filing, so send her the October invoices. She will also need the purchase register.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "Priya Sharma is my accountant and files my GST returns",
       "answer": "GST returns for the quarter are due on the 20th of the following month. Late filing attracts a fee of 50 rupees per day, so it is worth submitting early.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "The Apollo project deadline is 14 November",
       "answer": "With the Apollo deadline on 14 November you have about three weeks left. I'd finish the integration tests first and leave the documentation for the last week.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "The Apollo project deadline is 14 November",
       "answer": "The Apollo repository has three open pull requests. The largest one refactors the billing module and still needs a review from the platform team.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "Preference: preference holder the user; preference topic coffee; preference value with oat milk",
       "answer": "For the café order I'd get you a flat white made with oat milk, the way you take your coffee. The pastries there are baked in the morning.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "Preference: preference holder the user; preference topic coffee; preference value with oat milk",
       "answer": "A cup of brewed coffee contains about 95 mg of caffeine, and the effect peaks roughly 45 minutes after drinking it.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "I am vegetarian",
       "answer": "Since you don't eat meat, I'd skip the steakhouse and book the Lebanese place instead; most of its mezze menu is meat-free.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "I am vegetarian",
       "answer": "Here are three restaurants near the conference venue: a steakhouse, a Lebanese place known for its mezze, and a sushi bar. All three take reservations online.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "My daughter Meera's school holidays start on 20 December",
       "answer": "If you want to travel with Meera, plan the trip for after 20 December, when her school break begins. Flights on the 21st are still reasonably priced.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "My daughter Meera's school holidays start on 20 December",
       "answer": "School holidays in many countries run from late December to early January, so flights in that period are usually more expensive. Booking eight weeks ahead helps.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "I write my papers in LaTeX using Overleaf",
       "answer": "Since you draft in Overleaf, you can paste this table straight into your LaTeX source; I've formatted it with the booktabs package.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "I write my papers in LaTeX using Overleaf",
       "answer": "Here is the table of results. The baseline reaches 71.2% recall at 10 and the new index reaches 78.5%, at about the same query latency.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "My manager is Daniel Okafor",
       "answer": "I'd send the draft to Daniel Okafor first: as your manager he will want to see it before it goes to the client.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "My manager is Daniel Okafor",
       "answer": "A good status update to a manager states what changed, what is blocked and what decision is needed, in that order. Keep it under half a page.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "I am allergic to penicillin",
       "answer": "Because of your penicillin allergy, tell the doctor before they prescribe amoxicillin, which belongs to the same family of antibiotics.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "I am allergic to penicillin",
       "answer": "Amoxicillin is usually taken three times a day for five to seven days. Finish the course even if you feel better before it ends.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "I live in Pune",
       "answer": "Coming from Pune, the quickest way to the Mumbai office is the Deccan Queen, which takes about three hours and leaves at 7:15.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "I live in Pune",
       "answer": "The Mumbai office is in Bandra Kurla Complex. Meetings there usually start at ten, and visitors register at the reception on the ground floor.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "Preference: preference holder the user; preference topic citation style; preference value IEEE",
       "answer": "I've formatted the references in IEEE style, numbered in the order they are cited, which is how you like them in your papers.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "Preference: preference holder the user; preference topic citation style; preference value IEEE",
       "answer": "The paper cites twelve works. The most cited is the 2016 HNSW paper by Malkov and Yashunin, which introduced hierarchical navigable small-world graphs.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "My thesis is on approximate nearest neighbour search for vector databases",
       "answer": "Given that your thesis is about approximate nearest neighbour search, the DiskANN paper is the most relevant here: it shows how to search billion-scale vector indexes from an SSD.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "My thesis is on approximate nearest neighbour search for vector databases",
       "answer": "Vector databases store embeddings and answer similarity queries. Popular open-source ones include Milvus, Weaviate and Qdrant.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "I run on Tuesday and Thursday mornings",
       "answer": "I've kept Tuesday and Thursday mornings free for your runs and moved the design review to Wednesday at nine.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "I run on Tuesday and Thursday mornings",
       "answer": "The design review is on Thursday at 3 pm in room 4B. Anika will present the new onboarding flow and the open questions about pricing.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "The Hyderabad client prefers calls after 4 pm IST",
       "answer": "I'd schedule the call with the Hyderabad client for 4:30 pm IST, since they like to talk late in the afternoon.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "The Hyderabad client prefers calls after 4 pm IST",
       "answer": "The Hyderabad client signed the renewal last week. The contract runs for two years and includes a support retainer of 40 hours a month.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "I use Neovim as my editor",
       "answer": "In Neovim you can format on save by adding an autocommand for BufWritePre to your init.lua that calls the built-in LSP formatter.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "I use Neovim as my editor",
       "answer": "Most editors can format code on save. In VS Code, turn on the editor.formatOnSave setting and pick a default formatter for the language.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "We chose PostgreSQL over MongoDB for the billing service",
       "answer": "Because the billing service runs on PostgreSQL, you can enforce this with a foreign key and a check constraint instead of validating it in application code.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "We chose PostgreSQL over MongoDB for the billing service",
       "answer": "MongoDB stores documents as BSON and scales horizontally with sharding. It suits data whose shape changes often.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "I prefer short answers with bullet points",
       "answer": "Short version, as bullets:\n- Renew the domain by Friday\n- Move DNS to the new provider\n- Keep the old records for a week",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "I prefer short answers with bullet points",
       "answer": "Domain renewals can be automated at most registrars. Turn on auto-renew and keep the payment card on file up to date, or the domain lapses after the grace period.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "My partner's name is Ananya and her birthday is 3 March",
       "answer": "Ananya's birthday is on 3 March, so a dinner on the 3rd works; I've booked a table for two at eight.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "My partner's name is Ananya and her birthday is 3 March",
       "answer": "I've booked a table for two at eight on Friday at the Italian place on FC Road. They hold reservations for fifteen minutes.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "I'm learning Japanese and am at JLPT N4 level",
       "answer": "At your N4 level this grammar should be familiar; the new points are the passive form and ようにする, which the N3 exam tests.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "I'm learning Japanese and am at JLPT N4 level",
       "answer": "The JLPT has five levels, from N5, the easiest, to N1. The test is held in July and December in most countries.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "Our team uses Linear for issue tracking",
       "answer": "I've written the bug up as a Linear issue with steps to reproduce, so you can paste it straight into your team's tracker.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "Our team uses Linear for issue tracking",
       "answer": "A good bug report gives the steps to reproduce, the expected result, the actual result and the version where it happened.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "I take the 8:15 train to work",
       "answer": "If the meeting starts at nine, your usual 8:15 train gets you there with about ten minutes to spare.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "I take the 8:15 train to work",
       "answer": "Trains on the line run every twelve minutes during the morning peak, and the journey to the city centre takes about thirty minutes.",
-      "used": false
+      "used": false,
+      "split": "held_out"
     },
     {
       "memory": "Preference: preference holder the user; preference topic units; preference value metric",
       "answer": "I've converted everything to metric units for you: the bridge is about 1.3 kilometres long and the deck is 67 metres above the water.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "Preference: preference holder the user; preference topic units; preference value metric",
       "answer": "The bridge was completed in 1937 and was the longest suspension bridge in the world until 1964.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "My laptop is a ThinkPad X1 Carbon running Fedora",
       "answer": "On your Fedora ThinkPad, install it with dnf rather than the .deb package: sudo dnf install ./package.rpm.",
-      "used": true
+      "used": true,
+      "split": "tuning"
     },
     {
       "memory": "My laptop is a ThinkPad X1 Carbon running Fedora",
       "answer": "Debian-based systems install .deb packages with apt, while Red Hat-based systems use .rpm packages with dnf or yum.",
-      "used": false
+      "used": false,
+      "split": "tuning"
     },
     {
       "memory": "I'm reviewing for NeurIPS this year and reviews are due 2 July",
       "answer": "Since your NeurIPS reviews are due on 2 July, I'd read the two longest submissions this week and leave the short ones for the last days.",
-      "used": true
+      "used": true,
+      "split": "held_out"
     },
     {
       "memory": "I'm reviewing for NeurIPS this year and reviews are due 2 July",
       "answer": "NeurIPS accepts around a quarter of its submissions. Reviewers score novelty, soundness and clarity, and the area chair writes the meta-review.",
-      "used": false
+      "used": false,
+      "split": "held_out"
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic citation style; preference value APA 7th edition",
+      "answer": "Here is a structure for the literature review chapter. Open with a short section that defines the problem and explains why approximate search matters for retrieval systems at scale. Then group the prior work into three strands: graph-based indexes such as HNSW and NSG, quantisation methods such as product quantisation and its variants, and disk-resident designs such as DiskANN and SPANN. For each strand, describe the core idea, the trade-off it makes between recall, latency and memory, and the open questions the later papers try to answer. End each strand with a paragraph that connects it to your own research question, so the reader sees why the chapter exists. After the three strands, add a short synthesis that names the gap your thesis fills. I have formatted the reference list at the end in APA 7th edition, the style you use, with DOIs where the publisher provides them. Two of the papers you mentioned are preprints, so check whether a peer-reviewed version has appeared before you submit. Keep the chapter to about twelve pages; examiners tend to skim longer reviews.",
+      "used": true,
+      "split": "tuning"
+    },
+    {
+      "memory": "Preference: preference holder the user; preference topic citation style; preference value APA 7th edition",
+      "answer": "Here is a structure for the literature review chapter. Open with a short section that defines the problem and explains why approximate search matters for retrieval systems at scale. Then group the prior work into three strands: graph-based indexes such as HNSW and NSG, quantisation methods such as product quantisation and its variants, and disk-resident designs such as DiskANN and SPANN. For each strand, describe the core idea, the trade-off it makes between recall, latency and memory, and the open questions the later papers try to answer. End each strand with a paragraph that connects it to your own research question, so the reader sees why the chapter exists. After the three strands, add a short synthesis that names the gap your thesis fills. Most reviews in this area cite between forty and eighty papers; quality matters more than count, so prefer the paper that introduced an idea over a later survey that repeats it. Two of the papers you mentioned are preprints, so check whether a peer-reviewed version has appeared before you submit. Keep the chapter to about twelve pages; examiners tend to skim longer reviews.",
+      "used": false,
+      "split": "tuning"
+    },
+    {
+      "memory": "My PhD supervisor is Professor Hannah Lindqvist",
+      "answer": "The paper is close to ready, but a few things are worth fixing before it goes out. The abstract promises a 3x speed-up, while the results section shows 2.4x on the largest dataset and 3.1x only on the smallest; state the range instead of the best case. The related work section does not mention the 2023 paper on learned termination, which reviewers in this area will expect to see compared. Figure 4 uses a log scale on one axis without saying so in the caption. The ablation in Table 3 removes two components at once, so it cannot show which of them matters; split it into two rows. Before you submit, send the revised draft to Professor Hannah Lindqvist, since as your supervisor she will want to sign off on the claims and the author order. The discussion section is the weakest part: it repeats the results instead of explaining when the method fails. Add a paragraph on the workloads where the index is slower than the baseline, because reviewers trust a paper more when it states its limits.",
+      "used": true,
+      "split": "tuning"
+    },
+    {
+      "memory": "My PhD supervisor is Professor Hannah Lindqvist",
+      "answer": "The paper is close to ready, but a few things are worth fixing before it goes out. The abstract promises a 3x speed-up, while the results section shows 2.4x on the largest dataset and 3.1x only on the smallest; state the range instead of the best case. The related work section does not mention the 2023 paper on learned termination, which reviewers in this area will expect to see compared. Figure 4 uses a log scale on one axis without saying so in the caption. The ablation in Table 3 removes two components at once, so it cannot show which of them matters; split it into two rows. In most groups the supervisor reads the final draft before submission and agrees the author order, so leave a week for that round of comments. The discussion section is the weakest part: it repeats the results instead of explaining when the method fails. Add a paragraph on the workloads where the index is slower than the baseline, because reviewers trust a paper more when it states its limits.",
+      "used": false,
+      "split": "tuning"
+    },
+    {
+      "memory": "Our production database runs on AWS in the eu-west-1 region",
+      "answer": "The latency spikes in the dashboard line up with the nightly backup window, so the first suspect is I/O contention rather than the application. During a snapshot the volume's throughput is shared between the backup and the live queries, and the slow queries in the log are exactly the ones that scan large tables. There are three ways to reduce the impact. First, move the backup to a read replica so the primary never takes the snapshot load. Second, if the replica is not an option, switch the volume to provisioned IOPS for the window, which costs more but caps the contention. Third, look at the two reports that run at the same hour and schedule them later. Since your production database runs in AWS eu-west-1, create the read replica in the same region so replication lag stays under a second and you pay no cross-region transfer. After the change, compare the p99 latency for a week before and after; the spikes should drop from around 900 milliseconds to the normal 40 to 60.",
+      "used": true,
+      "split": "tuning"
+    },
+    {
+      "memory": "Our production database runs on AWS in the eu-west-1 region",
+      "answer": "The latency spikes in the dashboard line up with the nightly backup window, so the first suspect is I/O contention rather than the application. During a snapshot the volume's throughput is shared between the backup and the live queries, and the slow queries in the log are exactly the ones that scan large tables. There are three ways to reduce the impact. First, move the backup to a read replica so the primary never takes the snapshot load. Second, if the replica is not an option, switch the volume to provisioned IOPS for the window, which costs more but caps the contention. Third, look at the two reports that run at the same hour and schedule them later. Cloud providers bill data that leaves a region, so a replica placed far from the primary adds both cost and replication lag; most teams keep it close. After the change, compare the p99 latency for a week before and after; the spikes should drop from around 900 milliseconds to the normal 40 to 60.",
+      "used": false,
+      "split": "tuning"
+    },
+    {
+      "memory": "I am training for the Mumbai marathon in January",
+      "answer": "A sore knee after long runs is common, and most of the time it comes from load rather than injury. Start by looking at the last four weeks: if your weekly distance rose by more than about ten percent a week, the knee is probably telling you that the tissues have not caught up. Cut the next week's volume by a third, keep one easy run and one short run with strides, and replace the long run with an hour on the bike. Strength work helps more than most runners expect: two sessions a week of split squats, step-downs and hip bridges protect the knee by taking load off it. Check your shoes too; pairs past about 700 kilometres lose much of their cushioning. With the Mumbai marathon in January, you still have time to back off for a week now without losing fitness, and a short break is far cheaper than a month out later. If the pain is sharp, swells, or stays the morning after a rest day, see a physiotherapist before running again.",
+      "used": true,
+      "split": "tuning"
+    },
+    {
+      "memory": "I am training for the Mumbai marathon in January",
+      "answer": "A sore knee after long runs is common, and most of the time it comes from load rather than injury. Start by looking at the last four weeks: if your weekly distance rose by more than about ten percent a week, the knee is probably telling you that the tissues have not caught up. Cut the next week's volume by a third, keep one easy run and one short run with strides, and replace the long run with an hour on the bike. Strength work helps more than most runners expect: two sessions a week of split squats, step-downs and hip bridges protect the knee by taking load off it. Check your shoes too; pairs past about 700 kilometres lose much of their cushioning. Marathon plans usually build over sixteen to twenty weeks, so a week of lower volume costs very little fitness, and a short break is far cheaper than a month out later. If the pain is sharp, swells, or stays the morning after a rest day, see a physiotherapist before running again.",
+      "used": false,
+      "split": "tuning"
+    },
+    {
+      "memory": "My son Arjun is allergic to peanuts",
+      "answer": "For a birthday party of twelve children, plan the food around things that can be prepared the day before. Mini wraps with paneer or chicken, a fruit platter, corn on the cob cut into short pieces, and a tray of baked potato wedges cover most tastes and can be eaten standing up. For the cake, a plain sponge with buttercream travels well and is easy to cut into neat squares. Keep drinks simple: water, a jug of lemonade and one juice. Since Arjun is allergic to peanuts, leave out satay sauce, peanut cookies and any bakery items you cannot check, and ask the other parents not to bring sweets from home. Put the ingredients list for each dish on a card next to it so parents of other children can check at a glance. Plan for about one and a half portions per child; children eat less than adults at parties but take more than they finish. Set a separate table for the adults with tea and samosas so they stay out of the games area.",
+      "used": true,
+      "split": "tuning"
+    },
+    {
+      "memory": "My son Arjun is allergic to peanuts",
+      "answer": "For a birthday party of twelve children, plan the food around things that can be prepared the day before. Mini wraps with paneer or chicken, a fruit platter, corn on the cob cut into short pieces, and a tray of baked potato wedges cover most tastes and can be eaten standing up. For the cake, a plain sponge with buttercream travels well and is easy to cut into neat squares. Keep drinks simple: water, a jug of lemonade and one juice. Food allergies are common among children, so it is worth asking parents in the invitation whether their child has any, and nuts are the ones schools most often ban. Put the ingredients list for each dish on a card next to it so parents of other children can check at a glance. Plan for about one and a half portions per child; children eat less than adults at parties but take more than they finish. Set a separate table for the adults with tea and samosas so they stay out of the games area.",
+      "used": false,
+      "split": "tuning"
+    },
+    {
+      "memory": "The grant application for the Wellcome Trust is due on 30 November",
+      "answer": "A strong research proposal answers four questions in the first page: what problem you will solve, why it matters now, why your approach will work, and why you are the right team to do it. Reviewers read dozens of applications, so put the answers in plain sentences before any technical detail. The aims should be few and testable; three aims with clear milestones read better than six vague ones. In the methods, describe the riskiest step first and say what you will do if it fails, because reviewers look for that. The budget should follow the work plan line by line, with each salary and piece of equipment tied to an aim. With the Wellcome Trust application due on 30 November, aim to have a complete draft by the middle of the month so colleagues have two weeks to read it and you have time for the institutional sign-off. Ask at least one reader from outside your field: if they cannot explain your aims back to you, the panel will struggle too.",
+      "used": true,
+      "split": "held_out"
+    },
+    {
+      "memory": "The grant application for the Wellcome Trust is due on 30 November",
+      "answer": "A strong research proposal answers four questions in the first page: what problem you will solve, why it matters now, why your approach will work, and why you are the right team to do it. Reviewers read dozens of applications, so put the answers in plain sentences before any technical detail. The aims should be few and testable; three aims with clear milestones read better than six vague ones. In the methods, describe the riskiest step first and say what you will do if it fails, because reviewers look for that. The budget should follow the work plan line by line, with each salary and piece of equipment tied to an aim. Funders such as the Wellcome Trust publish their review criteria, and it is worth mapping each criterion to a section of your application before you start writing. Ask at least one reader from outside your field: if they cannot explain your aims back to you, the panel will struggle too, and an internal review round usually needs two weeks.",
+      "used": false,
+      "split": "held_out"
+    },
+    {
+      "memory": "I prefer Python over R for data analysis",
+      "answer": "To compare the two groups, start by checking the shape of the data rather than jumping to a test. Plot the distribution of the outcome in each group; with fewer than thirty observations per group and visible skew, a t-test can mislead. If the distributions look roughly normal and the variances are similar, Welch's t-test is a safe default because it does not assume equal variances. If they are skewed, use the Mann-Whitney U test, and report the median and interquartile range instead of the mean. Either way, report an effect size alongside the p-value: Cohen's d for the t-test, or the rank-biserial correlation for Mann-Whitney. Since you prefer Python, scipy.stats has both tests, ttest_ind with equal_var set to False and mannwhitneyu, and pingouin adds the effect sizes in one call. Finally, check whether any observations appear twice or come from the same participant, because repeated measures need a paired test instead. Write down which test you chose and why before you look at the result.",
+      "used": true,
+      "split": "held_out"
+    },
+    {
+      "memory": "I prefer Python over R for data analysis",
+      "answer": "To compare the two groups, start by checking the shape of the data rather than jumping to a test. Plot the distribution of the outcome in each group; with fewer than thirty observations per group and visible skew, a t-test can mislead. If the distributions look roughly normal and the variances are similar, Welch's t-test is a safe default because it does not assume equal variances. If they are skewed, use the Mann-Whitney U test, and report the median and interquartile range instead of the mean. Either way, report an effect size alongside the p-value: Cohen's d for the t-test, or the rank-biserial correlation for Mann-Whitney. Every major statistics package implements both tests, and the results should agree to several decimal places whichever one you use. Finally, check whether any observations appear twice or come from the same participant, because repeated measures need a paired test instead. Write down which test you chose and why before you look at the result, so the analysis cannot drift toward the answer you hoped for.",
+      "used": false,
+      "split": "held_out"
+    },
+    {
+      "memory": "Our team does code review on GitHub pull requests with two approvals required",
+      "answer": "Splitting the refactor into smaller changes is the right call; a two-thousand-line diff rarely gets a careful review. Start with a change that only moves code without altering behaviour, such as extracting the parser into its own module, so reviewers can check it quickly by comparing before and after. Then introduce the new interface behind the old one, with tests that pin the current behaviour. Only in the third change switch the callers over, one subsystem at a time. Each step should leave the main branch working, so you can stop or ship at any point. Write a short note at the top of each description that explains where it sits in the sequence and what the reviewer should focus on. Because your team needs two approvals on every GitHub pull request, line up the two reviewers for the whole series at the start, so the same people see each step and do not have to rebuild the context. Expect the first change to take longest to review; the later ones go faster once the plan is understood.",
+      "used": true,
+      "split": "held_out"
+    },
+    {
+      "memory": "Our team does code review on GitHub pull requests with two approvals required",
+      "answer": "Splitting the refactor into smaller changes is the right call; a two-thousand-line diff rarely gets a careful review. Start with a change that only moves code without altering behaviour, such as extracting the parser into its own module, so reviewers can check it quickly by comparing before and after. Then introduce the new interface behind the old one, with tests that pin the current behaviour. Only in the third change switch the callers over, one subsystem at a time. Each step should leave the main branch working, so you can stop or ship at any point. Write a short note at the top of each description that explains where it sits in the sequence and what the reviewer should focus on. Research on code review finds that defect detection drops sharply once a change passes about four hundred lines, which is another reason to keep each step small. Expect the first change to take longest to review; the later ones go faster once the plan is understood, and the reviewers will thank you for it.",
+      "used": false,
+      "split": "held_out"
+    },
+    {
+      "memory": "I am visiting Tokyo from 12 to 19 April",
+      "answer": "Japan is easy to get around, but a little preparation saves a lot of time. Buy a Suica or Pasmo card at the airport; it works on almost every train, subway and bus in the big cities and in most convenience stores. The Japan Rail Pass is only worth it if you plan several long trips on the shinkansen, so price out your route first. Carry some cash: many small restaurants and temples still do not take cards. Download an offline map and a translation app, and note your hotel's address in Japanese to show taxi drivers. Since you are in Tokyo from 12 to 19 April, you will catch the end of the cherry blossom season, so visit Shinjuku Gyoen or the Meguro River early in the morning before the crowds arrive. Restaurants in popular areas fill up at seven in the evening; eating at six or after eight is much easier. Tipping is not expected anywhere and can cause confusion, so simply thank the staff.",
+      "used": true,
+      "split": "held_out"
+    },
+    {
+      "memory": "I am visiting Tokyo from 12 to 19 April",
+      "answer": "Japan is easy to get around, but a little preparation saves a lot of time. Buy a Suica or Pasmo card at the airport; it works on almost every train, subway and bus in the big cities and in most convenience stores. The Japan Rail Pass is only worth it if you plan several long trips on the shinkansen, so price out your route first. Carry some cash: many small restaurants and temples still do not take cards. Download an offline map and a translation app, and note your hotel's address in Japanese to show taxi drivers. Cherry blossoms usually bloom in Tokyo in late March and early April, and parks such as Shinjuku Gyoen are crowded on weekends during that season. Restaurants in popular areas fill up at seven in the evening; eating at six or after eight is much easier. Tipping is not expected anywhere and can cause confusion, so simply thank the staff, and keep your rubbish with you, since public bins are rare.",
+      "used": false,
+      "split": "held_out"
     }
   ]
 }

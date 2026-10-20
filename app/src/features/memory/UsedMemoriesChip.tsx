@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { errorText, markNotRelevant, onSuggestionsChanged, usedMemories } from './api';
 import { requestMemoryEdit } from './navigation';
-import { FORGOTTEN_MEMORY, chipText, coInjected, markedNotRelevant, rowOf } from './usedMemories';
+import { FORGOTTEN_MEMORY, chipText, markedNotRelevant, rowOf } from './usedMemories';
 import type { UsedMemory } from './usedMemories';
 
 const FOCUS_RING =
@@ -93,7 +93,7 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
   const notRelevant = async (id: string) => {
     setBusy(id);
     try {
-      await markNotRelevant(runId, id, coInjected(ids, id));
+      await markNotRelevant(runId, id);
       setLoaded(prev => (prev.state === 'ready' ? { state: 'ready', used: markedNotRelevant(prev.used, id) } : prev));
     } catch (err) {
       notify.error('It was not marked', { description: errorText(err) });

@@ -42,7 +42,7 @@ use shodh_ontology::{PropertyChange, Statement, Violation};
 pub use dynamics::{DynamicsState, LinkState};
 pub use identity::identity_tokens;
 pub use render::{render_terms, render_text, SELF_ENTITY_ID};
-pub use sqlite::DynamicsStore;
+pub use sqlite::{DynamicsStore, RunMemoryKind};
 pub use store::{EmbedderSource, StatementStore, STATEMENTS_TABLE};
 
 /// Errors of the statement store.

@@ -17,8 +17,26 @@ use crate::audit::{open_shared_connection, AuditKey};
 /// Rows per `IN (...)` lookup.
 const LOOKUP_CHUNK: usize = 400;
 
-/// `memory_feedback.kind` of "Not relevant".
-const FEEDBACK_IRRELEVANT: &str = "irrelevant";
+/// What happened to a memory in one answer (a row of `run_memories`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunMemoryKind {
+    /// It was put in front of the answer's question.
+    Injected,
+    /// The answer used it, and it was reinforced.
+    Used,
+    /// The user marked it not relevant to the answer.
+    Irrelevant,
+}
+
+impl RunMemoryKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Injected => "injected",
+            Self::Used => "used",
+            Self::Irrelevant => "irrelevant",
+        }
+    }
+}
 
 /// Dynamics and links of statements, in the shared `shodh.db`.
 ///
@@ -312,7 +330,7 @@ impl DynamicsStore {
     }
 
     /// Applies the user's "Not relevant" on memory `id` in run `run_id` once, in one
-    /// transaction: records the feedback (`memory_feedback`), lowers the memory's
+    /// transaction: records the feedback (`run_memories`), lowers the memory's
     /// importance ([`DynamicsState::mark_irrelevant`]; `fallback` is its state when it has
     /// no row yet) and weakens its links to `co_injected`, the memories that went into the
     /// same answer ([`LinkState::weaken`]; links that fall below [`LINK_PRUNE_FLOOR`] are
@@ -332,10 +350,15 @@ impl DynamicsStore {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let inserted = tx.execute(
-            "INSERT INTO memory_feedback(run_id, statement_id, kind, created_at)
+            "INSERT INTO run_memories(run_id, statement_id, kind, created_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(run_id, statement_id, kind) DO NOTHING",
-            params![run_id, id, FEEDBACK_IRRELEVANT, format_ts(now)],
+            params![
+                run_id,
+                id,
+                RunMemoryKind::Irrelevant.as_str(),
+                format_ts(now)
+            ],
         )?;
         if inserted == 0 {
             tx.commit()?;
@@ -384,23 +407,46 @@ impl DynamicsStore {
         Ok(Some(state))
     }
 
-    /// Which of `ids` the user marked not relevant in run `run_id`.
-    pub fn marked_irrelevant(
+    /// Records that `ids` had `kind` in run `run_id` (already recorded ones are kept).
+    pub fn record_run_memories(
         &self,
         run_id: &str,
+        kind: RunMemoryKind,
         ids: &[String],
+        now: DateTime<Utc>,
+    ) -> StatementResult<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for id in ids {
+            tx.execute(
+                "INSERT INTO run_memories(run_id, statement_id, kind, created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(run_id, statement_id, kind) DO NOTHING",
+                params![run_id, id, kind.as_str(), format_ts(now)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The memories recorded with `kind` in any of the runs `run_ids`.
+    pub fn run_memories(
+        &self,
+        run_ids: &[String],
+        kind: RunMemoryKind,
     ) -> StatementResult<BTreeSet<String>> {
         let conn = self.lock();
         let mut out = BTreeSet::new();
-        for chunk in ids.chunks(LOOKUP_CHUNK) {
+        for chunk in run_ids.chunks(LOOKUP_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
             let mut stmt = conn.prepare(&format!(
-                "SELECT statement_id FROM memory_feedback
-                 WHERE run_id = ? AND kind = ? AND statement_id IN ({placeholders})"
+                "SELECT statement_id FROM run_memories
+                 WHERE kind = ? AND run_id IN ({placeholders})"
             ))?;
-            let args = [run_id, FEEDBACK_IRRELEVANT]
-                .into_iter()
-                .chain(chunk.iter().map(String::as_str));
+            let args = std::iter::once(kind.as_str()).chain(chunk.iter().map(String::as_str));
             let rows = stmt.query_map(params_from_iter(args), |r| r.get::<_, String>(0))?;
             for row in rows {
                 out.insert(row?);
@@ -474,7 +520,7 @@ impl DynamicsStore {
                 params_from_iter(chunk.iter().chain(chunk.iter())),
             )?;
             tx.execute(
-                &format!("DELETE FROM memory_feedback WHERE statement_id IN ({placeholders})"),
+                &format!("DELETE FROM run_memories WHERE statement_id IN ({placeholders})"),
                 params_from_iter(chunk.iter()),
             )?;
         }
@@ -665,14 +711,14 @@ mod tests {
         );
         assert_eq!(store.link("m", "x").unwrap().unwrap(), after);
         let marked = store
-            .marked_irrelevant("run-1", &["m".to_string(), "x".to_string()])
+            .run_memories(&["run-1".to_string()], RunMemoryKind::Irrelevant)
             .unwrap();
         assert_eq!(
             marked.into_iter().collect::<Vec<_>>(),
             vec!["m".to_string()]
         );
         assert!(store
-            .marked_irrelevant("run-2", &["m".to_string()])
+            .run_memories(&["run-2".to_string()], RunMemoryKind::Irrelevant)
             .unwrap()
             .is_empty());
 
@@ -687,10 +733,37 @@ mod tests {
             .unwrap();
         assert!((fresh.importance - 0.25).abs() < 1e-12);
 
-        // Forgetting erases the feedback rows with the dynamics.
+        // Forgetting erases the run rows with the dynamics.
+        store
+            .record_run_memories("run-1", RunMemoryKind::Injected, &["m".to_string()], t0())
+            .unwrap();
         store.remove_statements(&["m".to_string()]).unwrap();
+        for kind in [RunMemoryKind::Irrelevant, RunMemoryKind::Injected] {
+            assert!(store
+                .run_memories(&["run-1".to_string()], kind)
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn run_memories_are_recorded_once_per_run_and_kind() {
+        let (_dir, store) = store();
+        let ids = ["a".to_string(), "b".to_string()];
+        for _ in 0..2 {
+            store
+                .record_run_memories("r1", RunMemoryKind::Used, &ids, t0())
+                .unwrap();
+        }
+        store
+            .record_run_memories("r2", RunMemoryKind::Used, &["c".to_string()], t0())
+            .unwrap();
+        let used = store
+            .run_memories(&["r1".to_string(), "r2".to_string()], RunMemoryKind::Used)
+            .unwrap();
+        assert_eq!(used.into_iter().collect::<Vec<_>>(), vec!["a", "b", "c"]);
         assert!(store
-            .marked_irrelevant("run-1", &["m".to_string()])
+            .run_memories(&["r1".to_string()], RunMemoryKind::Injected)
             .unwrap()
             .is_empty());
     }

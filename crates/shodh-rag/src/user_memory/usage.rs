@@ -3,14 +3,20 @@
 //! A memory is reinforced (stronger, linked to the others used with it, audited as
 //! `memory_use`) only when the answer used it, not whenever recall put it in the prompt:
 //! otherwise a memory that matches many questions grows stronger whether or not it helps,
-//! and the strong get stronger. The judgement is local (no model call), from two signals:
+//! and the strong get stronger. The judgement is local (no model call), from two signals
+//! measured inside one short window of the answer (one sentence, or two in a row):
 //!
 //! ```text
-//! similarity(m) = max over answer sentences s of cos(E(m), E(s))
-//! overlap(m)    = share of m's content words that appear in the answer
-//! score(m)      = (similarity(m) + overlap(m)) / 2
-//! used          = score ≥ DEFAULT_USE_CUTOFF
+//! similarity(m, w) = cos(E(m), E(w))
+//! overlap(m, w)    = share of m's content words that appear in w
+//! score(m)         = max over windows w of (similarity(m, w) + overlap(m, w)) / 2
+//! used             = score ≥ DEFAULT_USE_CUTOFF
 //! ```
+//!
+//! Both signals are taken from the same window, so a long answer gains nothing from its
+//! length: words scattered over many paragraphs do not add up, and a memory counts as used
+//! only where one or two sentences rely on it. (A longer answer has more windows to take
+//! the maximum over; the fixture's long answers measure what that costs.)
 //!
 //! Similarity alone does not separate use from topic: an answer about the same subject
 //! scores almost as high as one that relies on the memory (see [`DEFAULT_USE_CUTOFF`]).
@@ -145,17 +151,21 @@ pub const MIN_SENTENCE_CHARS: usize = 12;
 /// Longest sentence compared, in characters (the embedder truncates longer input anyway).
 pub const MAX_SENTENCE_CHARS: usize = 600;
 
+/// Most consecutive sentences in one window: a memory is often used across a sentence and
+/// the one that follows it ("Your accountant is Priya. Send her the invoices.").
+pub const MAX_WINDOW_SENTENCES: usize = 2;
+
 /// How one memory scored against the answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UseJudgement {
     /// The memory.
     pub id: String,
-    /// Best cosine similarity with any answer sentence, in `[-1, 1]`.
+    /// Cosine similarity with the best window, in `[-1, 1]`.
     pub similarity: f64,
-    /// Share of the memory's content words found in the answer, in `[0, 1]`
+    /// Share of the memory's content words found in the best window, in `[0, 1]`
     /// ([`content_overlap`]).
     pub overlap: f64,
-    /// `(similarity + overlap) / 2`.
+    /// `(similarity + overlap) / 2` of the best window.
     pub score: f64,
     /// `score` reached the cutoff.
     pub used: bool,
@@ -309,8 +319,8 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
     dot / (na.sqrt() * nb.sqrt())
 }
 
-/// Scores each of `memories` (`(id, text)`) against `answer` with `embedder` (see the
-/// module docs) and judges it used at `cutoff` (normally [`DEFAULT_USE_CUTOFF`]). Blocking
+/// Scores each of `memories` (`(id, text)`) against the windows of `answer` with
+/// `embedder` (see the module docs) and judges it used at `cutoff` (normally [`DEFAULT_USE_CUTOFF`]). Blocking
 /// (it runs the embedder); call it off the async executor. An answer with no sentence to
 /// compare uses nothing.
 pub fn judge_use(
@@ -332,19 +342,21 @@ pub fn judge_use(
             })
             .collect());
     }
-    let sentence_vectors = sentences
+    let windows = answer_windows(&sentences);
+    let window_vectors = windows
         .iter()
-        .map(|s| embedder.embed_query(s))
+        .map(|w| embedder.embed_query(w))
         .collect::<anyhow::Result<Vec<_>>>()?;
     memories
         .iter()
         .map(|(id, text)| {
             let memory = embedder.embed_query(&text.replace(['\n', '\r'], " "))?;
-            let similarity = sentence_vectors
+            let (similarity, overlap) = windows
                 .iter()
-                .map(|s| cosine(&memory, s))
-                .fold(f64::MIN, f64::max);
-            let overlap = content_overlap(text, answer);
+                .zip(&window_vectors)
+                .map(|(window, vector)| (cosine(&memory, vector), content_overlap(text, window)))
+                .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)))
+                .unwrap_or((0.0, 0.0));
             let score = (similarity + overlap) / 2.0;
             Ok(UseJudgement {
                 id: id.clone(),
@@ -355,6 +367,21 @@ pub fn judge_use(
             })
         })
         .collect()
+}
+
+/// The windows of `sentences` a memory is compared with: each sentence, and each run of
+/// up to [`MAX_WINDOW_SENTENCES`] consecutive sentences, joined by a space.
+pub fn answer_windows(sentences: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for start in 0..sentences.len() {
+        for len in 1..=MAX_WINDOW_SENTENCES {
+            if start + len > sentences.len() {
+                break;
+            }
+            out.push(sentences[start..start + len].join(" "));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -429,6 +456,8 @@ mod tests {
         memory: String,
         answer: String,
         used: bool,
+        /// `tuning` (the cutoff is chosen on these) or `held_out` (only checks it).
+        split: String,
     }
 
     #[derive(serde::Deserialize)]
@@ -442,24 +471,51 @@ mod tests {
             .pairs
     }
 
+    /// Answers of at least this many words count as long.
+    const LONG_ANSWER_WORDS: usize = 150;
+
+    fn is_long(p: &Pair) -> bool {
+        p.answer.split_whitespace().count() >= LONG_ANSWER_WORDS
+    }
+
     #[test]
-    fn the_fixture_is_balanced_and_each_memory_is_both_used_and_not() {
+    fn the_fixture_is_balanced_split_and_has_long_answers() {
         let pairs = pairs();
         assert!(pairs.len() >= 40, "{} pairs", pairs.len());
         let used = pairs.iter().filter(|p| p.used).count();
         assert_eq!(used * 2, pairs.len(), "half used, half not");
-        let mut by_memory: std::collections::BTreeMap<&str, (usize, usize)> =
+        let long: Vec<&Pair> = pairs.iter().filter(|p| is_long(p)).collect();
+        assert!(long.len() >= 16, "{} long answers", long.len());
+        assert_eq!(long.iter().filter(|p| p.used).count() * 2, long.len());
+        assert!(long
+            .iter()
+            .all(|p| p.answer.split_whitespace().count() <= 400));
+        let held_out: Vec<&Pair> = pairs.iter().filter(|p| p.split == "held_out").collect();
+        assert!(
+            held_out.len() * 3 >= pairs.len(),
+            "held out: {}",
+            held_out.len()
+        );
+        assert!(held_out.iter().any(|p| is_long(p)));
+        assert!(pairs
+            .iter()
+            .all(|p| p.split == "held_out" || p.split == "tuning"));
+        // Each memory once used and once not, both in the same split.
+        let mut by_memory: std::collections::BTreeMap<&str, (usize, usize, &str)> =
             std::collections::BTreeMap::new();
         for p in &pairs {
             assert!(!answer_sentences(&p.answer).is_empty(), "{}", p.answer);
-            let entry = by_memory.entry(p.memory.as_str()).or_default();
+            let entry = by_memory
+                .entry(p.memory.as_str())
+                .or_insert((0, 0, p.split.as_str()));
+            assert_eq!(entry.2, p.split, "{}", p.memory);
             if p.used {
                 entry.0 += 1;
             } else {
                 entry.1 += 1;
             }
         }
-        for (memory, (used, unused)) in by_memory {
+        for (memory, (used, unused, _)) in by_memory {
             assert_eq!((used, unused), (1, 1), "{memory}");
         }
     }
@@ -483,25 +539,35 @@ mod tests {
         )
     }
 
-    /// The shipped cutoff against the real E5 model on the labelled fixture: it must be
-    /// one of the cutoffs with the best accuracy (swept in steps of 0.005), and classify
-    /// at least [`REQUIRED_ACCURACY`] of the pairs right. Run with `--nocapture` for the
-    /// scores of every pair and the sweep.
+    fn describe(name: &str, values: &[(f64, bool)]) {
+        let used = spread(values.iter().filter(|s| s.1).map(|s| s.0).collect());
+        let unused = spread(values.iter().filter(|s| !s.1).map(|s| s.0).collect());
+        eprintln!(
+            "{name}: used min {:.4} median {:.4} max {:.4}; unused min {:.4} median {:.4} max {:.4}",
+            used.0, used.1, used.2, unused.0, unused.1, unused.2
+        );
+    }
+
+    /// The shipped cutoff against the real E5 model on the labelled fixture. The cutoff is
+    /// chosen on the `tuning` pairs only: it must lie on their plateau (within one pair of
+    /// the best tuning accuracy, cutoffs swept in steps of 0.005). The `held_out` pairs,
+    /// never used to choose it, must be classified right at least [`HELD_OUT_FLOOR`] of
+    /// the time. Run with `--nocapture` for every pair's score and the sweep.
     #[test]
     #[cfg_attr(
         not(shodh_test_models),
         ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
     )]
     fn the_use_cutoff_separates_used_from_unused_memories_with_e5() {
-        /// Share of the fixture the shipped cutoff must classify right (42 of 48).
-        const REQUIRED_ACCURACY: f64 = 0.875;
+        /// Share of the held-out pairs the shipped cutoff must classify right.
+        const HELD_OUT_FLOOR: f64 = 0.75;
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory to run this test");
         let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
             .expect("multilingual-e5-base under SHODH_TEST_MODELS");
         let e5 = crate::embeddings::e5::E5Embeddings::new(config).expect("load E5");
-        let mut scores = Vec::new();
-        let mut similarities = Vec::new();
+        let (mut tuning, mut held_out, mut long, mut short) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for p in pairs() {
             let judged = judge_use(
                 &e5,
@@ -512,50 +578,66 @@ mod tests {
             .expect("embed");
             let j = &judged[0];
             eprintln!(
-                "{:>6} score {:.4} similarity {:.4} overlap {:.2} {:50.50} | {:.50}",
+                "{:>8} {:>6} {:>5} score {:.4} similarity {:.4} overlap {:.2} {:45.45}",
+                p.split,
                 if p.used { "used" } else { "unused" },
+                if is_long(&p) { "long" } else { "short" },
                 j.score,
                 j.similarity,
                 j.overlap,
                 p.memory,
-                p.answer
             );
-            scores.push((j.score, p.used));
-            similarities.push((j.similarity, p.used));
+            let point = (j.score, p.used);
+            if p.split == "tuning" {
+                tuning.push(point);
+            } else {
+                held_out.push(point);
+            }
+            if is_long(&p) {
+                long.push(point);
+            } else {
+                short.push(point);
+            }
         }
-        for (name, values) in [("score", &scores), ("similarity", &similarities)] {
-            let used = spread(values.iter().filter(|s| s.1).map(|s| s.0).collect());
-            let unused = spread(values.iter().filter(|s| !s.1).map(|s| s.0).collect());
+        describe("tuning", &tuning);
+        describe("held out", &held_out);
+        describe("long", &long);
+        describe("short", &short);
+        let sweep: Vec<(f64, f64)> = (0..=140)
+            .map(|i| {
+                let cutoff = 0.30 + 0.005 * f64::from(i);
+                (cutoff, accuracy(&tuning, cutoff))
+            })
+            .collect();
+        let best = sweep.iter().map(|s| s.1).fold(0.0, f64::max);
+        let one_pair = 1.0 / tuning.len() as f64;
+        for (cutoff, acc) in &sweep {
             eprintln!(
-                "{name}: used min {:.4} median {:.4} max {:.4}; unused min {:.4} median {:.4} max {:.4}",
-                used.0, used.1, used.2, unused.0, unused.1, unused.2
+                "cutoff {cutoff:.3} tuning {acc:.3} held out {:.3} long {:.3}",
+                accuracy(&held_out, *cutoff),
+                accuracy(&long, *cutoff)
             );
         }
-        let sweep = |values: &[(f64, bool)]| -> Vec<(f64, f64)> {
-            (0..=140)
-                .map(|i| {
-                    let cutoff = 0.30 + 0.005 * f64::from(i);
-                    (cutoff, accuracy(values, cutoff))
-                })
-                .collect()
-        };
-        let by_similarity = sweep(&similarities);
-        let similarity_best = by_similarity.iter().map(|s| s.1).fold(0.0, f64::max);
-        eprintln!("similarity alone: best accuracy {similarity_best:.3}");
-        let by_score = sweep(&scores);
-        let best = by_score.iter().map(|s| s.1).fold(0.0, f64::max);
-        for (cutoff, acc) in &by_score {
-            eprintln!("cutoff {cutoff:.3} accuracy {acc:.3}");
-        }
-        let shipped = accuracy(&scores, DEFAULT_USE_CUTOFF);
-        eprintln!("shipped {DEFAULT_USE_CUTOFF:.3} accuracy {shipped:.3}, best {best:.3}");
-        assert!(
-            (shipped - best).abs() < 1e-9,
-            "the shipped cutoff is not one of the best: {shipped:.3} vs {best:.3}"
+        let plateau: Vec<f64> = sweep
+            .iter()
+            .filter(|(_, acc)| *acc >= best - one_pair - 1e-9)
+            .map(|(cutoff, _)| *cutoff)
+            .collect();
+        let shipped_tuning = accuracy(&tuning, DEFAULT_USE_CUTOFF);
+        let shipped_held_out = accuracy(&held_out, DEFAULT_USE_CUTOFF);
+        eprintln!(
+            "best tuning {best:.3}; plateau {:.3}-{:.3}; shipped {DEFAULT_USE_CUTOFF:.3}: tuning {shipped_tuning:.3}, held out {shipped_held_out:.3}, long {:.3}",
+            plateau.first().copied().unwrap_or(f64::NAN),
+            plateau.last().copied().unwrap_or(f64::NAN),
+            accuracy(&long, DEFAULT_USE_CUTOFF),
         );
         assert!(
-            shipped >= REQUIRED_ACCURACY,
-            "accuracy {shipped:.3} below {REQUIRED_ACCURACY}"
+            shipped_tuning >= best - one_pair - 1e-9,
+            "the shipped cutoff is off the tuning plateau: {shipped_tuning:.3} vs best {best:.3}"
+        );
+        assert!(
+            shipped_held_out >= HELD_OUT_FLOOR,
+            "held-out accuracy {shipped_held_out:.3} below {HELD_OUT_FLOOR}"
         );
     }
 

@@ -107,8 +107,3 @@ export function rowOf(used: UsedMemory, workspaceName: (id: string) => string | 
 export function markedNotRelevant(used: readonly UsedMemory[], id: string): UsedMemory[] {
   return used.map(u => (u.id === id ? { ...u, notRelevant: true } : u));
 }
-
-/** The other memories of the same answer, whose links to `id` "Not relevant" weakens. */
-export function coInjected(ids: readonly string[], id: string): string[] {
-  return ids.filter(other => other !== id);
-}

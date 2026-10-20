@@ -44,7 +44,7 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
 /// the learning model's rejected answers (10), forgotten suggestions (11), the statement
-/// store's state (12) and the user's feedback on memories used in answers (13) use one
+/// store's state (12) and what happened to memories in each answer (13) use one
 /// version sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
@@ -373,17 +373,19 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (
         13,
-        // The user's feedback on a memory an answer used ("Not relevant"): one row per run,
-        // memory and kind, so the same feedback on the same answer is applied once. Ids
-        // only, never a memory's words; the rows of a memory go when it is forgotten.
-        "CREATE TABLE memory_feedback (
+        // What happened to a memory in one answer (run): given to it (`injected`),
+        // reinforced because the answer used it (`used`), marked not relevant by the user
+        // (`irrelevant`). One row per run, memory and kind, so feedback is applied once,
+        // only to memories the answer was given, and a retried question reinforces a memory
+        // once. Ids only, never a memory's words; a memory's rows go when it is forgotten.
+        "CREATE TABLE run_memories (
             run_id TEXT NOT NULL,
             statement_id TEXT NOT NULL,
             kind TEXT NOT NULL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (run_id, statement_id, kind)
         );
-        CREATE INDEX memory_feedback_statement ON memory_feedback(statement_id);",
+        CREATE INDEX run_memories_statement ON run_memories(statement_id);",
     ),
 ];
 
@@ -1840,7 +1842,7 @@ mod tests {
                  DROP TABLE inbox_items;
                  DROP TABLE memory_learn_rejections;
                  DROP TABLE statement_state;
-                 DROP TABLE memory_feedback;
+                 DROP TABLE run_memories;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

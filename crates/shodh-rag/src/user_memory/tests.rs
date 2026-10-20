@@ -782,7 +782,7 @@ async fn an_answer_reinforces_and_links_only_the_memories_it_used() {
     let injected = vec![invoices.clone(), gym.clone(), report.clone()];
     let used = m
         .service
-        .record_answer_use(&injected, answer, &Scope::Global, &actor)
+        .record_answer_use("run-1", &[], &injected, answer, &Scope::Global, &actor)
         .await
         .unwrap();
     assert_eq!(used, vec![invoices.clone(), report.clone()]);
@@ -808,6 +808,8 @@ async fn an_answer_reinforces_and_links_only_the_memories_it_used() {
     let none = m
         .service
         .record_answer_use(
+            "run-2",
+            &[],
             &injected,
             "Gradient descent follows the slope downhill.",
             &Scope::Global,
@@ -823,7 +825,14 @@ async fn an_answer_reinforces_and_links_only_the_memories_it_used() {
     m.service.forget(&gym, None, &Actor::ui()).await.unwrap();
     let after = m
         .service
-        .record_answer_use(&injected, "Gym on Tuesdays.", &Scope::Global, &actor)
+        .record_answer_use(
+            "run-3",
+            &[],
+            &injected,
+            "Gym on Tuesdays.",
+            &Scope::Global,
+            &actor,
+        )
         .await
         .unwrap();
     assert!(after.is_empty());
@@ -841,6 +850,8 @@ async fn without_a_working_embedder_an_answer_reinforces_nothing() {
     let used = m
         .service
         .record_answer_use(
+            "run-1",
+            &[],
             std::slice::from_ref(&invoices),
             "Invoices go to Priya.",
             &Scope::Global,
@@ -859,9 +870,12 @@ async fn not_relevant_weakens_a_memory_once_per_answer_and_never_changes_its_wor
     let invoices = m.note("Invoices go to Priya", Scope::Global).await;
     let report = m.note("Reports are due Fridays", Scope::Global).await;
     let injected = vec![invoices.clone(), report.clone()];
+    m.service.record_injected("run-7", &injected).await.unwrap();
     // Used together: linked.
     m.service
         .record_answer_use(
+            "run-7",
+            &[],
             &injected,
             "Invoices go to Priya. Reports are due Fridays.",
             &Scope::Global,
@@ -876,13 +890,7 @@ async fn not_relevant_weakens_a_memory_once_per_answer_and_never_changes_its_wor
 
     let applied = m
         .service
-        .record_feedback(
-            "run-7",
-            &invoices,
-            Feedback::Irrelevant,
-            &injected,
-            &Actor::ui(),
-        )
+        .record_feedback("run-7", &invoices, Feedback::Irrelevant, &Actor::ui())
         .await
         .unwrap();
     assert!(applied);
@@ -903,13 +911,7 @@ async fn not_relevant_weakens_a_memory_once_per_answer_and_never_changes_its_wor
     // The same answer's mark again changes nothing.
     let again = m
         .service
-        .record_feedback(
-            "run-7",
-            &invoices,
-            Feedback::Irrelevant,
-            &injected,
-            &Actor::ui(),
-        )
+        .record_feedback("run-7", &invoices, Feedback::Irrelevant, &Actor::ui())
         .await
         .unwrap();
     assert!(!again);
@@ -929,14 +931,13 @@ async fn not_relevant_weakens_a_memory_once_per_answer_and_never_changes_its_wor
 
     // Bounded: however often it is marked, importance stays at or above the floor.
     for i in 0..40 {
+        let run = format!("another-run-{i}");
         m.service
-            .record_feedback(
-                &format!("another-run-{i}"),
-                &invoices,
-                Feedback::Irrelevant,
-                &[],
-                &Actor::ui(),
-            )
+            .record_injected(&run, std::slice::from_ref(&invoices))
+            .await
+            .unwrap();
+        m.service
+            .record_feedback(&run, &invoices, Feedback::Irrelevant, &Actor::ui())
             .await
             .unwrap();
     }
@@ -960,17 +961,25 @@ async fn not_relevant_weakens_a_memory_once_per_answer_and_never_changes_its_wor
         );
     }
 
-    // Feedback needs the answer it is about; a forgotten memory takes none, and the
-    // lookup shows it as gone.
+    // Feedback needs the answer it is about, and only a memory that answer was given
+    // takes it; a forgotten memory takes none, and the lookup shows it as gone.
     assert!(m
         .service
-        .record_feedback("", &report, Feedback::Irrelevant, &[], &Actor::ui())
+        .record_feedback("", &report, Feedback::Irrelevant, &Actor::ui())
         .await
         .is_err());
+    for run in ["never-injected", "another-run-0"] {
+        assert!(matches!(
+            m.service
+                .record_feedback(run, &report, Feedback::Irrelevant, &Actor::ui())
+                .await,
+            Err(MemoryError::InvalidInput(_))
+        ));
+    }
     m.service.forget(&report, None, &Actor::ui()).await.unwrap();
     assert!(matches!(
         m.service
-            .record_feedback("run-8", &report, Feedback::Irrelevant, &[], &Actor::ui())
+            .record_feedback("run-7", &report, Feedback::Irrelevant, &Actor::ui())
             .await,
         Err(MemoryError::NotFound(_))
     ));
@@ -981,4 +990,71 @@ async fn not_relevant_weakens_a_memory_once_per_answer_and_never_changes_its_wor
         Some(invoices.as_str())
     );
     assert!(looked_up[1].is_none());
+}
+
+#[tokio::test]
+async fn a_retried_question_reinforces_a_memory_once() {
+    let m = mem().await;
+    let invoices = m.note("Invoices go to Priya", Scope::Global).await;
+    let report = m.note("Reports are due Fridays", Scope::Global).await;
+    let injected = vec![invoices.clone(), report.clone()];
+    let first = m
+        .service
+        .record_answer_use(
+            "try-1",
+            &[],
+            &injected,
+            "Invoices go to Priya.",
+            &Scope::Global,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first, vec![invoices.clone()]);
+    // The retry uses both: only the memory the first try did not use is reinforced.
+    let retry = m
+        .service
+        .record_answer_use(
+            "try-2",
+            &["try-1".to_string()],
+            &injected,
+            "Invoices go to Priya. Reports are due Fridays.",
+            &Scope::Global,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry, vec![report.clone()]);
+    // A third try reinforces nothing more.
+    let third = m
+        .service
+        .record_answer_use(
+            "try-3",
+            &["try-1".to_string(), "try-2".to_string()],
+            &injected,
+            "Invoices go to Priya. Reports are due Fridays.",
+            &Scope::Global,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert!(third.is_empty());
+    for id in [&invoices, &report] {
+        assert_eq!(m.service.get(id).await.unwrap().use_count, 1, "{id}");
+    }
+    // Another question is not a retry: it reinforces again.
+    let other = m
+        .service
+        .record_answer_use(
+            "other",
+            &[],
+            &injected,
+            "Invoices go to Priya.",
+            &Scope::Global,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(other, vec![invoices.clone()]);
+    assert_eq!(m.service.get(&invoices).await.unwrap().use_count, 2);
 }

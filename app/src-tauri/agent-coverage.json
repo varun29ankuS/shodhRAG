@@ -83,6 +83,7 @@
     "memory_set_pinned": { "excluded": "Pinning exempts a memory from fading; which memories last indefinitely is the user's decision, not the assistant's." },
     "memory_export": { "excluded": "Exporting writes every memory about the user to a file of the user's choosing; the assistant must not copy that record elsewhere." },
     "memory_used_lookup": { "excluded": "The answer's \"Used N memories\" list is the user's view of which memories went into an answer; the assistant is given those memories with the question and needs no view of its own inputs." },
+    "memory_core_list": { "excluded": "The \"Always included in answers\" list is the user's view of what is put in front of every question; the assistant is given those memories with each question and needs no view of its own inputs." },
     "memory_mark_not_relevant": { "excluded": "\"Not relevant\" is the user's judgement of the assistant's memory use; an assistant that could mark its own memories would steer which memories it is given." },
     "memory_learn_status": { "excluded": "Learning status, model and costs are the user's view of what the assistant learns; the assistant does not manage its own learning." },
     "memory_suggestions_list": { "excluded": "The suggestion inbox is where the user reviews what the assistant proposes to remember; the assistant must not curate its own review queue." },

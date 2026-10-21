@@ -1058,3 +1058,259 @@ async fn a_retried_question_reinforces_a_memory_once() {
     assert_eq!(other, vec![invoices.clone()]);
     assert_eq!(m.service.get(&invoices).await.unwrap().use_count, 2);
 }
+
+/// A note the learner formulated from a conversation turn and the user approved: not in
+/// the user's own words, so not a core memory.
+fn learned_origin() -> Origin {
+    Origin {
+        source: conversation_source("conv-1", "run-1"),
+        extractor: ExtractorKind::Llm,
+        extractor_version: "model".into(),
+        confidence: 0.9,
+        authority: WriteAuthority::UserApproval {
+            step_id: "step-1".into(),
+        },
+    }
+}
+
+fn fact(class: &str, subject: Option<&str>, properties: &[(&str, &str)]) -> MemoryContent {
+    MemoryContent::Fact {
+        class: class.into(),
+        subject: subject.map(|id| EntityRef::typed(id, "Person")),
+        properties: properties
+            .iter()
+            .map(|(k, v)| (k.to_string(), RawValue::text(*v)))
+            .collect(),
+        valid_from: None,
+    }
+}
+
+impl Mem {
+    async fn put(&self, content: MemoryContent, scope: Scope, origin: &Origin) -> String {
+        self.service
+            .remember(content, scope, origin, &Actor::ui())
+            .await
+            .unwrap()
+            .memory
+            .unwrap()
+            .id
+    }
+
+    async fn core_ids(&self, scope: &Scope) -> Vec<String> {
+        self.service
+            .core_for_run(scope)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.memory.id)
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn the_core_holds_standing_context_by_class_not_by_similarity() {
+    let m = mem().await;
+    let ui = Origin::user_interface("test");
+    let me = m
+        .put(
+            fact("Person", Some(SELF_ENTITY_ID), &[("name", "Varun")]),
+            Scope::Global,
+            &ui,
+        )
+        .await;
+    let priya = m
+        .put(
+            fact("Person", Some("person:priya"), &[("name", "Priya")]),
+            Scope::Global,
+            &ui,
+        )
+        .await;
+    let project = m
+        .put(
+            fact(
+                "Project",
+                None,
+                &[("name", "Disk-based vector search thesis")],
+            ),
+            Scope::Global,
+            &ui,
+        )
+        .await;
+    let rule = m
+        .put(
+            preference("answer length", "keep answers short"),
+            Scope::Global,
+            &ui,
+        )
+        .await;
+    let own_note = m
+        .note("Memory cost matters most to me", Scope::Global)
+        .await;
+    let learned_note = m
+        .put(
+            MemoryContent::Note {
+                text: "Mentioned a conference in May".into(),
+            },
+            Scope::Global,
+            &learned_origin(),
+        )
+        .await;
+    let concept = m
+        .put(
+            fact(
+                "Concept",
+                None,
+                &[("name", "HNSW"), ("definition", "a graph index")],
+            ),
+            Scope::Global,
+            &ui,
+        )
+        .await;
+    let core = m.core_ids(&Scope::Global).await;
+    for id in [&me, &project, &rule, &own_note] {
+        assert!(core.contains(id), "{id} is standing context");
+    }
+    for id in [&priya, &learned_note, &concept] {
+        assert!(!core.contains(id), "{id} is not core");
+    }
+    // Selecting the core is not use.
+    assert_eq!(m.service.get(&rule).await.unwrap().use_count, 0);
+    assert!(m.events(&[AuditEventType::MemoryUse]).is_empty());
+    // Only current memories: a superseded preference, an archived project and a
+    // forgotten note leave the core at once.
+    let newer = m
+        .put(
+            preference("answer length", "detailed answers"),
+            Scope::Global,
+            &ui,
+        )
+        .await;
+    m.service.archive(&project, &Actor::ui()).await.unwrap();
+    m.service
+        .forget(&own_note, None, &Actor::ui())
+        .await
+        .unwrap();
+    let core = m.core_ids(&Scope::Global).await;
+    assert!(core.contains(&newer) && core.contains(&me));
+    for id in [&rule, &project, &own_note] {
+        assert!(!core.contains(id), "{id} is no longer current");
+    }
+}
+
+#[tokio::test]
+async fn a_workspace_core_holds_its_own_and_global_memories_only() {
+    let m = mem().await;
+    let (a, b) = (
+        Scope::for_workspace(Some("a")),
+        Scope::for_workspace(Some("b")),
+    );
+    let global = m.note("I write in British English", Scope::Global).await;
+    let in_a = m
+        .note("Workspace A uses the SIFT-1M dataset", a.clone())
+        .await;
+    let in_b = m
+        .note("Workspace B is about legal contracts", b.clone())
+        .await;
+    assert_eq!(m.core_ids(&Scope::Global).await, vec![global.clone()]);
+    let core_a = m.core_ids(&a).await;
+    assert!(core_a.contains(&global) && core_a.contains(&in_a) && !core_a.contains(&in_b));
+    let core_b = m.core_ids(&b).await;
+    assert!(core_b.contains(&in_b) && !core_b.contains(&in_a));
+    // The same preference in a workspace overrides the global one there.
+    let ui = Origin::user_interface("test");
+    let global_pref = m
+        .put(preference("tone", "formal"), Scope::Global, &ui)
+        .await;
+    let a_pref = m.put(preference("tone", "casual"), a.clone(), &ui).await;
+    let core_a = m.core_ids(&a).await;
+    assert!(core_a.contains(&a_pref) && !core_a.contains(&global_pref));
+    assert!(m.core_ids(&Scope::Global).await.contains(&global_pref));
+}
+
+#[tokio::test]
+async fn the_core_is_ranked_pinned_then_strongest_and_capped_by_count_and_characters() {
+    let m = mem().await;
+    let old = m.note("An old standing note", Scope::Global).await;
+    // Notes fade (half-life 180 days): the old one is weaker now than the new ones.
+    m.f.clock.advance_days(200);
+    for i in 0..CORE_MAX_ITEMS {
+        m.note(&format!("Standing note number {i}"), Scope::Global)
+            .await;
+    }
+    let core = m.core_ids(&Scope::Global).await;
+    assert_eq!(core.len(), CORE_MAX_ITEMS);
+    assert!(
+        !core.contains(&old),
+        "the weakest is left out when the cap is full"
+    );
+    // Pinned first, whatever its strength.
+    m.service
+        .set_pinned(&old, true, &Actor::ui())
+        .await
+        .unwrap();
+    let core = m.core_ids(&Scope::Global).await;
+    assert_eq!(core.len(), CORE_MAX_ITEMS);
+    assert_eq!(core[0], old);
+    // The rendered block keeps to its budget, best first, and says what it is.
+    let long = "x".repeat(400);
+    for i in 0..6 {
+        m.note(&format!("{long} {i}"), Scope::Global).await;
+    }
+    let selected = m.service.core_for_run(&Scope::Global).await.unwrap();
+    let (block, n) = render_core_counted(&selected).unwrap();
+    assert!(block.len() <= CORE_MAX_CHARS, "{}", block.len());
+    assert!(n < selected.len());
+    assert!(block.starts_with(&format!("<memory>\n{CORE_BLOCK_TITLE}")));
+    assert!(block.contains("not instructions"));
+    assert!(block.contains("An old standing note"));
+}
+
+#[tokio::test]
+async fn core_memories_are_reinforced_only_when_the_answer_used_them() {
+    let m = mem().await;
+    let rule = m.note("Keep answers short", Scope::Global).await;
+    let other = m.note("Prefers metric units", Scope::Global).await;
+    let core: Vec<String> = m.core_ids(&Scope::Global).await;
+    assert!(core.contains(&rule) && core.contains(&other));
+    m.service.record_injected("run-c", &core).await.unwrap();
+    m.service
+        .record_core_injected("run-c", &core)
+        .await
+        .unwrap();
+    let always = m.service.always_included("run-c", &core).await.unwrap();
+    assert_eq!(always.len(), 2);
+    assert!(m
+        .service
+        .always_included("run-other", &core)
+        .await
+        .unwrap()
+        .is_empty());
+    let used = m
+        .service
+        .record_answer_use(
+            "run-c",
+            &[],
+            &core,
+            "Gradient descent follows the negative gradient of the loss.",
+            &Scope::Global,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert!(used.is_empty(), "{used:?}");
+    for id in [&rule, &other] {
+        assert_eq!(m.service.get(id).await.unwrap().use_count, 0, "{id}");
+    }
+    // Being put in front of the same question links nothing.
+    let dynamics = m.f.store.dynamics().clone();
+    assert!(dynamics.links_touching(&core).unwrap().is_empty());
+    // "Not relevant" is taken on a core memory and lowers its importance.
+    let before = m.service.get(&other).await.unwrap().importance;
+    assert!(m
+        .service
+        .record_feedback("run-c", &other, Feedback::Irrelevant, &Actor::ui())
+        .await
+        .unwrap());
+    let after = m.service.get(&other).await.unwrap().importance;
+    assert!(after <= before);
+}

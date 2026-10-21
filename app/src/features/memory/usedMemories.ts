@@ -15,6 +15,8 @@ export interface UsedMemory {
   memory: MemoryRecord | null;
   /** The user marked it not relevant to this answer. */
   notRelevant: boolean;
+  /** It was given as a core memory: in front of every question, whatever it asked. */
+  alwaysIncluded: boolean;
 }
 
 /** One row of the "Used N memories" list. */
@@ -34,6 +36,8 @@ export interface UsedMemoryRow {
   canEdit: boolean;
   /** "Not relevant" was recorded for this answer. */
   notRelevant: boolean;
+  /** A core memory: "always included" (kept for a forgotten one too). */
+  alwaysIncluded: boolean;
 }
 
 /** What a forgotten memory shows instead of its words. */
@@ -62,10 +66,11 @@ export function parseUsedMemories(value: unknown, ids: readonly string[]): UsedM
         id: entry.id,
         memory: entry.memory === null ? null : parseMemory(entry.memory),
         notRelevant: entry.notRelevant === true,
+        alwaysIncluded: entry.alwaysIncluded === true,
       });
     }
   }
-  return ids.map(id => byId.get(id) ?? { id, memory: null, notRelevant: false });
+  return ids.map(id => byId.get(id) ?? { id, memory: null, notRelevant: false, alwaysIncluded: false });
 }
 
 /** Where a memory applies, in one or two words: "Global" or its workspace's name. */
@@ -88,6 +93,7 @@ export function rowOf(used: UsedMemory, workspaceName: (id: string) => string | 
       replaced: false,
       canEdit: false,
       notRelevant: used.notRelevant,
+      alwaysIncluded: used.alwaysIncluded,
     };
   }
   const since = formatDate(m.validFrom);
@@ -100,7 +106,13 @@ export function rowOf(used: UsedMemory, workspaceName: (id: string) => string | 
     replaced: !m.current && m.supersededBy !== null,
     canEdit: m.current,
     notRelevant: used.notRelevant,
+    alwaysIncluded: used.alwaysIncluded,
   };
+}
+
+/** The heading of Settings, Memory's core list: "Always included in answers (3)". */
+export function coreHeading(count: number): string {
+  return `Always included in answers (${Number.isInteger(count) && count > 0 ? count : 0})`;
 }
 
 /** `used` with `id` marked not relevant (after the backend recorded it). */

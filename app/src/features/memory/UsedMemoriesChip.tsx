@@ -157,7 +157,9 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
             <ul aria-live="polite" className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle">
               {loaded.used.map(used => {
                 const row = rowOf(used, workspaceName);
-                const meta = [row.classLabel, row.since, row.scope].filter(part => part.length > 0);
+                const meta = [row.alwaysIncluded ? 'always included' : '', row.classLabel, row.since, row.scope].filter(
+                  part => part.length > 0,
+                );
                 return (
                   <li key={row.id} className="px-3.5 py-2.5 flex flex-col gap-1 text-[12.5px]">
                     {row.text === null ? (
@@ -206,6 +208,7 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
           )}
           <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-faint">
             Memories the answer drew on grow stronger; “Not relevant” makes one weigh less in later answers without deleting it.
+            “Always included” ones go with every question: who you are, your projects, preferences and the notes you asked Shodh to keep.
           </p>
         </section>
       )}

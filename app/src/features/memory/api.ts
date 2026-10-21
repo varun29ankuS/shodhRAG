@@ -74,6 +74,14 @@ export async function usedMemories(runId: string, ids: string[]): Promise<UsedMe
 }
 
 /**
+ * The core memories: put in front of every question (of workspace `workspace`'s chats, or
+ * outside workspaces when null), whatever it asks, as they would be now. Reading is not use.
+ */
+export async function coreMemories(workspace: string | null = null): Promise<MemoryRecord[]> {
+  return parseMemories(await invoke<unknown>('memory_core_list', { workspace }));
+}
+
+/**
  * "Not relevant": memory `id` did not belong in the answer of run `runId`. It loses a
  * little importance and its links to the answer's other memories (as the backend recorded
  * them) weaken; it is not edited or deleted. Resolves `false` when it was marked before.

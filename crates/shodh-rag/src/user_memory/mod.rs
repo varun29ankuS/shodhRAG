@@ -19,6 +19,7 @@
 pub mod guard;
 pub mod learn;
 mod recall;
+pub mod standing;
 #[cfg(test)]
 mod tests;
 pub mod usage;
@@ -49,6 +50,7 @@ pub use recall::{
     render_injection, render_injection_counted, RecallMode, RecallRequest, RecalledMemory,
     DEFAULT_MIN_SIMILARITY, MAX_INJECTION_CHARS, MEMORY_BLOCK_TITLE,
 };
+pub use standing::{render_core_counted, CORE_BLOCK_TITLE, CORE_MAX_CHARS, CORE_MAX_ITEMS};
 pub use usage::DEFAULT_USE_CUTOFF;
 
 /// Most memories one "Not relevant" weakens links to (the others of the same answer).
@@ -816,6 +818,40 @@ impl MemoryService {
             }),
         );
         Ok(())
+    }
+
+    /// The core memories of `scope` ([`standing`]): put in front of every question of the
+    /// scope, whatever it asks, best first, at most [`CORE_MAX_ITEMS`]. Read-only: being
+    /// selected is not use.
+    pub async fn core_for_run(&self, scope: &Scope) -> MemoryResult<Vec<RecalledMemory>> {
+        standing::select(self, scope).await
+    }
+
+    /// Records that memories `ids`, put in front of the question of run `run_id`
+    /// ([`MemoryService::record_injected`]), were there as core memories, whatever the
+    /// question asked: the answer's list says "always included" for them
+    /// ([`MemoryService::always_included`]). Ids only.
+    pub async fn record_core_injected(&self, run_id: &str, ids: &[String]) -> MemoryResult<()> {
+        let run_id = checked_run_id(run_id)?;
+        let dynamics = self.store.dynamics().clone();
+        let (run, ids, now) = (run_id.to_string(), ids.to_vec(), self.store.now());
+        blocking(move || dynamics.record_run_memories(&run, RunMemoryKind::Core, &ids, now)).await
+    }
+
+    /// Which of `ids` were given to run `run_id` as core memories.
+    pub async fn always_included(
+        &self,
+        run_id: &str,
+        ids: &[String],
+    ) -> MemoryResult<BTreeSet<String>> {
+        let dynamics = self.store.dynamics().clone();
+        let runs = vec![run_id.to_string()];
+        let core = blocking(move || dynamics.run_memories(&runs, RunMemoryKind::Core)).await?;
+        Ok(ids
+            .iter()
+            .filter(|id| core.contains(*id))
+            .cloned()
+            .collect())
     }
 
     /// Records that memories `ids` were put in front of the question of run `run_id`, so

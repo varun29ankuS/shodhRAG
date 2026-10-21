@@ -23,9 +23,9 @@ use shodh_rag::statements::{
 };
 use shodh_rag::user_memory::learn::Inbox;
 use shodh_rag::user_memory::{
-    render_injection_counted, Actor, Feedback, ListRequest, MemoryContent, MemoryError,
-    MemoryRecord, MemoryService, Origin, RecallMode, RecallRequest, RememberOutcome,
-    MAX_INJECTION_CHARS,
+    render_core_counted, render_injection_counted, Actor, Feedback, ListRequest, MemoryContent,
+    MemoryError, MemoryRecord, MemoryService, Origin, RecallMode, RecallRequest, RecalledMemory,
+    RememberOutcome, CORE_MAX_CHARS, MAX_INJECTION_CHARS,
 };
 use shodh_rag::RAGEngine;
 use tauri::State;
@@ -46,8 +46,17 @@ const MAX_TRACKED_RUNS: usize = 64;
 const MAX_TRACKED_ANSWER_CHARS: usize = 24_000;
 
 /// Most memories one lookup or feedback names (an answer has at most
-/// [`INJECTED_MEMORIES`]).
+/// [`shodh_rag::user_memory::CORE_MAX_ITEMS`] core memories and [`INJECTED_MEMORIES`]
+/// recalled ones, 26).
 const MAX_IDS_PER_CALL: usize = 32;
+
+/// Most characters of everything put in front of one question: the core block
+/// ([`CORE_MAX_CHARS`]) and the recalled memories' block ([`MAX_INJECTION_CHARS`]),
+/// separator included (about 875 tokens).
+pub const MAX_RUN_MEMORY_CHARS: usize = CORE_MAX_CHARS + MAX_INJECTION_CHARS;
+
+/// Between the core block and the recalled memories' block.
+const BLOCK_SEPARATOR: &str = "\n";
 
 /// The app version recorded on memories the user states.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -253,14 +262,20 @@ impl MemoryState {
     }
 
     /// Records that memories `ids` were given to run `run_id`, so the user's feedback on
-    /// that answer is accepted for them ([`MemoryService::record_injected`]). A failure is
-    /// logged; the answer goes on (feedback on it is then refused).
-    pub async fn record_injected(&self, run_id: &str, ids: &[String]) {
+    /// that answer is accepted for them ([`MemoryService::record_injected`]), and which of
+    /// them (`core`) were core memories, so its list says "always included"
+    /// ([`MemoryService::record_core_injected`]). A failure is logged; the answer goes on
+    /// (feedback on it is then refused).
+    pub async fn record_injected(&self, run_id: &str, ids: &[String], core: &[String]) {
         let recorded = match self.service().await {
-            Ok(service) => service
-                .record_injected(run_id, ids)
-                .await
-                .map_err(error_text),
+            Ok(service) => match service.record_injected(run_id, ids).await {
+                Ok(()) if core.is_empty() => Ok(()),
+                Ok(()) => service
+                    .record_core_injected(run_id, core)
+                    .await
+                    .map_err(error_text),
+                Err(e) => Err(error_text(e)),
+            },
             Err(e) => Err(e),
         };
         if let Err(e) = recorded {
@@ -415,40 +430,56 @@ pub const RECALL_TIMEOUT: Duration = Duration::from_millis(1_500);
 /// The memories put in front of one run's question.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunMemories {
-    /// The delimited block for the message ([`with_memories`]).
+    /// The delimited blocks for the message ([`with_memories`]): the core block first,
+    /// then the recalled memories' block, at most [`MAX_RUN_MEMORY_CHARS`].
     pub block: String,
-    /// The memories in it, in order (what the chat shows and the end of the run judges).
+    /// The memories in them, in order: core ones first (what the chat shows and the end of
+    /// the run judges).
     pub ids: Vec<String>,
+    /// Those of `ids` that are core memories (in front of every question of the scope).
+    pub core_ids: Vec<String>,
 }
 
-/// The memories for the start of an agent run: those relevant to `text`, ranked
-/// read-only within [`RECALL_TIMEOUT`]. Nothing is reinforced here: being put in front of a
-/// question is not use. Only the memories the answer used are reinforced, when the run
-/// completes ([`MemoryState::track_run`], [`MemoryState::observe`]). `None` when nothing is
-/// relevant or memory is unavailable; failures never block the answer.
+/// The memories for the start of an agent run: the scope's core memories (standing
+/// context, selected by class: [`MemoryService::core_for_run`]) and those relevant to
+/// `text` (recall), read-only within one [`RECALL_TIMEOUT`]. A memory in the core block is
+/// not repeated among the recalled ones. Nothing is reinforced here: being put in front of
+/// a question is not use, for core memories as for the others. Only the memories the answer
+/// used are reinforced, when the run completes ([`MemoryState::track_run`],
+/// [`MemoryState::observe`]). `None` when there is nothing to inject; on a timeout or a
+/// failure nothing is injected (core included) and the answer goes on.
 pub async fn recall_for_run(
     memory: &MemoryState,
     text: &str,
     workspace: Option<&str>,
     actor: &Actor,
 ) -> Option<RunMemories> {
-    let request = RecallRequest::new(
-        text,
-        Scope::for_workspace(workspace),
-        INJECTED_MEMORIES,
-        RecallMode::Inspect,
-    );
-    let ranked = tokio::time::timeout(RECALL_TIMEOUT, async {
+    let scope = Scope::for_workspace(workspace);
+    let selected = tokio::time::timeout(RECALL_TIMEOUT, async {
         let service = memory.service().await.map_err(RecallFailure::Unavailable)?;
+        let core = service
+            .core_for_run(&scope)
+            .await
+            .map_err(RecallFailure::Memory)?;
+        let core_block = render_core_counted(&core);
+        let in_core = core_block.as_ref().map_or(0, |(_, n)| *n);
+        // As many more as the core may take back, so the recalled block is not left short
+        // by memories that are in the core block already.
+        let request = RecallRequest::new(
+            text,
+            scope.clone(),
+            INJECTED_MEMORIES + in_core,
+            RecallMode::Inspect,
+        );
         let recalled = service
             .recall(&request, actor)
             .await
             .map_err(RecallFailure::Memory)?;
-        Ok::<_, RecallFailure>(recalled)
+        Ok::<_, RecallFailure>((core, core_block, recalled))
     })
     .await;
-    let recalled = match ranked {
-        Ok(Ok(recalled)) => recalled,
+    let (core, core_block, recalled) = match selected {
+        Ok(Ok(selected)) => selected,
         Ok(Err(RecallFailure::Unavailable(e))) => {
             tracing::debug!(target: "shodh::memory", error = %e, "memory unavailable; nothing injected");
             return None;
@@ -468,13 +499,51 @@ pub async fn recall_for_run(
             return None;
         }
     };
-    let (block, injected) = render_injection_counted(&recalled, MAX_INJECTION_CHARS)?;
+    compose_run_memories(&core, core_block, recalled)
+}
+
+/// The run's blocks from the selected core memories (`core`, whose rendered block holds
+/// the first ones) and the recalled ones: those in the core block are dropped from the
+/// recalled ones, which keep at most [`INJECTED_MEMORIES`] within what the core block
+/// left of [`MAX_RUN_MEMORY_CHARS`] (never more than [`MAX_INJECTION_CHARS`]).
+fn compose_run_memories(
+    core: &[RecalledMemory],
+    core_block: Option<(String, usize)>,
+    recalled: Vec<RecalledMemory>,
+) -> Option<RunMemories> {
+    let core_ids: Vec<String> = core_block
+        .as_ref()
+        .map(|(_, n)| core[..*n].iter().map(|m| m.memory.id.clone()).collect())
+        .unwrap_or_default();
+    let recalled: Vec<RecalledMemory> = recalled
+        .into_iter()
+        .filter(|m| !core_ids.contains(&m.memory.id))
+        .take(INJECTED_MEMORIES)
+        .collect();
+    let core_chars = core_block
+        .as_ref()
+        .map_or(0, |(block, _)| block.len() + BLOCK_SEPARATOR.len());
+    let budget = MAX_RUN_MEMORY_CHARS
+        .saturating_sub(core_chars)
+        .min(MAX_INJECTION_CHARS);
+    let recalled_block = render_injection_counted(&recalled, budget);
+    let mut ids = core_ids.clone();
+    let block = match (core_block, recalled_block) {
+        (None, None) => return None,
+        (Some((core, _)), None) => core,
+        (None, Some((block, n))) => {
+            ids.extend(recalled[..n].iter().map(|m| m.memory.id.clone()));
+            block
+        }
+        (Some((core, _)), Some((block, n))) => {
+            ids.extend(recalled[..n].iter().map(|m| m.memory.id.clone()));
+            format!("{core}{BLOCK_SEPARATOR}{block}")
+        }
+    };
     Some(RunMemories {
         block,
-        ids: recalled[..injected]
-            .iter()
-            .map(|m| m.memory.id.clone())
-            .collect(),
+        ids,
+        core_ids,
     })
 }
 
@@ -578,6 +647,8 @@ pub struct UsedMemory {
     pub memory: Option<MemoryRecord>,
     /// The user marked it not relevant to this answer.
     pub not_relevant: bool,
+    /// It was given to the answer as a core memory (in front of every question).
+    pub always_included: bool,
 }
 
 /// Checks the answer's run id and memory ids sent with a lookup or feedback.
@@ -607,15 +678,38 @@ pub async fn memory_used_lookup(
         .marked_irrelevant(&run_id, &ids)
         .await
         .map_err(error_text)?;
+    let core = service
+        .always_included(&run_id, &ids)
+        .await
+        .map_err(error_text)?;
     Ok(ids
         .into_iter()
         .zip(records)
         .map(|(id, memory)| UsedMemory {
             not_relevant: marked.contains(&id),
+            always_included: core.contains(&id),
             id,
             memory,
         })
         .collect())
+}
+
+/// The core memories of Settings, Memory (global ones), or of workspace `workspace`'s
+/// chats: what is put in front of every question there, as it would be now (those that fit
+/// in the core block, best first). Reading is not use: nothing is reinforced.
+#[tauri::command]
+pub async fn memory_core_list(
+    workspace: Option<String>,
+    memory: State<'_, MemoryState>,
+) -> Result<Vec<MemoryRecord>, String> {
+    let service = memory.service().await?;
+    let workspace = workspace.filter(|w| !w.trim().is_empty());
+    let core = service
+        .core_for_run(&Scope::for_workspace(workspace.as_deref()))
+        .await
+        .map_err(error_text)?;
+    let shown = render_core_counted(&core).map_or(0, |(_, n)| n);
+    Ok(core.into_iter().take(shown).map(|m| m.memory).collect())
 }
 
 /// "Not relevant" on memory `id` in the answer of run `run_id`: the memory loses a little
@@ -743,8 +837,22 @@ mod tests {
         .is_err());
     }
 
-    /// A memory state over `dir` with two notes; returns it, the audit log and the notes'
-    /// ids (invoices, gym).
+    /// A note the learner formulated from a conversation and the user approved: recalled
+    /// when relevant, never a core memory (not in the user's own words).
+    fn learned() -> Origin {
+        Origin {
+            source: shodh_rag::user_memory::conversation_source("conv-0", "run-0"),
+            extractor: shodh_ontology::ExtractorKind::Llm,
+            extractor_version: "model".into(),
+            confidence: 0.9,
+            authority: shodh_rag::user_memory::WriteAuthority::UserApproval {
+                step_id: "step-0".into(),
+            },
+        }
+    }
+
+    /// A memory state over `dir` with two learned notes (not core); returns it, the audit
+    /// log and the notes' ids (invoices, gym).
     async fn two_notes(dir: &Path) -> (MemoryState, Arc<AuditLog>, String, String) {
         let audit = Arc::new(AuditLog::open(dir.join("shodh.db"), None).unwrap());
         let memory = crate::agent_tools::testing::memory_state(dir, Some(audit.clone())).await;
@@ -755,7 +863,7 @@ mod tests {
                 .remember(
                     MemoryContent::Note { text: text.into() },
                     Scope::Global,
-                    &Origin::user_interface("t"),
+                    &learned(),
                     &Actor::ui(),
                 )
                 .await
@@ -922,7 +1030,7 @@ mod tests {
             .record_feedback("run-1", &gym, Feedback::Irrelevant, &Actor::ui())
             .await
             .is_err());
-        memory.record_injected("run-1", &ids).await;
+        memory.record_injected("run-1", &ids, &[]).await;
         let applied = service
             .record_feedback("run-1", &gym, Feedback::Irrelevant, &Actor::ui())
             .await
@@ -934,6 +1042,142 @@ mod tests {
         assert!(records[0].is_none(), "a forgotten memory has no words");
         assert_eq!(records[1].as_ref().unwrap().text, "Gym on Tuesdays");
         assert!(marked.contains(&gym) && !marked.contains(&invoices));
+    }
+
+    /// A note the user typed in Settings (a core memory) in `workspace`'s scope.
+    async fn own_note(memory: &MemoryState, text: &str, workspace: Option<&str>) -> String {
+        memory
+            .service()
+            .await
+            .unwrap()
+            .remember(
+                MemoryContent::Note { text: text.into() },
+                Scope::for_workspace(workspace),
+                &Origin::user_interface("t"),
+                &Actor::ui(),
+            )
+            .await
+            .unwrap()
+            .memory
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn core_memories_go_in_front_of_every_question_first_and_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, audit, invoices, gym) = two_notes(dir.path()).await;
+        let rule = own_note(&memory, "Keep answers short", None).await;
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        // A question the core has nothing to do with still gets it, and only it.
+        let unrelated = recall_for_run(&memory, "Explain gradient descent", None, &actor)
+            .await
+            .unwrap();
+        assert_eq!(unrelated.ids, vec![rule.clone()]);
+        assert_eq!(unrelated.core_ids, vec![rule.clone()]);
+        assert!(unrelated.block.starts_with(&format!(
+            "<memory>\n{}",
+            shodh_rag::user_memory::CORE_BLOCK_TITLE
+        )));
+        assert!(!unrelated.block.contains("Invoices") && !unrelated.block.contains("Gym"));
+        // A relevant question gets the core first, then the recalled memories.
+        let relevant = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+            .await
+            .unwrap();
+        assert_eq!(relevant.ids, vec![rule.clone(), invoices.clone()]);
+        assert_eq!(relevant.core_ids, vec![rule.clone()]);
+        let core_at = relevant.block.find("Keep answers short").unwrap();
+        let recalled_at = relevant
+            .block
+            .find(shodh_rag::user_memory::MEMORY_BLOCK_TITLE)
+            .unwrap();
+        assert!(core_at < recalled_at, "{}", relevant.block);
+        assert!(relevant.block.len() <= MAX_RUN_MEMORY_CHARS);
+        // A core memory the question is about is not repeated among the recalled ones.
+        let about_core = recall_for_run(&memory, "Keep answers short?", None, &actor)
+            .await
+            .unwrap();
+        assert_eq!(about_core.ids, vec![rule.clone()]);
+        assert_eq!(about_core.block.matches("Keep answers short").count(), 1);
+        // Being put in front of a question is not use.
+        for id in [&rule, &invoices, &gym] {
+            assert_eq!(use_count(&memory, id).await, 0);
+        }
+        assert!(use_events(&audit).is_empty());
+        // Forgotten, it is gone from the next question.
+        memory
+            .service()
+            .await
+            .unwrap()
+            .forget(&rule, None, &Actor::ui())
+            .await
+            .unwrap();
+        assert!(
+            recall_for_run(&memory, "Explain gradient descent", None, &actor)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_workspace_chat_never_gets_another_workspaces_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, _audit, _, _) = two_notes(dir.path()).await;
+        let mine = own_note(&memory, "This workspace cites in IEEE style", Some("a")).await;
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        let in_a = recall_for_run(&memory, "Explain gradient descent", Some("a"), &actor)
+            .await
+            .unwrap();
+        assert_eq!(in_a.core_ids, vec![mine]);
+        for other in [Some("b"), None] {
+            assert!(
+                recall_for_run(&memory, "Explain gradient descent", other, &actor)
+                    .await
+                    .is_none(),
+                "{other:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_core_memory_the_answer_did_not_use_is_not_reinforced_and_is_listed_as_always_included(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, audit, _, _) = two_notes(dir.path()).await;
+        let rule = own_note(&memory, "Keep answers short", None).await;
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-5");
+        let given = recall_for_run(&memory, "Explain gradient descent", None, &actor)
+            .await
+            .unwrap();
+        memory.track_run("run-5", given.ids.clone(), None, actor, Vec::new());
+        memory
+            .record_injected("run-5", &given.ids, &given.core_ids)
+            .await;
+        memory.observe(&delta(
+            "run-5",
+            "m1",
+            "Gradient descent follows the negative gradient of the loss.",
+        ));
+        memory
+            .observe(&finished("run-5", RunStatus::Completed))
+            .expect("a completed run with memories is judged")
+            .await
+            .unwrap();
+        assert_eq!(use_count(&memory, &rule).await, 0);
+        assert!(use_events(&audit).is_empty());
+        let service = memory.service().await.unwrap();
+        let always = service.always_included("run-5", &given.ids).await.unwrap();
+        assert!(always.contains(&rule));
+    }
+
+    #[test]
+    fn the_whole_injection_budget_is_the_core_budget_plus_the_recalled_one() {
+        assert_eq!(
+            MAX_RUN_MEMORY_CHARS,
+            shodh_rag::user_memory::CORE_MAX_CHARS + MAX_INJECTION_CHARS
+        );
+        assert_eq!(MAX_RUN_MEMORY_CHARS, 3_500);
+        assert!(shodh_rag::user_memory::CORE_MAX_ITEMS + INJECTED_MEMORIES <= MAX_IDS_PER_CALL);
     }
 
     #[test]

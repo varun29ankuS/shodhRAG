@@ -51,7 +51,7 @@ use crate::audit_commands::AuditState;
 use crate::conversation_commands::ConversationMode;
 use crate::inbox_commands;
 use crate::llm_commands::LLMState;
-use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
+use crate::memory_commands::{recall_for_run, with_memories, MemoryState, RunMemories};
 use crate::memory_learn::{LearnState, RequestHandled, TextOrigin};
 use crate::model_picker_commands::{override_mode, ModelOverride};
 use crate::rag_commands::RagState;
@@ -2030,7 +2030,10 @@ pub async fn agent_send(
                 retried_runs(prior_run_ids.as_deref()),
             );
             // Feedback on this answer ("Not relevant") is accepted for these memories only.
-            memory.record_injected(&request_id, &recalled.ids).await;
+            // Core ones are recorded as such: the chat's list says "always included".
+            memory
+                .record_injected(&request_id, &recalled.ids, &recalled.core_ids)
+                .await;
             // The chat shows which memories the answer was given ("Used 2 memories"), by
             // id; the run id is `request_id`. Sent before the prompt so it reaches the chat
             // before the run's own events; a prompt that fails clears it there.
@@ -2092,11 +2095,13 @@ pub async fn agent_send(
     // while the session has seen nothing private (memories, instructions, carried
     // passages, the replayed conversation, a side thread's composed message).
     scope.own_words = own_words.map(str::to_string);
-    scope.private_context = memories.is_some()
-        || workspace_block.is_some()
-        || passages_block.is_some()
-        || entry.parent_conversation_id.is_some()
-        || (replay && history.as_ref().is_some_and(|h| !h.is_empty()));
+    scope.private_context = private_context(
+        memories.as_ref(),
+        workspace_block.is_some()
+            || passages_block.is_some()
+            || entry.parent_conversation_id.is_some()
+            || (replay && history.as_ref().is_some_and(|h| !h.is_empty())),
+    );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.
@@ -2154,6 +2159,14 @@ fn retried_runs(prior: Option<&[String]>) -> Vec<String> {
         .collect();
     let skip = valid.len().saturating_sub(MAX_PRIOR_RUNS);
     valid.into_iter().skip(skip).collect()
+}
+
+/// Whether a run's message holds anything private, so the web tools ask before sending
+/// anything away: any memory put in front of the question (core memories included, which
+/// are in front of nearly every question) or `other_private` context (the workspace's
+/// instructions, carried passages, a side thread, the replayed conversation).
+fn private_context(memories: Option<&RunMemories>, other_private: bool) -> bool {
+    memories.is_some() || other_private
 }
 
 /// Tells the chat which memories were put in front of run `run_id`'s question
@@ -3608,6 +3621,20 @@ mod tests {
             "words the message does not hold are refused"
         );
         assert_eq!(user_words(&composed, None, Some("  "), true), None);
+    }
+
+    #[test]
+    fn a_run_given_only_core_memories_is_private_to_the_web_tools() {
+        // Core memories go in front of nearly every question; the web gate holds for them
+        // as for recalled ones: web_search and fetch_url then ask before sending anything.
+        let core_only = RunMemories {
+            block: "<memory>\n- [Preference] keep answers short\n</memory>".into(),
+            ids: vec!["mem-core".into()],
+            core_ids: vec!["mem-core".into()],
+        };
+        assert!(private_context(Some(&core_only), false));
+        assert!(private_context(None, true));
+        assert!(!private_context(None, false));
     }
 
     #[test]

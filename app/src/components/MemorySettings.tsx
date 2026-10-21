@@ -21,6 +21,7 @@ import {
 } from '../features/memory/model';
 import type { MemoryRecord, StrengthLevel } from '../features/memory/model';
 import {
+  coreMemories,
   errorText,
   exportMemories,
   forgetMemory,
@@ -31,6 +32,7 @@ import {
   updateMemory,
 } from '../features/memory/api';
 import { OPEN_MEMORY_EDIT, takeRequestedMemoryEdit } from '../features/memory/navigation';
+import { coreHeading, shortScope } from '../features/memory/usedMemories';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -345,6 +347,8 @@ function MemoryItem({
 export default function MemorySettings(props: MemorySettingsProps) {
   const [memories, setMemories] = useState<MemoryRecord[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [core, setCore] = useState<MemoryRecord[] | null>(null);
+  const [coreError, setCoreError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState(false);
   const [prefs, setPrefs] = useState<MemoryPrefs | null>(null);
@@ -354,6 +358,8 @@ export default function MemorySettings(props: MemorySettingsProps) {
   const [editId, setEditId] = useState<string | null>(() => (props.scope ? null : takeRequestedMemoryEdit()));
   const searchId = useId();
 
+  // Settings, Memory shows the core of chats outside workspaces (global memories).
+  const showCore = !props.scope;
   const refresh = useCallback(async () => {
     try {
       setMemories(await listMemories());
@@ -361,7 +367,14 @@ export default function MemorySettings(props: MemorySettingsProps) {
     } catch (err) {
       setLoadError(errorText(err));
     }
-  }, []);
+    if (!showCore) return;
+    try {
+      setCore(await coreMemories(null));
+      setCoreError(null);
+    } catch (err) {
+      setCoreError(errorText(err));
+    }
+  }, [showCore]);
 
   useEffect(() => {
     void refresh();
@@ -429,6 +442,12 @@ export default function MemorySettings(props: MemorySettingsProps) {
 
   const editOpened = useCallback(() => setEditId(null), []);
 
+  // "Outdated" on a core memory: its editor in the list below.
+  const editCore = useCallback((id: string) => {
+    setFilter('');
+    setEditId(id);
+  }, []);
+
   // The memory asked for is no longer current (edited or forgotten since the answer).
   useEffect(() => {
     if (editId === null || memories === null) return;
@@ -460,6 +479,16 @@ export default function MemorySettings(props: MemorySettingsProps) {
         disabled={prefs === null || savingPrefs}
         onChange={next => prefs && void changePrefs({ ...prefs, injectMemories: next })}
       />
+      )}
+
+      {showCore && (
+        <CoreMemories
+          core={core}
+          error={coreError}
+          injecting={prefs?.injectMemories ?? true}
+          workspaceName={props.workspaceName}
+          onOutdated={editCore}
+        />
       )}
 
       {prefs && (
@@ -555,5 +584,82 @@ export default function MemorySettings(props: MemorySettingsProps) {
         ))
       )}
     </div>
+  );
+}
+
+interface CoreMemoriesProps {
+  /** The core memories, as they would be sent now (null while loading). */
+  core: MemoryRecord[] | null;
+  /** Why they could not be read, if they could not. */
+  error: string | null;
+  /** Memories are put in front of questions (the switch above). */
+  injecting: boolean;
+  /** Name of a workspace, by id. */
+  workspaceName: (id: string) => string | undefined;
+  /** Opens memory `id`'s editor in the list below. */
+  onOutdated: (id: string) => void;
+}
+
+/**
+ * "Always included in answers (N)": the core memories that go in front of every
+ * question here, whatever it asks (who the user is, their projects, preferences and the
+ * notes they asked Shodh to keep), so the user can see what is always sent. Read-only:
+ * which memories are core follows from their kind and strength. "Outdated" opens one's
+ * editor; "Not relevant" is given under an answer, where it applies to that answer.
+ */
+function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: CoreMemoriesProps) {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
+      <h3 id={headingId} className="m-0 text-[13px] font-bold text-shodh-text-secondary">
+        {coreHeading(injecting ? (core?.length ?? 0) : 0)}
+      </h3>
+      {!injecting ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          Nothing is sent while “Use memories in answers” is off.
+        </p>
+      ) : error ? (
+        <p role="alert" className="m-0 text-[12.5px] text-shodh-error break-words">
+          They could not be read: {error}
+        </p>
+      ) : core === null ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">Loading…</p>
+      ) : core.length === 0 ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          None yet. Who you are, your projects, your preferences and the notes you ask Shodh to keep go with every
+          question.
+        </p>
+      ) : (
+        <>
+          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+            Sent with every question, marked as possibly outdated, pinned and strongest first. “Not relevant” under an
+            answer makes one weigh less.
+          </p>
+          <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle">
+            {core.map(memory => (
+              <li key={memory.id} className="py-1.5 flex items-start gap-2 text-[12.5px]">
+                <p className="m-0 flex-1 min-w-0 text-shodh-text break-words">
+                  {memory.text}
+                  <span className="text-shodh-text-muted">
+                    {' · '}
+                    {[memory.classLabel, shortScope(memory.scope, workspaceName), memory.pinned ? 'pinned' : '']
+                      .filter(part => part.length > 0)
+                      .join(' · ')}
+                  </span>
+                </p>
+                <button
+                  type="button"
+                  className={cn(ICON_BUTTON, 'shrink-0')}
+                  onClick={() => onOutdated(memory.id)}
+                  aria-label={`Outdated: edit “${memory.text}”`}
+                >
+                  <Pencil aria-hidden="true" className="w-3.5 h-3.5" /> Outdated
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
   );
 }

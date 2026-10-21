@@ -632,8 +632,9 @@ function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: Cor
       ) : (
         <>
           <p className="m-0 text-[12.5px] text-shodh-text-muted">
-            Sent with every question, marked as possibly outdated, pinned and strongest first. “Not relevant” under an
-            answer makes one weigh less.
+            Sent with every question, marked as possibly outdated. The core holds your strongest standing notes: ones
+            you do not use fade and can leave it, so pin a note to keep it here. “Not relevant” under an answer makes one
+            weigh less.
           </p>
           <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle">
             {core.map(memory => (

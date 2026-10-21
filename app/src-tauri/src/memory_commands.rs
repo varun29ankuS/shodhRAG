@@ -446,8 +446,9 @@ pub struct RunMemories {
 /// not repeated among the recalled ones. Nothing is reinforced here: being put in front of
 /// a question is not use, for core memories as for the others. Only the memories the answer
 /// used are reinforced, when the run completes ([`MemoryState::track_run`],
-/// [`MemoryState::observe`]). `None` when there is nothing to inject; on a timeout or a
-/// failure nothing is injected (core included) and the answer goes on.
+/// [`MemoryState::observe`]). `None` when there is nothing to inject; the core and the
+/// recalled memories fail open on their own (no search models, an error or the shared
+/// deadline passing leaves the other in place), and the answer goes on.
 pub async fn recall_for_run(
     memory: &MemoryState,
     text: &str,
@@ -455,48 +456,53 @@ pub async fn recall_for_run(
     actor: &Actor,
 ) -> Option<RunMemories> {
     let scope = Scope::for_workspace(workspace);
-    let selected = tokio::time::timeout(RECALL_TIMEOUT, async {
-        let service = memory.service().await.map_err(RecallFailure::Unavailable)?;
-        let core = service
-            .core_for_run(&scope)
-            .await
-            .map_err(RecallFailure::Memory)?;
-        let core_block = render_core_counted(&core);
-        let in_core = core_block.as_ref().map_or(0, |(_, n)| *n);
-        // As many more as the core may take back, so the recalled block is not left short
-        // by memories that are in the core block already.
-        let request = RecallRequest::new(
-            text,
-            scope.clone(),
-            INJECTED_MEMORIES + in_core,
-            RecallMode::Inspect,
-        );
-        let recalled = service
-            .recall(&request, actor)
-            .await
-            .map_err(RecallFailure::Memory)?;
-        Ok::<_, RecallFailure>((core, core_block, recalled))
-    })
-    .await;
-    let (core, core_block, recalled) = match selected {
-        Ok(Ok(selected)) => selected,
-        Ok(Err(RecallFailure::Unavailable(e))) => {
+    let deadline = tokio::time::Instant::now() + RECALL_TIMEOUT;
+    let service = match tokio::time::timeout_at(deadline, memory.service()).await {
+        Ok(Ok(service)) => service,
+        Ok(Err(e)) => {
             tracing::debug!(target: "shodh::memory", error = %e, "memory unavailable; nothing injected");
             return None;
         }
-        Ok(Err(RecallFailure::Memory(MemoryError::Statement(
-            StatementError::EmbeddingUnavailable(_),
-        )))) => {
-            tracing::debug!(target: "shodh::memory", "search models not installed; no memories recalled");
+        Err(_) => {
+            tracing::warn!(target: "shodh::memory", "memory unavailable in time; nothing injected");
             return None;
         }
-        Ok(Err(RecallFailure::Memory(e))) => {
-            tracing::warn!(target: "shodh::memory", error = %e, "memory recall failed; nothing injected");
-            return None;
+    };
+    // The core needs no search models: it fails open on its own, and so does recall.
+    let core = match tokio::time::timeout_at(deadline, service.core_for_run(&scope)).await {
+        Ok(Ok(core)) => core,
+        Ok(Err(e)) => {
+            tracing::warn!(target: "shodh::memory", error = %e, "core memories not read; none injected");
+            Vec::new()
         }
         Err(_) => {
-            tracing::warn!(target: "shodh::memory", timeout_ms = RECALL_TIMEOUT.as_millis(), "memory recall timed out; nothing injected");
-            return None;
+            tracing::warn!(target: "shodh::memory", "core memories timed out; none injected");
+            Vec::new()
+        }
+    };
+    let core_block = render_core_counted(&core);
+    let in_core = core_block.as_ref().map_or(0, |(_, n)| *n);
+    // As many more as the core may take back, so the recalled block is not left short
+    // by memories that are in the core block already.
+    let request = RecallRequest::new(
+        text,
+        scope.clone(),
+        INJECTED_MEMORIES + in_core,
+        RecallMode::Inspect,
+    );
+    let recalled = match tokio::time::timeout_at(deadline, service.recall(&request, actor)).await {
+        Ok(Ok(recalled)) => recalled,
+        Ok(Err(MemoryError::Statement(StatementError::EmbeddingUnavailable(_)))) => {
+            tracing::debug!(target: "shodh::memory", "search models not installed; no memories recalled");
+            Vec::new()
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(target: "shodh::memory", error = %e, "memory recall failed; only core injected");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::warn!(target: "shodh::memory", "memory recall timed out; only core injected");
+            Vec::new()
         }
     };
     compose_run_memories(&core, core_block, recalled)
@@ -545,11 +551,6 @@ fn compose_run_memories(
         ids,
         core_ids,
     })
-}
-
-enum RecallFailure {
-    Unavailable(String),
-    Memory(MemoryError),
 }
 
 /// `message` with the memory block in front of it, delimited from the user's words.
@@ -1137,6 +1138,82 @@ mod tests {
                 "{other:?}"
             );
         }
+    }
+
+    /// A state over `dir` with one core rule (a note the user typed) and one recallable
+    /// learned note, and the switch of its embedder.
+    async fn rule_and_note(
+        dir: &Path,
+    ) -> (
+        MemoryState,
+        crate::agent_tools::testing::EmbedderSwitch,
+        String,
+        String,
+    ) {
+        let (memory, switch) = crate::agent_tools::testing::memory_state_switched(dir, None).await;
+        let rule = own_note(&memory, "Keep answers short", None).await;
+        let service = memory.service().await.unwrap();
+        let note = service
+            .remember(
+                MemoryContent::Note {
+                    text: "Invoices go to Priya".into(),
+                },
+                Scope::Global,
+                &learned(),
+                &Actor::ui(),
+            )
+            .await
+            .unwrap()
+            .memory
+            .unwrap()
+            .id;
+        (memory, switch, rule, note)
+    }
+
+    #[tokio::test]
+    async fn core_is_still_injected_when_the_search_models_are_missing() {
+        use crate::agent_tools::testing::Embedder;
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, switch, rule, _) = rule_and_note(dir.path()).await;
+        switch.set(Embedder::Missing);
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        let given = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+            .await
+            .expect("the core needs no search models");
+        assert_eq!(given.ids, vec![rule.clone()]);
+        assert_eq!(given.core_ids, vec![rule]);
+        assert!(given.block.contains("Keep answers short"));
+        assert!(!given.block.contains("Invoices"));
+    }
+
+    #[tokio::test]
+    async fn core_is_still_injected_when_recall_fails() {
+        use crate::agent_tools::testing::Embedder;
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, switch, rule, _) = rule_and_note(dir.path()).await;
+        switch.set(Embedder::Failing);
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        let given = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+            .await
+            .expect("a failing recall leaves the core");
+        assert_eq!(given.ids, vec![rule]);
+        assert!(!given.block.contains("Invoices"));
+    }
+
+    #[tokio::test]
+    async fn core_is_still_injected_when_recall_times_out() {
+        use crate::agent_tools::testing::Embedder;
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, switch, rule, _) = rule_and_note(dir.path()).await;
+        switch.set(Embedder::Held);
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        let started = std::time::Instant::now();
+        let given = recall_for_run(&memory, "Invoices go to Priya?", None, &actor)
+            .await
+            .expect("a slow recall leaves the core");
+        assert!(started.elapsed() < RECALL_TIMEOUT * 3);
+        assert_eq!(given.ids, vec![rule]);
+        assert!(!given.block.contains("Invoices"));
     }
 
     #[tokio::test]

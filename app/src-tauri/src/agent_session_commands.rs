@@ -2207,9 +2207,17 @@ fn user_words<'a>(
 /// Whether memories are recalled into answers (Settings → Memory). Unreadable settings
 /// leave them out: sharing memories with the model needs the user's setting.
 fn inject_memories(app: &AppHandle) -> bool {
-    let settings = app_data_dir(app)
-        .ok()
-        .map(|dir| SettingsStore::in_dir(&dir).load());
+    inject_setting(
+        app_data_dir(app)
+            .ok()
+            .map(|dir| SettingsStore::in_dir(&dir).load()),
+    )
+}
+
+/// [`inject_memories`] from the settings read (`None`: no data folder).
+fn inject_setting<E: std::fmt::Display>(
+    settings: Option<Result<crate::app_settings::AppSettings, E>>,
+) -> bool {
     match settings {
         Some(Ok(settings)) => settings.memory.inject_memories,
         Some(Err(e)) => {
@@ -3623,18 +3631,50 @@ mod tests {
         assert_eq!(user_words(&composed, None, Some("  "), true), None);
     }
 
-    #[test]
-    fn a_run_given_only_core_memories_is_private_to_the_web_tools() {
+    #[tokio::test]
+    async fn a_run_given_only_core_memories_is_private_to_the_web_tools() {
+        use crate::agent_tools::testing::{memory_state_switched, Embedder};
         // Core memories go in front of nearly every question; the web gate holds for them
         // as for recalled ones: web_search and fetch_url then ask before sending anything.
-        let core_only = RunMemories {
-            block: "<memory>\n- [Preference] keep answers short\n</memory>".into(),
-            ids: vec!["mem-core".into()],
-            core_ids: vec!["mem-core".into()],
-        };
-        assert!(private_context(Some(&core_only), false));
-        assert!(private_context(None, true));
+        // Here with no search models, so the core is all the run is given.
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, switch) = memory_state_switched(dir.path(), None).await;
+        memory
+            .service()
+            .await
+            .unwrap()
+            .remember(
+                shodh_rag::user_memory::MemoryContent::Note {
+                    text: "Keep answers short".into(),
+                },
+                shodh_rag::statements::Scope::Global,
+                &shodh_rag::user_memory::Origin::user_interface("t"),
+                &Actor::ui(),
+            )
+            .await
+            .unwrap();
+        switch.set(Embedder::Missing);
+        let actor = Actor::agent(LOCAL_OWNER, "conv-1", "assistant", "run-1");
+        let given = recall_for_run(&memory, "Explain gradient descent", None, &actor).await;
+        let core = given.as_ref().expect("the core is injected");
+        assert_eq!(core.ids, core.core_ids);
+        assert!(private_context(given.as_ref(), false));
+        // Nothing injected and nothing else private: not private.
         assert!(!private_context(None, false));
+        assert!(private_context(None, true));
+    }
+
+    #[test]
+    fn memories_are_injected_only_when_the_setting_is_on_and_readable() {
+        use crate::app_settings::AppSettings;
+        let on = AppSettings::default();
+        assert!(on.memory.inject_memories);
+        assert!(inject_setting(Some(Ok::<_, String>(on))));
+        let mut off = AppSettings::default();
+        off.memory.inject_memories = false;
+        assert!(!inject_setting(Some(Ok::<_, String>(off))));
+        assert!(!inject_setting(Some(Err::<AppSettings, _>("unreadable"))));
+        assert!(!inject_setting::<String>(None));
     }
 
     #[test]

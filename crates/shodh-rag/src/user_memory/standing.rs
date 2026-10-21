@@ -15,7 +15,7 @@
 //!   in the user's own words (extractor `user`: typed in Settings, asked for in a
 //!   conversation, or approved as written; notes the learner formulated are not core);
 //! - read with a filtered query on the statement store (no vector search), ranked pinned
-//!   first, then strongest now, then most important, at most [`CORE_MAX_ITEMS`]; the
+//!   first, then by strength now weighted by importance (as recall weighs it), at most [`CORE_MAX_ITEMS`]; the
 //!   rendered block is capped at [`CORE_MAX_CHARS`] ([`render_core_counted`]).
 //!
 //! Selecting a memory into the core is not use: like every injected memory it is
@@ -25,7 +25,7 @@ use std::collections::HashSet;
 
 use shodh_ontology::ExtractorKind;
 
-use super::recall::{prefer_workspace, render_block};
+use super::recall::{fits_alone, prefer_workspace, render_block};
 use super::{memory_source_prefixes, MemoryResult, MemoryService, RecalledMemory};
 use crate::statements::{identity_tokens, Scope, StatementQuery, StoredStatement, SELF_ENTITY_ID};
 
@@ -101,7 +101,7 @@ pub(super) async fn select(
                 .map(|valid| identity_tokens(ontology, &valid))
                 .unwrap_or_default();
             let recalled = RecalledMemory {
-                score: record.strength,
+                score: record.strength * (0.8 + 0.2 * record.importance),
                 relevance: 0.0,
                 activation: record.strength,
                 association: 0.0,
@@ -111,18 +111,21 @@ pub(super) async fn select(
         })
         .collect();
     ranked.sort_by(|a, b| core_order(&a.0, &b.0));
+    // A memory too long for the block even alone could never be rendered; it must not
+    // hold the places of the ones behind it (the rendered core is a prefix of this list).
+    ranked.retain(|(m, _)| fits_alone(CORE_BLOCK_TITLE, m, CORE_MAX_CHARS));
     let mut kept = prefer_workspace(ranked, scope);
     kept.truncate(CORE_MAX_ITEMS);
     Ok(kept)
 }
 
-/// Pinned first, then strongest now, then most important, then by id (stable).
+/// Pinned first, then by strength weighted by importance (as recall weighs it, so "Not
+/// relevant" can demote a core memory), then by id (stable).
 fn core_order(a: &RecalledMemory, b: &RecalledMemory) -> std::cmp::Ordering {
     b.memory
         .pinned
         .cmp(&a.memory.pinned)
-        .then_with(|| b.memory.strength.total_cmp(&a.memory.strength))
-        .then_with(|| b.memory.importance.total_cmp(&a.memory.importance))
+        .then_with(|| b.score.total_cmp(&a.score))
         .then_with(|| a.memory.id.cmp(&b.memory.id))
 }
 

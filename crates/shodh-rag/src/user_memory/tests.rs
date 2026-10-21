@@ -1315,5 +1315,81 @@ async fn core_memories_are_reinforced_only_when_the_answer_used_them() {
         .await
         .unwrap());
     let after = m.service.get(&other).await.unwrap().importance;
-    assert!(after <= before);
+    assert!(after < before, "{after} < {before}");
+    // The half that matters: a core memory the answer does use IS reinforced, alone.
+    m.service.record_injected("run-d", &core).await.unwrap();
+    m.service
+        .record_core_injected("run-d", &core)
+        .await
+        .unwrap();
+    let used = m
+        .service
+        .record_answer_use(
+            "run-d",
+            &[],
+            &core,
+            "Keep answers short.",
+            &Scope::Global,
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(used, vec![rule.clone()]);
+    assert_eq!(m.service.get(&rule).await.unwrap().use_count, 1);
+    assert_eq!(m.service.get(&other).await.unwrap().use_count, 0);
+}
+
+#[tokio::test]
+async fn one_item_too_long_for_the_block_does_not_blank_the_core() {
+    let m = mem().await;
+    let thesis = m.note(&"y".repeat(1_800), Scope::Global).await;
+    let short_a = m.note("Keep answers short", Scope::Global).await;
+    let short_b = m.note("Prefers metric units", Scope::Global).await;
+    // Pinned items rank first: the long one would be the front of the list.
+    m.service
+        .set_pinned(&thesis, true, &Actor::ui())
+        .await
+        .unwrap();
+    let core = m.service.core_for_run(&Scope::Global).await.unwrap();
+    let ids: Vec<&str> = core.iter().map(|c| c.memory.id.as_str()).collect();
+    assert!(!ids.contains(&thesis.as_str()), "{ids:?}");
+    assert!(ids.contains(&short_a.as_str()) && ids.contains(&short_b.as_str()));
+    let (block, n) = render_core_counted(&core).unwrap();
+    assert_eq!(n, core.len());
+    assert_eq!(n, 2);
+    assert!(block.contains("Keep answers short") && block.contains("Prefers metric units"));
+    assert!(block.len() <= CORE_MAX_CHARS);
+}
+
+#[tokio::test]
+async fn not_relevant_demotes_a_core_memory_out_of_a_full_core() {
+    let m = mem().await;
+    for i in 0..CORE_MAX_ITEMS {
+        m.note(&format!("Standing note number {i}"), Scope::Global)
+            .await;
+    }
+    // Written later, so stronger than every other note: first in the core.
+    m.f.clock.advance_days(1);
+    let weighed = m.note("Prefers metric units", Scope::Global).await;
+    let core = m.core_ids(&Scope::Global).await;
+    assert_eq!(core.len(), CORE_MAX_ITEMS);
+    assert_eq!(core[0], weighed);
+    let before = m.service.get(&weighed).await.unwrap().importance;
+    for run in 0..5 {
+        let run = format!("run-n{run}");
+        let ids = vec![weighed.clone()];
+        m.service.record_injected(&run, &ids).await.unwrap();
+        m.service.record_core_injected(&run, &ids).await.unwrap();
+        m.service
+            .record_feedback(&run, &weighed, Feedback::Irrelevant, &Actor::ui())
+            .await
+            .unwrap();
+    }
+    assert!(m.service.get(&weighed).await.unwrap().importance < before);
+    let core = m.core_ids(&Scope::Global).await;
+    assert_eq!(core.len(), CORE_MAX_ITEMS);
+    assert!(
+        !core.contains(&weighed),
+        "marked not relevant, it is the one that leaves the full core"
+    );
 }

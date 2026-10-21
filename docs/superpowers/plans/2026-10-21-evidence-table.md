@@ -4106,18 +4106,17 @@ Branch: `feat/evidence-table-export-eval`.
 4. **Neighbour-expanded search snippets.** Window chunks are joined with their neighbours, so a quote can match text from the neighbour while the cell takes the centre chunk's page and boxes. The highlight can then be one chunk off. Structure chunks (PDFs) are not expanded.
 5. **`paper_hash` reads the whole file on every fill of the paper.** It is negligible for PDFs. Re-check if tables of hundreds of papers appear.
 
-## Open questions
+## Decisions (2026-10-21, were open questions)
 
-1. **Recorded fixtures.** The spec asks for real responses captured once. PR 2 ships hand-written replies in free-model style, because nothing can call a model before PR 3. Capturing the real ones in PR 3 costs about 3 calls.
-2. **The eval corpus.** The spec says "10 open-access papers from the existing retrieval-eval corpus", but the committed `shodh-eval` corpus is synthetic. Someone has to choose the papers, check their licences and write the gold set by hand.
-3. **The per-day counter's scope.** Does it count chat calls too (the spec's "Shodh has made 12 calls today")? That means hooking the chat path, or the dialog says "Tables have made…".
-4. **Where the eval runs.** The user runs no local cargo. It runs either from a scheduled CI workflow with a free-key secret, with its state kept between runs, or on the user's machine.
-
-5. **Spec deviations, each with its reason:**
-   - **`paper_hash`** is the SHA-256 of the file's bytes. The library has no content hash.
+1. **Recorded fixtures.** PR 2 ships hand-written replies in free-model style. PR 3 captures real replies once (about 3 calls) and replaces them.
+2. **The eval corpus.** We choose 10 open-access CC-BY papers (arXiv), record each licence next to the gold set, and write the gold set by hand. The synthetic `shodh-eval` corpus is not used for this eval.
+3. **The per-day counter counts table calls only.** The dialog says "Tables have made N of 30 calls today". Chat is not hooked: a shared counter would let a table fill silently spend the chat quota.
+4. **The eval runs on the user's machine,** resumable across days. There is no CI workflow and no key secret in CI.
+5. **The spec deviations are accepted:**
+   - **`paper_hash`** is the SHA-256 of the file's bytes, because the library has no content hash.
    - **Removing a paper from the library** deletes its rows, not only its cells.
-   - **Editing or deleting a column** purges the cache entries only its cells used. §4 says the old entries "stay unused", but then deleting a table could never find them, and quotes would outlive their cells.
-   - **`column_key`** is stored on `table_column`, so the SQL purges can match cache entries.
+   - **Editing or deleting a column** purges the cache entries only its cells used. Otherwise a deleted table can never find them, and quotes outlive their cells (Forget erases everywhere). Re-asking an undone column costs one call per paper, which is accepted.
+   - **`column_key`** is stored on `table_column`.
 
 ## Self-review
 

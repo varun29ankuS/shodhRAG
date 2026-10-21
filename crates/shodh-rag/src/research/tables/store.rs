@@ -158,30 +158,23 @@ fn value_json(value: &Option<CellValue>) -> ResearchResult<Option<String>> {
         .map_err(|e| ResearchError::Invalid(e.to_string()))
 }
 
-/// Removes the cache entries used by the cells `scope` selects (a condition on `c`, the
-/// cell, with `?1` bound to `arg`) that no cell outside `scope` uses. `scope` is one of
-/// this module's constants, never user text.
-fn purge_cache(conn: &Connection, scope: &str, arg: &str) -> rusqlite::Result<usize> {
-    let sql = format!(
-        "DELETE FROM fill_cache WHERE EXISTS (
+/// Removes every cache entry that no cell uses (a cell uses the entry of its paper hash
+/// and its column's key). Called inside the transaction of every write that deletes or
+/// replaces cells or changes a column's key, so no model answer, and the quote of the
+/// user's paper in it, outlives the cells that showed it. An entry two tables share stays
+/// until the last of their cells goes.
+fn sweep_cache(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM fill_cache WHERE NOT EXISTS (
             SELECT 1 FROM table_cell c JOIN table_column k ON k.id = c.column_id
-             WHERE ({scope}) AND c.paper_hash = fill_cache.paper_hash
-               AND k.column_key = fill_cache.column_key)
-         AND NOT EXISTS (
-            SELECT 1 FROM table_cell c JOIN table_column k ON k.id = c.column_id
-             WHERE NOT ({scope}) AND c.paper_hash = fill_cache.paper_hash
-               AND k.column_key = fill_cache.column_key)"
-    );
-    conn.execute(&sql, params![arg])
+             WHERE c.paper_hash = fill_cache.paper_hash
+               AND k.column_key = fill_cache.column_key)",
+        [],
+    )
 }
-
-const BY_TABLE: &str = "c.table_id = ?1";
-const BY_COLUMN: &str = "c.column_id = ?1";
-const BY_ROW: &str = "c.row_id = ?1";
 
 /// Deletes one table with its columns, rows, cells, jobs and unshared cache entries.
 fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize> {
-    purge_cache(conn, BY_TABLE, table_id)?;
     conn.execute(
         "DELETE FROM table_cell WHERE table_id = ?1",
         params![table_id],
@@ -198,17 +191,20 @@ fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize>
         "DELETE FROM table_fill_job WHERE table_id = ?1",
         params![table_id],
     )?;
-    conn.execute(
+    let removed = conn.execute(
         "DELETE FROM evidence_table WHERE id = ?1",
         params![table_id],
-    )
+    )?;
+    sweep_cache(conn)?;
+    Ok(removed)
 }
 
 /// Deletes one row with its cells and the cache entries only it used.
 fn delete_row_in(conn: &Connection, row_id: &str) -> rusqlite::Result<usize> {
-    purge_cache(conn, BY_ROW, row_id)?;
     conn.execute("DELETE FROM table_cell WHERE row_id = ?1", params![row_id])?;
-    conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])
+    let removed = conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])?;
+    sweep_cache(conn)?;
+    Ok(removed)
 }
 
 /// Deletes every table of a workspace (called inside the workspace's own delete
@@ -243,17 +239,6 @@ impl TableStore {
 
     pub fn create_table(&self, workspace_id: &str, name: &str) -> ResearchResult<EvidenceTable> {
         let name = clean_name(name)?;
-        let conn = self.lock();
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
-            params![workspace_id],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            return Err(ResearchError::NotFound(format!(
-                "No workspace {workspace_id}."
-            )));
-        }
         let now = now_text();
         let table = EvidenceTable {
             id: new_id(),
@@ -262,9 +247,12 @@ impl TableStore {
             created_at: now.clone(),
             updated_at: now,
         };
-        conn.execute(
+        // One statement: the workspace is checked and the table inserted in the same
+        // write, so a workspace deleted meanwhile never keeps a table.
+        let inserted = self.lock().execute(
             "INSERT INTO evidence_table(id, workspace_id, name, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             SELECT ?1, ?2, ?3, ?4, ?5
+              WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ?2)",
             params![
                 table.id,
                 table.workspace_id,
@@ -273,6 +261,11 @@ impl TableStore {
                 table.updated_at
             ],
         )?;
+        if inserted == 0 {
+            return Err(ResearchError::NotFound(format!(
+                "No workspace {workspace_id}."
+            )));
+        }
         Ok(table)
     }
 
@@ -412,7 +405,6 @@ impl TableStore {
         if current.key == key {
             return Ok(current);
         }
-        purge_cache(&tx, BY_COLUMN, column_id)?;
         let now = now_text();
         tx.execute(
             "UPDATE table_column SET question = ?2, kind = ?3, options_json = ?4,
@@ -428,6 +420,7 @@ impl TableStore {
                 now
             ],
         )?;
+        sweep_cache(&tx)?;
         let updated = tx.query_row(
             &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
             params![column_id],
@@ -440,12 +433,12 @@ impl TableStore {
     pub fn delete_column(&self, column_id: &str) -> ResearchResult<bool> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        purge_cache(&tx, BY_COLUMN, column_id)?;
         tx.execute(
             "DELETE FROM table_cell WHERE column_id = ?1",
             params![column_id],
         )?;
         let removed = tx.execute("DELETE FROM table_column WHERE id = ?1", params![column_id])?;
+        sweep_cache(&tx)?;
         tx.commit()?;
         Ok(removed > 0)
     }
@@ -595,6 +588,8 @@ impl TableStore {
                 params![entry.paper_hash, entry.column_key, entry.model, entry.response_json, now_text()],
             )?;
         }
+        // A refill with a new paper hash leaves the old hash's entries unused.
+        sweep_cache(&tx)?;
         tx.commit()?;
         Ok(true)
     }
@@ -636,10 +631,15 @@ impl TableStore {
 
     /// Empties a cell (an edit included); the next fill fills it.
     pub fn clear_cell(&self, row_id: &str, column_id: &str) -> ResearchResult<bool> {
-        Ok(self.lock().execute(
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let removed = tx.execute(
             "DELETE FROM table_cell WHERE row_id = ?1 AND column_id = ?2",
             params![row_id, column_id],
-        )? > 0)
+        )?;
+        sweep_cache(&tx)?;
+        tx.commit()?;
+        Ok(removed > 0)
     }
 
     pub fn cached(
@@ -660,7 +660,7 @@ impl TableStore {
     }
 
     /// Forgets papers removed from the library: their rows in every table, their cells,
-    /// and the cache entries no remaining cell uses. Returns the rows removed.
+    /// and every cache entry no remaining cell uses. Returns the rows removed.
     pub fn forget_documents(&self, documents: &[String]) -> ResearchResult<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -671,25 +671,8 @@ impl TableStore {
                 let rows = stmt.query_map(params![path_key(document)], |r| r.get(0))?;
                 rows.collect::<Result<_, _>>()?
             };
-            let hashes: Vec<String> = {
-                let mut stmt = tx.prepare(
-                    "SELECT DISTINCT c.paper_hash FROM table_cell c JOIN table_row r ON r.id = c.row_id
-                     WHERE r.document_id = ?1 AND c.paper_hash IS NOT NULL",
-                )?;
-                let rows = stmt.query_map(params![path_key(document)], |r| r.get(0))?;
-                rows.collect::<Result<_, _>>()?
-            };
             for id in &row_ids {
                 removed += delete_row_in(&tx, id)?;
-            }
-            // Every cache entry of the paper's content, whichever column it answered,
-            // unless a remaining cell (another path to the same file) still shows it.
-            for hash in &hashes {
-                tx.execute(
-                    "DELETE FROM fill_cache WHERE paper_hash = ?1
-                       AND NOT EXISTS (SELECT 1 FROM table_cell WHERE paper_hash = ?1)",
-                    params![hash],
-                )?;
             }
         }
         tx.commit()?;
@@ -774,6 +757,115 @@ mod tests {
                 r#"{"answer":"LAION-400M","quote":"We pre-train on LAION-400M","passage":1}"#
                     .to_string(),
         }
+    }
+
+    fn cache_rows(f: &Fixture) -> i64 {
+        f.store
+            .lock()
+            .query_row("SELECT count(*) FROM fill_cache", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn no_delete_or_replace_path_leaves_an_unused_cache_entry() {
+        let f = fixture();
+        let one = f.store.create_table(&f.workspace, "A").unwrap();
+        let two = f.store.create_table(&f.workspace, "B").unwrap();
+        let q = spec("Dataset?", ColumnKind::Text);
+        let c1 = f.store.add_column(&one.id, &q).unwrap();
+        let c2 = f.store.add_column(&two.id, &q).unwrap();
+        let r1 = f
+            .store
+            .add_rows(&one.id, &["/p/a.pdf".to_string()])
+            .unwrap()
+            .remove(0);
+        let r2 = f
+            .store
+            .add_rows(&two.id, &["/p/a.pdf".to_string()])
+            .unwrap()
+            .remove(0);
+
+        // A cleared cell, then its table.
+        f.store
+            .store_fill(&filled(&c1, &r1, "h"), Some(&entry(&c1, "h")))
+            .unwrap();
+        assert_eq!(cache_rows(&f), 1);
+        assert!(f.store.clear_cell(&r1.id, &c1.id).unwrap());
+        assert_eq!(cache_rows(&f), 0, "clearing the only cell that used it");
+        f.store
+            .store_fill(&filled(&c1, &r1, "h"), Some(&entry(&c1, "h")))
+            .unwrap();
+        f.store.clear_cell(&r1.id, &c1.id).unwrap();
+        assert!(f.store.delete_table(&one.id).unwrap());
+        assert_eq!(cache_rows(&f), 0);
+
+        // An entry two tables share stays until the last cell goes.
+        let three = f.store.create_table(&f.workspace, "C").unwrap();
+        let c3 = f.store.add_column(&three.id, &q).unwrap();
+        let r3 = f
+            .store
+            .add_rows(&three.id, &["/p/a.pdf".to_string()])
+            .unwrap()
+            .remove(0);
+        f.store
+            .store_fill(&filled(&c3, &r3, "h"), Some(&entry(&c3, "h")))
+            .unwrap();
+        f.store
+            .store_fill(&filled(&c2, &r2, "h"), Some(&entry(&c2, "h")))
+            .unwrap();
+        assert_eq!(
+            cache_rows(&f),
+            1,
+            "one entry for the same paper and question"
+        );
+        f.store.clear_cell(&r3.id, &c3.id).unwrap();
+        assert_eq!(cache_rows(&f), 1, "table B still uses it");
+        f.store.clear_cell(&r2.id, &c2.id).unwrap();
+        assert_eq!(cache_rows(&f), 0);
+
+        // A refill with a new paper hash leaves no entry of the old one.
+        f.store
+            .store_fill(&filled(&c2, &r2, "old"), Some(&entry(&c2, "old")))
+            .unwrap();
+        f.store
+            .store_fill(&filled(&c2, &r2, "new"), Some(&entry(&c2, "new")))
+            .unwrap();
+        assert!(f
+            .store
+            .cached("old", &c2.key, "test-model")
+            .unwrap()
+            .is_none());
+        assert!(f
+            .store
+            .cached("new", &c2.key, "test-model")
+            .unwrap()
+            .is_some());
+
+        // Forgetting a paper after one of its cells was cleared.
+        let other = f
+            .store
+            .add_column(&two.id, &spec("Method?", ColumnKind::Text))
+            .unwrap();
+        f.store
+            .store_fill(&filled(&other, &r2, "new"), Some(&entry(&other, "new")))
+            .unwrap();
+        f.store.clear_cell(&r2.id, &c2.id).unwrap();
+        assert_eq!(cache_rows(&f), 1);
+        assert_eq!(
+            f.store.forget_documents(&["/p/a.pdf".to_string()]).unwrap(),
+            2
+        );
+        assert_eq!(cache_rows(&f), 0);
+    }
+
+    #[test]
+    fn a_table_cannot_be_created_in_a_missing_workspace() {
+        let f = fixture();
+        assert!(matches!(
+            f.store.create_table("gone", "T"),
+            Err(ResearchError::NotFound(_))
+        ));
+        assert!(f.store.tables("gone").unwrap().is_empty());
     }
 
     #[test]

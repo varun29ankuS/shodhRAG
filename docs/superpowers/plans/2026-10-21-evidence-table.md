@@ -479,7 +479,8 @@ impl ColumnSpec {
 
     /// `column_key`: the SHA-256 (hex) of the normalised question, kind, options and
     /// instructions. Two specs that differ only in whitespace share a key; any other edit
-    /// changes it, so the column's cells refill and its old cache entries go unused.
+    /// changes it, so the column's cells refill ([`TableStore::update_column`] removes
+    /// the cache entries only the old key's cells used).
     pub fn key(&self) -> String {
         let canonical = serde_json::json!({
             "v": 1,
@@ -3134,6 +3135,8 @@ mod tests {
     }
 ```
 
+No existing `rag_engine.rs` test runs `search_comprehensive` on `test_engine`, so this test is the first to do it. If the word embedder cannot drive the full pipeline, fix the test setup: attach what `search_comprehensive` requires. Never skip the search assertions.
+
 The 40 sections are units of the structure chunker (see `short_and_whitespace_free_files_are_indexed_with_their_text`), so the file is several chunks. If CI shows a single chunk, lengthen each section's text; never drop the `chunks.len() > 1` assertion.
 
 - [ ] **Step 4: Commit**
@@ -4109,6 +4112,12 @@ Branch: `feat/evidence-table-export-eval`.
 2. **The eval corpus.** The spec says "10 open-access papers from the existing retrieval-eval corpus", but the committed `shodh-eval` corpus is synthetic. Someone has to choose the papers, check their licences and write the gold set by hand.
 3. **The per-day counter's scope.** Does it count chat calls too (the spec's "Shodh has made 12 calls today")? That means hooking the chat path, or the dialog says "Tables have made…".
 4. **Where the eval runs.** The user runs no local cargo. It runs either from a scheduled CI workflow with a free-key secret, with its state kept between runs, or on the user's machine.
+
+5. **Spec deviations, each with its reason:**
+   - **`paper_hash`** is the SHA-256 of the file's bytes. The library has no content hash.
+   - **Removing a paper from the library** deletes its rows, not only its cells.
+   - **Editing or deleting a column** purges the cache entries only its cells used. §4 says the old entries "stay unused", but then deleting a table could never find them, and quotes would outlive their cells.
+   - **`column_key`** is stored on `table_column`, so the SQL purges can match cache entries.
 
 ## Self-review
 

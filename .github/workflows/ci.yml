@@ -242,6 +242,13 @@ jobs:
   # is the mean of its fastest 20% of launches: runner noise only adds time,
   # and on the noisier runners it moves the median of 9 launches by more than
   # a 10% regression (measured on this PR's runs; medians are still logged).
+  # PAIRS is 45, not 15: across 64 earlier runs of this job, 15 pairs put the
+  # fastest-20% estimate within about 10% of its run's true ratio only 99% of
+  # the time, while the anchor ceiling sits 8.5% above the typical 0.866 s, so
+  # about one run in 64 failed on noise alone (0.950 s on fcfbd33, 0.876 s on
+  # its unchanged re-run). The estimate's spread falls about as pairs^-0.46,
+  # so 45 pairs cuts it to about 6%, inside the margin, for about 2.5 more
+  # minutes (4.4 s a pair).
   # Gated on ratios of those times:
   #   - Against the base commit's build (the merge commit's first parent), at
   #     most MAX_WINDOW_RATIO, set from master-against-itself runs.
@@ -265,7 +272,7 @@ jobs:
     env:
       FOOTPRINT_ANCHOR_SHA: 76bf22ff6df23370b58b6af5d0684f0529efd2ab
       FOOTPRINT_ANCHOR_SECONDS: "0.857"
-      PAIRS: "15"
+      PAIRS: "45"
       MAX_WINDOW_RATIO: "1.06"
     steps:
       - uses: actions/checkout@v4

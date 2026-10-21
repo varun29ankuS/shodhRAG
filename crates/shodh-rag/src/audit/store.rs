@@ -1925,6 +1925,12 @@ mod tests {
                  DROP TABLE memory_learn_rejections;
                  DROP TABLE statement_state;
                  DROP TABLE run_memories;
+                 DROP TABLE evidence_table;
+                 DROP TABLE table_column;
+                 DROP TABLE table_row;
+                 DROP TABLE table_cell;
+                 DROP TABLE table_fill_job;
+                 DROP TABLE fill_cache;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

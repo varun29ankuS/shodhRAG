@@ -469,7 +469,6 @@ const MIGRATIONS: &[(i64, &str)] = &[
             PRIMARY KEY (paper_hash, column_key, model)
         );",
     ),
-```
 ];
 
 fn latest_schema_version() -> i64 {

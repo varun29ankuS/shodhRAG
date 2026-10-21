@@ -1,13 +1,16 @@
 //! The rules a model's answer must pass. Deterministic; the model never has the last word.
 //!
-//! - The quote must occur, after [`normalize`], in the passage the model named or in
-//!   another passage of the same call (`quote_not_in_passages` otherwise).
+//! - The quote must occur, after [`normalize`] (letter case, signs and superscripts kept),
+//!   in the passage the model named or in another passage of the same call
+//!   (`quote_not_in_passages` otherwise), and be at least [`MIN_QUOTE_WORDS`] words and
+//!   [`MIN_QUOTE_CHARS`] characters long (`quote_too_short` otherwise).
 //! - The value must pass its column's type rule: `number` — its digits occur in the quote
 //!   (nothing computed, rounded or converted) and a stated unit too; `yes_no` — yes or no;
 //!   `choice` — one of the options, case-folded; `text` — 1 to 500 characters.
 //! - A verified answer the local entailment model reads as contradicted by its quote is
 //!   downgraded (`quote_does_not_support`).
-//! - `answer: null` is `not_found`, shown as "Not found in the passages searched".
+//! - A reply with no `answer` key at all is `failed` (`missing_answer`), so the job retries
+//!   it; only an explicit `answer: null` is `not_found`, shown as "Not found in the passages searched".
 
 use std::sync::LazyLock;
 
@@ -24,6 +27,8 @@ use crate::research::{ResearchError, ResearchResult};
 pub const QUOTE_NOT_IN_PASSAGES: &str = "quote_not_in_passages";
 pub const QUOTE_DOES_NOT_SUPPORT: &str = "quote_does_not_support";
 pub const MISSING_QUOTE: &str = "missing_quote";
+pub const MISSING_ANSWER: &str = "missing_answer";
+pub const QUOTE_TOO_SHORT: &str = "quote_too_short";
 pub const NOT_A_NUMBER: &str = "not_a_number";
 pub const NUMBER_NOT_IN_QUOTE: &str = "number_not_in_quote";
 pub const UNIT_NOT_IN_QUOTE: &str = "unit_not_in_quote";
@@ -36,10 +41,32 @@ pub const TEXT_TOO_LONG: &str = "text_too_long";
 /// verified cell is downgraded. Uncalibrated; the accuracy eval measures it.
 pub const CONTRADICTION_CUTOFF: f32 = 0.5;
 
+/// Fewest words a quote must have to back an answer. A shorter quote ("the") would sit in
+/// any paper and prove nothing; the reader must be able to check the answer at a glance.
+pub const MIN_QUOTE_WORDS: usize = 3;
+/// Fewest characters (after normalisation) a quote must have, whatever its word count.
+pub const MIN_QUOTE_CHARS: usize = 15;
+
+/// Reads `answer` so that a missing key stays distinct from `null`: a missing key is
+/// `None`, `null` is `Some(None)`, a value is `Some(Some(value))`.
+fn answer_present<'de, D>(deserializer: D) -> Result<Option<Option<Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Value>::deserialize(deserializer).map(Some)
+}
+
 /// What the model said for one column. `passage` is 1-based, as numbered in the prompt.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RawAnswer {
-    pub answer: Option<Value>,
+    /// `None`: the reply has no `answer` key. `Some(None)`: `answer: null`, the model
+    /// found nothing.
+    #[serde(
+        default,
+        deserialize_with = "answer_present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub answer: Option<Option<Value>>,
     pub quote: Option<String>,
     pub passage: Option<usize>,
 }
@@ -63,9 +90,9 @@ static ANSWER_NUMBER: LazyLock<Option<Regex>> = LazyLock::new(|| {
     .ok()
 });
 
-/// Numbers printed in a quote (signs are not digits and are compared without).
+/// Numbers printed in a quote, with the sign written directly before them.
 static QUOTE_NUMBER: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+").ok());
+    LazyLock::new(|| Regex::new(r"[+\-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+\-]?\.\d+").ok());
 
 fn unsigned_decimal(lexeme: &str) -> String {
     let digits = lexeme
@@ -143,17 +170,27 @@ pub fn typed_value(spec: &ColumnSpec, answer: &Value) -> Result<CellValue, &'sta
     }
 }
 
-/// The number rule: the value's digits occur in the quote as a whole number (not inside
-/// a longer one), and a stated unit occurs in the quote too.
+/// The number rule: the value's digits and sign occur in the quote as a whole number (not
+/// inside a longer one, and not with another sign: "-3.2" is not in "improved by 3.2"),
+/// and a stated unit occurs in the quote too, letter case included.
 fn number_in_quote(value: &CellValue, quote: &str) -> Result<(), &'static str> {
     let CellValue::Number { decimal, unit, .. } = value else {
         return Ok(());
     };
     let quote = normalize(quote);
+    let negative = decimal.starts_with('-');
     let wanted = decimal.trim_start_matches('-');
     let found = QUOTE_NUMBER.as_ref().is_some_and(|re| {
-        re.find_iter(&quote)
-            .any(|m| unsigned_decimal(m.as_str()) == wanted)
+        re.find_iter(&quote).any(|m| {
+            let text = m.as_str();
+            // A hyphen glued to a word ("Top-1") is not a sign.
+            let glued = quote[..m.start()]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
+            let quote_negative = text.starts_with('-') && !glued;
+            quote_negative == negative && unsigned_decimal(text) == wanted
+        })
     });
     if !found {
         return Err(NUMBER_NOT_IN_QUOTE);
@@ -180,14 +217,26 @@ fn number_in_quote(value: &CellValue, quote: &str) -> Result<(), &'static str> {
 
 /// Checks one raw answer against the passages of its call.
 pub fn check(spec: &ColumnSpec, raw: &RawAnswer, passages: &[Passage]) -> Checked {
-    let Some(answer) = raw.answer.as_ref().filter(|a| !a.is_null()) else {
-        return Checked {
-            status: CellStatus::NotFound,
-            value: None,
-            quote: None,
-            passage: None,
-            error: None,
-        };
+    let answer = match raw.answer.as_ref() {
+        None => {
+            return Checked {
+                status: CellStatus::Failed,
+                value: None,
+                quote: None,
+                passage: None,
+                error: Some(MISSING_ANSWER.to_string()),
+            }
+        }
+        Some(None) | Some(Some(Value::Null)) => {
+            return Checked {
+                status: CellStatus::NotFound,
+                value: None,
+                quote: None,
+                passage: None,
+                error: None,
+            }
+        }
+        Some(Some(answer)) => answer,
     };
     let quote = raw
         .quote
@@ -224,6 +273,12 @@ pub fn check(spec: &ColumnSpec, raw: &RawAnswer, passages: &[Passage]) -> Checke
     let Some(found) = find_quote(quote_text, passages, preferred) else {
         return unverified(QUOTE_NOT_IN_PASSAGES, None);
     };
+    let normal = normalize(quote_text);
+    if normal.split_whitespace().count() < MIN_QUOTE_WORDS
+        || normal.chars().count() < MIN_QUOTE_CHARS
+    {
+        return unverified(QUOTE_TOO_SHORT, Some(found));
+    }
     let value = match typed.as_ref() {
         Ok(value) => value.clone(),
         Err(code) => return unverified(code, Some(found)),
@@ -288,6 +343,8 @@ pub fn reason(code: &str) -> &'static str {
         QUOTE_NOT_IN_PASSAGES => "The quote does not occur in the passages the model was given.",
         QUOTE_DOES_NOT_SUPPORT => "The quote appears to contradict the answer.",
         MISSING_QUOTE => "The model gave no quote for its answer.",
+        MISSING_ANSWER => "The model's reply had no answer for this column.",
+        QUOTE_TOO_SHORT => "The quote is too short to back the answer.",
         NOT_A_NUMBER => "The answer is not a single number.",
         NUMBER_NOT_IN_QUOTE => "The number does not occur in the quote.",
         UNIT_NOT_IN_QUOTE => "The unit does not occur in the quote.",
@@ -335,7 +392,7 @@ mod tests {
 
     fn raw(answer: Value, quote: &str, passage: usize) -> RawAnswer {
         RawAnswer {
-            answer: Some(answer),
+            answer: Some(Some(answer)),
             quote: Some(quote.to_string()),
             passage: Some(passage),
         }
@@ -475,28 +532,129 @@ mod tests {
         assert_eq!(out.status, CellStatus::Verified);
     }
 
+    fn one_passage(text: &str) -> Vec<Passage> {
+        vec![Passage {
+            chunk_id: "c".to_string(),
+            text: text.to_string(),
+            page: Some(1),
+            bboxes: None,
+        }]
+    }
+
     #[test]
-    fn a_null_answer_is_not_found_and_a_missing_quote_is_unverified() {
+    fn only_an_explicit_null_is_not_found_and_a_missing_key_fails() {
         let s = spec(ColumnKind::Text, &[]);
-        let none = RawAnswer {
-            answer: Some(Value::Null),
+        let null = RawAnswer {
+            answer: Some(None),
             quote: Some("x".into()),
             passage: Some(1),
         };
-        assert_eq!(check(&s, &none, &passages()).status, CellStatus::NotFound);
+        assert_eq!(check(&s, &null, &passages()).status, CellStatus::NotFound);
         let absent = RawAnswer {
             answer: None,
             quote: None,
             passage: None,
         };
-        assert_eq!(check(&s, &absent, &passages()).status, CellStatus::NotFound);
+        let out = check(&s, &absent, &passages());
+        assert_eq!(out.status, CellStatus::Failed);
+        assert_eq!(out.error.as_deref(), Some(MISSING_ANSWER));
+        let parsed: RawAnswer = serde_json::from_str(r#"{"value":"LAION","quote":"q"}"#).unwrap();
+        assert_eq!(parsed.answer, None, "a wrong key is not an answer");
+        let parsed: RawAnswer = serde_json::from_str(r#"{"answer":null}"#).unwrap();
+        assert_eq!(parsed.answer, Some(None));
+        let parsed: RawAnswer = serde_json::from_str(r#"{"answer":"x","passage":2}"#).unwrap();
+        assert_eq!(parsed.answer, Some(Some(Value::from("x"))));
+        assert_eq!(
+            serde_json::to_string(&null).unwrap(),
+            r#"{"answer":null,"quote":"x","passage":1}"#
+        );
+    }
+
+    #[test]
+    fn a_missing_quote_is_unverified() {
+        let s = spec(ColumnKind::Text, &[]);
         let unquoted = RawAnswer {
-            answer: Some(Value::from("LAION")),
+            answer: Some(Some(Value::from("LAION"))),
             quote: Some("  ".into()),
             passage: None,
         };
         let out = check(&s, &unquoted, &passages());
         assert_eq!(out.error.as_deref(), Some(MISSING_QUOTE));
+    }
+
+    #[test]
+    fn a_quote_needs_three_words_and_fifteen_characters() {
+        let s = spec(ColumnKind::YesNo, &[]);
+        let passages = one_passage("Code is a Co de is avai thing, Co de is avai t here.");
+        // One word, two words, three words of nine characters, four words of 13.
+        for quote in ["Code", "Code is", "Code is a", "Co de is avai"] {
+            let out = check(&s, &raw(Value::from("yes"), quote, 1), &passages);
+            assert_eq!(out.status, CellStatus::Unverified, "{quote}");
+            assert_eq!(out.error.as_deref(), Some(QUOTE_TOO_SHORT), "{quote}");
+        }
+        assert_eq!((MIN_QUOTE_WORDS, MIN_QUOTE_CHARS), (3, 15));
+        // Four words, exactly fifteen characters.
+        let out = check(
+            &s,
+            &raw(Value::from("yes"), "Co de is avai t", 1),
+            &passages,
+        );
+        assert_eq!(out.status, CellStatus::Verified);
+    }
+
+    #[test]
+    fn a_number_keeps_its_sign_and_is_not_cut_out_of_a_longer_one() {
+        let s = spec(ColumnKind::Number, &[]);
+        let passages = one_passage(
+            "Validation loss improved by 3.2 points and fell by \u{2212}4.5 points, with Top-1 at 91.2% after 1,234 steps.",
+        );
+        let cases = [
+            (
+                "-3.2",
+                "loss improved by 3.2 points",
+                Some(NUMBER_NOT_IN_QUOTE),
+            ),
+            ("3.2", "loss improved by 3.2 points", None),
+            ("+3.2", "loss improved by 3.2 points", None),
+            (
+                "4.5",
+                "and fell by \u{2212}4.5 points",
+                Some(NUMBER_NOT_IN_QUOTE),
+            ),
+            ("-4.5", "and fell by \u{2212}4.5 points", None),
+            ("1", "with Top-1 at 91.2% after", None),
+            ("-1", "with Top-1 at 91.2% after", Some(NUMBER_NOT_IN_QUOTE)),
+            ("91", "with Top-1 at 91.2% after", Some(NUMBER_NOT_IN_QUOTE)),
+            ("91.2%", "with Top-1 at 91.2% after", None),
+            (
+                "234",
+                "at 91.2% after 1,234 steps",
+                Some(NUMBER_NOT_IN_QUOTE),
+            ),
+            ("1,234", "at 91.2% after 1,234 steps", None),
+        ];
+        for (answer, quote, expected) in cases {
+            let out = check(&s, &raw(Value::from(answer), quote, 1), &passages);
+            assert_eq!(out.error.as_deref(), expected, "{answer} / {quote}");
+        }
+        // A quote that stops inside a number is not in the passage at all.
+        let out = check(
+            &s,
+            &raw(Value::from("91"), "with Top-1 at 91", 1),
+            &passages,
+        );
+        assert_eq!(out.error.as_deref(), Some(QUOTE_NOT_IN_PASSAGES));
+    }
+
+    #[test]
+    fn a_unit_keeps_its_letter_case() {
+        let s = spec(ColumnKind::Number, &[]);
+        let passages = one_passage("The link sustains 5 Mb/s per node in practice.");
+        let quote = "The link sustains 5 Mb/s per node";
+        let out = check(&s, &raw(Value::from("5 MB/s"), quote, 1), &passages);
+        assert_eq!(out.error.as_deref(), Some(UNIT_NOT_IN_QUOTE));
+        let out = check(&s, &raw(Value::from("5 Mb/s"), quote, 1), &passages);
+        assert_eq!(out.status, CellStatus::Verified);
     }
 
     /// Replays recorded NLI probabilities for every premise.

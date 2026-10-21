@@ -93,7 +93,6 @@ rand = "0.8"
 
 # Utilities
 regex = "1"
-unicode-normalization = "0.1"
 walkdir = "2"
 dirs = "5"
 

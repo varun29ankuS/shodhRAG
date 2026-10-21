@@ -1177,7 +1177,9 @@ async fn the_core_holds_standing_context_by_class_not_by_similarity() {
     assert_eq!(m.service.get(&rule).await.unwrap().use_count, 0);
     assert!(m.events(&[AuditEventType::MemoryUse]).is_empty());
     // Only current memories: a superseded preference, an archived project and a
-    // forgotten note leave the core at once.
+    // forgotten note leave the core at once. The preference changes later (a new value
+    // at the same instant does not supersede).
+    m.f.clock.advance_days(1);
     let newer = m
         .put(
             preference("answer length", "detailed answers"),
@@ -1185,6 +1187,7 @@ async fn the_core_holds_standing_context_by_class_not_by_similarity() {
             &ui,
         )
         .await;
+    assert_ne!(newer, rule, "the new value supersedes the old one");
     m.service.archive(&project, &Actor::ui()).await.unwrap();
     m.service
         .forget(&own_note, None, &Actor::ui())

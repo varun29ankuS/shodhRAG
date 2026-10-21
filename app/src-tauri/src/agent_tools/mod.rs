@@ -575,15 +575,75 @@ pub(crate) mod testing {
         }
     }
 
-    struct FixedEmbedder(Arc<dyn shodh_rag::embeddings::EmbeddingModel>);
+    /// How the embedder source of a test memory behaves (it can change during a test, so a
+    /// memory written with search models can be read as if they were missing, slow or
+    /// failing).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Embedder {
+        /// Works.
+        Ready,
+        /// The search models are not installed.
+        Missing,
+        /// The engine is held (indexing): the embedder never arrives.
+        Held,
+        /// Arrives, but embedding a query fails.
+        Failing,
+    }
+
+    /// Switches the embedder of a test memory.
+    #[derive(Clone)]
+    pub struct EmbedderSwitch(Arc<Mutex<Embedder>>);
+
+    impl EmbedderSwitch {
+        pub fn set(&self, mode: Embedder) {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = mode;
+        }
+        fn get(&self) -> Embedder {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    /// Delegates to `inner`, except that a query cannot be embedded while `switch` is
+    /// [`Embedder::Failing`].
+    struct SwitchedModel {
+        inner: Arc<dyn shodh_rag::embeddings::EmbeddingModel>,
+        switch: EmbedderSwitch,
+    }
+
+    impl shodh_rag::embeddings::EmbeddingModel for SwitchedModel {
+        fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            if self.switch.get() == Embedder::Failing {
+                anyhow::bail!("the embedding model failed");
+            }
+            self.inner.embed_query(text)
+        }
+        fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            self.inner.embed_document(text)
+        }
+        fn dimension(&self) -> usize {
+            self.inner.dimension()
+        }
+    }
+
+    struct SwitchedEmbedder {
+        model: Arc<SwitchedModel>,
+    }
 
     #[async_trait::async_trait]
-    impl shodh_rag::statements::EmbedderSource for FixedEmbedder {
+    impl shodh_rag::statements::EmbedderSource for SwitchedEmbedder {
         async fn embedder(
             &self,
         ) -> shodh_rag::statements::StatementResult<Arc<dyn shodh_rag::embeddings::EmbeddingModel>>
         {
-            Ok(self.0.clone())
+            match self.model.switch.get() {
+                Embedder::Missing => {
+                    Err(shodh_rag::statements::StatementError::EmbeddingUnavailable(
+                        "search models are not installed".into(),
+                    ))
+                }
+                Embedder::Held => std::future::pending().await,
+                Embedder::Ready | Embedder::Failing => Ok(self.model.clone()),
+            }
         }
     }
 
@@ -593,6 +653,19 @@ pub(crate) mod testing {
         dir: &std::path::Path,
         audit: Option<Arc<AuditLog>>,
     ) -> crate::memory_commands::MemoryState {
+        memory_state_switched(dir, audit).await.0
+    }
+
+    /// [`memory_state`] and the switch of its embedder.
+    pub async fn memory_state_switched(
+        dir: &std::path::Path,
+        audit: Option<Arc<AuditLog>>,
+    ) -> (crate::memory_commands::MemoryState, EmbedderSwitch) {
+        let switch = EmbedderSwitch(Arc::new(Mutex::new(Embedder::Ready)));
+        let model = Arc::new(SwitchedModel {
+            inner: Arc::new(WordEmbedder::default()),
+            switch: switch.clone(),
+        });
         use shodh_rag::statements::{DynamicsStore, StatementStore, SystemClock};
         let dynamics = DynamicsStore::open(&dir.join("shodh.db"), None).unwrap();
         let inbox =
@@ -602,15 +675,16 @@ pub(crate) mod testing {
             WORD_DIM,
             Arc::new(crate::memory_commands::memory_ontology().unwrap()),
             Arc::new(dynamics),
-            Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
+            Arc::new(SwitchedEmbedder { model }),
             Arc::new(SystemClock),
         )
         .await
         .unwrap();
-        crate::memory_commands::MemoryState::ready(Arc::new(
+        let state = crate::memory_commands::MemoryState::ready(Arc::new(
             shodh_rag::user_memory::MemoryService::new(Arc::new(store), audit, "test")
                 .with_inbox(Arc::new(inbox)),
-        ))
+        ));
+        (state, switch)
     }
 
     /// A tool context whose events land in the returned receiver.

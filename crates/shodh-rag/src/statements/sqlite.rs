@@ -26,6 +26,9 @@ pub enum RunMemoryKind {
     Used,
     /// The user marked it not relevant to the answer.
     Irrelevant,
+    /// It was put in front of the question as a core memory (whatever the question
+    /// asked), besides being recorded as [`RunMemoryKind::Injected`].
+    Core,
 }
 
 impl RunMemoryKind {
@@ -34,6 +37,7 @@ impl RunMemoryKind {
             Self::Injected => "injected",
             Self::Used => "used",
             Self::Irrelevant => "irrelevant",
+            Self::Core => "core",
         }
     }
 }

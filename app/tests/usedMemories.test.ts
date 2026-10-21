@@ -18,6 +18,7 @@ import {
 import {
   FORGOTTEN_MEMORY,
   chipText,
+  coreHeading,
   markedNotRelevant,
   parseUsedMemories,
   rowOf,
@@ -136,7 +137,9 @@ test('memories are read live: a forgotten one has no words', () => {
   // A malformed record is treated as forgotten, never shown half-read.
   const [broken] = parseUsedMemories([{ id: 'mem-1', memory: { id: 'mem-1' } }], ['mem-1']);
   assert.equal(broken.memory, null);
-  assert.deepEqual(parseUsedMemories('nonsense', ['mem-1']), [{ id: 'mem-1', memory: null, notRelevant: false }]);
+  assert.deepEqual(parseUsedMemories('nonsense', ['mem-1']), [
+    { id: 'mem-1', memory: null, notRelevant: false, alwaysIncluded: false },
+  ]);
 });
 
 test('an edited memory shows its old version as replaced, without an editor', () => {
@@ -171,4 +174,25 @@ test('Not relevant is shown once recorded and weakens links to the other memorie
   assert.equal(marked[0].notRelevant, true);
   assert.equal(marked[1].notRelevant, true);
   assert.equal(used[0].notRelevant, false, 'not changed in place');
+});
+
+test('core memories are marked always included, forgotten or not', () => {
+  const used = parseUsedMemories(
+    [
+      { id: 'mem-1', memory: record(), notRelevant: false, alwaysIncluded: true },
+      { id: 'mem-2', memory: null, notRelevant: false, alwaysIncluded: true },
+      { id: 'mem-3', memory: record({ id: 'mem-3', text: 'Gym on Tuesdays' }), notRelevant: false, alwaysIncluded: 'yes' },
+    ],
+    ['mem-1', 'mem-2', 'mem-3'],
+  );
+  const [core, forgottenCore, recalled] = used.map(u => rowOf(u, noWorkspace));
+  assert.equal(core.alwaysIncluded, true);
+  assert.equal(core.canEdit, true, 'a core memory keeps Outdated');
+  assert.equal(forgottenCore.alwaysIncluded, true);
+  assert.equal(forgottenCore.text, null);
+  assert.equal(recalled.alwaysIncluded, false, 'only a boolean true counts');
+  assert.equal(markedNotRelevant(used, 'mem-1')[0].alwaysIncluded, true);
+  assert.equal(coreHeading(3), 'Always included in answers (3)');
+  assert.equal(coreHeading(0), 'Always included in answers (0)');
+  assert.equal(coreHeading(Number.NaN), 'Always included in answers (0)');
 });

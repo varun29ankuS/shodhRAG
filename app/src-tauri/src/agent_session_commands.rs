@@ -51,7 +51,7 @@ use crate::audit_commands::AuditState;
 use crate::conversation_commands::ConversationMode;
 use crate::inbox_commands;
 use crate::llm_commands::LLMState;
-use crate::memory_commands::{recall_for_run, with_memories, MemoryState};
+use crate::memory_commands::{recall_for_run, with_memories, MemoryState, RunMemories};
 use crate::memory_learn::{LearnState, RequestHandled, TextOrigin};
 use crate::model_picker_commands::{override_mode, ModelOverride};
 use crate::rag_commands::RagState;
@@ -2030,7 +2030,10 @@ pub async fn agent_send(
                 retried_runs(prior_run_ids.as_deref()),
             );
             // Feedback on this answer ("Not relevant") is accepted for these memories only.
-            memory.record_injected(&request_id, &recalled.ids).await;
+            // Core ones are recorded as such: the chat's list says "always included".
+            memory
+                .record_injected(&request_id, &recalled.ids, &recalled.core_ids)
+                .await;
             // The chat shows which memories the answer was given ("Used 2 memories"), by
             // id; the run id is `request_id`. Sent before the prompt so it reaches the chat
             // before the run's own events; a prompt that fails clears it there.
@@ -2092,11 +2095,13 @@ pub async fn agent_send(
     // while the session has seen nothing private (memories, instructions, carried
     // passages, the replayed conversation, a side thread's composed message).
     scope.own_words = own_words.map(str::to_string);
-    scope.private_context = memories.is_some()
-        || workspace_block.is_some()
-        || passages_block.is_some()
-        || entry.parent_conversation_id.is_some()
-        || (replay && history.as_ref().is_some_and(|h| !h.is_empty()));
+    scope.private_context = private_context(
+        memories.as_ref(),
+        workspace_block.is_some()
+            || passages_block.is_some()
+            || entry.parent_conversation_id.is_some()
+            || (replay && history.as_ref().is_some_and(|h| !h.is_empty())),
+    );
     let scoped = !scope.is_empty();
     // Registered before prompting: the run id is `request_id`, and the first events may
     // arrive before `prompt_scoped` returns.
@@ -2156,6 +2161,14 @@ fn retried_runs(prior: Option<&[String]>) -> Vec<String> {
     valid.into_iter().skip(skip).collect()
 }
 
+/// Whether a run's message holds anything private, so the web tools ask before sending
+/// anything away: any memory put in front of the question (core memories included, which
+/// are in front of nearly every question) or `other_private` context (the workspace's
+/// instructions, carried passages, a side thread, the replayed conversation).
+fn private_context(memories: Option<&RunMemories>, other_private: bool) -> bool {
+    memories.is_some() || other_private
+}
+
 /// Tells the chat which memories were put in front of run `run_id`'s question
 /// ([`AgentEvent::MemoriesUsed`], ids only), on the run's event stream.
 fn emit_memories_used(app: &AppHandle, session_id: &str, run_id: &str, ids: &[String]) {
@@ -2194,9 +2207,17 @@ fn user_words<'a>(
 /// Whether memories are recalled into answers (Settings → Memory). Unreadable settings
 /// leave them out: sharing memories with the model needs the user's setting.
 fn inject_memories(app: &AppHandle) -> bool {
-    let settings = app_data_dir(app)
-        .ok()
-        .map(|dir| SettingsStore::in_dir(&dir).load());
+    inject_setting(
+        app_data_dir(app)
+            .ok()
+            .map(|dir| SettingsStore::in_dir(&dir).load()),
+    )
+}
+
+/// [`inject_memories`] from the settings read (`None`: no data folder).
+fn inject_setting<E: std::fmt::Display>(
+    settings: Option<Result<crate::app_settings::AppSettings, E>>,
+) -> bool {
     match settings {
         Some(Ok(settings)) => settings.memory.inject_memories,
         Some(Err(e)) => {
@@ -3608,6 +3629,52 @@ mod tests {
             "words the message does not hold are refused"
         );
         assert_eq!(user_words(&composed, None, Some("  "), true), None);
+    }
+
+    #[tokio::test]
+    async fn a_run_given_only_core_memories_is_private_to_the_web_tools() {
+        use crate::agent_tools::testing::{memory_state_switched, Embedder};
+        // Core memories go in front of nearly every question; the web gate holds for them
+        // as for recalled ones: web_search and fetch_url then ask before sending anything.
+        // Here with no search models, so the core is all the run is given.
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, switch) = memory_state_switched(dir.path(), None).await;
+        memory
+            .service()
+            .await
+            .unwrap()
+            .remember(
+                shodh_rag::user_memory::MemoryContent::Note {
+                    text: "Keep answers short".into(),
+                },
+                shodh_rag::statements::Scope::Global,
+                &shodh_rag::user_memory::Origin::user_interface("t"),
+                &Actor::ui(),
+            )
+            .await
+            .unwrap();
+        switch.set(Embedder::Missing);
+        let actor = Actor::agent(LOCAL_OWNER, "conv-1", "assistant", "run-1");
+        let given = recall_for_run(&memory, "Explain gradient descent", None, &actor).await;
+        let core = given.as_ref().expect("the core is injected");
+        assert_eq!(core.ids, core.core_ids);
+        assert!(private_context(given.as_ref(), false));
+        // Nothing injected and nothing else private: not private.
+        assert!(!private_context(None, false));
+        assert!(private_context(None, true));
+    }
+
+    #[test]
+    fn memories_are_injected_only_when_the_setting_is_on_and_readable() {
+        use crate::app_settings::AppSettings;
+        let on = AppSettings::default();
+        assert!(on.memory.inject_memories);
+        assert!(inject_setting(Some(Ok::<_, String>(on))));
+        let mut off = AppSettings::default();
+        off.memory.inject_memories = false;
+        assert!(!inject_setting(Some(Ok::<_, String>(off))));
+        assert!(!inject_setting(Some(Err::<AppSettings, _>("unreadable"))));
+        assert!(!inject_setting::<String>(None));
     }
 
     #[test]

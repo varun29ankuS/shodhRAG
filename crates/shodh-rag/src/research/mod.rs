@@ -28,6 +28,7 @@ pub mod pdf_text;
 pub mod results;
 pub mod scopes;
 pub mod snippets;
+pub mod tables;
 pub mod vision;
 
 use sha2::{Digest, Sha256};

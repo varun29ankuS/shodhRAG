@@ -44,8 +44,8 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
 /// the learning model's rejected answers (10), forgotten suggestions (11), the statement
-/// store's state (12) and what happened to memories in each answer (13) use one
-/// version sequence, so every component that opens it sees the same schema.
+/// store's state (12), what happened to memories in each answer (13) and evidence tables
+/// (14) use one version sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -387,6 +387,89 @@ const MIGRATIONS: &[(i64, &str)] = &[
         );
         CREATE INDEX run_memories_statement ON run_memories(statement_id);",
     ),
+    (
+        14,
+        // Evidence tables: a workspace's tables of papers (rows) × questions (columns).
+        // A cell holds the answer, the verbatim quote it rests on and where it is; the
+        // fill cache holds the model's raw answer per (paper content, column, model) so an
+        // unchanged column of an unchanged paper never costs a second call. Deleting a
+        // table, column or row removes its cells and the cache entries no other cell
+        // uses; removing a paper from the library removes its rows.
+        "CREATE TABLE evidence_table (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX evidence_table_workspace ON evidence_table(workspace_id, created_at);
+        CREATE TABLE table_column (
+            id TEXT PRIMARY KEY,
+            table_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            question TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('text', 'number', 'yes_no', 'choice')),
+            options_json TEXT NOT NULL,
+            instructions TEXT NOT NULL,
+            column_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK (revision >= 1)
+        );
+        CREATE INDEX table_column_table ON table_column(table_id, position);
+        CREATE TABLE table_row (
+            id TEXT PRIMARY KEY,
+            table_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            document_id TEXT NOT NULL,
+            added_at TEXT NOT NULL,
+            UNIQUE (table_id, document_id)
+        );
+        CREATE INDEX table_row_document ON table_row(document_id);
+        CREATE TABLE table_cell (
+            table_id TEXT NOT NULL,
+            row_id TEXT NOT NULL,
+            column_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN
+                ('empty', 'queued', 'verified', 'unverified', 'not_found', 'edited', 'failed')),
+            value_json TEXT NULL,
+            quote TEXT NULL,
+            chunk_id TEXT NULL,
+            page INTEGER NULL,
+            bbox_json TEXT NULL,
+            model TEXT NULL,
+            column_revision INTEGER NULL,
+            paper_hash TEXT NULL,
+            filled_at TEXT NULL,
+            edited_at TEXT NULL,
+            error TEXT NULL,
+            PRIMARY KEY (row_id, column_id)
+        );
+        CREATE INDEX table_cell_table ON table_cell(table_id);
+        CREATE INDEX table_cell_column ON table_cell(column_id);
+        CREATE INDEX table_cell_paper ON table_cell(paper_hash);
+        CREATE TABLE table_fill_job (
+            id TEXT PRIMARY KEY,
+            table_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN
+                ('queued', 'running', 'paused', 'done', 'cancelled', 'failed')),
+            planned_calls INTEGER NOT NULL CHECK (planned_calls >= 0),
+            done_calls INTEGER NOT NULL CHECK (done_calls >= 0),
+            next_attempt_at TEXT NULL,
+            last_error TEXT NULL
+        );
+        CREATE INDEX table_fill_job_table ON table_fill_job(table_id, created_at);
+        CREATE TABLE fill_cache (
+            paper_hash TEXT NOT NULL,
+            column_key TEXT NOT NULL,
+            model TEXT NOT NULL,
+            response_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (paper_hash, column_key, model)
+        );",
+    ),
+```
 ];
 
 fn latest_schema_version() -> i64 {

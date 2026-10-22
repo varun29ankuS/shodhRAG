@@ -15,7 +15,7 @@ use chrono::{SecondsFormat, Utc};
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-use super::validate::parse_edit;
+use super::validate::{parse_edit, typed_value, VALUE_NO_LONGER_FITS};
 use super::{
     collapse, Cell, CellStatus, CellValue, Column, ColumnKind, ColumnSpec, EvidenceTable, TableRow,
     MAX_NAME_CHARS,
@@ -171,6 +171,41 @@ fn sweep_cache(conn: &Connection) -> rusqlite::Result<usize> {
                AND k.column_key = fill_cache.column_key)",
         [],
     )
+}
+
+/// Re-checks the edited cells of a column against its new type and options, with the
+/// type rule of an edit ([`typed_value`] on the value's text). A value that no longer fits
+/// keeps its text and gets the error [`VALUE_NO_LONGER_FITS`], so typed sort and filter can
+/// leave it out and the grid can say why; a value that fits again loses that flag. The
+/// user's value is never rewritten. Cells that are not edited are not touched: the column's
+/// new revision purges and refills them.
+fn refit_edited_cells(conn: &Connection, column_id: &str, spec: &ColumnSpec) -> ResearchResult<()> {
+    let cells: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT row_id, value_json, error FROM table_cell
+              WHERE column_id = ?1 AND status = 'edited' AND value_json IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![column_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (row_id, value_json, error) in cells {
+        let fits = serde_json::from_str::<CellValue>(&value_json).is_ok_and(|value| {
+            typed_value(spec, &serde_json::Value::String(value.display())).is_ok()
+        });
+        let flagged = error.as_deref() == Some(VALUE_NO_LONGER_FITS);
+        let new_error = match (fits, flagged) {
+            (false, false) => Some(VALUE_NO_LONGER_FITS.to_string()),
+            (true, true) => None,
+            _ => continue,
+        };
+        conn.execute(
+            "UPDATE table_cell SET error = ?3 WHERE row_id = ?1 AND column_id = ?2",
+            params![row_id, column_id, new_error],
+        )?;
+    }
+    Ok(())
 }
 
 /// Deletes one table with its columns, rows, cells, jobs and unshared cache entries.
@@ -386,7 +421,8 @@ impl TableStore {
 
     /// Changes a column. A change of its key (question, kind, options or instructions,
     /// whitespace aside) raises its revision, so its cells are stale, and removes the
-    /// cache entries only its cells used.
+    /// cache entries only its cells used. When the kind or the options change, the edited
+    /// cells are checked against them again (`refit_edited_cells`).
     pub fn update_column(&self, column_id: &str, spec: &ColumnSpec) -> ResearchResult<Column> {
         let spec = spec.cleaned()?;
         let key = spec.key();
@@ -421,6 +457,9 @@ impl TableStore {
             ],
         )?;
         sweep_cache(&tx)?;
+        if current.spec.kind != spec.kind || current.spec.options != spec.options {
+            refit_edited_cells(&tx, column_id, &spec)?;
+        }
         let updated = tx.query_row(
             &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
             params![column_id],
@@ -1042,6 +1081,152 @@ mod tests {
             f.store.edit_cell(&foreign.id, &column.id, "yes"),
             Err(ResearchError::NotFound(_))
         ));
+    }
+
+    fn choice_spec(options: &[&str]) -> ColumnSpec {
+        ColumnSpec {
+            question: "Which architecture?".to_string(),
+            kind: ColumnKind::Choice,
+            options: options.iter().map(|o| o.to_string()).collect(),
+            instructions: String::new(),
+        }
+    }
+
+    fn papers(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("/p/{i}.pdf")).collect()
+    }
+
+    #[test]
+    fn an_edited_value_that_no_longer_fits_a_new_type_is_flagged_and_kept() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &spec("Year", ColumnKind::Text))
+            .unwrap();
+        let rows = f.store.add_rows(&table.id, &papers(3)).unwrap();
+        f.store
+            .edit_cell(&rows[0].id, &column.id, "around 2020")
+            .unwrap();
+        f.store.edit_cell(&rows[1].id, &column.id, "2021").unwrap();
+        let fill = filled(&column, &rows[2], "hash-2");
+        assert!(f
+            .store
+            .store_fill(&fill, Some(&entry(&column, "hash-2")))
+            .unwrap());
+        let untouched = f.store.cell(&rows[2].id, &column.id).unwrap();
+
+        let number = f
+            .store
+            .update_column(&column.id, &spec("Year", ColumnKind::Number))
+            .unwrap();
+        let flagged = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(flagged.status, CellStatus::Edited);
+        assert_eq!(flagged.error.as_deref(), Some(VALUE_NO_LONGER_FITS));
+        assert_eq!(
+            flagged.value,
+            Some(CellValue::Text {
+                text: "around 2020".to_string()
+            }),
+            "the user's text is kept"
+        );
+        let fits = f.store.cell(&rows[1].id, &column.id).unwrap().unwrap();
+        assert_eq!(fits.status, CellStatus::Edited);
+        assert_eq!(fits.error, None);
+        assert_eq!(
+            fits.value,
+            Some(CellValue::Text {
+                text: "2021".to_string()
+            }),
+            "the user's value is never rewritten"
+        );
+        assert_eq!(
+            f.store.cell(&rows[2].id, &column.id).unwrap(),
+            untouched,
+            "a cell that is not edited is left to the purge and refill"
+        );
+
+        // A change that leaves the type and options alone does not re-check.
+        let mut renamed = spec("Publication year", ColumnKind::Number);
+        renamed.instructions = "As printed".to_string();
+        f.store.update_column(&number.id, &renamed).unwrap();
+        let still = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(still.error.as_deref(), Some(VALUE_NO_LONGER_FITS));
+
+        // Back to text: the value fits again, and the flag goes.
+        f.store
+            .update_column(&column.id, &spec("Year", ColumnKind::Text))
+            .unwrap();
+        let back = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(back.error, None);
+        assert_eq!(
+            back.value,
+            Some(CellValue::Text {
+                text: "around 2020".to_string()
+            })
+        );
+        let back = f.store.cell(&rows[1].id, &column.id).unwrap().unwrap();
+        assert_eq!(back.error, None);
+    }
+
+    #[test]
+    fn an_edited_choice_that_leaves_the_options_is_flagged_until_it_returns() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &choice_spec(&["CNN", "Transformer"]))
+            .unwrap();
+        let rows = f.store.add_rows(&table.id, &papers(2)).unwrap();
+        f.store
+            .edit_cell(&rows[0].id, &column.id, "transformer")
+            .unwrap();
+        f.store.edit_cell(&rows[1].id, &column.id, "CNN").unwrap();
+
+        f.store
+            .update_column(&column.id, &choice_spec(&["CNN", "MLP"]))
+            .unwrap();
+        let gone = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(gone.error.as_deref(), Some(VALUE_NO_LONGER_FITS));
+        assert_eq!(
+            gone.value,
+            Some(CellValue::Choice {
+                option: "Transformer".to_string()
+            })
+        );
+        let kept = f.store.cell(&rows[1].id, &column.id).unwrap().unwrap();
+        assert_eq!(kept.error, None);
+
+        f.store
+            .update_column(&column.id, &choice_spec(&["CNN", "Transformer", "MLP"]))
+            .unwrap();
+        let back = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(back.error, None);
+        assert_eq!(back.status, CellStatus::Edited);
+    }
+
+    #[test]
+    fn an_edit_replaces_a_flag() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &spec("Year", ColumnKind::Text))
+            .unwrap();
+        let row = f.store.add_rows(&table.id, &papers(1)).unwrap().remove(0);
+        f.store.edit_cell(&row.id, &column.id, "late 2020").unwrap();
+        f.store
+            .update_column(&column.id, &spec("Year", ColumnKind::Number))
+            .unwrap();
+        assert!(f
+            .store
+            .cell(&row.id, &column.id)
+            .unwrap()
+            .unwrap()
+            .error
+            .is_some());
+        let cell = f.store.edit_cell(&row.id, &column.id, "2020").unwrap();
+        assert_eq!(cell.error, None);
     }
 
     #[test]

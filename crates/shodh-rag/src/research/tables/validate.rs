@@ -36,6 +36,9 @@ pub const NOT_YES_NO: &str = "not_yes_no";
 pub const NOT_AN_OPTION: &str = "not_an_option";
 pub const EMPTY_TEXT: &str = "empty_text";
 pub const TEXT_TOO_LONG: &str = "text_too_long";
+/// Set on an edited cell, which keeps the user's value, when its column's type or options
+/// changed and the value no longer fits them (see `TableStore::update_column`).
+pub const VALUE_NO_LONGER_FITS: &str = "value_no_longer_fits";
 
 /// Contradiction probability at or above which (and above the entailment probability) a
 /// verified cell is downgraded. Uncalibrated; the accuracy eval measures it.
@@ -352,6 +355,7 @@ pub fn reason(code: &str) -> &'static str {
         NOT_AN_OPTION => "The answer is not one of the column's options.",
         EMPTY_TEXT => "The answer is empty.",
         TEXT_TOO_LONG => "The answer is longer than 500 characters.",
+        VALUE_NO_LONGER_FITS => "Your value does not fit the column's type or options any more.",
         _ => "The answer could not be checked.",
     }
 }

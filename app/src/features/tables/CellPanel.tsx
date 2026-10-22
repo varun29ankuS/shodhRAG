@@ -6,7 +6,7 @@ import { notify } from '../../lib/notify';
 import { relativeTime } from '../../utils/time';
 import { showSourceBox } from '../research/snippetBus';
 import { tableError, tablesApi } from './api';
-import { cellExplanation, handFillOutcome, INLINE_REFUSALS, reasonText } from './format';
+import { cellExplanation, handFillOutcome, INLINE_REFUSALS, knownReason, reasonText } from './format';
 import type { Outcome } from './format';
 import { cellMark, cellSource, isStale, KIND_LABELS, MAX_EDIT_CHARS, quoteSegments, valueText } from './model';
 import type { Cell, Column, RowView } from './types';
@@ -51,7 +51,7 @@ function PaperPanel({
       const calls = capture.calls.length;
       const kept = capture.captureId ? 'kept for export' : 'returned but could not be kept';
       if (capture.error) {
-        setNotice({ tone: 'warning', text: `The check stopped: ${reasonText(capture.error)} ${calls} model ${calls === 1 ? 'call was' : 'calls were'} ${kept}.` });
+        setNotice({ tone: 'warning', text: `The check stopped: ${knownReason(capture.error) ? reasonText(capture.error) : capture.error} ${calls} model ${calls === 1 ? 'call was' : 'calls were'} ${kept}.` });
       } else if (capture.result) {
         const outcome = handFillOutcome(capture.result);
         setNotice({ tone: outcome.tone, text: `${outcome.text} ${calls} model ${calls === 1 ? 'call' : 'calls'} ${kept}.` });

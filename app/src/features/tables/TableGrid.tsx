@@ -223,7 +223,7 @@ export function TableGrid({
 
   return (
     <div className="overflow-x-auto scrollbar-thin rounded-xl border border-shodh-border">
-      <table ref={tableRef} className="w-max min-w-full border-collapse text-left">
+      <table ref={tableRef} role="grid" className="w-max min-w-full border-collapse text-left">
         <caption className="sr-only">{caption}</caption>
         <thead className="bg-shodh-raised">
           <tr>

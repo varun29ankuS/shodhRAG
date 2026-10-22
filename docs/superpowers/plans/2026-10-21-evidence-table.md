@@ -4307,6 +4307,7 @@ SELECT id FROM table_fill_job
 - `two_unreachable_papers_in_a_row_pause_the_job`.
 - `an_edit_during_a_run_is_never_requeued_or_overwritten`.
 - `a_run_that_panics_releases_its_job_for_resume`.
+- Also: `a_quota_error_without_a_reset_time_pauses_until_the_next_local_midnight`, `cancelling_a_paused_job_empties_its_queued_cells_at_once`, `one_unreachable_paper_does_not_stop_the_job`, `a_cap_below_one_paper_is_refused`, `states_and_reasons_round_trip_their_stored_names`.
 
 **PR 3a end:** push, open "Evidence table 3a: call counter and job runner (pause, resume, cancel, daily cap)", get CI green. No real model runs in 3a.
 

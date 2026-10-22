@@ -1425,3 +1425,167 @@ async fn a_failed_refill_never_replaces_a_result_whatever_the_failure() {
         }
     }
 }
+
+fn cell_json(column: &str, answer: &str, quote: &str, passage: u32) -> String {
+    format!(r#"{{"column":"{column}","answer":"{answer}","quote":"{quote}","passage":{passage}}}"#)
+}
+
+#[tokio::test]
+async fn a_reply_the_provider_cut_is_read_as_cut_even_when_its_cell_list_closed() {
+    let s = setup();
+    // The model closed its list of cells, then kept writing until the limit cut it: by its
+    // shape the list reads as a whole reply that left out two columns.
+    let cut = format!(
+        r#"{{"cells":[{},{}],"note":"{}"}}"#,
+        cell_json(
+            "c1",
+            "LAION-400M",
+            "We pre-train a bi-encoder on LAION-400M",
+            1
+        ),
+        cell_json("c2", "0.912", "Recall@10 of 0.912 on MS MARCO", 2),
+        "x".repeat(reply_budget(4) * CHARS_PER_TOKEN)
+    );
+    assert!(cut.len() > reply_budget(4) * CHARS_PER_TOKEN);
+    let model = Arc::new(Replies::new(vec![Ok(cut.as_str()), Ok(RETRY_LAST_TWO)]));
+    let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
+    assert_eq!(
+        fill.calls, 2,
+        "the columns the cut reply missed are asked again"
+    );
+    assert_eq!(fill.cells.len(), 4);
+    assert!(
+        fill.cells.iter().all(|c| c.status == CellStatus::Verified),
+        "{:?}",
+        fill.cells
+    );
+    assert_eq!(model.limits(), vec![reply_budget(4), reply_budget(2)]);
+    assert!(model.prompts()[1].contains("Is the code released?"));
+    assert!(!model.prompts()[1].contains("Which pre-training dataset is used?"));
+}
+
+#[tokio::test]
+async fn a_reply_cut_inside_its_reasoning_is_never_taken_for_the_answer() {
+    let s = setup();
+    // Cut while thinking, after a draft envelope with a wrong answer.
+    let thinking = format!(
+        r#"<think>Draft: {{"cells":[{}]}} Let me read the passages {}"#,
+        cell_json(
+            "c1",
+            "ImageNet",
+            "We pre-train a bi-encoder on LAION-400M",
+            1
+        ),
+        "again ".repeat(reply_budget(4) * CHARS_PER_TOKEN)
+    );
+    let model = Arc::new(Replies::new(vec![Ok(thinking.as_str()), Ok(CORRECT)]));
+    let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
+    assert_eq!(
+        fill.calls, 2,
+        "the cut reply was unreadable and earned the retry"
+    );
+    assert!(model.prompts()[1].contains("could not be read"));
+    let dataset = s.store.cell(&s.row.id, &s.columns[0].id).unwrap().unwrap();
+    assert_eq!(dataset.status, CellStatus::Verified);
+    assert_eq!(
+        dataset.value.map(|v| v.display()).as_deref(),
+        Some("LAION-400M")
+    );
+}
+
+#[tokio::test]
+async fn a_refill_asks_one_cell_again_past_the_cache_with_wider_passages() {
+    let s = setup();
+    let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
+    filler(&s, paper_index(), model, ScorerSet::default())
+        .fill_paper(&request(&s), &OpenGate)
+        .await
+        .unwrap();
+    let before = s.store.cells(&s.table).unwrap();
+
+    // The study kind is stated only in the seventh passage of its search.
+    let mut wide: Vec<Passage> = (1..=6)
+        .map(|i| {
+            passage(
+                &format!("w{i}"),
+                i,
+                &format!("Unrelated passage number {i}."),
+            )
+        })
+        .collect();
+    wide.push(passage(
+        "w7",
+        9,
+        "We ran a user study with twelve participants.",
+    ));
+    wide.push(passage("w8", 10, "Acknowledgements."));
+    let index = paper_index().with_query("kind of study", wide);
+    let reply = format!(
+        r#"{{"cells":[{}]}}"#,
+        cell_json(
+            "c1",
+            "User study",
+            "We ran a user study with twelve participants.",
+            8
+        )
+    );
+    let model = Arc::new(Replies::new(vec![Ok(reply.as_str())]));
+    let f = filler(&s, index, model.clone(), ScorerSet::default());
+    let choice = s.columns[3].id.clone();
+    let fill = f
+        .refill_cell(&request(&s), &choice, &OpenGate)
+        .await
+        .unwrap();
+    assert_eq!(fill.calls, 1, "the cache did not answer the refill");
+    assert_eq!(fill.cache_hits, 0);
+    let prompts = model.prompts();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].contains("We ran a user study with twelve participants."));
+    assert!(prompts[0].contains("What kind of study is it?"));
+    assert!(!prompts[0].contains("Is the code released?"));
+    let refilled = s.store.cell(&s.row.id, &choice).unwrap().unwrap();
+    assert_eq!(refilled.status, CellStatus::Verified);
+    assert_eq!(
+        refilled
+            .value
+            .map(|v| v.display().to_lowercase())
+            .as_deref(),
+        Some("user study")
+    );
+    assert_eq!(refilled.page, Some(9));
+    for cell in before.iter().filter(|c| c.column_id != choice) {
+        assert_eq!(
+            s.store
+                .cell(&cell.row_id, &cell.column_id)
+                .unwrap()
+                .as_ref(),
+            Some(cell),
+            "the other cells are untouched"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refill_of_an_edited_cell_is_refused_without_a_call() {
+    let s = setup();
+    let dataset = s.columns[0].id.clone();
+    s.store.edit_cell(&s.row.id, &dataset, "LAION-5B").unwrap();
+    let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
+    let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
+    assert!(matches!(
+        f.refill_cell(&request(&s), &dataset, &OpenGate).await,
+        Err(ResearchError::Invalid(_))
+    ));
+    assert!(matches!(
+        f.refill_cell(&request(&s), "no-such-column", &OpenGate)
+            .await,
+        Err(ResearchError::NotFound(_))
+    ));
+    assert!(model.prompts().is_empty());
+    assert_eq!(
+        s.store.cell(&s.row.id, &dataset).unwrap().unwrap().status,
+        CellStatus::Edited
+    );
+}

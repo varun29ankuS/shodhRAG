@@ -45,8 +45,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
 /// the learning model's rejected answers (10), forgotten suggestions (11), the statement
 /// store's state (12), what happened to memories in each answer (13), evidence tables
-/// (14) and the evidence tables' daily call counter and fill-job state (15) use one
-/// version sequence, so every component that opens it sees the same schema.
+/// (14), the evidence tables' daily call counter and fill-job state (15) and the captures
+/// of their hand fills with the `model_unavailable` pause (16) use one version sequence,
+/// so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -501,6 +502,56 @@ const MIGRATIONS: &[(i64, &str)] = &[
            AND rowid NOT IN (SELECT MAX(rowid) FROM table_fill_job
                               WHERE state IN ('queued', 'running', 'paused')
                               GROUP BY table_id);
+        CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
+            WHERE state IN ('queued', 'running', 'paused');",
+    ),
+    (
+        16,
+        // Evidence tables. `table_fill_capture`: what each model call of a fill by hand sent
+        // and received (prompt, raw reply), kept in this database (encrypted with it) so it
+        // goes with its row, table, workspace or forgotten paper; a few per row. A job's
+        // pause may now be `model_unavailable` (no usable model: the job waits for the
+        // user). SQLite cannot change a CHECK, so `table_fill_job` is rebuilt with its rows
+        // in their order and its indexes.
+        "CREATE TABLE table_fill_capture (
+            id TEXT PRIMARY KEY,
+            table_id TEXT NOT NULL,
+            row_id TEXT NOT NULL REFERENCES table_row(id) ON DELETE CASCADE,
+            captured_at TEXT NOT NULL,
+            capture_json TEXT NOT NULL
+        );
+        CREATE INDEX table_fill_capture_row ON table_fill_capture(row_id, captured_at);
+        CREATE INDEX table_fill_capture_table ON table_fill_capture(table_id);
+        CREATE TABLE table_fill_job_v16 (
+            id TEXT PRIMARY KEY,
+            table_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN
+                ('queued', 'running', 'paused', 'done', 'cancelled', 'failed')),
+            planned_calls INTEGER NOT NULL CHECK (planned_calls >= 0),
+            done_calls INTEGER NOT NULL CHECK (done_calls >= 0),
+            next_attempt_at TEXT NULL,
+            last_error TEXT NULL,
+            run_token TEXT NULL,
+            heartbeat_at TEXT NULL,
+            pause_reason TEXT NULL CHECK (pause_reason IN
+                ('daily_cap', 'quota', 'auth', 'unreachable', 'failing', 'busy',
+                 'model_unavailable')),
+            cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+            backoff_step INTEGER NOT NULL DEFAULT 0 CHECK (backoff_step >= 0),
+            failure_streak INTEGER NOT NULL DEFAULT 0 CHECK (failure_streak >= 0),
+            panics INTEGER NOT NULL DEFAULT 0 CHECK (panics >= 0)
+        );
+        INSERT INTO table_fill_job_v16(id, table_id, created_at, state, planned_calls,
+            done_calls, next_attempt_at, last_error, run_token, heartbeat_at, pause_reason,
+            cancel_requested, backoff_step, failure_streak, panics)
+          SELECT id, table_id, created_at, state, planned_calls, done_calls, next_attempt_at,
+                 last_error, run_token, heartbeat_at, pause_reason, cancel_requested,
+                 backoff_step, failure_streak, panics
+            FROM table_fill_job ORDER BY rowid;
+        DROP TABLE table_fill_job;
+        ALTER TABLE table_fill_job_v16 RENAME TO table_fill_job;
+        CREATE INDEX table_fill_job_table ON table_fill_job(table_id, created_at);
         CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
             WHERE state IN ('queued', 'running', 'paused');",
     ),
@@ -1967,6 +2018,7 @@ mod tests {
                  DROP TABLE table_fill_job;
                  DROP TABLE fill_cache;
                  DROP TABLE table_calls;
+                 DROP TABLE table_fill_capture;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

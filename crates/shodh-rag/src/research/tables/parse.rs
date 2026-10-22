@@ -44,6 +44,7 @@ pub struct ParsedReply {
     pub cut_off: bool,
 }
 
+const THINK_START: &str = "<think>";
 const THINK_END: &str = "</think>";
 /// Keys the list of cells may sit under.
 const LIST_KEYS: [&str; 3] = ["cells", "results", "answers"];
@@ -282,9 +283,63 @@ pub fn parse_reply(reply: &str) -> Option<ParsedReply> {
     salvage(text)
 }
 
+/// `reply` without a reasoning block that opens after the last closed one and never
+/// closes: a reply cut off while the model was still thinking.
+fn before_open_thinking(reply: &str) -> &str {
+    // ASCII lower-casing keeps byte offsets.
+    let lower = reply.to_ascii_lowercase();
+    let closed_end = lower.rfind(THINK_END).map_or(0, |at| at + THINK_END.len());
+    match lower[closed_end..].find(THINK_START) {
+        Some(at) => &reply[..closed_end + at],
+        None => reply,
+    }
+}
+
+/// The cells of a reply the provider says it cut off at the output limit. Whatever the
+/// reply holds is read as cut, never as a whole answer: text in a reasoning block that
+/// never closed is thinking (a draft envelope in it is not taken), and the cells found
+/// are kept with `cut_off` set, so the fill asks again for the columns the reply did not
+/// reach instead of failing them as left out.
+pub fn parse_cut_reply(reply: &str) -> Option<ParsedReply> {
+    parse_reply(before_open_thinking(reply)).map(|parsed| ParsedReply {
+        cut_off: true,
+        ..parsed
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cut_reply_is_read_as_cut_even_when_its_cell_list_closed() {
+        // Cut after the list but before the envelope's last brace.
+        let reply = r#"{"cells":[{"column":"c1","answer":"ImageNet","quote":"trained on ImageNet","passage":1}]"#;
+        let parsed = parse_cut_reply(reply).unwrap();
+        assert!(parsed.cut_off);
+        assert_eq!(parsed.cells.len(), 1);
+        assert_eq!(parsed.cells[0].column, "c1");
+        // A whole envelope the provider still marked as cut is read as cut too.
+        let whole = r#"{"cells":[{"column":"c1","answer":null}]}"#;
+        assert!(parse_cut_reply(whole).unwrap().cut_off);
+        assert!(!parse_reply(whole).unwrap().cut_off);
+    }
+
+    #[test]
+    fn a_reply_cut_inside_its_reasoning_has_no_answer() {
+        let thinking = r#"<think>A first draft: {"cells":[{"column":"c1","answer":"yes","quote":"the code is released","passage":1}]} but the quote may be wrong, so"#;
+        assert!(parse_cut_reply(thinking).is_none());
+        // The same text not marked as cut is read by its shape alone.
+        assert!(parse_reply(thinking).is_some());
+        // Closed reasoning, then an answer cut short: its complete cells are kept.
+        let answered = r#"<think>short</think>{"cells":[{"column":"c1","answer":"yes","quote":"the code is released","passage":1},{"column":"c2","ans"#;
+        let parsed = parse_cut_reply(answered).unwrap();
+        assert!(parsed.cut_off);
+        assert_eq!(parsed.cells.len(), 1);
+        // A second block that opens after a closed one and never closes is thinking too.
+        let reopened = r#"<think>a</think><think>{"cells":[{"column":"c1","answer":null}]}"#;
+        assert!(parse_cut_reply(reopened).is_none());
+    }
 
     fn cells(reply: &str) -> Vec<ParsedCell> {
         parse_reply(reply).unwrap().cells

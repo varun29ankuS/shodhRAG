@@ -134,6 +134,34 @@ impl SimpleExternalProvider {
         }
     }
 
+    /// The `reasoning` object a request carries: the config's, and only to OpenRouter
+    /// (the one provider whose API defines it here).
+    fn reasoning_param(&self, config: &GenerationConfig) -> Option<serde_json::Value> {
+        match self.provider {
+            ApiProvider::OpenRouter => config.reasoning.clone(),
+            _ => None,
+        }
+    }
+
+    /// The body of a non-streaming OpenAI-compatible completion request.
+    fn completion_request(&self, prompt: &str, config: &GenerationConfig) -> serde_json::Value {
+        let mut request = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            "top_p": config.top_p,
+            "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
+            "stream": false
+        });
+        if let Some(reasoning) = self.reasoning_param(config) {
+            request["reasoning"] = reasoning;
+        }
+        request
+    }
+
     /// Who this call goes to, for its failures (which never carry the key).
     fn call(&self) -> CallContext {
         CallContext::new(
@@ -514,17 +542,7 @@ impl SimpleExternalProvider {
             "Sending OpenAI-compatible request"
         );
 
-        let request = json!({
-            "model": self.model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
-            "top_p": config.top_p,
-            "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
-            "stream": false
-        });
+        let request = self.completion_request(prompt, config);
 
         let response = self
             .send_checked(
@@ -1229,6 +1247,44 @@ mod tests {
             "message": {"content": "  "}, "finish_reason": "stop"
         }]}))
         .is_none());
+    }
+
+    #[test]
+    fn the_reasoning_object_goes_to_openrouter_only() {
+        let mut config = GenerationConfig::from(&crate::llm::LLMConfig::default());
+        assert!(config.reasoning.is_none());
+        config.reasoning = Some(json!({ "effort": "none" }));
+        let provider = |p: ApiProvider| {
+            SimpleExternalProvider::new(p, "test-key".to_string(), "m".to_string()).unwrap()
+        };
+        assert_eq!(
+            provider(ApiProvider::OpenRouter).reasoning_param(&config),
+            Some(json!({ "effort": "none" }))
+        );
+        for other in [
+            ApiProvider::OpenAI,
+            ApiProvider::Together,
+            ApiProvider::Ollama,
+        ] {
+            assert_eq!(provider(other).reasoning_param(&config), None);
+        }
+        // The request body the call sends carries it, with the raised output budget.
+        config.max_tokens = 840 + 4096;
+        let body = provider(ApiProvider::OpenRouter).completion_request("p", &config);
+        assert_eq!(body["reasoning"], json!({ "effort": "none" }));
+        assert_eq!(body["max_tokens"], json!(4936));
+        assert_eq!(body["messages"][0]["content"], json!("p"));
+        for other in [
+            ApiProvider::OpenAI,
+            ApiProvider::Together,
+            ApiProvider::Ollama,
+        ] {
+            let body = provider(other).completion_request("p", &config);
+            assert!(body.get("reasoning").is_none(), "{body}");
+        }
+        config.reasoning = None;
+        let plain = provider(ApiProvider::OpenRouter).completion_request("p", &config);
+        assert!(plain.get("reasoning").is_none());
     }
 
     #[test]

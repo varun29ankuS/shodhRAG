@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::budget::{plan_calls, MAX_CALLS_PER_PAPER, PASSAGES_PER_COLUMN};
-use super::parse::{parse_reply, ParsedReply};
+use super::parse::{parse_cut_reply, parse_reply, ParsedReply};
 use super::passages::{result_hint_terms, PaperIndex, RESULT_HINTS_PER_COLUMN};
 use super::prompt::{fill_prompt, format_correction, missing_columns_prompt, reply_budget};
 use super::store::{CacheEntry, TableStore, REFILL_FAILED};
@@ -64,6 +64,11 @@ pub const MODEL_AUTH: &str = "model_auth";
 pub const MODEL_QUOTA: &str = "model_quota";
 pub const UNPARSABLE_RESPONSE: &str = "unparsable_response";
 pub const MISSING_IN_REPLY: &str = "missing_in_reply";
+
+/// Passages per column searched for a refill of one cell by hand ([`Filler::refill_cell`]):
+/// twice a fill's [`PASSAGES_PER_COLUMN`], so a refill can find an answer the first
+/// search missed (spec §10).
+pub const REFILL_PASSAGES: usize = 8;
 
 /// Longest provider or I/O detail kept (in the log, in a returned [`ModelFailure`], and
 /// in the detail of a search or file error on a cell).
@@ -485,7 +490,54 @@ impl Filler {
         request: &PaperRequest,
         gate: &dyn CallGate,
     ) -> ResearchResult<PaperFill> {
+        self.fill(request, gate, None).await
+    }
+
+    /// Refills one cell by hand: the column `column_id` of the request's paper is asked
+    /// again even when its cell holds a current result, without the cache (it would give
+    /// back the answer being replaced) and with [`REFILL_PASSAGES`] passages searched. A
+    /// failed refill keeps the result the cell holds ([`TableStore::store_fill`]). An
+    /// edited cell is refused: a refill is never stored over the user's own value.
+    pub async fn refill_cell(
+        &self,
+        request: &PaperRequest,
+        column_id: &str,
+        gate: &dyn CallGate,
+    ) -> ResearchResult<PaperFill> {
+        let Some(column) = request.columns.iter().find(|c| c.id == column_id) else {
+            return Err(ResearchError::NotFound(format!("No column {column_id}.")));
+        };
+        let edited = request.cells.iter().any(|c| {
+            c.row_id == request.row.id && c.column_id == column.id && c.status == CellStatus::Edited
+        });
+        if edited {
+            return Err(ResearchError::Invalid(
+                "This cell holds your own value. Clear it before asking the model again."
+                    .to_string(),
+            ));
+        }
+        self.fill(request, gate, Some(column_id)).await
+    }
+
+    /// The fill of one paper; `only` forces a refill of that one column (see
+    /// [`Self::refill_cell`]).
+    async fn fill(
+        &self,
+        request: &PaperRequest,
+        gate: &dyn CallGate,
+        only: Option<&str>,
+    ) -> ResearchResult<PaperFill> {
         let row = &request.row;
+        let per_column = if only.is_some() {
+            REFILL_PASSAGES
+        } else {
+            PASSAGES_PER_COLUMN
+        };
+        let asked: Vec<&Column> = request
+            .columns
+            .iter()
+            .filter(|c| only.is_none_or(|id| c.id == id))
+            .collect();
         let path = row.document_id.clone();
         let model_id = self.model.model_id();
         let existing: HashMap<&str, &Cell> = request
@@ -505,9 +557,9 @@ impl Filler {
             Err(e) => {
                 // Without the file's hash a result cannot be told stale, so a cell that
                 // holds one is left as it is; the others fail.
-                let columns: Vec<&Column> = request
-                    .columns
+                let columns: Vec<&Column> = asked
                     .iter()
+                    .copied()
                     .filter(|c| {
                         let cell = existing.get(c.id.as_str()).copied();
                         !cell.is_some_and(|cell| cell.status == CellStatus::Edited)
@@ -521,10 +573,18 @@ impl Filler {
                 return Ok(fill);
             }
         };
-        let columns: Vec<&Column> = request
-            .columns
+        let columns: Vec<&Column> = asked
             .iter()
-            .filter(|c| needs_fill(existing.get(c.id.as_str()).copied(), c, &hash))
+            .copied()
+            .filter(|c| {
+                let cell = existing.get(c.id.as_str()).copied();
+                if only.is_some() {
+                    // A forced refill asks again whatever the cell holds, but an edit.
+                    !cell.is_some_and(|cell| cell.status == CellStatus::Edited)
+                } else {
+                    needs_fill(cell, c, &hash)
+                }
+            })
             .collect();
         if columns.is_empty() {
             return Ok(fill);
@@ -546,7 +606,7 @@ impl Filler {
 
         // 1. Local retrieval: no model call.
         let accepted = accepted_results(request);
-        let (first, ranked) = match self.retrieve(&path, &columns, &accepted).await {
+        let (first, ranked) = match self.retrieve(&path, &columns, &accepted, per_column).await {
             Ok(found) => found,
             Err(e) => {
                 let error = with_detail(SEARCH_FAILED, &e);
@@ -577,6 +637,11 @@ impl Filler {
         // asking the same question of the same paper.
         let mut misses: Vec<usize> = Vec::new();
         for (i, column) in columns.iter().enumerate() {
+            if only.is_some() {
+                // A refill asks the model again: the cache holds the answer it replaces.
+                misses.push(i);
+                continue;
+            }
             match self.cached_fill(&hash, column, &model_id).await? {
                 Some(cached) => {
                     // The replay is checked against what the original call was: its
@@ -805,11 +870,26 @@ impl Filler {
         }
         fill.calls += 1;
         Ok(
-            match self.model.complete(prompt, reply_budget(columns)).await {
-                Ok(reply) => match parse_reply(&reply) {
-                    Some(parsed) => Attempt::Cells(parsed),
-                    None => Attempt::Unparsable,
-                },
+            match self
+                .model
+                .complete_reply(prompt, reply_budget(columns))
+                .await
+            {
+                Ok(reply) => {
+                    // A reply the provider cut off is read as cut whatever its shape:
+                    // the columns it did not reach are asked again, never failed as
+                    // left out, and an envelope drafted in unfinished reasoning is
+                    // never taken for the answer.
+                    let parsed = if reply.truncated {
+                        parse_cut_reply(&reply.text)
+                    } else {
+                        parse_reply(&reply.text)
+                    };
+                    match parsed {
+                        Some(parsed) => Attempt::Cells(parsed),
+                        None => Attempt::Unparsable,
+                    }
+                }
                 Err(message) => {
                     fill.model_error = Some(ModelFailure::classify(&message));
                     Attempt::Failed
@@ -819,22 +899,20 @@ impl Filler {
     }
 
     /// The paper's first passage and each column's passages (best first, at most
-    /// [`PASSAGES_PER_COLUMN`]), searched locally. An error is the index's message.
+    /// `per_column`), searched locally. An error is the index's message.
     async fn retrieve(
         &self,
         path: &str,
         columns: &[&Column],
         accepted: &[ResultRecord],
+        per_column: usize,
     ) -> Result<(Option<Passage>, Vec<Vec<Passage>>), String> {
         let first = self.index.first_passage(path).await?;
         let mut ranked: Vec<Vec<Passage>> = Vec::with_capacity(columns.len());
         for column in columns {
             let query = column_query(column, accepted);
-            let mut passages = self
-                .index
-                .search_paper(path, &query, PASSAGES_PER_COLUMN)
-                .await?;
-            passages.truncate(PASSAGES_PER_COLUMN);
+            let mut passages = self.index.search_paper(path, &query, per_column).await?;
+            passages.truncate(per_column);
             ranked.push(passages);
         }
         Ok((first, ranked))
@@ -897,7 +975,12 @@ impl Filler {
             .filter_map(|&i| request.columns.get(i))
             .collect();
         let Ok((first, ranked)) = self
-            .retrieve(&request.row.document_id, &columns, &accepted)
+            .retrieve(
+                &request.row.document_id,
+                &columns,
+                &accepted,
+                PASSAGES_PER_COLUMN,
+            )
             .await
         else {
             return 0;

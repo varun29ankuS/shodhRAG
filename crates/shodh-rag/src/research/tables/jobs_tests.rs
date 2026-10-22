@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::*;
 use crate::harness::grounding::verify::ScorerSet;
 use crate::research::results::TextModel;
-use crate::research::tables::calls::{day_key, CallCounter};
+use crate::research::tables::calls::{day_key, CallCounter, DailyCap, MIN_DAILY_CAP};
 use crate::research::tables::fill::paper_hash;
 use crate::research::tables::testkit::{big_index, paper_index, utc, Index, ManualClock, Replies};
 use crate::research::tables::validate::NOT_FOUND_PARTIAL;
@@ -151,10 +151,19 @@ fn runner_with(
     cap: usize,
     token: &str,
 ) -> JobRunner {
-    JobRunner::new(filler(e, index, model), counter, Arc::new(NoResults), cap)
-        .unwrap()
-        .with_clock(e.clock.clone())
-        .with_token(token)
+    JobRunner::new(
+        filler(e, index, model),
+        counter,
+        Arc::new(NoResults),
+        daily(cap),
+    )
+    .with_clock(e.clock.clone())
+    .with_token(token)
+}
+
+/// A shared cap of `calls`.
+fn daily(calls: usize) -> DailyCap {
+    DailyCap::new(calls).unwrap()
 }
 
 fn runner(e: &Env, index: Index, model: Arc<dyn TextModel>, cap: usize, token: &str) -> JobRunner {
@@ -257,7 +266,7 @@ async fn a_restarted_job_resumes_where_it_stopped_and_never_refills_done_cells()
     filler(&e, paper_index(), replies(vec![Ok(CORRECT)]))
         .fill_paper(
             &request(&e, 0),
-            &CounterGate::new(e.counter.clone(), 30).with_clock(e.clock.clone()),
+            &CounterGate::new(e.counter.clone(), daily(30)).with_clock(e.clock.clone()),
         )
         .await
         .unwrap();
@@ -681,7 +690,7 @@ async fn the_cap_holds_when_other_calls_take_the_room_mid_paper() {
 #[tokio::test]
 async fn a_counter_gate_counts_a_fill_by_hand_and_refuses_past_the_cap() {
     let e = env(2);
-    let gate = CounterGate::new(e.counter.clone(), 3).with_clock(e.clock.clone());
+    let gate = CounterGate::new(e.counter.clone(), daily(3)).with_clock(e.clock.clone());
     let model = replies(vec![Ok(CORRECT), Ok(CORRECT)]);
     let f = filler(&e, paper_index(), model.clone());
     let fill = f.fill_paper(&request(&e, 0), &gate).await.unwrap();
@@ -1188,11 +1197,13 @@ fn migration_15_keeps_one_active_job_per_table() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shodh.db");
     let conn = crate::audit::open_shared_connection(&path, None).unwrap();
-    // Back to schema 14, with two active jobs for one table.
+    // Back to schema 14, with two active jobs for one table (migration 16 runs again
+    // after 15 and rebuilds the job table with its rows).
     conn.execute_batch(
         "DROP TABLE table_fill_job;
          DROP TABLE table_calls;
-         DELETE FROM schema_version WHERE version = 15;
+         DROP TABLE table_fill_capture;
+         DELETE FROM schema_version WHERE version >= 15;
          CREATE TABLE table_fill_job (
             id TEXT PRIMARY KEY,
             table_id TEXT NOT NULL,
@@ -1241,14 +1252,16 @@ fn migration_15_keeps_one_active_job_per_table() {
 
 #[test]
 fn a_cap_below_a_two_call_paper_is_refused() {
-    let e = env(1);
-    let result = JobRunner::new(
-        filler(&e, paper_index(), replies(vec![])),
-        e.counter.clone(),
-        Arc::new(NoResults),
-        MIN_DAILY_CAP - 1,
-    );
-    assert!(matches!(result, Err(ResearchError::Invalid(_))));
+    assert!(matches!(
+        DailyCap::new(MIN_DAILY_CAP - 1),
+        Err(ResearchError::Invalid(_))
+    ));
+    let cap = daily(MIN_DAILY_CAP);
+    assert!(matches!(
+        cap.set(MIN_DAILY_CAP - 1),
+        Err(ResearchError::Invalid(_))
+    ));
+    assert_eq!(cap.get(), MIN_DAILY_CAP);
 }
 
 #[test]
@@ -1270,10 +1283,412 @@ fn states_and_reasons_round_trip_their_stored_names() {
         PauseReason::Unreachable,
         PauseReason::Failing,
         PauseReason::Busy,
+        PauseReason::ModelUnavailable,
     ] {
         assert_eq!(PauseReason::parse(reason.as_str()), Some(reason));
     }
     assert_eq!(JobState::parse("paused-ish"), None);
     assert!(JobState::Paused.is_active());
     assert!(!JobState::Done.is_active());
+}
+
+#[tokio::test]
+async fn lowering_the_cap_mid_run_pauses_before_the_next_paper() {
+    let e = env(2);
+    let cap = daily(30);
+    // One call was made elsewhere today. While the first paper's call is with the model,
+    // the user lowers the cap in Settings to the smallest one.
+    e.counter.record(today(&e), 1).unwrap();
+    let mut model = Replies::new(vec![Ok(CORRECT), Ok(CORRECT)]);
+    let lowered = cap.clone();
+    model.before_reply = Some(Box::new(move || lowered.set(MIN_DAILY_CAP).unwrap()));
+    let model = Arc::new(model);
+    let r = JobRunner::new(
+        filler(&e, paper_index(), model.clone()),
+        e.counter.clone(),
+        Arc::new(NoResults),
+        cap.clone(),
+    )
+    .with_clock(e.clock.clone())
+    .with_token("p");
+    let job = r.start(&e.table, 2).await.unwrap();
+
+    let report = r.run(&job.id).await.unwrap();
+    // The second paper needs its call and the retry: 2 + 2 > 3.
+    assert_eq!(
+        report.outcome,
+        paused(PauseReason::DailyCap, Some(utc(2026, 10, 23, 0, 0)))
+    );
+    assert_eq!(report.calls, 1);
+    assert_eq!(model.prompts().len(), 1, "the second paper did not start");
+    assert_eq!(statuses(&e, 0), all(CellStatus::Verified));
+    assert_eq!(statuses(&e, 1), all(CellStatus::Queued));
+    assert_eq!(e.counter.count(today(&e)).unwrap(), 2);
+}
+
+#[tokio::test]
+async fn a_quota_pause_reports_which_limit_it_was() {
+    let now = utc(2099, 1, 1, 12, 0);
+    for (error, window) in [
+        (DAILY_LIMIT, LimitWindow::Daily),
+        (UPSTREAM_LIMIT, LimitWindow::Short),
+    ] {
+        let e = env_at(1, now);
+        let r = runner(&e, paper_index(), replies(vec![Err(error)]), 30, "p");
+        let job = r.start(&e.table, 1).await.unwrap();
+        let report = r.run(&job.id).await.unwrap();
+        assert!(matches!(
+            report.outcome,
+            JobOutcome::Paused {
+                reason: PauseReason::Quota,
+                ..
+            }
+        ));
+        assert_eq!(report.quota_window, Some(window));
+    }
+    let e = env(1);
+    let r = runner(&e, paper_index(), replies(vec![Err(AUTH_ERROR)]), 30, "p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    assert_eq!(r.run(&job.id).await.unwrap().quota_window, None);
+}
+
+#[tokio::test]
+async fn the_latest_job_outlives_its_end_and_a_job_is_cancelled_without_a_runner() {
+    let e = env(2);
+    assert!(e.store.latest_fill_job(&e.table).unwrap().is_none());
+    let r = runner(&e, paper_index(), replies(vec![Err(AUTH_ERROR)]), 30, "p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    r.run(&job.id).await.unwrap();
+    assert_eq!(job_of(&e, &job.id).state, JobState::Paused);
+
+    let cancelled = cancel_job(e.store.clone(), &job.id).await.unwrap().unwrap();
+    assert_eq!(cancelled.state, JobState::Cancelled);
+    assert_eq!(statuses(&e, 1), all(CellStatus::Empty));
+    assert!(e.store.active_fill_job(&e.table).unwrap().is_none());
+    assert_eq!(
+        e.store.latest_fill_job(&e.table).unwrap().unwrap().id,
+        job.id
+    );
+    let next = r.start(&e.table, 1).await.unwrap();
+    assert_eq!(
+        e.store.latest_fill_job(&e.table).unwrap().unwrap().id,
+        next.id,
+        "the newest job wins, also within one millisecond"
+    );
+    // A scheduler finds the queued job without a runner.
+    assert_eq!(
+        resume_due_jobs(e.store.clone()).await.unwrap(),
+        vec![next.id.clone()]
+    );
+    assert!(cancel_job(e.store.clone(), "no-such-job")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn a_job_held_by_a_process_that_quit_is_given_back_and_taken_up_at_once() {
+    let e = env(2);
+    let r = runner(&e, paper_index(), replies(vec![]), 30, "process-2");
+    let job = r.start(&e.table, 2).await.unwrap();
+    // Process 1 holds the job under a live lease.
+    claimed_by(&e, &job.id, "process-1");
+    let until = e.clock.now() + TimeDelta::minutes(LEASE_MINUTES);
+    assert_eq!(r.hold(&job.id).await.unwrap(), Hold::Elsewhere { until });
+    assert!(
+        r.resume_due().await.unwrap().is_empty(),
+        "not due under a live lease"
+    );
+    // A cancel asked meanwhile waits for the lease.
+    let pending = r.cancel(&job.id).await.unwrap().unwrap();
+    assert_eq!(pending.state, JobState::Running);
+    assert!(pending.cancel_requested);
+
+    // Process 1 quits cleanly and gives its jobs back.
+    assert_eq!(e.store.release_fill_jobs_held_by("process-1").unwrap(), 1);
+    assert_eq!(e.store.release_fill_jobs_held_by("process-1").unwrap(), 0);
+    let released = job_of(&e, &job.id);
+    assert_eq!(released.state, JobState::Queued);
+    assert_eq!(released.heartbeat_at, None);
+    assert_eq!(
+        statuses(&e, 0),
+        all(CellStatus::Queued),
+        "queued cells stay"
+    );
+    assert_eq!(r.hold(&job.id).await.unwrap(), Hold::Free);
+    assert_eq!(r.resume_due().await.unwrap(), vec![job.id.clone()]);
+    // The next claim finishes the cancel that was asked.
+    assert_eq!(
+        r.run(&job.id).await.unwrap().outcome,
+        JobOutcome::NotClaimed {
+            state: Some(JobState::Cancelled)
+        }
+    );
+
+    // Without a cancel, the next start runs it at once.
+    let job = r.start(&e.table, 2).await.unwrap();
+    claimed_by(&e, &job.id, "process-1");
+    e.store.release_fill_jobs_held_by("process-1").unwrap();
+    let fresh = runner(
+        &e,
+        paper_index(),
+        replies(vec![Ok(CORRECT), Ok(CORRECT)]),
+        30,
+        "process-2",
+    );
+    assert_eq!(fresh.run(&job.id).await.unwrap().outcome, JobOutcome::Done);
+    assert_eq!(fresh.hold(&job.id).await.unwrap(), Hold::Free);
+}
+
+#[tokio::test]
+async fn a_job_that_cannot_get_a_model_waits_for_the_user_and_keeps_its_queue() {
+    let e = env(2);
+    let r = runner(&e, paper_index(), replies(vec![]), 30, "p");
+    let job = r.start(&e.table, 2).await.unwrap();
+    claimed_by(&e, &job.id, "gone");
+    e.clock.advance(TimeDelta::minutes(LEASE_MINUTES));
+    let blocked = r
+        .block(&job.id, "refused_reasoning")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(blocked.state, JobState::Paused);
+    assert_eq!(blocked.pause_reason, Some(PauseReason::ModelUnavailable));
+    assert_eq!(blocked.last_error.as_deref(), Some("refused_reasoning"));
+    assert_eq!(blocked.next_attempt_at, None);
+    assert_eq!(statuses(&e, 0), all(CellStatus::Queued));
+    assert!(r.resume_due().await.unwrap().is_empty());
+    // A live run elsewhere is never paused from here.
+    let other = env(1);
+    let o = runner(&other, paper_index(), replies(vec![]), 30, "p");
+    let live = o.start(&other.table, 1).await.unwrap();
+    claimed_by(&other, &live.id, "elsewhere");
+    let kept = o.block(&live.id, "no_key").await.unwrap().unwrap();
+    assert_eq!(kept.state, JobState::Running);
+    // Fixing the model makes it due again.
+    let woken = e
+        .store
+        .wake_paused_fill_jobs(PauseReason::ModelUnavailable, &timestamp(e.clock.now()))
+        .unwrap();
+    assert_eq!(woken.len(), 1);
+    assert_eq!(r.resume_due().await.unwrap(), vec![job.id.clone()]);
+}
+
+/// What a scheduler told the app.
+#[derive(Default)]
+struct Seen {
+    changed: Mutex<Vec<String>>,
+    ended: Mutex<Vec<(String, JobOutcome, bool)>>,
+    blocked: Mutex<Vec<(String, Option<String>)>>,
+}
+
+impl crate::research::tables::schedule::RunEvents for Seen {
+    fn changed(&self, table_id: &str) {
+        self.changed.lock().unwrap().push(table_id.to_string());
+    }
+    fn ended(&self, job: &FillJob, report: &RunReport, by_user: bool) {
+        self.ended
+            .lock()
+            .unwrap()
+            .push((job.id.clone(), report.outcome.clone(), by_user));
+    }
+    fn blocked(&self, job: &FillJob, _message: &str) {
+        self.blocked
+            .lock()
+            .unwrap()
+            .push((job.id.clone(), job.last_error.clone()));
+    }
+}
+
+/// A runner source that gives `runner`, or says no model can be used.
+struct Source {
+    runner: Mutex<Option<JobRunner>>,
+    asked: Mutex<usize>,
+}
+
+impl Source {
+    fn blocked() -> Self {
+        Self {
+            runner: Mutex::new(None),
+            asked: Mutex::new(0),
+        }
+    }
+    fn with(runner: JobRunner) -> Self {
+        Self {
+            runner: Mutex::new(Some(runner)),
+            asked: Mutex::new(0),
+        }
+    }
+    fn asked(&self) -> usize {
+        *self.asked.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::research::tables::schedule::RunnerSource for Source {
+    async fn runner(&self) -> Result<JobRunner, crate::research::tables::schedule::RunnerError> {
+        *self.asked.lock().unwrap() += 1;
+        self.runner.lock().unwrap().clone().ok_or_else(|| {
+            crate::research::tables::schedule::RunnerError::Blocked {
+                code: "refused_reasoning",
+                message: "this model always reasons".to_string(),
+            }
+        })
+    }
+}
+
+async fn finish(tick: crate::research::tables::schedule::Tick) {
+    for run in tick.runs {
+        run.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_check_with_nothing_due_resolves_no_model() {
+    use crate::research::tables::schedule::Scheduler;
+    let e = env(1);
+    let scheduler = Scheduler::with("p", e.clock.clone());
+    let source = Source::blocked();
+    let seen = Arc::new(Seen::default());
+    let tick = scheduler
+        .tick(e.store.clone(), &source, seen.clone())
+        .await
+        .unwrap();
+    assert_eq!((tick.due, tick.asked), (0, false));
+    assert_eq!(source.asked(), 0);
+}
+
+#[tokio::test]
+async fn a_job_is_run_once_however_often_it_is_started() {
+    use crate::research::tables::schedule::Scheduler;
+    let e = env(1);
+    let model = replies(vec![Ok(CORRECT), Ok(CORRECT)]);
+    let r = runner(&e, paper_index(), model.clone(), 30, "p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    let scheduler = Scheduler::with("p", e.clock.clone());
+    let seen = Arc::new(Seen::default());
+    // The user's Fill runs it at once; a second start while it runs adds nothing.
+    let first = scheduler
+        .spawn_run(r.clone(), job.id.clone(), seen.clone(), true)
+        .unwrap();
+    assert!(scheduler.is_running(&job.id));
+    assert!(scheduler
+        .spawn_run(r.clone(), job.id.clone(), seen.clone(), true)
+        .is_none());
+    first.await.unwrap();
+    assert!(!scheduler.is_running(&job.id));
+    assert_eq!(model.prompts().len(), 1, "one paper, one call");
+    assert_eq!(
+        seen.ended.lock().unwrap().as_slice(),
+        &[(job.id.clone(), JobOutcome::Done, true)]
+    );
+    assert_eq!(seen.changed.lock().unwrap().as_slice(), &[e.table.clone()]);
+}
+
+#[tokio::test]
+async fn a_blocked_model_pauses_due_jobs_once_and_a_fixed_one_resumes_them() {
+    use crate::research::tables::schedule::Scheduler;
+    let e = env(1);
+    let r = runner(&e, paper_index(), replies(vec![Ok(CORRECT)]), 30, "p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    let scheduler = Scheduler::with("p", e.clock.clone());
+    let seen = Arc::new(Seen::default());
+
+    let blocked = Source::blocked();
+    let tick = scheduler
+        .tick(e.store.clone(), &blocked, seen.clone())
+        .await
+        .unwrap();
+    assert_eq!(tick.blocked, vec![job.id.clone()]);
+    let paused = job_of(&e, &job.id);
+    assert_eq!(paused.pause_reason, Some(PauseReason::ModelUnavailable));
+    assert_eq!(paused.next_attempt_at, None);
+    // Later checks look again (the user may fix it) but say nothing new.
+    for _ in 0..2 {
+        let tick = scheduler
+            .tick(e.store.clone(), &blocked, seen.clone())
+            .await
+            .unwrap();
+        assert!(tick.blocked.is_empty());
+    }
+    assert_eq!(blocked.asked(), 3);
+    assert_eq!(
+        seen.blocked.lock().unwrap().as_slice(),
+        &[(job.id.clone(), Some("refused_reasoning".to_string()))],
+        "told once"
+    );
+
+    // The user chooses a model that tables can use: the next check runs the job.
+    let fixed = Source::with(r.clone());
+    let tick = scheduler
+        .tick(e.store.clone(), &fixed, seen.clone())
+        .await
+        .unwrap();
+    assert_eq!(tick.woken, 1);
+    finish(tick).await;
+    assert_eq!(job_of(&e, &job.id).state, JobState::Done);
+    assert_eq!(statuses(&e, 0), all(CellStatus::Verified));
+}
+
+#[tokio::test]
+async fn raising_the_cap_wakes_a_job_paused_for_it() {
+    use crate::research::tables::schedule::Scheduler;
+    let e = env(1);
+    let cap = daily(MIN_DAILY_CAP);
+    e.counter.record(today(&e), 2).unwrap();
+    let model = replies(vec![Ok(CORRECT)]);
+    let r = JobRunner::new(
+        filler(&e, paper_index(), model.clone()),
+        e.counter.clone(),
+        Arc::new(NoResults),
+        cap.clone(),
+    )
+    .with_clock(e.clock.clone())
+    .with_token("p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    assert!(matches!(
+        r.run(&job.id).await.unwrap().outcome,
+        JobOutcome::Paused {
+            reason: PauseReason::DailyCap,
+            ..
+        }
+    ));
+    let scheduler = Scheduler::with("p", e.clock.clone());
+    let source = Source::with(r.clone());
+    let seen = Arc::new(Seen::default());
+    assert_eq!(
+        scheduler
+            .tick(e.store.clone(), &source, seen.clone())
+            .await
+            .unwrap()
+            .due,
+        0,
+        "not due before midnight"
+    );
+    // The user raises the cap: the paused job is due at once and runs.
+    cap.set(30).unwrap();
+    let woken = e
+        .store
+        .wake_paused_fill_jobs(PauseReason::DailyCap, &timestamp(e.clock.now()))
+        .unwrap();
+    assert_eq!(woken.len(), 1);
+    let tick = scheduler
+        .tick(e.store.clone(), &source, seen.clone())
+        .await
+        .unwrap();
+    assert_eq!(tick.due, 1);
+    finish(tick).await;
+    assert_eq!(job_of(&e, &job.id).state, JobState::Done);
+    assert_eq!(model.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn a_run_counts_the_papers_it_took_up_and_those_not_indexed() {
+    let e = env(3);
+    let index = paper_index().without(&e.papers[1].to_string_lossy());
+    let r = runner(&e, index, replies(vec![Ok(CORRECT), Ok(CORRECT)]), 30, "p");
+    let job = r.start(&e.table, 2).await.unwrap();
+    let report = r.run(&job.id).await.unwrap();
+    assert_eq!(report.outcome, JobOutcome::Done);
+    assert_eq!((report.papers, report.not_indexed), (3, 1));
 }

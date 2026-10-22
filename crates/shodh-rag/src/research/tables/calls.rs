@@ -15,7 +15,8 @@
 //! under-count could run into the provider's own daily limit.
 
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -31,6 +32,55 @@ pub const DEFAULT_DAILY_CAP: usize = 30;
 pub const MAX_CALLS_PER_PAPER_WITH_RETRY: usize = MAX_CALLS_PER_PAPER + 1;
 /// The smallest cap a runner accepts.
 pub const MIN_DAILY_CAP: usize = MAX_CALLS_PER_PAPER_WITH_RETRY;
+/// The largest cap Settings accepts: OpenRouter's daily request limit for a key with
+/// credits. A larger number could not be spent, and a typo of one more digit should not
+/// lift the guard that keeps a table fill from emptying the day's quota.
+pub const MAX_DAILY_CAP: usize = 1_000;
+
+/// The day's cap of table calls, shared by every runner and gate that holds a clone. It is
+/// read at every check (each paper and each call), so a change in Settings applies from
+/// the next check, also to a run in flight.
+#[derive(Debug, Clone)]
+pub struct DailyCap(Arc<AtomicUsize>);
+
+impl DailyCap {
+    /// A cap of `calls`, within [`MIN_DAILY_CAP`]..=[`MAX_DAILY_CAP`].
+    pub fn new(calls: usize) -> ResearchResult<Self> {
+        check_cap(calls)?;
+        Ok(Self(Arc::new(AtomicUsize::new(calls))))
+    }
+
+    /// The cap now.
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Changes the cap for every holder; a value out of range is refused and changes
+    /// nothing.
+    pub fn set(&self, calls: usize) -> ResearchResult<()> {
+        check_cap(calls)?;
+        self.0.store(calls, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl Default for DailyCap {
+    /// [`DEFAULT_DAILY_CAP`], which is within the bounds.
+    fn default() -> Self {
+        Self(Arc::new(AtomicUsize::new(DEFAULT_DAILY_CAP)))
+    }
+}
+
+/// Whether `calls` is a cap Settings may hold.
+pub fn check_cap(calls: usize) -> ResearchResult<()> {
+    if (MIN_DAILY_CAP..=MAX_DAILY_CAP).contains(&calls) {
+        Ok(())
+    } else {
+        Err(ResearchError::Invalid(format!(
+            "The daily cap of table calls is between {MIN_DAILY_CAP} and {MAX_DAILY_CAP}."
+        )))
+    }
+}
 
 /// The time. Injected so that days, resets and waits are deterministic in tests.
 pub trait Clock: Send + Sync {
@@ -257,6 +307,27 @@ mod tests {
         });
         assert_eq!(granted, cap, "exactly the cap was granted");
         assert_eq!(first.count(day).unwrap(), cap);
+    }
+
+    #[test]
+    fn a_shared_cap_changes_for_every_holder_and_refuses_values_out_of_range() {
+        assert!(DailyCap::new(MIN_DAILY_CAP - 1).is_err());
+        assert!(DailyCap::new(MAX_DAILY_CAP + 1).is_err());
+        let cap = DailyCap::new(DEFAULT_DAILY_CAP).unwrap();
+        let held = cap.clone();
+        cap.set(MIN_DAILY_CAP).unwrap();
+        assert_eq!(held.get(), MIN_DAILY_CAP);
+        assert!(held.set(0).is_err());
+        assert!(held.set(MAX_DAILY_CAP + 1).is_err());
+        assert_eq!(cap.get(), MIN_DAILY_CAP, "a refused value changes nothing");
+        held.set(MAX_DAILY_CAP).unwrap();
+        assert_eq!(cap.get(), MAX_DAILY_CAP);
+        let default = DailyCap::default();
+        assert_eq!(default.get(), DEFAULT_DAILY_CAP);
+        assert!(
+            check_cap(default.get()).is_ok(),
+            "the default is within the bounds"
+        );
     }
 
     #[test]

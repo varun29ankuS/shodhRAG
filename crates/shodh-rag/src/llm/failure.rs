@@ -116,6 +116,31 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// The rate-limit headers a router copies into its error object
+/// (OpenRouter's `error.metadata.headers`: `X-RateLimit-Limit`, `-Remaining`, `-Reset`),
+/// as `[X-RateLimit-Reset: 1761177600000, …]`. A failure's detail starts with them, so no
+/// cut of a long body drops the reset time the caller waits for.
+fn rate_limit_headers(error: &Value) -> Option<String> {
+    let headers = error.get("metadata")?.get("headers")?.as_object()?;
+    let pairs: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| name.to_ascii_lowercase().starts_with("x-ratelimit-"))
+        .map(|(name, value)| match value.as_str() {
+            Some(text) => format!("{name}: {text}"),
+            None => format!("{name}: {value}"),
+        })
+        .collect();
+    (!pairs.is_empty()).then(|| format!("[{}]", pairs.join(", ")))
+}
+
+/// `detail` with the rate-limit headers of `error` in front, when it has any.
+fn with_rate_limit_headers(error: Option<&Value>, detail: &str) -> String {
+    match error.and_then(rate_limit_headers) {
+        Some(headers) => format!("{headers} {detail}"),
+        None => detail.to_string(),
+    }
+}
+
 /// An HTTP error status in a provider's error `code` (number or digits).
 fn error_status(code: &Value) -> Option<u16> {
     let n = match code {
@@ -160,16 +185,19 @@ impl CallContext {
         }
     }
 
-    /// An HTTP error response, classified from its status and body.
+    /// An HTTP error response, classified from its status and body. The rate-limit
+    /// headers a JSON body carries lead the detail.
     pub fn http(&self, status: u16, body: &str) -> ProviderFailure {
         let classified = classify(&format!("{status} {body}"), None, now_ms());
+        let parsed: Option<Value> = serde_json::from_str(body).ok();
+        let error = parsed.as_ref().and_then(|v| v.get("error"));
         ProviderFailure {
             kind: classified.kind,
             provider: self.provider.clone(),
             upstream: classified.upstream,
             model: self.model.clone(),
             status: Some(status),
-            detail: self.detail(body),
+            detail: self.detail(&with_rate_limit_headers(error, body)),
         }
     }
 
@@ -197,6 +225,7 @@ impl CallContext {
             Some(raw) if !raw.trim().is_empty() && raw != message => format!("{message} ({raw})"),
             _ => message,
         };
+        let detail = with_rate_limit_headers(Some(error), &detail);
         ProviderFailure {
             kind: classified.kind,
             provider: self.provider.clone(),
@@ -877,6 +906,41 @@ mod tests {
             .kind,
             ProviderErrorKind::InvalidRequest
         );
+    }
+
+    /// OpenRouter's 429 for an exhausted daily free quota, with its headers late in a
+    /// long body (an upstream's raw text and the account id come first).
+    fn late_headers_429() -> String {
+        format!(
+            r#"{{"error":{{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day","code":429,"metadata":{{"raw":"{}","provider_name":null,"headers":{{"X-RateLimit-Limit":"50","X-RateLimit-Remaining":"0","X-RateLimit-Reset":"1761177600000"}}}}}},"user_id":"user_2xYz"}}"#,
+            "upstream says: slow down. ".repeat(40)
+        )
+    }
+
+    #[test]
+    fn rate_limit_headers_lead_the_detail_and_survive_the_cut() {
+        let body = late_headers_429();
+        assert!(body.find("X-RateLimit-Reset").unwrap() > MAX_FAILURE_DETAIL_CHARS);
+        let f = ctx().http(429, &body);
+        assert_eq!(f.kind, ProviderErrorKind::QuotaExhausted);
+        assert!(f.detail.chars().count() <= MAX_FAILURE_DETAIL_CHARS);
+        assert!(
+            f.detail.starts_with("[X-RateLimit-Limit: 50, X-RateLimit-Remaining: 0, X-RateLimit-Reset: 1761177600000]"),
+            "{}",
+            f.detail
+        );
+        assert!(f.to_string().contains("X-RateLimit-Reset: 1761177600000"));
+        // The same error inside a `200 OK` body keeps them too.
+        let in_band: Value = serde_json::from_str(&body).unwrap();
+        let f = ctx().body_error(&in_band).unwrap();
+        assert!(
+            f.detail.contains("X-RateLimit-Reset: 1761177600000"),
+            "{}",
+            f.detail
+        );
+        // A body without them is unchanged.
+        let plain = r#"{"error":{"message":"Provider returned error","code":502}}"#;
+        assert_eq!(ctx().http(502, plain).detail, plain);
     }
 
     #[test]

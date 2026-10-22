@@ -33,7 +33,7 @@ use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Serialize;
 
-use super::calls::{next_utc_midnight, utc_day, CallCounter, Clock, SystemClock, MIN_DAILY_CAP};
+use super::calls::{next_utc_midnight, utc_day, CallCounter, Clock, DailyCap, SystemClock};
 use super::fill::{
     CallGate, Filler, Halt, LimitWindow, ModelFailure, ModelFailureKind, PaperFill, PaperRequest,
     MODEL_AUTH, MODEL_FAILED, MODEL_QUOTA, MODEL_TIMEOUT, PAPER_NOT_INDEXED, SEARCH_FAILED,
@@ -71,6 +71,11 @@ pub const STALE_RESET_WAIT_SECS: i64 = 60;
 
 /// This process's claim on the jobs it runs.
 static PROCESS_TOKEN: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+
+/// This process's run token.
+pub(super) fn process_token() -> String {
+    PROCESS_TOKEN.clone()
+}
 
 /// The jobs this process is running now, by (token, job id).
 static LIVE_RUNS: LazyLock<Mutex<HashSet<(String, String)>>> =
@@ -168,6 +173,10 @@ pub enum PauseReason {
     Failing,
     /// The database stayed locked by another writer; resumes in a minute.
     Busy,
+    /// No usable model (none set, Local-only mode against a cloud model, no API key, or a
+    /// model whose reasoning cannot be bounded); `last_error` holds which. Waits for the
+    /// user; the scheduler takes the job up again once a model can be used.
+    ModelUnavailable,
 }
 
 impl PauseReason {
@@ -179,6 +188,7 @@ impl PauseReason {
             Self::Unreachable => "unreachable",
             Self::Failing => "failing",
             Self::Busy => "busy",
+            Self::ModelUnavailable => "model_unavailable",
         }
     }
 
@@ -190,6 +200,7 @@ impl PauseReason {
             "unreachable" => Some(Self::Unreachable),
             "failing" => Some(Self::Failing),
             "busy" => Some(Self::Busy),
+            "model_unavailable" => Some(Self::ModelUnavailable),
             _ => None,
         }
     }
@@ -267,8 +278,14 @@ pub struct RunReport {
     pub calls: usize,
     /// Cells stored in this run.
     pub cells: usize,
+    /// Papers this run took up (each with something to fill), those skipped included.
+    pub papers: usize,
     /// Papers skipped because they are not indexed yet.
     pub not_indexed: usize,
+    /// For a run paused by the provider's rate limit or quota, which limit it was: a
+    /// daily quota costs the rest of the day and is worth the user's attention, a short
+    /// limit resumes on its own within minutes.
+    pub quota_window: Option<LimitWindow>,
 }
 
 impl RunReport {
@@ -277,7 +294,9 @@ impl RunReport {
             outcome,
             calls: 0,
             cells: 0,
+            papers: 0,
             not_indexed: 0,
+            quota_window: None,
         }
     }
 }
@@ -334,7 +353,7 @@ pub(super) enum Claim {
 }
 
 /// Fixed-width UTC with milliseconds and `Z`: string order is time order.
-fn timestamp(at: DateTime<Utc>) -> String {
+pub(super) fn timestamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -435,6 +454,47 @@ fn run_is_gone(
         .is_none_or(|beat| beat <= cutoff)
 }
 
+/// Who holds a job now, as far as a run of it is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hold {
+    /// Not running, or running under a run that is gone: a claim takes it.
+    Free,
+    /// A run of this process runs it.
+    RunningHere,
+    /// Another process's run holds it under a live lease, until `until` at the latest
+    /// (its last heartbeat plus [`LEASE_MINUTES`]).
+    Elsewhere { until: DateTime<Utc> },
+}
+
+/// The hold of `job` (whose run token is `owner`) for a caller holding `token`.
+fn hold_of(
+    job: &FillJob,
+    owner: Option<&str>,
+    token: &str,
+    live_here: bool,
+    now: DateTime<Utc>,
+) -> Hold {
+    if job.state != JobState::Running {
+        return Hold::Free;
+    }
+    if owner == Some(token) {
+        return if live_here {
+            Hold::RunningHere
+        } else {
+            Hold::Free
+        };
+    }
+    let until = job
+        .heartbeat_at
+        .as_deref()
+        .and_then(|beat| DateTime::parse_from_rfc3339(beat).ok())
+        .map(|beat| beat.with_timezone(&Utc) + TimeDelta::minutes(LEASE_MINUTES));
+    match until {
+        Some(until) if owner.is_some() && until > now => Hold::Elsewhere { until },
+        _ => Hold::Free,
+    }
+}
+
 /// Marks the table's cells that hold no result `queued`: a missing cell is inserted, an
 /// `empty` or `failed` one is changed. Edits and results (stale or not) are not touched.
 fn queue_in(conn: &Connection, table_id: &str) -> rusqlite::Result<()> {
@@ -485,6 +545,124 @@ impl TableStore {
     /// The table's active (queued, running or paused) job.
     pub fn active_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
         Ok(active_in(&self.lock(), table_id)?)
+    }
+
+    /// A job with the token of the run that holds it.
+    fn fill_job_owned(&self, id: &str) -> ResearchResult<Option<(FillJob, Option<String>)>> {
+        let conn = self.lock();
+        let Some(job) = job_in(&conn, id)? else {
+            return Ok(None);
+        };
+        let owner = owner_in(&conn, id)?;
+        Ok(Some((job, owner)))
+    }
+
+    /// Gives back every job running under `token` (the run's process is ending): back to
+    /// `queued`, with no run token and no heartbeat, so the next start of the app takes
+    /// them up at once instead of waiting out the lease. Cells already filled stay; the
+    /// queued ones stay queued; a cancel asked meanwhile is finished by the next claim.
+    /// Returns the jobs given back.
+    pub fn release_fill_jobs_held_by(&self, token: &str) -> ResearchResult<usize> {
+        Ok(self.lock().execute(
+            "UPDATE table_fill_job SET state = 'queued', run_token = NULL, heartbeat_at = NULL
+              WHERE state = 'running' AND run_token = ?1",
+            params![token],
+        )?)
+    }
+
+    /// Pauses a job that cannot get a model (`model_unavailable`, `code` as its error,
+    /// waiting for the user), unless it is held by a live run (`token` with `live_here`,
+    /// or another process's lease newer than `cutoff`). A job whose cancel was asked is
+    /// cancelled instead. Queued cells stay queued. Returns the job as it now is.
+    pub fn block_fill_job(
+        &self,
+        id: &str,
+        token: &str,
+        live_here: bool,
+        cutoff: &str,
+        code: &str,
+    ) -> ResearchResult<Option<FillJob>> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(job) = job_in(&tx, id)? else {
+            return Ok(None);
+        };
+        let free = match job.state {
+            JobState::Queued | JobState::Paused => true,
+            JobState::Running => {
+                let owner = owner_in(&tx, id)?;
+                run_is_gone(&job, owner.as_deref(), token, live_here, cutoff)
+            }
+            JobState::Done | JobState::Cancelled | JobState::Failed => false,
+        };
+        if free {
+            if job.cancel_requested {
+                cancel_in(&tx, &job)?;
+            } else {
+                tx.execute(
+                    "UPDATE table_fill_job SET state = 'paused',
+                       pause_reason = 'model_unavailable', next_attempt_at = NULL,
+                       last_error = ?2, run_token = NULL, heartbeat_at = NULL
+                     WHERE id = ?1",
+                    params![id, code],
+                )?;
+            }
+        }
+        let job = job_in(&tx, id)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
+    /// Makes the jobs paused for `reason` due at `now` (the cap was raised; a model can be
+    /// used again). Returns them.
+    pub fn wake_paused_fill_jobs(
+        &self,
+        reason: PauseReason,
+        now: &str,
+    ) -> ResearchResult<Vec<FillJob>> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let jobs: Vec<FillJob> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT {JOB_COLS} FROM table_fill_job
+                  WHERE state = 'paused' AND pause_reason = ?1 ORDER BY created_at, id"
+            ))?;
+            let rows = stmt.query_map(params![reason.as_str()], job_from)?;
+            rows.collect::<Result<_, _>>()?
+        };
+        tx.execute(
+            "UPDATE table_fill_job SET next_attempt_at = ?2
+              WHERE state = 'paused' AND pause_reason = ?1",
+            params![reason.as_str(), now],
+        )?;
+        tx.commit()?;
+        Ok(jobs)
+    }
+
+    /// The jobs paused for `reason`, oldest first.
+    pub fn paused_fill_jobs(&self, reason: PauseReason) -> ResearchResult<Vec<FillJob>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {JOB_COLS} FROM table_fill_job
+              WHERE state = 'paused' AND pause_reason = ?1 ORDER BY created_at, id"
+        ))?;
+        let rows = stmt.query_map(params![reason.as_str()], job_from)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The table's newest job, active or finished: how its last fill ended.
+    pub fn latest_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
+        Ok(self
+            .lock()
+            .query_row(
+                &format!(
+                    "SELECT {JOB_COLS} FROM table_fill_job WHERE table_id = ?1
+                      ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                ),
+                params![table_id],
+                job_from,
+            )
+            .optional()?)
     }
 
     /// A new queued job for the table, or its active job when it has one.
@@ -796,11 +974,11 @@ impl TableStore {
 pub struct CounterGate {
     counter: Arc<CallCounter>,
     clock: Arc<dyn Clock>,
-    cap: usize,
+    cap: DailyCap,
 }
 
 impl CounterGate {
-    pub fn new(counter: Arc<CallCounter>, cap: usize) -> Self {
+    pub fn new(counter: Arc<CallCounter>, cap: DailyCap) -> Self {
         Self {
             counter,
             clock: Arc::new(SystemClock),
@@ -829,7 +1007,7 @@ fn paper_fits(
 #[async_trait::async_trait]
 impl CallGate for CounterGate {
     async fn before_paper(&self, calls: usize) -> ResearchResult<Option<Halt>> {
-        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap);
+        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap.get());
         blocking(move || {
             Ok((!paper_fits(&counter, clock.as_ref(), calls, cap)?).then_some(Halt::DailyCap))
         })
@@ -837,7 +1015,7 @@ impl CallGate for CounterGate {
     }
 
     async fn before_call(&self) -> ResearchResult<Option<Halt>> {
-        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap);
+        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap.get());
         blocking(move || {
             let reserved = counter.try_record(utc_day(clock.now()), 1, cap)?;
             Ok(reserved.is_none().then_some(Halt::DailyCap))
@@ -853,7 +1031,7 @@ struct JobGate {
     store: Arc<TableStore>,
     counter: Arc<CallCounter>,
     clock: Arc<dyn Clock>,
-    cap: usize,
+    cap: DailyCap,
     job_id: String,
     token: String,
 }
@@ -864,7 +1042,7 @@ impl CallGate for JobGate {
         let store = self.store.clone();
         let counter = self.counter.clone();
         let clock = self.clock.clone();
-        let cap = self.cap;
+        let cap = self.cap.get();
         let id = self.job_id.clone();
         let token = self.token.clone();
         blocking(move || {
@@ -883,7 +1061,7 @@ impl CallGate for JobGate {
         let store = self.store.clone();
         let counter = self.counter.clone();
         let clock = self.clock.clone();
-        let cap = self.cap;
+        let cap = self.cap.get();
         let id = self.job_id.clone();
         let token = self.token.clone();
         blocking(move || {
@@ -914,40 +1092,136 @@ pub struct JobRunner {
     counter: Arc<CallCounter>,
     results: Arc<dyn ResultSource>,
     clock: Arc<dyn Clock>,
-    cap: usize,
+    cap: DailyCap,
     token: String,
 }
 
 impl std::fmt::Debug for JobRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobRunner")
-            .field("cap", &self.cap)
+            .field("cap", &self.cap.get())
             .finish_non_exhaustive()
     }
 }
 
+/// Cancels a job from this process without a runner, so stopping a fill never needs a
+/// usable model: see [`JobRunner::cancel`].
+pub async fn cancel_job(store: Arc<TableStore>, job_id: &str) -> ResearchResult<Option<FillJob>> {
+    let id = job_id.to_string();
+    let token = PROCESS_TOKEN.clone();
+    let live = LiveRun::is_live(&token, &id);
+    let cutoff = lease_cutoff(SystemClock.now());
+    blocking(move || store.cancel_fill_job(&id, &token, live, &cutoff)).await
+}
+
+/// Gives back every job this process's runs hold (see
+/// [`TableStore::release_fill_jobs_held_by`]): called when the app exits.
+pub async fn release_held_jobs(store: Arc<TableStore>) -> ResearchResult<usize> {
+    let token = PROCESS_TOKEN.clone();
+    blocking(move || store.release_fill_jobs_held_by(&token)).await
+}
+
+/// Who holds the job now, for this process on the computer's clock: see [`Hold`].
+pub async fn job_hold(store: Arc<TableStore>, job_id: &str) -> ResearchResult<Hold> {
+    hold_at(store, job_id, PROCESS_TOKEN.clone(), SystemClock.now()).await
+}
+
+pub(super) async fn hold_at(
+    store: Arc<TableStore>,
+    job_id: &str,
+    token: String,
+    now: DateTime<Utc>,
+) -> ResearchResult<Hold> {
+    let id = job_id.to_string();
+    let live = LiveRun::is_live(&token, job_id);
+    let owned = blocking(move || store.fill_job_owned(&id)).await?;
+    Ok(match owned {
+        Some((job, owner)) => hold_of(&job, owner.as_deref(), &token, live, now),
+        None => Hold::Free,
+    })
+}
+
+/// Pauses a job of this process's scheduler that cannot get a model: see
+/// [`TableStore::block_fill_job`].
+pub async fn block_job(
+    store: Arc<TableStore>,
+    job_id: &str,
+    code: &str,
+) -> ResearchResult<Option<FillJob>> {
+    block_at(
+        store,
+        job_id,
+        code,
+        PROCESS_TOKEN.clone(),
+        SystemClock.now(),
+    )
+    .await
+}
+
+pub(super) async fn block_at(
+    store: Arc<TableStore>,
+    job_id: &str,
+    code: &str,
+    token: String,
+    now: DateTime<Utc>,
+) -> ResearchResult<Option<FillJob>> {
+    let (id, code) = (job_id.to_string(), code.to_string());
+    let live = LiveRun::is_live(&token, job_id);
+    let cutoff = lease_cutoff(now);
+    blocking(move || store.block_fill_job(&id, &token, live, &cutoff, &code)).await
+}
+
+/// Makes the jobs paused for `reason` due now: see [`TableStore::wake_paused_fill_jobs`].
+pub async fn wake_paused_jobs(
+    store: Arc<TableStore>,
+    reason: PauseReason,
+) -> ResearchResult<Vec<FillJob>> {
+    let now = timestamp(SystemClock.now());
+    blocking(move || store.wake_paused_fill_jobs(reason, &now)).await
+}
+
+/// The jobs a runner of this process could run now, on the computer's clock, without a
+/// runner (a scheduler asks this before it resolves a model): see
+/// [`JobRunner::resume_due`].
+pub async fn resume_due_jobs(store: Arc<TableStore>) -> ResearchResult<Vec<String>> {
+    due_jobs(store, PROCESS_TOKEN.clone(), SystemClock.now()).await
+}
+
+/// The jobs due at `now` for a runner holding `token`, leaving out those this process is
+/// running.
+pub(super) async fn due_jobs(
+    store: Arc<TableStore>,
+    token: String,
+    now: DateTime<Utc>,
+) -> ResearchResult<Vec<String>> {
+    let (at, cutoff) = (timestamp(now), lease_cutoff(now));
+    let mine = token.clone();
+    let due = blocking(move || store.due_fill_jobs(&mine, &at, &cutoff)).await?;
+    Ok(due
+        .into_iter()
+        .filter(|(id, own_running)| !(*own_running && LiveRun::is_live(&token, id)))
+        .map(|(id, _)| id)
+        .collect())
+}
+
 impl JobRunner {
-    /// A runner filling with `filler`, counting its calls in `counter` under a daily cap
-    /// of `cap` calls (at least [`MIN_DAILY_CAP`]), on the computer's clock.
+    /// A runner filling with `filler`, counting its calls in `counter` under the shared
+    /// daily cap `cap`, on the computer's clock. The cap is read at every check, so a
+    /// change in Settings applies from the next paper of a run in flight.
     pub fn new(
         filler: Filler,
         counter: Arc<CallCounter>,
         results: Arc<dyn ResultSource>,
-        cap: usize,
-    ) -> ResearchResult<Self> {
-        if cap < MIN_DAILY_CAP {
-            return Err(ResearchError::Invalid(format!(
-                "The daily cap of table calls is at least {MIN_DAILY_CAP}."
-            )));
-        }
-        Ok(Self {
+        cap: DailyCap,
+    ) -> Self {
+        Self {
             filler,
             counter,
             results,
             clock: Arc::new(SystemClock),
             cap,
             token: PROCESS_TOKEN.clone(),
-        })
+        }
     }
 
     #[cfg(test)]
@@ -993,19 +1267,28 @@ impl JobRunner {
         blocking(move || store.cancel_fill_job(&id, &token, live, &cutoff)).await
     }
 
+    /// Who holds the job now, for this runner on its clock: see [`Hold`].
+    pub async fn hold(&self, job_id: &str) -> ResearchResult<Hold> {
+        hold_at(self.store(), job_id, self.token.clone(), self.clock.now()).await
+    }
+
+    /// Pauses a job that cannot get a model, for this runner on its clock: see
+    /// [`TableStore::block_fill_job`].
+    pub async fn block(&self, job_id: &str, code: &str) -> ResearchResult<Option<FillJob>> {
+        block_at(
+            self.store(),
+            job_id,
+            code,
+            self.token.clone(),
+            self.clock.now(),
+        )
+        .await
+    }
+
     /// The jobs to run now (see [`TableStore::due_fill_jobs`]), on this runner's clock,
     /// leaving out those this process is running.
     pub async fn resume_due(&self) -> ResearchResult<Vec<String>> {
-        let store = self.store();
-        let token = self.token.clone();
-        let now = self.clock.now();
-        let (at, cutoff) = (timestamp(now), lease_cutoff(now));
-        let due = blocking(move || store.due_fill_jobs(&token, &at, &cutoff)).await?;
-        Ok(due
-            .into_iter()
-            .filter(|(id, own_running)| !(*own_running && LiveRun::is_live(&self.token, id)))
-            .map(|(id, _)| id)
-            .collect())
+        due_jobs(self.store(), self.token.clone(), self.clock.now()).await
     }
 
     /// The table calls made today (UTC date).
@@ -1170,7 +1453,7 @@ impl JobRunner {
             store: store.clone(),
             counter: self.counter.clone(),
             clock: self.clock.clone(),
-            cap: self.cap,
+            cap: self.cap.clone(),
             job_id: job.id.clone(),
             token: self.token.clone(),
         };
@@ -1213,6 +1496,7 @@ impl JobRunner {
             if survey.hash.is_some() && survey.needing.is_empty() {
                 continue;
             }
+            report.papers += 1;
             if self.needs_hints(&request, &survey.misses) {
                 request.results = self.results_of(&request.row.document_id).await;
             }
@@ -1249,7 +1533,10 @@ impl JobRunner {
         }
         if let Some(failure) = &fill.model_error {
             return match failure.kind {
-                ModelFailureKind::Quota => Some(self.quota_pause(failure, streaks)),
+                ModelFailureKind::Quota => {
+                    report.quota_window = Some(failure.window);
+                    Some(self.quota_pause(failure, streaks))
+                }
                 ModelFailureKind::Auth => Some(End::Paused {
                     reason: PauseReason::Auth,
                     until: None,

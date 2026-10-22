@@ -39,6 +39,22 @@ fn failure_code(error: Option<&str>) -> &str {
         .unwrap_or("unknown")
 }
 
+/// Captures of hand fills kept per row: the newest ones. A capture holds a fill's
+/// prompts (the paper's passages) and raw replies; a few are enough to compare models and
+/// to make test fixtures, and the oldest go as new ones come.
+pub const CAPTURES_PER_ROW: usize = 3;
+
+/// What a fill by hand sent and received, as `table_fill_paper` recorded it (JSON).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredCapture {
+    pub id: String,
+    pub table_id: String,
+    pub row_id: String,
+    pub captured_at: String,
+    pub capture_json: String,
+}
+
 /// A model's raw answer for one column of one paper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheEntry {
@@ -224,10 +240,15 @@ fn refit_edited_cells(conn: &Connection, column_id: &str, spec: &ColumnSpec) -> 
     Ok(())
 }
 
-/// Deletes one table with its columns, rows, cells, jobs and unshared cache entries.
+/// Deletes one table with its columns, rows, cells, captures, jobs and unshared cache
+/// entries.
 fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM table_cell WHERE table_id = ?1",
+        params![table_id],
+    )?;
+    conn.execute(
+        "DELETE FROM table_fill_capture WHERE table_id = ?1",
         params![table_id],
     )?;
     conn.execute(
@@ -250,10 +271,14 @@ fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize>
     Ok(removed)
 }
 
-/// Deletes one row with its cells. The cache is not swept: the caller does it once,
-/// after the last row it deletes.
+/// Deletes one row with its cells and captures. The cache is not swept: the caller does
+/// it once, after the last row it deletes.
 fn delete_row_unswept(conn: &Connection, row_id: &str) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM table_cell WHERE row_id = ?1", params![row_id])?;
+    conn.execute(
+        "DELETE FROM table_fill_capture WHERE row_id = ?1",
+        params![row_id],
+    )?;
     conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])
 }
 
@@ -796,6 +821,65 @@ impl TableStore {
         Ok(removed > 0)
     }
 
+    /// Keeps a capture of a fill by hand of `row_id` (a row of `table_id`), and only the
+    /// row's [`CAPTURES_PER_ROW`] newest. Returns its id.
+    pub fn save_capture(
+        &self,
+        table_id: &str,
+        row_id: &str,
+        captured_at: &str,
+        capture_json: &str,
+    ) -> ResearchResult<String> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT table_id FROM table_row WHERE id = ?1",
+                params![row_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if owner.as_deref() != Some(table_id) {
+            return Err(ResearchError::NotFound(format!(
+                "No row {row_id} in this table."
+            )));
+        }
+        let id = new_id();
+        tx.execute(
+            "INSERT INTO table_fill_capture(id, table_id, row_id, captured_at, capture_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, table_id, row_id, captured_at, capture_json],
+        )?;
+        let keep = i64::try_from(CAPTURES_PER_ROW).unwrap_or(i64::MAX);
+        tx.execute(
+            "DELETE FROM table_fill_capture WHERE row_id = ?1 AND id NOT IN (
+                SELECT id FROM table_fill_capture WHERE row_id = ?1
+                 ORDER BY captured_at DESC, rowid DESC LIMIT ?2)",
+            params![row_id, keep],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// The table's captures, by row and then oldest first.
+    pub fn captures(&self, table_id: &str) -> ResearchResult<Vec<StoredCapture>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, table_id, row_id, captured_at, capture_json FROM table_fill_capture
+              WHERE table_id = ?1 ORDER BY row_id, captured_at, rowid",
+        )?;
+        let rows = stmt.query_map(params![table_id], |r| {
+            Ok(StoredCapture {
+                id: r.get(0)?,
+                table_id: r.get(1)?,
+                row_id: r.get(2)?,
+                captured_at: r.get(3)?,
+                capture_json: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn cached(
         &self,
         paper_hash: &str,
@@ -840,6 +924,7 @@ impl TableStore {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM table_cell", [])?;
+        tx.execute("DELETE FROM table_fill_capture", [])?;
         let removed = tx.execute("DELETE FROM table_row", [])?;
         sweep_cache(&tx)?;
         tx.commit()?;
@@ -1536,6 +1621,98 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(f.store.cells(&table.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn captures_keep_the_newest_per_row_and_refuse_another_tables_row() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "A").unwrap();
+        let other = f.store.create_table(&f.workspace, "B").unwrap();
+        let row = f
+            .store
+            .add_rows(&table.id, &["/p/a.pdf".to_string()])
+            .unwrap()
+            .remove(0);
+        for i in 0..5 {
+            f.store
+                .save_capture(
+                    &table.id,
+                    &row.id,
+                    &format!("2026-10-23T09:00:0{i}.000Z"),
+                    &format!("{{\"n\":{i}}}"),
+                )
+                .unwrap();
+        }
+        let kept = f.store.captures(&table.id).unwrap();
+        assert_eq!(kept.len(), CAPTURES_PER_ROW);
+        assert_eq!(
+            kept.iter()
+                .map(|c| c.capture_json.as_str())
+                .collect::<Vec<_>>(),
+            vec!["{\"n\":2}", "{\"n\":3}", "{\"n\":4}"],
+            "the newest stay, oldest first"
+        );
+        assert!(matches!(
+            f.store
+                .save_capture(&other.id, &row.id, "2026-10-23T09:00:09.000Z", "{}"),
+            Err(ResearchError::NotFound(_))
+        ));
+        assert!(f.store.captures(&other.id).unwrap().is_empty());
+    }
+
+    /// A table with two papers and a capture of each.
+    fn captured(f: &Fixture, name: &str) -> (EvidenceTable, Vec<TableRow>) {
+        let table = f.store.create_table(&f.workspace, name).unwrap();
+        let rows = f
+            .store
+            .add_rows(
+                &table.id,
+                &[format!("/p/{name}-gone.pdf"), format!("/p/{name}-kept.pdf")],
+            )
+            .unwrap();
+        for row in &rows {
+            f.store
+                .save_capture(&table.id, &row.id, "2026-10-23T09:00:00.000Z", "{}")
+                .unwrap();
+        }
+        (table, rows)
+    }
+
+    fn capture_count(f: &Fixture) -> i64 {
+        f.store
+            .lock()
+            .query_row("SELECT count(*) FROM table_fill_capture", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn captures_go_with_every_way_their_row_goes() {
+        let f = fixture();
+        // A row removed by hand.
+        let (table, rows) = captured(&f, "a");
+        assert!(f.store.remove_row(&rows[0].id).unwrap());
+        let left = f.store.captures(&table.id).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].row_id, rows[1].id);
+        // A paper forgotten by the library (also the path a pending forget settles by).
+        f.store
+            .forget_documents(&["/p/a-kept.pdf".to_string()])
+            .unwrap();
+        assert!(f.store.captures(&table.id).unwrap().is_empty());
+        // A table deleted.
+        let (table, _) = captured(&f, "b");
+        assert!(f.store.delete_table(&table.id).unwrap());
+        assert_eq!(capture_count(&f), 0);
+        // The library reset.
+        captured(&f, "c");
+        f.store.forget_all().unwrap();
+        assert_eq!(capture_count(&f), 0);
+        // The workspace deleted.
+        captured(&f, "d");
+        assert_eq!(capture_count(&f), 2);
+        let workspaces = WorkspaceStore::open(&f.path, None).unwrap();
+        assert!(workspaces.delete(&f.workspace).unwrap());
+        assert_eq!(capture_count(&f), 0);
     }
 
     #[test]

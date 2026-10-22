@@ -48,6 +48,13 @@ use serde_json::{json, Value};
 pub const REASONING_ALLOWANCE_TOKENS: usize = 4_096;
 /// How long OpenRouter's model list is reused.
 pub const MODEL_LIST_TTL: Duration = Duration::from_secs(3_600);
+/// How long after a failed fetch of the list no new fetch is tried: the last list (or the
+/// plain budget) is used meanwhile, so a slow or unreachable list never makes every table
+/// command wait for its timeout.
+pub const FAILED_LIST_RETRY: Duration = Duration::from_secs(300);
+/// Time allowed for fetching the list (the picker's own fetch allows 12 s; a table command
+/// waits for this one).
+pub const MODEL_LIST_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// Efforts, lowest first, that keep a mandatory reasoning pass small.
 const LOW_EFFORTS: [&str; 2] = ["minimal", "low"];
@@ -256,9 +263,12 @@ pub fn parse_models(body: &str) -> Result<HashMap<String, ModelReasoning>, Strin
 type Listed = (Instant, Arc<HashMap<String, ModelReasoning>>);
 
 /// OpenRouter's reasoning metadata, fetched when needed and kept for [`MODEL_LIST_TTL`].
+/// One fetch at a time; after a failure none for [`FAILED_LIST_RETRY`].
 #[derive(Debug, Default)]
 pub struct ReasoningCatalog {
     list: Mutex<Option<Listed>>,
+    failed_at: Mutex<Option<Instant>>,
+    refresh: tokio::sync::Mutex<()>,
     warned: AtomicBool,
 }
 
@@ -271,48 +281,69 @@ impl ReasoningCatalog {
     /// old.
     pub async fn rule(&self, model: &str) -> ReasoningRule {
         self.rule_with(model, || async {
-            crate::harness::catalog_fetch::fetch_openrouter_body()
+            crate::harness::catalog_fetch::fetch_openrouter_body_within(MODEL_LIST_TIMEOUT)
                 .await
                 .map_err(|e| e.to_string())
         })
         .await
     }
 
-    /// [`Self::rule`] with the list fetched by `fetch`. A list that cannot be fetched or
-    /// read leaves the last one in use, and with none the plain budget; the first such
-    /// failure is logged at warn, later ones at debug. A model the list does not hold gets
-    /// the plain budget.
+    /// The list kept, and whether it is still fresh.
+    fn kept(&self) -> (Option<Arc<HashMap<String, ModelReasoning>>>, bool) {
+        match self.list.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            Some((at, list)) => (Some(list.clone()), at.elapsed() < MODEL_LIST_TTL),
+            None => (None, false),
+        }
+    }
+
+    fn failed_recently(&self) -> bool {
+        self.failed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|at| at.elapsed() < FAILED_LIST_RETRY)
+    }
+
+    /// [`Self::rule`] with the list fetched by `fetch`. One caller fetches at a time; the
+    /// others wait and use what it got. A list that cannot be fetched or read leaves the
+    /// last one in use (with none, the plain budget) and is not asked for again for
+    /// [`FAILED_LIST_RETRY`]; the first such failure is logged at warn, later ones at
+    /// debug. A model the list does not hold gets the plain budget.
     pub async fn rule_with<F, Fut>(&self, model: &str, fetch: F) -> ReasoningRule
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<String, String>>,
     {
-        let cached = self.list.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let fresh = cached
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < MODEL_LIST_TTL)
-            .map(|(_, list)| list.clone());
-        let list = match fresh {
-            Some(list) => Some(list),
-            None => match fetch().await.and_then(|body| parse_models(&body)) {
-                Ok(parsed) => {
-                    let parsed = Arc::new(parsed);
-                    *self.list.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some((Instant::now(), parsed.clone()));
-                    Some(parsed)
+        let list = match self.kept() {
+            (Some(list), true) => Some(list),
+            _ => {
+                let _one_fetch = self.refresh.lock().await;
+                match self.kept() {
+                    (Some(list), true) => Some(list),
+                    (kept, _) if self.failed_recently() => kept,
+                    (kept, _) => match fetch().await.and_then(|body| parse_models(&body)) {
+                        Ok(parsed) => {
+                            let parsed = Arc::new(parsed);
+                            *self.list.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some((Instant::now(), parsed.clone()));
+                            *self.failed_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                            Some(parsed)
+                        }
+                        Err(e) => {
+                            *self.failed_at.lock().unwrap_or_else(|e| e.into_inner()) =
+                                Some(Instant::now());
+                            if self.warned.swap(true, Ordering::SeqCst) {
+                                tracing::debug!(error = %e, "OpenRouter's model list is still unavailable");
+                            } else {
+                                tracing::warn!(
+                                    error = %e,
+                                    "OpenRouter's model list could not be read; evidence table fills use the plain reply budget"
+                                );
+                            }
+                            kept
+                        }
+                    },
                 }
-                Err(e) => {
-                    if self.warned.swap(true, Ordering::SeqCst) {
-                        tracing::debug!(error = %e, "OpenRouter's model list is still unavailable");
-                    } else {
-                        tracing::warn!(
-                            error = %e,
-                            "OpenRouter's model list could not be read; evidence table fills use the plain reply budget"
-                        );
-                    }
-                    cached.map(|(_, list)| list)
-                }
-            },
+            }
         };
         match list.as_ref().and_then(|list| list.get(model)) {
             Some(reasoning) => rule_for(reasoning),
@@ -428,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_list_is_fetched_once_and_an_unreachable_list_means_the_plain_budget() {
+    async fn an_unreachable_list_means_the_plain_budget_and_is_not_asked_again_soon() {
         let catalog = ReasoningCatalog::new();
         let down = catalog
             .rule_with("minimax/minimax-m3.1-flash", || async {
@@ -437,6 +468,16 @@ mod tests {
             .await;
         assert_eq!(down, ReasoningRule::Plain);
         assert!(catalog.warned());
+        // Within the retry wait, no command waits for another fetch.
+        let soon = catalog
+            .rule_with("minimax/minimax-m3.1-flash", || async { not_fetched() })
+            .await;
+        assert_eq!(soon, ReasoningRule::Plain);
+    }
+
+    #[tokio::test]
+    async fn the_list_is_fetched_once_and_kept() {
+        let catalog = ReasoningCatalog::new();
         let fetched = catalog
             .rule_with("minimax/minimax-m3.1-flash", || async {
                 Ok::<String, String>(RECORDED.to_string())

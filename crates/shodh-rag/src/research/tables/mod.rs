@@ -10,6 +10,7 @@
 //! - [`calls`]: the table model calls per UTC day (schema 15) and the clock.
 //! - [`jobs`]: filling a whole table under the daily cap: pause, resume, cancel.
 //! - [`reasoning`]: what a fill asks of a reasoning model, from OpenRouter's metadata.
+//! - [`schedule`]: which fill jobs run in the background, and a job without a model paused.
 //!
 //! The model never has the last word: an answer whose quote is not in the passages, whose
 //! value fails its column's type rule, or that the local entailment model reads as
@@ -24,6 +25,7 @@ pub mod parse;
 pub mod passages;
 pub mod prompt;
 pub mod reasoning;
+pub mod schedule;
 pub mod store;
 #[cfg(test)]
 mod testkit;
@@ -36,7 +38,7 @@ use sha2::{Digest, Sha256};
 
 use super::{ResearchError, ResearchResult};
 
-pub use store::{CacheEntry, TableStore, TableStoreHandle};
+pub use store::{CacheEntry, StoredCapture, TableStore, TableStoreHandle, CAPTURES_PER_ROW};
 
 /// Most columns of a table. A paper is filled in at most [`budget::MAX_CALLS_PER_PAPER`]
 /// calls, and the reply to one call must fit [`prompt::REPLY_TOKEN_CAP`] output tokens,

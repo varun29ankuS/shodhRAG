@@ -88,7 +88,13 @@ pub async fn fetch_openrouter() -> Result<Vec<CatalogModel>, FetchError> {
 /// OpenRouter's model list as sent (JSON), for readers of fields the picker does not
 /// keep (the evidence tables read each model's `reasoning` metadata).
 pub async fn fetch_openrouter_body() -> Result<String, FetchError> {
-    get_bounded(OPENROUTER_MODELS_URL, OPENROUTER_TIMEOUT).await
+    fetch_openrouter_body_within(OPENROUTER_TIMEOUT).await
+}
+
+/// [`fetch_openrouter_body`] allowed `timeout` (a caller that a user waits on allows
+/// less).
+pub async fn fetch_openrouter_body_within(timeout: Duration) -> Result<String, FetchError> {
+    get_bounded(OPENROUTER_MODELS_URL, timeout).await
 }
 
 #[derive(Deserialize)]

@@ -23,14 +23,14 @@ import type {
 } from './types';
 import { RESEARCH_CHANGED_EVENT } from './types';
 
-export type ResearchErrorCode = 'not_found' | 'invalid' | 'unavailable' | 'storage' | 'conflict' | 'unknown';
+export type ResearchErrorCode = 'not_found' | 'invalid' | 'unavailable' | 'storage' | 'busy' | 'conflict' | 'unknown';
 
 export interface ResearchFailure {
   code: ResearchErrorCode;
   message: string;
 }
 
-const CODES: readonly ResearchErrorCode[] = ['not_found', 'invalid', 'unavailable', 'storage', 'conflict'];
+const CODES: readonly ResearchErrorCode[] = ['not_found', 'invalid', 'unavailable', 'storage', 'busy', 'conflict'];
 
 export function toResearchError(error: unknown): ResearchFailure {
   if (typeof error === 'object' && error !== null) {

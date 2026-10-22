@@ -5,25 +5,33 @@
 //!   ([`crate::memory_learn::configured_table_model`]), resolved when the run starts: a
 //!   change of model applies from the next run, and a run in flight finishes with the
 //!   model it started with. The API key is read at every call, so a corrected key applies
-//!   from the next call. A model whose reasoning cannot be bounded is refused with the
-//!   reason ([`shodh_rag::research::tables::reasoning`]).
+//!   from the next call. No model set, Local-only mode against a cloud model, no API key,
+//!   or a model whose reasoning cannot be bounded is refused with its code
+//!   (`model_refused` for the last, `model_unavailable` for the others).
 //! - **Daily cap.** One shared [`DailyCap`] (Settings → Tables, `tables.dailyCallCap`) is
 //!   read by every run and hand fill at every check, so a change applies from the next
-//!   paper. Hand fills (`table_fill_paper`, `cell_refill`) count against it too.
-//! - **Scheduler.** Once the app has loaded its model settings, and then every
-//!   [`SCHEDULER_TICK`], the due jobs are run: queued ones, paused ones whose wait is over
-//!   (a backoff rung, the provider's reset, the 00:00 UTC cap reset) and running ones
-//!   whose run is gone (another process's lease expired, or a run of this process that
-//!   ended without writing its end). A job is run once at a time in this process; the
-//!   job's claim also refuses a second run anywhere. `fill_start` runs its job at once.
+//!   paper. Hand fills (`table_fill_paper`, `cell_refill`) count against it too. Raising
+//!   the cap wakes the jobs paused for it.
+//! - **Scheduler** ([`Scheduler`]). Once the app has loaded its model settings, and then
+//!   every [`SCHEDULER_TICK`], the due jobs are run; a job that cannot get a model is
+//!   paused (`model_unavailable`) and the user told once, and each check looks again, so
+//!   fixing the model, the key or the setting lets it go on within a minute.
+//!   `fill_start` runs its job at once and says honestly when it could not.
+//! - **Exit.** When the app exits, the jobs its runs hold are given back (queued, no run
+//!   token), so the next start takes them up at once instead of waiting out their lease.
+//! - **Hand fills** run one per row at a time, and never on a table whose fill is running,
+//!   so a double click or a refill during a fill cannot pay twice.
+//! - **Captures** (`table_fill_paper`, a diagnostics setting) are kept in `shodh.db`, a
+//!   few per row, and go with their row, table, workspace or forgotten paper; they leave
+//!   the database only through `table_captures_export`.
 //! - **Events.** Every change emits [`TABLE_CHANGED_EVENT`] with `{ "tableId" }`, and so
 //!   does the end of every run, whatever its outcome; the Tables tab polls `fill_status`
 //!   while a job is active.
-//! - **Notifications.** Only what needs the user ([`crate::notifications::table_outcome`]).
+//! - **Notifications.** Only what needs the user ([`crate::notifications::table_outcome`]);
+//!   the cap and the provider's daily quota at most once a UTC day across all tables.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -41,17 +49,18 @@ use shodh_rag::research::tables::calls::{
 };
 use shodh_rag::research::tables::fill::{Filler, Halt, PaperFill, PaperRequest};
 use shodh_rag::research::tables::jobs::{
-    cancel_job, resume_due_jobs, FillEstimate, FillJob, JobRunner, JobState, PauseReason,
-    ResultSource, RunReport,
+    cancel_job, job_hold, release_held_jobs, wake_paused_jobs, FillEstimate, FillJob, Hold,
+    JobOutcome, JobRunner, JobState, PauseReason, ResultSource, RunReport,
 };
 use shodh_rag::research::tables::parse::{parse_cut_reply, parse_reply};
 use shodh_rag::research::tables::passages::PaperIndex;
 use shodh_rag::research::tables::reasoning::{ReasoningCatalog, ReasoningRule};
+use shodh_rag::research::tables::schedule::{RunEvents, RunnerError, RunnerSource, Scheduler};
 use shodh_rag::research::tables::{
     Cell, CellStatus, Column, ColumnKind, ColumnSpec, EvidenceTable, TableRow, TableStore,
     TableStoreHandle, MAX_COLUMNS,
 };
-use shodh_rag::research::{file_name, ResearchError, ResearchResult};
+use shodh_rag::research::{file_name, path_key, ResearchError, ResearchResult};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{watch, OnceCell, RwLock as AsyncRwLock};
 
@@ -59,13 +68,16 @@ use crate::answer_check_commands::SharedNli;
 use crate::app_settings::{broadcast, SettingsStore};
 use crate::audit_commands::AuditState;
 use crate::llm_commands::{ApiKeys, LLMState};
-use crate::notifications::{announce_table, table_outcome, TableRunEnd};
+use crate::memory_learn::TableModelError;
+use crate::notifications::{
+    announce_table, once_a_day_key, table_outcome, OncePerDay, TableRunEnd,
+};
 use crate::research_commands::{ResearchCommandError, ResearchCommandResult, ResearchState};
 
 /// Emitted with `{ "tableId": … }` after anything in a table changed, and after every
 /// run of its fill ends.
 pub const TABLE_CHANGED_EVENT: &str = "table_changed";
-/// How often the scheduler looks for due jobs.
+/// How often the scheduler looks for due jobs (and at jobs waiting for a model).
 pub const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 /// Longest id a command accepts (ids are UUIDs).
 pub const MAX_ID_CHARS: usize = 64;
@@ -79,9 +91,17 @@ pub const MAX_EDIT_CHARS: usize = 2_000;
 /// Most calls a fill can be started for: far above any table's (22 columns, two calls
 /// per paper), low enough to refuse a number that is not an estimate.
 pub const MAX_PLANNED_CALLS: usize = 100_000;
-/// Where `table_fill_paper` writes what each model call sent and received (under the app
-/// data directory).
-pub const CAPTURES_DIR: &str = "tables/captures";
+/// The least a paper can cost: its call and the one retry. With fewer calls left today a
+/// fill cannot start.
+pub const LEAST_PAPER_CALLS: usize = 2;
+
+/// A command error with its own code (see [`ResearchCommandError`]).
+fn coded(code: &'static str, message: impl Into<String>) -> ResearchCommandError {
+    ResearchCommandError {
+        code,
+        message: message.into(),
+    }
+}
 
 type TableResult<T> = ResearchCommandResult<T>;
 
@@ -183,6 +203,32 @@ pub fn check_planned_calls(calls: usize) -> TableResult<()> {
     Ok(())
 }
 
+/// The command error of a model tables cannot fill with: `model_refused` for a model
+/// whose reasoning cannot be bounded (choose another one), `model_unavailable` for no
+/// model, Local-only mode or a missing key, `unavailable` for unreadable settings.
+pub fn model_error(error: &TableModelError) -> ResearchCommandError {
+    let code = match error {
+        TableModelError::RefusedReasoning(_) => "model_refused",
+        TableModelError::Settings(_) => "unavailable",
+        TableModelError::NoModel | TableModelError::LocalOnly | TableModelError::NoKey => {
+            "model_unavailable"
+        }
+    };
+    coded(code, error.message())
+}
+
+/// Why a fill by hand may not start now: the table's fill is running (`fill_running`).
+pub fn hand_fill_refusal(active: Option<&FillJob>) -> Option<ResearchCommandError> {
+    active
+        .filter(|job| job.state == JobState::Running)
+        .map(|_| {
+            coded(
+                "fill_running",
+                "This table is being filled. Wait for the fill to end, or cancel it, before filling by hand.",
+            )
+        })
+}
+
 // ── Views ────────────────────────────────────────────────────────
 
 /// A fill job as the Tables tab shows it.
@@ -195,11 +241,16 @@ pub struct JobView {
     pub planned_calls: usize,
     pub done_calls: usize,
     pub pause_reason: Option<PauseReason>,
-    /// The code of what paused or stopped the job (for a search failure, with detail).
+    /// The code of what paused or stopped the job (for a search failure, with detail;
+    /// for `model_unavailable`, which: `refused_reasoning`, `local_only`, `no_key`,
+    /// `no_model`).
     pub last_error: Option<String>,
     /// When a paused job goes on by itself (UTC, Unix milliseconds); none while it waits
     /// for the user.
     pub next_attempt_at: Option<i64>,
+    /// The running run's last heartbeat (UTC, Unix milliseconds): a `running` job whose
+    /// heartbeat is minutes old is held by a run that is gone.
+    pub heartbeat_at: Option<i64>,
     pub cancel_requested: bool,
     pub created_at: String,
 }
@@ -221,19 +272,54 @@ pub fn job_view(job: &FillJob) -> JobView {
         pause_reason: job.pause_reason,
         last_error: job.last_error.clone(),
         next_attempt_at: job.next_attempt_at.as_deref().and_then(utc_ms),
+        heartbeat_at: job.heartbeat_at.as_deref().and_then(utc_ms),
         cancel_requested: job.cancel_requested,
         created_at: job.created_at.clone(),
     }
 }
 
-/// Papers none of whose cells waits in the fill queue: done for this run, or not part of
-/// it. (A stale result being refilled counts until its refill.)
-pub fn papers_done(rows: &[TableRow], cells: &[Cell]) -> usize {
+/// Whether a cell holds the end of a fill (an answer, a not-found, a failure) or an edit.
+fn settled(status: CellStatus) -> bool {
+    matches!(
+        status,
+        CellStatus::Verified
+            | CellStatus::Unverified
+            | CellStatus::NotFound
+            | CellStatus::Edited
+            | CellStatus::Failed
+    )
+}
+
+/// The papers `job` filled: rows whose every column holds a settled cell, at least one
+/// of them written since the job was created. None without a job; a paper that was
+/// already filled before the job, or not reached before a cancel or a failure, is not
+/// counted.
+pub fn papers_done(
+    job: Option<&FillJob>,
+    rows: &[TableRow],
+    columns: &[Column],
+    cells: &[Cell],
+) -> usize {
+    let Some(job) = job else {
+        return 0;
+    };
+    if columns.is_empty() {
+        return 0;
+    }
+    let since = job.created_at.as_str();
     rows.iter()
         .filter(|row| {
-            !cells
-                .iter()
-                .any(|c| c.row_id == row.id && c.status == CellStatus::Queued)
+            let row_cells: Vec<&Cell> = cells.iter().filter(|c| c.row_id == row.id).collect();
+            let complete = columns.iter().all(|column| {
+                row_cells
+                    .iter()
+                    .any(|c| c.column_id == column.id && settled(c.status))
+            });
+            let touched = row_cells.iter().any(|c| {
+                c.filled_at.as_deref().is_some_and(|at| at >= since)
+                    || c.edited_at.as_deref().is_some_and(|at| at >= since)
+            });
+            complete && touched
         })
         .count()
 }
@@ -244,6 +330,7 @@ pub fn papers_done(rows: &[TableRow], cells: &[Cell]) -> usize {
 pub struct FillStatus {
     /// The table's newest job (active, or how the last fill ended).
     pub job: Option<JobView>,
+    /// Papers that job filled ([`papers_done`]).
     pub papers_done: usize,
     pub papers_total: usize,
     /// Table calls made today (UTC day), by every table.
@@ -252,6 +339,44 @@ pub struct FillStatus {
     /// When the day's count starts again: the next 00:00 UTC (Unix milliseconds); the
     /// interface shows it in local time.
     pub day_resets_at: i64,
+}
+
+/// What `fill_start` did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillStart {
+    pub job: JobView,
+    /// `started`; `already_running` (this app is filling it); `held_elsewhere` (an
+    /// earlier run of Shodh still holds it, until `leaseExpiresAt` at the latest, when it
+    /// goes on by itself); `at_cap` (today's calls are used up: it goes on at
+    /// `dayResetsAt`).
+    pub start: &'static str,
+    pub lease_expires_at: Option<i64>,
+    pub day_resets_at: i64,
+}
+
+/// How a fill the user starts goes: held by another run, running here, stopped by the
+/// day's cap before its first paper, or started.
+pub fn start_state(hold: Hold, running_here: bool, calls_today: usize, cap: usize) -> &'static str {
+    match hold {
+        Hold::Elsewhere { .. } => "held_elsewhere",
+        Hold::RunningHere => "already_running",
+        Hold::Free if running_here => "already_running",
+        Hold::Free if calls_today.saturating_add(LEAST_PAPER_CALLS) > cap => "at_cap",
+        Hold::Free => "started",
+    }
+}
+
+/// What `fill_cancel` did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FillCancel {
+    /// The job as it now is.
+    pub job: Option<JobView>,
+    /// The cancel is asked and not done yet: the job runs (here, after its current call)
+    /// or is held by an earlier run of Shodh (by `leaseExpiresAt` at the latest).
+    pub pending: bool,
+    pub lease_expires_at: Option<i64>,
 }
 
 /// What filling the table would take, and the day's calls.
@@ -265,14 +390,28 @@ pub struct EstimateView {
     pub day_resets_at: i64,
 }
 
-/// A row with the paper's title: the citation graph's title when the graph knows the
-/// paper, else its file name.
+/// A row with the paper's title.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowView {
     #[serde(flatten)]
     pub row: TableRow,
     pub title: String,
+}
+
+/// A paper's title: the citation graph's when it knows the paper, else the file name as
+/// the file system spelled it at indexing, else the name in the row's key (which is
+/// lower-cased on Windows). Both maps are keyed by `path_key`.
+pub fn row_title(
+    document_id: &str,
+    graph_titles: &HashMap<String, String>,
+    file_names: &HashMap<String, String>,
+) -> String {
+    graph_titles
+        .get(document_id)
+        .or_else(|| file_names.get(document_id))
+        .cloned()
+        .unwrap_or_else(|| file_name(document_id))
 }
 
 /// A whole table.
@@ -292,13 +431,16 @@ pub struct TablesSettings {
     pub daily_call_cap: usize,
     pub min_daily_call_cap: usize,
     pub max_daily_call_cap: usize,
+    /// `table_fill_paper` (the capture of a fill's model calls) is allowed.
+    pub diagnostics: bool,
 }
 
-fn settings_view(cap: usize) -> TablesSettings {
+fn settings_view(cap: usize, diagnostics: bool) -> TablesSettings {
     TablesSettings {
         daily_call_cap: cap,
         min_daily_call_cap: MIN_DAILY_CAP,
         max_daily_call_cap: MAX_DAILY_CAP,
+        diagnostics,
     }
 }
 
@@ -336,6 +478,43 @@ fn hand_fill(fill: &PaperFill) -> HandFill {
     }
 }
 
+/// The rows with a fill by hand running, one at a time per row.
+#[derive(Debug, Clone, Default)]
+pub struct HandFills {
+    rows: Arc<Mutex<HashSet<String>>>,
+}
+
+/// A row's hold on hand fills, let go when dropped.
+#[derive(Debug)]
+pub struct HandFillHold {
+    rows: Arc<Mutex<HashSet<String>>>,
+    row_id: String,
+}
+
+impl Drop for HandFillHold {
+    fn drop(&mut self) {
+        self.rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.row_id);
+    }
+}
+
+impl HandFills {
+    /// Holds `row_id` for a fill by hand, or `None` when one runs on it.
+    pub fn try_hold(&self, row_id: &str) -> Option<HandFillHold> {
+        let held = self
+            .rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(row_id.to_string());
+        held.then(|| HandFillHold {
+            rows: self.rows.clone(),
+            row_id: row_id.to_string(),
+        })
+    }
+}
+
 // ── Capture of model calls (table_fill_paper) ────────────────────
 
 /// One model call of a fill by hand, byte for byte.
@@ -360,8 +539,8 @@ pub struct CapturedCall {
     pub cut_off: Option<bool>,
 }
 
-/// A model that keeps every call it passes on: what `table_fill_paper` writes to its
-/// capture file and returns. It changes nothing about the calls.
+/// A model that keeps every call it passes on, for `table_fill_paper`. It changes nothing
+/// about the calls.
 struct RecordingModel {
     inner: Arc<dyn TextModel>,
     calls: Mutex<Vec<CapturedCall>>,
@@ -430,7 +609,7 @@ impl TextModel for RecordingModel {
     }
 }
 
-/// What `table_fill_paper` returns and writes to its capture file.
+/// What `table_fill_paper` returns and keeps (in `shodh.db`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaperCapture {
@@ -440,26 +619,45 @@ pub struct PaperCapture {
     pub document_id: String,
     pub model: String,
     pub reasoning_rule: String,
+    /// Every model call the fill made, also when it then failed.
     pub calls: Vec<CapturedCall>,
-    pub result: HandFill,
-    /// The capture file, when it could be written.
-    pub file: Option<String>,
+    /// What the fill did, when it ended.
+    pub result: Option<HandFill>,
+    /// What stopped the fill, when it failed after (or before) its calls.
+    pub error: Option<String>,
+    /// The kept capture's id; none when it could not be kept.
+    pub capture_id: Option<String>,
 }
 
-/// The capture file of a fill by hand: `<captures>/<utc time>-<table>-<row>.json`.
-pub fn capture_path(dir: &Path, at: DateTime<Utc>, table_id: &str, row_id: &str) -> PathBuf {
-    dir.join(format!(
-        "{}-{table_id}-{row_id}.json",
-        at.format("%Y%m%dT%H%M%S%.3fZ")
-    ))
-}
-
-fn write_capture(path: &Path, capture: &PaperCapture) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+/// The capture of a fill by hand from its calls and how it ended: kept whole when the
+/// fill failed after spending calls.
+#[allow(clippy::too_many_arguments)]
+pub fn paper_capture(
+    at: DateTime<Utc>,
+    table_id: &str,
+    row_id: &str,
+    document_id: &str,
+    model: String,
+    rule: &ReasoningRule,
+    calls: Vec<CapturedCall>,
+    ended: Result<&PaperFill, String>,
+) -> PaperCapture {
+    let (result, error) = match ended {
+        Ok(fill) => (Some(hand_fill(fill)), None),
+        Err(e) => (None, Some(e)),
+    };
+    PaperCapture {
+        captured_at: at.to_rfc3339_opts(SecondsFormat::Millis, true),
+        table_id: table_id.to_string(),
+        row_id: row_id.to_string(),
+        document_id: document_id.to_string(),
+        model,
+        reasoning_rule: rule.describe(),
+        calls,
+        result,
+        error,
+        capture_id: None,
     }
-    let text = serde_json::to_string_pretty(capture).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| e.to_string())
 }
 
 // ── State ────────────────────────────────────────────────────────
@@ -499,29 +697,12 @@ struct Inner {
     nli: SharedNli,
     research: ResearchState,
     catalog: ReasoningCatalog,
-    /// Jobs with a run started from this process.
-    in_flight: Mutex<HashSet<String>>,
+    scheduler: Arc<Scheduler>,
+    hand_fills: HandFills,
+    /// The cap and daily-quota notices shown today.
+    once_a_day: Mutex<OncePerDay>,
     /// Becomes true once the app has loaded its model settings and keys.
     models_loaded: watch::Receiver<bool>,
-    /// A scheduler tick that could not resolve a model was logged.
-    blocked_logged: AtomicBool,
-}
-
-/// A job's place in the in-flight set, given back when the run's task ends.
-struct InFlight {
-    state: TableState,
-    job_id: String,
-}
-
-impl Drop for InFlight {
-    fn drop(&mut self) {
-        self.state
-            .inner
-            .in_flight
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.job_id);
-    }
 }
 
 /// What a `TableState` is built from.
@@ -562,9 +743,10 @@ impl TableState {
                 nli: parts.nli,
                 research: parts.research,
                 catalog: ReasoningCatalog::new(),
-                in_flight: Mutex::new(HashSet::new()),
+                scheduler: Scheduler::new(),
+                hand_fills: HandFills::default(),
+                once_a_day: Mutex::new(OncePerDay::default()),
                 models_loaded: parts.models_loaded,
-                blocked_logged: AtomicBool::new(false),
             }),
         }
     }
@@ -615,14 +797,18 @@ impl TableState {
     }
 
     /// The model tables fill with now, and its reasoning rule.
-    async fn model(&self) -> TableResult<(Arc<dyn TextModel>, ReasoningRule)> {
+    async fn table_model(&self) -> Result<(Arc<dyn TextModel>, ReasoningRule), TableModelError> {
         crate::memory_learn::configured_table_model(
             &self.inner.data_dir,
             &self.llm(),
             &self.inner.catalog,
         )
         .await
-        .map_err(ResearchCommandError::unavailable)
+    }
+
+    /// [`Self::table_model`] for a command.
+    async fn model(&self) -> TableResult<(Arc<dyn TextModel>, ReasoningRule)> {
+        self.table_model().await.map_err(|e| model_error(&e))
     }
 
     async fn filler(&self, model: Arc<dyn TextModel>) -> TableResult<Filler> {
@@ -645,14 +831,18 @@ impl TableState {
         })
     }
 
-    async fn runner(&self) -> TableResult<JobRunner> {
-        let (model, _) = self.model().await?;
+    async fn runner_with(&self, model: Arc<dyn TextModel>) -> TableResult<JobRunner> {
         Ok(JobRunner::new(
             self.filler(model).await?,
             self.counter().await?,
             self.results(),
             self.inner.cap.clone(),
         ))
+    }
+
+    async fn runner(&self) -> TableResult<JobRunner> {
+        let (model, _) = self.model().await?;
+        self.runner_with(model).await
     }
 
     fn results(&self) -> Arc<dyn ResultSource> {
@@ -663,24 +853,57 @@ impl TableState {
         shodh_rag::research::tables::jobs::CounterGate::new(counter, self.inner.cap.clone())
     }
 
-    fn enter(&self, job_id: &str) -> Option<InFlight> {
-        let entered = self
-            .inner
-            .in_flight
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(job_id.to_string());
-        entered.then(|| InFlight {
+    fn events(&self, app: &AppHandle) -> Arc<dyn RunEvents> {
+        Arc::new(AppEvents {
+            app: app.clone(),
             state: self.clone(),
-            job_id: job_id.to_string(),
         })
     }
 
-    async fn models_loaded(&self) {
-        let mut loaded = self.inner.models_loaded.clone();
-        // A bootstrap that ended without saying so (its task failed) closes the channel:
-        // the scheduler goes on then too.
-        let _ = loaded.wait_for(|done| *done).await;
+    /// One check of the scheduler now.
+    async fn check(&self, app: &AppHandle) {
+        let store = match self.store().await {
+            Ok(store) => store,
+            Err(e) => {
+                tracing::debug!(error = %e.message, "evidence tables unavailable; no fill resumed");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .inner
+            .scheduler
+            .tick(store, self, self.events(app))
+            .await
+        {
+            tracing::warn!(error = %e, "evidence table fills could not be checked");
+        }
+    }
+
+    /// A check of the scheduler on a task of its own (after a setting changed).
+    fn check_soon(&self, app: &AppHandle) {
+        let (state, app) = (self.clone(), app.clone());
+        tauri::async_runtime::spawn(async move { state.check(&app).await });
+    }
+
+    /// Holds the row for a fill by hand: refused while the table's fill runs
+    /// (`fill_running`) or another fill by hand runs on the row (`hand_fill_running`).
+    async fn hold_hand_fill(
+        &self,
+        store: &Arc<TableStore>,
+        table_id: &str,
+        row_id: &str,
+    ) -> TableResult<HandFillHold> {
+        let (s, table) = (store.clone(), table_id.to_string());
+        let active = blocking(move || s.active_fill_job(&table)).await?;
+        if let Some(refusal) = hand_fill_refusal(active.as_ref()) {
+            return Err(refusal);
+        }
+        self.inner.hand_fills.try_hold(row_id).ok_or_else(|| {
+            coded(
+                "hand_fill_running",
+                "This paper is being filled by hand already.",
+            )
+        })
     }
 
     /// The paper's request: its row, the table's columns and the row's cells; Results as
@@ -732,6 +955,164 @@ impl TableState {
             results,
         })
     }
+
+    /// The file names of the table's papers as the file system spelled them at indexing,
+    /// by `path_key`.
+    async fn file_names(&self, rows: &[TableRow]) -> HashMap<String, String> {
+        let wanted: HashSet<&str> = rows.iter().map(|r| r.document_id.as_str()).collect();
+        let engine = self.inner.rag.read().await;
+        let (sources, names) = match (
+            engine.document_sources().await,
+            engine.document_names().await,
+        ) {
+            (Ok(sources), Ok(names)) => (sources, names),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::debug!(error = %format!("{e:#}"), "indexed file names not read; titles use the row keys");
+                return HashMap::new();
+            }
+        };
+        drop(engine);
+        sources
+            .into_iter()
+            .filter_map(|row| {
+                let key = path_key(&row.source);
+                if !wanted.contains(key.as_str()) {
+                    return None;
+                }
+                let names = names.get(&row.doc_id)?;
+                let name = names
+                    .display_path
+                    .as_deref()
+                    .map(file_name)
+                    .or_else(|| names.filename.clone())?;
+                Some((key, name))
+            })
+            .collect()
+    }
+}
+
+/// The scheduler's runner: the model tables use now. A model that cannot be used is a
+/// block (the job waits for the user); anything else is a failure.
+#[async_trait::async_trait]
+impl RunnerSource for TableState {
+    async fn runner(&self) -> Result<JobRunner, RunnerError> {
+        let model = match self.table_model().await {
+            Ok((model, _)) => model,
+            Err(TableModelError::Settings(e)) => return Err(RunnerError::Unavailable(e)),
+            Err(e) => {
+                return Err(RunnerError::Blocked {
+                    code: e.code(),
+                    message: e.message(),
+                })
+            }
+        };
+        self.runner_with(model)
+            .await
+            .map_err(|e| RunnerError::Unavailable(e.message))
+    }
+}
+
+/// The scheduler's events in the app: `table_changed`, and the notifications.
+struct AppEvents {
+    app: AppHandle,
+    state: TableState,
+}
+
+impl RunEvents for AppEvents {
+    fn changed(&self, table_id: &str) {
+        emit_changed(&self.app, table_id);
+    }
+
+    fn ended(&self, job: &FillJob, report: &RunReport, by_user: bool) {
+        let (app, state, job, report) = (
+            self.app.clone(),
+            self.state.clone(),
+            job.clone(),
+            report.clone(),
+        );
+        tauri::async_runtime::spawn(async move {
+            tracing::info!(
+                table = %job.table_id,
+                job = %job.id,
+                outcome = ?report.outcome,
+                calls = report.calls,
+                papers = report.papers,
+                not_indexed = report.not_indexed,
+                "evidence table fill run ended"
+            );
+            announce_end(&app, &state, &job, &report.outcome, &report, by_user).await;
+        });
+    }
+
+    fn blocked(&self, job: &FillJob, message: &str) {
+        tracing::warn!(table = %job.table_id, job = %job.id, reason = %message, "evidence table fill waits for a usable model");
+        let (app, state, job) = (self.app.clone(), self.state.clone(), job.clone());
+        tauri::async_runtime::spawn(async move {
+            let outcome = JobOutcome::Paused {
+                reason: PauseReason::ModelUnavailable,
+                until: None,
+            };
+            let report = RunReport {
+                outcome: outcome.clone(),
+                calls: 0,
+                cells: 0,
+                papers: 0,
+                not_indexed: 0,
+                quota_window: None,
+            };
+            announce_end(&app, &state, &job, &outcome, &report, false).await;
+        });
+    }
+}
+
+/// Tells what needs the user about the end of `job`'s run (see
+/// [`crate::notifications::table_outcome`]); the cap and the daily quota once a UTC day.
+async fn announce_end(
+    app: &AppHandle,
+    state: &TableState,
+    job: &FillJob,
+    outcome: &JobOutcome,
+    report: &RunReport,
+    by_user: bool,
+) {
+    let Ok(store) = state.store().await else {
+        return;
+    };
+    let (s, table, id) = (store, job.table_id.clone(), job.id.clone());
+    let read = blocking(move || Ok((s.table(&table)?, s.fill_job(&id)?))).await;
+    let (name, last_error) = match read {
+        Ok((table, job)) => (
+            table.map(|t| t.name).unwrap_or_default(),
+            job.and_then(|j| j.last_error),
+        ),
+        Err(_) => (String::new(), None),
+    };
+    let end = TableRunEnd {
+        outcome,
+        quota_window: report.quota_window,
+        last_error: last_error.as_deref(),
+        cap: state.inner.cap.get(),
+        papers: report.papers,
+        not_indexed: report.not_indexed,
+        calls: report.calls,
+        by_user,
+    };
+    let Some(notice) = table_outcome(&job.table_id, &name, end, *chrono::Local::now().offset())
+    else {
+        return;
+    };
+    if let Some(key) = once_a_day_key(&end) {
+        let admitted = state
+            .inner
+            .once_a_day
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admit(key, utc_day(Utc::now()));
+        if !admitted {
+            return;
+        }
+    }
+    announce_table(app, notice);
 }
 
 async fn blocking<T, F>(job: F) -> TableResult<T>
@@ -755,111 +1136,12 @@ fn now_ms(at: DateTime<Utc>) -> i64 {
     at.timestamp_millis()
 }
 
-// ── Runs and the scheduler ───────────────────────────────────────
+// ── The scheduler and exit ───────────────────────────────────────
 
-/// Runs a job on its own task unless this process already runs it; at its end, emits the
-/// table's change and announces what needs the user.
-fn spawn_run(app: &AppHandle, state: &TableState, runner: JobRunner, job_id: String) {
-    let Some(in_flight) = state.enter(&job_id) else {
-        return;
-    };
-    let app = app.clone();
-    let state = state.clone();
-    tauri::async_runtime::spawn(async move {
-        let _in_flight = in_flight;
-        let table_id = match runner.job(&job_id).await {
-            Ok(Some(job)) => job.table_id,
-            Ok(None) => return,
-            Err(e) => {
-                tracing::warn!(job = %job_id, error = %e, "evidence table fill job could not be read");
-                return;
-            }
-        };
-        let report = runner.run(&job_id).await;
-        emit_changed(&app, &table_id);
-        match report {
-            Ok(report) => announce_run(&app, &state, &table_id, &job_id, &report).await,
-            Err(e) => {
-                tracing::warn!(job = %job_id, error = %e, "evidence table fill run failed; the job is given back")
-            }
-        }
-    });
-}
-
-async fn announce_run(
-    app: &AppHandle,
-    state: &TableState,
-    table_id: &str,
-    job_id: &str,
-    report: &RunReport,
-) {
-    tracing::info!(
-        table = %table_id,
-        job = %job_id,
-        outcome = ?report.outcome,
-        calls = report.calls,
-        cells = report.cells,
-        not_indexed = report.not_indexed,
-        "evidence table fill run ended"
-    );
-    let Ok(store) = state.store().await else {
-        return;
-    };
-    let (s, table, job) = (store, table_id.to_string(), job_id.to_string());
-    let read = blocking(move || Ok((s.table(&table)?, s.fill_job(&job)?))).await;
-    let (name, last_error) = match read {
-        Ok((table, job)) => (
-            table.map(|t| t.name).unwrap_or_default(),
-            job.and_then(|j| j.last_error),
-        ),
-        Err(_) => (String::new(), None),
-    };
-    let end = TableRunEnd {
-        outcome: &report.outcome,
-        quota_window: report.quota_window,
-        last_error: last_error.as_deref(),
-        cap: state.inner.cap.get(),
-    };
-    if let Some(notice) = table_outcome(table_id, &name, end, *chrono::Local::now().offset()) {
-        announce_table(app, notice);
-    }
-}
-
-/// Runs every due job (see the module documentation).
-async fn run_due(app: &AppHandle, state: &TableState) {
-    let store = match state.store().await {
-        Ok(store) => store,
-        Err(e) => {
-            tracing::debug!(error = %e.message, "evidence tables unavailable; no fill resumed");
-            return;
-        }
-    };
-    let due = match resume_due_jobs(store).await {
-        Ok(due) => due,
-        Err(e) => {
-            tracing::warn!(error = %e, "due evidence table fills could not be read");
-            return;
-        }
-    };
-    if due.is_empty() {
-        return;
-    }
-    let runner = match state.runner().await {
-        Ok(runner) => {
-            state.inner.blocked_logged.store(false, Ordering::SeqCst);
-            runner
-        }
-        Err(e) => {
-            // The jobs stay as they are and are taken up once a model can be used.
-            if !state.inner.blocked_logged.swap(true, Ordering::SeqCst) {
-                tracing::warn!(jobs = due.len(), error = %e.message, "evidence table fills wait for a usable model");
-            }
-            return;
-        }
-    };
-    for job_id in due {
-        spawn_run(app, state, runner.clone(), job_id);
-    }
+/// Waits until the app has loaded its model settings and keys (`loaded` turns true), or
+/// until its sender is gone (the loading task ended without saying so).
+pub async fn models_loaded(mut loaded: watch::Receiver<bool>) {
+    let _ = loaded.wait_for(|done| *done).await;
 }
 
 /// Starts the scheduler: once the model settings are loaded (so a job is never run, and
@@ -868,12 +1150,36 @@ async fn run_due(app: &AppHandle, state: &TableState) {
 pub fn spawn_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<TableState>().inner().clone();
-        state.models_loaded().await;
+        models_loaded(state.inner.models_loaded.clone()).await;
         let mut tick = tokio::time::interval(SCHEDULER_TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
-            run_due(&app, &state).await;
+            state.check(&app).await;
+        }
+    });
+}
+
+/// Gives back the jobs this process's runs hold, when the app exits: the next start
+/// takes them up at once.
+pub fn release_on_exit(app: &AppHandle) {
+    let Some(state) = app.try_state::<TableState>() else {
+        return;
+    };
+    let state = state.inner().clone();
+    tauri::async_runtime::block_on(async move {
+        let Ok(store) = state.store().await else {
+            return;
+        };
+        match release_held_jobs(store).await {
+            Ok(0) => {}
+            Ok(released) => tracing::info!(
+                jobs = released,
+                "evidence table fills given back for the next start"
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "evidence table fills could not be given back; they resume once their lease runs out")
+            }
         }
     });
 }
@@ -918,8 +1224,8 @@ pub async fn table_rename(
     Ok(table)
 }
 
-/// Deletes a table with its columns, rows, cells and jobs. A fill running on it stops
-/// after its current call.
+/// Deletes a table with its columns, rows, cells, captures and jobs. A fill running on it
+/// stops after its current call.
 #[tauri::command]
 pub async fn table_delete(
     app: AppHandle,
@@ -950,16 +1256,28 @@ pub async fn table_get(tables: State<'_, TableState>, table_id: String) -> Table
         ))
     })
     .await?;
-    let graph = tables.inner.research.graph();
+    let graph_titles: HashMap<String, String> = tables
+        .inner
+        .research
+        .graph()
+        .map(|graph| {
+            graph
+                .papers()
+                .iter()
+                .filter(|p| p.in_library)
+                .filter_map(|p| {
+                    let title = p.title.as_deref()?.trim();
+                    let file = p.file_path.as_deref()?;
+                    (!title.is_empty()).then(|| (path_key(file), title.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let file_names = tables.file_names(&rows).await;
     let rows = rows
         .into_iter()
         .map(|row| {
-            let title = graph
-                .as_ref()
-                .and_then(|g| g.paper_for_file(&row.document_id))
-                .and_then(|p| p.title.clone())
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| file_name(&row.document_id));
+            let title = row_title(&row.document_id, &graph_titles, &file_names);
             RowView { row, title }
         })
         .collect();
@@ -1081,6 +1399,7 @@ pub async fn rows_add(
     Ok(rows)
 }
 
+/// Removes a row with its cells and captures.
 #[tauri::command]
 pub async fn row_remove(
     app: AppHandle,
@@ -1147,7 +1466,8 @@ pub async fn cell_clear(
 
 /// Asks the model again for one cell, over the top 8 passages of its column and past the
 /// cache. Counts against the day's cap. A failed refill keeps the cell's result; an
-/// edited cell is refused (clear it first).
+/// edited cell is refused (clear it first). Refused while the table's fill runs
+/// (`fill_running`) or the row is filled by hand already (`hand_fill_running`).
 #[tauri::command]
 pub async fn cell_refill(
     app: AppHandle,
@@ -1161,6 +1481,7 @@ pub async fn cell_refill(
     check_id("column", &column_id)?;
     let store = tables.store().await?;
     column_of(&store, &table_id, &column_id).await?;
+    let _hold = tables.hold_hand_fill(&store, &table_id, &row_id).await?;
     let request = tables
         .request(&store, &table_id, &row_id, Some(&column_id))
         .await?;
@@ -1193,40 +1514,76 @@ pub async fn fill_estimate(
 }
 
 /// Starts filling the table (or takes up its paused or queued job) and runs it at once.
-/// `planned_calls` is the estimate the user agreed to.
+/// `planned_calls` is the estimate the user agreed to. Says honestly how it went
+/// ([`FillStart`]): a job an earlier run of Shodh still holds is not reported as running.
 #[tauri::command]
 pub async fn fill_start(
     app: AppHandle,
     tables: State<'_, TableState>,
     table_id: String,
     planned_calls: usize,
-) -> TableResult<JobView> {
+) -> TableResult<FillStart> {
     check_id("table", &table_id)?;
     check_planned_calls(planned_calls)?;
     let runner = tables.runner().await?;
     let job = runner.start(&table_id, planned_calls).await?;
-    spawn_run(&app, &tables, runner, job.id.clone());
+    let hold = job_hold(tables.store().await?, &job.id).await?;
+    let calls_today = tables.calls_today().await?;
+    let scheduler = tables.inner.scheduler.clone();
+    let start = start_state(
+        hold,
+        scheduler.is_running(&job.id),
+        calls_today,
+        tables.inner.cap.get(),
+    );
+    if matches!(start, "started" | "at_cap") {
+        // At the cap the run pauses before any call, until the day's reset; the answer
+        // says so, and no notification repeats it.
+        scheduler.spawn_run(runner, job.id.clone(), tables.events(&app), true);
+    }
     emit_changed(&app, &table_id);
-    Ok(job_view(&job))
+    Ok(FillStart {
+        job: job_view(&job),
+        start,
+        lease_expires_at: match hold {
+            Hold::Elsewhere { until } => Some(now_ms(until)),
+            Hold::Free | Hold::RunningHere => None,
+        },
+        day_resets_at: now_ms(next_utc_midnight(Utc::now())),
+    })
 }
 
 /// Cancels the table's active fill: at once when it is queued or paused, after the
-/// current call when it runs. Finished cells stay. Needs no model.
+/// current call when it runs here. A job an earlier run of Shodh still holds keeps the
+/// cancel asked (`pending`), and it is done by the lease's end at the latest. Finished
+/// cells stay. Needs no model.
 #[tauri::command]
 pub async fn fill_cancel(
     app: AppHandle,
     tables: State<'_, TableState>,
     table_id: String,
-) -> TableResult<Option<JobView>> {
+) -> TableResult<FillCancel> {
     check_id("table", &table_id)?;
     let store = tables.store().await?;
     let (s, id) = (store.clone(), table_id.clone());
     let Some(active) = blocking(move || s.active_fill_job(&id)).await? else {
-        return Ok(None);
+        return Ok(FillCancel {
+            job: None,
+            pending: false,
+            lease_expires_at: None,
+        });
     };
-    let job = cancel_job(store, &active.id).await?;
+    let job = cancel_job(store.clone(), &active.id).await?;
+    let hold = job_hold(store, &active.id).await?;
     emit_changed(&app, &table_id);
-    Ok(job.as_ref().map(job_view))
+    Ok(FillCancel {
+        pending: job.as_ref().is_some_and(|j| j.state == JobState::Running),
+        lease_expires_at: match hold {
+            Hold::Elsewhere { until } => Some(now_ms(until)),
+            Hold::Free | Hold::RunningHere => None,
+        },
+        job: job.as_ref().map(job_view),
+    })
 }
 
 /// The table's fill and the day's calls. Needs no model.
@@ -1237,17 +1594,18 @@ pub async fn fill_status(
 ) -> TableResult<FillStatus> {
     check_id("table", &table_id)?;
     let store = tables.store().await?;
-    let (job, rows, cells) = blocking(move || {
+    let (job, rows, columns, cells) = blocking(move || {
         Ok((
             store.latest_fill_job(&table_id)?,
             store.rows(&table_id)?,
+            store.columns(&table_id)?,
             store.cells(&table_id)?,
         ))
     })
     .await?;
     Ok(FillStatus {
+        papers_done: papers_done(job.as_ref(), &rows, &columns, &cells),
         job: job.as_ref().map(job_view),
-        papers_done: papers_done(&rows, &cells),
         papers_total: rows.len(),
         calls_today: tables.calls_today().await?,
         cap: tables.inner.cap.get(),
@@ -1255,11 +1613,11 @@ pub async fn fill_status(
     })
 }
 
-/// Fills one paper by hand with the configured model, counted against the day's cap, and
-/// keeps every model call it made byte for byte: they are returned and written to
-/// `<app data>/tables/captures/<utc time>-<table>-<row>.json` (on this computer only), so
-/// replies of real models can be checked and kept as test fixtures. The fill is the
-/// normal one: cells that are current, or answered by the cache, cost no call.
+/// Fills one paper by hand with the configured model, counted against the day's cap,
+/// and keeps every model call it made byte for byte: they are returned and kept in
+/// `shodh.db` (the row's newest few; they go with the row), also when the fill fails
+/// after its calls. Only with Settings → Tables → diagnostics on. The fill is the normal
+/// one: cells that are current, or answered by the cache, cost no call.
 #[tauri::command]
 pub async fn table_fill_paper(
     app: AppHandle,
@@ -1269,57 +1627,90 @@ pub async fn table_fill_paper(
 ) -> TableResult<PaperCapture> {
     check_id("table", &table_id)?;
     check_id("row", &row_id)?;
+    let diagnostics = SettingsStore::in_dir(&tables.inner.data_dir)
+        .load()
+        .map(|s| s.tables.diagnostics)
+        .unwrap_or(false);
+    if !diagnostics {
+        return Err(coded(
+            "diagnostics_off",
+            "Filling one paper with its model calls kept is a diagnostics tool: turn it on in Settings → Tables.",
+        ));
+    }
     let store = tables.store().await?;
+    let _hold = tables.hold_hand_fill(&store, &table_id, &row_id).await?;
     let request = tables.request(&store, &table_id, &row_id, None).await?;
     let (model, rule) = tables.model().await?;
     let recording = Arc::new(RecordingModel::new(model));
     let filler = tables.filler(recording.clone()).await?;
     let gate = tables.gate(tables.counter().await?);
-    let fill = filler.fill_paper(&request, &gate).await?;
+    let ended = filler.fill_paper(&request, &gate).await;
     emit_changed(&app, &table_id);
-    let at = Utc::now();
-    let mut capture = PaperCapture {
-        captured_at: at.to_rfc3339_opts(SecondsFormat::Millis, true),
-        table_id: table_id.clone(),
-        row_id: row_id.clone(),
-        document_id: request.row.document_id.clone(),
-        model: recording.model_id(),
-        reasoning_rule: rule.describe(),
-        calls: recording.calls(),
-        result: hand_fill(&fill),
-        file: None,
-    };
-    let path = capture_path(
-        &tables.inner.data_dir.join(CAPTURES_DIR),
-        at,
+    let mut capture = paper_capture(
+        Utc::now(),
         &table_id,
         &row_id,
+        &request.row.document_id,
+        recording.model_id(),
+        &rule,
+        recording.calls(),
+        ended.as_ref().map_err(|e| e.to_string()),
     );
-    let written = capture.clone();
-    let target = path.clone();
-    match tokio::task::spawn_blocking(move || write_capture(&target, &written)).await {
-        Ok(Ok(())) => capture.file = Some(path.display().to_string()),
-        Ok(Err(e)) => tracing::warn!(error = %e, "the table fill capture could not be written"),
-        Err(e) => tracing::warn!(error = %e, "the table fill capture task failed"),
+    let json = serde_json::to_string(&capture)
+        .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?;
+    let (s, table, row, at) = (
+        store,
+        table_id.clone(),
+        row_id.clone(),
+        capture.captured_at.clone(),
+    );
+    match blocking(move || s.save_capture(&table, &row, &at, &json)).await {
+        Ok(id) => capture.capture_id = Some(id),
+        Err(e) => tracing::warn!(error = %e.message, "the table fill capture could not be kept"),
     }
     Ok(capture)
+}
+
+/// The table's kept captures (see `table_fill_paper`), as the JSON each was kept as, for
+/// the user to save (test fixtures are made from them).
+#[tauri::command]
+pub async fn table_captures_export(
+    tables: State<'_, TableState>,
+    table_id: String,
+) -> TableResult<Vec<serde_json::Value>> {
+    check_id("table", &table_id)?;
+    let store = tables.store().await?;
+    let captures = blocking(move || store.captures(&table_id)).await?;
+    captures
+        .iter()
+        .map(|c| {
+            serde_json::from_str(&c.capture_json)
+                .map_err(|e| ResearchCommandError::unavailable(e.to_string()))
+        })
+        .collect()
 }
 
 // ── Commands: settings ───────────────────────────────────────────
 
 #[tauri::command]
 pub async fn tables_settings_get(tables: State<'_, TableState>) -> TableResult<TablesSettings> {
-    Ok(settings_view(tables.inner.cap.get()))
+    let diagnostics = SettingsStore::in_dir(&tables.inner.data_dir)
+        .load()
+        .map(|s| s.tables.diagnostics)
+        .unwrap_or(false);
+    Ok(settings_view(tables.inner.cap.get(), diagnostics))
 }
 
-/// Sets the day's cap of table calls. User-only. It applies from the next check of
-/// every fill, also one in flight.
+/// Sets the day's cap of table calls (and, when given, the diagnostics switch). User-only.
+/// The cap applies from the next check of every fill, also one in flight; raising it
+/// takes up the jobs paused for it at once.
 #[tauri::command]
 pub async fn tables_settings_set(
     app: AppHandle,
     tables: State<'_, TableState>,
     audit: State<'_, AuditState>,
     daily_call_cap: usize,
+    diagnostics: Option<bool>,
 ) -> TableResult<TablesSettings> {
     check_daily_cap(daily_call_cap)?;
     let store = SettingsStore::in_dir(&tables.inner.data_dir);
@@ -1327,12 +1718,16 @@ pub async fn tables_settings_set(
         store.update(|s| {
             let before = s.tables;
             s.tables.daily_call_cap = daily_call_cap;
+            if let Some(on) = diagnostics {
+                s.tables.diagnostics = on;
+            }
             Ok(before)
         })
     })
     .await
     .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?
     .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?;
+    let raised = daily_call_cap > tables.inner.cap.get();
     tables.inner.cap.set(daily_call_cap)?;
     if before != settings.tables {
         audit.record(AuditRecord::new(
@@ -1346,7 +1741,19 @@ pub async fn tables_settings_set(
         ));
     }
     broadcast(&app, &settings);
-    Ok(settings_view(tables.inner.cap.get()))
+    if raised {
+        let woken = wake_paused_jobs(tables.store().await?, PauseReason::DailyCap).await?;
+        for job in &woken {
+            emit_changed(&app, &job.table_id);
+        }
+        if !woken.is_empty() {
+            tables.check_soon(&app);
+        }
+    }
+    Ok(settings_view(
+        tables.inner.cap.get(),
+        settings.tables.diagnostics,
+    ))
 }
 
 #[cfg(test)]
@@ -1433,17 +1840,106 @@ mod tests {
         assert_eq!(DailyCap::default().get(), DEFAULT_DAILY_CAP);
     }
 
+    #[test]
+    fn a_model_tables_cannot_use_has_its_own_code() {
+        assert_eq!(
+            model_error(&TableModelError::RefusedReasoning("m".to_string())).code,
+            "model_refused"
+        );
+        for unusable in [
+            TableModelError::NoModel,
+            TableModelError::LocalOnly,
+            TableModelError::NoKey,
+        ] {
+            let e = model_error(&unusable);
+            assert_eq!(e.code, "model_unavailable", "{unusable:?}");
+            assert!(e.message.contains("Settings → Model"), "{}", e.message);
+        }
+        assert_eq!(
+            model_error(&TableModelError::Settings("x".to_string())).code,
+            "unavailable"
+        );
+    }
+
+    fn job(state: JobState) -> FillJob {
+        FillJob {
+            id: "j".to_string(),
+            table_id: "t".to_string(),
+            state,
+            planned_calls: 12,
+            done_calls: 5,
+            created_at: "2026-10-22T09:00:00.000Z".to_string(),
+            next_attempt_at: Some("2026-10-23T00:00:00.000Z".to_string()),
+            pause_reason: Some(PauseReason::DailyCap),
+            last_error: None,
+            cancel_requested: false,
+            heartbeat_at: Some("2026-10-22T09:05:00.000Z".to_string()),
+            backoff_step: 0,
+            failure_streak: 0,
+            panics: 0,
+        }
+    }
+
+    #[test]
+    fn hand_fills_never_overlap_a_running_fill_or_each_other() {
+        let running = job(JobState::Running);
+        assert_eq!(
+            hand_fill_refusal(Some(&running)).unwrap().code,
+            "fill_running"
+        );
+        for quiet in [JobState::Paused, JobState::Queued, JobState::Done] {
+            assert!(hand_fill_refusal(Some(&job(quiet))).is_none(), "{quiet:?}");
+        }
+        assert!(hand_fill_refusal(None).is_none());
+        let fills = HandFills::default();
+        let first = fills.try_hold("r1").unwrap();
+        assert!(fills.try_hold("r1").is_none(), "a double click pays once");
+        let other = fills.try_hold("r2").unwrap();
+        drop(first);
+        assert!(fills.try_hold("r1").is_some(), "free again when it ends");
+        drop(other);
+    }
+
+    #[test]
+    fn a_users_fill_says_how_it_started() {
+        let until = Utc::now();
+        assert_eq!(
+            start_state(Hold::Elsewhere { until }, false, 0, 30),
+            "held_elsewhere"
+        );
+        assert_eq!(
+            start_state(Hold::RunningHere, false, 0, 30),
+            "already_running"
+        );
+        assert_eq!(start_state(Hold::Free, true, 0, 30), "already_running");
+        assert_eq!(start_state(Hold::Free, false, 29, 30), "at_cap");
+        assert_eq!(start_state(Hold::Free, false, 28, 30), "started");
+    }
+
     fn row(id: &str) -> TableRow {
         TableRow {
             id: id.to_string(),
             table_id: "t".to_string(),
             position: 0,
             document_id: format!("/p/{id}.pdf"),
-            added_at: "2026-10-22T09:00:00.000Z".to_string(),
+            added_at: "2026-10-22T08:00:00.000Z".to_string(),
         }
     }
 
-    fn cell(row: &str, column: &str, status: CellStatus) -> Cell {
+    fn column(id: &str) -> Column {
+        Column {
+            id: id.to_string(),
+            table_id: "t".to_string(),
+            position: 0,
+            spec: spec(ColumnKind::YesNo, 0),
+            key: "k".to_string(),
+            revision: 1,
+            created_at: "2026-10-22T08:00:00.000Z".to_string(),
+            updated_at: "2026-10-22T08:00:00.000Z".to_string(),
+        }
+    }
+
+    fn cell(row: &str, column: &str, status: CellStatus, filled_at: &str) -> Cell {
         Cell {
             table_id: "t".to_string(),
             row_id: row.to_string(),
@@ -1457,59 +1953,98 @@ mod tests {
             model: None,
             column_revision: Some(1),
             paper_hash: None,
-            filled_at: None,
+            filled_at: Some(filled_at.to_string()),
             edited_at: None,
             error: None,
         }
     }
 
     #[test]
-    fn a_paper_is_done_when_none_of_its_cells_waits_in_the_queue() {
-        let rows = [row("a"), row("b"), row("c")];
+    fn only_papers_the_job_filled_count_as_done() {
+        let rows = [row("a"), row("b"), row("c"), row("d")];
+        let columns = [column("k1"), column("k2")];
+        let before = "2026-10-22T08:30:00.000Z";
+        let during = "2026-10-22T09:10:00.000Z";
+        let job = job(JobState::Running);
         let cells = [
-            cell("a", "k1", CellStatus::Verified),
-            cell("a", "k2", CellStatus::NotFound),
-            cell("b", "k1", CellStatus::Verified),
-            cell("b", "k2", CellStatus::Queued),
+            // a: both columns filled by this job (one failed: it was reached).
+            cell("a", "k1", CellStatus::Verified, during),
+            cell("a", "k2", CellStatus::Failed, during),
+            // b: filled before the job; nothing to do in it.
+            cell("b", "k1", CellStatus::Verified, before),
+            cell("b", "k2", CellStatus::NotFound, before),
+            // c: one column still waits.
+            cell("c", "k1", CellStatus::Verified, during),
+            cell("c", "k2", CellStatus::Queued, during),
         ];
-        assert_eq!(papers_done(&rows, &cells), 2, "a, and c with no cells yet");
-        assert_eq!(papers_done(&rows, &[]), 3);
+        assert_eq!(papers_done(Some(&job), &rows, &columns, &cells), 1);
+        assert_eq!(
+            papers_done(None, &rows, &columns, &cells),
+            0,
+            "no job, nothing done"
+        );
+        // A table never filled has nothing done.
+        assert_eq!(papers_done(Some(&job), &rows, &columns, &[]), 0);
+        // After a cancel (or a failure) the waiting cells are emptied: the papers the job
+        // reached stay done, the others do not become done.
+        let mut cancelled = cells.to_vec();
+        cancelled[5].status = CellStatus::Empty;
+        let ended = FillJob {
+            state: JobState::Cancelled,
+            ..job.clone()
+        };
+        assert_eq!(papers_done(Some(&ended), &rows, &columns, &cancelled), 1);
+        let failed = FillJob {
+            state: JobState::Failed,
+            ..job
+        };
+        assert_eq!(papers_done(Some(&failed), &rows, &columns, &cancelled), 1);
     }
 
     #[test]
-    fn a_job_shows_its_next_attempt_as_utc_milliseconds() {
-        let job = FillJob {
-            id: "j".to_string(),
-            table_id: "t".to_string(),
-            state: JobState::Paused,
-            planned_calls: 12,
-            done_calls: 5,
-            created_at: "2026-10-22T09:00:00.000Z".to_string(),
-            next_attempt_at: Some("2026-10-23T00:00:00.000Z".to_string()),
-            pause_reason: Some(PauseReason::DailyCap),
-            last_error: None,
-            cancel_requested: false,
-            heartbeat_at: None,
-            backoff_step: 0,
-            failure_streak: 0,
-            panics: 0,
-        };
-        let view = job_view(&job);
+    fn a_job_shows_its_times_as_utc_milliseconds() {
+        let view = job_view(&job(JobState::Paused));
         assert_eq!(view.next_attempt_at, Some(1_792_713_600_000));
+        assert_eq!(view.heartbeat_at, Some(1_792_659_900_000));
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["nextAttemptAt"], 1_792_713_600_000_i64);
+        assert_eq!(json["heartbeatAt"], 1_792_659_900_000_i64);
         assert_eq!(json["pauseReason"], "daily_cap");
         assert_eq!(json["state"], "paused");
         assert_eq!(json["doneCalls"], 5);
         let waiting = FillJob {
             next_attempt_at: None,
-            ..job
+            heartbeat_at: None,
+            ..job(JobState::Paused)
         };
         assert_eq!(job_view(&waiting).next_attempt_at, None);
+        assert_eq!(job_view(&waiting).heartbeat_at, None);
     }
 
     #[test]
-    fn a_capture_keeps_the_reply_byte_for_byte_and_names_its_file_by_time_table_and_row() {
+    fn titles_keep_the_case_the_file_system_spelled() {
+        let path = r"C:\Papers\Attention Is All You Need.pdf";
+        let key = path_key(path);
+        let names = HashMap::from([(key.clone(), "Attention Is All You Need.pdf".to_string())]);
+        assert_eq!(
+            row_title(&key, &HashMap::new(), &names),
+            "Attention Is All You Need.pdf"
+        );
+        let graph = HashMap::from([(key.clone(), "Attention Is All You Need".to_string())]);
+        assert_eq!(
+            row_title(&key, &graph, &names),
+            "Attention Is All You Need",
+            "the citation graph's title first"
+        );
+        assert_eq!(
+            row_title(&key, &HashMap::new(), &HashMap::new()),
+            file_name(&key),
+            "the key's name when nothing else is known"
+        );
+    }
+
+    #[test]
+    fn a_capture_keeps_the_reply_byte_for_byte_and_the_calls_of_a_fill_that_failed() {
         let reply = "<think>x</think>\r\n{\"cells\":[{\"column\":\"c1\",\"answer\":null}]}  ";
         let call = captured(
             "the prompt",
@@ -1534,53 +2069,67 @@ mod tests {
         );
         assert!(cut.truncated);
         assert_eq!(cut.parsed_cells, None);
-        let failed = captured("p", 840, &Err("HTTP 429".to_string()));
-        assert_eq!(failed.error.as_deref(), Some("HTTP 429"));
-        assert_eq!(failed.reply, None);
+        let failed_call = captured("p", 840, &Err("HTTP 429".to_string()));
+        assert_eq!(failed_call.error.as_deref(), Some("HTTP 429"));
+        assert_eq!(failed_call.reply, None);
 
+        // The fill failed (the database was busy) after two calls: both are kept.
         use chrono::TimeZone;
         let at = Utc.with_ymd_and_hms(2026, 10, 22, 9, 30, 5).unwrap();
-        let path = capture_path(Path::new("/data/tables/captures"), at, "t1", "r1");
-        assert_eq!(
-            path.file_name().unwrap().to_string_lossy(),
-            "20261022T093005.000Z-t1-r1.json"
+        let capture = paper_capture(
+            at,
+            "t1",
+            "r1",
+            "/p/a.pdf",
+            "test/model:free".to_string(),
+            &ReasoningRule::Plain,
+            vec![call.clone(), cut],
+            Err("research database is busy: locked".to_string()),
         );
+        assert_eq!(capture.calls.len(), 2);
+        assert_eq!(capture.calls[0].reply.as_deref(), Some(reply));
+        assert_eq!(capture.result, None);
+        assert_eq!(
+            capture.error.as_deref(),
+            Some("research database is busy: locked")
+        );
+        assert_eq!(capture.captured_at, "2026-10-22T09:30:05.000Z");
+        let json = serde_json::to_value(&capture).unwrap();
+        assert_eq!(json["reasoningRule"], "no reasoning; plain reply budget");
+        assert_eq!(json["calls"][0]["reply"], reply);
+        let filled = paper_capture(
+            at,
+            "t1",
+            "r1",
+            "/p/a.pdf",
+            "m".to_string(),
+            &ReasoningRule::Plain,
+            vec![call],
+            Ok(&PaperFill {
+                calls: 1,
+                ..PaperFill::default()
+            }),
+        );
+        assert_eq!(filled.result.unwrap().calls, 1);
+        assert_eq!(filled.error, None);
     }
 
-    #[test]
-    fn a_capture_file_holds_what_the_command_returns() {
-        let dir = tempfile::tempdir().unwrap();
-        let capture = PaperCapture {
-            captured_at: "2026-10-22T09:30:05.000Z".to_string(),
-            table_id: "t1".to_string(),
-            row_id: "r1".to_string(),
-            document_id: "/p/a.pdf".to_string(),
-            model: "test/model:free".to_string(),
-            reasoning_rule: ReasoningRule::Plain.describe(),
-            calls: vec![captured(
-                "p",
-                840,
-                &Ok(ModelReply {
-                    text: "{\"cells\":[]}".to_string(),
-                    truncated: false,
-                }),
-            )],
-            result: HandFill {
-                cells: Vec::new(),
-                calls: 1,
-                cache_hits: 0,
-                halted: None,
-                model_error: None,
-                paper_error: None,
-            },
-            file: None,
-        };
-        let path = dir.path().join(CAPTURES_DIR).join("c.json");
-        write_capture(&path, &capture).unwrap();
-        let read: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(read["calls"][0]["reply"], "{\"cells\":[]}");
-        assert_eq!(read["reasoningRule"], "no reasoning; plain reply budget");
-        assert_eq!(read["result"]["calls"], 1);
+    #[tokio::test]
+    async fn the_scheduler_waits_for_the_model_settings_and_not_forever() {
+        let (sent, loaded) = watch::channel(false);
+        let waiting = tokio::spawn(models_loaded(loaded));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished(), "waits while the settings load");
+        sent.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        // A loading task that ended without saying so does not hold it back.
+        let (gone, loaded) = watch::channel(false);
+        drop(gone);
+        tokio::time::timeout(Duration::from_secs(5), models_loaded(loaded))
+            .await
+            .unwrap();
     }
 }

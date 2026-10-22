@@ -406,10 +406,87 @@ pub(crate) fn configured_model(
     }))
 }
 
+/// Why evidence tables cannot fill with the configured model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableModelError {
+    /// The settings could not be read.
+    Settings(String),
+    /// No model is configured.
+    NoModel,
+    /// Local-only mode is on and the model is a cloud one.
+    LocalOnly,
+    /// The provider needs an API key and none is saved.
+    NoKey,
+    /// The model always reasons and its reasoning cannot be bounded (the model id).
+    RefusedReasoning(String),
+}
+
+impl TableModelError {
+    /// The code a paused job and a command error carry.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Settings(_) => "settings_unreadable",
+            Self::NoModel => "no_model",
+            Self::LocalOnly => "local_only",
+            Self::NoKey => "no_key",
+            Self::RefusedReasoning(_) => "refused_reasoning",
+        }
+    }
+
+    /// What it means, in words.
+    pub fn message(&self) -> String {
+        match self {
+            Self::Settings(e) => format!("The settings could not be read: {e}"),
+            Self::NoModel => "No model is configured (Settings → Model).".to_string(),
+            Self::LocalOnly => {
+                "Local-only mode is on, so tables need a local model (Settings → Model)."
+                    .to_string()
+            }
+            Self::NoKey => "The model's provider needs an API key (Settings → Model).".to_string(),
+            Self::RefusedReasoning(model) => unbounded_message(model),
+        }
+    }
+}
+
+/// The model choice for tables and its reasoning rule, `rule` giving the OpenRouter
+/// rule of a model id (other providers get the plain budget).
+async fn table_choice<F, Fut>(
+    mode: &LLMMode,
+    local_only: bool,
+    rule: F,
+) -> Result<(ModelChoice, ReasoningRule), TableModelError>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = ReasoningRule>,
+{
+    if matches!(mode, LLMMode::Disabled) {
+        return Err(TableModelError::NoModel);
+    }
+    // With a model set, the only refusal left is Local-only mode against a cloud model.
+    let choice = choose_model(mode, None, local_only).map_err(|_| TableModelError::LocalOnly)?;
+    let reasoning = match &choice {
+        ModelChoice::External {
+            provider: ApiProvider::OpenRouter,
+            model,
+            ..
+        } => rule(model.clone()).await,
+        _ => ReasoningRule::Plain,
+    };
+    if !reasoning.usable() {
+        let model = match &choice {
+            ModelChoice::Local { id } => id.clone(),
+            ModelChoice::External { model, .. } => model.clone(),
+        };
+        return Err(TableModelError::RefusedReasoning(model));
+    }
+    Ok((choice, reasoning))
+}
+
 /// The model evidence tables fill with: the one answers come from, as
 /// [`configured_model`] resolves it, with OpenRouter's reasoning rule for it
-/// ([`shodh_rag::research::tables::reasoning`]). A model whose reasoning cannot be bounded
-/// is refused with the reason. Returns the model and its rule.
+/// ([`shodh_rag::research::tables::reasoning`]). Refused, with the reason, when no model
+/// is set, Local-only mode refuses it, its provider has no API key, or its reasoning
+/// cannot be bounded. Returns the model and its rule.
 pub(crate) async fn configured_table_model(
     data_dir: &Path,
     llm: &LLMState,
@@ -419,32 +496,29 @@ pub(crate) async fn configured_table_model(
         Arc<dyn shodh_rag::research::results::TextModel>,
         ReasoningRule,
     ),
-    String,
+    TableModelError,
 > {
     let settings = SettingsStore::in_dir(data_dir)
         .load()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| TableModelError::Settings(e.to_string()))?;
     let mode = llm
         .config
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .mode
         .clone();
-    let choice = choose_model(&mode, None, settings.policy.local_only)?;
-    let reasoning = match &choice {
-        ModelChoice::External {
-            provider: ApiProvider::OpenRouter,
-            model,
-            ..
-        } => catalog.rule(model).await,
-        _ => ReasoningRule::Plain,
-    };
-    if !reasoning.usable() {
-        let model = match &choice {
-            ModelChoice::Local { id } => id.clone(),
-            ModelChoice::External { model, .. } => model.clone(),
-        };
-        return Err(unbounded_message(&model));
+    let (choice, reasoning) = table_choice(&mode, settings.policy.local_only, |model| async move {
+        catalog.rule(&model).await
+    })
+    .await?;
+    if let ModelChoice::External { provider, .. } = &choice {
+        if !matches!(provider, ApiProvider::Ollama)
+            && crate::agent_session_commands::resolve_key(llm, &mode)
+                .await
+                .is_none()
+        {
+            return Err(TableModelError::NoKey);
+        }
     }
     let model: Arc<dyn shodh_rag::research::results::TextModel> = Arc::new(AppModel {
         data_dir: data_dir.to_path_buf(),
@@ -1354,6 +1428,88 @@ mod tests {
         assert_eq!(legacy_progress(&path), 12);
         std::fs::write(&path, "not a number").unwrap();
         assert_eq!(legacy_progress(&path), 0);
+    }
+
+    #[tokio::test]
+    async fn tables_take_the_reasoning_rule_only_for_openrouter_and_refuse_what_they_cannot_use() {
+        let bounded = ReasoningRule::Bounded {
+            request: Some(json!({ "effort": "low" })),
+            allowance: 4096,
+        };
+        let rule = |r: ReasoningRule| move |_model: String| std::future::ready(r);
+        let openrouter = external(ApiProvider::OpenRouter);
+        assert_eq!(
+            table_choice(&openrouter, false, rule(ReasoningRule::Unbounded))
+                .await
+                .unwrap_err(),
+            TableModelError::RefusedReasoning("big-model".to_string())
+        );
+        assert_eq!(
+            table_choice(&openrouter, false, rule(bounded.clone()))
+                .await
+                .unwrap()
+                .1,
+            bounded
+        );
+        // Another provider never gets OpenRouter's rule.
+        let (_, plain) = table_choice(
+            &external(ApiProvider::OpenAI),
+            false,
+            rule(ReasoningRule::Unbounded),
+        )
+        .await
+        .unwrap();
+        assert_eq!(plain, ReasoningRule::Plain);
+        let refused = table_choice(&openrouter, true, rule(bounded.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(refused, TableModelError::LocalOnly);
+        assert_eq!(refused.code(), "local_only");
+        let unset = table_choice(&LLMMode::Disabled, false, rule(bounded.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(unset.code(), "no_model");
+        let (_, local) = table_choice(&external(ApiProvider::Ollama), true, rule(bounded))
+            .await
+            .unwrap();
+        assert_eq!(local, ReasoningRule::Plain);
+        assert!(TableModelError::RefusedReasoning("m".to_string())
+            .message()
+            .contains("Choose another model"));
+        assert_eq!(TableModelError::NoKey.code(), "no_key");
+    }
+
+    #[test]
+    fn a_bounded_rule_raises_the_reply_budget_and_asks_for_low_reasoning() {
+        let model = |reasoning: ReasoningRule| AppModel {
+            data_dir: PathBuf::new(),
+            manager: Arc::new(AsyncRwLock::new(None)),
+            config: Arc::new(std::sync::Mutex::new(LLMConfig::default())),
+            api_keys: Arc::new(std::sync::Mutex::new(ApiKeys::default())),
+            choice: ModelChoice::External {
+                provider: ApiProvider::OpenRouter,
+                model: "m".to_string(),
+                local: false,
+            },
+            reasoning,
+        };
+        let bounded = model(ReasoningRule::Bounded {
+            request: Some(json!({ "effort": "low" })),
+            allowance: 4096,
+        })
+        .generation(840);
+        assert_eq!(bounded.max_tokens, 840 + 4096);
+        assert_eq!(bounded.reasoning, Some(json!({ "effort": "low" })));
+        assert_eq!(bounded.temperature, 0.0);
+        let plain = model(ReasoningRule::Plain).generation(840);
+        assert_eq!(plain.max_tokens, 840);
+        assert_eq!(plain.reasoning, None);
+        let off = model(ReasoningRule::Off {
+            request: json!({ "enabled": false }),
+        })
+        .generation(840);
+        assert_eq!(off.max_tokens, 840);
+        assert_eq!(off.reasoning, Some(json!({ "enabled": false })));
     }
 
     fn external(provider: ApiProvider) -> LLMMode {

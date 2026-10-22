@@ -945,6 +945,43 @@ pub struct TableRunEnd<'a> {
     pub last_error: Option<&'a str>,
     /// The day's cap of table calls.
     pub cap: usize,
+    /// Papers the run took up, and of them those skipped as not indexed yet.
+    pub papers: usize,
+    pub not_indexed: usize,
+    /// Model calls the run made.
+    pub calls: usize,
+    /// The user's Fill started the run (the app shows its state already).
+    pub by_user: bool,
+}
+
+/// The key of a notice shown at most once per UTC day across all tables: the day's cap of
+/// table calls, and the provider's daily quota. Other notices have none.
+pub fn once_a_day_key(end: &TableRunEnd<'_>) -> Option<&'static str> {
+    match end.outcome {
+        JobOutcome::Paused {
+            reason: PauseReason::DailyCap,
+            until: Some(_),
+        } => Some("daily_cap"),
+        JobOutcome::Paused {
+            reason: PauseReason::Quota,
+            until: Some(_),
+        } if end.quota_window == Some(LimitWindow::Daily) => Some("daily_quota"),
+        _ => None,
+    }
+}
+
+/// The notices already shown today, by key ([`once_a_day_key`]).
+#[derive(Debug, Default)]
+pub struct OncePerDay {
+    seen: HashSet<(&'static str, chrono::NaiveDate)>,
+}
+
+impl OncePerDay {
+    /// Whether the notice `key` may be shown on `day` (it is then counted as shown).
+    pub fn admit(&mut self, key: &'static str, day: chrono::NaiveDate) -> bool {
+        self.seen.retain(|(_, seen)| *seen >= day);
+        self.seen.insert((key, day))
+    }
 }
 
 /// What the end of a table fill's run announces, if anything. Only what needs the user,
@@ -980,6 +1017,16 @@ pub fn table_outcome(
         }))
     };
     match end.outcome {
+        JobOutcome::Done if end.not_indexed > 0 => {
+            let filled = end.papers.saturating_sub(end.not_indexed);
+            Some(TableNotice::NeedsYou(Notice {
+                title: "Table filled in part".to_string(),
+                body: format!(
+                    "{name}: filled {filled} of {} papers; {} not indexed yet. Fill again once they are indexed.",
+                    end.papers, end.not_indexed
+                ),
+            }))
+        }
         JobOutcome::Done => Some(TableNotice::Finished(WorkDone {
             source,
             kind: WorkKind::Tables,
@@ -1020,10 +1067,29 @@ pub fn table_outcome(
             PauseReason::Failing => format!(
                 "{name}: the model failed on {MAX_FAILING_PAPERS} papers in a row. Check the model in Settings → Model, then press Fill."
             ),
+            PauseReason::ModelUnavailable => match end.last_error {
+                Some("refused_reasoning") => format!(
+                    "{name}: the chosen model always reasons at length, which tables cannot use. Choose another model in Settings → Model; filling goes on then."
+                ),
+                Some("local_only") => format!(
+                    "{name}: Local-only mode is on, so tables need a local model. Choose one in Settings → Model; filling goes on then."
+                ),
+                Some("no_key") => format!(
+                    "{name}: the model's provider needs an API key. Add it in Settings → Model; filling goes on then."
+                ),
+                _ => format!(
+                    "{name}: no model is set for tables. Choose one in Settings → Model; filling goes on then."
+                ),
+            },
             _ => format!(
                 "{name}: the provider kept refusing requests. Press Fill to try again later."
             ),
         }),
+        // The user pressed Fill with the day's calls used up: the app shows it.
+        JobOutcome::Paused {
+            reason: PauseReason::DailyCap,
+            until: Some(_),
+        } if end.by_user && end.calls == 0 => None,
         JobOutcome::Paused {
             reason: PauseReason::DailyCap,
             until: Some(until),
@@ -1768,6 +1834,93 @@ mod tests {
             quota_window: None,
             last_error: None,
             cap: 30,
+            papers: 14,
+            not_indexed: 0,
+            calls: 14,
+            by_user: false,
+        }
+    }
+
+    #[test]
+    fn a_fill_that_skipped_papers_says_how_many() {
+        let done = JobOutcome::Done;
+        let partial = TableRunEnd {
+            not_indexed: 2,
+            ..table_end(&done)
+        };
+        let (kind, title, body) = outcome(partial);
+        assert_eq!(
+            (kind, title.as_str()),
+            ("needs_you", "Table filled in part")
+        );
+        assert_eq!(
+            body,
+            "Retrieval papers: filled 12 of 14 papers; 2 not indexed yet. Fill again once they are indexed."
+        );
+    }
+
+    #[test]
+    fn the_cap_is_told_once_a_day_and_not_for_the_users_own_fill_at_the_cap() {
+        use chrono::{NaiveDate, TimeZone, Utc};
+        let midnight = Utc.with_ymd_and_hms(2026, 10, 23, 0, 0, 0).unwrap();
+        let cap = JobOutcome::Paused {
+            reason: PauseReason::DailyCap,
+            until: Some(midnight),
+        };
+        let by_user = TableRunEnd {
+            by_user: true,
+            calls: 0,
+            ..table_end(&cap)
+        };
+        assert_eq!(outcome(by_user).0, "none");
+        let mid_fill = TableRunEnd {
+            by_user: true,
+            calls: 4,
+            ..table_end(&cap)
+        };
+        assert_eq!(outcome(mid_fill).0, "needs_you");
+        assert_eq!(once_a_day_key(&table_end(&cap)), Some("daily_cap"));
+        let quota = JobOutcome::Paused {
+            reason: PauseReason::Quota,
+            until: Some(midnight),
+        };
+        let daily = TableRunEnd {
+            quota_window: Some(LimitWindow::Daily),
+            ..table_end(&quota)
+        };
+        assert_eq!(once_a_day_key(&daily), Some("daily_quota"));
+        assert_eq!(once_a_day_key(&table_end(&JobOutcome::Done)), None);
+
+        let day = NaiveDate::from_ymd_opt(2026, 10, 22).unwrap();
+        let mut once = OncePerDay::default();
+        assert!(once.admit("daily_cap", day), "the first table's");
+        assert!(!once.admit("daily_cap", day), "not the second table's");
+        assert!(once.admit("daily_quota", day));
+        let next = day.succ_opt().unwrap();
+        assert!(once.admit("daily_cap", next), "again the next UTC day");
+        assert!(!once.admit("daily_cap", next));
+    }
+
+    #[test]
+    fn a_job_without_a_usable_model_says_what_to_change() {
+        let blocked = JobOutcome::Paused {
+            reason: PauseReason::ModelUnavailable,
+            until: None,
+        };
+        for (code, words) in [
+            ("refused_reasoning", "always reasons"),
+            ("local_only", "Local-only mode"),
+            ("no_key", "API key"),
+            ("no_model", "no model is set"),
+        ] {
+            let end = TableRunEnd {
+                last_error: Some(code),
+                ..table_end(&blocked)
+            };
+            let (kind, title, body) = outcome(end);
+            assert_eq!((kind, title.as_str()), ("needs_you", "Table fill paused"));
+            assert!(body.contains(words), "{code}: {body}");
+            assert!(body.contains("Settings → Model"), "{body}");
         }
     }
 

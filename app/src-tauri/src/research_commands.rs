@@ -43,7 +43,9 @@ use crate::workspace_commands::WorkspaceState;
 /// Emitted with `{ "kind": "snippet" | "result" | "graph", "filePath": ... }` after a write.
 pub const RESEARCH_CHANGED_EVENT: &str = "research-changed";
 
-/// Error of a research command: `not_found`, `invalid`, `unavailable` or `storage`.
+/// Error of a research command: `not_found`, `invalid`, `unavailable`, `storage` or
+/// `busy` (the database was locked by another writer: try again); the evidence tables add
+/// `model_refused`, `model_unavailable`, `fill_running` and `hand_fill_running`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResearchCommandError {
@@ -76,10 +78,11 @@ impl From<ResearchError> for ResearchCommandError {
             | ResearchError::Model(_) => "unavailable",
             ResearchError::Statement(StatementError::Invalid(_)) => "invalid",
             ResearchError::Statement(StatementError::NotFound(_)) => "not_found",
-            ResearchError::Statement(_)
-            | ResearchError::Database(_)
-            | ResearchError::Busy(_)
-            | ResearchError::Task(_) => "storage",
+            // Another writer held the database: trying again shortly works.
+            ResearchError::Busy(_) => "busy",
+            ResearchError::Statement(_) | ResearchError::Database(_) | ResearchError::Task(_) => {
+                "storage"
+            }
         };
         Self {
             code,
@@ -849,6 +852,8 @@ mod tests {
             "unavailable"
         );
         assert_eq!(code(ResearchError::Database("x".into())), "storage");
+        assert_eq!(code(ResearchError::Busy("locked".into())), "busy");
+        assert_eq!(code(ResearchError::Task("x".into())), "storage");
         assert!(decode_png("data:image/png;base64,iVBORw0KGgo=").is_ok());
         assert_eq!(decode_png("***").unwrap_err().code, "invalid");
         assert!(scopes_for(None).is_empty());

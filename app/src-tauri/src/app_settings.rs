@@ -330,12 +330,16 @@ impl Default for NotificationPrefs {
 pub struct TablesPrefs {
     /// The most model calls table fills make per UTC day (the provider's daily window).
     pub daily_call_cap: usize,
+    /// Diagnostics: filling one paper by hand with its model calls kept (prompts and raw
+    /// replies, in `shodh.db`). Off by default.
+    pub diagnostics: bool,
 }
 
 impl Default for TablesPrefs {
     fn default() -> Self {
         Self {
             daily_call_cap: shodh_rag::research::tables::calls::DEFAULT_DAILY_CAP,
+            diagnostics: false,
         }
     }
 }
@@ -820,6 +824,10 @@ mod tests {
     #[test]
     fn the_table_call_cap_defaults_to_30_and_an_out_of_range_one_reads_as_the_default() {
         assert_eq!(AppSettings::default().tables.daily_call_cap, 30);
+        assert!(
+            !AppSettings::default().tables.diagnostics,
+            "diagnostics are off"
+        );
         let old: AppSettings = serde_json::from_str(r#"{"preferences":{"theme":"dark"}}"#).unwrap();
         assert_eq!(old.tables.daily_cap(), 30, "settings from before the field");
         let set: AppSettings = serde_json::from_str(r#"{"tables":{"dailyCallCap":120}}"#).unwrap();
@@ -827,6 +835,7 @@ mod tests {
         for out_of_range in [0, 2, 1_001] {
             let prefs = TablesPrefs {
                 daily_call_cap: out_of_range,
+                diagnostics: false,
             };
             assert_eq!(prefs.daily_cap(), 30, "{out_of_range}");
         }

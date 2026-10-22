@@ -817,6 +817,7 @@ pub fn run() {
             table_commands::fill_cancel,
             table_commands::fill_status,
             table_commands::table_fill_paper,
+            table_commands::table_captures_export,
             table_commands::tables_settings_get,
             table_commands::tables_settings_set,
             // Calendar/Todo commands
@@ -863,6 +864,9 @@ pub fn run() {
             }
         }
         tauri::RunEvent::Exit => {
+            // Evidence table fills held by this process go back to the queue, so the
+            // next start takes them up at once.
+            table_commands::release_on_exit(app_handle);
             // Stop every omp sidecar before the process exits.
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());

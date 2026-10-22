@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use super::prompt::MAX_COLUMNS_PER_CALL;
 use super::Passage;
 use crate::embeddings::estimate_tokens;
 
@@ -68,14 +69,16 @@ fn plan_one(first: Option<&Passage>, ranked: &[Vec<Passage>], columns: &[usize])
     }
 }
 
-/// The calls for one paper: one when every column's passages fit, else two.
+/// The calls for one paper: one when every column's passages fit and the reply of that
+/// many columns fits the reply cap ([`MAX_COLUMNS_PER_CALL`]), else two.
 pub fn plan_calls(first: Option<&Passage>, ranked: &[Vec<Passage>]) -> Vec<CallPlan> {
     if ranked.is_empty() {
         return Vec::new();
     }
     let all: Vec<usize> = (0..ranked.len()).collect();
     let single = plan_one(first, ranked, &all);
-    if single.truncated.is_empty() || ranked.len() < MAX_CALLS_PER_PAPER {
+    let reply_fits = ranked.len() <= MAX_COLUMNS_PER_CALL;
+    if (single.truncated.is_empty() && reply_fits) || ranked.len() < MAX_CALLS_PER_PAPER {
         return vec![single];
     }
     let mid = ranked.len().div_ceil(MAX_CALLS_PER_PAPER);
@@ -153,6 +156,28 @@ mod tests {
         assert!(plans
             .iter()
             .all(|p| p.truncated.is_empty() && p.passages.len() == 4));
+    }
+
+    #[test]
+    fn more_columns_than_one_reply_can_hold_are_split_even_when_the_passages_fit() {
+        let columns = MAX_COLUMNS_PER_CALL + 1;
+        let plans = plan_calls(None, &ranked(columns, 1, 100));
+        assert_eq!(plans.len(), 2);
+        assert!(plans.iter().all(|p| p.truncated.is_empty()));
+        assert!(plans
+            .iter()
+            .all(|p| p.columns.len() <= MAX_COLUMNS_PER_CALL));
+        let all: usize = plans.iter().map(|p| p.columns.len()).sum();
+        assert_eq!(all, columns);
+        // The most a table may have is two full calls.
+        let most = plan_calls(
+            None,
+            &ranked(MAX_COLUMNS_PER_CALL * MAX_CALLS_PER_PAPER, 1, 100),
+        );
+        assert_eq!(most.len(), 2);
+        assert!(most.iter().all(|p| p.columns.len() == MAX_COLUMNS_PER_CALL));
+        let exact = plan_calls(None, &ranked(MAX_COLUMNS_PER_CALL, 1, 100));
+        assert_eq!(exact.len(), 1);
     }
 
     #[test]

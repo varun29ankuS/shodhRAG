@@ -30,6 +30,11 @@ use super::{ResearchError, ResearchResult};
 
 pub use store::{CacheEntry, TableStore, TableStoreHandle};
 
+/// Most columns of a table. A paper is filled in at most [`budget::MAX_CALLS_PER_PAPER`]
+/// calls, and the reply to one call must fit [`prompt::REPLY_TOKEN_CAP`] output tokens,
+/// which holds [`prompt::MAX_COLUMNS_PER_CALL`] cells (11): so 22 columns. More would make
+/// a reply the provider cuts off, or a third call.
+pub const MAX_COLUMNS: usize = prompt::MAX_COLUMNS_PER_CALL * budget::MAX_CALLS_PER_PAPER;
 /// Longest `text` value, in characters.
 pub const MAX_TEXT_CHARS: usize = 500;
 /// Fewest options of a pick-list column.

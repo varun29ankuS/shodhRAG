@@ -18,7 +18,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use super::validate::{parse_edit, typed_value, VALUE_NO_LONGER_FITS};
 use super::{
     collapse, Cell, CellStatus, CellValue, Column, ColumnKind, ColumnSpec, EvidenceTable, TableRow,
-    MAX_NAME_CHARS,
+    MAX_COLUMNS, MAX_NAME_CHARS,
 };
 use crate::audit::{open_shared_connection, AuditKey};
 use crate::research::{path_key, ResearchError, ResearchResult};
@@ -370,6 +370,16 @@ impl TableStore {
             params![table_id],
             |r| r.get(0),
         )?;
+        let count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM table_column WHERE table_id = ?1",
+            params![table_id],
+            |r| r.get(0),
+        )?;
+        if usize::try_from(count).map_or(true, |count| count >= MAX_COLUMNS) {
+            return Err(ResearchError::Invalid(format!(
+                "A table has at most {MAX_COLUMNS} columns."
+            )));
+        }
         let now = now_text();
         let column = Column {
             id: new_id(),
@@ -997,6 +1007,32 @@ mod tests {
             2
         );
         assert_eq!(cache_rows(&f), 0);
+    }
+
+    #[test]
+    fn a_table_has_at_most_as_many_columns_as_two_calls_can_answer() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "Wide").unwrap();
+        for i in 0..MAX_COLUMNS {
+            f.store
+                .add_column(
+                    &table.id,
+                    &spec(&format!("Question {i}?"), ColumnKind::Text),
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            f.store
+                .add_column(&table.id, &spec("One too many?", ColumnKind::Text)),
+            Err(ResearchError::Invalid(_))
+        ));
+        assert_eq!(f.store.columns(&table.id).unwrap().len(), MAX_COLUMNS);
+        // A deleted column makes room again.
+        let first = f.store.columns(&table.id).unwrap().remove(0);
+        f.store.delete_column(&first.id).unwrap();
+        f.store
+            .add_column(&table.id, &spec("One more?", ColumnKind::Text))
+            .unwrap();
     }
 
     #[test]

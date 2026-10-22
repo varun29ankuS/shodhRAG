@@ -4420,7 +4420,8 @@ Branch: `feat/evidence-table-commands` from origin/master (42f6949). These decis
 | `reasoning` parameter only, no object | nothing | + 4,096 |
 | any other mandatory reasoning | — | refused: "not offered for tables" |
 
-- On 2026-10-22, 37 models were bare `{"mandatory": true}` (including the free `liquid/lfm-2.5-2.6b:free` and `recursive/flint-v1.0:free`) and are refused. No mandatory model had `supports_max_tokens`.
+- On 2026-10-22/23 the rule refuses 52 of the 468 listed models (37 of them bare `{"mandatory": true}`), including the free `liquid/lfm-2.5-2.6b:free` and `recursive/flint-v1.0:free`. No mandatory model has `supports_max_tokens`, so that row is untested against a real model.
+- **Documentation status.** The `/models` schema documents only `reasoning`/`include_reasoning` in `supported_parameters`; the `reasoning` object (`mandatory`, `supported_efforts`, `supports_max_tokens`) is an undocumented contract. If it disappears, a model falls to "parameter only": nothing sent, budget + 4,096. The reasoning-tokens doc lists `effort: "none"` ("disables reasoning entirely"); `{"enabled": false}` appears only in its Anthropic mapping table, so for optional-reasoning models that list no efforts (e.g. `google/gemma-4-31b-it:free`) the switch is a residual risk.
 - The parameter goes to OpenRouter only (`GenerationConfig.reasoning`, read by `SimpleExternalProvider` for `ApiProvider::OpenRouter`). Other providers keep the plain budget.
 - The list is cached for an hour. If it cannot be fetched, the plain budget is used and the failure is logged once.
 - **Re-check at the quality check:** count the cut and empty replies per model in the captures. If a disabled model still cuts replies, add the allowance to the `Off` row too.
@@ -4480,7 +4481,61 @@ Branch: `feat/evidence-table-commands` from origin/master (42f6949). These decis
 **Open risks**
 - **Captures hold paper text and quotes outside `shodh.db`.** Forget (removing a paper) does not delete them; they are a debugging aid the user creates by hand.
 - **The 4,096-token allowance is unmeasured,** and so is whether `{"enabled": false}` is honoured by every upstream of an optional-reasoning model. Both are re-checked on the first captures.
-- **37 mandatory-reasoning models are refused today,** some of them free. The model picker does not warn yet; the refusal comes when a fill starts (PR 4 can surface `fill_estimate`'s error).
+- **52 models are refused today,** two of them free. The model picker does not warn yet; the refusal comes as `model_refused` from `fill_estimate`/`fill_start`, and a due job pauses with `model_unavailable`/`refused_reasoning` (PR 4 can surface both).
+
+### Fix round (review of #91)
+
+Twelve findings; these decisions replace the ones above where they differ.
+
+1. **A clean quit gives jobs back (F1).**
+   - On `RunEvent::Exit`, `release_held_jobs` sets every job running under this process's token back to `queued` with no token and no heartbeat. Cells stay; a cancel asked meanwhile is finished by the next claim.
+   - `fill_start` returns `{ job, start, leaseExpiresAt, dayResetsAt }`, where `start` is one of:
+     - `started`;
+     - `already_running`;
+     - `held_elsewhere` (with the lease's end);
+     - `at_cap`.
+   - `fill_cancel` returns `{ job, pending, leaseExpiresAt }`. A cancel of a job another process holds stays asked (`pending`).
+   - `JobView` gains `heartbeatAt`.
+   - The library gains `Hold` (`JobRunner::hold`, `jobs::job_hold`).
+2. **A fill without a usable model is paused and told (F2).**
+   - There is a new pause reason, `model_unavailable` (migration 16 rebuilds `table_fill_job` for its CHECK).
+   - `last_error` holds which: `refused_reasoning`, `local_only`, `no_key` or `no_model`.
+   - When the runner cannot be made, the scheduler pauses every due job this way (`TableStore::block_fill_job`, never a live run) and notifies once. A paused job is not due, so it is not told again.
+   - Each check (every 60 s) asks again while such jobs exist. Once a model can be used, they are woken (`wake_paused_fill_jobs`) and run. Fixing the model, the key or the setting therefore resumes them within a minute.
+   - `fill_status` shows the reason through the job.
+3. **Captures live in `shodh.db` (F3).**
+   - Migration 16 adds `table_fill_capture(id, table_id, row_id, captured_at, capture_json)`, encrypted with the database.
+   - Captures are deleted with their row, table, workspace, forgotten paper (`forget_documents`, and so a settled pending forget too) and `forget_all`. The deletes are explicit, because foreign keys are off.
+   - Retention is the newest `CAPTURES_PER_ROW = 3` per row.
+   - No file is written. `table_captures_export(tableId)` returns the JSON for the user to save; fixtures are made from it later.
+   - `table_fill_paper` is refused (`diagnostics_off`) unless Settings → Tables → diagnostics (`tables.diagnostics`, default off) is on.
+4. **The scheduler is library code and tested (F4).**
+   - `research/tables/schedule.rs` holds `Scheduler`, `RunnerSource` and `RunEvents`. The app implements the source (the configured model) and the events (`table_changed`, notifications).
+   - The tests use the testkit doubles to cover:
+     - nothing due → no model resolved;
+     - a job run once however often it is started;
+     - a blocked model paused once and resumed when fixed;
+     - a raised cap waking a cap-paused job.
+   - Other added tests:
+     - `configured_table_model`'s choice (`table_choice`, with an injected rule);
+     - `AppModel::generation` with each rule;
+     - the request body carrying `reasoning` for OpenRouter only (`completion_request`);
+     - the wait for the model settings.
+5. **Hand fills cannot pay twice (F5).** One hand fill per row at a time (`hand_fill_running`). None while the table's fill runs (`fill_running`).
+6. **`papersDone` counts the job's own papers (F6).** A paper counts when every column holds a settled cell (answer, not found, failed, edited) and at least one was written since the job was created. A paper filled before the job, not reached before a cancel or failure, or with no job at all, is not counted.
+7. **`/models` negative cache (F7).** After a failed fetch, no fetch for 5 minutes (`FAILED_LIST_RETRY`). The fetch timeout is 4 s, and one fetch runs at a time.
+8. **Notification wording (F8).**
+   - A run that skipped papers says "filled 12 of 14 papers; 2 not indexed yet" (`RunReport.papers`).
+   - The user's own Fill at the cap with no call made notifies nothing; its answer says `at_cap`.
+   - The cap notice and the daily-quota notice each come at most once per UTC day across all tables (`OncePerDay`).
+9. **Raising the cap wakes the jobs paused for it (F9).** They get `next_attempt_at = now` and a check runs at once.
+10. **Error codes (F10).**
+    - `busy`: SQLITE_BUSY, try again; the research API's TypeScript codes include it.
+    - `model_refused`: reasoning that cannot be bounded.
+    - `model_unavailable`: no model, Local-only mode, no key.
+    - `fill_running` and `hand_fill_running`.
+11. **Titles keep their case (F11).** A title is the graph's title, else the file name from the index's display path or filename, else the key's name. The graph's titles are mapped once per `table_get`.
+12. **A failed hand fill keeps its capture (F12).** The capture records the calls made and the error.
 
 # PR 4 — Tables tab, grid, cell panel, column and budget dialogs (outline)
 

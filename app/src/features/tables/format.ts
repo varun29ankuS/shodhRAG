@@ -5,7 +5,7 @@
  * (`app/tests/tablesFormat.test.ts`, which also checks this list against the Rust codes).
  */
 
-import type { FillCancel, FillStart, FillStatus, HandFill, JobView, PauseReason } from './types.ts';
+import type { Cell, FillCancel, FillStart, FillStatus, HandFill, JobView, PauseReason } from './types.ts';
 
 /** How an empty answer is worded, always: the model saw only some passages. */
 export const NOT_FOUND_TEXT = 'Not found in the passages searched';
@@ -200,6 +200,14 @@ function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/**
+ * How long a run may be silent: its heartbeat is renewed before every paper and every
+ * model call, and one call times out after five minutes (`LEASE_MINUTES` explains it).
+ */
+export const QUIET_RUN_MS = 6 * 60 * 1000;
+/** How long another run's hold on a fill lasts after its last heartbeat (`LEASE_MINUTES`). */
+export const LEASE_MS = 10 * 60 * 1000;
+
 /** The table's fill in one line, or null when it never had one. */
 export function fillStatusText(status: FillStatus, now: number, options: TimeOptions = {}): StatusText | null {
   const job = status.job;
@@ -207,6 +215,13 @@ export function fillStatusText(status: FillStatus, now: number, options: TimeOpt
   const progress = `${status.papersDone} of ${plural(status.papersTotal, 'paper', 'papers')} done · ${job.doneCalls} of about ${plural(job.plannedCalls, 'call', 'calls')}`;
   switch (job.state) {
     case 'running':
+      if (job.heartbeatAt !== null && now - job.heartbeatAt > QUIET_RUN_MS) {
+        // Held by a run that stopped answering (an earlier Shodh that quit without letting go).
+        return {
+          tone: 'waiting',
+          text: `${job.cancelRequested ? 'Cancelling… ' : ''}The run filling this table has not been heard from since ${localTime(job.heartbeatAt, now, options)}. If it was an earlier Shodh, the fill goes on here by itself by ${localTime(job.heartbeatAt + LEASE_MS, now, options)} at the latest. ${progress}.`,
+        };
+      }
       return job.cancelRequested
         ? { tone: 'active', text: `Cancelling… the fill stops after its current call. ${progress}.` }
         : { tone: 'active', text: `Filling: ${progress}.` };
@@ -318,4 +333,52 @@ export function capNotice(
     return `Only ${plural(left, 'call is', 'calls are')} left today, so the fill pauses at the cap and goes on at ${reset}.`;
   }
   return null;
+}
+
+// ── A cell ──────────────────────────────────────────────────────────
+
+/** What a cell holds and why, for its panel. */
+export interface CellExplanation {
+  /** The cell's state in a few words. */
+  label: string;
+  /** Why, when there is something to say. */
+  detail: string | null;
+  /** A refill failed and this is the earlier result, kept: the reason it could not be refreshed. */
+  refreshFailed: string | null;
+}
+
+/**
+ * A cell's state and its reason. `stale`: answered for an earlier version of its column.
+ * A kept result whose refresh failed (`refill_failed:<code>`) shows its value with
+ * "couldn't refresh" and the reason.
+ */
+export function cellExplanation(cell: Pick<Cell, 'status' | 'error'> | undefined, stale: boolean): CellExplanation {
+  const status = cell?.status ?? 'empty';
+  const parts = cell?.error ? splitError(cell.error) : null;
+  const refreshFailed = parts && parts.refillFailed ? `Couldn't refresh: ${reasonText(parts.code)} The earlier result is kept.` : null;
+  const staleText = stale ? ' It was answered for an earlier version of this column; the next fill asks again.' : '';
+  switch (status) {
+    case 'verified':
+      return { label: 'Verified', detail: `The quote occurs in the paper and the value passed its type check.${staleText}`, refreshFailed };
+    case 'unverified':
+      return { label: 'Unverified', detail: `${parts && !parts.refillFailed ? reasonText(parts.code) : 'The answer could not be checked against the paper.'}${staleText}`, refreshFailed };
+    case 'not_found':
+      return {
+        label: NOT_FOUND_TEXT,
+        detail: parts && !parts.refillFailed ? `${reasonText(parts.code)}${staleText}` : staleText.trim() || null,
+        refreshFailed,
+      };
+    case 'edited':
+      return {
+        label: 'Edited by you',
+        detail: parts && !parts.refillFailed ? reasonText(parts.code) : 'A fill never overwrites your value; clear it to have the model answer again.',
+        refreshFailed: null,
+      };
+    case 'failed':
+      return { label: 'Failed', detail: `${reasonText(cell?.error)} The next fill tries again.`, refreshFailed: null };
+    case 'queued':
+      return { label: 'Waiting in the fill', detail: null, refreshFailed: null };
+    default:
+      return { label: 'Not filled yet', detail: 'Fill the table to answer it.', refreshFailed: null };
+  }
 }

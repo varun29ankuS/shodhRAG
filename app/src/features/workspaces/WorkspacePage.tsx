@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { Archive, ArchiveRestore, ArrowLeft, MessageSquarePlus, MoreHorizontal, Pin, PinOff, Trash2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -21,6 +21,9 @@ import { deleteWorkspaceQuestion, pathWithin, sourceSummary, WORKSPACE_TAB_LABEL
 import type { WorkspaceDetail, WorkspaceTab } from './types';
 import { WorkspaceIcon } from './WorkspaceIcon';
 import { FOCUS_RING, PRIMARY_BUTTON, QUIET_BUTTON, SECTION_TITLE } from './ui';
+
+// Loaded when the Tables tab is first opened.
+const TablesTab = lazy(() => import('../tables/TablesTab').then(m => ({ default: m.TablesTab })));
 
 const CASE_INSENSITIVE_PATHS = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform);
 
@@ -115,8 +118,8 @@ function ResultsTab({ workspace }: { workspace: WorkspaceDetail }) {
 
 /**
  * One workspace: its header (name, what it searches, new chat, pin, archive, delete) and
- * tabs for the overview and instructions, sources, chats, its task board, memory, visuals, and results
- * and the citation graph.
+ * tabs for the overview and instructions, sources, chats, its task board, memory, visuals, results
+ * and the citation graph, and its evidence tables.
  */
 export function WorkspacePage({
   workspaceId,
@@ -365,6 +368,11 @@ export function WorkspacePage({
           />
         )}
         {tab === 'results' && <ResultsTab workspace={detail} />}
+        {tab === 'tables' && (
+          <Suspense fallback={<p role="status" className="m-0 text-[13px] text-shodh-text-muted">Opening tables…</p>}>
+            <TablesTab workspace={detail} />
+          </Suspense>
+        )}
       </div>
     </div>
   );

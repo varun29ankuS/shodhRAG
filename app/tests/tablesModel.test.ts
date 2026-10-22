@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  addBatches,
   cellIndex,
   cellMark,
   cellSource,
@@ -13,7 +14,9 @@ import {
   filterRows,
   inKind,
   isStale,
+  fileNameOf,
   nextCell,
+  paperKey,
   PRESET_COLUMNS,
   quoteSegments,
   sortRows,
@@ -297,4 +300,21 @@ test('a column spec is checked as the backend checks it', () => {
   assert.equal(specProblem(spec({ kind: 'choice', options: ['A', 'B', ' '] })), null);
   assert.deepEqual(cleanSpec(spec({ kind: 'text', options: ['x'], question: ' What   now? ' })), { question: 'What now?', kind: 'text', options: [], instructions: '' });
   assert.deepEqual(cleanSpec(spec({ kind: 'choice', options: [' A ', '', 'B'] })).options, ['A', 'B']);
+});
+
+// ── Papers ──────────────────────────────────────────────────────────
+
+test('a path is compared with a row the way path_key spells it', () => {
+  assert.equal(paperKey('C:\\Papers\\SPANN.pdf', true), 'c:/papers/spann.pdf');
+  assert.equal(paperKey('/home/me/Papers/SPANN.pdf', false), '/home/me/Papers/SPANN.pdf');
+  assert.equal(fileNameOf('C:\\Papers\\SPANN.pdf'), 'SPANN.pdf');
+  assert.equal(fileNameOf('/a/b/'), 'b');
+});
+
+test('papers are added in batches the command accepts', () => {
+  const paths = Array.from({ length: 1201 }, (_, i) => `p${i}`);
+  const batches = addBatches(paths);
+  assert.deepEqual(batches.map(b => b.length), [500, 500, 201]);
+  assert.deepEqual(batches.flat(), paths);
+  assert.deepEqual(addBatches([]), []);
 });

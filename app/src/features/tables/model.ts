@@ -446,3 +446,31 @@ export function cleanSpec(spec: ColumnSpec): ColumnSpec {
     instructions: collapse(spec.instructions),
   };
 }
+
+// ── Papers ──────────────────────────────────────────────────────────
+
+/**
+ * A file path as a row's `documentId` spells it (`path_key`): forward slashes, and
+ * lower-cased where the file system ignores case (Windows). Used to tell which of the
+ * workspace's files a table has already; the backend skips a paper it has in any case.
+ */
+export function paperKey(path: string, caseInsensitive: boolean): string {
+  const slashed = path.trim().replace(/\\/g, '/');
+  return caseInsensitive ? slashed.toLowerCase() : slashed;
+}
+
+/** The file name of a path, for a paper without a title. */
+export function fileNameOf(path: string): string {
+  const parts = path.split(/[\\/]/).filter(p => p.length > 0);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+/** Most papers one `rows_add` takes (mirrors `MAX_ROWS_PER_ADD`). */
+export const MAX_ROWS_PER_ADD = 500;
+
+/** The paths in batches `rows_add` accepts. */
+export function addBatches(paths: readonly string[], size = MAX_ROWS_PER_ADD): string[][] {
+  const batches: string[][] = [];
+  for (let i = 0; i < paths.length; i += size) batches.push(paths.slice(i, i + size));
+  return batches;
+}

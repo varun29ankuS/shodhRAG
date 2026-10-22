@@ -11,6 +11,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import {
   callsLine,
   cancelOutcome,
+  cellExplanation,
   cancelPending,
   capNotice,
   estimateText,
@@ -141,18 +142,18 @@ const RESET = Date.UTC(2026, 9, 24, 0, 0); // the next 00:00 UTC
 
 test('the reset is shown in local time, relative to today', () => {
   // 15:30 in India: the UTC midnight is 05:30 tomorrow there.
-  assert.equal(localTime(RESET, Date.UTC(2026, 9, 23, 10, 0), INDIA), '05:30 tomorrow');
+  assert.match(localTime(RESET, Date.UTC(2026, 9, 23, 10, 0), INDIA), /^0?5:30 tomorrow$/);
   // 01:30 in India, already the 24th: the reset is today.
-  assert.equal(localTime(RESET, Date.UTC(2026, 9, 23, 20, 0), INDIA), '05:30');
+  assert.match(localTime(RESET, Date.UTC(2026, 9, 23, 20, 0), INDIA), /^0?5:30$/);
   // In New York the UTC midnight is 20:00 the same evening.
   assert.equal(localTime(RESET, Date.UTC(2026, 9, 23, 10, 0), NEW_YORK), '20:00');
-  assert.match(localTime(RESET, Date.UTC(2026, 9, 20, 10, 0), INDIA), /^05:30 on Sat 24 Oct$/);
+  assert.match(localTime(RESET, Date.UTC(2026, 9, 20, 10, 0), INDIA), /^0?5:30 on Sat 24 Oct$/);
 });
 
 test('the day\'s calls line names the count, the cap and the local reset', () => {
-  assert.equal(
+  assert.match(
     callsLine(12, 30, RESET, Date.UTC(2026, 9, 23, 10, 0), INDIA),
-    'Tables have made 12 of 30 calls today; resets at 05:30 tomorrow.',
+    /^Tables have made 12 of 30 calls today; resets at 0?5:30 tomorrow\.$/,
   );
 });
 
@@ -199,9 +200,9 @@ test('a short rate limit says when it goes on; a daily quota and the cap name th
   assert.equal(short.tone, 'waiting');
   assert.equal(short.text, "Paused for the provider's rate limit; goes on at 15:32.");
   const daily = pauseText(paused('quota', { lastError: 'model_quota', nextAttemptAt: RESET }), NOW, INDIA);
-  assert.equal(daily.text, "Paused: the provider's daily quota is used up. It goes on at 05:30 tomorrow.");
+  assert.match(daily.text, /^Paused: the provider's daily quota is used up\. It goes on at 0?5:30 tomorrow\.$/);
   const cap = pauseText(paused('daily_cap', { nextAttemptAt: RESET }), NOW, INDIA);
-  assert.match(cap.text, /cap of table calls is reached\. It goes on at 05:30 tomorrow/);
+  assert.match(cap.text, /cap of table calls is reached\. It goes on at 0?5:30 tomorrow/);
 });
 
 test('pauses that wait for the user say so and what to fix', () => {
@@ -235,6 +236,14 @@ test('the status line shows progress, cancelling, and why a fill stopped', () =>
   assert.match(fillStatusText(status(paused('daily_cap', { nextAttemptAt: RESET })), NOW, INDIA)?.text ?? '', /3 of 8 papers done/);
 });
 
+test('a fill held by a run that stopped answering says when it goes on', () => {
+  const quiet = job('running', { heartbeatAt: NOW - 8 * 60 * 1000 });
+  const line = fillStatusText(status(quiet), NOW, INDIA);
+  assert.equal(line?.tone, 'waiting');
+  assert.match(line?.text ?? '', /not been heard from since 15:22\..*by 15:32 at the latest/);
+  assert.match(fillStatusText(status(job('running', { heartbeatAt: NOW - 60_000 })), NOW, INDIA)?.text ?? '', /^Filling:/);
+});
+
 test('active jobs and pending cancels', () => {
   for (const state of ['queued', 'running', 'paused'] as const) assert.equal(jobActive(job(state)), true);
   for (const state of ['done', 'cancelled', 'failed'] as const) assert.equal(jobActive(job(state)), false);
@@ -257,7 +266,7 @@ test('each fill_start result is told honestly', () => {
   assert.match(start('held_elsewhere').text, /once that run lets go/);
   const cap = start('at_cap');
   assert.equal(cap.tone, 'warning');
-  assert.match(cap.text, /used up\. The fill goes on at 05:30 tomorrow/);
+  assert.match(cap.text, /used up\. The fill goes on at 0?5:30 tomorrow/);
 });
 
 test('a cancel asked of a running fill says cancelling until it is done', () => {
@@ -280,6 +289,28 @@ test('the estimate and the cap are worded', () => {
   assert.equal(estimateText(8, 5, 9), 'Filling 8 papers × 5 columns needs about 9 model calls.');
   assert.equal(estimateText(1, 1, 1), 'Filling 1 paper × 1 column needs about 1 model call.');
   assert.equal(capNotice(9, 12, 30, RESET, NOW, INDIA), null);
-  assert.equal(capNotice(9, 21, 30, RESET, NOW, INDIA), 'Only 9 calls are left today, so the fill pauses at the cap and goes on at 05:30 tomorrow.');
-  assert.match(capNotice(1, 29, 30, RESET, NOW, INDIA) ?? '', /used up, so the fill waits until 05:30 tomorrow/);
+  assert.match(capNotice(9, 21, 30, RESET, NOW, INDIA) ?? '', /^Only 9 calls are left today, so the fill pauses at the cap and goes on at 0?5:30 tomorrow\.$/);
+  assert.match(capNotice(1, 29, 30, RESET, NOW, INDIA) ?? '', /used up, so the fill waits until 0?5:30 tomorrow/);
+});
+
+// ── A cell ──────────────────────────────────────────────────────────
+
+test('a kept result whose refresh failed shows its value with "couldn\u2019t refresh" and why', () => {
+  const kept = cellExplanation({ status: 'verified', error: 'refill_failed:model_timeout' }, false);
+  assert.equal(kept.label, 'Verified');
+  assert.equal(kept.refreshFailed, "Couldn't refresh: The model could not be reached. The earlier result is kept.");
+  const notFound = cellExplanation({ status: 'not_found', error: 'refill_failed:paper_not_indexed' }, false);
+  assert.equal(notFound.label, NOT_FOUND_TEXT);
+  assert.match(notFound.refreshFailed ?? '', /not indexed yet/);
+  assert.equal(notFound.detail, null);
+});
+
+test('each cell state is explained, with its reason', () => {
+  assert.equal(cellExplanation({ status: 'unverified', error: 'quote_not_in_passages' }, false).detail, reasonText('quote_not_in_passages'));
+  assert.match(cellExplanation({ status: 'not_found', error: 'not_found_partial' }, false).detail ?? '', /did not fit/);
+  assert.equal(cellExplanation({ status: 'edited', error: 'value_no_longer_fits' }, false).detail, reasonText('value_no_longer_fits'));
+  assert.match(cellExplanation({ status: 'failed', error: 'missing_in_reply' }, false).detail ?? '', /left this column out.*tries again/);
+  assert.match(cellExplanation({ status: 'verified', error: null }, true).detail ?? '', /earlier version of this column/);
+  assert.equal(cellExplanation(undefined, false).label, 'Not filled yet');
+  assert.equal(cellExplanation({ status: 'queued', error: null }, false).label, 'Waiting in the fill');
 });

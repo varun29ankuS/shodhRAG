@@ -34,6 +34,7 @@ mod source_viewer_commands;
 mod space_manager;
 mod storage_commands;
 mod store_notices;
+mod table_commands;
 mod table_model_commands;
 mod ui_state_commands;
 mod updater;
@@ -292,6 +293,9 @@ pub fn run() {
             // Load provider API keys saved in the OS credential store, then
             // apply the opt-in SHODH_LLM_PROVIDER / SHODH_LLM_MODEL environment
             // configuration. Order matters: environment keys override stored ones.
+            // `models_loaded` turns true at the end, so background work that calls a
+            // model (evidence table fills) never starts before the model and key are known.
+            let (models_loaded_tx, models_loaded) = tokio::sync::watch::channel(false);
             let llm_bootstrap_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let llm_state = llm_bootstrap_handle.state::<LLMState>();
@@ -345,6 +349,7 @@ pub fn run() {
                 // The saved model choice applies unless the environment set one.
                 model_picker_commands::apply_startup_choice(&llm_bootstrap_handle, environment)
                     .await;
+                let _ = models_loaded_tx.send(true);
                 // The top bar's connection status: checked once keys are
                 // loaded, in the background, without spending a chat request.
                 connection_health::check_at_startup(&llm_bootstrap_handle);
@@ -389,7 +394,7 @@ pub fn run() {
             if settled > 0 {
                 tracing::info!(files = settled, "removed files forgotten by tables");
             }
-            app.manage(table_handle);
+            app.manage(table_handle.clone());
             // PDFs indexed with table-candidate pages are refined in the background.
             let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
             // Scans read without the scan reader (installed before it shipped)
@@ -468,6 +473,34 @@ pub fn run() {
             inbox_commands::recover_on_launch(app.handle());
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
+
+            // Evidence tables: commands, and the scheduler that resumes due fills.
+            {
+                let llm = app.state::<LLMState>();
+                app.manage(table_commands::TableState::new(
+                    table_commands::TableStateParts {
+                        handle: table_handle,
+                        database: app.state::<audit_commands::AuditState>().database(),
+                        data_dir: app_data_dir.clone(),
+                        llm: (
+                            llm.manager.clone(),
+                            llm.config.clone(),
+                            llm.api_keys.clone(),
+                        ),
+                        rag: rag_engine.clone(),
+                        nli: app
+                            .state::<answer_check_commands::AnswerCheckState>()
+                            .model
+                            .clone(),
+                        research: app
+                            .state::<research_commands::ResearchState>()
+                            .inner()
+                            .clone(),
+                        models_loaded,
+                    },
+                ));
+            }
+            table_commands::spawn_scheduler(app.handle().clone());
 
             app.manage(RagState {
                 rag: rag_engine,
@@ -764,6 +797,28 @@ pub fn run() {
             graph_commands::paper_get,
             graph_commands::papers_find,
             graph_commands::paper_concept,
+            // Evidence tables
+            table_commands::tables_list,
+            table_commands::table_create,
+            table_commands::table_rename,
+            table_commands::table_delete,
+            table_commands::table_get,
+            table_commands::column_add,
+            table_commands::column_update,
+            table_commands::column_delete,
+            table_commands::column_move,
+            table_commands::rows_add,
+            table_commands::row_remove,
+            table_commands::cell_edit,
+            table_commands::cell_clear,
+            table_commands::cell_refill,
+            table_commands::fill_estimate,
+            table_commands::fill_start,
+            table_commands::fill_cancel,
+            table_commands::fill_status,
+            table_commands::table_fill_paper,
+            table_commands::tables_settings_get,
+            table_commands::tables_settings_set,
             // Calendar/Todo commands
             calendar_commands::load_tasks,
             calendar_commands::create_task,

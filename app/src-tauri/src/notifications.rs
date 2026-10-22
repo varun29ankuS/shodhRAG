@@ -7,8 +7,8 @@
 //!   was closed;
 //! - needs you: the assistant waits for an approval; memory suggestions are
 //!   a separate switch inside it, off by default;
-//! - work finished: an answer, a folder's indexing or sync, or a result
-//!   extraction finished;
+//! - work finished: an answer, a folder's indexing or sync, a result
+//!   extraction or an evidence table's fill finished;
 //! - problems: indexing or a sync failed, a background model call for the
 //!   app's own work failed (learning memories), or a data file had to be
 //!   restored or reset.
@@ -54,6 +54,10 @@ use shodh_rag::audit::{AuditEventType, AuditRecord};
 use shodh_rag::harness::{AgentEvent, RunStatus};
 use shodh_rag::inbox::{InboxKind, InboxStatus, NewInboxItem};
 use shodh_rag::indexing::IndexingResult;
+use shodh_rag::research::tables::fill::{LimitWindow, MODEL_TIMEOUT, SEARCH_FAILED};
+use shodh_rag::research::tables::jobs::{
+    JobOutcome, PauseReason, FILL_PANICKED, MAX_FAILING_PAPERS,
+};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -166,6 +170,8 @@ pub enum WorkKind {
     Results,
     /// An answer finished (or stopped with an error).
     Answer,
+    /// An evidence table was filled.
+    Tables,
 }
 
 impl WorkKind {
@@ -177,6 +183,8 @@ impl WorkKind {
             (WorkKind::Results, n) => format!("Results extracted from {n} papers"),
             (WorkKind::Answer, 1) => "1 answer finished".to_string(),
             (WorkKind::Answer, n) => format!("{n} answers finished"),
+            (WorkKind::Tables, 1) => "1 table filled".to_string(),
+            (WorkKind::Tables, n) => format!("{n} tables filled"),
         }
     }
 }
@@ -916,6 +924,137 @@ pub fn results_outcome(file_path: &str, file_name: &str, added: Option<usize>) -
     }
 }
 
+/// What the end of an evidence table fill's run announces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableNotice {
+    /// The table is filled ([`Category::WorkFinished`]).
+    Finished(WorkDone),
+    /// The fill waits for the user, or for a long time ([`Category::NeedsYou`]).
+    NeedsYou(Notice),
+    /// The fill stopped for good ([`Category::Problems`]).
+    Problem { source: String, notice: Notice },
+}
+
+/// The end of a fill's run, as far as the user is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableRunEnd<'a> {
+    pub outcome: &'a JobOutcome,
+    /// The kind of limit of a quota pause (see `RunReport::quota_window`).
+    pub quota_window: Option<LimitWindow>,
+    /// The job's `last_error` (a code; for a search failure with its detail).
+    pub last_error: Option<&'a str>,
+    /// The day's cap of table calls.
+    pub cap: usize,
+}
+
+/// What the end of a table fill's run announces, if anything. Only what needs the user,
+/// or costs the rest of the day, is told: the table filled; the fill failed; a pause that
+/// waits for the user (`until: None`: the key was refused, papers kept failing, the
+/// provider kept refusing); a pause for the day's cap of table calls or for the
+/// provider's daily quota. A short wait that resumes on its own (a rate limit, an
+/// unreachable model, a busy database), a cancel (the user's own, or a table deleted) and
+/// a run that did not start announce nothing. Times are shown at `offset` (the local
+/// time). The body names the table and never quotes an error message.
+pub fn table_outcome(
+    table_id: &str,
+    table_name: &str,
+    end: TableRunEnd<'_>,
+    offset: chrono::FixedOffset,
+) -> Option<TableNotice> {
+    let name = {
+        let name = one_line(table_name);
+        if name.is_empty() {
+            "Your table".to_string()
+        } else {
+            name
+        }
+    };
+    let source = format!("table:{table_id}");
+    let at = |until: &chrono::DateTime<chrono::Utc>| {
+        until.with_timezone(&offset).format("%H:%M").to_string()
+    };
+    let paused = |body: String| {
+        Some(TableNotice::NeedsYou(Notice {
+            title: "Table fill paused".to_string(),
+            body,
+        }))
+    };
+    match end.outcome {
+        JobOutcome::Done => Some(TableNotice::Finished(WorkDone {
+            source,
+            kind: WorkKind::Tables,
+            notice: Notice {
+                title: "Table filled".to_string(),
+                body: name.clone(),
+            },
+            summary: name,
+        })),
+        JobOutcome::Failed { error } => {
+            let body = if error.starts_with(SEARCH_FAILED) {
+                format!(
+                    "{name}: its papers could not be searched. Check the search models in Settings, then fill again."
+                )
+            } else if error.starts_with(FILL_PANICKED) {
+                format!("{name}: the fill failed twice. Open the table to start it again.")
+            } else {
+                format!("{name}: the fill stopped with an error. Open the table to see why.")
+            };
+            Some(TableNotice::Problem {
+                source,
+                notice: Notice {
+                    title: "Table fill stopped".to_string(),
+                    body,
+                },
+            })
+        }
+        JobOutcome::Paused {
+            reason,
+            until: None,
+        } => paused(match reason {
+            PauseReason::Auth => format!(
+                "{name}: the provider refused the API key. Check it in Settings → Model, then press Fill."
+            ),
+            PauseReason::Failing if end.last_error == Some(MODEL_TIMEOUT) => format!(
+                "{name}: the model could not be reached for a while. Press Fill to try again."
+            ),
+            PauseReason::Failing => format!(
+                "{name}: the model failed on {MAX_FAILING_PAPERS} papers in a row. Check the model in Settings → Model, then press Fill."
+            ),
+            _ => format!(
+                "{name}: the provider kept refusing requests. Press Fill to try again later."
+            ),
+        }),
+        JobOutcome::Paused {
+            reason: PauseReason::DailyCap,
+            until: Some(until),
+        } => paused(format!(
+            "{name}: tables reached today's limit of {} calls. Filling goes on at {}.",
+            end.cap,
+            at(until)
+        )),
+        JobOutcome::Paused {
+            reason: PauseReason::Quota,
+            until: Some(until),
+        } if end.quota_window == Some(LimitWindow::Daily) => paused(format!(
+            "{name}: the provider's daily limit is used up. Filling goes on at {}.",
+            at(until)
+        )),
+        JobOutcome::Paused { .. }
+        | JobOutcome::Cancelled
+        | JobOutcome::Lost
+        | JobOutcome::NotClaimed { .. } => None,
+    }
+}
+
+/// Announces a table fill's run end ([`table_outcome`]).
+pub fn announce_table(app: &AppHandle, notice: TableNotice) {
+    match notice {
+        TableNotice::Finished(done) => work_finished(app, done),
+        TableNotice::NeedsYou(notice) => notify(app, Category::NeedsYou, notice.title, notice.body),
+        TableNotice::Problem { source, notice } => problem(app, source, notice.title, notice.body),
+    }
+}
+
 /// `waiting` new memory suggestions wait for the user.
 pub fn memory_suggestions(app: &AppHandle, waiting: usize) {
     if waiting == 0 {
@@ -1621,6 +1760,157 @@ mod tests {
         let error = send_test(&refusing).unwrap_err();
         assert!(error.contains("did not accept"), "{error}");
         assert!(error.contains("no executable path"), "{error}");
+    }
+
+    fn table_end(outcome: &JobOutcome) -> TableRunEnd<'_> {
+        TableRunEnd {
+            outcome,
+            quota_window: None,
+            last_error: None,
+            cap: 30,
+        }
+    }
+
+    fn told(notice: Option<TableNotice>) -> (&'static str, String, String) {
+        match notice {
+            Some(TableNotice::Finished(done)) => {
+                assert_eq!(done.kind, WorkKind::Tables);
+                ("finished", done.notice.title, done.notice.body)
+            }
+            Some(TableNotice::NeedsYou(notice)) => ("needs_you", notice.title, notice.body),
+            Some(TableNotice::Problem { source, notice }) => {
+                assert_eq!(source, "table:t1");
+                ("problem", notice.title, notice.body)
+            }
+            None => ("none", String::new(), String::new()),
+        }
+    }
+
+    /// India's offset: 00:00 UTC is 05:30 there.
+    fn ist() -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap()
+    }
+
+    fn outcome(end: TableRunEnd<'_>) -> (&'static str, String, String) {
+        told(table_outcome("t1", "  Retrieval\n papers ", end, ist()))
+    }
+
+    #[test]
+    fn a_table_fill_tells_only_what_needs_the_user() {
+        use chrono::{TimeZone, Utc};
+        let midnight = Utc.with_ymd_and_hms(2026, 10, 23, 0, 0, 0).unwrap();
+        let soon = Utc.with_ymd_and_hms(2026, 10, 22, 9, 1, 0).unwrap();
+
+        let done = JobOutcome::Done;
+        assert_eq!(
+            outcome(table_end(&done)),
+            (
+                "finished",
+                "Table filled".to_string(),
+                "Retrieval papers".to_string()
+            )
+        );
+
+        let search = JobOutcome::Failed {
+            error: "search_failed: the search models are not installed".to_string(),
+        };
+        let (kind, title, body) = outcome(table_end(&search));
+        assert_eq!((kind, title.as_str()), ("problem", "Table fill stopped"));
+        assert!(
+            body.starts_with("Retrieval papers: its papers could not be searched"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("not installed"),
+            "never the error's own text"
+        );
+        let panicked = JobOutcome::Failed {
+            error: FILL_PANICKED.to_string(),
+        };
+        assert!(outcome(table_end(&panicked)).2.contains("failed twice"));
+
+        let auth = JobOutcome::Paused {
+            reason: PauseReason::Auth,
+            until: None,
+        };
+        let (kind, title, body) = outcome(table_end(&auth));
+        assert_eq!((kind, title.as_str()), ("needs_you", "Table fill paused"));
+        assert!(body.contains("refused the API key"), "{body}");
+        let failing = JobOutcome::Paused {
+            reason: PauseReason::Failing,
+            until: None,
+        };
+        assert!(outcome(table_end(&failing)).2.contains("3 papers in a row"));
+        let unreachable_end = TableRunEnd {
+            last_error: Some(MODEL_TIMEOUT),
+            ..table_end(&failing)
+        };
+        assert!(outcome(unreachable_end).2.contains("could not be reached"));
+        let ladder_end = JobOutcome::Paused {
+            reason: PauseReason::Quota,
+            until: None,
+        };
+        assert_eq!(outcome(table_end(&ladder_end)).0, "needs_you");
+
+        // The day's cap: when filling goes on, in local time (00:00 UTC is 05:30 IST).
+        let cap = JobOutcome::Paused {
+            reason: PauseReason::DailyCap,
+            until: Some(midnight),
+        };
+        assert_eq!(
+            outcome(table_end(&cap)).2,
+            "Retrieval papers: tables reached today's limit of 30 calls. Filling goes on at 05:30."
+        );
+        // The provider's daily quota is told; a short limit is not.
+        let quota = JobOutcome::Paused {
+            reason: PauseReason::Quota,
+            until: Some(midnight),
+        };
+        let daily = TableRunEnd {
+            quota_window: Some(LimitWindow::Daily),
+            ..table_end(&quota)
+        };
+        assert!(outcome(daily)
+            .2
+            .contains("daily limit is used up. Filling goes on at 05:30"));
+        let short = JobOutcome::Paused {
+            reason: PauseReason::Quota,
+            until: Some(soon),
+        };
+        for window in [Some(LimitWindow::Short), Some(LimitWindow::Unknown), None] {
+            let end = TableRunEnd {
+                quota_window: window,
+                ..table_end(&short)
+            };
+            assert_eq!(outcome(end).0, "none", "{window:?}");
+        }
+
+        // Waits that end on their own, and ends the user caused, are not told.
+        for quiet in [
+            JobOutcome::Paused {
+                reason: PauseReason::Unreachable,
+                until: Some(soon),
+            },
+            JobOutcome::Paused {
+                reason: PauseReason::Busy,
+                until: Some(soon),
+            },
+            JobOutcome::Cancelled,
+            JobOutcome::Lost,
+            JobOutcome::NotClaimed { state: None },
+        ] {
+            assert_eq!(outcome(table_end(&quiet)).0, "none", "{quiet:?}");
+        }
+        assert_eq!(
+            told(table_outcome("t1", "  ", table_end(&done), ist())).2,
+            "Your table"
+        );
+    }
+
+    #[test]
+    fn filled_tables_are_counted_in_a_batch() {
+        assert_eq!(WorkKind::Tables.counted(1), "1 table filled");
+        assert_eq!(WorkKind::Tables.counted(3), "3 tables filled");
     }
 
     #[test]

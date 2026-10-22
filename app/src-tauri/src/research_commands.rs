@@ -173,6 +173,12 @@ impl ResearchState {
         Ok(self.inner.objects.parts(pdf, candidates).await?)
     }
 
+    /// The citation graph built last, when there is one (it names library papers by
+    /// their titles). Never builds it.
+    pub fn graph(&self) -> Option<Arc<shodh_rag::research::citations::PaperGraph>> {
+        self.inner.graph.read().clone()
+    }
+
     /// The services, opening them if needed. Fails (and retries on the next call) while
     /// the statement store or the database is unavailable.
     pub async fn services(&self) -> ResearchCommandResult<Arc<ResearchServices>> {

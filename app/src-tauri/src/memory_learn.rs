@@ -29,8 +29,11 @@ use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditKey, AuditRecord};
 use shodh_rag::harness::{AgentEvent, RunStatus};
 use shodh_rag::llm::{
-    ApiProvider, GenerationConfig, LLMConfig, LLMManager, LLMMode, SimpleExternalProvider,
+    ApiProvider, BoundedCompletion, GenerationConfig, LLMConfig, LLMManager, LLMMode,
+    SimpleExternalProvider,
 };
+use shodh_rag::research::results::ModelReply;
+use shodh_rag::research::tables::reasoning::{unbounded_message, ReasoningCatalog, ReasoningRule};
 use shodh_rag::user_memory::learn::engine::ModelSource;
 use shodh_rag::user_memory::learn::extract::learned_scope;
 use shodh_rag::user_memory::learn::{
@@ -246,6 +249,9 @@ struct AppModel {
     config: Arc<std::sync::Mutex<LLMConfig>>,
     api_keys: Arc<std::sync::Mutex<ApiKeys>>,
     choice: ModelChoice,
+    /// What a call asks of a reasoning model and its output budget (evidence tables;
+    /// plain for everything else).
+    reasoning: ReasoningRule,
 }
 
 impl AppModel {
@@ -256,23 +262,19 @@ impl AppModel {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let mut generation = GenerationConfig::from(&config);
-        generation.max_tokens = max_tokens;
+        generation.max_tokens = self.reasoning.max_tokens(max_tokens);
+        generation.reasoning = self.reasoning.request().cloned();
         // Extraction is classification, not writing: no creativity wanted.
         generation.temperature = 0.0;
         generation
     }
-}
 
-#[async_trait::async_trait]
-impl LearnModel for AppModel {
-    fn model_id(&self) -> String {
-        match &self.choice {
-            ModelChoice::Local { id } => id.clone(),
-            ModelChoice::External { model, .. } => model.clone(),
-        }
-    }
-
-    async fn complete(&self, prompt: &str, max_output_tokens: usize) -> Result<String, LearnError> {
+    /// The model's reply to `prompt`, and whether the provider cut it off at the limit.
+    async fn complete_bounded(
+        &self,
+        prompt: &str,
+        max_output_tokens: usize,
+    ) -> Result<BoundedCompletion, LearnError> {
         // Re-checked per call: the user may have turned Local-only mode on since.
         let local_only = SettingsStore::in_dir(&self.data_dir)
             .load()
@@ -284,10 +286,15 @@ impl LearnModel for AppModel {
                 let manager = guard.as_ref().ok_or_else(|| {
                     LearnError::ModelUnavailable("the local model is not loaded".into())
                 })?;
+                // The local runtime does not say where it stopped.
                 manager
                     .generate_custom(prompt, max_output_tokens)
                     .await
-                    .map_err(|e| LearnError::Model(format!("{e:#}")))
+                    .map(|text| BoundedCompletion {
+                        text,
+                        truncated: false,
+                    })
+                    .map_err(model_error)
             }
             ModelChoice::External {
                 provider,
@@ -322,18 +329,53 @@ impl LearnModel for AppModel {
                         })?,
                 };
                 let client = SimpleExternalProvider::new(provider.clone(), key, model.clone())
-                    .map_err(|e| LearnError::Model(format!("{e:#}")))?;
-                // Learning answers are strict JSON: an answer cut off at the limit is refused.
-                let completion = client
-                    .generate_bounded(prompt, &self.generation(max_output_tokens))
-                    .await
-                    .map_err(|e| LearnError::Model(format!("{e:#}")))?;
-                if completion.truncated {
-                    return Err(LearnError::Truncated(completion.text));
-                }
-                Ok(completion.text)
+                    .map_err(model_error)?;
+                external_completion(&client, prompt, &self.generation(max_output_tokens)).await
             }
         }
+    }
+}
+
+/// A failed model call as a learning error. `{:#}` keeps the whole provider failure: its
+/// status, and its detail with the rate-limit headers in front, which a table fill reads
+/// the reset time from.
+fn model_error(e: anyhow::Error) -> LearnError {
+    LearnError::Model(format!("{e:#}"))
+}
+
+/// One call to an API provider, its failure kept whole ([`model_error`]).
+async fn external_completion(
+    client: &SimpleExternalProvider,
+    prompt: &str,
+    generation: &GenerationConfig,
+) -> Result<BoundedCompletion, LearnError> {
+    client
+        .generate_bounded(prompt, generation)
+        .await
+        .map_err(model_error)
+}
+
+/// A learning error as the text a one-shot extraction caller classifies.
+fn text_model_error(e: LearnError) -> String {
+    e.to_string()
+}
+
+#[async_trait::async_trait]
+impl LearnModel for AppModel {
+    fn model_id(&self) -> String {
+        match &self.choice {
+            ModelChoice::Local { id } => id.clone(),
+            ModelChoice::External { model, .. } => model.clone(),
+        }
+    }
+
+    async fn complete(&self, prompt: &str, max_output_tokens: usize) -> Result<String, LearnError> {
+        // Learning answers are strict JSON: an answer cut off at the limit is refused.
+        let completion = self.complete_bounded(prompt, max_output_tokens).await?;
+        if completion.truncated {
+            return Err(LearnError::Truncated(completion.text));
+        }
+        Ok(completion.text)
     }
 }
 
@@ -360,7 +402,59 @@ pub(crate) fn configured_model(
         config: llm.config.clone(),
         api_keys: llm.api_keys.clone(),
         choice,
+        reasoning: ReasoningRule::Plain,
     }))
+}
+
+/// The model evidence tables fill with: the one answers come from, as
+/// [`configured_model`] resolves it, with OpenRouter's reasoning rule for it
+/// ([`shodh_rag::research::tables::reasoning`]). A model whose reasoning cannot be bounded
+/// is refused with the reason. Returns the model and its rule.
+pub(crate) async fn configured_table_model(
+    data_dir: &Path,
+    llm: &LLMState,
+    catalog: &ReasoningCatalog,
+) -> Result<
+    (
+        Arc<dyn shodh_rag::research::results::TextModel>,
+        ReasoningRule,
+    ),
+    String,
+> {
+    let settings = SettingsStore::in_dir(data_dir)
+        .load()
+        .map_err(|e| e.to_string())?;
+    let mode = llm
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .mode
+        .clone();
+    let choice = choose_model(&mode, None, settings.policy.local_only)?;
+    let reasoning = match &choice {
+        ModelChoice::External {
+            provider: ApiProvider::OpenRouter,
+            model,
+            ..
+        } => catalog.rule(model).await,
+        _ => ReasoningRule::Plain,
+    };
+    if !reasoning.usable() {
+        let model = match &choice {
+            ModelChoice::Local { id } => id.clone(),
+            ModelChoice::External { model, .. } => model.clone(),
+        };
+        return Err(unbounded_message(&model));
+    }
+    let model: Arc<dyn shodh_rag::research::results::TextModel> = Arc::new(AppModel {
+        data_dir: data_dir.to_path_buf(),
+        manager: llm.manager.clone(),
+        config: llm.config.clone(),
+        api_keys: llm.api_keys.clone(),
+        choice,
+        reasoning: reasoning.clone(),
+    });
+    Ok((model, reasoning))
 }
 
 #[async_trait::async_trait]
@@ -370,14 +464,22 @@ impl shodh_rag::research::results::TextModel for AppModel {
     }
 
     async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
-        match LearnModel::complete(self, prompt, max_tokens).await {
-            Ok(text) => Ok(text),
-            // A reply cut off at the limit is returned as far as it was written: the
-            // callers of a one-shot extraction read what is complete in it (a table fill
-            // keeps the cells before the cut) and check everything they use.
-            Err(LearnError::Truncated(partial)) => Ok(partial),
-            Err(e) => Err(e.to_string()),
-        }
+        // A reply cut off at the limit is returned as far as it was written: the callers
+        // of a one-shot extraction read what is complete in it and check everything they
+        // use. A caller that must know it was cut asks `complete_reply`.
+        self.complete_reply(prompt, max_tokens)
+            .await
+            .map(|reply| reply.text)
+    }
+
+    async fn complete_reply(&self, prompt: &str, max_tokens: usize) -> Result<ModelReply, String> {
+        self.complete_bounded(prompt, max_tokens)
+            .await
+            .map(|completion| ModelReply {
+                text: completion.text,
+                truncated: completion.truncated,
+            })
+            .map_err(text_model_error)
     }
 }
 
@@ -410,6 +512,7 @@ impl ModelSource for AppModels {
             config: self.config.clone(),
             api_keys: self.api_keys.clone(),
             choice,
+            reasoning: ReasoningRule::Plain,
         }))
     }
 }
@@ -1319,5 +1422,92 @@ mod tests {
         );
         assert!(parse_statuses(Some(vec!["maybe".into()])).is_err());
         assert!(parse_statuses(None).unwrap().is_empty());
+    }
+
+    /// Answers the first request on a local port with `status` and the JSON `body`, the
+    /// way a provider answers. Returns the chat completions endpoint.
+    async fn serve_once(status: &'static str, body: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buffer).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&request).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|v| v.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            let _ = socket.shutdown().await;
+        });
+        format!("http://{addr}/v1/chat/completions")
+    }
+
+    fn client_for(endpoint: String) -> SimpleExternalProvider {
+        SimpleExternalProvider::new(
+            ApiProvider::Custom { endpoint },
+            "sk-or-v1-00000000000000000000000000000000".to_string(),
+            "test/model:free".to_string(),
+        )
+        .unwrap()
+    }
+
+    /// OpenRouter's 429 for the exhausted daily free quota goes through the real HTTP
+    /// path and the learning model's error mapping, and the evidence table fill still
+    /// reads its reset time and its window from it. The body is long, with the headers
+    /// last, as OpenRouter sends them after an upstream's raw text.
+    #[tokio::test]
+    async fn an_openrouter_daily_limit_reaches_the_table_fill_with_its_reset_time() {
+        use shodh_rag::research::tables::fill::{LimitWindow, ModelFailure, ModelFailureKind};
+        let reset_ms: u64 = 4_102_444_800_000; // 2100-01-01T00:00:00Z
+        let body = format!(
+            r#"{{"error":{{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day","code":429,"metadata":{{"raw":"{}","provider_name":null,"headers":{{"X-RateLimit-Limit":"50","X-RateLimit-Remaining":"0","X-RateLimit-Reset":"{reset_ms}"}}}}}},"user_id":"user_2xYz"}}"#,
+            "upstream says: slow down. ".repeat(40)
+        );
+        let client = client_for(serve_once("429 Too Many Requests", body).await);
+        let generation = GenerationConfig::from(&LLMConfig::default());
+        let error = external_completion(&client, "prompt", &generation)
+            .await
+            .unwrap_err();
+        let failure = ModelFailure::classify(&text_model_error(error));
+        assert_eq!(failure.kind, ModelFailureKind::Quota);
+        assert_eq!(failure.window, LimitWindow::Daily);
+        assert_eq!(failure.reset_at_ms, Some(reset_ms));
+        assert!(!failure.detail.contains("sk-or-v1"));
+    }
+
+    /// A reply the provider stopped at the limit keeps that mark through the adapter.
+    #[tokio::test]
+    async fn a_reply_cut_at_the_limit_is_reported_as_cut() {
+        let body = r#"{"choices":[{"message":{"content":"{\"cells\":[{\"column\":\"c1\""},"finish_reason":"length"}]}"#.to_string();
+        let client = client_for(serve_once("200 OK", body).await);
+        let generation = GenerationConfig::from(&LLMConfig::default());
+        let completion = external_completion(&client, "prompt", &generation)
+            .await
+            .unwrap();
+        assert!(completion.truncated);
+        assert!(completion.text.starts_with("{\"cells\""));
     }
 }

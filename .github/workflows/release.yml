@@ -137,6 +137,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+          # Only master saves caches, and this workflow never runs on master
+          # (tags and pull requests only): its runs restore, never save, so
+          # they do not fill the 10 GB pool that CI's master caches live in.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # LanceDB's protobuf definitions are compiled at build time: a pinned,
       # checksum-verified protoc from the official release (the Chocolatey

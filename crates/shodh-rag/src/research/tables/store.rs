@@ -8,14 +8,14 @@
 //! its paper removed from the library), so nothing of a paper's text outlives the cells
 //! that showed it.
 
-use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 
-use super::validate::parse_edit;
+use super::validate::{parse_edit, typed_value, VALUE_NO_LONGER_FITS};
 use super::{
     collapse, Cell, CellStatus, CellValue, Column, ColumnKind, ColumnSpec, EvidenceTable, TableRow,
     MAX_NAME_CHARS,
@@ -173,6 +173,41 @@ fn sweep_cache(conn: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
+/// Re-checks the edited cells of a column against its new type and options, with the
+/// type rule of an edit ([`typed_value`] on the value's text). A value that no longer fits
+/// keeps its text and gets the error [`VALUE_NO_LONGER_FITS`], so typed sort and filter can
+/// leave it out and the grid can say why; a value that fits again loses that flag. The
+/// user's value is never rewritten. Cells that are not edited are not touched: the column's
+/// new revision purges and refills them.
+fn refit_edited_cells(conn: &Connection, column_id: &str, spec: &ColumnSpec) -> ResearchResult<()> {
+    let cells: Vec<(String, String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT row_id, value_json, error FROM table_cell
+              WHERE column_id = ?1 AND status = 'edited' AND value_json IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![column_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?;
+        rows.collect::<Result<_, _>>()?
+    };
+    for (row_id, value_json, error) in cells {
+        let fits = serde_json::from_str::<CellValue>(&value_json).is_ok_and(|value| {
+            typed_value(spec, &serde_json::Value::String(value.display())).is_ok()
+        });
+        let flagged = error.as_deref() == Some(VALUE_NO_LONGER_FITS);
+        let new_error = match (fits, flagged) {
+            (false, false) => Some(VALUE_NO_LONGER_FITS.to_string()),
+            (true, true) => None,
+            _ => continue,
+        };
+        conn.execute(
+            "UPDATE table_cell SET error = ?3 WHERE row_id = ?1 AND column_id = ?2",
+            params![row_id, column_id, new_error],
+        )?;
+    }
+    Ok(())
+}
+
 /// Deletes one table with its columns, rows, cells, jobs and unshared cache entries.
 fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize> {
     conn.execute(
@@ -199,10 +234,16 @@ fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize>
     Ok(removed)
 }
 
+/// Deletes one row with its cells. The cache is not swept: the caller does it once,
+/// after the last row it deletes.
+fn delete_row_unswept(conn: &Connection, row_id: &str) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM table_cell WHERE row_id = ?1", params![row_id])?;
+    conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])
+}
+
 /// Deletes one row with its cells and the cache entries only it used.
 fn delete_row_in(conn: &Connection, row_id: &str) -> rusqlite::Result<usize> {
-    conn.execute("DELETE FROM table_cell WHERE row_id = ?1", params![row_id])?;
-    let removed = conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])?;
+    let removed = delete_row_unswept(conn, row_id)?;
     sweep_cache(conn)?;
     Ok(removed)
 }
@@ -386,7 +427,8 @@ impl TableStore {
 
     /// Changes a column. A change of its key (question, kind, options or instructions,
     /// whitespace aside) raises its revision, so its cells are stale, and removes the
-    /// cache entries only its cells used.
+    /// cache entries only its cells used. When the kind or the options change, the edited
+    /// cells are checked against them again (`refit_edited_cells`).
     pub fn update_column(&self, column_id: &str, spec: &ColumnSpec) -> ResearchResult<Column> {
         let spec = spec.cleaned()?;
         let key = spec.key();
@@ -421,6 +463,9 @@ impl TableStore {
             ],
         )?;
         sweep_cache(&tx)?;
+        if current.spec.kind != spec.kind || current.spec.options != spec.options {
+            refit_edited_cells(&tx, column_id, &spec)?;
+        }
         let updated = tx.query_row(
             &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
             params![column_id],
@@ -597,13 +642,21 @@ impl TableStore {
     /// The user's value for a cell, under its column's type rule. The model's quote and
     /// passage no longer back it and are cleared; the paper hash stays.
     pub fn edit_cell(&self, row_id: &str, column_id: &str, input: &str) -> ResearchResult<Cell> {
-        let column = self
-            .column(column_id)?
+        let mut conn = self.lock();
+        // The column is read in the transaction that writes the cell, so a column change
+        // (and the re-check of the edited cells it makes) cannot come between them.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let column = tx
+            .query_row(
+                &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
+                params![column_id],
+                column_from,
+            )
+            .optional()?
             .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
         let value = parse_edit(&column.spec, input)?;
         let value = value_json(&Some(value))?;
-        let conn = self.lock();
-        let row_table: Option<String> = conn
+        let row_table: Option<String> = tx
             .query_row(
                 "SELECT table_id FROM table_row WHERE id = ?1",
                 params![row_id],
@@ -615,7 +668,7 @@ impl TableStore {
                 "No row {row_id} in this table."
             )));
         }
-        conn.execute(
+        tx.execute(
             "INSERT INTO table_cell(table_id, row_id, column_id, status, value_json, column_revision, edited_at)
              VALUES (?1, ?2, ?3, 'edited', ?4, ?5, ?6)
              ON CONFLICT(row_id, column_id) DO UPDATE SET status = 'edited',
@@ -624,9 +677,16 @@ impl TableStore {
                edited_at = excluded.edited_at, error = NULL",
             params![column.table_id, row_id, column_id, value, column.revision, now_text()],
         )?;
-        drop(conn);
-        self.cell(row_id, column_id)?
-            .ok_or_else(|| ResearchError::NotFound(format!("No cell {row_id}/{column_id}.")))
+        let cell = tx
+            .query_row(
+                &format!("SELECT {CELL_COLS} FROM table_cell WHERE row_id = ?1 AND column_id = ?2"),
+                params![row_id, column_id],
+                cell_from,
+            )
+            .optional()?
+            .ok_or_else(|| ResearchError::NotFound(format!("No cell {row_id}/{column_id}.")))?;
+        tx.commit()?;
+        Ok(cell)
     }
 
     /// Empties a cell (an edit included); the next fill fills it.
@@ -672,11 +732,92 @@ impl TableStore {
                 rows.collect::<Result<_, _>>()?
             };
             for id in &row_ids {
-                removed += delete_row_in(&tx, id)?;
+                removed += delete_row_unswept(&tx, id)?;
             }
         }
+        sweep_cache(&tx)?;
         tx.commit()?;
         Ok(removed)
+    }
+
+    /// Forgets every paper (the library was reset): all rows and cells of every table
+    /// and every cache entry. Tables and columns stay. Returns the rows removed.
+    pub fn forget_all(&self) -> ResearchResult<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM table_cell", [])?;
+        let removed = tx.execute("DELETE FROM table_row", [])?;
+        sweep_cache(&tx)?;
+        tx.commit()?;
+        Ok(removed)
+    }
+}
+
+/// The library tells the tables which files left the index (see
+/// [`crate::rag_engine::RAGEngine::set_removal_observer`]).
+impl crate::rag_engine::LibraryRemovalObserver for TableStore {
+    fn forget_sources(&self, sources: &[String]) -> anyhow::Result<()> {
+        self.forget_documents(sources)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    fn forget_all(&self) -> anyhow::Result<()> {
+        TableStore::forget_all(self).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+}
+
+/// The app's handle on the tables: the store, opened on first use and opened again on the
+/// next call while the database is unavailable. It is the library's removal observer
+/// from the start of the app, so a removal made while the database cannot be opened is
+/// reported as failed (and written down for a retry), never skipped.
+pub struct TableStoreHandle {
+    database: Option<(PathBuf, Option<AuditKey>)>,
+    store: Mutex<Option<Arc<TableStore>>>,
+}
+
+impl TableStoreHandle {
+    /// A handle over `shodh.db` at `database` (path and key; `None` when the app's
+    /// database could not be opened).
+    pub fn new(database: Option<(PathBuf, Option<AuditKey>)>) -> Self {
+        Self {
+            database,
+            store: Mutex::new(None),
+        }
+    }
+
+    /// The store, opening it if needed.
+    pub fn store(&self) -> ResearchResult<Arc<TableStore>> {
+        let mut slot = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(store) = slot.as_ref() {
+            return Ok(store.clone());
+        }
+        let (path, key) = self.database.as_ref().ok_or_else(|| {
+            ResearchError::Database(
+                "The app database (shodh.db) could not be opened, so the evidence tables                  are unavailable."
+                    .to_string(),
+            )
+        })?;
+        let store = Arc::new(TableStore::open(path, key.as_ref())?);
+        *slot = Some(store.clone());
+        Ok(store)
+    }
+}
+
+impl crate::rag_engine::LibraryRemovalObserver for TableStoreHandle {
+    fn forget_sources(&self, sources: &[String]) -> anyhow::Result<()> {
+        self.store()
+            .and_then(|store| store.forget_documents(sources))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    fn forget_all(&self) -> anyhow::Result<()> {
+        self.store()
+            .and_then(|store| store.forget_all())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
     }
 }
 
@@ -1044,6 +1185,152 @@ mod tests {
         ));
     }
 
+    fn choice_spec(options: &[&str]) -> ColumnSpec {
+        ColumnSpec {
+            question: "Which architecture?".to_string(),
+            kind: ColumnKind::Choice,
+            options: options.iter().map(|o| o.to_string()).collect(),
+            instructions: String::new(),
+        }
+    }
+
+    fn papers(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("/p/{i}.pdf")).collect()
+    }
+
+    #[test]
+    fn an_edited_value_that_no_longer_fits_a_new_type_is_flagged_and_kept() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &spec("Year", ColumnKind::Text))
+            .unwrap();
+        let rows = f.store.add_rows(&table.id, &papers(3)).unwrap();
+        f.store
+            .edit_cell(&rows[0].id, &column.id, "around 2020")
+            .unwrap();
+        f.store.edit_cell(&rows[1].id, &column.id, "2021").unwrap();
+        let fill = filled(&column, &rows[2], "hash-2");
+        assert!(f
+            .store
+            .store_fill(&fill, Some(&entry(&column, "hash-2")))
+            .unwrap());
+        let untouched = f.store.cell(&rows[2].id, &column.id).unwrap();
+
+        let number = f
+            .store
+            .update_column(&column.id, &spec("Year", ColumnKind::Number))
+            .unwrap();
+        let flagged = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(flagged.status, CellStatus::Edited);
+        assert_eq!(flagged.error.as_deref(), Some(VALUE_NO_LONGER_FITS));
+        assert_eq!(
+            flagged.value,
+            Some(CellValue::Text {
+                text: "around 2020".to_string()
+            }),
+            "the user's text is kept"
+        );
+        let fits = f.store.cell(&rows[1].id, &column.id).unwrap().unwrap();
+        assert_eq!(fits.status, CellStatus::Edited);
+        assert_eq!(fits.error, None);
+        assert_eq!(
+            fits.value,
+            Some(CellValue::Text {
+                text: "2021".to_string()
+            }),
+            "the user's value is never rewritten"
+        );
+        assert_eq!(
+            f.store.cell(&rows[2].id, &column.id).unwrap(),
+            untouched,
+            "a cell that is not edited is left to the purge and refill"
+        );
+
+        // A change that leaves the type and options alone does not re-check.
+        let mut renamed = spec("Publication year", ColumnKind::Number);
+        renamed.instructions = "As printed".to_string();
+        f.store.update_column(&number.id, &renamed).unwrap();
+        let still = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(still.error.as_deref(), Some(VALUE_NO_LONGER_FITS));
+
+        // Back to text: the value fits again, and the flag goes.
+        f.store
+            .update_column(&column.id, &spec("Year", ColumnKind::Text))
+            .unwrap();
+        let back = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(back.error, None);
+        assert_eq!(
+            back.value,
+            Some(CellValue::Text {
+                text: "around 2020".to_string()
+            })
+        );
+        let back = f.store.cell(&rows[1].id, &column.id).unwrap().unwrap();
+        assert_eq!(back.error, None);
+    }
+
+    #[test]
+    fn an_edited_choice_that_leaves_the_options_is_flagged_until_it_returns() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &choice_spec(&["CNN", "Transformer"]))
+            .unwrap();
+        let rows = f.store.add_rows(&table.id, &papers(2)).unwrap();
+        f.store
+            .edit_cell(&rows[0].id, &column.id, "transformer")
+            .unwrap();
+        f.store.edit_cell(&rows[1].id, &column.id, "CNN").unwrap();
+
+        f.store
+            .update_column(&column.id, &choice_spec(&["CNN", "MLP"]))
+            .unwrap();
+        let gone = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(gone.error.as_deref(), Some(VALUE_NO_LONGER_FITS));
+        assert_eq!(
+            gone.value,
+            Some(CellValue::Choice {
+                option: "Transformer".to_string()
+            })
+        );
+        let kept = f.store.cell(&rows[1].id, &column.id).unwrap().unwrap();
+        assert_eq!(kept.error, None);
+
+        f.store
+            .update_column(&column.id, &choice_spec(&["CNN", "Transformer", "MLP"]))
+            .unwrap();
+        let back = f.store.cell(&rows[0].id, &column.id).unwrap().unwrap();
+        assert_eq!(back.error, None);
+        assert_eq!(back.status, CellStatus::Edited);
+    }
+
+    #[test]
+    fn an_edit_replaces_a_flag() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &spec("Year", ColumnKind::Text))
+            .unwrap();
+        let row = f.store.add_rows(&table.id, &papers(1)).unwrap().remove(0);
+        f.store.edit_cell(&row.id, &column.id, "late 2020").unwrap();
+        f.store
+            .update_column(&column.id, &spec("Year", ColumnKind::Number))
+            .unwrap();
+        assert!(f
+            .store
+            .cell(&row.id, &column.id)
+            .unwrap()
+            .unwrap()
+            .error
+            .is_some());
+        let cell = f.store.edit_cell(&row.id, &column.id, "2020").unwrap();
+        assert_eq!(cell.error, None);
+    }
+
     #[test]
     fn deleting_a_table_removes_everything_but_cache_entries_another_table_uses() {
         let f = fixture();
@@ -1178,6 +1465,53 @@ mod tests {
             .unwrap()
             .is_some());
         assert_eq!(f.store.cells(&two.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_handle_reports_an_unavailable_database_instead_of_skipping_the_forget() {
+        use crate::rag_engine::LibraryRemovalObserver;
+        let none = TableStoreHandle::new(None);
+        assert!(none.store().is_err());
+        assert!(none.forget_sources(&["/papers/a.pdf".to_string()]).is_err());
+
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        f.store
+            .add_rows(&table.id, &["/papers/a.pdf".to_string()])
+            .unwrap();
+        let handle = TableStoreHandle::new(Some((f.path.clone(), None)));
+        handle
+            .forget_sources(&["/papers/a.pdf".to_string()])
+            .unwrap();
+        assert!(f.store.rows(&table.id).unwrap().is_empty());
+        assert!(Arc::ptr_eq(
+            &handle.store().unwrap(),
+            &handle.store().unwrap()
+        ));
+    }
+
+    #[test]
+    fn forgetting_everything_keeps_the_tables_and_columns() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &spec("Dataset?", ColumnKind::Text))
+            .unwrap();
+        let rows = f.store.add_rows(&table.id, &papers(2)).unwrap();
+        for (i, row) in rows.iter().enumerate() {
+            let hash = format!("hash-{i}");
+            assert!(f
+                .store
+                .store_fill(&filled(&column, row, &hash), Some(&entry(&column, &hash)))
+                .unwrap());
+        }
+        assert_eq!(f.store.forget_all().unwrap(), 2);
+        assert!(f.store.rows(&table.id).unwrap().is_empty());
+        assert!(f.store.cells(&table.id).unwrap().is_empty());
+        assert_eq!(cache_rows(&f), 0);
+        assert_eq!(f.store.columns(&table.id).unwrap().len(), 1);
+        assert!(f.store.table(&table.id).unwrap().is_some());
     }
 
     #[test]

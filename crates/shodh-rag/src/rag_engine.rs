@@ -319,6 +319,104 @@ pub const CHUNKS_KEPT_FROM_KEY: &str = "chunks_kept_from";
 /// commit began and has not finished ([`RAGEngine::commit_file`]).
 pub const REPLACED_CHUNKS_FILE: &str = "replaced_chunks.json";
 
+/// The file, in the data directory, that lists the files removed from the index
+/// whose data the [`LibraryRemovalObserver`] has not confirmed forgetting
+/// ([`RAGEngine::settle_forgotten`]).
+pub const PENDING_FORGETS_FILE: &str = "pending_forgets.json";
+
+/// Something that keeps data about indexed files and must lose it when a file leaves
+/// the library (the evidence tables: their rows, cells and cached quotes). Every
+/// removal from the index reports the files that are gone through
+/// [`RAGEngine::set_removal_observer`], so no removal can skip it.
+pub trait LibraryRemovalObserver: Send + Sync {
+    /// Forgets everything kept about `sources`, given as the index spells them
+    /// ([`normalize_source_path`]). Must be safe to repeat.
+    fn forget_sources(&self, sources: &[String]) -> Result<()>;
+
+    /// Forgets everything kept about every file (the index was reset). Must be safe
+    /// to repeat.
+    fn forget_all(&self) -> Result<()>;
+}
+
+/// The entry of [`PENDING_FORGETS_FILE`] that stands for "every file": a reset whose
+/// files could not be listed first. `<` and `>` are not in a Windows file name.
+const FORGET_ALL: &str = "<all>";
+
+/// Whether `source` is a file path. A `scheme://` source (a calendar item, a note) is
+/// not a paper and is never a row of an evidence table.
+fn is_file_source(source: &str) -> bool {
+    !source.contains("://")
+}
+
+/// The file sources among `sources`, each once.
+fn file_sources(sources: impl IntoIterator<Item = String>) -> Vec<String> {
+    sources
+        .into_iter()
+        .filter(|s| is_file_source(s) && s != FORGET_ALL)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The removals written down and not confirmed. A record that does not parse is not
+/// dropped: it is moved to `pending_forgets.corrupt-<unix seconds>.json` and logged, so
+/// nothing is overwritten and the entries can be read by hand. When it cannot be moved
+/// the read fails, and nothing is written over it.
+fn load_pending_forgets(path: &Path) -> Result<std::collections::BTreeSet<String>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(e) => return Err(e.into()),
+    };
+    match serde_json::from_str(&text) {
+        Ok(pending) => Ok(pending),
+        Err(parse) => {
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let aside = path.with_file_name(format!("pending_forgets.corrupt-{seconds}.json"));
+            std::fs::rename(path, &aside).with_context(|| {
+                format!("the pending removals do not parse ({parse}) and could not be moved aside")
+            })?;
+            tracing::error!(
+                error = %parse,
+                moved_to = %aside.display(),
+                "the pending removals did not parse; kept aside, and the record starts empty"
+            );
+            Ok(Default::default())
+        }
+    }
+}
+
+/// Writes `sources` as the removals not confirmed (none: the record goes), through a
+/// temporary file renamed over the previous record.
+fn write_pending_forgets(path: &Path, sources: &std::collections::BTreeSet<String>) -> Result<()> {
+    if sources.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        };
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut out = std::fs::File::create(&tmp)?;
+        out.write_all(&serde_json::to_vec(sources)?)?;
+        // On disk before the rename, so a power loss can't leave an empty record.
+        out.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
 /// A replacement of a file's chunks in progress: written down before the new
 /// chunks are stored, dropped once the old ones are gone
 /// ([`RAGEngine::settle_replaced`]).
@@ -1234,6 +1332,15 @@ pub struct RAGEngine {
     no_stale_chunks: Arc<std::sync::atomic::AtomicBool>,
     /// [`Self::rechunk_sources`] found every chunk of the current [`CHUNKER_VERSION`].
     no_rechunk_chunks: Arc<std::sync::atomic::AtomicBool>,
+    /// Told which files left the index, after every removal (see
+    /// [`LibraryRemovalObserver`]).
+    removal_observer: Option<Arc<dyn LibraryRemovalObserver>>,
+    /// Tests: the next listing of the index in [`Self::clear_all_data`] fails.
+    #[cfg(test)]
+    fail_source_listing: std::sync::atomic::AtomicBool,
+    /// Tests: the next keyword-index removal in [`Self::delete_by_source`] fails.
+    #[cfg(test)]
+    fail_text_removal: std::sync::atomic::AtomicBool,
     /// Tests: the next [`Self::commit_file`] fails before it stores anything.
     #[cfg(test)]
     fail_next_store: std::sync::atomic::AtomicBool,
@@ -1318,6 +1425,11 @@ impl RAGEngine {
             source_ranker: None,
             no_stale_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             no_rechunk_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            removal_observer: None,
+            #[cfg(test)]
+            fail_source_listing: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_text_removal: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_store: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1661,6 +1773,182 @@ impl RAGEngine {
         ranker: Option<Arc<dyn crate::search::graph_fusion::SourceRanker>>,
     ) {
         self.source_ranker = ranker;
+    }
+
+    /// Reports every file that leaves the index from now on to `observer` (`None`
+    /// stops). Call [`Self::settle_forgotten`] after setting it, to finish what an
+    /// earlier run could not.
+    pub fn set_removal_observer(&mut self, observer: Option<Arc<dyn LibraryRemovalObserver>>) {
+        self.removal_observer = observer;
+    }
+
+    /// Where the removals the observer has not confirmed are written down.
+    fn pending_forgets_path(&self) -> std::path::PathBuf {
+        self.config.data_dir.join(PENDING_FORGETS_FILE)
+    }
+
+    /// Writes down, before they are removed, the files about to leave the index (or
+    /// [`FORGET_ALL`]), so a quit or a failure between the removal and the report cannot
+    /// lose them: the next report (or [`Self::settle_forgotten`]) drops the ones that are
+    /// still indexed. The file work runs on the blocking pool.
+    async fn begin_forget(&self, entries: Vec<String>) {
+        if self.removal_observer.is_none() || entries.is_empty() {
+            return;
+        }
+        let path = self.pending_forgets_path();
+        let written = tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut pending = load_pending_forgets(&path)?;
+            let known = pending.len();
+            pending.extend(entries);
+            if pending.len() == known {
+                return Ok(());
+            }
+            write_pending_forgets(&path, &pending)
+        })
+        .await;
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(
+                error = %format!("{e:#}"),
+                "pending removals not written down; they are reported only while the app runs"
+            ),
+            Err(e) => tracing::error!(error = %e, "writing the pending removals failed"),
+        }
+    }
+
+    /// The files of `sources` that still have chunks in the index. Reads only the
+    /// files asked for, 500 at a time.
+    async fn still_indexed(&self, sources: &[String]) -> Result<std::collections::HashSet<String>> {
+        let mut indexed = std::collections::HashSet::new();
+        for batch in sources.chunks(500) {
+            let quoted: Vec<String> = batch
+                .iter()
+                .map(|s| format!("'{}'", s.replace('\'', "''")))
+                .collect();
+            let predicate = format!("source IN ({})", quoted.join(", "));
+            for row in self.store.document_sources_where(Some(&predicate)).await? {
+                indexed.insert(row.source);
+            }
+        }
+        Ok(indexed)
+    }
+
+    /// Tells the removal observer that `removed` left the index, together with the
+    /// files an earlier removal could not report. `removed_for_sure` says the removal
+    /// of `removed` succeeded (nothing is listed to check it); otherwise, and for the
+    /// recorded files, the index is asked which files still have chunks, and those are
+    /// not reported (a file added back, or only partly removed, is still in the
+    /// library; it is dropped from the record). Called whatever the removal's outcome
+    /// was, so a removal that failed halfway still forgets what it did remove.
+    ///
+    /// A report that fails is logged and kept in [`PENDING_FORGETS_FILE`], and tried
+    /// again by the next removal and by [`Self::settle_forgotten`]. The observer and the
+    /// record run on the blocking pool; the engine lock is held meanwhile, because the
+    /// index is read under it and the report must not outlive an answer the caller is
+    /// still waiting for. Returns the files the observer confirmed.
+    async fn forget_removed(&self, removed: &[String], removed_for_sure: bool) -> usize {
+        let Some(observer) = self.removal_observer.clone() else {
+            return 0;
+        };
+        let removed: Vec<String> = file_sources(removed.iter().cloned());
+        let path = self.pending_forgets_path();
+        let load_path = path.clone();
+        let loaded = tokio::task::spawn_blocking(move || load_pending_forgets(&load_path)).await;
+        let (recorded, can_record) = match loaded {
+            Ok(Ok(recorded)) => (recorded, true),
+            Ok(Err(e)) => {
+                tracing::error!(error = %format!("{e:#}"), "pending removals unreadable");
+                (Default::default(), false)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "reading the pending removals failed");
+                (Default::default(), false)
+            }
+        };
+        if removed.is_empty() && recorded.is_empty() {
+            return 0;
+        }
+        let wants_all = recorded.contains(FORGET_ALL);
+        let mut to_check: Vec<String> = file_sources(recorded.iter().cloned());
+        let mut gone = std::collections::BTreeSet::new();
+        let mut pending = std::collections::BTreeSet::new();
+        if removed_for_sure {
+            gone.extend(removed.iter().cloned());
+        } else {
+            to_check.extend(removed.iter().cloned());
+        }
+        if !to_check.is_empty() {
+            match self.still_indexed(&to_check).await {
+                Ok(indexed) => gone.extend(to_check.into_iter().filter(|s| !indexed.contains(s))),
+                Err(e) => {
+                    tracing::error!(
+                        error = %format!("{e:#}"),
+                        "could not tell which removed files are back in the index"
+                    );
+                    pending.extend(to_check);
+                }
+            }
+        }
+        let mut forget_all = false;
+        if wants_all {
+            match self.store.count().await {
+                Ok(0) => forget_all = true,
+                Ok(_) => tracing::warn!(
+                    "a reset was recorded but the index has files; they are not forgotten"
+                ),
+                Err(e) => {
+                    tracing::error!(error = %format!("{e:#}"), "could not tell whether the index is empty");
+                    pending.insert(FORGET_ALL.to_string());
+                }
+            }
+        }
+        let gone: Vec<String> = gone.into_iter().collect();
+        let reported = tokio::task::spawn_blocking(move || {
+            let mut confirmed = 0;
+            if forget_all {
+                if let Err(e) = observer.forget_all() {
+                    tracing::error!(
+                        error = %format!("{e:#}"),
+                        "the evidence tables did not forget everything; will retry"
+                    );
+                    pending.insert(FORGET_ALL.to_string());
+                }
+            }
+            if !gone.is_empty() {
+                match observer.forget_sources(&gone) {
+                    Ok(()) => confirmed = gone.len(),
+                    Err(e) => {
+                        tracing::error!(
+                            files = gone.len(),
+                            error = %format!("{e:#}"),
+                            "removed files were not forgotten by the evidence tables; will retry"
+                        );
+                        pending.extend(gone);
+                    }
+                }
+            }
+            if can_record && pending != recorded {
+                if let Err(e) = write_pending_forgets(&path, &pending) {
+                    tracing::error!(
+                        error = %format!("{e:#}"),
+                        "pending removals not written down; they are retried only while the app runs"
+                    );
+                }
+            }
+            confirmed
+        })
+        .await;
+        reported.unwrap_or_else(|e| {
+            tracing::error!(error = %e, "reporting removed files failed; they stay recorded");
+            0
+        })
+    }
+
+    /// Reports again the removals the observer did not confirm (a failure or a quit
+    /// came first). Run after [`Self::set_removal_observer`] at start. Returns the files
+    /// the observer confirmed.
+    pub async fn settle_forgotten(&self) -> usize {
+        self.forget_removed(&[], false).await
     }
 
     /// The graph's ranks of library files for `query`, when it is about the graph.
@@ -2375,17 +2663,29 @@ impl RAGEngine {
         // Get all chunk IDs for this doc so we can remove from Tantivy
         let predicate = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
         let chunks = self.store.list_chunks(Some(&predicate), 100_000).await?;
+        let sources = file_sources(
+            self.store
+                .document_sources_where(Some(&predicate))
+                .await?
+                .into_iter()
+                .map(|row| row.source),
+        );
+        self.begin_forget(sources.clone()).await;
 
-        for chunk in &chunks {
-            let _ = self.text_search.delete_by_id(&chunk.id);
+        let outcome: Result<usize> = async {
+            for chunk in &chunks {
+                let _ = self.text_search.delete_by_id(&chunk.id);
+            }
+            if !chunks.is_empty() {
+                self.text_search.commit()?;
+            }
+            let deleted = self.store.delete_by_doc_id(doc_id).await?;
+            tracing::info!(doc_id = %doc_id, deleted = deleted, "Deleted document by doc_id");
+            Ok(deleted)
         }
-        if !chunks.is_empty() {
-            self.text_search.commit()?;
-        }
-
-        let deleted = self.store.delete_by_doc_id(doc_id).await?;
-        tracing::info!(doc_id = %doc_id, deleted = deleted, "Deleted document by doc_id");
-        Ok(deleted)
+        .await;
+        self.forget_removed(&sources, false).await;
+        outcome
     }
 
     /// Delete all documents from a specific source/folder.
@@ -2393,11 +2693,32 @@ impl RAGEngine {
     /// Windows backslash / mixed-case paths always match.
     pub async fn delete_by_source(&mut self, source: &str) -> Result<usize> {
         let normalized = normalize_source_path(Path::new(source));
-        let deleted = self.store.delete_by_source(&normalized).await?;
-        self.text_search.delete_by_source(&normalized)?;
-        self.text_search.commit()?;
-        self.ocr_cache.remove(&normalized);
-        Ok(deleted)
+        // A calendar item or a note is not a paper: nothing to forget, and no cost.
+        let tracked = is_file_source(source) && is_file_source(&normalized);
+        if tracked {
+            self.begin_forget(vec![normalized.clone()]).await;
+        }
+        let outcome: Result<usize> = async {
+            let deleted = self.store.delete_by_source(&normalized).await?;
+            #[cfg(test)]
+            if self
+                .fail_text_removal
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                anyhow::bail!("removing from the keyword index failed (injected)");
+            }
+            self.text_search.delete_by_source(&normalized)?;
+            self.text_search.commit()?;
+            self.ocr_cache.remove(&normalized);
+            Ok(deleted)
+        }
+        .await;
+        if tracked {
+            // After a successful removal the file is gone by construction; after a
+            // failed one the index is asked what is left of it.
+            self.forget_removed(&[normalized], outcome.is_ok()).await;
+        }
+        outcome
     }
 
     /// Removes the OCR cache entries of the indexed files `leaving` selects
@@ -2510,31 +2831,38 @@ impl RAGEngine {
         if chunks.is_empty() {
             return Ok(0);
         }
-        let sources: std::collections::BTreeSet<&str> =
-            chunks.iter().map(|chunk| chunk.source.as_str()).collect();
-        for source in sources {
-            self.ocr_cache.remove(source);
+        let sources: std::collections::BTreeSet<String> =
+            chunks.iter().map(|chunk| chunk.source.clone()).collect();
+        let tracked = file_sources(sources.iter().cloned());
+        self.begin_forget(tracked.clone()).await;
+        let outcome: Result<usize> = async {
+            for source in &sources {
+                self.ocr_cache.remove(source);
+            }
+            for chunk in chunks {
+                self.text_search.delete_by_id(&chunk.id)?;
+            }
+            self.text_search.commit()?;
+            let mut deleted = 0;
+            for batch in chunks.chunks(500) {
+                let ids: Vec<String> = batch
+                    .iter()
+                    .map(|chunk| format!("'{}'", chunk.id.replace('\'', "''")))
+                    .collect();
+                deleted += self
+                    .store
+                    .delete_where(&format!("id IN ({})", ids.join(", ")))
+                    .await?;
+            }
+            tracing::info!(
+                deleted,
+                "Deleted chunks without a source under a removed Library source"
+            );
+            Ok(deleted)
         }
-        for chunk in chunks {
-            self.text_search.delete_by_id(&chunk.id)?;
-        }
-        self.text_search.commit()?;
-        let mut deleted = 0;
-        for batch in chunks.chunks(500) {
-            let ids: Vec<String> = batch
-                .iter()
-                .map(|chunk| format!("'{}'", chunk.id.replace('\'', "''")))
-                .collect();
-            deleted += self
-                .store
-                .delete_where(&format!("id IN ({})", ids.join(", ")))
-                .await?;
-        }
-        tracing::info!(
-            deleted,
-            "Deleted chunks without a source under a removed Library source"
-        );
-        Ok(deleted)
+        .await;
+        self.forget_removed(&tracked, false).await;
+        outcome
     }
 
     /// Delete all chunks belonging to a specific space.
@@ -2545,22 +2873,38 @@ impl RAGEngine {
         // First, get all chunk IDs for this space so we can remove them from Tantivy
         let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
         let chunks = self.store.list_chunks(Some(&predicate), 1_000_000).await?;
-
-        // Delete each chunk from the Tantivy text search index by ID
-        for chunk in &chunks {
-            let _ = self.text_search.delete_by_id(&chunk.id);
-        }
-        self.text_search.commit()?;
-
-        // Delete from LanceDB by space_id
-        let deleted = self.store.delete_by_space_id(space_id).await?;
-
-        tracing::info!(
-            space_id = %space_id,
-            deleted_chunks = deleted,
-            "Deleted space data from vector store and text index"
+        // The files to forget come from the space's document listing, which has no cap:
+        // the chunk listing above stops at a million chunks, the deletion below does not.
+        let sources = file_sources(
+            self.store
+                .document_sources_where(Some(&predicate))
+                .await?
+                .into_iter()
+                .map(|row| row.source),
         );
-        Ok(deleted)
+        self.begin_forget(sources.clone()).await;
+
+        let outcome: Result<usize> = async {
+            // Delete each chunk from the Tantivy text search index by ID
+            for chunk in &chunks {
+                let _ = self.text_search.delete_by_id(&chunk.id);
+            }
+            self.text_search.commit()?;
+
+            // Delete from LanceDB by space_id
+            let deleted = self.store.delete_by_space_id(space_id).await?;
+
+            tracing::info!(
+                space_id = %space_id,
+                deleted_chunks = deleted,
+                "Deleted space data from vector store and text index"
+            );
+            Ok(deleted)
+        }
+        .await;
+        // A file with chunks in another space is still in the library; the index says so.
+        self.forget_removed(&sources, false).await;
+        outcome
     }
 
     /// Gives the indexed file `source` of the space `from` to the space `to`
@@ -2656,10 +3000,48 @@ impl RAGEngine {
 
     /// Clear all data
     pub async fn clear_all_data(&mut self) -> Result<()> {
-        self.store.clear().await?;
-        self.text_search.clear()?;
-        self.ocr_cache.clear();
-        Ok(())
+        // A reset must work on an index that cannot be read: when the files cannot be
+        // listed, the clear goes on and the tables are told to forget everything.
+        let listed: Result<Vec<String>> = async {
+            #[cfg(test)]
+            if self
+                .fail_source_listing
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                anyhow::bail!("listing the index failed (injected)");
+            }
+            Ok(self
+                .store
+                .document_sources()
+                .await?
+                .into_iter()
+                .map(|row| row.source)
+                .collect())
+        }
+        .await;
+        let (sources, entries) = match listed {
+            Ok(sources) => {
+                let sources = file_sources(sources);
+                (sources.clone(), sources)
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %format!("{e:#}"),
+                    "the index could not be listed before it was cleared"
+                );
+                (Vec::new(), vec![FORGET_ALL.to_string()])
+            }
+        };
+        self.begin_forget(entries).await;
+        let outcome: Result<()> = async {
+            self.store.clear().await?;
+            self.text_search.clear()?;
+            self.ocr_cache.clear();
+            Ok(())
+        }
+        .await;
+        self.forget_removed(&sources, outcome.is_ok()).await;
+        outcome
     }
 
     /// Get statistics about the current state
@@ -3764,6 +4146,471 @@ Language models trained on long documents reach lower perplexity.
             )))
             .unwrap();
         engine
+    }
+
+    /// Evidence tables with a row, a filled cell and a cache entry for each of `papers`.
+    struct SeededTables {
+        store: Arc<crate::research::tables::TableStore>,
+        table_id: String,
+        column_key: String,
+        papers: Vec<String>,
+    }
+
+    fn seeded_tables(dir: &Path, papers: &[&Path]) -> SeededTables {
+        use crate::research::tables::{
+            Cell, CellStatus, CellValue, ColumnKind, ColumnSpec, TableStore,
+        };
+        use crate::workspaces::{NewWorkspace, WorkspaceAuthor, WorkspaceStore};
+        let database = dir.join("shodh.db");
+        let workspace = WorkspaceStore::open(&database, None)
+            .unwrap()
+            .create(
+                &NewWorkspace {
+                    name: "Survey".to_string(),
+                    ..Default::default()
+                },
+                WorkspaceAuthor::User,
+            )
+            .unwrap()
+            .id;
+        let store = Arc::new(TableStore::open(&database, None).unwrap());
+        let table = store.create_table(&workspace, "Datasets").unwrap();
+        let column = store
+            .add_column(
+                &table.id,
+                &ColumnSpec {
+                    question: "Which dataset?".to_string(),
+                    kind: ColumnKind::Text,
+                    options: Vec::new(),
+                    instructions: String::new(),
+                },
+            )
+            .unwrap();
+        let papers: Vec<String> = papers
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        let rows = store.add_rows(&table.id, &papers).unwrap();
+        for (i, row) in rows.iter().enumerate() {
+            let hash = format!("hash-{i}");
+            let cell = Cell {
+                table_id: table.id.clone(),
+                row_id: row.id.clone(),
+                column_id: column.id.clone(),
+                status: CellStatus::Verified,
+                value: Some(CellValue::Text {
+                    text: "LAION-400M".to_string(),
+                }),
+                quote: Some("We pre-train on LAION-400M".to_string()),
+                chunk_id: None,
+                page: Some(3),
+                bboxes: None,
+                model: Some("test-model".to_string()),
+                column_revision: Some(column.revision),
+                paper_hash: Some(hash.clone()),
+                filled_at: Some("2026-10-22T00:00:00.000Z".to_string()),
+                edited_at: None,
+                error: None,
+            };
+            let entry = crate::research::tables::CacheEntry {
+                paper_hash: hash,
+                column_key: column.key.clone(),
+                model: "test-model".to_string(),
+                response_json: "{\"answer\":\"LAION-400M\"}".to_string(),
+            };
+            assert!(store.store_fill(&cell, Some(&entry)).unwrap());
+        }
+        SeededTables {
+            store,
+            table_id: table.id,
+            column_key: column.key,
+            papers,
+        }
+    }
+
+    impl SeededTables {
+        /// Whether paper `i` still has its row, its cell and its cached quote (all
+        /// three, or none: a paper is never half forgotten).
+        fn keeps(&self, i: usize) -> bool {
+            let key = crate::research::path_key(&self.papers[i]);
+            let row = self
+                .store
+                .rows(&self.table_id)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.document_id == key);
+            let cells = self.store.cells(&self.table_id).unwrap();
+            let cell = row
+                .as_ref()
+                .is_some_and(|row| cells.iter().any(|c| c.row_id == row.id));
+            let cached = self
+                .store
+                .cached(&format!("hash-{i}"), &self.column_key, "test-model")
+                .unwrap()
+                .is_some();
+            assert_eq!(row.is_some(), cell, "row and cell of paper {i}");
+            assert_eq!(row.is_some(), cached, "row and cached quote of paper {i}");
+            row.is_some()
+        }
+    }
+
+    /// Writes and indexes a note about `word` as `dir/name` in `space`.
+    async fn index_note(
+        engine: &mut RAGEngine,
+        dir: &Path,
+        name: &str,
+        word: &str,
+        space: &str,
+    ) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "# Notes\n\nThe {word} was seen near the river at dawn. The {word} returned \
+                 the next morning, and the field notes describe the {word} at length.\n"
+            ),
+        )
+        .unwrap();
+        let metadata = if space.is_empty() {
+            HashMap::new()
+        } else {
+            HashMap::from([("space_id".to_string(), space.to_string())])
+        };
+        engine
+            .add_document_from_file(&path, metadata)
+            .await
+            .unwrap();
+        path
+    }
+
+    /// An engine reporting its removals to evidence tables that hold papers `a`, `b`
+    /// and `c` (indexed in the spaces `spaces`).
+    async fn engine_with_tables(
+        dir: &Path,
+        spaces: [&str; 3],
+    ) -> (RAGEngine, SeededTables, [std::path::PathBuf; 3]) {
+        let mut engine = test_engine(dir).await;
+        let papers = dir.join("papers");
+        let a = index_note(&mut engine, &papers, "a.md", "zebra", spaces[0]).await;
+        let b = index_note(&mut engine, &papers, "b.md", "otter", spaces[1]).await;
+        let c = index_note(&mut engine, &papers, "c.md", "heron", spaces[2]).await;
+        let tables = seeded_tables(dir, &[&a, &b, &c]);
+        engine.set_removal_observer(Some(tables.store.clone()));
+        (engine, tables, [a, b, c])
+    }
+
+    /// Forget erases everywhere: every way a paper leaves the index also removes its
+    /// rows, cells and cached quotes, and leaves the other papers' alone.
+    #[tokio::test]
+    async fn removing_a_file_by_its_path_forgets_it_in_the_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        // Another spelling of the path reaches the same row.
+        engine
+            .delete_by_source(&a.to_string_lossy().replace('\\', "/"))
+            .await
+            .unwrap();
+        assert!(!tables.keeps(0));
+        assert!(tables.keeps(1) && tables.keeps(2));
+    }
+
+    #[tokio::test]
+    async fn removing_a_document_by_its_id_forgets_it_in_the_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [_, b, _]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        let source = normalize_source_path(&b);
+        let doc_id = engine
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.source == source)
+            .unwrap()
+            .doc_id;
+        engine.delete_by_doc_id(&doc_id).await.unwrap();
+        assert!(!tables.keeps(1));
+        assert!(tables.keeps(0) && tables.keeps(2));
+    }
+
+    #[tokio::test]
+    async fn removing_a_space_forgets_its_files_in_the_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, _) = engine_with_tables(dir.path(), ["s1", "s2", "s1"]).await;
+        engine.delete_by_space_id("s1").await.unwrap();
+        assert!(!tables.keeps(0) && !tables.keeps(2));
+        assert!(tables.keeps(1));
+    }
+
+    #[tokio::test]
+    async fn removing_a_library_source_forgets_its_files_and_the_unowned_ones_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // `b` belongs to no source (indexed before chunks recorded theirs) and lies
+        // under the removed folder; `c` is the source of another folder.
+        let (mut engine, tables, _) = engine_with_tables(dir.path(), ["papers", "", "other"]).await;
+        let folder = dir.path().join("papers").display().to_string();
+        engine
+            .delete_library_source("papers", Some(folder.as_str()), &[])
+            .await
+            .unwrap();
+        assert!(!tables.keeps(0) && !tables.keeps(1));
+        assert!(tables.keeps(2));
+    }
+
+    #[tokio::test]
+    async fn clearing_the_index_forgets_every_file_in_the_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, _) = engine_with_tables(dir.path(), ["s1", "s2", ""]).await;
+        engine.clear_all_data().await.unwrap();
+        assert!(!tables.keeps(0) && !tables.keeps(1) && !tables.keeps(2));
+    }
+
+    #[tokio::test]
+    async fn indexing_a_file_again_does_not_forget_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        engine
+            .add_document_from_file(&a, HashMap::new())
+            .await
+            .unwrap();
+        assert!(tables.keeps(0) && tables.keeps(1) && tables.keeps(2));
+    }
+
+    /// An observer that fails while `failing` is set.
+    struct FlakyObserver {
+        inner: Arc<crate::research::tables::TableStore>,
+        failing: std::sync::atomic::AtomicBool,
+    }
+
+    impl LibraryRemovalObserver for FlakyObserver {
+        fn forget_sources(&self, sources: &[String]) -> Result<()> {
+            if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("the database is locked (injected)");
+            }
+            self.inner.forget_sources(sources)
+        }
+
+        fn forget_all(&self) -> Result<()> {
+            if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("the database is locked (injected)");
+            }
+            LibraryRemovalObserver::forget_all(&*self.inner)
+        }
+    }
+
+    /// An observer that counts what it is told.
+    #[derive(Default)]
+    struct CountingObserver {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl LibraryRemovalObserver for CountingObserver {
+        fn forget_sources(&self, _: &[String]) -> Result<()> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn forget_all(&self) -> Result<()> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn pending_file(dir: &Path) -> std::path::PathBuf {
+        dir.join("data").join(PENDING_FORGETS_FILE)
+    }
+
+    #[tokio::test]
+    async fn a_reset_works_on_an_index_that_cannot_be_listed_and_forgets_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, _) = engine_with_tables(dir.path(), ["s1", "s2", ""]).await;
+        engine
+            .fail_source_listing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine
+            .clear_all_data()
+            .await
+            .expect("the reset still clears");
+        assert!(engine.document_sources().await.unwrap().is_empty());
+        assert!(!tables.keeps(0) && !tables.keeps(1) && !tables.keeps(2));
+        assert!(
+            tables.store.table(&tables.table_id).unwrap().is_some()
+                && tables.store.columns(&tables.table_id).unwrap().len() == 1,
+            "tables and columns stay"
+        );
+        assert!(!pending_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_reset_the_tables_did_not_take_is_recorded_and_settled() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, _) = engine_with_tables(dir.path(), ["s1", "s2", ""]).await;
+        let flaky = Arc::new(FlakyObserver {
+            inner: tables.store.clone(),
+            failing: std::sync::atomic::AtomicBool::new(true),
+        });
+        engine.set_removal_observer(Some(flaky.clone()));
+        engine
+            .fail_source_listing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine.clear_all_data().await.unwrap();
+        assert!(tables.keeps(0) && tables.keeps(1) && tables.keeps(2));
+        assert!(pending_file(dir.path()).exists());
+        flaky
+            .failing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        engine.settle_forgotten().await;
+        assert!(!tables.keeps(0) && !tables.keeps(1) && !tables.keeps(2));
+        assert!(!pending_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_removal_that_fails_after_the_index_lost_the_file_still_forgets_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        engine
+            .fail_text_removal
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(engine.delete_by_source(&a.to_string_lossy()).await.is_err());
+        assert!(
+            !tables.keeps(0),
+            "gone from the index, so gone from the tables"
+        );
+        assert!(tables.keeps(1) && tables.keeps(2));
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_pending_record_is_kept_aside_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        std::fs::write(pending_file(dir.path()), b"[\"half").unwrap();
+        engine.delete_by_source(&a.to_string_lossy()).await.unwrap();
+        assert!(!tables.keeps(0));
+        let aside: Vec<_> = std::fs::read_dir(dir.path().join("data"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("pending_forgets.corrupt-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read(aside[0].path()).unwrap(), b"[\"half");
+        assert!(!pending_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_calendar_item_is_not_reported_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let observer = Arc::new(CountingObserver::default());
+        engine.set_removal_observer(Some(observer.clone()));
+        engine.delete_by_source("calendar://task/7").await.unwrap();
+        engine.delete_by_source("note://n1").await.unwrap();
+        assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!pending_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_file_with_chunks_in_two_spaces_survives_the_removal_of_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        let source = normalize_source_path(&a);
+        let copies: Vec<crate::types::ChunkRecord> = engine
+            .store
+            .list_chunks(Some(&source_predicate(&source)), 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|chunk| crate::types::ChunkRecord {
+                id: format!("{}-copy", chunk.id),
+                doc_id: "copy-doc".to_string(),
+                chunk_index: chunk.chunk_index,
+                text: chunk.text,
+                title: chunk.title,
+                source: chunk.source,
+                heading: chunk.heading,
+                vector: vec![0.0; engine.config.embedding.dimension],
+                space_id: "s2".to_string(),
+                metadata_json: chunk.metadata_json,
+                citation_json: chunk.citation_json,
+                created_at: 0,
+            })
+            .collect();
+        assert!(!copies.is_empty());
+        engine.store.upsert_chunks(copies).await.unwrap();
+        engine.delete_by_space_id("s1").await.unwrap();
+        assert!(tables.keeps(0), "still in the library through space s2");
+        assert!(!tables.keeps(1) && !tables.keeps(2));
+    }
+
+    #[tokio::test]
+    async fn a_removal_the_tables_did_not_take_is_written_down_and_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        let flaky = Arc::new(FlakyObserver {
+            inner: tables.store.clone(),
+            failing: std::sync::atomic::AtomicBool::new(true),
+        });
+        engine.set_removal_observer(Some(flaky.clone()));
+        engine
+            .delete_by_source(&a.to_string_lossy())
+            .await
+            .expect("the index removal itself succeeded");
+        assert!(tables.keeps(0), "not forgotten while the observer fails");
+        assert_eq!(engine.settle_forgotten().await, 0);
+        assert!(tables.keeps(0));
+
+        assert!(
+            dir.path().join("data").join(PENDING_FORGETS_FILE).exists(),
+            "written down, for a run after a quit"
+        );
+        // The observer recovers; the next start (or removal) reports the file again.
+        flaky
+            .failing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // A new run: a new engine over the same data directory reads the record.
+        drop(engine);
+        let mut engine = test_engine(dir.path()).await;
+        engine.set_removal_observer(Some(flaky));
+        assert_eq!(engine.settle_forgotten().await, 1);
+        assert!(!tables.keeps(0));
+        assert!(tables.keeps(1) && tables.keeps(2));
+        assert!(
+            !dir.path().join("data").join(PENDING_FORGETS_FILE).exists(),
+            "the record goes once the tables confirmed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_added_back_before_the_retry_is_not_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut engine, tables, [a, ..]) =
+            engine_with_tables(dir.path(), ["s1", "s1", "s1"]).await;
+        let flaky = Arc::new(FlakyObserver {
+            inner: tables.store.clone(),
+            failing: std::sync::atomic::AtomicBool::new(true),
+        });
+        engine.set_removal_observer(Some(flaky.clone()));
+        engine.delete_by_source(&a.to_string_lossy()).await.unwrap();
+        engine
+            .add_document_from_file(&a, HashMap::new())
+            .await
+            .unwrap();
+        flaky
+            .failing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(engine.settle_forgotten().await, 0);
+        assert!(tables.keeps(0), "it is in the library again");
+        assert!(!dir.path().join("data").join(PENDING_FORGETS_FILE).exists());
     }
 
     /// A file with text is never indexed as no chunks: a short note is one

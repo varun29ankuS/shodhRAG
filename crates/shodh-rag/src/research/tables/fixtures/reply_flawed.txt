@@ -1,0 +1,8 @@
+Here is the row:
+{"cells":[
+ {"column":"c1","answer":"LAION","quote":"They trained on the LAION dataset","passage":1},
+ {"column":"c2","answer":"0.92","quote":"Recall@10 of 0.912 on MS MARCO","passage":2},
+ {"column":"c3","answer":null,"quote":"","passage":null},
+ {"column":"c4","answer":"Case study","quote":"The study is a benchmark evaluation","passage":3}
+]}
+Let me know if you need anything else.

@@ -370,9 +370,14 @@ impl shodh_rag::research::results::TextModel for AppModel {
     }
 
     async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
-        LearnModel::complete(self, prompt, max_tokens)
-            .await
-            .map_err(|e| e.to_string())
+        match LearnModel::complete(self, prompt, max_tokens).await {
+            Ok(text) => Ok(text),
+            // A reply cut off at the limit is returned as far as it was written: the
+            // callers of a one-shot extraction read what is complete in it (a table fill
+            // keeps the cells before the cut) and check everything they use.
+            Err(LearnError::Truncated(partial)) => Ok(partial),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 

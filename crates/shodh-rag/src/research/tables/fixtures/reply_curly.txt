@@ -1,0 +1,7 @@
+Based on the passages, here is the row:
+
+```json
+{"cells": [
+  {"column": "c1", "answer": "a linear probe", "quote": "We don’t use fine-tuning – we only train a linear probe", "passage": 1}
+]}
+```

@@ -36,9 +36,72 @@ pub const NOT_YES_NO: &str = "not_yes_no";
 pub const NOT_AN_OPTION: &str = "not_an_option";
 pub const EMPTY_TEXT: &str = "empty_text";
 pub const TEXT_TOO_LONG: &str = "text_too_long";
+/// Set on a `not_found` cell whose column did not see all its passages (they did not fit
+/// the call): the answer may lie in the passages left out, so one later fill tries again.
+pub const NOT_FOUND_PARTIAL: &str = "not_found_partial";
+/// Set on a `not_found` cell of a column whose passages did not all fit even in the
+/// second try. It is not tried again for the same paper and column revision.
+pub const NOT_FOUND_PARTIAL_RETRIED: &str = "not_found_partial_retried";
 /// Set on an edited cell, which keeps the user's value, when its column's type or options
 /// changed and the value no longer fits them (see `TableStore::update_column`).
 pub const VALUE_NO_LONGER_FITS: &str = "value_no_longer_fits";
+
+/// Answers that say "there is no answer" in words. A free model that follows "never guess"
+/// badly writes one of these into a `text` or `choice` cell with a real sentence of the
+/// paper as its quote; the quote is found and long enough, so without this list the cell
+/// would be `verified` with a value that claims nothing. They are read as `answer: null`
+/// (not found), whatever the quote says. Compared after [`non_answer_form`]: letter case,
+/// surrounding space and punctuation do not matter. Not applied to `yes_no` (`no` is an
+/// answer) and never to a `choice` that is one of the column's options.
+pub const NON_ANSWERS: &[&str] = &[
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "nil",
+    "unknown",
+    "not found",
+    "not reported",
+    "not specified",
+    "not mentioned",
+    "not stated",
+    "not available",
+    "not provided",
+    "not applicable",
+    "no information",
+    "-",
+    "\u{2013}",
+    "\u{2014}",
+];
+
+/// `text` as compared with [`NON_ANSWERS`]: whitespace collapsed, lower-cased, and
+/// sentence punctuation and quotes trimmed from both ends.
+pub fn non_answer_form(text: &str) -> String {
+    collapse(text)
+        .to_lowercase()
+        .trim_matches(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '(' | ')' | '[' | ']' | '*'
+                )
+        })
+        .to_string()
+}
+
+fn is_non_answer(spec: &ColumnSpec, answer: &Value) -> bool {
+    if !matches!(spec.kind, ColumnKind::Text | ColumnKind::Choice) {
+        return false;
+    }
+    let Value::String(text) = answer else {
+        return false;
+    };
+    let form = non_answer_form(text);
+    if spec.kind == ColumnKind::Choice && spec.options.iter().any(|o| non_answer_form(o) == form) {
+        return false;
+    }
+    NON_ANSWERS.contains(&form.as_str())
+}
 
 /// Contradiction probability at or above which (and above the entailment probability) a
 /// verified cell is downgraded. Uncalibrated; the accuracy eval measures it.
@@ -241,6 +304,15 @@ pub fn check(spec: &ColumnSpec, raw: &RawAnswer, passages: &[Passage]) -> Checke
         }
         Some(Some(answer)) => answer,
     };
+    if is_non_answer(spec, answer) {
+        return Checked {
+            status: CellStatus::NotFound,
+            value: None,
+            quote: None,
+            passage: None,
+            error: None,
+        };
+    }
     let quote = raw
         .quote
         .as_deref()
@@ -355,6 +427,9 @@ pub fn reason(code: &str) -> &'static str {
         NOT_AN_OPTION => "The answer is not one of the column's options.",
         EMPTY_TEXT => "The answer is empty.",
         TEXT_TOO_LONG => "The answer is longer than 500 characters.",
+        NOT_FOUND_PARTIAL | NOT_FOUND_PARTIAL_RETRIED => {
+            "Not found, but some passages did not fit in the call, so the answer may be in them."
+        }
         VALUE_NO_LONGER_FITS => "Your value does not fit the column's type or options any more.",
         _ => "The answer could not be checked.",
     }
@@ -400,6 +475,59 @@ mod tests {
             quote: Some(quote.to_string()),
             passage: Some(passage),
         }
+    }
+
+    #[test]
+    fn a_non_answer_in_words_is_not_found_whatever_the_quote_says() {
+        let quote = "We pre-train on LAION-400M";
+        for text in [
+            "N/A",
+            "n/a",
+            "  Not specified. ",
+            "not reported",
+            "Not mentioned",
+            "unknown",
+            "None",
+            "-",
+            "\u{2014}",
+            "NA",
+            "\"not found\"",
+            "No information",
+            "not stated",
+            "Not available",
+        ] {
+            let out = check(
+                &spec(ColumnKind::Text, &[]),
+                &raw(Value::from(text), quote, 1),
+                &passages(),
+            );
+            assert_eq!(out.status, CellStatus::NotFound, "{text}");
+            assert_eq!(out.value, None, "{text}");
+        }
+        // A choice that is not an option reads the same; one that is an option is an answer.
+        let pick = spec(ColumnKind::Choice, &["Benchmark", "None"]);
+        let out = check(&pick, &raw(Value::from("unknown"), quote, 1), &passages());
+        assert_eq!(out.status, CellStatus::NotFound);
+        let out = check(&pick, &raw(Value::from("none"), quote, 1), &passages());
+        assert_eq!(out.status, CellStatus::Verified);
+        // `no` is an answer to a yes/no column.
+        let out = check(
+            &spec(ColumnKind::YesNo, &[]),
+            &raw(
+                Value::from("no"),
+                "Code is available at the project page",
+                3,
+            ),
+            &passages(),
+        );
+        assert_eq!(out.status, CellStatus::Verified);
+        // A real answer that merely contains the words is still an answer.
+        let out = check(
+            &spec(ColumnKind::Text, &[]),
+            &raw(Value::from("LAION-400M, none other"), quote, 1),
+            &passages(),
+        );
+        assert_eq!(out.status, CellStatus::Verified);
     }
 
     #[test]

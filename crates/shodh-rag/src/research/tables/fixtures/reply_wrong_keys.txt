@@ -1,0 +1,6 @@
+{"results": [
+  {"key": "c1", "value": "LAION-400M", "evidence": "We pre-train a bi-encoder on LAION-400M", "passage": 1},
+  {"key": "c2", "value": "0.912", "evidence": "Recall@10 of 0.912 on MS MARCO", "passage": 2},
+  {"key": "c3", "value": "yes", "evidence": "Our code is available at the project page", "passage": 3},
+  {"key": "c4", "value": "benchmark", "evidence": "The study is a benchmark evaluation", "passage": 3},
+]}

@@ -3212,6 +3212,21 @@ impl RAGEngine {
             .unwrap_or_default())
     }
 
+    /// The first chunk of `source` (a paper's title and abstract), or `None` when it has
+    /// no chunks. `source` is read as [`crate::research::path_key`] reads it (trimmed, then
+    /// normalised as the index stores it), the one spelling the per-paper search filters
+    /// by, so any spelling of the path finds it. Reads only.
+    pub async fn first_chunk(&self, source: &str) -> Result<Option<crate::storage::SearchHit>> {
+        let source = normalize_source_path(Path::new(source.trim()));
+        let predicate = format!("{} AND chunk_index = 0", source_predicate(&source));
+        Ok(self
+            .store
+            .list_chunks(Some(&predicate), 1)
+            .await?
+            .into_iter()
+            .next())
+    }
+
     /// Brings the stored chunks of `source` to the current [`INDEX_FORMAT`]
     /// without reading its file: each chunk's context is made again from
     /// what was stored with it (title, section, unit kind; the opening from
@@ -4417,6 +4432,127 @@ Language models trained on long documents reach lower perplexity.
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
+    }
+
+    /// A table fill searches one paper, by any spelling of its path, and starts from
+    /// its first chunk.
+    #[tokio::test]
+    async fn a_paper_index_searches_only_that_paper_and_finds_its_first_chunk() {
+        use crate::research::tables::passages::PaperIndex;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let a = dir.path().join("alpha.md");
+        let b = dir.path().join("beta.md");
+        let mut alpha = String::from(
+            "# Alpha retrieval\n\nAlpha abstract: dense retrieval with a dataset of papers.\n",
+        );
+        for i in 0..40 {
+            alpha.push_str(&format!(
+                "\n## Section {i}\n\nAlpha section {i} reports the dataset size and the method. \
+                 The evaluation of section {i} compares retrieval quality, memory use and latency \
+                 on the dataset, and it explains how the method was tuned for that section.\n"
+            ));
+        }
+        std::fs::write(&a, alpha).unwrap();
+        std::fs::write(&b, "# Beta\n\nBeta also reports a dataset and a method.\n").unwrap();
+        engine
+            .add_document_from_file(&a, HashMap::new())
+            .await
+            .unwrap();
+        engine
+            .add_document_from_file(&b, HashMap::new())
+            .await
+            .unwrap();
+
+        // Several chunks, so the test proves chunk 0 is chosen, not merely the only one.
+        let chunks = engine
+            .store
+            .list_chunks(Some(&source_predicate(&normalize_source_path(&a))), 1_000)
+            .await
+            .unwrap();
+        assert!(chunks.len() > 1, "{} chunks", chunks.len());
+        let first = engine
+            .first_chunk(&a.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.chunk_index, 0);
+        assert!(first.text.contains("Alpha"), "{}", first.text);
+
+        // Reading a paper never reports a removal to the library's observer.
+        let observer = Arc::new(CountingObserver::default());
+        engine.set_removal_observer(Some(observer.clone() as Arc<dyn LibraryRemovalObserver>));
+        let index = tokio::sync::RwLock::new(engine);
+        let passages = index
+            .search_paper(&a.to_string_lossy(), "dataset method", 4)
+            .await
+            .unwrap();
+        assert!(!passages.is_empty());
+        assert!(
+            passages
+                .iter()
+                .all(|p| p.text.contains("Alpha") || p.text.contains("alpha")),
+            "{passages:?}"
+        );
+        // A passage is the text of its own chunk, never that chunk joined to its neighbours.
+        for passage in &passages {
+            let own = chunks
+                .iter()
+                .find(|c| {
+                    uuid::Uuid::parse_str(&c.id).map(|u| u.to_string()).ok()
+                        == Some(passage.chunk_id.clone())
+                })
+                .unwrap_or_else(|| panic!("no chunk {}", passage.chunk_id));
+            assert_eq!(passage.text, own.text);
+        }
+        let opened = index
+            .first_passage(&a.to_string_lossy())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(opened.text.contains("Alpha"));
+        let missing = dir.path().join("never-indexed.md");
+        assert!(index
+            .first_passage(&missing.to_string_lossy())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(index
+            .search_paper(&missing.to_string_lossy(), "dataset", 4)
+            .await
+            .unwrap()
+            .is_empty());
+        // Every spelling of the path finds the paper, for its first chunk and for the
+        // search alike: the two read one key.
+        let mut spellings = vec![
+            format!("{}/./sub/../alpha.md", dir.path().display()),
+            format!("  {}  ", a.display()),
+        ];
+        if cfg!(windows) {
+            spellings.push(a.display().to_string().to_uppercase());
+        }
+        for spelling in &spellings {
+            let first = index.first_passage(spelling).await.unwrap();
+            assert!(
+                first.is_some_and(|p| p.text.contains("Alpha")),
+                "first chunk of {spelling:?}"
+            );
+            let found = index
+                .search_paper(spelling, "dataset method", 4)
+                .await
+                .unwrap();
+            assert!(!found.is_empty(), "search of {spelling:?}");
+        }
+        assert_eq!(
+            observer.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "searching and opening papers triggered a removal"
+        );
+        assert!(
+            !pending_file(dir.path()).exists(),
+            "no removal was written down"
+        );
     }
 
     fn pending_file(dir: &Path) -> std::path::PathBuf {

@@ -1,0 +1,12 @@
+Sure! Here is the table row you asked for, built from the passages:
+
+```json
+{"cells": [
+  {"column": "c1", "answer": "LAION-400M", "quote": "We pre-train a bi-encoder on LAION-400M", "passage": 1},
+  {"column": "c2", "answer": "0.912", "quote": "Recall@10 of 0.912 on MS MARCO", "passage": 2},
+  {"column": "c3", "answer": "yes", "quote": "Our code is available at the project page", "passage": 3},
+  {"column": "c4", "answer": "Benchmark", "quote": "The study is a benchmark evaluation", "passage": 3}
+]}
+```
+
+Let me know if you need more detail on any {column}.

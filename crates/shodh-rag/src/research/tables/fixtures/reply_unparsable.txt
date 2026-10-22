@@ -1,0 +1,1 @@
+I looked at the passages. c1 = LAION-400M, c2 = 0.912, c3 = yes, c4 = Benchmark.

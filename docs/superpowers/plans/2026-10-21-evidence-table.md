@@ -76,10 +76,10 @@ These are input classes that the spec implies but does not spell out. Each has a
 1. **A reply whose quote holds braces or escaped quotes** (LaTeX `\{x\}`, set notation, `"…"` inside the quote).
    - The envelope must still parse. A naive brace counter that ignores JSON string state cuts it short.
    - Pinned in Task 5: `braces_and_quotes_inside_strings_do_not_end_the_envelope`.
-2. **A paper that is not indexed yet, or search models that are missing.**
-   - Retrieval returns nothing.
-   - The fill must make no model call, and must mark the cells `failed` with `paper_not_indexed`, not `not_found`.
-   - Pinned in Task 8: `an_unindexed_paper_costs_no_call_and_fails_its_cells`.
+2. **A paper that is not indexed yet, or search models that are missing.** Two different faults, two codes.
+   - The paper has no chunks: retrieval returns nothing. The fill makes no model call and marks the cells `failed` with `paper_not_indexed`, not `not_found`. Pinned in Task 8: `an_unindexed_paper_costs_no_call_and_fails_its_cells`.
+   - The search models are missing (`search_comprehensive` errors through `require_embeddings`), or the search cannot see a paper that has a first chunk: the cells are `failed` with `search_failed: …`, still with no model call. This is a configuration fault, not a property of the paper. Pinned in Task 8: `a_paper_the_search_cannot_see_costs_no_call_and_says_search_failed`.
+   - PR 3 reads the two differently: `paper_not_indexed` skips that paper and the job goes on; `search_failed` stops the job after the first paper (every paper would fail the same way) and tells the user to install the search models.
 3. **Quotes that differ from the passage only typographically:**
    - an `ﬁ` ligature, curly quotes, an en dash;
    - a word split by a line-break hyphen;
@@ -3957,7 +3957,18 @@ git commit -m "Evidence tables: fill one paper from retrieval, budget, call, par
 
 # PR 3 — Job queue, daily cap, quota pause, resume and notifications (outline)
 
-Branch: `feat/evidence-table-jobs`. This PR is planned in detail after the PR 2 quality gate. The outline below fixes:
+Branch: `feat/evidence-table-jobs`. This PR is planned in detail after the PR 2 quality gate.
+
+**What PR 2 settled for this PR (after review):**
+- `PaperFill.model_error` is a typed `ModelFailure { kind: Quota | Transient | Auth | Other, retry_after_secs, detail }`, classified in `fill.rs` by `harness::provider_error::classify`. The runner does not parse provider text.
+- On `Quota` (rate limit or exhausted quota) the fill has left the cells it did not reach exactly as they were, and written nothing for them. The runner sets them `queued`, pauses, and resumes later. Other errors are stored on the cells as codes only (`model_timeout`, `model_auth`, `model_failed`); the provider text is in the log, redacted, and in `ModelFailure.detail` for messages.
+- `search_failed` stops the job after the first paper (search models missing; every paper would fail the same way). `paper_not_indexed` skips the paper and the job continues.
+- A fill makes at most 2 planned calls and 1 retry per paper (3 calls); the runner's daily-cap check keeps using `today + 3 > cap`, not `+ 2`.
+- A table has at most `MAX_COLUMNS = 22` columns (2 calls of 11 cells, each reply at most 2,000 output tokens).
+- A `not_found` whose column missed passages is `not_found_partial` and is filled once more on the next run (`not_found_partial_retried` after that). `estimate` counts these cells as misses once.
+- The fill reads Results only as search hints for `number` columns; a Result line is never a passage, because it is not verbatim paper text.
+
+The outline below fixes:
 - the files;
 - the interfaces;
 - the tests that must exist.
@@ -3989,12 +4000,12 @@ Branch: `feat/evidence-table-jobs`. This PR is planned in detail after the PR 2 
     - `start(table_id) -> job_id`;
     - `run(job_id) -> ResearchResult<JobOutcome>`. It sets cells to `queued`, fills rows in `position` order, and adds each `PaperFill.calls` to `done_calls` and to the counter.
   - **Before each paper:**
-    - stop with `Paused` when `today + 2 > cap`;
+    - stop with `Paused` when `today + 3 > cap` (two calls and the one retry);
     - set `next_attempt_at` to the next local midnight.
   - **Quota:**
-    - `harness::provider_error::classify(model_error, None, now_ms)` is `RateLimited` or `QuotaExhausted` → `Paused`;
+    - `PaperFill.model_error` with `kind == Quota` → `Paused` (the fill already classified it);
     - `next_attempt_at` = `limit_reset_at_ms`, or the next midnight;
-    - the paper's `failed` cells are retried on resume.
+    - the paper's cells the fill did not reach are untouched; they are `queued` and are filled on resume.
   - **Cancel:** checked between calls. Finished cells stay. Queued cells go back to `empty`.
   - **Resume:** `resume_due(now) -> Vec<job_id>` returns `Queued`/`Running` jobs, and `Paused` jobs whose `next_attempt_at <= now`.
 - **Tests** (all with `Replies`/`Index` doubles like Task 8):

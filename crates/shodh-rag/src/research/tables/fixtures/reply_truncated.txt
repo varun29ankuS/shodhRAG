@@ -1,0 +1,8 @@
+<think>
+Passage 1 gives the dataset. Passage 2 has the recall. Passage 3 says the code is out.
+</think>
+```json
+{"cells":[
+ {"column":"c1","answer":"LAION-400M","quote":"We pre-train a bi-encoder on LAION-400M","passage":1},
+ {"column":"c2","answer":"0.912","quote":"Recall@10 of 0.912 on MS MARCO","passage":2},
+ {"column":"c3","answer":"yes","quote":"Our code is avai

@@ -4606,6 +4606,8 @@ Branch: `feat/evidence-table-ui` from origin/master (2b2ed03). Frontend only, ap
   - local-time reset in fixed time zones (Asia/Kolkata, America/New_York);
   - each `fill_start` result, a pending cancel with and without a lease, hand-fill outcomes, cap notices, cell explanations (including `refill_failed`).
 
+**Agent coverage.** `agent-coverage.json` excludes the 22 table commands, each with its reason. The commands that spend model calls (`fill_start`, `cell_refill`, `table_fill_paper`) and the cap (`tables_settings_set`) are user-only. The reading and editing commands are recorded as having no agent tools yet: agent tools for tables (at least `tables_list` and `table_get`) are a follow-up.
+
 **Open risks**
 - **The model picker does not warn** about a model tables refuse. No command says whether a model id is refused, and tables use the app's model, so the refusal is shown when a fill is estimated or started, and on a paused job. A picker warning needs a backend query of the reasoning rule.
 - **Staleness from a changed paper file** (`paper_hash`) is not shown: the interface does not know the file's hash. Such cells refill on the next run, as before.

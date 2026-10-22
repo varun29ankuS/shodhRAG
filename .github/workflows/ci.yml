@@ -6,6 +6,13 @@ on:
   push:
     branches: [master]
 
+# A new push to a pull request cancels that PR's superseded run. Runs on master
+# are never cancelled (group per commit): pull requests download the footprint
+# build a master run uploads, and master is the only ref that saves caches.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-C target-feature=-crt-static"
@@ -41,6 +48,8 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Pinned, checksum-verified protoc from the official release (the
       # Chocolatey feed answers 503 at times while choco exits 0).
@@ -59,7 +68,10 @@ jobs:
   test:
     name: Tests
     runs-on: windows-latest
-    needs: check
+    env:
+      # Line tables only (file:line in backtraces): smaller debug builds and
+      # caches. Dev and test profiles only; the release profile is untouched.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +80,8 @@ jobs:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Pinned, checksum-verified protoc from the official release (the
       # Chocolatey feed answers 503 at times while choco exits 0).
@@ -98,6 +112,8 @@ jobs:
     env:
       # The workflow's -crt-static is for the Windows MSVC builds.
       RUSTFLAGS: ""
+      # Line tables only: smaller debug builds and caches (release is untouched).
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
 
@@ -106,6 +122,8 @@ jobs:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # LanceDB's protobuf definitions are compiled at build time.
       - name: Install Protobuf compiler
@@ -123,7 +141,9 @@ jobs:
   eval-retrieval:
     name: Retrieval eval
     runs-on: windows-latest
-    needs: check
+    env:
+      # Line tables only: smaller debug builds and caches (release is untouched).
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
 
@@ -132,6 +152,8 @@ jobs:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Pinned, checksum-verified protoc from the official release (the
       # Chocolatey feed answers 503 at times while choco exits 0).
@@ -141,14 +163,24 @@ jobs:
 
       # Same cache as the footprint job: the pinned search and OCR models,
       # keyed by the file that pins them.
-      - name: Cache search models
-        uses: actions/cache@v4
+      # Only master saves the models (a pull request would add a copy that no
+      # other ref can read).
+      - name: Restore search models
+        id: models-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
       - name: Install search and OCR models
         run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
+
+      - name: Save search models
+        if: github.ref == 'refs/heads/master' && steps.models-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
       # The cutoff at which an answer counts as using a memory, measured on the labelled
       # fixture (crates/shodh-rag/src/user_memory/fixtures/memory_use.json) with the real
@@ -259,13 +291,13 @@ jobs:
   #     the ratio still reaches this ceiling.
   # The base commit's build comes from master's push run (artifact
   # footprint-exe-<sha>, uploaded right after its build), else from this PR's
-  # cache, else it is built here (about 35 more minutes). The anchor is cached
-  # and built the same way. Push runs on master upload their build and record
-  # their time against the anchor.
+  # cache, else it is built here (about 35 more minutes). The anchor is a
+  # 90-day artifact of a master run (footprint-anchor-<sha>), else the cache,
+  # else built. Push runs on master upload their build, seed the anchor
+  # artifact, and record their time against the anchor.
   footprint:
     name: Footprint budget
     runs-on: windows-latest
-    needs: check
     permissions:
       contents: read
       actions: read  # find and download the base commit's build
@@ -298,6 +330,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Pinned, checksum-verified protoc from the official release (the
       # Chocolatey feed answers 503 at times while choco exits 0).
@@ -345,7 +378,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $name = 'footprint-exe-${{ steps.builds.outputs.reference }}'
-          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master")][0].workflow_run.id // empty'
+          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0].workflow_run.id // empty'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $runId) {
             Write-Host "No artifact $name (master's push run has not uploaded it yet, or it expired): trying this PR's cache, else building it here."
@@ -365,8 +398,41 @@ jobs:
           path: ${{ runner.temp }}/footprint-bin/reference
           key: footprint-reference-${{ steps.builds.outputs.reference }}
 
+      # The anchor never changes, so it is kept as a 90-day artifact of a
+      # master run (the repository's maximum), found the same way as the base
+      # commit's build. A cache entry is evicted with the rest of the 10 GB
+      # pool. Only runs of this repository's master branch are trusted (a fork's
+      # branch can be named master too), as above.
+      - name: Download the anchor build
+        id: anchor-artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "footprint-anchor-$env:FOOTPRINT_ANCHOR_SHA"
+          $found = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0] | if . then "\(.workflow_run.id) \(.created_at)" else empty end'
+          if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
+          if (-not $found) {
+            Write-Host "No artifact $name (not uploaded yet, or it expired): trying the cache, else building it here."
+            "found=false" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $runId, $createdAt = $found -split ' '
+          $dir = '${{ runner.temp }}/footprint-bin/anchor'
+          gh run download $runId --repo '${{ github.repository }}' --name $name --dir $dir
+          if ($LASTEXITCODE -ne 0) { throw "Downloading $name from run $runId failed" }
+          $exe = Join-Path $dir 'shodh-rag-app.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "$name has no shodh-rag-app.exe" }
+          $ageDays = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($createdAt, [cultureinfo]::InvariantCulture)).TotalDays
+          Write-Host ("Anchor build: artifact $name from run $runId, {0:N0} days old, SHA-256 {1}" -f $ageDays, (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash)
+          "found=true" >> $env:GITHUB_OUTPUT
+          # A master run uploads the same file again before the artifact expires.
+          $stale = if ($ageDays -gt 45) { 'true' } else { 'false' }
+          "stale=$stale" >> $env:GITHUB_OUTPUT
+
       - name: Restore the anchor build
         id: anchor-cache
+        if: steps.anchor-artifact.outputs.found != 'true'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/footprint-bin/anchor
@@ -382,7 +448,7 @@ jobs:
           if ('${{ github.event_name }}' -eq 'pull_request' -and '${{ steps.reference-artifact.outputs.found }}' -ne 'true' -and '${{ steps.reference-cache.outputs.cache-hit }}' -ne 'true') {
             [void]$missing.Add(@{ Label = 'reference'; Sha = '${{ steps.builds.outputs.reference }}' })
           }
-          if ('${{ steps.anchor-cache.outputs.cache-hit }}' -ne 'true') {
+          if ('${{ steps.anchor-artifact.outputs.found }}' -ne 'true' -and '${{ steps.anchor-cache.outputs.cache-hit }}' -ne 'true') {
             [void]$missing.Add(@{ Label = 'anchor'; Sha = $env:FOOTPRINT_ANCHOR_SHA })
           }
           if ($missing.Count -eq 0) { Write-Host 'Every build to compare was downloaded or restored.'; exit 0 }
@@ -416,17 +482,32 @@ jobs:
           path: ${{ runner.temp }}/footprint-bin/reference
           key: footprint-reference-${{ steps.builds.outputs.reference }}
 
+      # Master only (the artifact is the durable copy; a PR's copy would only
+      # fill the pool).
       - name: Cache the anchor build
-        if: steps.build-missing.outputs.anchor == 'true'
+        if: steps.build-missing.outputs.anchor == 'true' && github.ref == 'refs/heads/master'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/footprint-bin/anchor
           key: footprint-anchor-${{ env.FOOTPRINT_ANCHOR_SHA }}
 
+      # Master seeds the artifact (from the build or the cache) when it is
+      # missing, and renews it before it expires.
+      - name: Upload the anchor build
+        if: github.event_name == 'push' && (steps.anchor-artifact.outputs.found != 'true' || steps.anchor-artifact.outputs.stale == 'true')
+        uses: actions/upload-artifact@v4
+        with:
+          name: footprint-anchor-${{ env.FOOTPRINT_ANCHOR_SHA }}
+          path: ${{ runner.temp }}/footprint-bin/anchor/shodh-rag-app.exe
+          retention-days: 90
+          overwrite: true
+          if-no-files-found: error
+
       # The pinned search and OCR models (installed by the app itself, SHA-256
       # checked), cached by the file that pins them.
-      - name: Cache search models
-        uses: actions/cache@v4
+      - name: Restore search models
+        id: models-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
@@ -455,6 +536,13 @@ jobs:
             $opts.MaxWindowRatio = [double]$env:MAX_WINDOW_RATIO
           }
           ./scripts/measure-footprint.ps1 @opts
+
+      - name: Save search models
+        if: github.ref == 'refs/heads/master' && steps.models-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
       - name: Upload footprint report
         if: always()

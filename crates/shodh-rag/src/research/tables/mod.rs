@@ -11,6 +11,7 @@
 //! contradicted by its quote is stored as `unverified` with the reason.
 
 pub mod normalize;
+pub mod parse;
 pub mod store;
 pub mod validate;
 

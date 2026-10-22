@@ -44,8 +44,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
 /// the learning model's rejected answers (10), forgotten suggestions (11), the statement
-/// store's state (12), what happened to memories in each answer (13) and evidence tables
-/// (14) use one version sequence, so every component that opens it sees the same schema.
+/// store's state (12), what happened to memories in each answer (13), evidence tables
+/// (14) and the evidence tables' daily call counter and fill-job state (15) use one
+/// version sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -468,6 +469,40 @@ const MIGRATIONS: &[(i64, &str)] = &[
             created_at TEXT NOT NULL,
             PRIMARY KEY (paper_hash, column_key, model)
         );",
+    ),
+    (
+        15,
+        // Evidence-table fill jobs. `table_calls`: the model calls tables made per UTC day
+        // (the provider's daily window; the daily cap reads it; chat and agents do not
+        // count here). On `table_fill_job`: the run that holds a job and its heartbeat (a
+        // lease another process may take over only once it has expired), why a paused job
+        // waits, a cancel asked of a running job, the backoff rung and the run of failing
+        // papers that escalate pauses, and the panics of its runs. A table has at most one
+        // active (queued, running or paused) job; the UPDATE only guards the index.
+        "CREATE TABLE table_calls (
+            utc_day TEXT PRIMARY KEY,
+            calls INTEGER NOT NULL CHECK (calls >= 0)
+        );
+        ALTER TABLE table_fill_job ADD COLUMN run_token TEXT NULL;
+        ALTER TABLE table_fill_job ADD COLUMN heartbeat_at TEXT NULL;
+        ALTER TABLE table_fill_job ADD COLUMN pause_reason TEXT NULL
+            CHECK (pause_reason IN
+                ('daily_cap', 'quota', 'auth', 'unreachable', 'failing', 'busy'));
+        ALTER TABLE table_fill_job ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0
+            CHECK (cancel_requested IN (0, 1));
+        ALTER TABLE table_fill_job ADD COLUMN backoff_step INTEGER NOT NULL DEFAULT 0
+            CHECK (backoff_step >= 0);
+        ALTER TABLE table_fill_job ADD COLUMN failure_streak INTEGER NOT NULL DEFAULT 0
+            CHECK (failure_streak >= 0);
+        ALTER TABLE table_fill_job ADD COLUMN panics INTEGER NOT NULL DEFAULT 0
+            CHECK (panics >= 0);
+        UPDATE table_fill_job SET state = 'cancelled'
+         WHERE state IN ('queued', 'running', 'paused')
+           AND rowid NOT IN (SELECT MAX(rowid) FROM table_fill_job
+                              WHERE state IN ('queued', 'running', 'paused')
+                              GROUP BY table_id);
+        CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
+            WHERE state IN ('queued', 'running', 'paused');",
     ),
 ];
 
@@ -1931,6 +1966,7 @@ mod tests {
                  DROP TABLE table_cell;
                  DROP TABLE table_fill_job;
                  DROP TABLE fill_cache;
+                 DROP TABLE table_calls;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

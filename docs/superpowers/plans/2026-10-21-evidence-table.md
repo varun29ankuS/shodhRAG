@@ -4048,6 +4048,359 @@ The outline below fixes:
 
 **PR 3 end:** push, open the PR, get CI green. Then the quality gate runs on the user's papers via `table_fill_paper`.
 
+**PR 3 is split.** PR 3a (`feat/evidence-table-jobs`) is library code only: Task 9 and Task 10, detailed below. PR 3b is Task 11 (Tauri state, commands, notifications, the removal hook and the real fixtures), planned from the outline above once 3a is merged.
+
+**Note for PR 3b (reasoning tokens).** PR 2's report found that on most OpenRouter providers reasoning tokens count against `max_tokens`. A reasoning model can therefore spend a cell's reply budget on thinking and return a cut-off or empty reply, which costs the paper its retry. PR 3a does not handle this per model. PR 3b decides it with the first real replies from `table_fill_paper`: either the table's model list excludes reasoning-only models, or the command raises `reply_budget` for models that report reasoning. Until then the job runner treats such a reply like any other cut-off or unparsable reply.
+
+## PR 3a — Daily call counter and job runner (detail plan)
+
+Branch: `feat/evidence-table-jobs` from origin/master (eb04e8f). Library only. Nothing calls the runner until PR 3b.
+
+### Decisions settled for 3a
+
+> The fix round after review (see "Fix round" at the end of this section) revised decisions 2, 4, 5, 6 and 7: a lease instead of one process per database, the UTC day, a per-paper reservation, and the rate-limit and failure escalation rules. Where they differ, the fix round wins.
+
+1. **The counter counts table calls only** (Decision 3). Chat and agents do not call `record`. The dialog wording is "Tables have made N of 30 calls today".
+2. **One active job per table, enforced in SQL.**
+   - Migration 15 adds the partial unique index `table_fill_job_active ON table_fill_job(table_id) WHERE state IN ('queued','running','paused')`. `Paused` counts as active, so pressing Fill on a paused table resumes its job rather than starting a second one. `start` returns the existing active job.
+   - **The same job twice** (`resume_due` racing a manual start, or two runs in one process) is refused by the claim, which is one guarded `UPDATE`:
+     ```sql
+     UPDATE table_fill_job SET state = 'running', run_token = ?2, next_attempt_at = NULL,
+            pause_reason = NULL, last_error = NULL
+      WHERE id = ?1 AND cancel_requested = 0
+        AND (state IN ('queued', 'paused')
+             OR (state = 'running' AND (run_token IS NULL OR run_token <> ?2)))
+     ```
+   - `run_token` is one value per process (a UUID made once). Within a process, a job that is `running` under this process's token is never claimed again. A `running` job under any other token was left by a process that is gone, so it is claimable.
+   - This relies on one app process per `shodh.db`. The normal profile is single-instance (`tauri-plugin-single-instance`), and a separate profile has its own data folder and so its own `shodh.db`.
+   - Every later write of the run carries `AND state = 'running' AND run_token = ?mine`. A write that changes 0 rows means the job was cancelled, deleted with its table, or claimed elsewhere; the run then stops and reports `Lost`.
+3. **Crash safety.**
+   - **What gets `queued`.** The claim sets cells to `queued` in the same transaction, but only cells that hold no result: missing cells are inserted as `queued`, and `empty` or `failed` cells become `queued` (their error is cleared).
+   - **Deviation from the outline:** stale results (`verified`, `unverified`, `not_found` of an old revision or paper hash) keep their status and are refilled in place (`needs_fill` already selects them). If they were queued, a cancel ("queued → empty") would erase the user's old answers.
+   - **Every terminal transition** (`done`, `cancelled`, `failed`) sets the table's `queued` cells back to `empty` in the same transaction as the state change (`WHERE status = 'queued'`, so an edit is never touched). Queued cells therefore exist only while their table has an active job.
+   - **Restart.** A job left `running` by a crash keeps its queued cells, and `resume_due` returns it. On resume the claim succeeds (the token differs), the cells that were stored stay (`needs_fill` is false for them), and the rows are walked again in `position` order. The paper that was in flight when the crash came is filled again; its calls were already counted (decision 4).
+   - **A run that panics.** `run` executes on a spawned task. If the task panics, `run` releases the claim (`state = 'queued'`, `run_token = NULL`) through `spawn_blocking` and returns `ResearchError::Task`. The job is resumable at once, not only after a restart.
+   - **The caller drops `run`'s future.** The spawned task goes on to its end, so a dropped future never leaves the job half-written.
+4. **Counter vs. calls actually made: reserved before each call.**
+   - The fill asks a `CallGate` before every model call (a small hook added to `fill.rs`; see Deviations). The job's gate checks the job is still its own and not cancelled. It then reserves the call atomically with `CallCounter::try_record(day, 1, cap)` and adds 1 to `done_calls`. The call is made only after the reservation is committed.
+   - **The count errs over, never under**, by at most 1 per crash: a reservation whose call never reached the provider because the app died in between. With a free quota of about 50 calls a day and a table cap of 30, an over-count only pauses a job one call early. An under-count could push past the provider's daily limit and lose the day.
+   - `done_calls` is progress for display; the cap reads `model_calls` only.
+5. **Cap check.**
+   - **Before each paper:** if `count(today) + 3 > cap` (two planned calls and the one retry, `CALLS_PER_PAPER_RESERVE = MAX_CALLS_PER_PAPER + 1`), the job pauses with reason `daily_cap` until the next local midnight. The check runs only for a paper with at least one cache miss. A paper with nothing to fill, or only cache hits, costs no call and is never paused for the cap. So a job whose remaining rows are all done ends `Done`, not `Paused`.
+   - **Across tables:** two tables' jobs can run at once, and both can pass the per-paper check at 27 of 30. The hard limit is therefore `try_record`, a read-then-upsert in one `IMMEDIATE` transaction that refuses a call that would pass `cap`. A refusal halts the fill like a cancel: the cells not reached are left as they are, and the job pauses for `daily_cap`. The cap cannot be exceeded by any interleaving, a resume or a restart.
+   - `MIN_DAILY_CAP = 3`. `JobRunner::new` refuses a lower cap, because no paper could ever start.
+6. **Time.**
+   - A `Clock` trait gives `now()` (UTC) and `offset_at(utc)` (the local UTC offset at that instant). `SystemClock` uses `chrono::Local` and reads the offset at every call, so a time-zone change or a DST switch applies from the next check. Going from UTC to local is infallible, so there is no `LocalResult` to handle.
+   - **The day** is `local_day(clock, at) = at.with_timezone(&offset_at(at)).date_naive()`, stored as `YYYY-MM-DD`.
+   - **The next local midnight** is the first instant after `at` whose local day is the next date. The candidates are `next_date 00:00 − offset`, with the offset read at `at` and at each candidate. The earliest candidate that is local `next_date` or later is taken. This gives the right answer on a 23-hour or 25-hour day, and when midnight itself is skipped (the day then starts at 01:00).
+   - A time-zone change mid-day can land the counter on a date key it has used before. That key keeps its count, which is the conservative side.
+   - `next_attempt_at` is stored as fixed-width UTC (`%Y-%m-%dT%H:%M:%S%.3fZ`), so comparing the strings is comparing the times.
+   - The runner reads time only from its injected clock. Tests use a manual clock with scripted offsets; there are no sleeps.
+7. **Pauses and stops.** After each paper's fill, in this order:
+   - **The gate halted the fill:** `Cancelled` → the job is cancelled. `DailyCap` → paused (`daily_cap`) until the next local midnight.
+   - **`ModelFailureKind::Quota`** → paused (`quota`). The wait is the provider's `X-RateLimit-Reset` when it gave one, else `retry_after_secs`, else the next local midnight.
+     - **Deviation:** `ModelFailure` gains `reset_at_ms: Option<u64>` (from `harness::provider_error::limit_reset_at_ms`). `retry_after_secs` is capped at an hour by `classify` and is absent for an exhausted daily quota, so it cannot carry a daily reset.
+     - The cells the fill did not reach are untouched and stay `queued`.
+   - **`Auth`** → paused (`auth`, "needs you") with `next_attempt_at = NULL`. `resume_due` never returns such a job; the user fixes the key and starts it again.
+     - The cells of the call that met the error are `failed` with `model_auth`, as PR 2 settled. That is one call's worth of cells, not every cell.
+     - Every later paper would fail the same way, so failing them all would only bury the grid in identical errors.
+   - **`Transient`** (timeout, network, model unavailable) → that paper's cells are `failed` with `model_timeout`, and the job goes on. A second transient failure on the next paper pauses the job (`unreachable`) for 30 minutes. Without that, an outage would spend one counted call per paper until the cap was gone.
+   - **`Other`** → the cells are `failed` with `model_failed`, and the job goes on.
+   - **`search_failed`** on any stored cell → the job is `failed`, with `last_error` holding the cell's `search_failed: …` text. The search models are missing, and every paper would fail the same way.
+   - **`paper_not_indexed`** → the paper is skipped (its cells are `failed` with that code, at no call), and the job goes on. The run report counts these papers.
+   - **A `ResearchError` from the fill or the store** → the job is `failed` with `fill_error: …`.
+8. **Cancel.**
+   - It is persisted, never an in-memory flag, so a paused job and a job in another runner can be cancelled too.
+   - **Queued or paused job:** `cancel` sets `cancelled` and resets the queued cells, in one transaction.
+   - **Running job:** `cancel` sets `cancel_requested = 1`. The run checks it before each paper and the gate checks it before each call, so it stops after the current call. Cells already stored stay; queued cells go back to `empty`.
+   - **Running job of a dead process:** the claim reads `cancel_requested = 1` and finishes the cancel itself.
+   - A pause transition that finds `cancel_requested = 1` cancels instead.
+9. **Edits during a run.**
+   - Every cell write of a fill goes through `store_fill`, which refuses an edited cell, an older column revision, and a removed row or column (PR 2).
+   - The runner writes cells only with `WHERE status IN ('empty','failed')` (queue) and `WHERE status = 'queued'` (unqueue), so an edited cell is never requeued or reset.
+   - Each paper's columns and cells are read fresh just before its fill. A column changed mid-run is filled at its new revision; a row removed mid-run is skipped.
+10. **Estimate.**
+    - It shares the fill's own steps. They are factored out of `fill_paper` into:
+      - `Filler::survey`: the paper hash, the columns that `needs_fill`, and the cache lookups;
+      - `Filler::retrieve`: the first passage and the per-column search, with the same queries and Result hints.
+    - The estimate counts cells that need a fill, cache hits, and calls (`plan_calls` over the misses' passages).
+    - It makes no model call.
+    - `not_found_partial` is never cached, so it is a miss once. `not_found_partial_retried` is not selected by `needs_fill`.
+    - A paper whose search fails, or that has no chunks, or whose file cannot be read is counted with 0 calls, because the fill makes none for it.
+    - The possible retry is not in the estimate; the cap check reserves room for it.
+
+### Task 9: Shared per-day call counter (migration 15)
+
+**Files:**
+- Modify `crates/shodh-rag/src/audit/store.rs`:
+  - add migration 15 and its doc-comment line;
+  - add `DROP TABLE model_calls;` to the version-1 migration test.
+- Create `crates/shodh-rag/src/research/tables/calls.rs`.
+- Modify `crates/shodh-rag/src/research/tables/mod.rs`: `pub mod calls;`, `pub mod jobs;`, `#[cfg(test)] mod testkit;`, and "schema 15" in the docs.
+
+**Migration 15:**
+```sql
+CREATE TABLE model_calls (
+    day TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL CHECK (calls >= 0)
+);
+ALTER TABLE table_fill_job ADD COLUMN run_token TEXT NULL;
+ALTER TABLE table_fill_job ADD COLUMN pause_reason TEXT NULL
+    CHECK (pause_reason IN ('daily_cap', 'quota', 'auth', 'unreachable'));
+ALTER TABLE table_fill_job ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0
+    CHECK (cancel_requested IN (0, 1));
+UPDATE table_fill_job SET state = 'cancelled'
+ WHERE state IN ('queued', 'running', 'paused')
+   AND rowid NOT IN (SELECT MAX(rowid) FROM table_fill_job
+                      WHERE state IN ('queued', 'running', 'paused') GROUP BY table_id);
+CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
+    WHERE state IN ('queued', 'running', 'paused');
+```
+- The `state` CHECK of migration 14 stays: SQLite cannot change a CHECK without rebuilding the table, and the six states are unchanged.
+- The `UPDATE` is a guard. No code before 3a writes jobs, so it changes nothing on a real database, but a duplicate could never make the index, and so the app's database, fail to open.
+
+**Interfaces (`crate::research::tables::calls`):**
+```rust
+pub const DEFAULT_DAILY_CAP: usize = 30;
+pub const CALLS_PER_PAPER_RESERVE: usize = MAX_CALLS_PER_PAPER + 1; // 3
+pub const MIN_DAILY_CAP: usize = CALLS_PER_PAPER_RESERVE;
+
+pub trait Clock: Send + Sync {
+    fn now(&self) -> DateTime<Utc>;
+    fn offset_at(&self, at: DateTime<Utc>) -> FixedOffset;
+}
+pub struct SystemClock;                       // chrono::Local
+pub fn local_day(clock: &dyn Clock, at: DateTime<Utc>) -> NaiveDate;
+pub fn next_local_midnight(clock: &dyn Clock, at: DateTime<Utc>) -> DateTime<Utc>;
+pub fn day_key(day: NaiveDate) -> String;     // "YYYY-MM-DD"
+
+pub struct CallCounter { /* Mutex<Connection> */ }
+impl CallCounter {
+    pub fn open(path: &Path, key: Option<&AuditKey>) -> ResearchResult<Self>;
+    pub fn record(&self, day: NaiveDate, n: usize) -> ResearchResult<usize>;     // day's total
+    pub fn try_record(&self, day: NaiveDate, n: usize, cap: usize)
+        -> ResearchResult<Option<usize>>;                                         // None: over cap, nothing recorded
+    pub fn count(&self, day: NaiveDate) -> ResearchResult<usize>;
+}
+```
+**Deviations from the outline:**
+- `day` is a `NaiveDate`, not `&str`, so a malformed key cannot be written.
+- `today(day)` is named `count(day)`.
+- `try_record` is new (decision 5).
+
+**Tests (`calls.rs`):**
+- `counts_add_up_per_day_and_a_new_day_starts_at_zero`;
+- `two_connections_see_the_same_count`;
+- `try_record_never_passes_the_cap`;
+- `the_day_and_the_next_midnight_follow_the_local_clock_across_dst`: a 23-hour day (Europe-style spring forward), a 25-hour day, a midnight that is skipped, and a positive offset that puts 23:30 UTC on the next local date.
+
+### Task 10: The job runner
+
+**Files:**
+- Create `crates/shodh-rag/src/research/tables/jobs.rs` (runner, job SQL as `impl TableStore`, tests).
+- Create `crates/shodh-rag/src/research/tables/testkit.rs` (`#[cfg(test)]`). It holds the doubles moved from `fill_tests.rs` (`passage`, `Index`, `Replies`, `paper_index`, `big_index`) and a `ManualClock`. `Index` gains per-source "not indexed" and "search fails" switches.
+- Modify `crates/shodh-rag/src/research/tables/fill.rs`:
+  - `CallGate`, `Halt`, `PaperFill.halted`;
+  - `fill_paper_with(request, Option<&dyn CallGate>)`, with `fill_paper` delegating to it with `None`;
+  - `ModelFailure.reset_at_ms`;
+  - the `survey` / `retrieve` / `cached_fill` helpers factored out of `fill_paper` with no change in behaviour.
+- Modify `crates/shodh-rag/src/research/tables/fill_tests.rs`: use the shared doubles; the `ModelFailure` literal gains `reset_at_ms`.
+- Modify `crates/shodh-rag/src/research/tables/store.rs`: `lock` becomes `pub(super)`, and the doc says schema 15.
+
+**Fill hook (`fill.rs`):**
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Halt { Cancelled, DailyCap }
+
+#[async_trait::async_trait]
+pub trait CallGate: Send + Sync {
+    /// Asked before every model call; `None` lets the call go (the gate has counted it).
+    async fn before_call(&self) -> ResearchResult<Option<Halt>>;
+}
+pub struct PaperFill { /* … */ pub halted: Option<Halt> }
+impl Filler {
+    pub async fn fill_paper(&self, r: &PaperRequest) -> ResearchResult<PaperFill>; // = fill_paper_with(r, None)
+    pub async fn fill_paper_with(&self, r: &PaperRequest, gate: Option<&dyn CallGate>)
+        -> ResearchResult<PaperFill>;
+}
+```
+- A halt leaves every cell the fill had not yet answered exactly as it was, the same as a quota error.
+- A gate error propagates as the fill's error.
+
+**Runner (`jobs.rs`):**
+```rust
+pub enum JobState { Queued, Running, Paused, Done, Cancelled, Failed }   // table_fill_job.state
+pub enum PauseReason { DailyCap, Quota, Auth, Unreachable }              // table_fill_job.pause_reason
+pub struct FillJob { id, table_id, state, planned_calls, done_calls, created_at,
+                     next_attempt_at: Option<String>, pause_reason: Option<PauseReason>,
+                     last_error: Option<String>, cancel_requested: bool }
+pub struct FillEstimate { papers, columns, cells, calls, cached }
+pub enum JobOutcome {
+    Done, Cancelled, Failed { error: String },
+    Paused { reason: PauseReason, until: Option<DateTime<Utc>> },
+    NotClaimed { state: Option<JobState> },   // running here already, finished, cancelled or gone
+    Lost,                                     // cancelled, deleted or claimed elsewhere mid-run
+}
+pub struct RunReport { outcome: JobOutcome, calls: usize, cells: usize, not_indexed: usize }
+
+#[async_trait::async_trait]
+pub trait ResultSource: Send + Sync {          // Results as search hints; ResultService implements it
+    async fn accepted(&self, path: &str) -> ResearchResult<Vec<ResultRecord>>;
+}
+
+#[derive(Clone)]
+pub struct JobRunner { filler: Filler, counter: Arc<CallCounter>,
+                       results: Arc<dyn ResultSource>, clock: Arc<dyn Clock>,
+                       cap: usize, token: String }
+impl JobRunner {
+    pub fn new(filler, counter, results, cap) -> ResearchResult<Self>; // cap >= MIN_DAILY_CAP
+    pub async fn start(&self, table_id: &str, planned_calls: usize) -> ResearchResult<FillJob>;
+    pub async fn run(&self, job_id: &str) -> ResearchResult<RunReport>;
+    pub async fn cancel(&self, job_id: &str) -> ResearchResult<Option<FillJob>>;
+    pub async fn resume_due(&self) -> ResearchResult<Vec<String>>;
+    pub async fn job(&self, job_id: &str) -> ResearchResult<Option<FillJob>>;
+    pub async fn estimate(&self, table_id: &str) -> ResearchResult<FillEstimate>;
+    pub async fn calls_today(&self) -> ResearchResult<usize>;
+}
+```
+**Deviations from the outline:**
+- `start` takes `planned_calls` (the estimate the user confirmed) and returns the job. If the table already has an active job, `start` returns that job.
+- `resume_due` reads `now` from the injected clock.
+- Cancel is persisted per job (`cancel_requested`), not an `Arc<AtomicBool>` on the runner.
+- The runner holds a `ResultSource` (for the hints) and a `Clock`.
+
+**State transitions:**
+
+| From | Event | To | Cells |
+|---|---|---|---|
+| — | `start` | queued | none |
+| queued, paused, running (other token) | claim | running | no-result cells → queued |
+| running | all rows walked | done | queued → empty |
+| running | cap check or gate cap halt | paused (`daily_cap`, next midnight) | queued stay |
+| running | quota | paused (`quota`, reset / retry-after / midnight) | queued stay |
+| running | auth | paused (`auth`, no time) | that call's cells `model_auth`; queued stay |
+| running | 2nd transient in a row | paused (`unreachable`, +30 min) | queued stay |
+| running | `search_failed` / store error | failed | queued → empty |
+| running | cancel requested | cancelled | queued → empty |
+| queued, paused | `cancel` | cancelled | queued → empty |
+| running (other token), cancel requested | claim | cancelled | queued → empty |
+| running | panic in the run task | queued | queued stay |
+
+`resume_due` returns:
+```sql
+SELECT id FROM table_fill_job
+ WHERE state = 'queued'
+    OR (state = 'running' AND (run_token IS NULL OR run_token <> ?1))
+    OR (state = 'paused' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?2)
+ ORDER BY created_at, id
+```
+
+**Tests (`jobs.rs`, with `Replies` / `Index` / `ManualClock`):**
+- `a_restarted_job_resumes_where_it_stopped_and_never_refills_done_cells`: a job is left `running` under a dead token. A new runner resumes it, fills only the papers left, and the done papers' cells are unchanged.
+- `a_quota_error_pauses_until_the_reset_and_resumes_after_it`: `X-RateLimit-Reset`. The job is not due before the reset and is due after it, and the resume fills the rest.
+- `cancel_stops_after_the_current_call_and_keeps_finished_cells`: a cancel during a paper's first of two calls. No second call is made; the first call's cells stay; queued cells go back to `empty`.
+- `the_daily_cap_is_never_exceeded`: the per-paper `+3` check pauses until the next local midnight. A new runner (a restart) on the same day makes no call. A later run after the clock passes midnight counts on the new day. The count never exceeds the cap.
+- `the_cap_holds_when_other_calls_take_the_room_mid_paper`: calls recorded elsewhere mid-paper make the gate refuse the second call. The job pauses, and the cells not reached stay `queued`.
+- `estimate_counts_only_cache_misses`: cache hits from a second table, `not_found_partial` counted once and `_retried` not at all, and two calls for a paper whose passages do not fit one call. No model call is made.
+- `one_active_job_per_table`: `start` twice gives one job, a raw second active insert violates the index, and two concurrent `run`s of one job claim it once.
+- `an_auth_error_pauses_the_job_until_the_user_starts_it_again`.
+- `search_failed_stops_the_job_and_unqueues_its_cells`.
+- `an_unindexed_paper_is_skipped_and_the_job_goes_on`.
+- `two_unreachable_papers_in_a_row_pause_the_job`.
+- `an_edit_during_a_run_is_never_requeued_or_overwritten`.
+- `a_run_that_panics_releases_its_job_for_resume`.
+- Also: `a_quota_error_without_a_reset_time_pauses_until_the_next_local_midnight`, `cancelling_a_paused_job_empties_its_queued_cells_at_once`, `one_unreachable_paper_does_not_stop_the_job`, `a_cap_below_one_paper_is_refused`, `states_and_reasons_round_trip_their_stored_names`.
+
+### Fix round (review of #90): decisions that replace the ones above
+
+The review found ten faults (F1–F10). The rules below supersede decisions 2, 4, 5, 6 and 7 above, and the Task 9/10 interfaces, wherever they differ. Migration 15 was not yet merged, so it was rewritten in place.
+
+1. **Rate limits keep their kind (F1).**
+   - `ModelFailure` gains `window: LimitWindow`:
+     - `Daily`: the provider's quota-exhausted kind, or a message that names a day (`free-models-per-day`, "daily").
+     - `Short`: a message that names a minute, or "temporarily rate-limited upstream".
+     - `Unknown`: anything else.
+   - `reset_at_ms` is the raw `X-RateLimit-Reset`, whether it is past or future.
+   - The pause rule, in order:
+     1. A header reset in the future: that time.
+     2. A header reset in the past (clock skew): now + 60 s.
+     3. A retry-after: now + that.
+     4. A short or unknown limit: the backoff ladder 1, 2, 5, 15, 30, 30, 30 minutes. The ladder tops out at 30 and then holds there for two more pauses. The 8th pause in a row waits for the user (`until = None`).
+     5. A daily limit with no hint: the provider's daily reset, the next 00:00 UTC.
+   - The ladder rung is `table_fill_job.backoff_step`. Any call that answers resets it.
+   - A free model's headerless upstream 429 now costs minutes, not the day.
+2. **The day is the UTC date (F8).**
+   - The table is `table_calls(utc_day, calls)`, and the daily-cap pause runs to the next 00:00 UTC. This lines the cap up with the provider's daily window, so a user east or west of UTC cannot spend two caps inside one provider day.
+   - The `Clock` trait keeps only `now()`. No local time is read on the job path, so DST and time-zone changes cannot move the day.
+3. **The gate is mandatory (F2).**
+   - `Filler::fill_paper(request, &dyn CallGate)` is the only fill; there is no ungated entry. The fill tests use a `#[cfg(test)]` `OpenGate`.
+   - `CounterGate` (counter + cap, no job) is for filling one paper by hand. PR 3b's `table_fill_paper` and `cell_refill` must use it, so their calls count against the daily cap.
+4. **A failed refill keeps the result (F3).**
+   - `store_fill` never lets a `failed` cell replace a `verified`, `unverified` or `not_found` one. The value, quote, status, revision and paper hash stay, and the error becomes `refill_failed:<code>`. This holds for every failure code:
+     - `model_timeout`, `model_failed`, `model_auth`;
+     - `unparsable_response`, `missing_in_reply`;
+     - `paper_not_indexed`, `search_failed`.
+   - `needs_fill` treats a `refill_failed` result as needing a fill.
+   - `paper_unreadable` still leaves results untouched, because no refill was attempted.
+   - `PaperFill.paper_error` carries a paper-level cause, so the runner no longer reads it from cells.
+5. **Failing papers escalate (F4).**
+   - `table_fill_job.failure_streak` counts papers in a row whose calls all failed: Other, Transient, or nothing usable back. A paper with an answered call resets it.
+   - **Transient** (unreachable): pause on the ladder (reason `unreachable`).
+   - **Other** (a refused request, a wrong model id): the job continues.
+   - **Either:** at `MAX_FAILING_PAPERS = 3` the job pauses `failing` with no time ("needs you").
+   - **Bounds on a permanently failing model:**
+     - a refused or unreachable model spends at most 3 calls;
+     - a model whose replies never parse spends at most 6 (a call and its retry per paper);
+     - a headerless rate limit spends at most 8 before the job waits for the user.
+6. **Released on every error (F5).**
+   - If `run_claimed` returns an error, the job is given back (`queued`). This covers a failed final write as well as a panic.
+   - **In-process slot:** each live run holds a slot for its job (`LIVE_RUNS`, keyed by token and job). A job `running` under this process's token with no live slot is a run that ended without writing its end. `resume_due` returns it, the claim takes it, and `cancel` cancels it at once, all without a restart.
+7. **A lease (F6).**
+   - The claim writes `heartbeat_at`, and the run renews it before every paper and every model call.
+   - Another process may take a `running` job over only when its heartbeat is at least `LEASE_MINUTES = 10` old.
+   - **Why 10 minutes:** the longest gap between two beats is one model call (the HTTP client's timeout is 300 s) plus a paper's local work (seconds). Ten minutes is twice the call timeout.
+   - This replaces "one process per `shodh.db`". A future MCP server or CLI opening the same database is safe.
+   - **Cost:** a resume after a crash waits until the lease expires.
+8. **Reserve what a paper can spend (F7).** The gate's `before_paper(planned calls + 1)` checks `today + planned + 1 <= cap` once the paper's calls are planned. A one-call paper needs 2 calls of room and a two-call paper 3. The flat `+3` is gone, and so is the runner's pre-paper check.
+9. **SQLITE_BUSY pauses (F9).**
+   - `ResearchError::Busy` is told apart from other database errors (SQLITE_BUSY/LOCKED).
+   - A busy error during a run pauses the job (`busy`) for the ladder's first rung, 1 minute, without escalating.
+10. **Panics are counted (F10).** `table_fill_job.panics` counts panicked runs. The first returns the job to `queued`; the second (`MAX_PANICS = 2`) fails it with `fill_panicked` and empties its queued cells.
+
+**Migration 15 as rewritten:**
+- `table_calls(utc_day, calls)`;
+- on `table_fill_job`: `run_token`, `heartbeat_at`, `pause_reason` (adds `failing`, `busy`), `cancel_requested`, `backoff_step`, `failure_streak`, `panics`;
+- the dedupe guard and the partial unique index.
+
+**Notes for PR 3b and PR 4:**
+- **Reset time in local time.** The UI shows when the table day resets in local time (for example "Tables have made 12 of 30 calls today; resets at 5:30 am"). The command returns the next 00:00 UTC as an instant.
+- **The provider's full error body.** The production `TextModel` adapter must pass the provider's whole error body, including OpenRouter's `metadata.headers`. Otherwise `X-RateLimit-Reset` is never seen and every limit falls to the ladder or the daily rule. Add a 3b test for it.
+- **Manual fills use `CounterGate`.** `table_fill_paper` and `cell_refill` go through `CounterGate`.
+- **Refill errors in the grid.** The grid shows `refill_failed:<code>` on a kept result as "couldn't refresh".
+
+**Tests added in the fix round:**
+- **Rate limits:**
+  - every rate-limit rung: a header in the future, a stale header, retry-after, daily with no hint, and the headerless upstream 429 (the `provider_error` fixture shape) climbing the whole ladder;
+  - a successful call resets the ladder.
+- **Leases and recovery:**
+  - lease takeover after expiry and refusal before it;
+  - a claim-time cancel of a dead process's job;
+  - a failed final write gives the job back;
+  - a job held here with no live run is resumed or cancelled without a restart;
+  - a run that keeps panicking fails its job.
+- **Failures:**
+  - a stale-result refill failure, for each failure kind (fill) and through a job;
+  - an unreachable model and a permanently failing model are bounded;
+  - a locked counter pauses for a minute.
+- **The cap and the estimate:**
+  - the per-paper reservation;
+  - a counter gate for a hand fill;
+  - concurrent `try_record` from four threads;
+  - `estimate().calls` equals a run's calls on a mixed table (a cached paper, a one-call paper, a two-call paper and a cut `not_found`).
+- **Migration:** the migration 15 dedupe.
+
+**PR 3a end:** push, open "Evidence table 3a: call counter and job runner (pause, resume, cancel, daily cap)", get CI green. No real model runs in 3a.
+
 # PR 4 — Tables tab, grid, cell panel, column and budget dialogs (outline)
 
 Branch: `feat/evidence-table-ui`. The files are under `app/src/features/tables/`, and the tests under `app/tests/` (run with `node --test`).

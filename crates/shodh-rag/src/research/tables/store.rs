@@ -1,5 +1,6 @@
-//! The evidence tables of `shodh.db` (schema 14): tables, columns, rows, cells and the
-//! fill cache. One connection, like [`crate::research::ResearchDb`]; every write that
+//! The evidence tables of `shodh.db` (schema 14, with schema 15's job columns): tables,
+//! columns, rows, cells and the fill cache. The fill jobs' own queries are in
+//! [`super::jobs`], on the same connection. One connection, like [`crate::research::ResearchDb`]; every write that
 //! touches several tables runs in one immediate transaction.
 //!
 //! The fill cache is not owned by a table: two tables asking the same question of the
@@ -22,6 +23,21 @@ use super::{
 };
 use crate::audit::{open_shared_connection, AuditKey};
 use crate::research::{path_key, ResearchError, ResearchResult};
+
+/// The error prefix of a cell that holds a result a refill could not replace:
+/// `refill_failed:<code>`, where `<code>` is the failure (`model_timeout`,
+/// `search_failed`, ...). The result itself is kept.
+pub const REFILL_FAILED: &str = "refill_failed";
+
+/// The code of a failure text: what comes before its first `:` (`search_failed: no
+/// passage ...` is `search_failed`).
+fn failure_code(error: Option<&str>) -> &str {
+    error
+        .and_then(|e| e.split(':').next())
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .unwrap_or("unknown")
+}
 
 /// A model's raw answer for one column of one paper.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +290,8 @@ impl TableStore {
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, Connection> {
+    /// The connection, for the job store ([`super::jobs`]) on the same tables.
+    pub(super) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -588,7 +605,10 @@ impl TableStore {
 
     /// Stores a filled cell and, with it, its cache entry. Nothing is written (false) when
     /// the row or column is gone, the column changed since the fill started, or the user
-    /// edited the cell meanwhile.
+    /// edited the cell meanwhile. A `failed` cell never replaces a result (`verified`,
+    /// `unverified`, `not_found`): the result keeps its value, quote, status, revision and
+    /// paper hash, and its error becomes `refill_failed:<code>`, so the grid can say the
+    /// answer could not be refreshed and the next fill tries again.
     pub fn store_fill(&self, cell: &Cell, cache: Option<&CacheEntry>) -> ResearchResult<bool> {
         let value = value_json(&cell.value)?;
         let mut conn = self.lock();
@@ -603,6 +623,22 @@ impl TableStore {
             .optional()?;
         if current.is_none() || current != cell.column_revision {
             return Ok(false);
+        }
+        if cell.status == CellStatus::Failed {
+            let flagged = tx.execute(
+                "UPDATE table_cell SET error = ?3
+                  WHERE row_id = ?1 AND column_id = ?2
+                    AND status IN ('verified', 'unverified', 'not_found')",
+                params![
+                    cell.row_id,
+                    cell.column_id,
+                    format!("{REFILL_FAILED}:{}", failure_code(cell.error.as_deref()))
+                ],
+            )?;
+            if flagged > 0 {
+                tx.commit()?;
+                return Ok(true);
+            }
         }
         let written = tx.execute(
             &format!(

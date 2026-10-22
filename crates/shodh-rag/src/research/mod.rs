@@ -57,6 +57,10 @@ pub enum ResearchError {
     /// `shodh.db` failed.
     #[error("research database error: {0}")]
     Database(String),
+    /// `shodh.db` stayed locked by another writer past the busy timeout: trying again
+    /// shortly is expected to work.
+    #[error("research database is busy: {0}")]
+    Busy(String),
     /// The PDF could not be read.
     #[error("{0}")]
     Pdf(String),
@@ -70,7 +74,19 @@ pub enum ResearchError {
 
 impl From<rusqlite::Error> for ResearchError {
     fn from(e: rusqlite::Error) -> Self {
-        ResearchError::Database(e.to_string())
+        let busy = matches!(
+            &e,
+            rusqlite::Error::SqliteFailure(failure, _)
+                if matches!(
+                    failure.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+        );
+        if busy {
+            ResearchError::Busy(e.to_string())
+        } else {
+            ResearchError::Database(e.to_string())
+        }
     }
 }
 

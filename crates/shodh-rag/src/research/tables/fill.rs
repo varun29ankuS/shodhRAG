@@ -21,6 +21,17 @@
 //! not reach exactly as they were, so the caller can pause and resume; other errors fail
 //! the cells of the call. A cell only ever holds an error code ([`ModelFailure::code`]),
 //! never the provider's text, which is logged with credentials redacted.
+//!
+//! Gate. Every fill goes through a [`CallGate`]: there is no ungated way to call the
+//! model. The gate is asked once a paper's calls are planned (it can refuse a paper whose
+//! planned calls and retry no longer fit the day's cap) and before every model call (it
+//! counts the call, or halts the fill: cancelled, or the cap reached). A halt, like a
+//! quota error, leaves every cell the fill had not answered yet exactly as it was.
+//!
+//! Results survive failures. A refill that fails over a cell holding a result (a stale
+//! answer being refreshed, or a cut `not_found` asked again) keeps the value, quote and
+//! status, and only records `refill_failed:<code>` as the cell's error (see
+//! [`TableStore::store_fill`]); the next fill tries it again.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -34,13 +45,13 @@ use super::budget::{plan_calls, MAX_CALLS_PER_PAPER, PASSAGES_PER_COLUMN};
 use super::parse::{parse_reply, ParsedReply};
 use super::passages::{result_hint_terms, PaperIndex, RESULT_HINTS_PER_COLUMN};
 use super::prompt::{fill_prompt, format_correction, missing_columns_prompt, reply_budget};
-use super::store::{CacheEntry, TableStore};
+use super::store::{CacheEntry, TableStore, REFILL_FAILED};
 use super::validate::{
     check, ground, Checked, RawAnswer, NOT_FOUND_PARTIAL, NOT_FOUND_PARTIAL_RETRIED,
 };
 use super::{collapse, Cell, CellStatus, Column, ColumnKind, ColumnSpec, Passage, TableRow};
 use crate::harness::grounding::verify::ScorerSet;
-use crate::harness::provider_error::{classify, safe_detail, ProviderErrorKind};
+use crate::harness::provider_error::{classify, reset_epoch_ms, safe_detail, ProviderErrorKind};
 use crate::research::results::{ResultRecord, ResultStatus, TextModel};
 use crate::research::{blocking, ResearchError, ResearchResult};
 
@@ -71,12 +82,32 @@ pub enum ModelFailureKind {
     Other,
 }
 
+/// The window of a quota or rate limit, as far as the provider's message tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitWindow {
+    /// A per-minute (or otherwise short) rate limit: `free-models-per-min`, "requests per
+    /// minute", an upstream provider's temporary limit.
+    Short,
+    /// A daily limit or an exhausted quota: `free-models-per-day`, "daily", no credits.
+    Daily,
+    /// A rate limit that does not say which (a bare 429).
+    Unknown,
+}
+
 /// A failed model call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFailure {
     pub kind: ModelFailureKind,
-    /// Seconds the provider asked to wait, when it said.
+    /// For a quota or rate-limit failure, which kind of limit it was (the provider
+    /// classifier's rate-limited and quota-exhausted kept apart); `Unknown` otherwise.
+    pub window: LimitWindow,
+    /// Seconds the provider asked to wait, when it said (capped at an hour).
     pub retry_after_secs: Option<u32>,
+    /// The provider's `X-RateLimit-Reset` (Unix milliseconds) as it was sent, past or
+    /// future: a daily quota keeps its real reset time here, which `retry_after_secs` does
+    /// not carry, and a reset that reads as past (a clock running fast) is still told
+    /// apart from no header at all.
+    pub reset_at_ms: Option<u64>,
     /// The provider's message, without credentials and cut short. For the caller's log and
     /// messages; it is never stored in a cell.
     pub detail: String,
@@ -155,9 +186,16 @@ impl ModelFailure {
             ProviderErrorKind::Auth => ModelFailureKind::Auth,
             _ => ModelFailureKind::Other,
         };
+        let (window, reset_at_ms) = if kind == ModelFailureKind::Quota {
+            (limit_window(found.kind, message), header_reset_ms(message))
+        } else {
+            (LimitWindow::Unknown, None)
+        };
         let failure = Self {
             kind,
+            window,
             retry_after_secs: found.retry_after_secs,
+            reset_at_ms,
             detail: safe_message(message),
         };
         tracing::warn!(
@@ -178,6 +216,36 @@ impl ModelFailure {
             ModelFailureKind::Other => MODEL_FAILED,
         }
     }
+}
+
+/// Which limit a quota or rate-limit error is: an exhausted quota or a message that names
+/// a day is daily; one that names a minute, or an upstream provider's temporary limit, is
+/// short; a bare rate limit is unknown.
+fn limit_window(kind: ProviderErrorKind, message: &str) -> LimitWindow {
+    let lower = message.to_ascii_lowercase();
+    let says = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    if kind == ProviderErrorKind::QuotaExhausted || says(&["per-day", "per day", "daily"]) {
+        LimitWindow::Daily
+    } else if says(&[
+        "per-min",
+        "per min",
+        "per minute",
+        "rate-limited upstream",
+        "temporarily rate-limited",
+    ]) {
+        LimitWindow::Short
+    } else {
+        LimitWindow::Unknown
+    }
+}
+
+/// The `X-RateLimit-Reset` a provider message carries (OpenRouter puts the response
+/// headers in its error body), as Unix milliseconds, whether past or future.
+fn header_reset_ms(message: &str) -> Option<u64> {
+    const MARKER: &str = "x-ratelimit-reset";
+    let lower = message.to_ascii_lowercase();
+    let at = lower.find(MARKER)?;
+    reset_epoch_ms(&lower[at + MARKER.len()..])
 }
 
 /// Text with a code in front of it, for the cell errors that name a local cause (a file
@@ -220,7 +288,10 @@ pub fn needs_fill(cell: Option<&Cell>, column: &Column, paper_hash: &str) -> boo
         CellStatus::Edited => false,
         CellStatus::Empty | CellStatus::Queued | CellStatus::Failed => true,
         CellStatus::Verified | CellStatus::Unverified | CellStatus::NotFound => {
-            cell.column_revision != Some(column.revision)
+            cell.error
+                .as_deref()
+                .is_some_and(|e| e.starts_with(REFILL_FAILED))
+                || cell.column_revision != Some(column.revision)
                 || cell.paper_hash.as_deref() != Some(paper_hash)
                 || (cell.status == CellStatus::NotFound
                     && cell.error.as_deref() == Some(NOT_FOUND_PARTIAL))
@@ -250,14 +321,85 @@ pub struct PaperRequest {
     pub results: Vec<ResultRecord>,
 }
 
-/// What a fill did: the cells it stored, the model calls it made (a retry included),
-/// the columns answered from the cache, and the model's error when a call failed.
+/// What a fill did: the cells it stored (as stored: a failed refill over a result is
+/// that result with its `refill_failed` error), the model calls it made (a retry
+/// included), the columns answered from the cache, the model's error when a call failed,
+/// the gate's halt when it stopped the fill, and the local cause when the whole paper
+/// could not be filled (`paper_unreadable`, `paper_not_indexed`, `search_failed`, with
+/// detail).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaperFill {
     pub cells: Vec<Cell>,
     pub calls: usize,
     pub cache_hits: usize,
     pub model_error: Option<ModelFailure>,
+    pub halted: Option<Halt>,
+    pub paper_error: Option<String>,
+}
+
+/// Why a [`CallGate`] stopped a fill before a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Halt {
+    /// The job was cancelled (or is no longer this run's).
+    Cancelled,
+    /// The call would pass the day's cap of table calls.
+    DailyCap,
+}
+
+/// Asked before a paper's calls and before every model call of a fill. `None` lets the
+/// fill go on; `Some` stops it: no more calls, and the cells it had not answered are left
+/// as they are. An error stops the fill with that error, with no call made.
+#[async_trait::async_trait]
+pub trait CallGate: Send + Sync {
+    /// Once the paper's calls are planned and before the first: `calls` is the most the
+    /// paper can still spend (its planned calls and the one retry).
+    async fn before_paper(&self, calls: usize) -> ResearchResult<Option<Halt>>;
+    /// Before every model call; `None` means the gate has counted the call.
+    async fn before_call(&self) -> ResearchResult<Option<Halt>>;
+}
+
+/// What a fill of one paper would do before any search: the paper's hash (`None` when
+/// the file cannot be read), the columns that need a fill, and those of them the cache
+/// cannot answer. Indices are into [`PaperRequest::columns`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Survey {
+    pub(super) hash: Option<String>,
+    pub(super) needing: Vec<usize>,
+    pub(super) misses: Vec<usize>,
+}
+
+/// The search query of a column: its question and instructions and, for a `number`
+/// column, the words of the paper's accepted Results that match it (they say where its
+/// numbers are, and steer the search to the real table text).
+fn column_query(column: &Column, accepted: &[ResultRecord]) -> String {
+    let query = collapse(&format!(
+        "{} {}",
+        column.spec.question, column.spec.instructions
+    ));
+    if column.spec.kind != ColumnKind::Number {
+        return query;
+    }
+    let hints = result_hint_terms(
+        accepted,
+        &column.spec.question,
+        &column.spec.instructions,
+        RESULT_HINTS_PER_COLUMN,
+    );
+    if hints.is_empty() {
+        query
+    } else {
+        format!("{query} {hints}")
+    }
+}
+
+/// The accepted Results of a request (the only ones used, and only as search hints).
+fn accepted_results(request: &PaperRequest) -> Vec<ResultRecord> {
+    request
+        .results
+        .iter()
+        .filter(|r| r.status == ResultStatus::Accepted)
+        .cloned()
+        .collect()
 }
 
 /// Fills papers with one model, index and set of local scorers.
@@ -332,10 +474,17 @@ enum Attempt {
     Unparsable,
     /// The call failed; the failure is in `PaperFill::model_error`.
     Failed,
+    /// The gate stopped the fill before the call; the halt is in `PaperFill::halted`.
+    Halted,
 }
 
 impl Filler {
-    pub async fn fill_paper(&self, request: &PaperRequest) -> ResearchResult<PaperFill> {
+    /// Fills one paper, asking `gate` before its calls and before every model call.
+    pub async fn fill_paper(
+        &self,
+        request: &PaperRequest,
+        gate: &dyn CallGate,
+    ) -> ResearchResult<PaperFill> {
         let row = &request.row;
         let path = row.document_id.clone();
         let model_id = self.model.model_id();
@@ -368,6 +517,7 @@ impl Filler {
                 let error = with_detail(PAPER_UNREADABLE, &e.to_string());
                 self.fail(row, &columns, None, &model_id, &error, &mut fill)
                     .await?;
+                fill.paper_error = Some(error);
                 return Ok(fill);
             }
         };
@@ -395,56 +545,17 @@ impl Filler {
             .collect();
 
         // 1. Local retrieval: no model call.
-        let first = match self.index.first_passage(&path).await {
-            Ok(first) => first,
+        let accepted = accepted_results(request);
+        let (first, ranked) = match self.retrieve(&path, &columns, &accepted).await {
+            Ok(found) => found,
             Err(e) => {
                 let error = with_detail(SEARCH_FAILED, &e);
                 self.fail(row, &columns, Some(&hash), &model_id, &error, &mut fill)
                     .await?;
+                fill.paper_error = Some(error);
                 return Ok(fill);
             }
         };
-        let accepted: Vec<ResultRecord> = request
-            .results
-            .iter()
-            .filter(|r| r.status == ResultStatus::Accepted)
-            .cloned()
-            .collect();
-        let mut ranked: Vec<Vec<Passage>> = Vec::with_capacity(columns.len());
-        for column in &columns {
-            let mut query = collapse(&format!(
-                "{} {}",
-                column.spec.question, column.spec.instructions
-            ));
-            if column.spec.kind == ColumnKind::Number {
-                // The Results already read from the paper's tables say where its numbers
-                // are; their words steer the search to the real table text.
-                let hints = result_hint_terms(
-                    &accepted,
-                    &column.spec.question,
-                    &column.spec.instructions,
-                    RESULT_HINTS_PER_COLUMN,
-                );
-                if !hints.is_empty() {
-                    query = format!("{query} {hints}");
-                }
-            }
-            let mut passages = match self
-                .index
-                .search_paper(&path, &query, PASSAGES_PER_COLUMN)
-                .await
-            {
-                Ok(passages) => passages,
-                Err(e) => {
-                    let error = with_detail(SEARCH_FAILED, &e);
-                    self.fail(row, &columns, Some(&hash), &model_id, &error, &mut fill)
-                        .await?;
-                    return Ok(fill);
-                }
-            };
-            passages.truncate(PASSAGES_PER_COLUMN);
-            ranked.push(passages);
-        }
         if ranked.iter().all(Vec::is_empty) {
             // No chunk at all: not indexed (yet). A first chunk but no hit for any
             // column: the search cannot see this paper (a path spelling, an index in the
@@ -457,6 +568,7 @@ impl Filler {
             };
             self.fail(row, &columns, Some(&hash), &model_id, &error, &mut fill)
                 .await?;
+            fill.paper_error = Some(error);
             return Ok(fill);
         }
 
@@ -465,10 +577,7 @@ impl Filler {
         // asking the same question of the same paper.
         let mut misses: Vec<usize> = Vec::new();
         for (i, column) in columns.iter().enumerate() {
-            let store = self.store.clone();
-            let (h, k, m) = (hash.clone(), column.key.clone(), model_id.clone());
-            let cached = blocking(move || store.cached(&h, &k, &m)).await?;
-            match cached.and_then(|json| serde_json::from_str::<CachedFill>(&json).ok()) {
+            match self.cached_fill(&hash, column, &model_id).await? {
                 Some(cached) => {
                     // The replay is checked against what the original call was: its
                     // passage numbers belong to another call's numbering and are ignored,
@@ -498,9 +607,19 @@ impl Filler {
         let miss_ranked: Vec<Vec<Passage>> = misses.iter().map(|&i| ranked[i].clone()).collect();
         let mut retried = false;
         let mut format_given_up = false;
-        for plan in plan_calls(first.as_ref(), &miss_ranked) {
+        let plans = plan_calls(first.as_ref(), &miss_ranked);
+        if !plans.is_empty() {
+            if let Some(halt) = gate.before_paper(plans.len() + 1).await? {
+                fill.halted = Some(halt);
+            }
+        }
+        for plan in plans {
             let call_columns: Vec<&Column> =
                 plan.columns.iter().map(|&m| columns[misses[m]]).collect();
+            if fill.halted.is_some() {
+                // The gate stopped the fill: these cells are left as they are.
+                continue;
+            }
             if let Some(failure) = fill.model_error.clone() {
                 self.stop(row, &call_columns, &hash, &model_id, &failure, &mut fill)
                     .await?;
@@ -525,15 +644,23 @@ impl Filler {
                 .zip(call_columns.iter().map(|c| &c.spec))
                 .collect();
             let prompt = fill_prompt(&plan.passages, &specs);
-            let mut attempt = self.ask(&prompt, call_columns.len(), &mut fill).await;
+            let mut attempt = self
+                .ask(&prompt, call_columns.len(), gate, &mut fill)
+                .await?;
             if matches!(attempt, Attempt::Unparsable) && !retried {
                 retried = true;
                 attempt = self
-                    .ask(&format_correction(&prompt), call_columns.len(), &mut fill)
-                    .await;
+                    .ask(
+                        &format_correction(&prompt),
+                        call_columns.len(),
+                        gate,
+                        &mut fill,
+                    )
+                    .await?;
             }
             let reply = match attempt {
                 Attempt::Cells(reply) => reply,
+                Attempt::Halted => continue,
                 Attempt::Unparsable => {
                     format_given_up = true;
                     self.fail(
@@ -574,8 +701,9 @@ impl Filler {
                         .zip(missing.iter().map(|&n| &call_columns[n].spec))
                         .collect();
                     let retry_prompt = missing_columns_prompt(&plan.passages, &retry_specs);
-                    if let Attempt::Cells(more) =
-                        self.ask(&retry_prompt, missing.len(), &mut fill).await
+                    if let Attempt::Cells(more) = self
+                        .ask(&retry_prompt, missing.len(), gate, &mut fill)
+                        .await?
                     {
                         for cell in more.cells {
                             if let Some(at) = retry_tags.iter().position(|t| *t == cell.column) {
@@ -587,6 +715,10 @@ impl Filler {
             }
             for (n, column) in call_columns.iter().enumerate() {
                 let Some(raw) = by_tag.remove(&tags[n]) else {
+                    if fill.halted.is_some() {
+                        // The retry that would have answered it was stopped by the gate.
+                        continue;
+                    }
                     match fill.model_error.clone() {
                         Some(failure) => {
                             self.stop(row, &[*column], &hash, &model_id, &failure, &mut fill)
@@ -658,19 +790,129 @@ impl Filler {
         Ok(fill)
     }
 
-    /// One model call and what came of it. A failure is recorded in `fill.model_error`.
-    async fn ask(&self, prompt: &str, columns: usize, fill: &mut PaperFill) -> Attempt {
+    /// One model call and what came of it, after the gate let it go. A failure is
+    /// recorded in `fill.model_error`, a halt in `fill.halted`.
+    async fn ask(
+        &self,
+        prompt: &str,
+        columns: usize,
+        gate: &dyn CallGate,
+        fill: &mut PaperFill,
+    ) -> ResearchResult<Attempt> {
+        if let Some(halt) = gate.before_call().await? {
+            fill.halted = Some(halt);
+            return Ok(Attempt::Halted);
+        }
         fill.calls += 1;
-        match self.model.complete(prompt, reply_budget(columns)).await {
-            Ok(reply) => match parse_reply(&reply) {
-                Some(parsed) => Attempt::Cells(parsed),
-                None => Attempt::Unparsable,
+        Ok(
+            match self.model.complete(prompt, reply_budget(columns)).await {
+                Ok(reply) => match parse_reply(&reply) {
+                    Some(parsed) => Attempt::Cells(parsed),
+                    None => Attempt::Unparsable,
+                },
+                Err(message) => {
+                    fill.model_error = Some(ModelFailure::classify(&message));
+                    Attempt::Failed
+                }
             },
-            Err(message) => {
-                fill.model_error = Some(ModelFailure::classify(&message));
-                Attempt::Failed
+        )
+    }
+
+    /// The paper's first passage and each column's passages (best first, at most
+    /// [`PASSAGES_PER_COLUMN`]), searched locally. An error is the index's message.
+    async fn retrieve(
+        &self,
+        path: &str,
+        columns: &[&Column],
+        accepted: &[ResultRecord],
+    ) -> Result<(Option<Passage>, Vec<Vec<Passage>>), String> {
+        let first = self.index.first_passage(path).await?;
+        let mut ranked: Vec<Vec<Passage>> = Vec::with_capacity(columns.len());
+        for column in columns {
+            let query = column_query(column, accepted);
+            let mut passages = self
+                .index
+                .search_paper(path, &query, PASSAGES_PER_COLUMN)
+                .await?;
+            passages.truncate(PASSAGES_PER_COLUMN);
+            ranked.push(passages);
+        }
+        Ok((first, ranked))
+    }
+
+    /// The cache entry of a column of a paper for this model, when there is a readable one.
+    async fn cached_fill(
+        &self,
+        hash: &str,
+        column: &Column,
+        model: &str,
+    ) -> ResearchResult<Option<CachedFill>> {
+        let store = self.store.clone();
+        let (h, k, m) = (hash.to_string(), column.key.clone(), model.to_string());
+        let cached = blocking(move || store.cached(&h, &k, &m)).await?;
+        Ok(cached.and_then(|json| serde_json::from_str::<CachedFill>(&json).ok()))
+    }
+
+    /// What a fill of this paper would do before any search ([`Survey`]): the same hash,
+    /// [`needs_fill`] and cache lookups the fill makes. No model call, no search.
+    pub(super) async fn survey(&self, request: &PaperRequest) -> ResearchResult<Survey> {
+        let row = &request.row;
+        let path = row.document_id.clone();
+        let Ok(hash) = blocking(move || paper_hash(&path)).await else {
+            return Ok(Survey::default());
+        };
+        let model_id = self.model.model_id();
+        let mut survey = Survey {
+            hash: Some(hash.clone()),
+            ..Survey::default()
+        };
+        for (i, column) in request.columns.iter().enumerate() {
+            let cell = request
+                .cells
+                .iter()
+                .find(|c| c.row_id == row.id && c.column_id == column.id);
+            if !needs_fill(cell, column, &hash) {
+                continue;
+            }
+            survey.needing.push(i);
+            if self.cached_fill(&hash, column, &model_id).await?.is_none() {
+                survey.misses.push(i);
             }
         }
+        Ok(survey)
+    }
+
+    /// The model calls a fill of this paper would make, its possible retry aside, found
+    /// with local retrieval only: [`plan_calls`] over the passages of the columns the
+    /// cache misses. A paper the fill makes no call for (unreadable, not indexed, not seen
+    /// by the search, or answered from the cache) needs 0.
+    pub(super) async fn planned_calls(&self, request: &PaperRequest, survey: &Survey) -> usize {
+        if survey.hash.is_none() || survey.misses.is_empty() {
+            return 0;
+        }
+        let accepted = accepted_results(request);
+        let columns: Vec<&Column> = survey
+            .needing
+            .iter()
+            .filter_map(|&i| request.columns.get(i))
+            .collect();
+        let Ok((first, ranked)) = self
+            .retrieve(&request.row.document_id, &columns, &accepted)
+            .await
+        else {
+            return 0;
+        };
+        if ranked.iter().all(Vec::is_empty) {
+            return 0;
+        }
+        let miss_ranked: Vec<Vec<Passage>> = survey
+            .needing
+            .iter()
+            .zip(ranked)
+            .filter(|(i, _)| survey.misses.contains(*i))
+            .map(|(_, passages)| passages)
+            .collect();
+        plan_calls(first.as_ref(), &miss_ranked).len()
     }
 
     /// What a model failure does to the cells of the call that met it, or was due to make
@@ -765,7 +1007,8 @@ impl Filler {
     }
 
     /// Writes one cell. The store refuses it (and its cache entry) when the user edited
-    /// the cell, or changed or removed the column or row, since the fill began.
+    /// the cell, or changed or removed the column or row, since the fill began, and keeps
+    /// a result a failure would replace; the cell is listed as the store holds it.
     async fn store_cell(
         &self,
         cell: Cell,
@@ -773,11 +1016,19 @@ impl Filler {
         fill: &mut PaperFill,
     ) -> ResearchResult<()> {
         let store = self.store.clone();
-        let stored = cell.clone();
-        let written = blocking(move || store.store_fill(&stored, cache.as_ref())).await?;
-        if written {
-            fill.cells.push(cell);
-        }
+        let stored = blocking(move || {
+            if !store.store_fill(&cell, cache.as_ref())? {
+                return Ok(None);
+            }
+            if cell.status != CellStatus::Failed {
+                return Ok(Some(cell));
+            }
+            Ok(Some(
+                store.cell(&cell.row_id, &cell.column_id)?.unwrap_or(cell),
+            ))
+        })
+        .await?;
+        fill.cells.extend(stored);
         Ok(())
     }
 }

@@ -1614,10 +1614,12 @@ impl JobRunner {
     /// provider's daily reset, the next 00:00 UTC.
     fn quota_pause(&self, failure: &ModelFailure, streaks: &mut Streaks) -> End {
         let now = self.clock.now();
+        // The window is kept with the pause, so the interface words a daily quota and a
+        // short rate limit apart without guessing from the wait.
         let paused = |until: Option<DateTime<Utc>>| End::Paused {
             reason: PauseReason::Quota,
             until,
-            error: Some(MODEL_QUOTA.to_string()),
+            error: Some(format!("{MODEL_QUOTA}:{}", failure.window.as_str())),
         };
         if let Some(reset) = failure
             .reset_at_ms

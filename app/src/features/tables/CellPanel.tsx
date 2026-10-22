@@ -14,18 +14,57 @@ import { FOCUS_RING, INPUT, MARK_CLASSES, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_
 
 type Notice = Outcome | null;
 
-const NOTICE_CLASSES: Record<Outcome['tone'], string> = {
+export const NOTICE_CLASSES: Record<Outcome['tone'], string> = {
   ok: 'text-shodh-success',
   info: 'text-shodh-text-secondary',
   warning: 'text-shodh-warning',
+  error: 'text-shodh-error',
 };
 
 /** A refusal that is a wait (the fill runs, the paper is being filled), said inline; anything else is an error. */
-function failureNotice(err: unknown, what: string): Notice {
+export function failureNotice(err: unknown, what: string): Notice {
   const failure = tableError(err);
   if (INLINE_REFUSALS.includes(failure.code)) return { tone: 'info', text: reasonText(failure.code) };
   notify.error(what, { description: failure.message || reasonText(failure.code) });
   return null;
+}
+
+/**
+ * A fill by hand (Refill, a quality check), kept by the table rather than by the panel: it
+ * can take minutes, and its outcome must survive the selection moving on (see `TableEditor`).
+ */
+export interface HandFillState {
+  busy: boolean;
+  outcome: Outcome | null;
+}
+
+/** Asks the model again for one cell; the outcome is read from the cells it stored. */
+export async function refillOutcome(tableId: string, rowId: string, columnId: string, columnName: (id: string) => string): Promise<Notice> {
+  try {
+    return handFillOutcome(await tablesApi.refillCell(tableId, rowId, columnId), columnName);
+  } catch (err) {
+    return failureNotice(err, 'The cell was not asked again');
+  }
+}
+
+/** Fills one paper with its model calls kept (diagnostics); the outcome is read from its cells. */
+export async function checkOutcome(tableId: string, rowId: string, columnName: (id: string) => string): Promise<Notice> {
+  try {
+    const capture = await tablesApi.fillPaper(tableId, rowId);
+    const calls = capture.calls.length;
+    const kept = capture.captureId ? 'kept for export' : 'returned but could not be kept';
+    const callsKept = `${calls} model ${calls === 1 ? 'call was' : 'calls were'} ${kept}.`;
+    if (capture.error) {
+      return { tone: 'error', text: `The check stopped: ${knownReason(capture.error) ? reasonText(capture.error) : capture.error} ${callsKept}` };
+    }
+    if (capture.result) {
+      const outcome = handFillOutcome(capture.result, columnName);
+      return { tone: outcome.tone, text: `${outcome.text} ${callsKept}` };
+    }
+    return { tone: 'info', text: callsKept };
+  } catch (err) {
+    return failureNotice(err, 'The quality check did not run');
+  }
 }
 
 /** The paper of a row: where it is, its quality check (with diagnostics on) and removing it. */
@@ -33,36 +72,20 @@ function PaperPanel({
   tableId,
   row,
   diagnostics,
+  check,
+  onCheck,
   onChanged,
 }: {
   tableId: string;
   row: RowView;
   diagnostics: boolean;
+  check: HandFillState | undefined;
+  onCheck: () => void;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState<'check' | 'remove' | null>(null);
-  const [notice, setNotice] = useState<Notice>(null);
-
-  const check = async () => {
-    setBusy('check');
-    setNotice(null);
-    try {
-      const capture = await tablesApi.fillPaper(tableId, row.id);
-      const calls = capture.calls.length;
-      const kept = capture.captureId ? 'kept for export' : 'returned but could not be kept';
-      if (capture.error) {
-        setNotice({ tone: 'warning', text: `The check stopped: ${knownReason(capture.error) ? reasonText(capture.error) : capture.error} ${calls} model ${calls === 1 ? 'call was' : 'calls were'} ${kept}.` });
-      } else if (capture.result) {
-        const outcome = handFillOutcome(capture.result);
-        setNotice({ tone: outcome.tone, text: `${outcome.text} ${calls} model ${calls === 1 ? 'call' : 'calls'} ${kept}.` });
-      }
-      onChanged();
-    } catch (err) {
-      setNotice(failureNotice(err, 'The quality check did not run'));
-    } finally {
-      setBusy(null);
-    }
-  };
+  const [busy, setBusy] = useState<'remove' | null>(null);
+  const checking = check?.busy ?? false;
+  const notice = check?.outcome ?? null;
 
   const remove = async () => {
     const confirmed = await ask(`Remove “${row.title}” from this table? Its cells go with it; the paper stays in your library.`, {
@@ -93,12 +116,12 @@ function PaperPanel({
       </div>
       <div className="flex flex-wrap gap-2">
         {diagnostics && (
-          <button type="button" className={OUTLINE_BUTTON} disabled={busy !== null} onClick={() => void check()}>
-            {busy === 'check' ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" />}
+          <button type="button" className={OUTLINE_BUTTON} disabled={busy !== null || checking} onClick={onCheck}>
+            {checking ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" />}
             Run quality check on this paper
           </button>
         )}
-        <button type="button" className={cn(QUIET_BUTTON, 'text-shodh-error')} disabled={busy !== null} onClick={() => void remove()}>
+        <button type="button" className={cn(QUIET_BUTTON, 'text-shodh-error')} disabled={busy !== null || checking} onClick={() => void remove()}>
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" /> Remove from table
         </button>
       </div>
@@ -126,6 +149,10 @@ export function CellPanel({
   column,
   cell,
   diagnostics,
+  refill,
+  check,
+  onRefill,
+  onCheck,
   onChanged,
 }: {
   tableId: string;
@@ -134,16 +161,26 @@ export function CellPanel({
   column: Column | null;
   cell: Cell | undefined;
   diagnostics: boolean;
+  /** This cell's Refill, as the table keeps it. */
+  refill: HandFillState | undefined;
+  /** This paper's quality check, as the table keeps it. */
+  check: HandFillState | undefined;
+  onRefill: () => void;
+  onCheck: () => void;
   onChanged: () => void;
 }) {
   const editId = useId();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState<'edit' | 'refill' | 'clear' | null>(null);
-  const [notice, setNotice] = useState<Notice>(null);
+  const [busy, setBusy] = useState<'edit' | 'clear' | null>(null);
+  const [localNotice, setNotice] = useState<Notice>(null);
   const [editError, setEditError] = useState<string | null>(null);
 
-  if (!column) return <PaperPanel tableId={tableId} row={row} diagnostics={diagnostics} onChanged={onChanged} />;
+  if (!column) return <PaperPanel tableId={tableId} row={row} diagnostics={diagnostics} check={check} onCheck={onCheck} onChanged={onChanged} />;
+
+  const refilling = refill?.busy ?? false;
+  // This panel's own note (an edit, a clear), else the cell's last Refill outcome.
+  const notice = refilling ? null : localNotice ?? refill?.outcome ?? null;
 
   const stale = isStale(cell, column);
   const explanation = cellExplanation(cell, stale);
@@ -174,18 +211,9 @@ export function CellPanel({
     }
   };
 
-  const refill = async () => {
-    setBusy('refill');
+  const startRefill = () => {
     setNotice(null);
-    try {
-      const fill = await tablesApi.refillCell(tableId, row.id, column.id);
-      setNotice(handFillOutcome(fill));
-      onChanged();
-    } catch (err) {
-      setNotice(failureNotice(err, 'The cell was not asked again'));
-    } finally {
-      setBusy(null);
-    }
+    onRefill();
   };
 
   const clear = async () => {
@@ -295,21 +323,21 @@ export function CellPanel({
         </form>
       ) : (
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={OUTLINE_BUTTON} disabled={busy !== null} onClick={startEdit}>
+          <button type="button" className={OUTLINE_BUTTON} disabled={busy !== null || refilling} onClick={startEdit}>
             <Pencil className="w-3.5 h-3.5" aria-hidden="true" /> Edit
           </button>
           <button
             type="button"
             className={OUTLINE_BUTTON}
-            disabled={busy !== null || edited}
+            disabled={busy !== null || edited || refilling}
             title={edited ? 'Your value is kept: clear it first to ask the model again.' : 'Ask the model again for this cell, over more of the paper. One call.'}
-            onClick={() => void refill()}
+            onClick={startRefill}
           >
-            {busy === 'refill' ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
+            {refilling ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
             Refill
           </button>
           {hasContent && (
-            <button type="button" className={QUIET_BUTTON} disabled={busy !== null} onClick={() => void clear()}>
+            <button type="button" className={QUIET_BUTTON} disabled={busy !== null || refilling} onClick={() => void clear()}>
               {busy === 'clear' ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Eraser className="w-3.5 h-3.5" aria-hidden="true" />}
               Clear
             </button>

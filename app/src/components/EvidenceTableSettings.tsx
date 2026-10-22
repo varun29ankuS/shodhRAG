@@ -5,6 +5,7 @@ import { cn } from '../lib/utils';
 import { SwitchRow } from './PrivacySettings';
 import { tableError, tablesApi } from '../features/tables/api';
 import type { TablesSettings } from '../features/tables/types';
+import { localTime, nextUtcMidnight } from '../features/tables/format';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -80,7 +81,8 @@ export default function EvidenceTableSettings() {
           <label htmlFor={capId} className="m-0 text-[13.5px] font-semibold text-shodh-text">Model calls tables may make per day</label>
           <p id={capHelpId} className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
             Filling a paper takes one or two calls, and one more when a reply cannot be read. A fill that reaches the
-            cap pauses and goes on when the day's count resets (midnight UTC). Raising the cap lets paused fills go on
+            cap pauses and goes on when the day's count resets, next at {localTime(nextUtcMidnight(Date.now()), Date.now())} (midnight UTC,
+            in your time). Raising the cap lets paused fills go on
             at once. {settings.minDailyCallCap} to {settings.maxDailyCallCap}.
           </p>
           {!capValid && capInput.trim() !== '' && (

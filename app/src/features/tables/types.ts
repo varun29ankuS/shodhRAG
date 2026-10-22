@@ -100,7 +100,7 @@ export interface JobView {
   pauseReason: PauseReason | null;
   /**
    * What paused or stopped the job: a code, `search_failed: <detail>`, `fill_error: <detail>`,
-   * or for `model_unavailable` one of `refused_reasoning`, `local_only`, `no_key`, `no_model`.
+   * for `quota` `model_quota:daily|short|unknown` (which limit it was), or for `model_unavailable` one of `refused_reasoning`, `local_only`, `no_key`, `no_model`.
    */
   lastError: string | null;
   /** When a paused job goes on by itself; null while it waits for the user. */
@@ -121,6 +121,13 @@ export interface FillStatus {
   cap: number;
   /** The next 00:00 UTC (Unix milliseconds). */
   dayResetsAt: number;
+  /**
+   * Who runs a `running` job: this app, another run of Shodh under a live lease, or nobody
+   * (the scheduler takes it up at its next check). Null when the job is not running.
+   */
+  run: 'here' | 'elsewhere' | 'stopped' | null;
+  /** For `elsewhere`: when that run's lease ends at the latest, after which the fill goes on here. */
+  leaseExpiresAt: number | null;
 }
 
 /** `fill_estimate`. */

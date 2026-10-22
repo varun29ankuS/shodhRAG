@@ -339,6 +339,33 @@ pub struct FillStatus {
     /// When the day's count starts again: the next 00:00 UTC (Unix milliseconds); the
     /// interface shows it in local time.
     pub day_resets_at: i64,
+    /// Who runs the job while it is `running` ([`run_holder`]): `here`, `elsewhere`
+    /// (another run of Shodh, under a live lease) or `stopped` (no run holds it: the
+    /// scheduler takes it up at its next check). None for a job that is not running.
+    pub run: Option<&'static str>,
+    /// For a job held `elsewhere`: when that run's lease ends at the latest, after which
+    /// the fill goes on here (UTC, Unix milliseconds).
+    pub lease_expires_at: Option<i64>,
+}
+
+/// Who runs a `running` job, for the status line: this app (`here`), another run of
+/// Shodh under a live lease (`elsewhere`, with the lease's end), or nobody (`stopped`: the
+/// run that held it is gone and the scheduler takes it up). None when the job is not
+/// running.
+pub fn run_holder(
+    state: Option<JobState>,
+    hold: Hold,
+    running_here: bool,
+) -> (Option<&'static str>, Option<i64>) {
+    if state != Some(JobState::Running) {
+        return (None, None);
+    }
+    match hold {
+        Hold::Elsewhere { until } => (Some("elsewhere"), Some(now_ms(until))),
+        Hold::RunningHere => (Some("here"), None),
+        Hold::Free if running_here => (Some("here"), None),
+        Hold::Free => (Some("stopped"), None),
+    }
 }
 
 /// What `fill_start` did.
@@ -1603,7 +1630,16 @@ pub async fn fill_status(
         ))
     })
     .await?;
+    let (run, lease_expires_at) = match job.as_ref() {
+        Some(j) if j.state == JobState::Running => {
+            let hold = job_hold(tables.store().await?, &j.id).await?;
+            run_holder(Some(j.state), hold, tables.inner.scheduler.is_running(&j.id))
+        }
+        _ => (None, None),
+    };
     Ok(FillStatus {
+        run,
+        lease_expires_at,
         papers_done: papers_done(job.as_ref(), &rows, &columns, &cells),
         job: job.as_ref().map(job_view),
         papers_total: rows.len(),
@@ -1914,6 +1950,23 @@ mod tests {
         assert_eq!(start_state(Hold::Free, true, 0, 30), "already_running");
         assert_eq!(start_state(Hold::Free, false, 29, 30), "at_cap");
         assert_eq!(start_state(Hold::Free, false, 28, 30), "started");
+    }
+
+    #[test]
+    fn the_status_says_who_runs_a_running_fill() {
+        let until = Utc::now();
+        let running = Some(JobState::Running);
+        assert_eq!(
+            run_holder(running, Hold::Elsewhere { until }, false),
+            (Some("elsewhere"), Some(until.timestamp_millis()))
+        );
+        assert_eq!(run_holder(running, Hold::RunningHere, false), (Some("here"), None));
+        assert_eq!(run_holder(running, Hold::Free, true), (Some("here"), None));
+        assert_eq!(run_holder(running, Hold::Free, false), (Some("stopped"), None));
+        for state in [JobState::Queued, JobState::Paused, JobState::Done] {
+            assert_eq!(run_holder(Some(state), Hold::Free, false), (None, None), "{state:?}");
+        }
+        assert_eq!(run_holder(None, Hold::Free, false), (None, None));
     }
 
     fn row(id: &str) -> TableRow {

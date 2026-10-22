@@ -9,16 +9,19 @@ import { relativeTime } from '../../utils/time';
 import type { WorkspaceDetail } from '../workspaces/types';
 import { onTableChanged, tableError, tablesApi } from './api';
 import { AddPapersDialog } from './AddPapersDialog';
-import { CellPanel } from './CellPanel';
+import { CellPanel, checkOutcome, refillOutcome } from './CellPanel';
+import type { HandFillState } from './CellPanel';
 import { ColumnDialog } from './ColumnDialog';
 import { FillDialog, ModelProblem } from './FillDialog';
-import { callsLine, cancelOutcome, cancelPending, fillStatusText, jobActive, reasonText } from './format';
+import { callsLine, cancelOutcome, cancelPending, failedCellsSince, fillStatusText, jobActive, reasonText } from './format';
+import type { Outcome } from './format';
 import { cellIndex, cellKey, cellValue, filterRows, filterValue, MAX_COLUMNS, MAX_NAME_CHARS, sortRows } from './model';
 import type { GridPos, RowFilter } from './model';
 import { NewTableDialog } from './NewTableDialog';
 import { TableGrid } from './TableGrid';
 import type { SortState } from './TableGrid';
-import type { CellStatus, Column, EvidenceTable, TableFailure, TableView } from './types';
+import type { Cell, CellStatus, Column, EvidenceTable, TableFailure, TableView } from './types';
+import { openTableOf, rememberOpenTable } from '../workspaces/place';
 import { useFillStatus } from './useFillStatus';
 import { FOCUS_RING, INPUT, openSettings, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, SECTION_TITLE, TONE_CLASSES } from './ui';
 
@@ -48,12 +51,15 @@ function localDate(at: Date): string {
 /** The fill's status line, the day's calls, and the ways out of a pause. */
 function FillStatusLine({
   tableId,
+  cells,
   onProgress,
   onFill,
 }: {
   tableId: string;
+  /** The table's cells, to count the ones a finished fill left failed. */
+  cells: readonly Cell[];
   onProgress: () => void;
-  onFill: (resume: boolean) => void;
+  onFill: () => void;
 }) {
   const { status, error, refresh } = useFillStatus(tableId);
   const [cancelling, setCancelling] = useState(false);
@@ -90,17 +96,22 @@ function FillStatusLine({
     return error ? <p role="alert" className="m-0 text-[12.5px] text-shodh-error">The fill status could not be read: {error}</p> : null;
   }
   const now = Date.now();
-  const line = fillStatusText(status, now);
+  const failedCells = job && job.state === 'done' ? failedCellsSince(cells, job.createdAt) : 0;
+  const line = fillStatusText(status, now, {}, { failedCells });
   const active = jobActive(job);
   const pending = cancelPending(job);
+  const spinning = job?.state === 'running' && status.run === 'here' && !pending;
 
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-shodh-border-subtle bg-shodh-raised/50 px-3 py-2">
+      {/* Told to screen readers when the fill's state changes, not at every call. */}
+      <p role="status" aria-live="polite" className="sr-only">{line?.text ?? ''}</p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         {line && (
-          <p role="status" aria-live="polite" className={cn('m-0 flex-1 min-w-[240px] text-[12.5px]', TONE_CLASSES[line.tone])}>
-            {job?.state === 'running' && !pending && <Loader2 className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+          <p className={cn('m-0 flex-1 min-w-[240px] text-[12.5px]', TONE_CLASSES[line.tone])}>
+            {spinning && <Loader2 className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
             {line.text}
+            {line.progress && <span className="text-shodh-text-muted"> {line.progress}</span>}
           </p>
         )}
         {job?.state === 'paused' && job.pauseReason && MODEL_PAUSES.includes(job.pauseReason) && (
@@ -110,7 +121,7 @@ function FillStatusLine({
           <button type="button" className={OUTLINE_BUTTON} onClick={() => openSettings('tables')}>Settings → Tables</button>
         )}
         {job?.state === 'paused' && (
-          <button type="button" className={OUTLINE_BUTTON} onClick={() => onFill(true)}>
+          <button type="button" className={OUTLINE_BUTTON} onClick={onFill}>
             <Play className="w-3.5 h-3.5" aria-hidden="true" /> Try now…
           </button>
         )}
@@ -122,8 +133,26 @@ function FillStatusLine({
         )}
       </div>
       <p className="m-0 text-[12px] text-shodh-text-muted">{callsLine(status.callsToday, status.cap, status.dayResetsAt, now)}</p>
+      {error && (
+        <p role="alert" className="m-0 text-[12px] text-shodh-error">
+          Couldn't refresh the fill status: {error} The line above may be out of date.
+        </p>
+      )}
     </div>
   );
+}
+
+/** A fill by hand's key: one Refill per cell, one quality check per paper. */
+function handKey(kind: 'refill' | 'check', rowId: string, columnId: string | null = null): string {
+  return `${kind}\u0000${rowId}\u0000${columnId ?? ''}`;
+}
+
+/** An outcome as a toast, for a fill by hand that ended while its cell was not shown. */
+function toastOutcome(title: string, outcome: Outcome): void {
+  if (outcome.tone === 'error') notify.error(title, { description: outcome.text });
+  else if (outcome.tone === 'warning') notify.warning(title, { description: outcome.text });
+  else if (outcome.tone === 'info') notify.info(title, { description: outcome.text });
+  else notify.success(title, { description: outcome.text });
 }
 
 /** One table: its toolbar, fill status, filters, grid and the selected cell's panel. */
@@ -146,7 +175,9 @@ function TableEditor({
   const [sort, setSort] = useState<SortState | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [valueFilters, setValueFilters] = useState<Record<string, string>>({});
-  const [active, setActive] = useState<GridPos>({ row: 0, col: 0 });
+  // Grid coordinates: row 0 is the header row, row 1 the first paper.
+  const [active, setActive] = useState<GridPos>({ row: 1, col: 0 });
+  const [handFills, setHandFills] = useState<Record<string, HandFillState>>({});
   const [selected, setSelected] = useState<{ rowId: string; columnId: string | null } | null>(null);
   const [columnDialog, setColumnDialog] = useState<{ open: boolean; column: Column | null }>({ open: false, column: null });
   const [fillOpen, setFillOpen] = useState(false);
@@ -157,15 +188,52 @@ function TableEditor({
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
+  // One load in flight and at most one queued behind it; only the newest answer is shown.
+  const loads = useRef({ asked: 0, inFlight: false, queued: false });
   const load = useCallback(async () => {
+    const state = loads.current;
+    if (state.inFlight) {
+      state.queued = true;
+      return;
+    }
+    state.inFlight = true;
     try {
-      setView(await tablesApi.get(tableId));
-      setLoadError(null);
-    } catch (err) {
-      const failure = tableError(err);
-      setLoadError(failure.message || reasonText(failure.code));
+      do {
+        state.queued = false;
+        const mine = ++state.asked;
+        try {
+          const next = await tablesApi.get(tableId);
+          if (mine === state.asked) {
+            setView(next);
+            setLoadError(null);
+          }
+        } catch (err) {
+          if (mine === state.asked) {
+            const failure = tableError(err);
+            setLoadError(failure.message || reasonText(failure.code));
+          }
+        }
+      } while (state.queued);
+    } finally {
+      state.inFlight = false;
     }
   }, [tableId]);
+
+  // Which cell the panel shows, read when a fill by hand ends.
+  const shown = useRef<{ rowId: string; columnId: string | null } | null>(null);
+  shown.current = selected;
+
+  const runHandFill = useCallback(
+    async (key: string, title: string, where: { rowId: string; columnId: string | null }, run: () => Promise<Outcome | null>) => {
+      setHandFills(prev => ({ ...prev, [key]: { busy: true, outcome: null } }));
+      const outcome = await run();
+      setHandFills(prev => ({ ...prev, [key]: { busy: false, outcome } }));
+      void load();
+      const now = shown.current;
+      if (outcome && !(now && now.rowId === where.rowId && now.columnId === where.columnId)) toastOutcome(title, outcome);
+    },
+    [load],
+  );
 
   useEffect(() => {
     setView(null);
@@ -235,9 +303,21 @@ function TableEditor({
   const select = (pos: GridPos) => {
     const row = rows[pos.row];
     if (!row) return;
-    setActive(pos);
+    setActive({ row: pos.row + 1, col: pos.col });
     setSelected({ rowId: row.id, columnId: pos.col === 0 ? null : sortedColumns[pos.col - 1]?.id ?? null });
   };
+
+  const columnName = (id: string) => sortedColumns.find(c => c.id === id)?.question ?? 'A column';
+
+  const refillCell = (rowId: string, column: Column) =>
+    void runHandFill(handKey('refill', rowId, column.id), `Refill: ${column.question}`, { rowId, columnId: column.id }, () =>
+      refillOutcome(table.id, rowId, column.id, columnName),
+    );
+
+  const checkPaper = (rowId: string, title: string) =>
+    void runHandFill(handKey('check', rowId), `Quality check: ${title}`, { rowId, columnId: null }, () =>
+      checkOutcome(table.id, rowId, columnName),
+    );
 
   const toggleSort = (columnId: string | null) =>
     setSort(prev => (prev && prev.columnId === columnId ? (prev.dir === 'asc' ? { columnId, dir: 'desc' } : null) : { columnId, dir: 'asc' }));
@@ -441,7 +521,7 @@ function TableEditor({
 
       {modelProblem && <ModelProblem failure={modelProblem} />}
 
-      <FillStatusLine tableId={table.id} onProgress={load} onFill={() => setFillOpen(true)} />
+      <FillStatusLine tableId={table.id} cells={view.cells} onProgress={load} onFill={() => setFillOpen(true)} />
 
       {view.rows.length > 0 && sortedColumns.length > 0 && (
         <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter papers">
@@ -534,12 +614,16 @@ function TableEditor({
                 column={selectedColumn}
                 cell={selectedColumn ? cells.get(cellKey(selectedRow.id, selectedColumn.id)) : undefined}
                 diagnostics={diagnostics}
+                refill={selectedColumn ? handFills[handKey('refill', selectedRow.id, selectedColumn.id)] : undefined}
+                check={handFills[handKey('check', selectedRow.id)]}
+                onRefill={() => { if (selectedColumn) refillCell(selectedRow.id, selectedColumn); }}
+                onCheck={() => checkPaper(selectedRow.id, selectedRow.title)}
                 onChanged={() => void load()}
               />
             ) : (
               <p className="m-0 text-[12.5px] text-shodh-text-muted">
-                Choose a cell to see its quote, its page in the paper and why it is marked. Arrow keys move between
-                cells; Enter opens one.
+                Choose a cell to see its quote, its page in the paper and why it is marked. In the table, arrow keys
+                move between cells and column headers; Enter opens a cell.
               </p>
             )}
           </aside>
@@ -566,7 +650,7 @@ function TableEditor({
 export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
   const [tables, setTables] = useState<EvidenceTable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(() => openTableOf(workspace.id));
   const [creating, setCreating] = useState(false);
   const [diagnostics, setDiagnostics] = useState(false);
 
@@ -583,12 +667,20 @@ export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
 
   useEffect(() => {
     setTables(null);
-    setOpenId(null);
     void load();
   }, [load]);
 
-  // A table created, renamed or deleted anywhere (its own id is sent).
-  useEffect(() => onTableChanged(() => void load()), [load]);
+  // Kept across a trip to Settings and back (the Workspaces view unmounts meanwhile).
+  useEffect(() => {
+    rememberOpenTable(workspace.id, openId);
+  }, [workspace.id, openId]);
+
+  // A table created, renamed or deleted anywhere (its own id is sent). While a table is
+  // open the list is not shown, so its cell-level changes do not reread it; Back does.
+  useEffect(() => {
+    if (openId) return undefined;
+    return onTableChanged(() => void load());
+  }, [load, openId]);
 
   useEffect(() => {
     let cancelled = false;

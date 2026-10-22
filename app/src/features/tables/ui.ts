@@ -43,6 +43,7 @@ export const TONE_CLASSES: Record<StatusTone, string> = {
   active: 'text-shodh-text-secondary',
   waiting: 'text-shodh-text-secondary',
   needs_you: 'text-shodh-warning',
+  warning: 'text-shodh-warning',
   done: 'text-shodh-success',
   failed: 'text-shodh-error',
   cancelled: 'text-shodh-text-muted',

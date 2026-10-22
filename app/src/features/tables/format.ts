@@ -122,6 +122,20 @@ function dateKey(ms: number, options: TimeOptions): string {
   return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: options.timeZone }).format(new Date(ms));
 }
 
+/** The calendar day after a `YYYY-MM-DD` key: by the calendar, not by adding 24 hours, which a DST change breaks. */
+function nextDateKey(key: string): string {
+  const [y, m, d] = key.split('-').map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
+}
+
+/** The next 00:00 UTC after `now`, when the day's count of table calls resets (`next_utc_midnight`). */
+export function nextUtcMidnight(now: number): number {
+  const at = new Date(now);
+  return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() + 1);
+}
+
 /**
  * A UTC instant as the user's local time, relative to `now`: "05:30" today, "05:30
  * tomorrow", else with the date ("05:30 on Mon 3 Nov").
@@ -131,7 +145,7 @@ export function localTime(ms: number, now: number, options: TimeOptions = {}): s
   const time = new Intl.DateTimeFormat(options.locale, { hour: 'numeric', minute: '2-digit', timeZone: options.timeZone }).format(at);
   const day = dateKey(ms, options);
   if (day === dateKey(now, options)) return time;
-  if (day === dateKey(now + 24 * 60 * 60 * 1000, options)) return `${time} tomorrow`;
+  if (day === nextDateKey(dateKey(now, options))) return `${time} tomorrow`;
   const date = new Intl.DateTimeFormat(options.locale, { weekday: 'short', day: 'numeric', month: 'short', timeZone: options.timeZone }).format(at);
   return `${time} on ${date}`;
 }
@@ -143,14 +157,14 @@ export function callsLine(callsToday: number, cap: number, dayResetsAt: number, 
 
 // ── Fill status ─────────────────────────────────────────────────────
 
-/** A short wait (a rate limit) against a long one (the provider's daily quota). */
-export const SHORT_WAIT_MS = 60 * 60 * 1000;
-
-export type StatusTone = 'active' | 'waiting' | 'needs_you' | 'done' | 'failed' | 'cancelled';
+export type StatusTone = 'active' | 'waiting' | 'needs_you' | 'warning' | 'done' | 'failed' | 'cancelled';
 
 export interface StatusText {
   tone: StatusTone;
+  /** What the fill is doing or why it stopped; changes only with the job's state (what a screen reader is told). */
   text: string;
+  /** The counts ("3 of 8 papers done · 4 of about 9 calls."), which change with every call. */
+  progress?: string | null;
 }
 
 function lastCode(job: JobView): string | null {
@@ -165,14 +179,17 @@ export function pauseText(job: JobView, now: number, options: TimeOptions = {}):
   switch (reason) {
     case 'daily_cap':
       return { tone: 'waiting', text: `Paused: today's cap of table calls is reached. It goes on at ${at ?? 'the next reset'}; raise the cap in Settings → Tables to go on now.` };
-    case 'quota':
+    case 'quota': {
+      // The runner keeps which limit it was: `model_quota:daily|short|unknown`.
+      const window = job.lastError ? splitError(job.lastError).detail : null;
       if (at === null) {
         return { tone: 'needs_you', text: "Paused: the provider's rate limit kept refusing calls. Start the fill again later, or pick another model." };
       }
-      if (until - now <= SHORT_WAIT_MS) {
-        return { tone: 'waiting', text: `Paused for the provider's rate limit; goes on at ${at}.` };
+      if (window === 'daily') {
+        return { tone: 'waiting', text: `Paused: the provider's daily quota is used up. It goes on at ${at}.` };
       }
-      return { tone: 'waiting', text: `Paused: the provider's daily quota is used up. It goes on at ${at}.` };
+      return { tone: 'waiting', text: `Paused for the provider's rate limit; goes on at ${at}.` };
+    }
     case 'auth':
       return { tone: 'needs_you', text: `Needs you: the provider refused the API key. Fix it in ${SETTINGS_MODEL}, then start the fill again.` };
     case 'unreachable':
@@ -201,38 +218,65 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /**
- * How long a run may be silent: its heartbeat is renewed before every paper and every
- * model call, and one call times out after five minutes (`LEASE_MINUTES` explains it).
+ * How long a run may be silent before it reads as not responding: its heartbeat is renewed
+ * before every paper and every model call, and one call times out after five minutes (the
+ * HTTP client's timeout), so a live run is never quieter than that plus a paper's local work.
  */
 export const QUIET_RUN_MS = 6 * 60 * 1000;
 /** How long another run's hold on a fill lasts after its last heartbeat (`LEASE_MINUTES`). */
 export const LEASE_MS = 10 * 60 * 1000;
 
-/** The table's fill in one line, or null when it never had one. */
-export function fillStatusText(status: FillStatus, now: number, options: TimeOptions = {}): StatusText | null {
+/** What the fill line adds about the cells the job left. */
+export interface StatusExtras {
+  /** Cells the job left failed, or whose refresh failed (`failedCellsSince`). */
+  failedCells?: number;
+}
+
+/**
+ * The table's fill, or null when it never had one. `text` changes only with the job's
+ * state; `progress` holds the counts.
+ */
+export function fillStatusText(status: FillStatus, now: number, options: TimeOptions = {}, extras: StatusExtras = {}): StatusText | null {
   const job = status.job;
   if (!job) return null;
-  const progress = `${status.papersDone} of ${plural(status.papersTotal, 'paper', 'papers')} done · ${job.doneCalls} of about ${plural(job.plannedCalls, 'call', 'calls')}`;
+  const progress = `${status.papersDone} of ${plural(status.papersTotal, 'paper', 'papers')} done · ${job.doneCalls} of about ${plural(job.plannedCalls, 'call', 'calls')}.`;
   switch (job.state) {
-    case 'running':
-      if (job.heartbeatAt !== null && now - job.heartbeatAt > QUIET_RUN_MS) {
-        // Held by a run that stopped answering (an earlier Shodh that quit without letting go).
+    case 'running': {
+      const cancelling = job.cancelRequested ? 'Cancelling… ' : '';
+      if (status.run === 'elsewhere') {
+        // Another run of Shodh holds the fill under its lease; the backend says until when.
+        const until = status.leaseExpiresAt !== null ? localTime(status.leaseExpiresAt, now, options) : null;
+        const resume = until !== null ? `by ${until} at the latest` : 'once it lets go';
+        const heard = job.heartbeatAt !== null ? localTime(job.heartbeatAt, now, options) : null;
+        const quiet = job.heartbeatAt !== null && now - job.heartbeatAt > QUIET_RUN_MS;
         return {
           tone: 'waiting',
-          text: `${job.cancelRequested ? 'Cancelling… ' : ''}The run filling this table has not been heard from since ${localTime(job.heartbeatAt, now, options)}. If it was an earlier Shodh, the fill goes on here by itself by ${localTime(job.heartbeatAt + LEASE_MS, now, options)} at the latest. ${progress}.`,
+          text: quiet
+            ? `${cancelling}Not responding: the run filling this table (an earlier Shodh) has not been heard from since ${heard}. The fill goes on here ${resume}.`
+            : `${cancelling}Another run of Shodh is filling this table${heard !== null ? ` (last heard from at ${heard})` : ''}. If it stops, the fill goes on here ${resume}.`,
+          progress,
         };
       }
+      if (status.run === 'stopped') {
+        return { tone: 'waiting', text: `${cancelling}The run filling this table stopped; the fill goes on here within a minute.`, progress };
+      }
       return job.cancelRequested
-        ? { tone: 'active', text: `Cancelling… the fill stops after its current call. ${progress}.` }
-        : { tone: 'active', text: `Filling: ${progress}.` };
+        ? { tone: 'active', text: 'Cancelling… the fill stops after its current call.', progress }
+        : { tone: 'active', text: 'Filling.', progress };
+    }
     case 'queued':
-      return { tone: 'active', text: job.cancelRequested ? 'Cancelling…' : `Waiting to start. ${progress}.` };
+      return { tone: 'active', text: job.cancelRequested ? 'Cancelling…' : 'Waiting to start.', progress };
     case 'paused': {
       const pause = pauseText(job, now, options);
-      return { tone: pause.tone, text: `${pause.text} ${progress}.` };
+      return { tone: pause.tone, text: pause.text, progress };
     }
-    case 'done':
-      return { tone: 'done', text: `Filled ${plural(status.papersDone, 'paper', 'papers')} with ${plural(job.doneCalls, 'call', 'calls')}.` };
+    case 'done': {
+      const failed = extras.failedCells ?? 0;
+      const filled = `Filled ${plural(status.papersDone, 'paper', 'papers')} with ${plural(job.doneCalls, 'call', 'calls')}`;
+      return failed > 0
+        ? { tone: 'warning', text: `${filled}; ${plural(failed, "cell couldn't", "cells couldn't")} be filled (show them with “With failed cells”).` }
+        : { tone: 'done', text: `${filled}.` };
+    }
     case 'cancelled':
       return { tone: 'cancelled', text: `Cancelled after ${plural(job.doneCalls, 'call', 'calls')}; finished cells stay.` };
     case 'failed':
@@ -255,7 +299,7 @@ export function cancelPending(job: JobView | null): boolean {
 // ── What Fill, Cancel and a fill by hand did ────────────────────────
 
 export interface Outcome {
-  tone: 'ok' | 'info' | 'warning';
+  tone: 'ok' | 'info' | 'warning' | 'error';
   text: string;
 }
 
@@ -294,14 +338,44 @@ export function cancelOutcome(cancel: FillCancel, now: number, options: TimeOpti
   return { tone: 'ok', text: 'Cancelled. Finished cells stay.' };
 }
 
-/** What a fill by hand (Refill, a quality check) did. */
-export function handFillOutcome(fill: HandFill): Outcome {
+/** Whether a stored cell is a failure: failed, or a kept result whose refresh failed. */
+export function cellFailed(cell: Pick<Cell, 'status' | 'error'>): boolean {
+  return cell.status === 'failed' || (typeof cell.error === 'string' && splitError(cell.error).refillFailed);
+}
+
+/**
+ * The cells a job left failed: failed, or whose refresh failed, written since the job was
+ * created (stored times are UTC RFC 3339 with milliseconds, so they compare as text, as
+ * `papers_done` compares them).
+ */
+export function failedCellsSince(cells: readonly Pick<Cell, 'status' | 'error' | 'filledAt'>[], since: string): number {
+  return cells.filter(c => cellFailed(c) && typeof c.filledAt === 'string' && c.filledAt >= since).length;
+}
+
+/**
+ * What a fill by hand (Refill, a quality check) did, read from the cells it stored: every
+ * cell answered → success; some failed → a warning naming those columns and why; all
+ * failed → an error. `columnName` names a column by its id.
+ */
+export function handFillOutcome(fill: HandFill, columnName: (columnId: string) => string = id => id): Outcome {
   if (fill.halted === 'daily_cap') return { tone: 'warning', text: `${reasonText('daily_cap')} Nothing was asked; raise the cap in Settings → Tables or wait for the reset.` };
   if (fill.halted) return { tone: 'info', text: reasonText(fill.halted) };
-  if (fill.modelError) return { tone: 'warning', text: reasonText(fill.modelError) };
-  if (fill.paperError) return { tone: 'warning', text: reasonText(fill.paperError) };
+  const cells = fill.cells ?? [];
+  const failed = cells.filter(cellFailed);
+  const calls = plural(fill.calls, 'model call', 'model calls');
+  if (failed.length > 0) {
+    const fallback = fill.modelError || fill.paperError || 'model_failed';
+    const why = failed.map(c => `${columnName(c.columnId)}: ${reasonText(c.error ?? fallback)}`).join(' ');
+    if (failed.length === cells.length) {
+      const what = failed.length === 1 ? "The cell couldn't be filled" : `None of the ${failed.length} cells could be filled`;
+      return { tone: 'error', text: `${what} (${calls}). ${why}` };
+    }
+    return { tone: 'warning', text: `${failed.length} of ${cells.length} cells couldn't be filled (${calls}). ${why}` };
+  }
+  if (fill.modelError) return { tone: 'error', text: reasonText(fill.modelError) };
+  if (fill.paperError) return { tone: 'error', text: reasonText(fill.paperError) };
   if (fill.calls === 0) return { tone: 'ok', text: 'Answered without a model call (the cell was current or cached).' };
-  return { tone: 'ok', text: `Asked the model (${plural(fill.calls, 'call', 'calls')}).` };
+  return { tone: 'ok', text: `Answered (${calls}).` };
 }
 
 /** The codes a fill by hand is refused with that are a wait, not a fault: shown inline. */
@@ -313,6 +387,9 @@ export const INLINE_REFUSALS: readonly string[] = ['fill_running', 'hand_fill_ru
 export function estimateText(papers: number, columns: number, calls: number): string {
   return `Filling ${plural(papers, 'paper', 'papers')} × ${plural(columns, 'column', 'columns')} needs about ${plural(calls, 'model call', 'model calls')}.`;
 }
+
+/** The least a paper can cost, its call and the one retry (mirrors `LEAST_PAPER_CALLS`). */
+export const LEAST_PAPER_CALLS = 2;
 
 /**
  * What the day's cap means for a fill of `calls` calls, or null when it fits. A paper is
@@ -328,7 +405,7 @@ export function capNotice(
 ): string | null {
   const left = Math.max(0, cap - callsToday);
   const reset = localTime(dayResetsAt, now, options);
-  if (left < 2) return `Today's table calls are used up, so the fill waits until ${reset}. Raise the cap in Settings → Tables to fill now.`;
+  if (left < LEAST_PAPER_CALLS) return `Today's table calls are used up, so the fill waits until ${reset}. Raise the cap in Settings → Tables to fill now.`;
   if (calls + 1 > left) {
     return `Only ${plural(left, 'call is', 'calls are')} left today, so the fill pauses at the cap and goes on at ${reset}.`;
   }

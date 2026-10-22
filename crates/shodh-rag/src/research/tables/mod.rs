@@ -10,8 +10,10 @@
 //! value fails its column's type rule, or that the local entailment model reads as
 //! contradicted by its quote is stored as `unverified` with the reason.
 
+pub mod budget;
 pub mod normalize;
 pub mod parse;
+pub mod prompt;
 pub mod store;
 pub mod validate;
 

@@ -4401,6 +4401,87 @@ The review found ten faults (F1–F10). The rules below supersede decisions 2, 4
 
 **PR 3a end:** push, open "Evidence table 3a: call counter and job runner (pause, resume, cancel, daily cap)", get CI green. No real model runs in 3a.
 
+## PR 3b — as built (app commands, scheduler, notifications, daily-cap setting)
+
+Branch: `feat/evidence-table-commands` from origin/master (42f6949). These decisions replace Task 11's outline where they differ.
+
+**What did not need building**
+- **The library-removal hook** shipped in #86/#87 (`LibraryRemovalObserver` → `TableStoreHandle::forget_documents`, `pending_forgets.json`, `settle_forgotten`). `TableState` reuses the managed `Arc<TableStoreHandle>`. The "removes rows only for the removed source's files" case is covered by `rag_engine.rs` `removing_a_library_source_forgets_its_files_and_the_unowned_ones_under_it`.
+- **Fixtures are not captured in this PR** (no local runs). `table_fill_paper` makes capture possible in the installed app (below).
+
+**Reasoning tokens (decided from OpenRouter's metadata, 2026-10-22).** `GET /api/v1/models` gives each model a `reasoning` object: `mandatory`, `supported_efforts` (omitted: no effort selection; `null`: all), `supports_max_tokens`, `default_enabled`. Non-reasoning models omit it. `exclude: true` only hides reasoning (still produced, still billed), so it is not used. The rule (`research/tables/reasoning.rs`, tested on recorded entries in `fixtures/openrouter_models_2026-10-22.json`):
+
+| Metadata | Sent | Reply budget |
+|---|---|---|
+| no `reasoning` object, no `reasoning` parameter | nothing | as is |
+| `mandatory: false` | `{"effort":"none"}` when `none` is listed, else `{"enabled":false}` | as is |
+| `mandatory: true`, `supports_max_tokens` | `{"max_tokens":4096}` | + 4,096 |
+| `mandatory: true`, `minimal`/`low` listed (or all efforts) | the lowest of those | + 4,096 |
+| `reasoning` parameter only, no object | nothing | + 4,096 |
+| any other mandatory reasoning | — | refused: "not offered for tables" |
+
+- On 2026-10-22, 37 models were bare `{"mandatory": true}` (including the free `liquid/lfm-2.5-2.6b:free` and `recursive/flint-v1.0:free`) and are refused. No mandatory model had `supports_max_tokens`.
+- The parameter goes to OpenRouter only (`GenerationConfig.reasoning`, read by `SimpleExternalProvider` for `ApiProvider::OpenRouter`). Other providers keep the plain budget.
+- The list is cached for an hour. If it cannot be fetched, the plain budget is used and the failure is logged once.
+- **Re-check at the quality check:** count the cut and empty replies per model in the captures. If a disabled model still cuts replies, add the allowance to the `Off` row too.
+
+**Cut replies are never whole answers.** `TextModel::complete_reply` returns `{text, truncated}` (the default says `false`; `AppModel` passes the provider's stop reason). A truncated reply is parsed with `parse_cut_reply`:
+- a reasoning block that never closed is thinking (a draft envelope inside it is not taken);
+- the cells found keep `cut_off`, so the columns the reply did not reach are asked again, never failed as `missing_in_reply`.
+
+**The provider's error body reaches the fill.** `CallContext::http` and `in_band` put OpenRouter's `error.metadata.headers` (`X-RateLimit-*`) at the front of the failure detail, so the 600-character cut never drops the reset. `AppModel` keeps the whole failure (`{e:#}`). Tested through the real HTTP path (a local server, `SimpleExternalProvider`, the adapter's error mapping, `ModelFailure::classify`).
+
+**Daily cap.** `tables.dailyCallCap` in the settings file (default 30, 3–1,000; an out-of-range stored value reads as 30). `DailyCap` is an `Arc<AtomicUsize>` shared by `JobRunner`, `JobGate` and `CounterGate`, and read at every check. A change applies from the next paper of a run in flight. `tables_settings_set` audits the change and broadcasts the settings.
+
+**Model and key changes.** A run resolves its model when it starts and keeps it to its end (done or paused); the next run uses the new model. The API key is resolved at every call, so a corrected key applies from the next call.
+
+**Scheduler.**
+- Started at setup. It waits until the LLM bootstrap has loaded the model choice and keys (a `watch` set at the end of that task), so no job claims, counts or spends a call before the app knows its key.
+- It then checks at once and every 60 s. It asks `resume_due_jobs` first, without a model, so an idle app never resolves a model or fetches `/models`.
+- Due jobs are run, each at most once at a time in this process (an in-flight set; the library's claim and lease guard against everything else). This covers ladder pauses, the 00:00 UTC cap reset, and a lease that expires after launch.
+- If no usable model can be resolved, the jobs are left as they are and this is logged once.
+- `fill_start` runs its job at once.
+
+**Progress.** Polling, no new library callback:
+- `fill_status` returns the table's newest job (`nextAttemptAt` as UTC ms), `papersDone` (rows with no queued cell), `papersTotal`, `callsToday`, `cap` and `dayResetsAt` (the next 00:00 UTC as UTC ms).
+- Every mutating command, and the end of every run, emits `table_changed { tableId }`.
+
+**Notifications** (`notifications::table_outcome`):
+- **Done** → work finished (`WorkKind::Tables`).
+- **Failed** → problem.
+- **Needs you:**
+  - a pause with no time (key refused, failing papers, the ladder exhausted);
+  - the daily cap, with the local time filling goes on;
+  - the provider's daily quota (`RunReport.quota_window == Daily`, new).
+- **No notification:** short rate limits, unreachable rungs, busy, cancel, lost, not claimed.
+- The runner has no "cancelled by error" outcome: errors end as failed or paused.
+
+**Commands** (camelCase, errors through `ResearchCommandError`; every id, spec, place, path list, cap, edit and estimate is checked at the boundary):
+- tables: `tables_list`, `table_create`, `table_rename`, `table_delete`, `table_get` (rows carry `title`: the citation graph's title when the built graph has the paper, else the file name);
+- columns: `column_add`, `column_update`, `column_delete`, `column_move` (new `TableStore::move_column`);
+- rows: `rows_add`, `row_remove`;
+- cells: `cell_edit`, `cell_clear`, `cell_refill`;
+- fill: `fill_estimate`, `fill_start`, `fill_cancel` (needs no model: `jobs::cancel_job`), `fill_status`;
+- settings: `tables_settings_get`, `tables_settings_set`;
+- `table_fill_paper`.
+
+**Refill** (`Filler::refill_cell`):
+- asks the one column again even over a current result, past the cache, with the top 8 passages per column (`REFILL_PASSAGES`);
+- a failed refill keeps the result;
+- an edited cell is refused ("clear it first");
+- counted through `CounterGate`.
+
+**Capture** (`table_fill_paper(tableId, rowId)`):
+- the normal fill of one paper through `CounterGate`;
+- every model call is recorded: prompt, its length and SHA-256, the reply budget, the raw reply byte for byte, the truncation flag, the error, and how the parse read it;
+- it is returned and written to `<app data>/tables/captures/<utc time>-<table>-<row>.json`;
+- cells that are current or cached cost no call, so clear them first for a fresh capture.
+
+**Open risks**
+- **Captures hold paper text and quotes outside `shodh.db`.** Forget (removing a paper) does not delete them; they are a debugging aid the user creates by hand.
+- **The 4,096-token allowance is unmeasured,** and so is whether `{"enabled": false}` is honoured by every upstream of an optional-reasoning model. Both are re-checked on the first captures.
+- **37 mandatory-reasoning models are refused today,** some of them free. The model picker does not warn yet; the refusal comes when a fill starts (PR 4 can surface `fill_estimate`'s error).
+
 # PR 4 — Tables tab, grid, cell panel, column and budget dialogs (outline)
 
 Branch: `feat/evidence-table-ui`. The files are under `app/src/features/tables/`, and the tests under `app/tests/` (run with `node --test`).

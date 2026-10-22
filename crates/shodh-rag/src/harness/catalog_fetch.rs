@@ -82,8 +82,13 @@ async fn get_bounded(url: &str, timeout: Duration) -> Result<String, FetchError>
 
 /// OpenRouter's model list, parsed.
 pub async fn fetch_openrouter() -> Result<Vec<CatalogModel>, FetchError> {
-    let body = get_bounded(OPENROUTER_MODELS_URL, OPENROUTER_TIMEOUT).await?;
-    Ok(parse_openrouter(&body)?)
+    Ok(parse_openrouter(&fetch_openrouter_body().await?)?)
+}
+
+/// OpenRouter's model list as sent (JSON), for readers of fields the picker does not
+/// keep (the evidence tables read each model's `reasoning` metadata).
+pub async fn fetch_openrouter_body() -> Result<String, FetchError> {
+    get_bounded(OPENROUTER_MODELS_URL, OPENROUTER_TIMEOUT).await
 }
 
 #[derive(Deserialize)]

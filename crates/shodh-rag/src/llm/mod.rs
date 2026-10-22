@@ -15,7 +15,7 @@ pub mod streaming;
 
 pub use failure::ProviderFailure;
 pub use llamacpp_provider::LlamaCppProvider;
-pub use simple_external::SimpleExternalProvider;
+pub use simple_external::{BoundedCompletion, SimpleExternalProvider};
 pub use streaming::{StreamingResponse, TokenStream};
 
 /// LLM operation mode
@@ -254,6 +254,11 @@ pub struct GenerationConfig {
     pub repetition_penalty: f32,
     pub stop_sequences: Vec<String>,
     pub seed: Option<u64>,
+    /// OpenRouter's `reasoning` request object (`{"effort": "none"}`, `{"max_tokens": n}`,
+    /// …), sent only to OpenRouter: other OpenAI-compatible APIs may refuse it. `None`
+    /// leaves the model's default.
+    #[serde(default)]
+    pub reasoning: Option<serde_json::Value>,
 }
 
 impl From<&LLMConfig> for GenerationConfig {
@@ -266,6 +271,7 @@ impl From<&LLMConfig> for GenerationConfig {
             repetition_penalty: config.repetition_penalty,
             stop_sequences: vec![],
             seed: None,
+            reasoning: None,
         }
     }
 }

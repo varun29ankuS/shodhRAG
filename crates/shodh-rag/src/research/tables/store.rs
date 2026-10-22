@@ -502,6 +502,54 @@ impl TableStore {
         Ok(updated)
     }
 
+    /// Moves a column to `position` (0 is first; a position past the end is last) and
+    /// numbers the table's columns 0, 1, 2… in their new order, in one transaction. The
+    /// column's key and revision do not change, so no cell becomes stale. Returns the
+    /// table's columns in order.
+    pub fn move_column(&self, column_id: &str, position: usize) -> ResearchResult<Vec<Column>> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let table_id: String = tx
+            .query_row(
+                "SELECT table_id FROM table_column WHERE id = ?1",
+                params![column_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
+        let mut order: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM table_column WHERE table_id = ?1 ORDER BY position, created_at",
+            )?;
+            let ids = stmt.query_map(params![table_id], |r| r.get(0))?;
+            ids.collect::<Result<_, _>>()?
+        };
+        order.retain(|id| id != column_id);
+        order.insert(position.min(order.len()), column_id.to_string());
+        let now = now_text();
+        for (at, id) in order.iter().enumerate() {
+            let at = i64::try_from(at)
+                .map_err(|_| ResearchError::Invalid("Too many columns.".to_string()))?;
+            tx.execute(
+                "UPDATE table_column SET position = ?2 WHERE id = ?1 AND position <> ?2",
+                params![id, at],
+            )?;
+        }
+        tx.execute(
+            "UPDATE evidence_table SET updated_at = ?2 WHERE id = ?1",
+            params![table_id, now],
+        )?;
+        let columns = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT {COLUMN_COLS} FROM table_column WHERE table_id = ?1 ORDER BY position, created_at"
+            ))?;
+            let rows = stmt.query_map(params![table_id], column_from)?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        tx.commit()?;
+        Ok(columns)
+    }
+
     pub fn delete_column(&self, column_id: &str) -> ResearchResult<bool> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -841,7 +889,7 @@ impl TableStoreHandle {
         }
         let (path, key) = self.database.as_ref().ok_or_else(|| {
             ResearchError::Database(
-                "The app database (shodh.db) could not be opened, so the evidence tables                  are unavailable."
+                "The app database (shodh.db) could not be opened, so the evidence tables are unavailable."
                     .to_string(),
             )
         })?;
@@ -1488,6 +1536,46 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(f.store.cells(&table.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn moving_a_column_renumbers_the_order_and_leaves_its_cells_current() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "A").unwrap();
+        let ids: Vec<String> = ["One?", "Two?", "Three?"]
+            .iter()
+            .map(|q| {
+                f.store
+                    .add_column(&table.id, &spec(q, ColumnKind::Text))
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        let questions = |columns: &[Column]| -> Vec<String> {
+            columns.iter().map(|c| c.spec.question.clone()).collect()
+        };
+        let moved = f.store.move_column(&ids[2], 0).unwrap();
+        assert_eq!(questions(&moved), vec!["Three?", "One?", "Two?"]);
+        assert_eq!(
+            moved.iter().map(|c| c.position).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(moved.iter().all(|c| c.revision == 1), "no cell goes stale");
+        // Past the end is last; the store reads the same order back.
+        f.store.move_column(&ids[2], 99).unwrap();
+        assert_eq!(
+            questions(&f.store.columns(&table.id).unwrap()),
+            vec!["One?", "Two?", "Three?"]
+        );
+        f.store.move_column(&ids[0], 1).unwrap();
+        assert_eq!(
+            questions(&f.store.columns(&table.id).unwrap()),
+            vec!["Two?", "One?", "Three?"]
+        );
+        assert!(matches!(
+            f.store.move_column("no-such-column", 0),
+            Err(ResearchError::NotFound(_))
+        ));
     }
 
     #[test]

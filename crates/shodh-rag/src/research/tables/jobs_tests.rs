@@ -4,7 +4,7 @@ use std::time::Duration;
 use super::*;
 use crate::harness::grounding::verify::ScorerSet;
 use crate::research::results::TextModel;
-use crate::research::tables::calls::{day_key, CallCounter};
+use crate::research::tables::calls::{day_key, CallCounter, DailyCap, MIN_DAILY_CAP};
 use crate::research::tables::fill::paper_hash;
 use crate::research::tables::testkit::{big_index, paper_index, utc, Index, ManualClock, Replies};
 use crate::research::tables::validate::NOT_FOUND_PARTIAL;
@@ -151,10 +151,19 @@ fn runner_with(
     cap: usize,
     token: &str,
 ) -> JobRunner {
-    JobRunner::new(filler(e, index, model), counter, Arc::new(NoResults), cap)
-        .unwrap()
-        .with_clock(e.clock.clone())
-        .with_token(token)
+    JobRunner::new(
+        filler(e, index, model),
+        counter,
+        Arc::new(NoResults),
+        daily(cap),
+    )
+    .with_clock(e.clock.clone())
+    .with_token(token)
+}
+
+/// A shared cap of `calls`.
+fn daily(calls: usize) -> DailyCap {
+    DailyCap::new(calls).unwrap()
 }
 
 fn runner(e: &Env, index: Index, model: Arc<dyn TextModel>, cap: usize, token: &str) -> JobRunner {
@@ -257,7 +266,7 @@ async fn a_restarted_job_resumes_where_it_stopped_and_never_refills_done_cells()
     filler(&e, paper_index(), replies(vec![Ok(CORRECT)]))
         .fill_paper(
             &request(&e, 0),
-            &CounterGate::new(e.counter.clone(), 30).with_clock(e.clock.clone()),
+            &CounterGate::new(e.counter.clone(), daily(30)).with_clock(e.clock.clone()),
         )
         .await
         .unwrap();
@@ -681,7 +690,7 @@ async fn the_cap_holds_when_other_calls_take_the_room_mid_paper() {
 #[tokio::test]
 async fn a_counter_gate_counts_a_fill_by_hand_and_refuses_past_the_cap() {
     let e = env(2);
-    let gate = CounterGate::new(e.counter.clone(), 3).with_clock(e.clock.clone());
+    let gate = CounterGate::new(e.counter.clone(), daily(3)).with_clock(e.clock.clone());
     let model = replies(vec![Ok(CORRECT), Ok(CORRECT)]);
     let f = filler(&e, paper_index(), model.clone());
     let fill = f.fill_paper(&request(&e, 0), &gate).await.unwrap();
@@ -1241,14 +1250,16 @@ fn migration_15_keeps_one_active_job_per_table() {
 
 #[test]
 fn a_cap_below_a_two_call_paper_is_refused() {
-    let e = env(1);
-    let result = JobRunner::new(
-        filler(&e, paper_index(), replies(vec![])),
-        e.counter.clone(),
-        Arc::new(NoResults),
-        MIN_DAILY_CAP - 1,
-    );
-    assert!(matches!(result, Err(ResearchError::Invalid(_))));
+    assert!(matches!(
+        DailyCap::new(MIN_DAILY_CAP - 1),
+        Err(ResearchError::Invalid(_))
+    ));
+    let cap = daily(MIN_DAILY_CAP);
+    assert!(matches!(
+        cap.set(MIN_DAILY_CAP - 1),
+        Err(ResearchError::Invalid(_))
+    ));
+    assert_eq!(cap.get(), MIN_DAILY_CAP);
 }
 
 #[test]
@@ -1276,4 +1287,98 @@ fn states_and_reasons_round_trip_their_stored_names() {
     assert_eq!(JobState::parse("paused-ish"), None);
     assert!(JobState::Paused.is_active());
     assert!(!JobState::Done.is_active());
+}
+
+#[tokio::test]
+async fn lowering_the_cap_mid_run_pauses_before_the_next_paper() {
+    let e = env(2);
+    let cap = daily(30);
+    // One call was made elsewhere today. While the first paper's call is with the model,
+    // the user lowers the cap in Settings to the smallest one.
+    e.counter.record(today(&e), 1).unwrap();
+    let mut model = Replies::new(vec![Ok(CORRECT), Ok(CORRECT)]);
+    let lowered = cap.clone();
+    model.before_reply = Some(Box::new(move || lowered.set(MIN_DAILY_CAP).unwrap()));
+    let model = Arc::new(model);
+    let r = JobRunner::new(
+        filler(&e, paper_index(), model.clone()),
+        e.counter.clone(),
+        Arc::new(NoResults),
+        cap.clone(),
+    )
+    .with_clock(e.clock.clone())
+    .with_token("p");
+    let job = r.start(&e.table, 2).await.unwrap();
+
+    let report = r.run(&job.id).await.unwrap();
+    // The second paper needs its call and the retry: 2 + 2 > 3.
+    assert_eq!(
+        report.outcome,
+        paused(PauseReason::DailyCap, Some(utc(2026, 10, 23, 0, 0)))
+    );
+    assert_eq!(report.calls, 1);
+    assert_eq!(model.prompts().len(), 1, "the second paper did not start");
+    assert_eq!(statuses(&e, 0), all(CellStatus::Verified));
+    assert_eq!(statuses(&e, 1), all(CellStatus::Queued));
+    assert_eq!(e.counter.count(today(&e)).unwrap(), 2);
+}
+
+#[tokio::test]
+async fn a_quota_pause_reports_which_limit_it_was() {
+    let now = utc(2099, 1, 1, 12, 0);
+    for (error, window) in [
+        (DAILY_LIMIT, LimitWindow::Daily),
+        (UPSTREAM_LIMIT, LimitWindow::Short),
+    ] {
+        let e = env_at(1, now);
+        let r = runner(&e, paper_index(), replies(vec![Err(error)]), 30, "p");
+        let job = r.start(&e.table, 1).await.unwrap();
+        let report = r.run(&job.id).await.unwrap();
+        assert!(matches!(
+            report.outcome,
+            JobOutcome::Paused {
+                reason: PauseReason::Quota,
+                ..
+            }
+        ));
+        assert_eq!(report.quota_window, Some(window));
+    }
+    let e = env(1);
+    let r = runner(&e, paper_index(), replies(vec![Err(AUTH_ERROR)]), 30, "p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    assert_eq!(r.run(&job.id).await.unwrap().quota_window, None);
+}
+
+#[tokio::test]
+async fn the_latest_job_outlives_its_end_and_a_job_is_cancelled_without_a_runner() {
+    let e = env(2);
+    assert!(e.store.latest_fill_job(&e.table).unwrap().is_none());
+    let r = runner(&e, paper_index(), replies(vec![Err(AUTH_ERROR)]), 30, "p");
+    let job = r.start(&e.table, 1).await.unwrap();
+    r.run(&job.id).await.unwrap();
+    assert_eq!(job_of(&e, &job.id).state, JobState::Paused);
+
+    let cancelled = cancel_job(e.store.clone(), &job.id).await.unwrap().unwrap();
+    assert_eq!(cancelled.state, JobState::Cancelled);
+    assert_eq!(statuses(&e, 1), all(CellStatus::Empty));
+    assert!(e.store.active_fill_job(&e.table).unwrap().is_none());
+    assert_eq!(
+        e.store.latest_fill_job(&e.table).unwrap().unwrap().id,
+        job.id
+    );
+    let next = r.start(&e.table, 1).await.unwrap();
+    assert_eq!(
+        e.store.latest_fill_job(&e.table).unwrap().unwrap().id,
+        next.id,
+        "the newest job wins, also within one millisecond"
+    );
+    // A scheduler finds the queued job without a runner.
+    assert_eq!(
+        resume_due_jobs(e.store.clone()).await.unwrap(),
+        vec![next.id.clone()]
+    );
+    assert!(cancel_job(e.store.clone(), "no-such-job")
+        .await
+        .unwrap()
+        .is_none());
 }

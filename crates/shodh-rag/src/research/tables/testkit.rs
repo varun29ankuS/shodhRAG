@@ -11,7 +11,7 @@ use super::fill::{CallGate, Halt};
 use super::passages::PaperIndex;
 use super::Passage;
 use crate::research::path_key;
-use crate::research::results::TextModel;
+use crate::research::results::{ModelReply, TextModel};
 use crate::research::ResearchResult;
 
 pub(crate) fn passage(id: &str, page: u32, text: &str) -> Passage {
@@ -217,6 +217,12 @@ impl TextModel for Replies {
         "recorded-model".to_string()
     }
     async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
+        self.complete_reply(prompt, max_tokens)
+            .await
+            .map(|reply| reply.text)
+    }
+
+    async fn complete_reply(&self, prompt: &str, max_tokens: usize) -> Result<ModelReply, String> {
         self.prompts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -234,7 +240,11 @@ impl TextModel for Replies {
             .unwrap_or_else(|e| e.into_inner())
             .pop_front()
             .unwrap_or_else(|| Err("no recorded reply left".to_string()))?;
-        Ok(reply.chars().take(max_tokens * CHARS_PER_TOKEN).collect())
+        let limit = max_tokens * CHARS_PER_TOKEN;
+        Ok(ModelReply {
+            truncated: reply.chars().count() > limit,
+            text: reply.chars().take(limit).collect(),
+        })
     }
 }
 

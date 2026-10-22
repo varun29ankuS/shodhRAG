@@ -9,6 +9,7 @@
 //! - [`passages`]: where passages come from.
 //! - [`calls`]: the table model calls per UTC day (schema 15) and the clock.
 //! - [`jobs`]: filling a whole table under the daily cap: pause, resume, cancel.
+//! - [`reasoning`]: what a fill asks of a reasoning model, from OpenRouter's metadata.
 //!
 //! The model never has the last word: an answer whose quote is not in the passages, whose
 //! value fails its column's type rule, or that the local entailment model reads as
@@ -22,6 +23,7 @@ pub mod normalize;
 pub mod parse;
 pub mod passages;
 pub mod prompt;
+pub mod reasoning;
 pub mod store;
 #[cfg(test)]
 mod testkit;

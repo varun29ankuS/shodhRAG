@@ -33,7 +33,7 @@ use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Serialize;
 
-use super::calls::{next_utc_midnight, utc_day, CallCounter, Clock, SystemClock, MIN_DAILY_CAP};
+use super::calls::{next_utc_midnight, utc_day, CallCounter, Clock, DailyCap, SystemClock};
 use super::fill::{
     CallGate, Filler, Halt, LimitWindow, ModelFailure, ModelFailureKind, PaperFill, PaperRequest,
     MODEL_AUTH, MODEL_FAILED, MODEL_QUOTA, MODEL_TIMEOUT, PAPER_NOT_INDEXED, SEARCH_FAILED,
@@ -269,6 +269,10 @@ pub struct RunReport {
     pub cells: usize,
     /// Papers skipped because they are not indexed yet.
     pub not_indexed: usize,
+    /// For a run paused by the provider's rate limit or quota, which limit it was: a
+    /// daily quota costs the rest of the day and is worth the user's attention, a short
+    /// limit resumes on its own within minutes.
+    pub quota_window: Option<LimitWindow>,
 }
 
 impl RunReport {
@@ -278,6 +282,7 @@ impl RunReport {
             calls: 0,
             cells: 0,
             not_indexed: 0,
+            quota_window: None,
         }
     }
 }
@@ -485,6 +490,21 @@ impl TableStore {
     /// The table's active (queued, running or paused) job.
     pub fn active_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
         Ok(active_in(&self.lock(), table_id)?)
+    }
+
+    /// The table's newest job, active or finished: how its last fill ended.
+    pub fn latest_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
+        Ok(self
+            .lock()
+            .query_row(
+                &format!(
+                    "SELECT {JOB_COLS} FROM table_fill_job WHERE table_id = ?1
+                      ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                ),
+                params![table_id],
+                job_from,
+            )
+            .optional()?)
     }
 
     /// A new queued job for the table, or its active job when it has one.
@@ -796,11 +816,11 @@ impl TableStore {
 pub struct CounterGate {
     counter: Arc<CallCounter>,
     clock: Arc<dyn Clock>,
-    cap: usize,
+    cap: DailyCap,
 }
 
 impl CounterGate {
-    pub fn new(counter: Arc<CallCounter>, cap: usize) -> Self {
+    pub fn new(counter: Arc<CallCounter>, cap: DailyCap) -> Self {
         Self {
             counter,
             clock: Arc::new(SystemClock),
@@ -829,7 +849,7 @@ fn paper_fits(
 #[async_trait::async_trait]
 impl CallGate for CounterGate {
     async fn before_paper(&self, calls: usize) -> ResearchResult<Option<Halt>> {
-        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap);
+        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap.get());
         blocking(move || {
             Ok((!paper_fits(&counter, clock.as_ref(), calls, cap)?).then_some(Halt::DailyCap))
         })
@@ -837,7 +857,7 @@ impl CallGate for CounterGate {
     }
 
     async fn before_call(&self) -> ResearchResult<Option<Halt>> {
-        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap);
+        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap.get());
         blocking(move || {
             let reserved = counter.try_record(utc_day(clock.now()), 1, cap)?;
             Ok(reserved.is_none().then_some(Halt::DailyCap))
@@ -853,7 +873,7 @@ struct JobGate {
     store: Arc<TableStore>,
     counter: Arc<CallCounter>,
     clock: Arc<dyn Clock>,
-    cap: usize,
+    cap: DailyCap,
     job_id: String,
     token: String,
 }
@@ -864,7 +884,7 @@ impl CallGate for JobGate {
         let store = self.store.clone();
         let counter = self.counter.clone();
         let clock = self.clock.clone();
-        let cap = self.cap;
+        let cap = self.cap.get();
         let id = self.job_id.clone();
         let token = self.token.clone();
         blocking(move || {
@@ -883,7 +903,7 @@ impl CallGate for JobGate {
         let store = self.store.clone();
         let counter = self.counter.clone();
         let clock = self.clock.clone();
-        let cap = self.cap;
+        let cap = self.cap.get();
         let id = self.job_id.clone();
         let token = self.token.clone();
         blocking(move || {
@@ -914,40 +934,70 @@ pub struct JobRunner {
     counter: Arc<CallCounter>,
     results: Arc<dyn ResultSource>,
     clock: Arc<dyn Clock>,
-    cap: usize,
+    cap: DailyCap,
     token: String,
 }
 
 impl std::fmt::Debug for JobRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobRunner")
-            .field("cap", &self.cap)
+            .field("cap", &self.cap.get())
             .finish_non_exhaustive()
     }
 }
 
+/// Cancels a job from this process without a runner, so stopping a fill never needs a
+/// usable model: see [`JobRunner::cancel`].
+pub async fn cancel_job(store: Arc<TableStore>, job_id: &str) -> ResearchResult<Option<FillJob>> {
+    let id = job_id.to_string();
+    let token = PROCESS_TOKEN.clone();
+    let live = LiveRun::is_live(&token, &id);
+    let cutoff = lease_cutoff(SystemClock.now());
+    blocking(move || store.cancel_fill_job(&id, &token, live, &cutoff)).await
+}
+
+/// The jobs a runner of this process could run now, on the computer's clock, without a
+/// runner (a scheduler asks this before it resolves a model): see
+/// [`JobRunner::resume_due`].
+pub async fn resume_due_jobs(store: Arc<TableStore>) -> ResearchResult<Vec<String>> {
+    due_jobs(store, PROCESS_TOKEN.clone(), SystemClock.now()).await
+}
+
+/// The jobs due at `now` for a runner holding `token`, leaving out those this process is
+/// running.
+async fn due_jobs(
+    store: Arc<TableStore>,
+    token: String,
+    now: DateTime<Utc>,
+) -> ResearchResult<Vec<String>> {
+    let (at, cutoff) = (timestamp(now), lease_cutoff(now));
+    let mine = token.clone();
+    let due = blocking(move || store.due_fill_jobs(&mine, &at, &cutoff)).await?;
+    Ok(due
+        .into_iter()
+        .filter(|(id, own_running)| !(*own_running && LiveRun::is_live(&token, id)))
+        .map(|(id, _)| id)
+        .collect())
+}
+
 impl JobRunner {
-    /// A runner filling with `filler`, counting its calls in `counter` under a daily cap
-    /// of `cap` calls (at least [`MIN_DAILY_CAP`]), on the computer's clock.
+    /// A runner filling with `filler`, counting its calls in `counter` under the shared
+    /// daily cap `cap`, on the computer's clock. The cap is read at every check, so a
+    /// change in Settings applies from the next paper of a run in flight.
     pub fn new(
         filler: Filler,
         counter: Arc<CallCounter>,
         results: Arc<dyn ResultSource>,
-        cap: usize,
-    ) -> ResearchResult<Self> {
-        if cap < MIN_DAILY_CAP {
-            return Err(ResearchError::Invalid(format!(
-                "The daily cap of table calls is at least {MIN_DAILY_CAP}."
-            )));
-        }
-        Ok(Self {
+        cap: DailyCap,
+    ) -> Self {
+        Self {
             filler,
             counter,
             results,
             clock: Arc::new(SystemClock),
             cap,
             token: PROCESS_TOKEN.clone(),
-        })
+        }
     }
 
     #[cfg(test)]
@@ -996,16 +1046,7 @@ impl JobRunner {
     /// The jobs to run now (see [`TableStore::due_fill_jobs`]), on this runner's clock,
     /// leaving out those this process is running.
     pub async fn resume_due(&self) -> ResearchResult<Vec<String>> {
-        let store = self.store();
-        let token = self.token.clone();
-        let now = self.clock.now();
-        let (at, cutoff) = (timestamp(now), lease_cutoff(now));
-        let due = blocking(move || store.due_fill_jobs(&token, &at, &cutoff)).await?;
-        Ok(due
-            .into_iter()
-            .filter(|(id, own_running)| !(*own_running && LiveRun::is_live(&self.token, id)))
-            .map(|(id, _)| id)
-            .collect())
+        due_jobs(self.store(), self.token.clone(), self.clock.now()).await
     }
 
     /// The table calls made today (UTC date).
@@ -1170,7 +1211,7 @@ impl JobRunner {
             store: store.clone(),
             counter: self.counter.clone(),
             clock: self.clock.clone(),
-            cap: self.cap,
+            cap: self.cap.clone(),
             job_id: job.id.clone(),
             token: self.token.clone(),
         };
@@ -1249,7 +1290,10 @@ impl JobRunner {
         }
         if let Some(failure) = &fill.model_error {
             return match failure.kind {
-                ModelFailureKind::Quota => Some(self.quota_pause(failure, streaks)),
+                ModelFailureKind::Quota => {
+                    report.quota_window = Some(failure.window);
+                    Some(self.quota_pause(failure, streaks))
+                }
                 ModelFailureKind::Auth => Some(End::Paused {
                     reason: PauseReason::Auth,
                     until: None,

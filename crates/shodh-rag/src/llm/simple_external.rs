@@ -134,6 +134,15 @@ impl SimpleExternalProvider {
         }
     }
 
+    /// The `reasoning` object a request carries: the config's, and only to OpenRouter
+    /// (the one provider whose API defines it here).
+    fn reasoning_param(&self, config: &GenerationConfig) -> Option<serde_json::Value> {
+        match self.provider {
+            ApiProvider::OpenRouter => config.reasoning.clone(),
+            _ => None,
+        }
+    }
+
     /// Who this call goes to, for its failures (which never carry the key).
     fn call(&self) -> CallContext {
         CallContext::new(
@@ -514,7 +523,7 @@ impl SimpleExternalProvider {
             "Sending OpenAI-compatible request"
         );
 
-        let request = json!({
+        let mut request = json!({
             "model": self.model,
             "messages": [
                 {"role": "user", "content": prompt}
@@ -525,6 +534,9 @@ impl SimpleExternalProvider {
             "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
             "stream": false
         });
+        if let Some(reasoning) = self.reasoning_param(config) {
+            request["reasoning"] = reasoning;
+        }
 
         let response = self
             .send_checked(
@@ -1229,6 +1241,27 @@ mod tests {
             "message": {"content": "  "}, "finish_reason": "stop"
         }]}))
         .is_none());
+    }
+
+    #[test]
+    fn the_reasoning_object_goes_to_openrouter_only() {
+        let mut config = GenerationConfig::from(&crate::llm::LLMConfig::default());
+        assert!(config.reasoning.is_none());
+        config.reasoning = Some(json!({ "effort": "none" }));
+        let provider = |p: ApiProvider| {
+            SimpleExternalProvider::new(p, "test-key".to_string(), "m".to_string()).unwrap()
+        };
+        assert_eq!(
+            provider(ApiProvider::OpenRouter).reasoning_param(&config),
+            Some(json!({ "effort": "none" }))
+        );
+        for other in [
+            ApiProvider::OpenAI,
+            ApiProvider::Together,
+            ApiProvider::Ollama,
+        ] {
+            assert_eq!(provider(other).reasoning_param(&config), None);
+        }
     }
 
     #[test]

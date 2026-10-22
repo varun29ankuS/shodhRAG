@@ -271,6 +271,26 @@ pub trait TextModel: Send + Sync {
     /// cut off at that limit is returned as far as it was written, not as an error: the
     /// caller reads what is complete in it and checks everything it uses.
     async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String>;
+
+    /// [`Self::complete`], and whether the provider said it stopped the reply at
+    /// `max_tokens`. A caller that must never take a cut reply for a whole one (an
+    /// evidence table fill) uses this. A model that cannot tell reports `truncated: false`
+    /// (the default), and the caller then judges the reply by its shape alone.
+    async fn complete_reply(&self, prompt: &str, max_tokens: usize) -> Result<ModelReply, String> {
+        self.complete(prompt, max_tokens)
+            .await
+            .map(|text| ModelReply {
+                text,
+                truncated: false,
+            })
+    }
+}
+
+/// A model's reply and whether the provider cut it off at the output limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelReply {
+    pub text: String,
+    pub truncated: bool,
 }
 
 /// Longest model reply read.

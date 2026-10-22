@@ -267,7 +267,9 @@ pub struct ResultFacets {
 pub trait TextModel: Send + Sync {
     /// Model id recorded as the extractor version.
     fn model_id(&self) -> String;
-    /// Completes `prompt` with at most `max_tokens` output tokens.
+    /// Completes `prompt` with at most `max_tokens` output tokens. A reply the provider
+    /// cut off at that limit is returned as far as it was written, not as an error: the
+    /// caller reads what is complete in it and checks everything it uses.
     async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String>;
 }
 

@@ -498,6 +498,27 @@ impl SimpleExternalProvider {
         Ok(completion.text)
     }
 
+    /// The body of an OpenAI-compatible completion request.
+    fn openai_request(&self, prompt: &str, config: &GenerationConfig) -> serde_json::Value {
+        let mut request = json!({
+            "model": self.model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            "top_p": config.top_p,
+            "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
+            "stream": false
+        });
+        if config.minimal_reasoning && matches!(self.provider, ApiProvider::OpenRouter) {
+            // OpenRouter normalises the effort across providers and ignores it for models
+            // that do not reason; OpenAI's own `reasoning_effort` is refused by those.
+            request["reasoning"] = json!({ "effort": "minimal" });
+        }
+        request
+    }
+
     /// One OpenAI-compatible completion and whether it stopped at `max_tokens`
     /// (`finish_reason: "length"`).
     async fn openai_compatible_complete(
@@ -514,17 +535,7 @@ impl SimpleExternalProvider {
             "Sending OpenAI-compatible request"
         );
 
-        let request = json!({
-            "model": self.model,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": config.max_tokens,
-            "temperature": config.temperature,
-            "top_p": config.top_p,
-            "frequency_penalty": (config.repetition_penalty - 1.0).max(0.0),
-            "stream": false
-        });
+        let request = self.openai_request(prompt, config);
 
         let response = self
             .send_checked(
@@ -1204,6 +1215,40 @@ struct HuggingFaceResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config(minimal_reasoning: bool) -> GenerationConfig {
+        GenerationConfig {
+            max_tokens: 300,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 40,
+            repetition_penalty: 1.0,
+            stop_sequences: vec![],
+            seed: None,
+            minimal_reasoning,
+        }
+    }
+
+    #[test]
+    fn minimal_reasoning_is_asked_of_openrouter_only() {
+        let ask = |provider: ApiProvider, minimal: bool| {
+            SimpleExternalProvider::new(provider, "key".into(), "model".into())
+                .unwrap()
+                .openai_request("prompt", &config(minimal))
+        };
+        let routed = ask(ApiProvider::OpenRouter, true);
+        assert_eq!(routed["reasoning"]["effort"], "minimal");
+        assert_eq!(routed["max_tokens"], 300);
+        assert!(ask(ApiProvider::OpenRouter, false)
+            .get("reasoning")
+            .is_none());
+        // Other OpenAI-compatible endpoints refuse a reasoning setting on models that
+        // have none, so it is not sent to them.
+        assert!(ask(ApiProvider::OpenAI, true).get("reasoning").is_none());
+        assert!(ask(ApiProvider::OpenAI, true)
+            .get("reasoning_effort")
+            .is_none());
+    }
 
     #[test]
     fn a_completion_stopped_at_the_token_limit_is_reported_as_cut_off() {

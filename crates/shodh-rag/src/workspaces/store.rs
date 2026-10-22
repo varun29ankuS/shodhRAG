@@ -582,8 +582,8 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Deletes a workspace, its instruction history and its source list (never the
-    /// sources themselves). Returns whether it existed.
+    /// Deletes a workspace, its instruction history, its source list and its evidence
+    /// tables (never the sources themselves). Returns whether it existed.
     pub fn delete(&self, id: &str) -> WorkspaceResult<bool> {
         let id = check_id(id)?;
         let mut conn = self.lock();
@@ -596,6 +596,7 @@ impl WorkspaceStore {
             "DELETE FROM workspace_instructions WHERE workspace_id = ?1",
             params![id],
         )?;
+        crate::research::tables::store::delete_workspace_tables(&tx, id)?;
         let removed = tx.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(removed > 0)

@@ -1633,7 +1633,11 @@ pub async fn fill_status(
     let (run, lease_expires_at) = match job.as_ref() {
         Some(j) if j.state == JobState::Running => {
             let hold = job_hold(tables.store().await?, &j.id).await?;
-            run_holder(Some(j.state), hold, tables.inner.scheduler.is_running(&j.id))
+            run_holder(
+                Some(j.state),
+                hold,
+                tables.inner.scheduler.is_running(&j.id),
+            )
         }
         _ => (None, None),
     };
@@ -1960,11 +1964,21 @@ mod tests {
             run_holder(running, Hold::Elsewhere { until }, false),
             (Some("elsewhere"), Some(until.timestamp_millis()))
         );
-        assert_eq!(run_holder(running, Hold::RunningHere, false), (Some("here"), None));
+        assert_eq!(
+            run_holder(running, Hold::RunningHere, false),
+            (Some("here"), None)
+        );
         assert_eq!(run_holder(running, Hold::Free, true), (Some("here"), None));
-        assert_eq!(run_holder(running, Hold::Free, false), (Some("stopped"), None));
+        assert_eq!(
+            run_holder(running, Hold::Free, false),
+            (Some("stopped"), None)
+        );
         for state in [JobState::Queued, JobState::Paused, JobState::Done] {
-            assert_eq!(run_holder(Some(state), Hold::Free, false), (None, None), "{state:?}");
+            assert_eq!(
+                run_holder(Some(state), Hold::Free, false),
+                (None, None),
+                "{state:?}"
+            );
         }
         assert_eq!(run_holder(None, Hold::Free, false), (None, None));
     }

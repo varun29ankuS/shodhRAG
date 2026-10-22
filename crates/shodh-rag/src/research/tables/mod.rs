@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use super::{ResearchError, ResearchResult};
 
-pub use store::{CacheEntry, TableStore};
+pub use store::{CacheEntry, TableStore, TableStoreHandle};
 
 /// Longest `text` value, in characters.
 pub const MAX_TEXT_CHARS: usize = 500;

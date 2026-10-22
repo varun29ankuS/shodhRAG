@@ -377,6 +377,19 @@ pub fn run() {
             default_rag.set_source_ranker(Some(Arc::new(
                 shodh_rag::research::citations::GraphRanker::new(graph_slot.clone()),
             )));
+            // A paper that leaves the index (any removal: a source, a deleted file, a
+            // reset) is forgotten by the evidence tables too. The handle is the engine's
+            // removal observer from the start, whether or not the database opens: a
+            // removal it cannot report is written down and reported on a later start.
+            let table_handle = Arc::new(shodh_rag::research::tables::TableStoreHandle::new(
+                app.state::<audit_commands::AuditState>().database(),
+            ));
+            default_rag.set_removal_observer(Some(table_handle.clone()));
+            let settled = tauri::async_runtime::block_on(default_rag.settle_forgotten());
+            if settled > 0 {
+                tracing::info!(files = settled, "removed files forgotten by tables");
+            }
+            app.manage(table_handle);
             // PDFs indexed with table-candidate pages are refined in the background.
             let refinement = table_model_commands::spawn_refinement(app.handle(), &mut default_rag);
             // Scans read without the scan reader (installed before it shipped)

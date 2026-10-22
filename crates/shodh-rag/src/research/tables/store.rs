@@ -8,8 +8,8 @@
 //! its paper removed from the library), so nothing of a paper's text outlives the cells
 //! that showed it.
 
-use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::types::Type;
@@ -719,6 +719,62 @@ impl TableStore {
     }
 }
 
+/// The library tells the tables which files left the index (see
+/// [`crate::rag_engine::RAGEngine::set_removal_observer`]).
+impl crate::rag_engine::LibraryRemovalObserver for TableStore {
+    fn forget_sources(&self, sources: &[String]) -> anyhow::Result<()> {
+        self.forget_documents(sources)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+}
+
+/// The app's handle on the tables: the store, opened on first use and opened again on the
+/// next call while the database is unavailable. It is the library's removal observer
+/// from the start of the app, so a removal made while the database cannot be opened is
+/// reported as failed (and written down for a retry), never skipped.
+pub struct TableStoreHandle {
+    database: Option<(PathBuf, Option<AuditKey>)>,
+    store: Mutex<Option<Arc<TableStore>>>,
+}
+
+impl TableStoreHandle {
+    /// A handle over `shodh.db` at `database` (path and key; `None` when the app's
+    /// database could not be opened).
+    pub fn new(database: Option<(PathBuf, Option<AuditKey>)>) -> Self {
+        Self {
+            database,
+            store: Mutex::new(None),
+        }
+    }
+
+    /// The store, opening it if needed.
+    pub fn store(&self) -> ResearchResult<Arc<TableStore>> {
+        let mut slot = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(store) = slot.as_ref() {
+            return Ok(store.clone());
+        }
+        let (path, key) = self.database.as_ref().ok_or_else(|| {
+            ResearchError::Database(
+                "The app database (shodh.db) could not be opened, so the evidence tables                  are unavailable."
+                    .to_string(),
+            )
+        })?;
+        let store = Arc::new(TableStore::open(path, key.as_ref())?);
+        *slot = Some(store.clone());
+        Ok(store)
+    }
+}
+
+impl crate::rag_engine::LibraryRemovalObserver for TableStoreHandle {
+    fn forget_sources(&self, sources: &[String]) -> anyhow::Result<()> {
+        self.store()
+            .and_then(|store| store.forget_documents(sources))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1363,6 +1419,29 @@ mod tests {
             .unwrap()
             .is_some());
         assert_eq!(f.store.cells(&two.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_handle_reports_an_unavailable_database_instead_of_skipping_the_forget() {
+        use crate::rag_engine::LibraryRemovalObserver;
+        let none = TableStoreHandle::new(None);
+        assert!(none.store().is_err());
+        assert!(none.forget_sources(&["/papers/a.pdf".to_string()]).is_err());
+
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        f.store
+            .add_rows(&table.id, &["/papers/a.pdf".to_string()])
+            .unwrap();
+        let handle = TableStoreHandle::new(Some((f.path.clone(), None)));
+        handle
+            .forget_sources(&["/papers/a.pdf".to_string()])
+            .unwrap();
+        assert!(f.store.rows(&table.id).unwrap().is_empty());
+        assert!(Arc::ptr_eq(
+            &handle.store().unwrap(),
+            &handle.store().unwrap()
+        ));
     }
 
     #[test]

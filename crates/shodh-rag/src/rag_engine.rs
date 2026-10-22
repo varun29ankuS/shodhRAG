@@ -3213,10 +3213,11 @@ impl RAGEngine {
     }
 
     /// The first chunk of `source` (a paper's title and abstract), or `None` when it has
-    /// no chunks. `source` is normalised as the index stores it, so any spelling of the
-    /// path finds it. Reads only.
+    /// no chunks. `source` is read as [`crate::research::path_key`] reads it (trimmed, then
+    /// normalised as the index stores it), the one spelling the per-paper search filters
+    /// by, so any spelling of the path finds it. Reads only.
     pub async fn first_chunk(&self, source: &str) -> Result<Option<crate::storage::SearchHit>> {
-        let source = normalize_source_path(Path::new(source));
+        let source = normalize_source_path(Path::new(source.trim()));
         let predicate = format!("{} AND chunk_index = 0", source_predicate(&source));
         Ok(self
             .store
@@ -4494,6 +4495,17 @@ Language models trained on long documents reach lower perplexity.
                 .all(|p| p.text.contains("Alpha") || p.text.contains("alpha")),
             "{passages:?}"
         );
+        // A passage is the text of its own chunk, never that chunk joined to its neighbours.
+        for passage in &passages {
+            let own = chunks
+                .iter()
+                .find(|c| {
+                    uuid::Uuid::parse_str(&c.id).map(|u| u.to_string()).ok()
+                        == Some(passage.chunk_id.clone())
+                })
+                .unwrap_or_else(|| panic!("no chunk {}", passage.chunk_id));
+            assert_eq!(passage.text, own.text);
+        }
         let opened = index
             .first_passage(&a.to_string_lossy())
             .await
@@ -4511,6 +4523,27 @@ Language models trained on long documents reach lower perplexity.
             .await
             .unwrap()
             .is_empty());
+        // Every spelling of the path finds the paper, for its first chunk and for the
+        // search alike: the two read one key.
+        let mut spellings = vec![
+            format!("{}/./sub/../alpha.md", dir.path().display()),
+            format!("  {}  ", a.display()),
+        ];
+        if cfg!(windows) {
+            spellings.push(a.display().to_string().to_uppercase());
+        }
+        for spelling in &spellings {
+            let first = index.first_passage(spelling).await.unwrap();
+            assert!(
+                first.is_some_and(|p| p.text.contains("Alpha")),
+                "first chunk of {spelling:?}"
+            );
+            let found = index
+                .search_paper(spelling, "dataset method", 4)
+                .await
+                .unwrap();
+            assert!(!found.is_empty(), "search of {spelling:?}");
+        }
         assert_eq!(
             observer.calls.load(std::sync::atomic::Ordering::SeqCst),
             0,

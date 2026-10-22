@@ -8,6 +8,7 @@
 //! - [`fill`]: retrieval, budget, call, parse, validation and cache for one paper.
 //! - [`passages`]: where passages come from.
 //! - [`calls`]: the table model calls per local day (schema 15) and the clock.
+//! - [`jobs`]: filling a whole table under the daily cap: pause, resume, cancel.
 //!
 //! The model never has the last word: an answer whose quote is not in the passages, whose
 //! value fails its column's type rule, or that the local entailment model reads as
@@ -16,6 +17,7 @@
 pub mod budget;
 pub mod calls;
 pub mod fill;
+pub mod jobs;
 pub mod normalize;
 pub mod parse;
 pub mod passages;

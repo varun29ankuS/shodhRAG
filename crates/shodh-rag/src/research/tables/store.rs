@@ -1,5 +1,6 @@
-//! The evidence tables of `shodh.db` (schema 14): tables, columns, rows, cells and the
-//! fill cache. One connection, like [`crate::research::ResearchDb`]; every write that
+//! The evidence tables of `shodh.db` (schema 14, with schema 15's job columns): tables,
+//! columns, rows, cells and the fill cache. The fill jobs' own queries are in
+//! [`super::jobs`], on the same connection. One connection, like [`crate::research::ResearchDb`]; every write that
 //! touches several tables runs in one immediate transaction.
 //!
 //! The fill cache is not owned by a table: two tables asking the same question of the
@@ -274,7 +275,8 @@ impl TableStore {
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, Connection> {
+    /// The connection, for the job store ([`super::jobs`]) on the same tables.
+    pub(super) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 

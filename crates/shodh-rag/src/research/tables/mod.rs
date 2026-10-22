@@ -5,6 +5,7 @@
 //! - [`store`]: the tables in `shodh.db` (schema 14) and the fill cache.
 //! - [`normalize`]: the normal form quotes are compared in.
 //! - [`validate`]: the deterministic rules a model's answer must pass to be `verified`.
+//! - [`passages`]: where passages come from.
 //!
 //! The model never has the last word: an answer whose quote is not in the passages, whose
 //! value fails its column's type rule, or that the local entailment model reads as
@@ -13,6 +14,7 @@
 pub mod budget;
 pub mod normalize;
 pub mod parse;
+pub mod passages;
 pub mod prompt;
 pub mod store;
 pub mod validate;

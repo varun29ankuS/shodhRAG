@@ -44,8 +44,9 @@ const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 /// API cache, per-file scans and the build report), the model catalog cache (7) and
 /// workspaces (8: workspaces, their versioned instructions and sources), the Inbox (9),
 /// the learning model's rejected answers (10), forgotten suggestions (11), the statement
-/// store's state (12), what happened to memories in each answer (13) and evidence tables
-/// (14) use one version sequence, so every component that opens it sees the same schema.
+/// store's state (12), what happened to memories in each answer (13), evidence tables
+/// (14) and the evidence tables' daily model-call counter and fill-job ownership (15) use one
+/// version sequence, so every component that opens it sees the same schema.
 const MIGRATIONS: &[(i64, &str)] = &[
     (
         1,
@@ -468,6 +469,30 @@ const MIGRATIONS: &[(i64, &str)] = &[
             created_at TEXT NOT NULL,
             PRIMARY KEY (paper_hash, column_key, model)
         );",
+    ),
+    (
+        15,
+        // Evidence-table fill jobs: the model calls tables made per local day (the daily
+        // cap reads it; chat and agents do not count here), which process runs a job
+        // (`run_token`), why a paused job waits, and a cancel asked of a running job. A
+        // table has at most one active (queued, running or paused) job. The UPDATE only
+        // guards the index: nothing wrote jobs before this version.
+        "CREATE TABLE model_calls (
+            day TEXT PRIMARY KEY,
+            calls INTEGER NOT NULL CHECK (calls >= 0)
+        );
+        ALTER TABLE table_fill_job ADD COLUMN run_token TEXT NULL;
+        ALTER TABLE table_fill_job ADD COLUMN pause_reason TEXT NULL
+            CHECK (pause_reason IN ('daily_cap', 'quota', 'auth', 'unreachable'));
+        ALTER TABLE table_fill_job ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0
+            CHECK (cancel_requested IN (0, 1));
+        UPDATE table_fill_job SET state = 'cancelled'
+         WHERE state IN ('queued', 'running', 'paused')
+           AND rowid NOT IN (SELECT MAX(rowid) FROM table_fill_job
+                              WHERE state IN ('queued', 'running', 'paused')
+                              GROUP BY table_id);
+        CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
+            WHERE state IN ('queued', 'running', 'paused');",
     ),
 ];
 
@@ -1931,6 +1956,7 @@ mod tests {
                  DROP TABLE table_cell;
                  DROP TABLE table_fill_job;
                  DROP TABLE fill_cache;
+                 DROP TABLE model_calls;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

@@ -1,6 +1,4 @@
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use chrono::Utc;
 use shodh_ontology::ExtractorKind;
@@ -10,6 +8,9 @@ use crate::harness::grounding::verify::EntailmentScorer;
 use crate::reranking::Entailment;
 use crate::research::path_key;
 use crate::research::results::Region;
+use crate::research::tables::testkit::{
+    big_index, paper_index, passage, Index, Replies, CHARS_PER_TOKEN,
+};
 use crate::research::tables::validate::NON_ANSWERS;
 use crate::research::tables::CellValue;
 use crate::statements::Scope;
@@ -33,176 +34,6 @@ const RETRY_LAST_TWO: &str = r#"{"cells":[{"column":"c1","answer":"yes","quote":
 const CUT_AFTER_ONE: &str = r#"{"cells":[{"column":"c1","answer":null},{"column":"c2","answ"#;
 const QUOTA_ERROR: &str = "HTTP 429 Too Many Requests: daily limit";
 const TIMEOUT_ERROR: &str = "the provider did not answer in time";
-
-fn passage(id: &str, page: u32, text: &str) -> Passage {
-    Passage {
-        chunk_id: id.to_string(),
-        text: text.to_string(),
-        page: Some(page),
-        bboxes: Some(format!(
-            r#"[{{"page":{page},"x0":1.0,"y0":2.0,"x1":3.0,"y1":4.0}}]"#
-        )),
-    }
-}
-
-/// The same passages for every query unless a keyword of the query selects others;
-/// records every search.
-struct Index {
-    first: Option<Passage>,
-    passages: Vec<Passage>,
-    by_query: Vec<(&'static str, Vec<Passage>)>,
-    searches: Mutex<Vec<(String, String)>>,
-}
-
-impl Index {
-    fn new(first: Option<Passage>, passages: Vec<Passage>) -> Self {
-        Self {
-            first,
-            passages,
-            by_query: Vec::new(),
-            searches: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn with_query(mut self, keyword: &'static str, passages: Vec<Passage>) -> Self {
-        self.by_query.push((keyword, passages));
-        self
-    }
-
-    fn searches(&self) -> Vec<(String, String)> {
-        self.searches
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl PaperIndex for Index {
-    async fn search_paper(
-        &self,
-        source: &str,
-        query: &str,
-        k: usize,
-    ) -> Result<Vec<Passage>, String> {
-        self.searches
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((source.to_string(), query.to_string()));
-        let lower = query.to_lowercase();
-        let chosen = self
-            .by_query
-            .iter()
-            .find(|(keyword, _)| lower.contains(keyword))
-            .map_or(&self.passages, |(_, passages)| passages);
-        Ok(chosen.iter().take(k).cloned().collect())
-    }
-    async fn first_passage(&self, _source: &str) -> Result<Option<Passage>, String> {
-        Ok(self.first.clone())
-    }
-}
-
-fn paper_index() -> Index {
-    Index::new(
-        Some(passage(
-            "p0",
-            1,
-            "Dense Retrieval at Scale. Abstract: We pre-train a bi-encoder on LAION-400M with a contrastive loss.",
-        )),
-        vec![
-            passage(
-                "p1",
-                4,
-                "Table 2 reports Recall@10 of 0.912 on MS MARCO with 48 GB of GPU memory.",
-            ),
-            passage(
-                "p2",
-                6,
-                "Our code is available at the project page. The study is a benchmark evaluation.",
-            ),
-        ],
-    )
-}
-
-/// Four passages of about 2,000 tokens each: more than one call holds for four columns.
-fn big_index() -> Index {
-    let big = "word ".repeat(1_200);
-    Index::new(
-        None,
-        (1..=4)
-            .map(|i| passage(&format!("big{i}"), i, &big))
-            .collect(),
-    )
-}
-
-/// The characters one output token is worth in the double below (the same estimate the
-/// budget uses).
-const CHARS_PER_TOKEN: usize = 3;
-
-/// Replays recorded replies in order, keeps the prompts and output limits it was sent,
-/// and cuts a reply at the limit the way a provider does. `before_reply` runs when a call
-/// arrives, as the user would act while the model is thinking.
-struct Replies {
-    replies: Mutex<VecDeque<Result<String, String>>>,
-    prompts: Mutex<Vec<String>>,
-    limits: Mutex<Vec<usize>>,
-    before_reply: Option<Box<dyn Fn() + Send + Sync>>,
-}
-
-impl Replies {
-    fn new(replies: Vec<Result<&str, &str>>) -> Self {
-        Self {
-            replies: Mutex::new(
-                replies
-                    .into_iter()
-                    .map(|r| r.map(str::to_string).map_err(str::to_string))
-                    .collect(),
-            ),
-            prompts: Mutex::new(Vec::new()),
-            limits: Mutex::new(Vec::new()),
-            before_reply: None,
-        }
-    }
-    fn prompts(&self) -> Vec<String> {
-        self.prompts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-    fn limits(&self) -> Vec<usize> {
-        self.limits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-}
-
-#[async_trait::async_trait]
-impl TextModel for Replies {
-    fn model_id(&self) -> String {
-        "recorded-model".to_string()
-    }
-    async fn complete(&self, prompt: &str, max_tokens: usize) -> Result<String, String> {
-        self.prompts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(prompt.to_string());
-        self.limits
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(max_tokens);
-        if let Some(act) = &self.before_reply {
-            act();
-        }
-        let reply = self
-            .replies
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_front()
-            .unwrap_or_else(|| Err("no recorded reply left".to_string()))?;
-        Ok(reply.chars().take(max_tokens * CHARS_PER_TOKEN).collect())
-    }
-}
 
 struct Recorded(Entailment);
 
@@ -1203,6 +1034,7 @@ fn model_errors_are_classified_and_their_detail_is_redacted() {
         ModelFailure {
             kind,
             retry_after_secs: None,
+            reset_at_ms: None,
             detail: String::new(),
         }
         .code()

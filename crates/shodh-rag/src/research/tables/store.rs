@@ -234,10 +234,16 @@ fn delete_table_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize>
     Ok(removed)
 }
 
+/// Deletes one row with its cells. The cache is not swept: the caller does it once,
+/// after the last row it deletes.
+fn delete_row_unswept(conn: &Connection, row_id: &str) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM table_cell WHERE row_id = ?1", params![row_id])?;
+    conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])
+}
+
 /// Deletes one row with its cells and the cache entries only it used.
 fn delete_row_in(conn: &Connection, row_id: &str) -> rusqlite::Result<usize> {
-    conn.execute("DELETE FROM table_cell WHERE row_id = ?1", params![row_id])?;
-    let removed = conn.execute("DELETE FROM table_row WHERE id = ?1", params![row_id])?;
+    let removed = delete_row_unswept(conn, row_id)?;
     sweep_cache(conn)?;
     Ok(removed)
 }
@@ -636,13 +642,21 @@ impl TableStore {
     /// The user's value for a cell, under its column's type rule. The model's quote and
     /// passage no longer back it and are cleared; the paper hash stays.
     pub fn edit_cell(&self, row_id: &str, column_id: &str, input: &str) -> ResearchResult<Cell> {
-        let column = self
-            .column(column_id)?
+        let mut conn = self.lock();
+        // The column is read in the transaction that writes the cell, so a column change
+        // (and the re-check of the edited cells it makes) cannot come between them.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let column = tx
+            .query_row(
+                &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
+                params![column_id],
+                column_from,
+            )
+            .optional()?
             .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
         let value = parse_edit(&column.spec, input)?;
         let value = value_json(&Some(value))?;
-        let conn = self.lock();
-        let row_table: Option<String> = conn
+        let row_table: Option<String> = tx
             .query_row(
                 "SELECT table_id FROM table_row WHERE id = ?1",
                 params![row_id],
@@ -654,7 +668,7 @@ impl TableStore {
                 "No row {row_id} in this table."
             )));
         }
-        conn.execute(
+        tx.execute(
             "INSERT INTO table_cell(table_id, row_id, column_id, status, value_json, column_revision, edited_at)
              VALUES (?1, ?2, ?3, 'edited', ?4, ?5, ?6)
              ON CONFLICT(row_id, column_id) DO UPDATE SET status = 'edited',
@@ -663,9 +677,16 @@ impl TableStore {
                edited_at = excluded.edited_at, error = NULL",
             params![column.table_id, row_id, column_id, value, column.revision, now_text()],
         )?;
-        drop(conn);
-        self.cell(row_id, column_id)?
-            .ok_or_else(|| ResearchError::NotFound(format!("No cell {row_id}/{column_id}.")))
+        let cell = tx
+            .query_row(
+                &format!("SELECT {CELL_COLS} FROM table_cell WHERE row_id = ?1 AND column_id = ?2"),
+                params![row_id, column_id],
+                cell_from,
+            )
+            .optional()?
+            .ok_or_else(|| ResearchError::NotFound(format!("No cell {row_id}/{column_id}.")))?;
+        tx.commit()?;
+        Ok(cell)
     }
 
     /// Empties a cell (an edit included); the next fill fills it.
@@ -711,9 +732,22 @@ impl TableStore {
                 rows.collect::<Result<_, _>>()?
             };
             for id in &row_ids {
-                removed += delete_row_in(&tx, id)?;
+                removed += delete_row_unswept(&tx, id)?;
             }
         }
+        sweep_cache(&tx)?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Forgets every paper (the library was reset): all rows and cells of every table
+    /// and every cache entry. Tables and columns stay. Returns the rows removed.
+    pub fn forget_all(&self) -> ResearchResult<usize> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("DELETE FROM table_cell", [])?;
+        let removed = tx.execute("DELETE FROM table_row", [])?;
+        sweep_cache(&tx)?;
         tx.commit()?;
         Ok(removed)
     }
@@ -725,6 +759,11 @@ impl crate::rag_engine::LibraryRemovalObserver for TableStore {
     fn forget_sources(&self, sources: &[String]) -> anyhow::Result<()> {
         self.forget_documents(sources)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    fn forget_all(&self) -> anyhow::Result<()> {
+        TableStore::forget_all(self).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(())
     }
 }
@@ -770,6 +809,13 @@ impl crate::rag_engine::LibraryRemovalObserver for TableStoreHandle {
     fn forget_sources(&self, sources: &[String]) -> anyhow::Result<()> {
         self.store()
             .and_then(|store| store.forget_documents(sources))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(())
+    }
+
+    fn forget_all(&self) -> anyhow::Result<()> {
+        self.store()
+            .and_then(|store| store.forget_all())
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(())
     }
@@ -1442,6 +1488,30 @@ mod tests {
             &handle.store().unwrap(),
             &handle.store().unwrap()
         ));
+    }
+
+    #[test]
+    fn forgetting_everything_keeps_the_tables_and_columns() {
+        let f = fixture();
+        let table = f.store.create_table(&f.workspace, "T").unwrap();
+        let column = f
+            .store
+            .add_column(&table.id, &spec("Dataset?", ColumnKind::Text))
+            .unwrap();
+        let rows = f.store.add_rows(&table.id, &papers(2)).unwrap();
+        for (i, row) in rows.iter().enumerate() {
+            let hash = format!("hash-{i}");
+            assert!(f
+                .store
+                .store_fill(&filled(&column, row, &hash), Some(&entry(&column, &hash)))
+                .unwrap());
+        }
+        assert_eq!(f.store.forget_all().unwrap(), 2);
+        assert!(f.store.rows(&table.id).unwrap().is_empty());
+        assert!(f.store.cells(&table.id).unwrap().is_empty());
+        assert_eq!(cache_rows(&f), 0);
+        assert_eq!(f.store.columns(&table.id).unwrap().len(), 1);
+        assert!(f.store.table(&table.id).unwrap().is_some());
     }
 
     #[test]

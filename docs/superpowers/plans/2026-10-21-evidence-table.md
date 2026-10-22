@@ -4045,6 +4045,7 @@ Branch: `feat/evidence-table-ui`. The files are under `app/src/features/tables/`
 - **`api.ts`:** typed `invoke` wrappers for the PR 3 commands.
 - **`model.ts`** (pure, tested):
   - `sortRows(rows, cells, column, dir)`: numbers sort numerically and ignore units; empty cells go last.
+  - **Read every cell value by column kind, through one accessor.** `update_column` never rewrites an edited value, and stale cells keep the variant they were filled with, so a cell's stored `CellValue` variant can differ from its column's kind (an edited `Text "2021"` in a column that is now `number`; a `Number` in a column that is now `text`). `model.ts` has one function, `inKind(value, column)`, which is the TypeScript form of `CellValue::in_kind(&self, spec) -> Option<CellValue>` (Rust: `typed_value(spec, display())`, `.ok()`). Every typed sort, filter, export and numeric aggregate reads values through it. `null` (or a cell with the error `value_no_longer_fits`) sorts last and never matches a typed filter. Storage stays as it is, so changing a column's kind back restores exactly what the user typed. Tests: a `Text "2021"` in a `number` column sorts as 2021; a `Number` in a `text` column filters as text; a flagged cell sorts last.
   - `filterRows(rows, cells, filters)`: by `yes_no`/`choice` values and by status.
   - `cellMark(cell)`: one of `'unverified' | 'not_found' | 'edited' | 'failed' | null`.
   - `isStale(cell, column)`.

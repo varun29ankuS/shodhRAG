@@ -378,7 +378,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $name = 'footprint-exe-${{ steps.builds.outputs.reference }}'
-          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master")][0].workflow_run.id // empty'
+          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0].workflow_run.id // empty'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $runId) {
             Write-Host "No artifact $name (master's push run has not uploaded it yet, or it expired): trying this PR's cache, else building it here."
@@ -401,7 +401,8 @@ jobs:
       # The anchor never changes, so it is kept as a 90-day artifact of a
       # master run (the repository's maximum), found the same way as the base
       # commit's build. A cache entry is evicted with the rest of the 10 GB
-      # pool. Only master runs are trusted, as above.
+      # pool. Only runs of this repository's master branch are trusted (a fork's
+      # branch can be named master too), as above.
       - name: Download the anchor build
         id: anchor-artifact
         shell: pwsh
@@ -409,7 +410,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $name = "footprint-anchor-$env:FOOTPRINT_ANCHOR_SHA"
-          $found = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master")][0] | if . then "\(.workflow_run.id) \(.created_at)" else empty end'
+          $found = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0] | if . then "\(.workflow_run.id) \(.created_at)" else empty end'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $found) {
             Write-Host "No artifact $name (not uploaded yet, or it expired): trying the cache, else building it here."
@@ -481,8 +482,10 @@ jobs:
           path: ${{ runner.temp }}/footprint-bin/reference
           key: footprint-reference-${{ steps.builds.outputs.reference }}
 
+      # Master only (the artifact is the durable copy; a PR's copy would only
+      # fill the pool).
       - name: Cache the anchor build
-        if: steps.build-missing.outputs.anchor == 'true'
+        if: steps.build-missing.outputs.anchor == 'true' && github.ref == 'refs/heads/master'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/footprint-bin/anchor

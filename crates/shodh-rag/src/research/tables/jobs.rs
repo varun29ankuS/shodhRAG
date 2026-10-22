@@ -1,55 +1,113 @@
 //! Fill jobs: filling a whole table, paper by paper, under the day's cap of table calls,
-//! pausing for the cap, the provider's quota or the user, resuming later (after a restart
+//! pausing for the cap, the provider's limits or the user, resuming later (after a restart
 //! too), and cancelling.
 //!
 //! - **One active job per table**, enforced by `shodh.db` (a unique index over the queued,
 //!   running and paused jobs of a table). A paused job is active: starting a fill of its
 //!   table returns it.
-//! - **One run per job.** A run claims its job with one guarded `UPDATE` that sets
-//!   `running` and the process's `run_token`. A job running under this process's token is
-//!   never claimed again; a job left `running` under another token was left by a process
-//!   that is gone (one app process uses a `shodh.db`: the app is single-instance, and a
-//!   separate profile has its own folder), so it is claimed and resumed. Every later write
-//!   of the run is guarded by the token, so a run whose job was cancelled, deleted or
-//!   claimed elsewhere stops.
+//! - **One run per job: a lease.** A run claims its job with one guarded `UPDATE` that
+//!   sets `running`, the process's `run_token` and a heartbeat, and refreshes the
+//!   heartbeat before every paper and every model call. Another process may take a
+//!   `running` job over only once its heartbeat is older than [`LEASE_MINUTES`]. Within
+//!   one process a run holds a slot for its job, so a second run of it is turned away,
+//!   and a job left `running` under this process's token with no live run (its run ended
+//!   without writing its end) is taken up or cancelled at once, without a restart.
 //! - **Cells.** The claim marks the cells that hold no result `queued` (missing, `empty`,
 //!   `failed`) in the same transaction. Stale results keep their status and are refilled
-//!   in place, so a cancel never erases an old answer. Every terminal transition sets the
-//!   table's queued cells back to `empty` in its own transaction: queued cells exist only
-//!   while their table has an active job. Cells are written only through
-//!   [`TableStore::store_fill`], which never overwrites an edit or a newer column.
-//! - **Calls.** Before each paper with a cache miss the run checks that
-//!   [`CALLS_PER_PAPER_RESERVE`] calls are left under the cap; before each model call the
-//!   gate reserves the call ([`CallCounter::try_record`]), so the count errs over by at
-//!   most one call per crash and the cap holds across jobs, resumes and restarts.
+//!   in place; a failed refill keeps them ([`TableStore::store_fill`]). Every terminal
+//!   transition sets the table's queued cells back to `empty` in its own transaction.
+//! - **Calls.** The fill's gate checks, once a paper's calls are planned, that they and
+//!   the retry fit under the day's cap, and reserves every call before it is made
+//!   ([`CallCounter::try_record`]), so the count errs over by at most one call per crash
+//!   and the cap holds across jobs, resumes and restarts.
+//! - **Escalation.** Rate limits without a hint, an unreachable model and failing papers
+//!   pause on a ladder of growing waits persisted on the job; a successful call resets
+//!   it. At its end, and after [`MAX_FAILING_PAPERS`] failing papers in a row, the job
+//!   waits for the user, so a dead model or key spends a small, bounded number of calls.
 
-use std::sync::{Arc, LazyLock};
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use rusqlite::types::Type;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::Serialize;
 
-use super::calls::{
-    local_day, next_local_midnight, CallCounter, Clock, SystemClock, CALLS_PER_PAPER_RESERVE,
-    MIN_DAILY_CAP,
-};
+use super::calls::{next_utc_midnight, utc_day, CallCounter, Clock, SystemClock, MIN_DAILY_CAP};
 use super::fill::{
-    CallGate, Filler, Halt, ModelFailure, ModelFailureKind, PaperRequest, MODEL_AUTH, MODEL_QUOTA,
-    MODEL_TIMEOUT, PAPER_NOT_INDEXED, SEARCH_FAILED,
+    CallGate, Filler, Halt, LimitWindow, ModelFailure, ModelFailureKind, PaperFill, PaperRequest,
+    MODEL_AUTH, MODEL_FAILED, MODEL_QUOTA, MODEL_TIMEOUT, PAPER_NOT_INDEXED, SEARCH_FAILED,
+    UNPARSABLE_RESPONSE,
 };
-use super::store::TableStore;
-use super::{Cell, ColumnKind, TableRow};
+use super::store::{TableStore, REFILL_FAILED};
+use super::{Cell, CellStatus, ColumnKind, TableRow};
 use crate::research::results::{ResultRecord, ResultService};
 use crate::research::{blocking, ResearchError, ResearchResult};
 
 /// The error of a job stopped by a failure of the fill itself (the database, a task).
 pub const FILL_ERROR: &str = "fill_error";
-/// How long a job waits after the model was unreachable for two papers in a row.
-pub const UNREACHABLE_PAUSE_MINUTES: i64 = 30;
+/// The error of a job whose runs panicked [`MAX_PANICS`] times.
+pub const FILL_PANICKED: &str = "fill_panicked";
+/// The error of a job paused because the database stayed locked.
+pub const DATABASE_BUSY: &str = "database_busy";
+/// Runs of one job that may panic before the job fails instead of being resumed again.
+pub const MAX_PANICS: usize = 2;
+/// Papers in a row whose model calls all failed (any failure but quota and auth) before
+/// the job waits for the user.
+pub const MAX_FAILING_PAPERS: usize = 3;
+/// How long a run's heartbeat holds its job against another process. The heartbeat is
+/// refreshed before every paper and every model call, so the longest gap between two
+/// beats is one model call (the HTTP client's timeout is 300 s) plus the local work of a
+/// paper (hashing, retrieval, the grounding model: seconds). Ten minutes is twice the
+/// call timeout: a live run is never taken over, and a dead one is resumed within ten
+/// minutes of its last beat.
+pub const LEASE_MINUTES: i64 = 10;
+/// The waits of the backoff ladder, in minutes: rate limits that say nothing of when they
+/// reset, and an unreachable model. One rung per pause in a row; past the last the job
+/// waits for the user. The ladder tops out at 30 minutes and holds there twice more.
+pub const BACKOFF_LADDER_MINUTES: [i64; 7] = [1, 2, 5, 15, 30, 30, 30];
+/// The wait after a rate limit whose reset time reads as already past (a fast clock).
+pub const STALE_RESET_WAIT_SECS: i64 = 60;
 
 /// This process's claim on the jobs it runs.
 static PROCESS_TOKEN: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
+
+/// The jobs this process is running now, by (token, job id).
+static LIVE_RUNS: LazyLock<Mutex<HashSet<(String, String)>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn live_runs() -> std::sync::MutexGuard<'static, HashSet<(String, String)>> {
+    LIVE_RUNS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A run's slot for its job in this process; given back when the run ends, however.
+struct LiveRun {
+    key: (String, String),
+}
+
+impl LiveRun {
+    fn enter(token: &str, job_id: &str) -> Option<Self> {
+        let key = (token.to_string(), job_id.to_string());
+        // The set's lock is let go before a slot exists: a slot dropped under it would
+        // lock it again, and a refused caller must not free the holder's slot.
+        let entered = live_runs().insert(key.clone());
+        if entered {
+            Some(Self { key })
+        } else {
+            None
+        }
+    }
+
+    fn is_live(token: &str, job_id: &str) -> bool {
+        live_runs().contains(&(token.to_string(), job_id.to_string()))
+    }
+}
+
+impl Drop for LiveRun {
+    fn drop(&mut self) {
+        live_runs().remove(&self.key);
+    }
+}
 
 /// Where a fill job stands (`table_fill_job.state`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -93,18 +151,23 @@ impl JobState {
     }
 }
 
-/// Why a job is paused (`table_fill_job.pause_reason`).
+/// Why a job is paused (`table_fill_job.pause_reason`). A pause without a time waits for
+/// the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PauseReason {
-    /// The day's cap of table calls is reached; resumes at the next local midnight.
+    /// The day's cap of table calls is reached; resumes at the next 00:00 UTC.
     DailyCap,
-    /// The provider's rate limit or quota; resumes when it resets.
+    /// The provider's rate limit or quota.
     Quota,
     /// The provider rejected the API key; waits for the user.
     Auth,
-    /// The model could not be reached for two papers in a row; tries again later.
+    /// The model could not be reached.
     Unreachable,
+    /// Papers in a row failed; waits for the user.
+    Failing,
+    /// The database stayed locked by another writer; resumes in a minute.
+    Busy,
 }
 
 impl PauseReason {
@@ -114,6 +177,8 @@ impl PauseReason {
             Self::Quota => "quota",
             Self::Auth => "auth",
             Self::Unreachable => "unreachable",
+            Self::Failing => "failing",
+            Self::Busy => "busy",
         }
     }
 
@@ -123,6 +188,8 @@ impl PauseReason {
             "quota" => Some(Self::Quota),
             "auth" => Some(Self::Auth),
             "unreachable" => Some(Self::Unreachable),
+            "failing" => Some(Self::Failing),
+            "busy" => Some(Self::Busy),
             _ => None,
         }
     }
@@ -147,6 +214,14 @@ pub struct FillJob {
     pub last_error: Option<String>,
     /// A cancel was asked while the job was running.
     pub cancel_requested: bool,
+    /// The running run's last heartbeat.
+    pub heartbeat_at: Option<String>,
+    /// Backoff pauses in a row (the rung of [`BACKOFF_LADDER_MINUTES`] the next one uses).
+    pub backoff_step: usize,
+    /// Papers in a row whose model calls all failed.
+    pub failure_streak: usize,
+    /// Runs of this job that panicked.
+    pub panics: usize,
 }
 
 /// What filling a table would take: papers and cells that need a fill, the cells the cache
@@ -175,12 +250,12 @@ pub enum JobOutcome {
         reason: PauseReason,
         until: Option<DateTime<Utc>>,
     },
-    /// The job was not run: it is running in this process already, it is finished, or it
-    /// does not exist (`state` is `None`).
+    /// The job was not run: it is running (here, or under a live lease elsewhere), it is
+    /// finished, or it does not exist (`state` is `None`).
     NotClaimed {
         state: Option<JobState>,
     },
-    /// The job was cancelled, deleted with its table, or claimed elsewhere during the run.
+    /// The job was cancelled, deleted with its table, or taken over during the run.
     Lost,
 }
 
@@ -263,6 +338,11 @@ fn timestamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// Heartbeats at or before this instant belong to a run that is gone.
+fn lease_cutoff(now: DateTime<Utc>) -> String {
+    timestamp(now - TimeDelta::minutes(LEASE_MINUTES))
+}
+
 fn bad_column(index: usize, message: String) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(index, Type::Text, message.into())
 }
@@ -271,8 +351,13 @@ fn as_count(value: i64) -> usize {
     usize::try_from(value).unwrap_or(0)
 }
 
+fn as_sql(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 const JOB_COLS: &str = "id, table_id, state, planned_calls, done_calls, created_at, \
-     next_attempt_at, pause_reason, last_error, cancel_requested";
+     next_attempt_at, pause_reason, last_error, cancel_requested, heartbeat_at, \
+     backoff_step, failure_streak, panics";
 
 fn job_from(r: &Row<'_>) -> rusqlite::Result<FillJob> {
     let state: String = r.get(2)?;
@@ -297,6 +382,10 @@ fn job_from(r: &Row<'_>) -> rusqlite::Result<FillJob> {
         pause_reason,
         last_error: r.get(8)?,
         cancel_requested: r.get::<_, i64>(9)? != 0,
+        heartbeat_at: r.get(10)?,
+        backoff_step: as_count(r.get(11)?),
+        failure_streak: as_count(r.get(12)?),
+        panics: as_count(r.get(13)?),
     })
 }
 
@@ -319,6 +408,31 @@ fn active_in(conn: &Connection, table_id: &str) -> rusqlite::Result<Option<FillJ
         job_from,
     )
     .optional()
+}
+
+fn owner_in(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT run_token FROM table_fill_job WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+}
+
+/// Whether a `running` job's run is gone: its token is this caller's and the caller knows
+/// no live run of it here, or another process's lease has expired.
+fn run_is_gone(
+    job: &FillJob,
+    owner: Option<&str>,
+    token: &str,
+    live_here: bool,
+    cutoff: &str,
+) -> bool {
+    if owner == Some(token) {
+        return !live_here;
+    }
+    job.heartbeat_at
+        .as_deref()
+        .is_none_or(|beat| beat <= cutoff)
 }
 
 /// Marks the table's cells that hold no result `queued`: a missing cell is inserted, an
@@ -347,6 +461,18 @@ fn unqueue_in(conn: &Connection, table_id: &str) -> rusqlite::Result<usize> {
         "UPDATE table_cell SET status = 'empty' WHERE table_id = ?1 AND status = 'queued'",
         params![table_id],
     )
+}
+
+/// Cancels a job at once: state, and its table's queued cells back to `empty`.
+fn cancel_in(conn: &Connection, job: &FillJob) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE table_fill_job SET state = 'cancelled', run_token = NULL,
+           next_attempt_at = NULL, pause_reason = NULL, cancel_requested = 1
+         WHERE id = ?1",
+        params![job.id],
+    )?;
+    unqueue_in(conn, &job.table_id)?;
+    Ok(())
 }
 
 /// The job store: `table_fill_job` on the tables' own connection.
@@ -397,46 +523,45 @@ impl TableStore {
 
     /// Claims a job for the run holding `token` and queues its table's cells, in one
     /// transaction. A job is claimable when it is queued or paused, or running under
-    /// another token (its process is gone). A claimable job with a pending cancel is
-    /// cancelled here instead.
-    pub(super) fn claim_fill_job(&self, id: &str, token: &str) -> ResearchResult<Claim> {
+    /// this token (the caller holds this process's only slot for the job, so that run is
+    /// gone) or under another token whose lease expired (heartbeat at or before
+    /// `cutoff`). A claimable job with a pending cancel is cancelled here instead.
+    pub(super) fn claim_fill_job(
+        &self,
+        id: &str,
+        token: &str,
+        now: &str,
+        cutoff: &str,
+    ) -> ResearchResult<Claim> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some(job) = job_in(&tx, id)? else {
             return Ok(Claim::Refused(None));
         };
-        let owner: Option<String> = tx.query_row(
-            "SELECT run_token FROM table_fill_job WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )?;
+        let owner = owner_in(&tx, id)?;
         let claimable = match job.state {
             JobState::Queued | JobState::Paused => true,
-            JobState::Running => owner.as_deref() != Some(token),
+            JobState::Running => run_is_gone(&job, owner.as_deref(), token, false, cutoff),
             JobState::Done | JobState::Cancelled | JobState::Failed => false,
         };
         if !claimable {
             return Ok(Claim::Refused(Some(job)));
         }
         if job.cancel_requested {
-            tx.execute(
-                "UPDATE table_fill_job SET state = 'cancelled', run_token = NULL,
-                   next_attempt_at = NULL, pause_reason = NULL
-                 WHERE id = ?1",
-                params![id],
-            )?;
-            unqueue_in(&tx, &job.table_id)?;
+            cancel_in(&tx, &job)?;
             let cancelled = job_in(&tx, id)?;
             tx.commit()?;
             return Ok(Claim::Refused(cancelled));
         }
         let claimed = tx.execute(
-            "UPDATE table_fill_job SET state = 'running', run_token = ?2, next_attempt_at = NULL,
-               pause_reason = NULL, last_error = NULL
+            "UPDATE table_fill_job SET state = 'running', run_token = ?2, heartbeat_at = ?3,
+               next_attempt_at = NULL, pause_reason = NULL, last_error = NULL
              WHERE id = ?1 AND cancel_requested = 0
                AND (state IN ('queued', 'paused')
-                    OR (state = 'running' AND (run_token IS NULL OR run_token <> ?2)))",
-            params![id, token],
+                    OR (state = 'running'
+                        AND (run_token IS NULL OR run_token = ?2
+                             OR heartbeat_at IS NULL OR heartbeat_at <= ?4)))",
+            params![id, token, now, cutoff],
         )?;
         if claimed == 0 {
             return Ok(Claim::Refused(Some(job)));
@@ -448,18 +573,15 @@ impl TableStore {
         Ok(Claim::Claimed(job))
     }
 
-    /// Whether the run holding `token` still owns the job and no cancel is pending.
-    pub(super) fn fill_job_standing(&self, id: &str, token: &str) -> ResearchResult<bool> {
-        let cancel: Option<i64> = self
-            .lock()
-            .query_row(
-                "SELECT cancel_requested FROM table_fill_job
-                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
-                params![id, token],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(cancel == Some(0))
+    /// Renews the run's lease. True while the run holding `token` owns the job and no
+    /// cancel is pending.
+    pub(super) fn beat_fill_job(&self, id: &str, token: &str, now: &str) -> ResearchResult<bool> {
+        let renewed = self.lock().execute(
+            "UPDATE table_fill_job SET heartbeat_at = ?3
+              WHERE id = ?1 AND state = 'running' AND run_token = ?2 AND cancel_requested = 0",
+            params![id, token, now],
+        )?;
+        Ok(renewed > 0)
     }
 
     /// Adds one call to the job's progress.
@@ -468,6 +590,22 @@ impl TableStore {
             "UPDATE table_fill_job SET done_calls = done_calls + 1
               WHERE id = ?1 AND state = 'running' AND run_token = ?2",
             params![id, token],
+        )?;
+        Ok(())
+    }
+
+    /// Writes the run's escalation counters.
+    pub(super) fn set_fill_streaks(
+        &self,
+        id: &str,
+        token: &str,
+        backoff_step: usize,
+        failure_streak: usize,
+    ) -> ResearchResult<()> {
+        self.lock().execute(
+            "UPDATE table_fill_job SET backoff_step = ?3, failure_streak = ?4
+              WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+            params![id, token, as_sql(backoff_step), as_sql(failure_streak)],
         )?;
         Ok(())
     }
@@ -536,8 +674,8 @@ impl TableStore {
         Ok(Some(end))
     }
 
-    /// Gives back a job whose run ended without writing its end (its task failed): it is
-    /// queued again, with its queued cells, and the next resume takes it up.
+    /// Gives back a job whose run ended without writing its end (an error in the last
+    /// write): it is queued again, with its queued cells, and the next resume takes it up.
     pub(super) fn release_fill_job(&self, id: &str, token: &str) -> ResearchResult<bool> {
         let released = self.lock().execute(
             "UPDATE table_fill_job SET state = 'queued', run_token = NULL
@@ -547,31 +685,78 @@ impl TableStore {
         Ok(released > 0)
     }
 
+    /// Counts a panic of the run holding `token`. Under [`MAX_PANICS`] the job is queued
+    /// again; at it the job fails with [`FILL_PANICKED`] and its queued cells go back to
+    /// `empty`, so a panic that repeats does not spend a call on every resume.
+    pub(super) fn record_fill_panic(
+        &self,
+        id: &str,
+        token: &str,
+    ) -> ResearchResult<Option<FillJob>> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let owned = tx
+            .query_row(
+                "SELECT table_id, panics FROM table_fill_job
+                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+                params![id, token],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        let Some((table_id, panics)) = owned else {
+            return Ok(job_in(&tx, id)?);
+        };
+        let panics = as_count(panics) + 1;
+        if panics >= MAX_PANICS {
+            tx.execute(
+                "UPDATE table_fill_job SET state = 'failed', run_token = NULL, panics = ?2,
+                   next_attempt_at = NULL, pause_reason = NULL, last_error = ?3
+                 WHERE id = ?1",
+                params![id, as_sql(panics), FILL_PANICKED],
+            )?;
+            unqueue_in(&tx, &table_id)?;
+        } else {
+            tx.execute(
+                "UPDATE table_fill_job SET state = 'queued', run_token = NULL, panics = ?2
+                 WHERE id = ?1",
+                params![id, as_sql(panics)],
+            )?;
+        }
+        let job = job_in(&tx, id)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
     /// Cancels a job. A queued or paused job is cancelled at once and its table's queued
-    /// cells go back to `empty`; a running job is asked to stop, and its run (or, when its
-    /// process is gone, the next claim) finishes the cancel after the current call. A
-    /// finished job is left as it is. Returns the job as it now is.
-    pub fn cancel_fill_job(&self, id: &str) -> ResearchResult<Option<FillJob>> {
+    /// cells go back to `empty`; so is a running job whose run is gone (this caller's
+    /// token with no live run here, `live_here` false, or another process's lease expired
+    /// at `cutoff`). A live running job is asked to stop, and its run finishes the cancel
+    /// after the current call. A finished job is left as it is. Returns the job as it now
+    /// is.
+    pub fn cancel_fill_job(
+        &self,
+        id: &str,
+        token: &str,
+        live_here: bool,
+        cutoff: &str,
+    ) -> ResearchResult<Option<FillJob>> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let Some(job) = job_in(&tx, id)? else {
             return Ok(None);
         };
         match job.state {
-            JobState::Queued | JobState::Paused => {
-                tx.execute(
-                    "UPDATE table_fill_job SET state = 'cancelled', run_token = NULL,
-                       next_attempt_at = NULL, pause_reason = NULL, cancel_requested = 1
-                     WHERE id = ?1",
-                    params![id],
-                )?;
-                unqueue_in(&tx, &job.table_id)?;
-            }
+            JobState::Queued | JobState::Paused => cancel_in(&tx, &job)?,
             JobState::Running => {
-                tx.execute(
-                    "UPDATE table_fill_job SET cancel_requested = 1 WHERE id = ?1",
-                    params![id],
-                )?;
+                let owner = owner_in(&tx, id)?;
+                if run_is_gone(&job, owner.as_deref(), token, live_here, cutoff) {
+                    cancel_in(&tx, &job)?;
+                } else {
+                    tx.execute(
+                        "UPDATE table_fill_job SET cancel_requested = 1 WHERE id = ?1",
+                        params![id],
+                    )?;
+                }
             }
             JobState::Done | JobState::Cancelled | JobState::Failed => {}
         }
@@ -580,26 +765,90 @@ impl TableStore {
         Ok(job)
     }
 
-    /// The jobs a runner holding `token` should run now: queued ones, running ones left by
-    /// a process that is gone, and paused ones that are due. A paused job that waits for
-    /// the user (no time) is never due. Oldest first.
-    pub(super) fn due_fill_jobs(&self, token: &str, now: &str) -> ResearchResult<Vec<String>> {
+    /// The jobs a runner holding `token` could run now: queued ones, paused ones that are
+    /// due, running ones whose lease expired, and running ones under `token` (the caller
+    /// leaves out those with a live run here; the flag says which these are). A paused job
+    /// that waits for the user (no time) is never due. Oldest first.
+    pub(super) fn due_fill_jobs(
+        &self,
+        token: &str,
+        now: &str,
+        cutoff: &str,
+    ) -> ResearchResult<Vec<(String, bool)>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id FROM table_fill_job
+            "SELECT id, COALESCE(state = 'running' AND run_token = ?1, 0) FROM table_fill_job
               WHERE state = 'queued'
-                 OR (state = 'running' AND (run_token IS NULL OR run_token <> ?1))
                  OR (state = 'paused' AND next_attempt_at IS NOT NULL
                      AND next_attempt_at <= ?2)
+                 OR (state = 'running'
+                     AND (run_token IS NULL OR run_token = ?1
+                          OR heartbeat_at IS NULL OR heartbeat_at <= ?3))
               ORDER BY created_at, id",
         )?;
-        let rows = stmt.query_map(params![token, now], |r| r.get(0))?;
+        let rows = stmt.query_map(params![token, now, cutoff], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 }
 
-/// The gate of one run: before each call it checks the run still owns its job and no
-/// cancel is pending, then reserves the call under the day's cap and counts it on the job.
+/// A gate that counts calls against the day's cap with no job: for filling one paper by
+/// hand (a refill, a debugging command). Its calls count like a job's.
+pub struct CounterGate {
+    counter: Arc<CallCounter>,
+    clock: Arc<dyn Clock>,
+    cap: usize,
+}
+
+impl CounterGate {
+    pub fn new(counter: Arc<CallCounter>, cap: usize) -> Self {
+        Self {
+            counter,
+            clock: Arc::new(SystemClock),
+            cap,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+}
+
+/// Whether `calls` more fit under `cap` today.
+fn paper_fits(
+    counter: &CallCounter,
+    clock: &dyn Clock,
+    calls: usize,
+    cap: usize,
+) -> ResearchResult<bool> {
+    let today = counter.count(utc_day(clock.now()))?;
+    Ok(today.saturating_add(calls) <= cap)
+}
+
+#[async_trait::async_trait]
+impl CallGate for CounterGate {
+    async fn before_paper(&self, calls: usize) -> ResearchResult<Option<Halt>> {
+        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap);
+        blocking(move || {
+            Ok((!paper_fits(&counter, clock.as_ref(), calls, cap)?).then_some(Halt::DailyCap))
+        })
+        .await
+    }
+
+    async fn before_call(&self) -> ResearchResult<Option<Halt>> {
+        let (counter, clock, cap) = (self.counter.clone(), self.clock.clone(), self.cap);
+        blocking(move || {
+            let reserved = counter.try_record(utc_day(clock.now()), 1, cap)?;
+            Ok(reserved.is_none().then_some(Halt::DailyCap))
+        })
+        .await
+    }
+}
+
+/// The gate of one run: it renews the run's lease, stops when the job is no longer the
+/// run's or a cancel is pending, refuses a paper whose calls no longer fit the day's cap,
+/// and reserves every call before it is made.
 struct JobGate {
     store: Arc<TableStore>,
     counter: Arc<CallCounter>,
@@ -611,6 +860,25 @@ struct JobGate {
 
 #[async_trait::async_trait]
 impl CallGate for JobGate {
+    async fn before_paper(&self, calls: usize) -> ResearchResult<Option<Halt>> {
+        let store = self.store.clone();
+        let counter = self.counter.clone();
+        let clock = self.clock.clone();
+        let cap = self.cap;
+        let id = self.job_id.clone();
+        let token = self.token.clone();
+        blocking(move || {
+            if !store.beat_fill_job(&id, &token, &timestamp(clock.now()))? {
+                return Ok(Some(Halt::Cancelled));
+            }
+            if !paper_fits(&counter, clock.as_ref(), calls, cap)? {
+                return Ok(Some(Halt::DailyCap));
+            }
+            Ok(None)
+        })
+        .await
+    }
+
     async fn before_call(&self) -> ResearchResult<Option<Halt>> {
         let store = self.store.clone();
         let counter = self.counter.clone();
@@ -619,11 +887,10 @@ impl CallGate for JobGate {
         let id = self.job_id.clone();
         let token = self.token.clone();
         blocking(move || {
-            if !store.fill_job_standing(&id, &token)? {
+            if !store.beat_fill_job(&id, &token, &timestamp(clock.now()))? {
                 return Ok(Some(Halt::Cancelled));
             }
-            let day = local_day(clock.as_ref(), clock.now());
-            if counter.try_record(day, 1, cap)?.is_none() {
+            if counter.try_record(utc_day(clock.now()), 1, cap)?.is_none() {
                 return Ok(Some(Halt::DailyCap));
             }
             store.count_fill_call(&id, &token)?;
@@ -631,6 +898,13 @@ impl CallGate for JobGate {
         })
         .await
     }
+}
+
+/// The escalation counters of a run, as stored on its job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Streaks {
+    backoff_step: usize,
+    failure_streak: usize,
 }
 
 /// Runs the fill jobs of the evidence tables with one model, index and cap.
@@ -682,7 +956,7 @@ impl JobRunner {
         self
     }
 
-    /// Another process's runner (tests simulate a restart with it).
+    /// Another process's runner (tests simulate a second process or a restart with it).
     #[cfg(test)]
     pub(crate) fn with_token(mut self, token: &str) -> Self {
         self.token = token.to_string();
@@ -708,24 +982,36 @@ impl JobRunner {
         blocking(move || store.fill_job(&id)).await
     }
 
+    /// Cancels a job (see [`TableStore::cancel_fill_job`]): a job whose run is gone, in
+    /// this process or another, is cancelled at once.
     pub async fn cancel(&self, job_id: &str) -> ResearchResult<Option<FillJob>> {
         let store = self.store();
         let id = job_id.to_string();
-        blocking(move || store.cancel_fill_job(&id)).await
+        let token = self.token.clone();
+        let live = LiveRun::is_live(&token, &id);
+        let cutoff = lease_cutoff(self.clock.now());
+        blocking(move || store.cancel_fill_job(&id, &token, live, &cutoff)).await
     }
 
-    /// The jobs to run now (see [`TableStore::due_fill_jobs`]), on this runner's clock.
+    /// The jobs to run now (see [`TableStore::due_fill_jobs`]), on this runner's clock,
+    /// leaving out those this process is running.
     pub async fn resume_due(&self) -> ResearchResult<Vec<String>> {
         let store = self.store();
         let token = self.token.clone();
-        let now = timestamp(self.clock.now());
-        blocking(move || store.due_fill_jobs(&token, &now)).await
+        let now = self.clock.now();
+        let (at, cutoff) = (timestamp(now), lease_cutoff(now));
+        let due = blocking(move || store.due_fill_jobs(&token, &at, &cutoff)).await?;
+        Ok(due
+            .into_iter()
+            .filter(|(id, own_running)| !(*own_running && LiveRun::is_live(&self.token, id)))
+            .map(|(id, _)| id)
+            .collect())
     }
 
-    /// The table calls made today (local date).
+    /// The table calls made today (UTC date).
     pub async fn calls_today(&self) -> ResearchResult<usize> {
         let counter = self.counter.clone();
-        let day = local_day(self.clock.as_ref(), self.clock.now());
+        let day = utc_day(self.clock.now());
         blocking(move || counter.count(day)).await
     }
 
@@ -778,33 +1064,55 @@ impl JobRunner {
     }
 
     /// Runs a job until it is done, paused, cancelled or failed. The run is a task of its
-    /// own: a caller that stops waiting does not stop it half way. If the task fails
-    /// (panics), the job is released for the next resume and the error returned.
+    /// own: a caller that stops waiting does not stop it half way. If the run ends with an
+    /// error before writing its end, the job is given back (queued) so it can be resumed
+    /// or cancelled at once; if the task panics, the panic is counted on the job, and the
+    /// job fails at [`MAX_PANICS`].
     pub async fn run(&self, job_id: &str) -> ResearchResult<RunReport> {
         let runner = self.clone();
         let id = job_id.to_string();
-        match tokio::spawn(async move { runner.run_claimed(&id).await }).await {
-            Ok(report) => report,
-            Err(e) => {
-                let store = self.store();
-                let id = job_id.to_string();
-                let token = self.token.clone();
+        let joined = tokio::spawn(async move { runner.run_claimed(&id).await }).await;
+        let store = self.store();
+        let id = job_id.to_string();
+        let token = self.token.clone();
+        match joined {
+            Ok(Ok(report)) => Ok(report),
+            Ok(Err(e)) => {
                 if let Err(release) = blocking(move || store.release_fill_job(&id, &token)).await {
                     tracing::warn!(
                         job = %job_id,
                         error = %release,
-                        "an evidence table fill job could not be released after its task failed"
+                        "an evidence table fill job could not be given back; it is taken up or cancelled when asked"
                     );
                 }
-                Err(ResearchError::Task(e.to_string()))
+                Err(e)
+            }
+            Err(panic) => {
+                if let Err(record) = blocking(move || store.record_fill_panic(&id, &token)).await {
+                    tracing::warn!(
+                        job = %job_id,
+                        error = %record,
+                        "the panic of an evidence table fill job could not be recorded"
+                    );
+                }
+                Err(ResearchError::Task(panic.to_string()))
             }
         }
     }
 
     async fn run_claimed(&self, job_id: &str) -> ResearchResult<RunReport> {
         let store = self.store();
+        let Some(_live) = LiveRun::enter(&self.token, job_id) else {
+            let (s, id) = (store.clone(), job_id.to_string());
+            let job = blocking(move || s.fill_job(&id)).await?;
+            return Ok(RunReport::new(JobOutcome::NotClaimed {
+                state: job.map(|j| j.state),
+            }));
+        };
+        let now = self.clock.now();
         let (s, id, token) = (store.clone(), job_id.to_string(), self.token.clone());
-        let job = match blocking(move || s.claim_fill_job(&id, &token)).await? {
+        let (at, cutoff) = (timestamp(now), lease_cutoff(now));
+        let job = match blocking(move || s.claim_fill_job(&id, &token, &at, &cutoff)).await? {
             Claim::Claimed(job) => job,
             Claim::Refused(job) => {
                 return Ok(RunReport::new(JobOutcome::NotClaimed {
@@ -815,6 +1123,11 @@ impl JobRunner {
         let mut report = RunReport::new(JobOutcome::Done);
         let end = match self.walk(&job, &mut report).await {
             Ok(end) => end,
+            Err(ResearchError::Busy(_)) => End::Paused {
+                reason: PauseReason::Busy,
+                until: Some(self.clock.now() + TimeDelta::minutes(BACKOFF_LADDER_MINUTES[0])),
+                error: Some(DATABASE_BUSY.to_string()),
+            },
             Err(e) => End::Failed(format!("{FILL_ERROR}: {e}")),
         };
         let (s, id, token) = (store, job_id.to_string(), self.token.clone());
@@ -824,6 +1137,28 @@ impl JobRunner {
             None => JobOutcome::Lost,
         };
         Ok(report)
+    }
+
+    /// Writes the escalation counters when they changed.
+    async fn save_streaks(
+        &self,
+        job: &FillJob,
+        before: Streaks,
+        now: Streaks,
+    ) -> ResearchResult<()> {
+        if before == now {
+            return Ok(());
+        }
+        let (store, id, token) = (self.store(), job.id.clone(), self.token.clone());
+        blocking(move || store.set_fill_streaks(&id, &token, now.backoff_step, now.failure_streak))
+            .await
+    }
+
+    /// The next rung of the backoff ladder, or `None` past its end (wait for the user).
+    fn next_rung(&self, streaks: &mut Streaks) -> Option<DateTime<Utc>> {
+        let minutes = BACKOFF_LADDER_MINUTES.get(streaks.backoff_step).copied()?;
+        streaks.backoff_step += 1;
+        Some(self.clock.now() + TimeDelta::minutes(minutes))
     }
 
     /// Fills the job's papers in row order, each as it is when its turn comes.
@@ -839,10 +1174,14 @@ impl JobRunner {
             job_id: job.id.clone(),
             token: self.token.clone(),
         };
-        let mut unreachable_streak = 0usize;
+        let mut streaks = Streaks {
+            backoff_step: job.backoff_step,
+            failure_streak: job.failure_streak,
+        };
         for row in rows {
             let (s, id, token) = (store.clone(), job.id.clone(), self.token.clone());
-            if !blocking(move || s.fill_job_standing(&id, &token)).await? {
+            let now = timestamp(self.clock.now());
+            if !blocking(move || s.beat_fill_job(&id, &token, &now)).await? {
                 return Ok(End::Cancelled);
             }
             // The paper as it is now: a column changed or an edit made since the run began
@@ -874,102 +1213,143 @@ impl JobRunner {
             if survey.hash.is_some() && survey.needing.is_empty() {
                 continue;
             }
-            if !survey.misses.is_empty() {
-                let now = self.clock.now();
-                let day = local_day(self.clock.as_ref(), now);
-                let counter = self.counter.clone();
-                let today = blocking(move || counter.count(day)).await?;
-                if today + CALLS_PER_PAPER_RESERVE > self.cap {
-                    return Ok(self.paused_for_cap(now));
-                }
-                if self.needs_hints(&request, &survey.misses) {
-                    request.results = self.results_of(&request.row.document_id).await;
-                }
+            if self.needs_hints(&request, &survey.misses) {
+                request.results = self.results_of(&request.row.document_id).await;
             }
-            let fill = self
-                .filler
-                .fill_paper_with(&request, Some(&gate as &dyn CallGate))
-                .await?;
+            let fill = self.filler.fill_paper(&request, &gate).await?;
             report.calls += fill.calls;
             report.cells += fill.cells.len();
-            match fill.halted {
-                Some(Halt::Cancelled) => return Ok(End::Cancelled),
-                Some(Halt::DailyCap) => return Ok(self.paused_for_cap(self.clock.now())),
-                None => {}
-            }
-            match &fill.model_error {
-                Some(failure) if failure.kind == ModelFailureKind::Quota => {
-                    return Ok(End::Paused {
-                        reason: PauseReason::Quota,
-                        until: Some(self.quota_until(failure)),
-                        error: Some(MODEL_QUOTA.to_string()),
-                    });
-                }
-                Some(failure) if failure.kind == ModelFailureKind::Auth => {
-                    return Ok(End::Paused {
-                        reason: PauseReason::Auth,
-                        until: None,
-                        error: Some(MODEL_AUTH.to_string()),
-                    });
-                }
-                Some(failure) if failure.kind == ModelFailureKind::Transient => {
-                    unreachable_streak += 1;
-                    if unreachable_streak >= 2 {
-                        return Ok(End::Paused {
-                            reason: PauseReason::Unreachable,
-                            until: Some(
-                                self.clock.now() + TimeDelta::minutes(UNREACHABLE_PAUSE_MINUTES),
-                            ),
-                            error: Some(MODEL_TIMEOUT.to_string()),
-                        });
-                    }
-                }
-                _ => unreachable_streak = 0,
-            }
-            if let Some(error) = fill
-                .cells
-                .iter()
-                .filter_map(|c| c.error.as_deref())
-                .find(|e| e.starts_with(SEARCH_FAILED))
-            {
-                return Ok(End::Failed(error.to_string()));
-            }
-            if fill
-                .cells
-                .iter()
-                .any(|c| c.error.as_deref() == Some(PAPER_NOT_INDEXED))
-            {
-                report.not_indexed += 1;
+            let before = streaks;
+            let end = self.after_paper(&fill, &mut streaks, report);
+            self.save_streaks(job, before, streaks).await?;
+            if let Some(end) = end {
+                return Ok(end);
             }
         }
         Ok(End::Done)
     }
 
-    /// Paused for the day's cap until the next local midnight.
-    fn paused_for_cap(&self, now: DateTime<Utc>) -> End {
+    /// What one paper's fill means for the job: `Some` ends the run there.
+    fn after_paper(
+        &self,
+        fill: &PaperFill,
+        streaks: &mut Streaks,
+        report: &mut RunReport,
+    ) -> Option<End> {
+        match fill.halted {
+            Some(Halt::Cancelled) => return Some(End::Cancelled),
+            Some(Halt::DailyCap) => {
+                return Some(End::Paused {
+                    reason: PauseReason::DailyCap,
+                    until: Some(next_utc_midnight(self.clock.now())),
+                    error: None,
+                })
+            }
+            None => {}
+        }
+        if let Some(failure) = &fill.model_error {
+            return match failure.kind {
+                ModelFailureKind::Quota => Some(self.quota_pause(failure, streaks)),
+                ModelFailureKind::Auth => Some(End::Paused {
+                    reason: PauseReason::Auth,
+                    until: None,
+                    error: Some(MODEL_AUTH.to_string()),
+                }),
+                ModelFailureKind::Transient => {
+                    streaks.failure_streak += 1;
+                    if streaks.failure_streak >= MAX_FAILING_PAPERS {
+                        return Some(self.failing_pause(MODEL_TIMEOUT));
+                    }
+                    // The model is not reachable: waiting helps, the next paper does not.
+                    Some(match self.next_rung(streaks) {
+                        Some(until) => End::Paused {
+                            reason: PauseReason::Unreachable,
+                            until: Some(until),
+                            error: Some(MODEL_TIMEOUT.to_string()),
+                        },
+                        None => self.failing_pause(MODEL_TIMEOUT),
+                    })
+                }
+                ModelFailureKind::Other => {
+                    streaks.failure_streak += 1;
+                    (streaks.failure_streak >= MAX_FAILING_PAPERS)
+                        .then(|| self.failing_pause(MODEL_FAILED))
+                }
+            };
+        }
+        if let Some(error) = &fill.paper_error {
+            if error.starts_with(SEARCH_FAILED) {
+                return Some(End::Failed(error.clone()));
+            }
+            if error == PAPER_NOT_INDEXED {
+                report.not_indexed += 1;
+            }
+            return None;
+        }
+        if fill.calls > 0 {
+            let answered = fill.cells.iter().any(|c| {
+                c.status != CellStatus::Failed
+                    && !c
+                        .error
+                        .as_deref()
+                        .is_some_and(|e| e.starts_with(REFILL_FAILED))
+            });
+            if answered {
+                // A call answered: the model is reachable and the limits are open again.
+                *streaks = Streaks {
+                    backoff_step: 0,
+                    failure_streak: 0,
+                };
+            } else {
+                // Calls made and nothing usable came back (unparsable or empty replies).
+                streaks.failure_streak += 1;
+                if streaks.failure_streak >= MAX_FAILING_PAPERS {
+                    return Some(self.failing_pause(UNPARSABLE_RESPONSE));
+                }
+            }
+        }
+        None
+    }
+
+    /// Paused until the user starts the job again, after failing papers in a row.
+    fn failing_pause(&self, code: &str) -> End {
         End::Paused {
-            reason: PauseReason::DailyCap,
-            until: Some(next_local_midnight(self.clock.as_ref(), now)),
-            error: None,
+            reason: PauseReason::Failing,
+            until: None,
+            error: Some(code.to_string()),
         }
     }
 
-    /// When a quota pause ends: the provider's reset time, else the wait it asked for,
-    /// else the next local midnight (a daily limit that did not say when it resets).
-    fn quota_until(&self, failure: &ModelFailure) -> DateTime<Utc> {
+    /// When a quota or rate-limit pause ends, in this order: the provider's reset time
+    /// when it is ahead; a minute when the reset reads as past (a clock running fast);
+    /// the wait the provider asked for; for a short or unknown limit, the next rung of the
+    /// backoff ladder (past its end the job waits for the user); for a daily limit, the
+    /// provider's daily reset, the next 00:00 UTC.
+    fn quota_pause(&self, failure: &ModelFailure, streaks: &mut Streaks) -> End {
         let now = self.clock.now();
-        let reset = failure
+        let paused = |until: Option<DateTime<Utc>>| End::Paused {
+            reason: PauseReason::Quota,
+            until,
+            error: Some(MODEL_QUOTA.to_string()),
+        };
+        if let Some(reset) = failure
             .reset_at_ms
             .and_then(|ms| i64::try_from(ms).ok())
             .and_then(DateTime::<Utc>::from_timestamp_millis)
-            .filter(|at| *at > now);
-        if let Some(at) = reset {
-            return at;
+        {
+            return paused(Some(if reset > now {
+                reset
+            } else {
+                now + TimeDelta::seconds(STALE_RESET_WAIT_SECS)
+            }));
         }
         if let Some(secs) = failure.retry_after_secs {
-            return now + TimeDelta::seconds(i64::from(secs.max(1)));
+            return paused(Some(now + TimeDelta::seconds(i64::from(secs.max(1)))));
         }
-        next_local_midnight(self.clock.as_ref(), now)
+        match failure.window {
+            LimitWindow::Daily => paused(Some(next_utc_midnight(now))),
+            LimitWindow::Short | LimitWindow::Unknown => paused(self.next_rung(streaks)),
+        }
     }
 
     /// Whether any of the columns a fill will ask about is a `number` column, whose search

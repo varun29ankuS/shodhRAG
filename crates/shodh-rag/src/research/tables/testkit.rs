@@ -4,13 +4,15 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use chrono::{DateTime, FixedOffset, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 
 use super::calls::Clock;
+use super::fill::{CallGate, Halt};
 use super::passages::PaperIndex;
 use super::Passage;
 use crate::research::path_key;
 use crate::research::results::TextModel;
+use crate::research::ResearchResult;
 
 pub(crate) fn passage(id: &str, page: u32, text: &str) -> Passage {
     Passage {
@@ -33,6 +35,7 @@ pub(crate) struct Index {
     pub(crate) searches: Mutex<Vec<(String, String)>>,
     pub(crate) unindexed: Vec<String>,
     pub(crate) search_error: Option<String>,
+    pub(crate) by_source: Vec<(String, Option<Passage>, Vec<Passage>)>,
 }
 
 impl Index {
@@ -44,7 +47,24 @@ impl Index {
             searches: Mutex::new(Vec::new()),
             unindexed: Vec::new(),
             search_error: None,
+            by_source: Vec::new(),
         }
+    }
+
+    /// `source` has its own first passage and passages.
+    pub(crate) fn with_source(
+        mut self,
+        source: &str,
+        first: Option<Passage>,
+        passages: Vec<Passage>,
+    ) -> Self {
+        self.by_source.push((path_key(source), first, passages));
+        self
+    }
+
+    fn own(&self, source: &str) -> Option<&(String, Option<Passage>, Vec<Passage>)> {
+        let key = path_key(source);
+        self.by_source.iter().find(|(s, _, _)| *s == key)
     }
 
     pub(crate) fn with_query(mut self, keyword: &'static str, passages: Vec<Passage>) -> Self {
@@ -94,6 +114,9 @@ impl PaperIndex for Index {
         if !self.indexed(source) {
             return Ok(Vec::new());
         }
+        if let Some((_, _, passages)) = self.own(source) {
+            return Ok(passages.iter().take(k).cloned().collect());
+        }
         let lower = query.to_lowercase();
         let chosen = self
             .by_query
@@ -105,6 +128,9 @@ impl PaperIndex for Index {
     async fn first_passage(&self, source: &str) -> Result<Option<Passage>, String> {
         if !self.indexed(source) {
             return Ok(None);
+        }
+        if let Some((_, first, _)) = self.own(source) {
+            return Ok(first.clone());
         }
         Ok(self.first.clone())
     }
@@ -219,29 +245,16 @@ pub(crate) fn utc(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Da
         .unwrap()
 }
 
-/// A clock that stands still until a test moves it, in a time zone given as offsets
-/// (seconds east of UTC) that apply from given instants on.
+/// A clock that stands still until a test moves it.
 pub(crate) struct ManualClock {
     now: Mutex<DateTime<Utc>>,
-    zone: Vec<(DateTime<Utc>, FixedOffset)>,
 }
 
 impl ManualClock {
-    pub(crate) fn new(now: DateTime<Utc>, zone: &[(DateTime<Utc>, i32)]) -> Self {
-        let mut zone: Vec<(DateTime<Utc>, FixedOffset)> = zone
-            .iter()
-            .map(|&(from, east)| (from, FixedOffset::east_opt(east).unwrap()))
-            .collect();
-        zone.sort_by_key(|(from, _)| *from);
+    pub(crate) fn new(now: DateTime<Utc>) -> Self {
         Self {
             now: Mutex::new(now),
-            zone,
         }
-    }
-
-    /// A clock in UTC.
-    pub(crate) fn utc_at(now: DateTime<Utc>) -> Self {
-        Self::new(now, &[])
     }
 
     pub(crate) fn set(&self, now: DateTime<Utc>) {
@@ -258,13 +271,17 @@ impl Clock for ManualClock {
     fn now(&self) -> DateTime<Utc> {
         *self.now.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
 
-    fn offset_at(&self, at: DateTime<Utc>) -> FixedOffset {
-        self.zone
-            .iter()
-            .rev()
-            .find(|(from, _)| *from <= at)
-            .map(|(_, offset)| *offset)
-            .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap())
+/// A gate that lets every call go and counts nothing: for the tests of one fill.
+pub(crate) struct OpenGate;
+
+#[async_trait::async_trait]
+impl CallGate for OpenGate {
+    async fn before_paper(&self, _calls: usize) -> ResearchResult<Option<Halt>> {
+        Ok(None)
+    }
+    async fn before_call(&self) -> ResearchResult<Option<Halt>> {
+        Ok(None)
     }
 }

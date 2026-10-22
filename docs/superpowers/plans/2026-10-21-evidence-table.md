@@ -4058,6 +4058,8 @@ Branch: `feat/evidence-table-jobs` from origin/master (eb04e8f). Library only. N
 
 ### Decisions settled for 3a
 
+> The fix round after review (see "Fix round" at the end of this section) revised decisions 2, 4, 5, 6 and 7: a lease instead of one process per database, the UTC day, a per-paper reservation, and the rate-limit and failure escalation rules. Where they differ, the fix round wins.
+
 1. **The counter counts table calls only** (Decision 3). Chat and agents do not call `record`. The dialog wording is "Tables have made N of 30 calls today".
 2. **One active job per table, enforced in SQL.**
    - Migration 15 adds the partial unique index `table_fill_job_active ON table_fill_job(table_id) WHERE state IN ('queued','running','paused')`. `Paused` counts as active, so pressing Fill on a paused table resumes its job rather than starting a second one. `start` returns the existing active job.
@@ -4308,6 +4310,94 @@ SELECT id FROM table_fill_job
 - `an_edit_during_a_run_is_never_requeued_or_overwritten`.
 - `a_run_that_panics_releases_its_job_for_resume`.
 - Also: `a_quota_error_without_a_reset_time_pauses_until_the_next_local_midnight`, `cancelling_a_paused_job_empties_its_queued_cells_at_once`, `one_unreachable_paper_does_not_stop_the_job`, `a_cap_below_one_paper_is_refused`, `states_and_reasons_round_trip_their_stored_names`.
+
+### Fix round (review of #90): decisions that replace the ones above
+
+The review found ten faults (F1–F10). The rules below supersede decisions 2, 4, 5, 6 and 7 above, and the Task 9/10 interfaces, wherever they differ. Migration 15 was not yet merged, so it was rewritten in place.
+
+1. **Rate limits keep their kind (F1).**
+   - `ModelFailure` gains `window: LimitWindow`:
+     - `Daily`: the provider's quota-exhausted kind, or a message that names a day (`free-models-per-day`, "daily").
+     - `Short`: a message that names a minute, or "temporarily rate-limited upstream".
+     - `Unknown`: anything else.
+   - `reset_at_ms` is the raw `X-RateLimit-Reset`, whether it is past or future.
+   - The pause rule, in order:
+     1. A header reset in the future: that time.
+     2. A header reset in the past (clock skew): now + 60 s.
+     3. A retry-after: now + that.
+     4. A short or unknown limit: the backoff ladder 1, 2, 5, 15, 30, 30, 30 minutes. The ladder tops out at 30 and then holds there for two more pauses. The 8th pause in a row waits for the user (`until = None`).
+     5. A daily limit with no hint: the provider's daily reset, the next 00:00 UTC.
+   - The ladder rung is `table_fill_job.backoff_step`. Any call that answers resets it.
+   - A free model's headerless upstream 429 now costs minutes, not the day.
+2. **The day is the UTC date (F8).**
+   - The table is `table_calls(utc_day, calls)`, and the daily-cap pause runs to the next 00:00 UTC. This lines the cap up with the provider's daily window, so a user east or west of UTC cannot spend two caps inside one provider day.
+   - The `Clock` trait keeps only `now()`. No local time is read on the job path, so DST and time-zone changes cannot move the day.
+3. **The gate is mandatory (F2).**
+   - `Filler::fill_paper(request, &dyn CallGate)` is the only fill; there is no ungated entry. The fill tests use a `#[cfg(test)]` `OpenGate`.
+   - `CounterGate` (counter + cap, no job) is for filling one paper by hand. PR 3b's `table_fill_paper` and `cell_refill` must use it, so their calls count against the daily cap.
+4. **A failed refill keeps the result (F3).**
+   - `store_fill` never lets a `failed` cell replace a `verified`, `unverified` or `not_found` one. The value, quote, status, revision and paper hash stay, and the error becomes `refill_failed:<code>`. This holds for every failure code:
+     - `model_timeout`, `model_failed`, `model_auth`;
+     - `unparsable_response`, `missing_in_reply`;
+     - `paper_not_indexed`, `search_failed`.
+   - `needs_fill` treats a `refill_failed` result as needing a fill.
+   - `paper_unreadable` still leaves results untouched, because no refill was attempted.
+   - `PaperFill.paper_error` carries a paper-level cause, so the runner no longer reads it from cells.
+5. **Failing papers escalate (F4).**
+   - `table_fill_job.failure_streak` counts papers in a row whose calls all failed: Other, Transient, or nothing usable back. A paper with an answered call resets it.
+   - **Transient** (unreachable): pause on the ladder (reason `unreachable`).
+   - **Other** (a refused request, a wrong model id): the job continues.
+   - **Either:** at `MAX_FAILING_PAPERS = 3` the job pauses `failing` with no time ("needs you").
+   - **Bounds on a permanently failing model:**
+     - a refused or unreachable model spends at most 3 calls;
+     - a model whose replies never parse spends at most 6 (a call and its retry per paper);
+     - a headerless rate limit spends at most 8 before the job waits for the user.
+6. **Released on every error (F5).**
+   - If `run_claimed` returns an error, the job is given back (`queued`). This covers a failed final write as well as a panic.
+   - **In-process slot:** each live run holds a slot for its job (`LIVE_RUNS`, keyed by token and job). A job `running` under this process's token with no live slot is a run that ended without writing its end. `resume_due` returns it, the claim takes it, and `cancel` cancels it at once, all without a restart.
+7. **A lease (F6).**
+   - The claim writes `heartbeat_at`, and the run renews it before every paper and every model call.
+   - Another process may take a `running` job over only when its heartbeat is at least `LEASE_MINUTES = 10` old.
+   - **Why 10 minutes:** the longest gap between two beats is one model call (the HTTP client's timeout is 300 s) plus a paper's local work (seconds). Ten minutes is twice the call timeout.
+   - This replaces "one process per `shodh.db`". A future MCP server or CLI opening the same database is safe.
+   - **Cost:** a resume after a crash waits until the lease expires.
+8. **Reserve what a paper can spend (F7).** The gate's `before_paper(planned calls + 1)` checks `today + planned + 1 <= cap` once the paper's calls are planned. A one-call paper needs 2 calls of room and a two-call paper 3. The flat `+3` is gone, and so is the runner's pre-paper check.
+9. **SQLITE_BUSY pauses (F9).**
+   - `ResearchError::Busy` is told apart from other database errors (SQLITE_BUSY/LOCKED).
+   - A busy error during a run pauses the job (`busy`) for the ladder's first rung, 1 minute, without escalating.
+10. **Panics are counted (F10).** `table_fill_job.panics` counts panicked runs. The first returns the job to `queued`; the second (`MAX_PANICS = 2`) fails it with `fill_panicked` and empties its queued cells.
+
+**Migration 15 as rewritten:**
+- `table_calls(utc_day, calls)`;
+- on `table_fill_job`: `run_token`, `heartbeat_at`, `pause_reason` (adds `failing`, `busy`), `cancel_requested`, `backoff_step`, `failure_streak`, `panics`;
+- the dedupe guard and the partial unique index.
+
+**Notes for PR 3b and PR 4:**
+- **Reset time in local time.** The UI shows when the table day resets in local time (for example "Tables have made 12 of 30 calls today; resets at 5:30 am"). The command returns the next 00:00 UTC as an instant.
+- **The provider's full error body.** The production `TextModel` adapter must pass the provider's whole error body, including OpenRouter's `metadata.headers`. Otherwise `X-RateLimit-Reset` is never seen and every limit falls to the ladder or the daily rule. Add a 3b test for it.
+- **Manual fills use `CounterGate`.** `table_fill_paper` and `cell_refill` go through `CounterGate`.
+- **Refill errors in the grid.** The grid shows `refill_failed:<code>` on a kept result as "couldn't refresh".
+
+**Tests added in the fix round:**
+- **Rate limits:**
+  - every rate-limit rung: a header in the future, a stale header, retry-after, daily with no hint, and the headerless upstream 429 (the `provider_error` fixture shape) climbing the whole ladder;
+  - a successful call resets the ladder.
+- **Leases and recovery:**
+  - lease takeover after expiry and refusal before it;
+  - a claim-time cancel of a dead process's job;
+  - a failed final write gives the job back;
+  - a job held here with no live run is resumed or cancelled without a restart;
+  - a run that keeps panicking fails its job.
+- **Failures:**
+  - a stale-result refill failure, for each failure kind (fill) and through a job;
+  - an unreachable model and a permanently failing model are bounded;
+  - a locked counter pauses for a minute.
+- **The cap and the estimate:**
+  - the per-paper reservation;
+  - a counter gate for a hand fill;
+  - concurrent `try_record` from four threads;
+  - `estimate().calls` equals a run's calls on a mixed table (a cached paper, a one-call paper, a two-call paper and a cut `not_found`).
+- **Migration:** the migration 15 dedupe.
 
 **PR 3a end:** push, open "Evidence table 3a: call counter and job runner (pause, resume, cancel, daily cap)", get CI green. No real model runs in 3a.
 

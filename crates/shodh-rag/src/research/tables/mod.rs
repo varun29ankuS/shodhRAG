@@ -7,7 +7,7 @@
 //! - [`validate`]: the deterministic rules a model's answer must pass to be `verified`.
 //! - [`fill`]: retrieval, budget, call, parse, validation and cache for one paper.
 //! - [`passages`]: where passages come from.
-//! - [`calls`]: the table model calls per local day (schema 15) and the clock.
+//! - [`calls`]: the table model calls per UTC day (schema 15) and the clock.
 //! - [`jobs`]: filling a whole table under the daily cap: pause, resume, cancel.
 //!
 //! The model never has the last word: an answer whose quote is not in the passages, whose

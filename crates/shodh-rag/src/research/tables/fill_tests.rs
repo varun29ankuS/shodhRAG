@@ -9,7 +9,7 @@ use crate::reranking::Entailment;
 use crate::research::path_key;
 use crate::research::results::Region;
 use crate::research::tables::testkit::{
-    big_index, paper_index, passage, Index, Replies, CHARS_PER_TOKEN,
+    big_index, paper_index, passage, Index, OpenGate, Replies, CHARS_PER_TOKEN,
 };
 use crate::research::tables::validate::NON_ANSWERS;
 use crate::research::tables::CellValue;
@@ -204,7 +204,7 @@ async fn a_correct_reply_verifies_every_cell_at_its_passage_in_one_call() {
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 1);
     assert_eq!(fill.cells.len(), 4);
     assert!(
@@ -240,7 +240,7 @@ async fn paraphrases_wrong_numbers_outside_choices_and_nulls_are_not_verified() 
         Arc::new(Replies::new(vec![Ok(FLAWED)])),
         ScorerSet::default(),
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(
         status_of(&s, 0),
         (CellStatus::Unverified, Some("quote_not_in_passages".into()))
@@ -261,7 +261,7 @@ async fn an_unparsable_reply_is_asked_again_with_a_format_instruction_and_then_f
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(UNPARSABLE), Ok(UNPARSABLE)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 2);
     for column in 0..4 {
         assert_eq!(
@@ -281,7 +281,7 @@ async fn an_unparsable_reply_is_asked_again_with_a_format_instruction_and_then_f
         Arc::new(Replies::new(vec![Ok(UNPARSABLE), Ok(CORRECT)])),
         ScorerSet::default(),
     );
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 2, "the retry counts");
     assert!(fill.cells.iter().all(|c| c.status == CellStatus::Verified));
 }
@@ -291,10 +291,10 @@ async fn an_unchanged_paper_and_column_cost_no_call_and_a_change_costs_only_itse
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
 
     // Filled cells are not refilled.
-    let again = f.fill_paper(&request(&s)).await.unwrap();
+    let again = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!((again.calls, again.cells.len()), (0, 0));
 
     // An edited column misses the cache alone: one call, asking only that column.
@@ -313,7 +313,7 @@ async fn an_unchanged_paper_and_column_cost_no_call_and_a_change_costs_only_itse
     let one = r#"{"cells":[{"column":"c1","answer":"LAION-400M","quote":"We pre-train a bi-encoder on LAION-400M","passage":1}]}"#;
     let model = Arc::new(Replies::new(vec![Ok(one)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let refill = f.fill_paper(&request(&s)).await.unwrap();
+    let refill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!((refill.calls, refill.cells.len()), (1, 1));
     assert_eq!(refill.cells[0].column_id, edited.id);
     assert!(model.prompts()[0].contains("Which dataset is largest?"));
@@ -323,7 +323,7 @@ async fn an_unchanged_paper_and_column_cost_no_call_and_a_change_costs_only_itse
     std::fs::write(&s.paper, b"%PDF-1.4 dense retrieval at scale, version 2").unwrap();
     let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let changed = f.fill_paper(&request(&s)).await.unwrap();
+    let changed = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(changed.calls, 1);
     assert_eq!(changed.cells.len(), 4);
 }
@@ -333,7 +333,7 @@ async fn a_second_table_asking_the_same_of_the_same_paper_is_answered_from_the_c
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     let hash = hash_of(&s);
 
     let table = s.store.create_table(&s.workspace, "Again").unwrap().id;
@@ -353,7 +353,7 @@ async fn a_second_table_asking_the_same_of_the_same_paper_is_answered_from_the_c
     };
     let none = Arc::new(Replies::new(vec![]));
     let f2 = filler(&s, paper_index(), none.clone(), ScorerSet::default());
-    let cached = f2.fill_paper(&second).await.unwrap();
+    let cached = f2.fill_paper(&second, &OpenGate).await.unwrap();
     assert_eq!((cached.calls, cached.cache_hits), (0, 4));
     assert!(none.prompts().is_empty());
     assert!(
@@ -387,7 +387,7 @@ async fn a_second_table_asking_the_same_of_the_same_paper_is_answered_from_the_c
         Arc::new(Replies::new(vec![Ok(CORRECT)])),
         ScorerSet::default(),
     );
-    let refilled = again.fill_paper(&request(&s)).await.unwrap();
+    let refilled = again.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!((refilled.calls, refilled.cache_hits), (1, 0));
 }
 
@@ -433,7 +433,7 @@ async fn a_replay_is_checked_against_the_passage_the_quote_was_found_in() {
         Arc::new(Replies::new(vec![Ok(reply)])),
         ScorerSet::default(),
     );
-    let first = f.fill_paper(&request(&s)).await.unwrap();
+    let first = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(first.calls, 1);
     assert_eq!(status_of(&s, 0), (CellStatus::Verified, None));
 
@@ -458,7 +458,7 @@ async fn a_replay_is_checked_against_the_passage_the_quote_was_found_in() {
     };
     let none = Arc::new(Replies::new(vec![]));
     let f2 = filler(&s, index(answer), none.clone(), ScorerSet::default());
-    let replay = f2.fill_paper(&second).await.unwrap();
+    let replay = f2.fill_paper(&second, &OpenGate).await.unwrap();
     assert_eq!((replay.calls, replay.cache_hits), (0, 1));
     let cell = s
         .store
@@ -480,7 +480,7 @@ async fn an_unindexed_paper_costs_no_call_and_fails_its_cells() {
         model.clone(),
         ScorerSet::default(),
     );
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 0);
     assert!(model.prompts().is_empty());
     for column in 0..4 {
@@ -502,7 +502,7 @@ async fn a_paper_the_search_cannot_see_costs_no_call_and_says_search_failed() {
         model.clone(),
         ScorerSet::default(),
     );
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 0);
     assert!(model.prompts().is_empty());
     for column in 0..4 {
@@ -524,7 +524,7 @@ async fn a_column_missing_from_the_reply_fails_and_a_repeat_is_ignored() {
         Arc::new(Replies::new(vec![Ok(reply)])),
         ScorerSet::default(),
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(status_of(&s, 0), (CellStatus::Verified, None));
     for column in 1..4 {
         assert_eq!(
@@ -548,7 +548,7 @@ async fn only_an_explicit_null_is_not_found_and_a_missing_answer_fails_uncached(
         Arc::new(Replies::new(vec![Ok(reply)])),
         ScorerSet::default(),
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(status_of(&s, 0), (CellStatus::NotFound, None));
     assert_eq!(
         status_of(&s, 1),
@@ -575,7 +575,7 @@ async fn a_non_answer_in_words_is_not_found_and_never_verified() {
         Arc::new(Replies::new(vec![Ok(NON_ANSWER)])),
         ScorerSet::default(),
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(status_of(&s, 0), (CellStatus::NotFound, None));
     assert_eq!(status_of(&s, 1), (CellStatus::Verified, None));
     assert_eq!(status_of(&s, 2), (CellStatus::Verified, None));
@@ -588,7 +588,7 @@ async fn a_not_found_over_cut_passages_is_asked_once_more_and_then_left_alone() 
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(NOTHING_2), Ok(NOTHING_2)]));
     let f = filler(&s, big_index(), model, ScorerSet::default());
-    let first = f.fill_paper(&request(&s)).await.unwrap();
+    let first = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(first.calls, 2, "the columns are split over two calls");
     for column in 0..4 {
         assert_eq!(
@@ -605,7 +605,7 @@ async fn a_not_found_over_cut_passages_is_asked_once_more_and_then_left_alone() 
     // The next run asks once more.
     let model = Arc::new(Replies::new(vec![Ok(NOTHING_2), Ok(NOTHING_2)]));
     let f = filler(&s, big_index(), model.clone(), ScorerSet::default());
-    let second = f.fill_paper(&request(&s)).await.unwrap();
+    let second = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(second.calls, 2);
     for column in 0..4 {
         assert_eq!(
@@ -617,7 +617,7 @@ async fn a_not_found_over_cut_passages_is_asked_once_more_and_then_left_alone() 
     // And then never again for this paper and these columns: no quota is spent in a loop.
     let model = Arc::new(Replies::new(vec![]));
     let f = filler(&s, big_index(), model.clone(), ScorerSet::default());
-    let third = f.fill_paper(&request(&s)).await.unwrap();
+    let third = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!((third.calls, third.cells.len()), (0, 0));
     assert!(model.prompts().is_empty());
 
@@ -625,7 +625,10 @@ async fn a_not_found_over_cut_passages_is_asked_once_more_and_then_left_alone() 
     std::fs::write(&s.paper, b"%PDF-1.4 dense retrieval at scale, version 2").unwrap();
     let model = Arc::new(Replies::new(vec![Ok(NOTHING_2), Ok(NOTHING_2)]));
     let f = filler(&s, big_index(), model, ScorerSet::default());
-    assert_eq!(f.fill_paper(&request(&s)).await.unwrap().calls, 2);
+    assert_eq!(
+        f.fill_paper(&request(&s), &OpenGate).await.unwrap().calls,
+        2
+    );
     assert_eq!(
         status_of(&s, 0),
         (CellStatus::NotFound, Some(NOT_FOUND_PARTIAL.into()))
@@ -641,10 +644,10 @@ async fn the_second_try_of_a_cut_not_found_can_find_the_answer() {
         Arc::new(Replies::new(vec![Ok(NOTHING_2), Ok(NOTHING_2)])),
         ScorerSet::default(),
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     let model = Arc::new(Replies::new(vec![Ok(CORRECT)]));
     let f = filler(&s, paper_index(), model, ScorerSet::default());
-    let second = f.fill_paper(&request(&s)).await.unwrap();
+    let second = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(second.calls, 1);
     assert!(second
         .cells
@@ -692,7 +695,7 @@ async fn a_cut_off_reply_keeps_its_cells_and_only_the_missing_columns_are_asked_
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(TRUNCATED), Ok(RETRY_LAST_TWO)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 2);
     assert!(
         fill.cells.iter().all(|c| c.status == CellStatus::Verified),
@@ -733,7 +736,7 @@ async fn a_reply_longer_than_its_token_limit_is_cut_by_the_double_and_salvaged()
     let last_one = r#"{"cells":[{"column":"c1","answer":"benchmark","quote":"The study is a benchmark evaluation","passage":3}]}"#;
     let model = Arc::new(Replies::new(vec![Ok(long.as_str()), Ok(last_one)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 2);
     assert_eq!(fill.cells.len(), 4);
     assert!(fill.cells.iter().all(|c| c.status == CellStatus::Verified));
@@ -752,7 +755,7 @@ async fn replies_in_the_shapes_free_models_write_are_read() {
         let s = setup();
         let model = Arc::new(Replies::new(vec![Ok(reply)]));
         let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-        let fill = f.fill_paper(&request(&s)).await.unwrap();
+        let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
         assert_eq!(fill.calls, 1, "{name}");
         assert_eq!(fill.cells.len(), 4, "{name}");
         assert!(
@@ -776,7 +779,7 @@ async fn a_quote_in_curly_quotes_and_dashes_matches_a_passage_with_a_ligature() 
     );
     let model = Arc::new(Replies::new(vec![Ok(CURLY)]));
     let f = filler(&s, index, model, ScorerSet::default());
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(status_of(&s, 0), (CellStatus::Verified, None));
     let cell = s.store.cell(&s.row.id, &s.columns[0].id).unwrap().unwrap();
     assert_eq!(cell.chunk_id.as_deref(), Some("p0"));
@@ -792,7 +795,7 @@ async fn edited_cells_are_never_asked_about() {
         .unwrap();
     let model = Arc::new(Replies::new(vec![Ok(r#"{"cells":[]}"#)]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert!(!model.prompts()[0].contains("Is the code released?"));
     assert_eq!(status_of(&s, 2).0, CellStatus::Edited);
 }
@@ -823,7 +826,7 @@ async fn an_edit_or_a_column_change_during_the_call_is_not_overwritten() {
     }));
     let old_key = s.columns[0].key.clone();
     let f = filler(&s, paper_index(), Arc::new(replies), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
 
     let stored: Vec<&str> = fill.cells.iter().map(|c| c.column_id.as_str()).collect();
     assert_eq!(
@@ -866,7 +869,7 @@ async fn a_contradicting_quote_downgrades_verified_cells() {
         Arc::new(Replies::new(vec![Ok(CORRECT)])),
         scorers,
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(
         status_of(&s, 2),
         (
@@ -913,7 +916,7 @@ async fn results_only_steer_the_search_of_number_columns_and_are_never_quotable(
             ResultStatus::Review,
         ),
     ];
-    f.fill_paper(&req).await.unwrap();
+    f.fill_paper(&req, &OpenGate).await.unwrap();
 
     let searches = index.searches();
     assert_eq!(searches.len(), 4, "one search per column");
@@ -961,7 +964,7 @@ async fn results_do_not_change_the_search_of_other_columns() {
         "Recall@10",
         ResultStatus::Accepted,
     )];
-    f.fill_paper(&req).await.unwrap();
+    f.fill_paper(&req, &OpenGate).await.unwrap();
     assert!(!index.searches()[0].1.contains("BM25"));
     assert_eq!(status_of(&s, 0), (CellStatus::Verified, None));
 }
@@ -975,12 +978,12 @@ async fn an_unreadable_paper_fails_empty_cells_and_leaves_results_standing() {
         Arc::new(Replies::new(vec![Ok(CORRECT)])),
         ScorerSet::default(),
     );
-    f.fill_paper(&request(&s)).await.unwrap();
+    f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     s.store.clear_cell(&s.row.id, &s.columns[3].id).unwrap();
     std::fs::remove_file(&s.paper).unwrap();
     let model = Arc::new(Replies::new(vec![]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 0);
     assert_eq!(fill.cells.len(), 1);
     assert_eq!(status_of(&s, 0).0, CellStatus::Verified);
@@ -1033,6 +1036,7 @@ fn model_errors_are_classified_and_their_detail_is_redacted() {
     .map(|&kind| {
         ModelFailure {
             kind,
+            window: LimitWindow::Unknown,
             retry_after_secs: None,
             reset_at_ms: None,
             detail: String::new(),
@@ -1090,7 +1094,7 @@ async fn a_quota_error_leaves_the_cells_untouched_and_is_returned() {
     let s = setup();
     let model = Arc::new(Replies::new(vec![Err(QUOTA_ERROR)]));
     let f = filler(&s, paper_index(), model, ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 1);
     assert!(fill.cells.is_empty());
     let failure = fill.model_error.unwrap();
@@ -1108,7 +1112,7 @@ async fn a_quota_error_leaves_the_cells_untouched_and_is_returned() {
         Arc::new(Replies::new(vec![Ok(CORRECT)])),
         ScorerSet::default(),
     );
-    g.fill_paper(&request(&s)).await.unwrap();
+    g.fill_paper(&request(&s), &OpenGate).await.unwrap();
     std::fs::write(&s.paper, b"%PDF-1.4 dense retrieval at scale, version 2").unwrap();
     let before = s.store.cells(&s.table).unwrap();
     let h = filler(
@@ -1117,7 +1121,7 @@ async fn a_quota_error_leaves_the_cells_untouched_and_is_returned() {
         Arc::new(Replies::new(vec![Err(QUOTA_ERROR)])),
         ScorerSet::default(),
     );
-    let paused = h.fill_paper(&request(&s)).await.unwrap();
+    let paused = h.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert!(paused.cells.is_empty());
     assert_eq!(s.store.cells(&s.table).unwrap(), before);
 }
@@ -1127,7 +1131,7 @@ async fn a_quota_error_after_a_first_call_keeps_its_cells_and_makes_no_second_ca
     let s = setup();
     let model = Arc::new(Replies::new(vec![Ok(NOTHING_2), Err(QUOTA_ERROR)]));
     let f = filler(&s, big_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 2);
     assert_eq!(fill.cells.len(), 2);
     assert_eq!(status_of(&s, 0).0, CellStatus::NotFound);
@@ -1144,7 +1148,7 @@ async fn a_quota_error_after_a_first_call_keeps_its_cells_and_makes_no_second_ca
     let s = setup();
     let model = Arc::new(Replies::new(vec![Err(QUOTA_ERROR)]));
     let f = filler(&s, big_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 1);
     assert!(s.store.cells(&s.table).unwrap().is_empty());
 }
@@ -1161,7 +1165,7 @@ async fn other_model_errors_fail_the_cells_with_a_code_and_never_the_provider_te
         let s = setup();
         let model = Arc::new(Replies::new(vec![Err(message)]));
         let f = filler(&s, big_index(), model, ScorerSet::default());
-        let fill = f.fill_paper(&request(&s)).await.unwrap();
+        let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
         assert_eq!(fill.calls, 1, "the second call is not made: {message}");
         assert_eq!(fill.cells.len(), 4);
         for column in 0..4 {
@@ -1194,7 +1198,7 @@ async fn no_combination_of_failures_costs_a_paper_more_than_three_calls() {
                     let model = Arc::new(Replies::new(replies));
                     // Two plans: the passages do not fit one call.
                     let f = filler(&s, big_index(), model.clone(), ScorerSet::default());
-                    let fill = f.fill_paper(&request(&s)).await.unwrap();
+                    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
                     let label = format!("{a}{b}{c}{d}");
                     assert!(fill.calls <= 3, "{label}: {} calls", fill.calls);
                     assert_eq!(model.prompts().len(), fill.calls, "{label}");
@@ -1223,7 +1227,7 @@ async fn two_unparsable_calls_in_a_row_do_not_make_a_third_for_the_second_plan()
         Ok(UNPARSABLE),
     ]));
     let f = filler(&s, big_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(
         fill.calls, 2,
         "one call and its retry; the second plan is not tried"
@@ -1260,7 +1264,7 @@ async fn more_columns_than_one_reply_holds_are_answered_in_two_calls() {
     let (first, second) = (reply(1..=7), reply(1..=6));
     let model = Arc::new(Replies::new(vec![Ok(first.as_str()), Ok(second.as_str())]));
     let f = filler(&s, paper_index(), model.clone(), ScorerSet::default());
-    let fill = f.fill_paper(&request(&s)).await.unwrap();
+    let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
     assert_eq!(fill.calls, 2);
     assert_eq!(fill.cells.len(), 13);
     assert!(fill.cells.iter().all(|c| c.status == CellStatus::Verified));
@@ -1317,4 +1321,107 @@ fn staleness_follows_revision_and_hash_and_never_touches_edits() {
         column,
         "h"
     ));
+}
+
+#[tokio::test]
+async fn a_failed_refill_never_replaces_a_result_whatever_the_failure() {
+    let auth = "HTTP 401 Unauthorized: invalid API key";
+    let only_first = r#"{"cells":[{"column":"c1","answer":null}]}"#;
+    let every = vec![0, 1, 2, 3];
+    type IndexOf = Box<dyn Fn() -> Index>;
+    let cases: Vec<(&str, IndexOf, Vec<Result<&str, &str>>, Vec<usize>)> = vec![
+        (
+            "model_timeout",
+            Box::new(paper_index),
+            vec![Err(TIMEOUT_ERROR)],
+            every.clone(),
+        ),
+        (
+            "model_failed",
+            Box::new(paper_index),
+            vec![Err("HTTP 400 Bad Request: invalid parameter")],
+            every.clone(),
+        ),
+        (
+            "model_auth",
+            Box::new(paper_index),
+            vec![Err(auth)],
+            every.clone(),
+        ),
+        (
+            "unparsable_response",
+            Box::new(paper_index),
+            vec![Ok(UNPARSABLE), Ok(UNPARSABLE)],
+            every.clone(),
+        ),
+        (
+            "missing_in_reply",
+            Box::new(paper_index),
+            vec![Ok(only_first)],
+            vec![1, 2, 3],
+        ),
+        (
+            "paper_not_indexed",
+            Box::new(|| Index::new(None, Vec::new())),
+            vec![],
+            every.clone(),
+        ),
+        (
+            "search_failed",
+            Box::new(|| paper_index().failing("the search models are not installed")),
+            vec![],
+            every.clone(),
+        ),
+    ];
+    for (code, index, replies, columns) in cases {
+        let s = setup();
+        filler(
+            &s,
+            paper_index(),
+            Arc::new(Replies::new(vec![Ok(CORRECT)])),
+            ScorerSet::default(),
+        )
+        .fill_paper(&request(&s), &OpenGate)
+        .await
+        .unwrap();
+        let before = s.store.cells(&s.table).unwrap();
+        // The paper changes: its answers are stale, and the refill fails.
+        std::fs::write(&s.paper, b"%PDF-1.4 dense retrieval at scale, version 2").unwrap();
+        let f = filler(
+            &s,
+            index(),
+            Arc::new(Replies::new(replies)),
+            ScorerSet::default(),
+        );
+        let fill = f.fill_paper(&request(&s), &OpenGate).await.unwrap();
+        for &n in &columns {
+            let cell = s.store.cell(&s.row.id, &s.columns[n].id).unwrap().unwrap();
+            let old = before
+                .iter()
+                .find(|c| c.column_id == cell.column_id)
+                .unwrap();
+            assert_eq!(cell.status, CellStatus::Verified, "{code}");
+            assert_eq!(cell.value, old.value, "{code}");
+            assert_eq!(cell.quote, old.quote, "{code}");
+            assert_eq!(cell.page, old.page, "{code}");
+            assert_eq!(cell.paper_hash, old.paper_hash, "{code}");
+            assert_eq!(cell.column_revision, old.column_revision, "{code}");
+            assert_eq!(
+                cell.error.as_deref(),
+                Some(format!("refill_failed:{code}").as_str()),
+                "{code}"
+            );
+            assert!(
+                fill.cells.contains(&cell),
+                "{code}: listed as the store holds it"
+            );
+            // Even once current again, a result that could not be refreshed is tried again.
+            let mut current = cell.clone();
+            current.paper_hash = Some(hash_of(&s));
+            assert!(
+                needs_fill(Some(&current), &s.columns[n], &hash_of(&s)),
+                "{code}"
+            );
+        }
+    }
 }

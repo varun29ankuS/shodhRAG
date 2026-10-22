@@ -22,10 +22,16 @@
 //! the cells of the call. A cell only ever holds an error code ([`ModelFailure::code`]),
 //! never the provider's text, which is logged with credentials redacted.
 //!
-//! Gate. A job fills through [`Filler::fill_paper_with`] and a [`CallGate`] that is asked
-//! before every model call: it counts the call against the day's cap, or halts the fill
-//! (cancelled, or the cap reached). A halt, like a quota error, leaves every cell the fill
-//! had not answered yet exactly as it was.
+//! Gate. Every fill goes through a [`CallGate`]: there is no ungated way to call the
+//! model. The gate is asked once a paper's calls are planned (it can refuse a paper whose
+//! planned calls and retry no longer fit the day's cap) and before every model call (it
+//! counts the call, or halts the fill: cancelled, or the cap reached). A halt, like a
+//! quota error, leaves every cell the fill had not answered yet exactly as it was.
+//!
+//! Results survive failures. A refill that fails over a cell holding a result (a stale
+//! answer being refreshed, or a cut `not_found` asked again) keeps the value, quote and
+//! status, and only records `refill_failed:<code>` as the cell's error (see
+//! [`TableStore::store_fill`]); the next fill tries it again.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -39,13 +45,13 @@ use super::budget::{plan_calls, MAX_CALLS_PER_PAPER, PASSAGES_PER_COLUMN};
 use super::parse::{parse_reply, ParsedReply};
 use super::passages::{result_hint_terms, PaperIndex, RESULT_HINTS_PER_COLUMN};
 use super::prompt::{fill_prompt, format_correction, missing_columns_prompt, reply_budget};
-use super::store::{CacheEntry, TableStore};
+use super::store::{CacheEntry, TableStore, REFILL_FAILED};
 use super::validate::{
     check, ground, Checked, RawAnswer, NOT_FOUND_PARTIAL, NOT_FOUND_PARTIAL_RETRIED,
 };
 use super::{collapse, Cell, CellStatus, Column, ColumnKind, ColumnSpec, Passage, TableRow};
 use crate::harness::grounding::verify::ScorerSet;
-use crate::harness::provider_error::{classify, limit_reset_at_ms, safe_detail, ProviderErrorKind};
+use crate::harness::provider_error::{classify, reset_epoch_ms, safe_detail, ProviderErrorKind};
 use crate::research::results::{ResultRecord, ResultStatus, TextModel};
 use crate::research::{blocking, ResearchError, ResearchResult};
 
@@ -76,15 +82,31 @@ pub enum ModelFailureKind {
     Other,
 }
 
+/// The window of a quota or rate limit, as far as the provider's message tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitWindow {
+    /// A per-minute (or otherwise short) rate limit: `free-models-per-min`, "requests per
+    /// minute", an upstream provider's temporary limit.
+    Short,
+    /// A daily limit or an exhausted quota: `free-models-per-day`, "daily", no credits.
+    Daily,
+    /// A rate limit that does not say which (a bare 429).
+    Unknown,
+}
+
 /// A failed model call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFailure {
     pub kind: ModelFailureKind,
+    /// For a quota or rate-limit failure, which kind of limit it was (the provider
+    /// classifier's rate-limited and quota-exhausted kept apart); `Unknown` otherwise.
+    pub window: LimitWindow,
     /// Seconds the provider asked to wait, when it said (capped at an hour).
     pub retry_after_secs: Option<u32>,
-    /// When a quota or rate limit resets (Unix milliseconds), when the provider said: an
-    /// exhausted daily quota keeps its real reset time here, which `retry_after_secs`
-    /// does not carry.
+    /// The provider's `X-RateLimit-Reset` (Unix milliseconds) as it was sent, past or
+    /// future: a daily quota keeps its real reset time here, which `retry_after_secs` does
+    /// not carry, and a reset that reads as past (a clock running fast) is still told
+    /// apart from no header at all.
     pub reset_at_ms: Option<u64>,
     /// The provider's message, without credentials and cut short. For the caller's log and
     /// messages; it is never stored in a cell.
@@ -164,13 +186,14 @@ impl ModelFailure {
             ProviderErrorKind::Auth => ModelFailureKind::Auth,
             _ => ModelFailureKind::Other,
         };
-        let reset_at_ms = if kind == ModelFailureKind::Quota {
-            limit_reset_at_ms(message, now_ms)
+        let (window, reset_at_ms) = if kind == ModelFailureKind::Quota {
+            (limit_window(found.kind, message), header_reset_ms(message))
         } else {
-            None
+            (LimitWindow::Unknown, None)
         };
         let failure = Self {
             kind,
+            window,
             retry_after_secs: found.retry_after_secs,
             reset_at_ms,
             detail: safe_message(message),
@@ -193,6 +216,36 @@ impl ModelFailure {
             ModelFailureKind::Other => MODEL_FAILED,
         }
     }
+}
+
+/// Which limit a quota or rate-limit error is: an exhausted quota or a message that names
+/// a day is daily; one that names a minute, or an upstream provider's temporary limit, is
+/// short; a bare rate limit is unknown.
+fn limit_window(kind: ProviderErrorKind, message: &str) -> LimitWindow {
+    let lower = message.to_ascii_lowercase();
+    let says = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    if kind == ProviderErrorKind::QuotaExhausted || says(&["per-day", "per day", "daily"]) {
+        LimitWindow::Daily
+    } else if says(&[
+        "per-min",
+        "per min",
+        "per minute",
+        "rate-limited upstream",
+        "temporarily rate-limited",
+    ]) {
+        LimitWindow::Short
+    } else {
+        LimitWindow::Unknown
+    }
+}
+
+/// The `X-RateLimit-Reset` a provider message carries (OpenRouter puts the response
+/// headers in its error body), as Unix milliseconds, whether past or future.
+fn header_reset_ms(message: &str) -> Option<u64> {
+    const MARKER: &str = "x-ratelimit-reset";
+    let lower = message.to_ascii_lowercase();
+    let at = lower.find(MARKER)?;
+    reset_epoch_ms(&lower[at + MARKER.len()..])
 }
 
 /// Text with a code in front of it, for the cell errors that name a local cause (a file
@@ -235,7 +288,10 @@ pub fn needs_fill(cell: Option<&Cell>, column: &Column, paper_hash: &str) -> boo
         CellStatus::Edited => false,
         CellStatus::Empty | CellStatus::Queued | CellStatus::Failed => true,
         CellStatus::Verified | CellStatus::Unverified | CellStatus::NotFound => {
-            cell.column_revision != Some(column.revision)
+            cell.error
+                .as_deref()
+                .is_some_and(|e| e.starts_with(REFILL_FAILED))
+                || cell.column_revision != Some(column.revision)
                 || cell.paper_hash.as_deref() != Some(paper_hash)
                 || (cell.status == CellStatus::NotFound
                     && cell.error.as_deref() == Some(NOT_FOUND_PARTIAL))
@@ -265,9 +321,12 @@ pub struct PaperRequest {
     pub results: Vec<ResultRecord>,
 }
 
-/// What a fill did: the cells it stored, the model calls it made (a retry included),
-/// the columns answered from the cache, the model's error when a call failed, and the
-/// gate's halt when it stopped the fill before a call.
+/// What a fill did: the cells it stored (as stored: a failed refill over a result is
+/// that result with its `refill_failed` error), the model calls it made (a retry
+/// included), the columns answered from the cache, the model's error when a call failed,
+/// the gate's halt when it stopped the fill, and the local cause when the whole paper
+/// could not be filled (`paper_unreadable`, `paper_not_indexed`, `search_failed`, with
+/// detail).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaperFill {
     pub cells: Vec<Cell>,
@@ -275,6 +334,7 @@ pub struct PaperFill {
     pub cache_hits: usize,
     pub model_error: Option<ModelFailure>,
     pub halted: Option<Halt>,
+    pub paper_error: Option<String>,
 }
 
 /// Why a [`CallGate`] stopped a fill before a call.
@@ -286,12 +346,15 @@ pub enum Halt {
     DailyCap,
 }
 
-/// Asked before every model call of a fill.
+/// Asked before a paper's calls and before every model call of a fill. `None` lets the
+/// fill go on; `Some` stops it: no more calls, and the cells it had not answered are left
+/// as they are. An error stops the fill with that error, with no call made.
 #[async_trait::async_trait]
 pub trait CallGate: Send + Sync {
-    /// `None` lets the call go, and the gate has counted it; `Some` stops the fill: no
-    /// more calls, and the cells it had not answered are left as they are. An error stops
-    /// the fill with that error, with no call made.
+    /// Once the paper's calls are planned and before the first: `calls` is the most the
+    /// paper can still spend (its planned calls and the one retry).
+    async fn before_paper(&self, calls: usize) -> ResearchResult<Option<Halt>>;
+    /// Before every model call; `None` means the gate has counted the call.
     async fn before_call(&self) -> ResearchResult<Option<Halt>>;
 }
 
@@ -416,16 +479,11 @@ enum Attempt {
 }
 
 impl Filler {
-    /// Fills one paper with no gate: every call it needs is made.
-    pub async fn fill_paper(&self, request: &PaperRequest) -> ResearchResult<PaperFill> {
-        self.fill_paper_with(request, None).await
-    }
-
-    /// Fills one paper, asking `gate` before every model call.
-    pub async fn fill_paper_with(
+    /// Fills one paper, asking `gate` before its calls and before every model call.
+    pub async fn fill_paper(
         &self,
         request: &PaperRequest,
-        gate: Option<&dyn CallGate>,
+        gate: &dyn CallGate,
     ) -> ResearchResult<PaperFill> {
         let row = &request.row;
         let path = row.document_id.clone();
@@ -459,6 +517,7 @@ impl Filler {
                 let error = with_detail(PAPER_UNREADABLE, &e.to_string());
                 self.fail(row, &columns, None, &model_id, &error, &mut fill)
                     .await?;
+                fill.paper_error = Some(error);
                 return Ok(fill);
             }
         };
@@ -493,6 +552,7 @@ impl Filler {
                 let error = with_detail(SEARCH_FAILED, &e);
                 self.fail(row, &columns, Some(&hash), &model_id, &error, &mut fill)
                     .await?;
+                fill.paper_error = Some(error);
                 return Ok(fill);
             }
         };
@@ -508,6 +568,7 @@ impl Filler {
             };
             self.fail(row, &columns, Some(&hash), &model_id, &error, &mut fill)
                 .await?;
+            fill.paper_error = Some(error);
             return Ok(fill);
         }
 
@@ -546,7 +607,13 @@ impl Filler {
         let miss_ranked: Vec<Vec<Passage>> = misses.iter().map(|&i| ranked[i].clone()).collect();
         let mut retried = false;
         let mut format_given_up = false;
-        for plan in plan_calls(first.as_ref(), &miss_ranked) {
+        let plans = plan_calls(first.as_ref(), &miss_ranked);
+        if !plans.is_empty() {
+            if let Some(halt) = gate.before_paper(plans.len() + 1).await? {
+                fill.halted = Some(halt);
+            }
+        }
+        for plan in plans {
             let call_columns: Vec<&Column> =
                 plan.columns.iter().map(|&m| columns[misses[m]]).collect();
             if fill.halted.is_some() {
@@ -729,14 +796,12 @@ impl Filler {
         &self,
         prompt: &str,
         columns: usize,
-        gate: Option<&dyn CallGate>,
+        gate: &dyn CallGate,
         fill: &mut PaperFill,
     ) -> ResearchResult<Attempt> {
-        if let Some(gate) = gate {
-            if let Some(halt) = gate.before_call().await? {
-                fill.halted = Some(halt);
-                return Ok(Attempt::Halted);
-            }
+        if let Some(halt) = gate.before_call().await? {
+            fill.halted = Some(halt);
+            return Ok(Attempt::Halted);
         }
         fill.calls += 1;
         Ok(
@@ -942,7 +1007,8 @@ impl Filler {
     }
 
     /// Writes one cell. The store refuses it (and its cache entry) when the user edited
-    /// the cell, or changed or removed the column or row, since the fill began.
+    /// the cell, or changed or removed the column or row, since the fill began, and keeps
+    /// a result a failure would replace; the cell is listed as the store holds it.
     async fn store_cell(
         &self,
         cell: Cell,
@@ -950,11 +1016,19 @@ impl Filler {
         fill: &mut PaperFill,
     ) -> ResearchResult<()> {
         let store = self.store.clone();
-        let stored = cell.clone();
-        let written = blocking(move || store.store_fill(&stored, cache.as_ref())).await?;
-        if written {
-            fill.cells.push(cell);
-        }
+        let stored = blocking(move || {
+            if !store.store_fill(&cell, cache.as_ref())? {
+                return Ok(None);
+            }
+            if cell.status != CellStatus::Failed {
+                return Ok(Some(cell));
+            }
+            Ok(Some(
+                store.cell(&cell.row_id, &cell.column_id)?.unwrap_or(cell),
+            ))
+        })
+        .await?;
+        fill.cells.extend(stored);
         Ok(())
     }
 }

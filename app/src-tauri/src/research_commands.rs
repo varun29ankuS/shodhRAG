@@ -76,9 +76,10 @@ impl From<ResearchError> for ResearchCommandError {
             | ResearchError::Model(_) => "unavailable",
             ResearchError::Statement(StatementError::Invalid(_)) => "invalid",
             ResearchError::Statement(StatementError::NotFound(_)) => "not_found",
-            ResearchError::Statement(_) | ResearchError::Database(_) | ResearchError::Task(_) => {
-                "storage"
-            }
+            ResearchError::Statement(_)
+            | ResearchError::Database(_)
+            | ResearchError::Busy(_)
+            | ResearchError::Task(_) => "storage",
         };
         Self {
             code,

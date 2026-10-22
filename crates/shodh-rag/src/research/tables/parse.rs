@@ -6,8 +6,9 @@
 //!
 //! What is accepted besides `{"cells":[…]}`: the list under `results` or `answers`, a bare
 //! top-level array of cells, trailing commas before `]` or `}`, and a short fixed list of
-//! key aliases (`key`/`id` for `column`, `value`/`result` for `answer`,
-//! `evidence`/`source_quote` for `quote`). The column tag may be written `c1`, `1`,
+//! key aliases (`key` for `column`, `value`/`result` for `answer`,
+//! `evidence`/`source_quote` for `quote`; not `id`, which is the key of the prompt's own
+//! column list that a model often echoes before it answers). The column tag may be written `c1`, `1`,
 //! `column 1` or `C1.`. Nothing is ever done to a `quote` or an `answer`: they are the
 //! model's text exactly, so no repair here can make a quote pass the check.
 //!
@@ -46,7 +47,7 @@ pub struct ParsedReply {
 const THINK_END: &str = "</think>";
 /// Keys the list of cells may sit under.
 const LIST_KEYS: [&str; 3] = ["cells", "results", "answers"];
-const COLUMN_KEYS: [&str; 3] = ["column", "key", "id"];
+const COLUMN_KEYS: [&str; 2] = ["column", "key"];
 const ANSWER_KEYS: [&str; 3] = ["answer", "value", "result"];
 const QUOTE_KEYS: [&str; 3] = ["quote", "evidence", "source_quote"];
 const PASSAGE_KEYS: [&str; 2] = ["passage", "passage_number"];
@@ -193,7 +194,12 @@ fn cells_of_value(value: &Value) -> Option<Vec<ParsedCell>> {
         }),
         Value::Array(items) => {
             let cells: Vec<ParsedCell> = items.iter().filter_map(cell_of).collect();
-            (!cells.is_empty()).then_some(cells)
+            // A bare array is only a reply when something in it answers: a list of
+            // columns (a model echoing the prompt) has a tag but no answer or quote.
+            let answers = cells
+                .iter()
+                .any(|c| c.raw.answer.is_some() || c.raw.quote.is_some());
+            answers.then_some(cells)
         }
         _ => None,
     }
@@ -372,7 +378,7 @@ mod tests {
 
     #[test]
     fn key_aliases_are_read_and_the_text_is_never_altered() {
-        let reply = "{\"cells\":[{\"key\":\"C2\",\"value\":\" 0.912 \",\"evidence\":\"  \u{201c}Recall\u{201d} of 0.912  \",\"passage_number\":\"2\"},{\"id\":1,\"result\":\"yes\",\"source_quote\":\"it is\"}]}";
+        let reply = "{\"cells\":[{\"key\":\"C2\",\"value\":\" 0.912 \",\"evidence\":\"  \u{201c}Recall\u{201d} of 0.912  \",\"passage_number\":\"2\"},{\"key\":1,\"result\":\"yes\",\"source_quote\":\"it is\"}]}";
         let cells = cells(reply);
         assert_eq!(cells[0].column, "c2");
         assert_eq!(cells[0].raw.answer, Some(Some(Value::from(" 0.912 "))));
@@ -384,6 +390,28 @@ mod tests {
         assert_eq!(cells[1].column, "c1");
         assert_eq!(cells[1].raw.answer, Some(Some(Value::from("yes"))));
         assert_eq!(cells[1].raw.quote.as_deref(), Some("it is"));
+    }
+
+    #[test]
+    fn an_echoed_column_list_is_not_the_reply() {
+        let reply = r#"The columns are:
+[{"id":"c1","kind":"text","question":"Dataset?"},{"id":"c2","kind":"number","question":"Recall?"}]
+Here are the answers:
+{"cells":[{"column":"c1","answer":"A","quote":"one two three"},{"column":"c2","answer":null}]}"#;
+        let parsed = parse_reply(reply).unwrap();
+        assert!(!parsed.cut_off);
+        assert_eq!(parsed.cells.len(), 2);
+        assert_eq!(parsed.cells[0].raw.answer, Some(Some(Value::from("A"))));
+        // The echo alone is nothing, and an echo before a cut-off envelope still lets the
+        // envelope's complete cells through.
+        assert_eq!(
+            parse_reply(r#"[{"id":"c1","kind":"text","question":"Dataset?"}]"#),
+            None
+        );
+        let cut = r#"[{"id":"c1","question":"Dataset?"}] {"cells":[{"column":"c1","answer":"A","quote":"one two three"},{"column":"c2","ans"#;
+        let parsed = parse_reply(cut).unwrap();
+        assert!(parsed.cut_off);
+        assert_eq!(parsed.cells.len(), 1);
     }
 
     #[test]

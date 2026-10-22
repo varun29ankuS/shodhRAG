@@ -1214,6 +1214,45 @@ fn model_errors_are_classified_and_their_detail_is_redacted() {
     );
 }
 
+#[test]
+fn every_shape_of_api_key_is_masked_in_a_failure_detail() {
+    // Built from pieces so that no literal in the source looks like a real credential.
+    let keys: Vec<String> = [
+        ("sk-or-v1-", "0123456789abcdef0123456789"),
+        ("AIza", "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"),
+        ("gsk_", "abcdefghijklmnopqrstuvwxyz0123456789ABCD"),
+        ("hf_", "abcdefghijklmnopqrstuvwxyzABCDEFGH"),
+        ("xai-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+        ("pplx-", "abcdefghijklmnopqrstuvwxyz0123456789"),
+        ("", "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"),
+        ("", "Zx9Qw8Er7Ty6Ui5Op4As3Df2Gh1Jk0LmNbVcXzQw"),
+    ]
+    .iter()
+    .map(|(prefix, rest)| format!("{prefix}{rest}"))
+    .collect();
+    for key in &keys {
+        let message = format!("HTTP 401 Unauthorized: the key {key} is not valid (see docs)");
+        let failure = ModelFailure::classify(&message);
+        assert!(
+            !failure.detail.contains(key.as_str()),
+            "{key}: {}",
+            failure.detail
+        );
+        assert!(failure.detail.contains("[REDACTED]"), "{key}");
+        assert!(failure.detail.contains("HTTP 401 Unauthorized"), "{key}");
+    }
+    let bearer = ModelFailure::classify("401: Authorization: Bearer abcdef123456");
+    assert!(!bearer.detail.contains("abcdef123456"));
+    // Ordinary words and numbers stay readable.
+    let plain = ModelFailure::classify(
+        "HTTP 429 Too Many Requests: free-models-per-day limit, reset 1760000000000",
+    );
+    assert_eq!(
+        plain.detail,
+        "HTTP 429 Too Many Requests: free-models-per-day limit, reset 1760000000000"
+    );
+}
+
 #[tokio::test]
 async fn a_quota_error_leaves_the_cells_untouched_and_is_returned() {
     let s = setup();

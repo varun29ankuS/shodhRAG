@@ -259,8 +259,6 @@ impl AppModel {
         generation.max_tokens = max_tokens;
         // Extraction is classification, not writing: no creativity wanted.
         generation.temperature = 0.0;
-        // Short structured answers: reasoning tokens would count against the limit.
-        generation.minimal_reasoning = true;
         generation
     }
 }

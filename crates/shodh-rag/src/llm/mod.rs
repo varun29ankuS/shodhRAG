@@ -254,13 +254,6 @@ pub struct GenerationConfig {
     pub repetition_penalty: f32,
     pub stop_sequences: Vec<String>,
     pub seed: Option<u64>,
-    /// Ask a reasoning model for as little hidden reasoning as it allows. Reasoning
-    /// tokens count against `max_tokens` on several providers, so a short structured
-    /// answer can otherwise be cut off before it is written. Sent where the provider
-    /// takes the setting without refusing models that have no reasoning (OpenRouter);
-    /// ignored elsewhere.
-    #[serde(default)]
-    pub minimal_reasoning: bool,
 }
 
 impl From<&LLMConfig> for GenerationConfig {
@@ -273,7 +266,6 @@ impl From<&LLMConfig> for GenerationConfig {
             repetition_penalty: config.repetition_penalty,
             stop_sequences: vec![],
             seed: None,
-            minimal_reasoning: false,
         }
     }
 }

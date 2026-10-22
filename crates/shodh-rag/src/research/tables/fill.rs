@@ -82,6 +82,61 @@ pub struct ModelFailure {
     pub detail: String,
 }
 
+/// Prefixes of provider API keys (Google, Groq, Hugging Face, xAI, Perplexity, and the
+/// `sk-` family of OpenAI, OpenRouter and Anthropic).
+const KEY_PREFIXES: [&str; 6] = ["AIza", "gsk_", "hf_", "xai-", "pplx-", "sk-"];
+/// Shortest token with a known key prefix that is taken for a key.
+const MIN_KEY_CHARS: usize = 20;
+/// Shortest letters-and-digits token of any kind that is taken for a key or a secret.
+const MIN_OPAQUE_TOKEN_CHARS: usize = 32;
+
+fn looks_like_key(token: &str) -> bool {
+    let length = token.chars().count();
+    if length >= MIN_KEY_CHARS && KEY_PREFIXES.iter().any(|p| token.starts_with(p)) {
+        return true;
+    }
+    length >= MIN_OPAQUE_TOKEN_CHARS
+        && token.chars().any(|c| c.is_ascii_digit())
+        && token.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+fn push_token(out: &mut String, token: &mut String) {
+    if looks_like_key(token) {
+        out.push_str("[REDACTED]");
+    } else {
+        out.push_str(token);
+    }
+    token.clear();
+}
+
+/// `text` with everything shaped like a credential replaced by `[REDACTED]`: what
+/// `safe_detail` masks (`sk-` keys, bearer tokens), a token with a known provider key
+/// prefix, and any long token of mixed letters and digits. Over-masking a request id in a
+/// log line costs nothing; leaking a key does.
+fn redact_key_like(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut token = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            token.push(c);
+        } else {
+            push_token(&mut out, &mut token);
+            out.push(c);
+        }
+    }
+    push_token(&mut out, &mut token);
+    out
+}
+
+/// A provider's message made fit for a log and for the caller: credentials masked, cut
+/// short.
+fn safe_message(message: &str) -> String {
+    redact_key_like(&safe_detail(message, None, usize::MAX))
+        .chars()
+        .take(MAX_DETAIL_CHARS)
+        .collect()
+}
+
 impl ModelFailure {
     /// Classifies a model's error message (the provider's status line and body).
     pub fn classify(message: &str) -> Self {
@@ -103,7 +158,7 @@ impl ModelFailure {
         let failure = Self {
             kind,
             retry_after_secs: found.retry_after_secs,
-            detail: safe_detail(message, None, MAX_DETAIL_CHARS),
+            detail: safe_message(message),
         };
         tracing::warn!(
             kind = ?failure.kind,

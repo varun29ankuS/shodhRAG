@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -25,7 +24,8 @@ use sha2::{Digest, Sha256};
 
 use super::{
     canonical_json, AuditError, AuditEventType, AuditKey, AuditQuery, AuditRecord, AuditResult,
-    AuditRow, AuditStats, MonthStats, VerifyReport, GENESIS_HASH, LOCAL_OWNER, SYSTEM_PRINCIPAL,
+    AuditRow, AuditStats, MonthStats, UnrecordedEvents, VerifyReport, GENESIS_HASH, LOCAL_OWNER,
+    SYSTEM_PRINCIPAL,
 };
 
 pub const DEFAULT_RETENTION_DAYS: u32 = 365;
@@ -601,12 +601,6 @@ fn is_not_a_database(error: &rusqlite::Error) -> bool {
     matches!(error, rusqlite::Error::SqliteFailure(e, _) if e.code == ErrorCode::NotADatabase)
 }
 
-/// Another connection held `shodh.db`'s write lock for the whole busy timeout. Nothing
-/// was written: the transaction rolled back, so the same append can be made again.
-fn is_busy(error: &AuditError) -> bool {
-    matches!(error, AuditError::Sqlite(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy))
-}
-
 fn has_plaintext_header(path: &Path) -> AuditResult<bool> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -753,31 +747,22 @@ enum WriterMsg {
     },
 }
 
-/// Queued events the writer could not record since the log was opened.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnrecordedEvents {
-    pub count: u64,
-    /// The error of the latest one.
-    pub last_error: String,
-}
-
-/// State the log shares with its writer thread.
+/// Queued events the writer failed to record, shared by the log and its writer thread.
 #[derive(Default)]
-struct WriterShared {
-    /// Set when the log is dropped: from then on a busy database no longer holds a
-    /// queued event back, so closing cannot wait on another connection forever.
-    closing: AtomicBool,
-    unrecorded: Mutex<Option<UnrecordedEvents>>,
-}
+struct UnrecordedTally(Mutex<Option<UnrecordedEvents>>);
 
-impl WriterShared {
-    fn note_unrecorded(&self, error: &AuditError) {
-        let mut unrecorded = lock(&self.unrecorded);
+impl UnrecordedTally {
+    fn note(&self, error: &AuditError) {
+        let mut unrecorded = lock(&self.0);
         let count = unrecorded.as_ref().map_or(0, |u| u.count) + 1;
         *unrecorded = Some(UnrecordedEvents {
             count,
             last_error: error.to_string(),
         });
+    }
+
+    fn get(&self) -> Option<UnrecordedEvents> {
+        lock(&self.0).clone()
     }
 }
 
@@ -934,39 +919,23 @@ impl Writer {
         Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
     }
 
-    /// Append a queued event, one no caller waits for ([`AuditLog::submit`]).
-    ///
-    /// `shodh.db` has other writers besides this one (the statement store's dynamics,
-    /// the inbox, research tables), each on its own connection. When one of them holds
-    /// the write lock past the busy timeout the append fails with `SQLITE_BUSY` and
-    /// nothing is written. The event is then appended again before any message queued
-    /// after it is read, so it is not lost and the chain keeps submission order; each
-    /// attempt waits out the busy timeout inside SQLite. Any other failure, or a busy
-    /// database once the log is closing, leaves the event unrecorded: logged, and counted
-    /// in [`AuditLog::unrecorded`].
-    fn append_queued(&mut self, record: &AuditRecord, shared: &WriterShared) {
-        loop {
-            let error = match self.append(record) {
-                Ok(_) => return,
-                Err(e) => e,
-            };
-            if is_busy(&error) && !shared.closing.load(Ordering::Acquire) {
-                tracing::warn!(target: "shodh::audit", event_type = %record.event_type, error = %error, "audit database busy; the event is written once it is free");
-                continue;
-            }
-            tracing::error!(target: "shodh::audit", event_type = %record.event_type, error = %error, "audit event was not recorded");
-            shared.note_unrecorded(&error);
-            return;
+    /// Append a queued event, one no caller waits for ([`AuditLog::submit`]). A failure
+    /// has nobody to return to: it is logged and counted in [`AuditLog::unrecorded`], so
+    /// the event is not lost silently.
+    fn append_queued(&mut self, record: &AuditRecord, unrecorded: &UnrecordedTally) {
+        if let Err(e) = self.append(record) {
+            tracing::error!(target: "shodh::audit", event_type = %record.event_type, error = %e, "audit event was not recorded");
+            unrecorded.note(&e);
         }
     }
 
-    fn run(mut self, inbox: mpsc::Receiver<WriterMsg>, shared: &WriterShared) {
+    fn run(mut self, inbox: mpsc::Receiver<WriterMsg>, unrecorded: &UnrecordedTally) {
         for msg in inbox {
             match msg {
                 WriterMsg::Append(record, Some(reply)) => {
                     let _ = reply.send(self.append(&record));
                 }
-                WriterMsg::Append(record, None) => self.append_queued(&record, shared),
+                WriterMsg::Append(record, None) => self.append_queued(&record, unrecorded),
                 WriterMsg::Retention { days, now, reply } => {
                     let _ = reply.send(self.retention(days, now));
                 }
@@ -1113,7 +1082,7 @@ pub struct AuditLog {
     encrypted: bool,
     writer: Mutex<Option<mpsc::Sender<WriterMsg>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
-    shared: Arc<WriterShared>,
+    unrecorded: Arc<UnrecordedTally>,
     reader: Mutex<Connection>,
 }
 
@@ -1143,19 +1112,19 @@ impl AuditLog {
         reader.execute_batch("PRAGMA query_only = 1;")?;
         let writer = Writer::new(write_conn)?;
         let (tx, rx) = mpsc::channel();
-        let shared = Arc::new(WriterShared::default());
+        let unrecorded = Arc::new(UnrecordedTally::default());
         let thread = std::thread::Builder::new()
             .name("shodh-audit-writer".to_string())
             .spawn({
-                let shared = Arc::clone(&shared);
-                move || writer.run(rx, &shared)
+                let unrecorded = Arc::clone(&unrecorded);
+                move || writer.run(rx, &unrecorded)
             })?;
         Ok(Self {
             path,
             encrypted,
             writer: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
-            shared,
+            unrecorded,
             reader: Mutex::new(reader),
         })
     }
@@ -1189,9 +1158,9 @@ impl AuditLog {
         self.request(|reply| WriterMsg::Append(record, Some(reply)))
     }
 
-    /// Queue an event without waiting. A busy database delays it rather than
-    /// losing it; other write failures are logged by the writer and counted in
-    /// [`unrecorded`](Self::unrecorded). Safe on async and UI threads.
+    /// Queue an event without waiting. Write failures are logged by the writer
+    /// and counted in [`unrecorded`](Self::unrecorded). Safe on async and UI
+    /// threads.
     pub fn submit(&self, record: AuditRecord) {
         let event_type = record.event_type;
         if let Err(e) = self.send(WriterMsg::Append(record, None)) {
@@ -1202,7 +1171,7 @@ impl AuditLog {
     /// Queued events ([`submit`](Self::submit)) the writer could not record since
     /// the log was opened, with the latest error; `None` when every one was.
     pub fn unrecorded(&self) -> Option<UnrecordedEvents> {
-        lock(&self.shared.unrecorded).clone()
+        self.unrecorded.get()
     }
 
     /// Delete events older than `days` and record a checkpoint. Returns the
@@ -1518,15 +1487,14 @@ impl AuditLog {
             },
             retention_days,
             encrypted: self.encrypted,
+            unrecorded: self.unrecorded.get(),
         })
     }
 }
 
 impl Drop for AuditLog {
-    /// Close the queue and wait for queued events to be committed. Events still
-    /// queued get one attempt each: a busy database no longer holds them back.
+    /// Close the queue and wait for queued events to be committed.
     fn drop(&mut self) {
-        self.shared.closing.store(true, Ordering::Release);
         lock(&self.writer).take();
         if let Some(thread) = lock(&self.thread).take() {
             if thread.join().is_err() {
@@ -1624,62 +1592,42 @@ mod tests {
     }
 
     #[test]
-    fn a_queued_event_outlasts_a_write_lock_held_past_the_busy_timeout() {
+    fn a_queued_event_that_finds_the_database_busy_is_counted_with_its_error() {
         let dir = tempfile::tempdir().unwrap();
-        let busy = Duration::from_millis(50);
-        let (mut writer, holder) = writer_behind_a_held_write_lock(&dir, busy);
-        // One append in the writer's place fails busy, and nothing is written.
-        assert!(is_busy(&writer.append(&question(1)).unwrap_err()));
-        assert_eq!(writer.head_id, 0);
-
-        // The writer thread as `AuditLog` runs it: a submitted event, then a waited-for one.
-        let shared = Arc::new(WriterShared::default());
+        let (writer, holder) = writer_behind_a_held_write_lock(&dir, Duration::from_millis(50));
+        // The writer thread as `AuditLog` runs it: two submitted events while another
+        // connection holds the write lock, a waited-for one while it is still held, and one
+        // after it is released.
+        let unrecorded = Arc::new(UnrecordedTally::default());
         let (inbox, rx) = mpsc::channel();
         let thread = std::thread::spawn({
-            let shared = Arc::clone(&shared);
-            move || writer.run(rx, &shared)
+            let unrecorded = Arc::clone(&unrecorded);
+            move || writer.run(rx, &unrecorded)
         });
         inbox.send(WriterMsg::Append(question(1), None)).unwrap();
-        // Held for many busy timeouts: the submitted event finds the database busy again
-        // and again while it waits.
-        std::thread::sleep(busy * 20);
-        holder.execute_batch("COMMIT").unwrap();
+        inbox.send(WriterMsg::Append(question(2), None)).unwrap();
         let (reply, response) = mpsc::channel();
         inbox
-            .send(WriterMsg::Append(question(2), Some(reply)))
+            .send(WriterMsg::Append(question(3), Some(reply.clone())))
             .unwrap();
-        // Written after the submitted event, which was not dropped.
-        assert_eq!(response.recv().unwrap().unwrap(), 2);
+        // The waited-for append fails busy too, and goes back to its caller uncounted.
+        let error = response.recv().unwrap().unwrap_err();
+        assert!(
+            matches!(&error, AuditError::Sqlite(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy)),
+            "{error}"
+        );
+        let counted = unrecorded.get().unwrap();
+        assert_eq!(counted.count, 2);
+        assert_eq!(counted.last_error, error.to_string());
+
+        holder.execute_batch("COMMIT").unwrap();
+        inbox
+            .send(WriterMsg::Append(question(4), Some(reply)))
+            .unwrap();
+        assert_eq!(response.recv().unwrap().unwrap(), 1);
         drop(inbox);
         thread.join().unwrap();
-        assert_eq!(lock(&shared.unrecorded).clone(), None);
-
-        let log = AuditLog::open(dir.path().join("shodh.db"), None).unwrap();
-        let texts: Vec<Value> = log
-            .query(&AuditQuery::default())
-            .unwrap()
-            .into_iter()
-            .rev()
-            .map(|row| row.payload["text"].clone())
-            .collect();
-        assert_eq!(texts, vec![json!("question 1"), json!("question 2")]);
-        assert!(log.verify().unwrap().ok);
-    }
-
-    #[test]
-    fn a_busy_database_while_closing_leaves_the_event_unrecorded_and_counted() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut writer, holder) = writer_behind_a_held_write_lock(&dir, Duration::from_millis(50));
-        let shared = WriterShared::default();
-        shared.closing.store(true, Ordering::Release);
-        // Returns after one attempt although the lock is still held.
-        writer.append_queued(&question(1), &shared);
-        writer.append_queued(&question(2), &shared);
-        let unrecorded = lock(&shared.unrecorded).clone().unwrap();
-        assert_eq!(unrecorded.count, 2);
-        assert!(unrecorded.last_error.contains("locked"), "{unrecorded:?}");
-        assert_eq!(writer.head_id, 0);
-        holder.execute_batch("COMMIT").unwrap();
+        assert_eq!(unrecorded.get().unwrap().count, 2);
     }
 
     #[test]

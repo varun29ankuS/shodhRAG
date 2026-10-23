@@ -5,9 +5,8 @@
 //! is made, so a crash over-counts by at most one and never under-counts.
 //!
 //! Kept in a small file next to the settings (`connectors/slack_usage.json`, written
-//! atomically with a backup) rather than in `shodh.db`: a new `shodh.db` table needs a
-//! schema migration, and the database's writers are being moved behind one write gate
-//! (#95); the Slack tables of part B go there after it.
+//! atomically with a backup) rather than in `shodh.db`, so part A of the connector needs
+//! no schema migration; it moves into `shodh.db` with part B's Slack tables.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

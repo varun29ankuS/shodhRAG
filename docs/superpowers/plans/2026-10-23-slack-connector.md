@@ -4,8 +4,8 @@ Date: 2026-10-23. Branch `feat/connectors-slack-answers`.
 
 Part A adds a **Connectors** view and the Slack connector: people in one Slack workspace mention the
 Shodh bot (or DM it) and get an answer, with citations, from the documents of **one Shodh workspace the
-user selects**. Part B (Slack channels as an indexed source) follows after the `shodh.db` write-lock
-change (#95) is merged.
+user selects**. Part B (Slack channels as an indexed source) follows in its own PR, on top of the
+`shodh.db` write gate (#95).
 
 The two priorities that decide most of what follows:
 
@@ -47,11 +47,10 @@ The two priorities that decide most of what follows:
   `is_known_provider` rejects, so the provider commands can never read or delete them.
 - **Daily cap.** Evidence tables count calls per UTC day in `shodh.db` (`research/tables/calls.rs`,
   table `table_calls`, reserve-before-call). Slack answers use **the same UTC day and reset rules**
-  (`utc_day`, `next_utc_midnight`, reserve before the call) but **not the same table**: adding a
-  `shodh.db` migration now would collide with #95, which changes every `shodh.db` writer to go through a
-  write gate (and makes ungated writes fail in debug builds). The Slack count is a small JSON file
-  written with the app's `durable_file` (atomic write, backup). It can move into `shodh.db` in part B,
-  after #95, with the other Slack tables.
+  (`utc_day`, `next_utc_midnight`, reserve before the call) but **not the same table**: part A adds no
+  `shodh.db` access at all (no migration, nothing behind the #95 write gate). The Slack count is a
+  small JSON file written with the app's `durable_file` (atomic write, backup); it moves into
+  `shodh.db` with part B's Slack tables.
 - **WebSocket stack.** `Cargo.lock` has no WebSocket crate. `reqwest 0.11` (used by `shodh-rag`)
   brings `native-tls` + `tokio-native-tls` (SChannel on Windows, Security.framework on macOS, OpenSSL on
   Linux). `tokio-tungstenite 0.28` with its `native-tls` feature reuses exactly those; every other

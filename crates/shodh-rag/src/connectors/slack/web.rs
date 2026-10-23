@@ -183,17 +183,16 @@ impl SlackWeb {
         token: &str,
         args: &[(&str, &str)],
     ) -> Result<(Value, Option<String>), SlackApiError> {
-        let mut form = url::form_urlencoded::Serializer::new(String::new());
-        for (k, v) in args {
-            form.append_pair(k, v);
-        }
-        self.send(
-            method,
-            token,
-            "application/x-www-form-urlencoded",
-            form.finish(),
-        )
-        .await
+        // Built before the await: the serializer is not `Send`.
+        let body = {
+            let mut form = url::form_urlencoded::Serializer::new(String::new());
+            for (k, v) in args {
+                form.append_pair(k, v);
+            }
+            form.finish()
+        };
+        self.send(method, token, "application/x-www-form-urlencoded", body)
+            .await
     }
 
     async fn send(
@@ -344,17 +343,18 @@ impl SlackWeb {
         let mut channels = Vec::new();
         let mut cursor = String::new();
         for _ in 0..MAX_CHANNEL_PAGES {
-            let mut args = vec![
-                ("types", "public_channel,private_channel"),
-                ("exclude_archived", "true"),
-                ("limit", limit.as_str()),
-            ];
-            if !cursor.is_empty() {
-                args.push(("cursor", cursor.as_str()));
-            }
-            let (value, _) = self
-                .call_form("users.conversations", token.expose(), &args)
-                .await?;
+            let (value, _) = {
+                let mut args = vec![
+                    ("types", "public_channel,private_channel"),
+                    ("exclude_archived", "true"),
+                    ("limit", limit.as_str()),
+                ];
+                if !cursor.is_empty() {
+                    args.push(("cursor", cursor.as_str()));
+                }
+                self.call_form("users.conversations", token.expose(), &args)
+                    .await?
+            };
             for c in value
                 .get("channels")
                 .and_then(Value::as_array)

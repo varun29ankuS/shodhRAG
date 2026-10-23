@@ -261,7 +261,7 @@ impl Responder {
 
     /// Makes `call` (a post or an edit), waiting out Slack's rate limits and one transient
     /// failure ([`RetryPolicy`]); never after cancellation.
-    async fn with_retry<T, F, Fut>(&self, what: &'static str, mut call: F) -> Result<T, PostError>
+    async fn retrying<T, F, Fut>(&self, what: &'static str, mut call: F) -> Result<T, PostError>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<T, SlackApiError>>,
@@ -301,7 +301,7 @@ impl Responder {
     }
 
     async fn post(&self, question: &Question, text: &str) -> Result<String, PostError> {
-        self.with_retry("chat.postMessage", || {
+        self.retrying("chat.postMessage", || {
             self.poster
                 .post(&question.channel, question.reply_thread_ts.as_deref(), text)
         })
@@ -321,7 +321,7 @@ impl Responder {
     /// `text` as a new reply in the thread.
     async fn finish(&self, question: &Question, ts: &str, text: &str, outcome: Outcome) -> Outcome {
         let edited = self
-            .with_retry("chat.update", || {
+            .retrying("chat.update", || {
                 self.poster.update(&question.channel, ts, text)
             })
             .await;

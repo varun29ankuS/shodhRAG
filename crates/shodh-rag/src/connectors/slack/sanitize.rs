@@ -177,7 +177,9 @@ fn path_patterns() -> &'static [PathPattern] {
             (format!(r"(?i)\b[a-z]:[\\/]{tail}"), false),
             // Root-relative Windows paths of two parts or more: \Users\…, \Clients\acme\…
             (
-                format!(r#"(?P<pre>^|[^\\\w:])\\{first}[^{NOT_IN_PART}]*\\{tail}"#),
+                // The first part has no spaces and no TeX characters, so `\alpha \beta` or
+                // `\frac{a}{b}\cdot` quoted from a paper stays.
+                format!(r#"(?P<pre>^|[^\\\w:])\\{first}[^\s{NOT_IN_PART}{{}}$^]*\\{tail}"#),
                 true,
             ),
             // Home folders on macOS, Linux and WSL, even alone: /Users, /home/x, /mnt/c/Users/…
@@ -539,6 +541,16 @@ mod tests {
             "Dates 12/03/2024 and km/h stay.",
         ] {
             assert_eq!(sanitize(text, &terms()), text);
+        }
+    }
+
+    #[test]
+    fn tex_quoted_from_a_paper_is_not_a_path() {
+        for text in [
+            r"The loss is \alpha \beta over the batch.",
+            r"Use \frac{a}{b}\cdot x here.",
+        ] {
+            assert_eq!(sanitize(text, &PrivateTerms::default()), text);
         }
     }
 

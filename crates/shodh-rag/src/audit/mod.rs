@@ -20,6 +20,7 @@ mod canonical;
 pub mod payload;
 mod store;
 pub mod tap;
+mod write_gate;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -35,6 +36,7 @@ pub use store::{
     MIN_RETENTION_DAYS,
 };
 pub use tap::RunAuditTap;
+pub use write_gate::{ReadConnection, SharedConnection};
 
 /// The principal of every event recorded by the desktop app.
 pub const LOCAL_OWNER: &str = "local-owner";

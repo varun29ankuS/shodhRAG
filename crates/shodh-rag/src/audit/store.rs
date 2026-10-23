@@ -15,17 +15,15 @@ use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{
-    params, params_from_iter, Connection, ErrorCode, OpenFlags, OptionalExtension,
-    TransactionBehavior,
-};
+use rusqlite::{params, params_from_iter, Connection, ErrorCode, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use super::write_gate::{guard_reads, may_wait_for_audit_writer, write_in_turn, WriteGate};
 use super::{
     canonical_json, AuditError, AuditEventType, AuditKey, AuditQuery, AuditRecord, AuditResult,
-    AuditRow, AuditStats, MonthStats, UnrecordedEvents, VerifyReport, GENESIS_HASH, LOCAL_OWNER,
-    SYSTEM_PRINCIPAL,
+    AuditRow, AuditStats, MonthStats, SharedConnection, UnrecordedEvents, VerifyReport,
+    GENESIS_HASH, LOCAL_OWNER, SYSTEM_PRINCIPAL,
 };
 
 pub const DEFAULT_RETENTION_DAYS: u32 = 365;
@@ -662,11 +660,14 @@ fn open_connection(path: &Path, key: Option<&AuditKey>) -> AuditResult<(Connecti
     Ok((conn, encrypted))
 }
 
-/// Apply pending migrations in one transaction. `IMMEDIATE` takes the write lock before the
-/// version is read, so two components opening the database at once cannot both apply the
-/// same migration.
-fn migrate(conn: &mut Connection) -> AuditResult<()> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+/// Apply pending migrations in one transaction during the database's write turn.
+/// `IMMEDIATE` takes the write lock before the version is read, so two components opening
+/// the database at once (in this process or another) cannot both apply the same migration.
+fn migrate(conn: &Connection, gate: &WriteGate) -> AuditResult<()> {
+    write_in_turn(conn, gate, apply_migrations)
+}
+
+fn apply_migrations(tx: &rusqlite::Transaction<'_>) -> AuditResult<()> {
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,
@@ -692,18 +693,23 @@ fn migrate(conn: &mut Connection) -> AuditResult<()> {
             params![version, format_ts(Utc::now())],
         )?;
     }
-    tx.commit()?;
     Ok(())
 }
 
-/// Open `shodh.db` for a component other than the audit log (the statement store's
-/// dynamics tables): the same key and connection settings, with every migration applied.
-/// The connection is independent of the audit writer; SQLite's WAL and busy timeout
-/// serialise the two writers.
-pub fn open_shared_connection(path: &Path, key: Option<&AuditKey>) -> AuditResult<Connection> {
-    let (mut conn, _) = open_connection(path, key)?;
-    migrate(&mut conn)?;
-    Ok(conn)
+/// Open `shodh.db` for a component other than the audit log (statement dynamics, the
+/// inboxes, research and evidence tables, visuals, workspaces, the model catalog cache):
+/// the same key and connection settings, with every migration applied. Its writes take
+/// the database's in-process write turn ([`SharedConnection::write`]), shared with the
+/// audit writer and every other shared connection to the same file; the busy timeout
+/// only has to cover other processes.
+pub fn open_shared_connection(
+    path: &Path,
+    key: Option<&AuditKey>,
+) -> AuditResult<SharedConnection> {
+    let (conn, _) = open_connection(path, key)?;
+    let gate = WriteGate::for_database(path);
+    migrate(&conn, &gate)?;
+    Ok(SharedConnection::new(conn, gate)?)
 }
 
 fn read_retention(conn: &Connection) -> AuditResult<u32> {
@@ -766,15 +772,18 @@ impl UnrecordedTally {
     }
 }
 
-/// The single writer: owns the write connection and the chain head.
+/// The single writer: owns the write connection and the chain head. Each write takes the
+/// database's in-process write turn.
 struct Writer {
     conn: Connection,
+    gate: Arc<WriteGate>,
     head_id: i64,
     head_hash: String,
 }
 
 impl Writer {
-    fn new(conn: Connection) -> AuditResult<Self> {
+    fn new(conn: Connection, gate: Arc<WriteGate>) -> AuditResult<Self> {
+        guard_reads(&conn)?;
         let head: Option<(i64, String)> = conn
             .query_row(
                 "SELECT id, hash FROM audit_events ORDER BY id DESC LIMIT 1",
@@ -785,6 +794,7 @@ impl Writer {
         let (head_id, head_hash) = head.unwrap_or((0, GENESIS_HASH.to_string()));
         Ok(Self {
             conn,
+            gate,
             head_id,
             head_hash,
         })
@@ -835,9 +845,9 @@ impl Writer {
     }
 
     fn append(&mut self, record: &AuditRecord) -> AuditResult<i64> {
-        let tx = self.conn.transaction()?;
-        let (id, hash) = Self::insert(&tx, self.head_id, &self.head_hash, record, Utc::now())?;
-        tx.commit()?;
+        let (id, hash) = write_in_turn(&self.conn, &self.gate, |tx| {
+            Self::insert(tx, self.head_id, &self.head_hash, record, Utc::now())
+        })?;
         self.head_id = id;
         self.head_hash = hash;
         Ok(id)
@@ -845,20 +855,20 @@ impl Writer {
 
     fn set_retention(&mut self, days: u32) -> AuditResult<()> {
         check_retention(days)?;
-        let old = read_retention(&self.conn)?;
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO audit_settings(key, value) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![RETENTION_KEY, days.to_string()],
-        )?;
-        let record = AuditRecord::new(
-            AuditEventType::SettingsChange,
-            json!({"setting": "audit_retention_days", "old": old, "new": days}),
-        )
-        .principal(LOCAL_OWNER);
-        let (id, hash) = Self::insert(&tx, self.head_id, &self.head_hash, &record, Utc::now())?;
-        tx.commit()?;
+        let (id, hash) = write_in_turn(&self.conn, &self.gate, |tx| {
+            let old = read_retention(tx)?;
+            tx.execute(
+                "INSERT INTO audit_settings(key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![RETENTION_KEY, days.to_string()],
+            )?;
+            let record = AuditRecord::new(
+                AuditEventType::SettingsChange,
+                json!({"setting": "audit_retention_days", "old": old, "new": days}),
+            )
+            .principal(LOCAL_OWNER);
+            Self::insert(tx, self.head_id, &self.head_hash, &record, Utc::now())
+        })?;
         self.head_id = id;
         self.head_hash = hash;
         Ok(())
@@ -884,36 +894,40 @@ impl Writer {
         check_retention(days)?;
         let cutoff = now - chrono::Duration::days(i64::from(days));
         let cutoff_ts = format_ts(cutoff);
-        let tx = self.conn.transaction()?;
-        let last: Option<i64> = tx.query_row(
-            "SELECT MAX(id) FROM audit_events WHERE id < COALESCE( \
-             (SELECT MIN(id) FROM audit_events WHERE ts >= ?1), \
-             (SELECT MAX(id) FROM audit_events) + 1)",
-            [&cutoff_ts],
-            |r| r.get(0),
-        )?;
-        let Some(last_id) = last else {
+        let trimmed = write_in_turn(&self.conn, &self.gate, |tx| {
+            let last: Option<i64> = tx.query_row(
+                "SELECT MAX(id) FROM audit_events WHERE id < COALESCE( \
+                 (SELECT MIN(id) FROM audit_events WHERE ts >= ?1), \
+                 (SELECT MAX(id) FROM audit_events) + 1)",
+                [&cutoff_ts],
+                |r| r.get(0),
+            )?;
+            let Some(last_id) = last else {
+                return Ok::<_, AuditError>(None);
+            };
+            let last_hash: String = tx.query_row(
+                "SELECT hash FROM audit_events WHERE id = ?1",
+                [last_id],
+                |r| r.get(0),
+            )?;
+            let deleted = tx.execute("DELETE FROM audit_events WHERE id <= ?1", [last_id])?;
+            let record = AuditRecord::new(
+                AuditEventType::RetentionCheckpoint,
+                json!({
+                    "retention_days": days,
+                    "cutoff": cutoff_ts,
+                    "deleted": deleted,
+                    "last_deleted_id": last_id,
+                    "last_deleted_hash": last_hash,
+                }),
+            )
+            .principal(SYSTEM_PRINCIPAL);
+            let head = Self::insert(tx, self.head_id, &self.head_hash, &record, now)?;
+            Ok(Some((deleted, head)))
+        })?;
+        let Some((deleted, (id, hash))) = trimmed else {
             return Ok(0);
         };
-        let last_hash: String = tx.query_row(
-            "SELECT hash FROM audit_events WHERE id = ?1",
-            [last_id],
-            |r| r.get(0),
-        )?;
-        let deleted = tx.execute("DELETE FROM audit_events WHERE id <= ?1", [last_id])?;
-        let record = AuditRecord::new(
-            AuditEventType::RetentionCheckpoint,
-            json!({
-                "retention_days": days,
-                "cutoff": cutoff_ts,
-                "deleted": deleted,
-                "last_deleted_id": last_id,
-                "last_deleted_hash": last_hash,
-            }),
-        )
-        .principal(SYSTEM_PRINCIPAL);
-        let (id, hash) = Self::insert(&tx, self.head_id, &self.head_hash, &record, now)?;
-        tx.commit()?;
         self.head_id = id;
         self.head_hash = hash;
         Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
@@ -1106,11 +1120,12 @@ impl AuditLog {
     /// rather than silently writing plaintext.
     pub fn open(path: impl AsRef<Path>, key: Option<&AuditKey>) -> AuditResult<Self> {
         let path = path.as_ref().to_path_buf();
-        let (mut write_conn, encrypted) = open_connection(&path, key)?;
-        migrate(&mut write_conn)?;
+        let (write_conn, encrypted) = open_connection(&path, key)?;
+        let gate = WriteGate::for_database(&path);
+        migrate(&write_conn, &gate)?;
         let (reader, _) = open_connection(&path, key)?;
         reader.execute_batch("PRAGMA query_only = 1;")?;
-        let writer = Writer::new(write_conn)?;
+        let writer = Writer::new(write_conn, gate)?;
         let (tx, rx) = mpsc::channel();
         let unrecorded = Arc::new(UnrecordedTally::default());
         let thread = std::thread::Builder::new()
@@ -1146,7 +1161,11 @@ impl AuditLog {
             .map_err(|_| AuditError::WriterStopped)
     }
 
+    /// Send `make`'s message to the writer and wait for its answer. Refused while this
+    /// thread holds a write turn or a read of a shared connection: the writer needs a turn
+    /// on the same database to answer, so the wait might never end.
     fn request<T>(&self, make: impl FnOnce(Reply<T>) -> WriterMsg) -> AuditResult<T> {
+        may_wait_for_audit_writer()?;
         let (reply, response) = mpsc::channel();
         self.send(make(reply))?;
         response.recv().map_err(|_| AuditError::WriterStopped)?
@@ -1520,6 +1539,12 @@ mod tests {
         Connection::open(dir.path().join("shodh.db")).unwrap()
     }
 
+    /// A writer over `dir`'s database on a plain connection, with the database's gate.
+    fn raw_writer(dir: &tempfile::TempDir) -> Writer {
+        let gate = WriteGate::for_database(&dir.path().join("shodh.db"));
+        Writer::new(raw(dir), gate).unwrap()
+    }
+
     fn question(n: usize) -> AuditRecord {
         AuditRecord::new(
             AuditEventType::Question,
@@ -1576,8 +1601,8 @@ mod tests {
     }
 
     /// A writer over `dir`'s migrated database whose busy timeout is `busy`, and a second
-    /// connection holding the database's write lock, as the statement store's does while
-    /// it commits.
+    /// connection holding the database's write lock without the gate, as a connection of
+    /// another process does while it commits.
     fn writer_behind_a_held_write_lock(
         dir: &tempfile::TempDir,
         busy: Duration,
@@ -1585,7 +1610,8 @@ mod tests {
         drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
         let conn = raw(dir);
         conn.busy_timeout(busy).unwrap();
-        let writer = Writer::new(conn).unwrap();
+        let gate = WriteGate::for_database(&dir.path().join("shodh.db"));
+        let writer = Writer::new(conn, gate).unwrap();
         let holder = raw(dir);
         holder.execute_batch("BEGIN IMMEDIATE").unwrap();
         (writer, holder)
@@ -1742,10 +1768,10 @@ mod tests {
 
     /// Append `record` through `writer` as if the wall clock read `ts`.
     fn append_at(writer: &mut Writer, record: &AuditRecord, ts: DateTime<Utc>) -> i64 {
-        let tx = writer.conn.transaction().unwrap();
-        let (id, hash) =
-            Writer::insert(&tx, writer.head_id, &writer.head_hash, record, ts).unwrap();
-        tx.commit().unwrap();
+        let (id, hash) = write_in_turn(&writer.conn, &writer.gate, |tx| {
+            Writer::insert(tx, writer.head_id, &writer.head_hash, record, ts)
+        })
+        .unwrap();
         writer.head_id = id;
         writer.head_hash = hash;
         id
@@ -1758,7 +1784,7 @@ mod tests {
         drop(AuditLog::open(&path, None).unwrap());
         let now = Utc::now();
         let day = chrono::Duration::days(1);
-        let mut writer = Writer::new(raw(&dir)).unwrap();
+        let mut writer = raw_writer(&dir);
         // Two old events, one recent one, then the clock is set back 39 days
         // for event 4, then it is corrected for event 5.
         let stamps = [
@@ -1827,7 +1853,7 @@ mod tests {
         drop(AuditLog::open(&path, None).unwrap());
         let now = Utc::now();
         let day = chrono::Duration::days(1);
-        let mut writer = Writer::new(raw(&dir)).unwrap();
+        let mut writer = raw_writer(&dir);
         // Out of the window, exactly at the cutoff, then back-dated again.
         for (i, ts) in [now - day * 40, now - day * 30, now - day * 38]
             .iter()
@@ -2116,10 +2142,14 @@ mod tests {
         // The statement store may open the database before the audit log does.
         let shared = open_shared_connection(&path, None).unwrap();
         let version: i64 = shared
+            .read()
+            .unwrap()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, latest_schema_version());
         let tables: i64 = shared
+            .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'                  AND name IN ('statement_dynamics', 'statement_links')",
                 [],
@@ -2128,6 +2158,8 @@ mod tests {
             .unwrap();
         assert_eq!(tables, 2);
         let learning: i64 = shared
+            .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('memory_proposals', 'memory_learn_usage', 'memory_learn_state',
@@ -2138,6 +2170,8 @@ mod tests {
             .unwrap();
         assert_eq!(learning, 4);
         let research: i64 = shared
+            .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('snippet_images', 'result_extractions', 'result_rejections')",
@@ -2147,6 +2181,8 @@ mod tests {
             .unwrap();
         assert_eq!(research, 3);
         let citations: i64 = shared
+            .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('scholarly_cache', 'citation_scans', 'citation_graph_state')",
@@ -2156,6 +2192,8 @@ mod tests {
             .unwrap();
         assert_eq!(citations, 3);
         let workspaces: i64 = shared
+            .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('workspaces', 'workspace_instructions', 'workspace_sources',
@@ -2175,11 +2213,16 @@ mod tests {
         assert!(report.ok, "{report:?}");
         assert_eq!(report.checked, 3);
         // Links are stored once per unordered pair.
-        let reversed = shared.execute(
-            "INSERT INTO statement_links(from_id, to_id, weight, updated_at) VALUES ('b', 'a', 0.5, 'x')",
-            [],
+        let reversed = shared.write(|tx| {
+            tx.execute(
+                "INSERT INTO statement_links(from_id, to_id, weight, updated_at) VALUES ('b', 'a', 0.5, 'x')",
+                [],
+            )
+        });
+        assert!(
+            matches!(&reversed, Err(e) if e.sqlite_error_code() == Some(ErrorCode::ConstraintViolation)),
+            "{reversed:?}"
         );
-        assert!(reversed.is_err());
     }
 
     #[test]

@@ -4644,6 +4644,14 @@ mod tests {
             .start_run("Add a test", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
+        // The conversation's branch first (a first change needs a clean tree).
+        runs_unasked(
+            &inner,
+            &mut out,
+            guard_request("0", "bash", test_command(), None),
+        )
+        .await;
+        ended(&inner, "0");
         feed(
             &inner,
             r#"{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"list_tasks","arguments":{}}"#,

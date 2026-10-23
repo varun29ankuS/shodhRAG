@@ -279,7 +279,8 @@ impl WorkspaceStore {
     /// One workspace.
     pub fn get(&self, id: &str) -> WorkspaceResult<Workspace> {
         let id = check_id(id)?;
-        workspace_in(&self.conn.read()?, id)
+        let conn = self.conn.read()?;
+        workspace_in(&conn, id)
     }
 
     /// One workspace with its current instructions and its sources.

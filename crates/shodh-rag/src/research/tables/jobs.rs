@@ -539,12 +539,14 @@ fn cancel_in(conn: &Connection, job: &FillJob) -> rusqlite::Result<()> {
 impl TableStore {
     /// One fill job.
     pub fn fill_job(&self, id: &str) -> ResearchResult<Option<FillJob>> {
-        Ok(job_in(&self.conn().read()?, id)?)
+        let conn = self.conn().read()?;
+        Ok(job_in(&conn, id)?)
     }
 
     /// The table's active (queued, running or paused) job.
     pub fn active_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
-        Ok(active_in(&self.conn().read()?, table_id)?)
+        let conn = self.conn().read()?;
+        Ok(active_in(&conn, table_id)?)
     }
 
     /// A job with the token of the run that holds it.

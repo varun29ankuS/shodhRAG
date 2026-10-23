@@ -237,3 +237,352 @@ impl Deref for ReadConnection<'_> {
         &self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::sync::Barrier;
+    use std::thread;
+    use std::time::Duration;
+
+    use rusqlite::ErrorCode;
+    use serde_json::json;
+
+    use super::*;
+    use crate::audit::{open_shared_connection, AuditEventType, AuditLog, AuditRecord};
+
+    fn shared(path: &Path) -> SharedConnection {
+        open_shared_connection(path, None).unwrap()
+    }
+
+    /// `conn` gives up at once when SQLite reports the write lock taken, so a write of it
+    /// that meets another writer of the process inside SQLite fails instead of waiting.
+    fn impatient(conn: &SharedConnection) {
+        conn.read().busy_timeout(Duration::ZERO).unwrap();
+    }
+
+    fn put(conn: &SharedConnection, key: &str) -> rusqlite::Result<usize> {
+        conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO audit_settings(key, value) VALUES (?1, 'x')",
+                [key],
+            )
+        })
+    }
+
+    /// Keys of the `audit_settings` rows the tests wrote, in commit order.
+    fn keys_in_order(conn: &SharedConnection) -> Vec<String> {
+        let conn = conn.read();
+        let mut stmt = conn
+            .prepare("SELECT key FROM audit_settings WHERE key LIKE 't-%' ORDER BY rowid")
+            .unwrap();
+        let keys = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<Vec<String>, _>>()
+            .unwrap();
+        keys
+    }
+
+    /// Spins until `n` turns on `gate` are held or queued. No sleeping: the count is exact
+    /// and only grows while the caller holds the current turn.
+    fn wait_for_pending(gate: &WriteGate, n: u64) {
+        while gate.pending() < n {
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn handles_to_one_file_share_a_gate_and_other_files_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let a = shared(&path);
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let b = shared(&dir.path().join("sub").join("..").join("shodh.db"));
+        assert!(Arc::ptr_eq(a.gate(), b.gate()));
+        assert!(Arc::ptr_eq(
+            a.gate(),
+            &WriteGate::for_database(&path).unwrap()
+        ));
+
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = shared(&other_dir.path().join("shodh.db"));
+        assert!(!Arc::ptr_eq(a.gate(), other.gate()));
+
+        // A turn held on one file does not hold up a write to another.
+        let (entered, holding) = mpsc::channel();
+        let (release, released) = mpsc::channel::<()>();
+        thread::scope(|s| {
+            let a = &a;
+            s.spawn(move || {
+                a.write(|tx| {
+                    tx.execute(
+                        "INSERT INTO audit_settings(key, value) VALUES ('t-a', 'x')",
+                        [],
+                    )?;
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                    Ok::<_, rusqlite::Error>(())
+                })
+                .unwrap();
+            });
+            holding.recv().unwrap();
+            assert_eq!(put(&other, "t-other").unwrap(), 1);
+            release.send(()).unwrap();
+        });
+        assert_eq!(keys_in_order(&b), ["t-a"]);
+    }
+
+    #[test]
+    fn without_the_gate_a_second_writer_of_the_process_is_refused_busy() {
+        // What the gate removes: two connections of one process, the second with no busy
+        // budget left, meet inside SQLite and the second fails with SQLITE_BUSY.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        drop(shared(&path));
+        let holder = Connection::open(&path).unwrap();
+        let victim = Connection::open(&path).unwrap();
+        victim.busy_timeout(Duration::ZERO).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let refused = victim
+            .execute(
+                "INSERT INTO audit_settings(key, value) VALUES ('t-v', 'x')",
+                [],
+            )
+            .unwrap_err();
+        assert_eq!(refused.sqlite_error_code(), Some(ErrorCode::DatabaseBusy));
+        holder.execute_batch("COMMIT").unwrap();
+    }
+
+    #[test]
+    fn with_the_gate_a_second_writer_waits_for_its_turn_instead_of_failing_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let holder = shared(&path);
+        let victim = shared(&path);
+        impatient(&victim);
+        let gate = Arc::clone(holder.gate());
+        let (entered, holding) = mpsc::channel();
+        thread::scope(|s| {
+            let (holder, gate) = (&holder, &gate);
+            s.spawn(move || {
+                holder
+                    .write(|tx| {
+                        tx.execute(
+                            "INSERT INTO audit_settings(key, value) VALUES ('t-h', 'x')",
+                            [],
+                        )?;
+                        entered.send(()).unwrap();
+                        // Commit only once the victim is queued behind this turn, so its
+                        // write is asked for while SQLite's write lock is held here.
+                        wait_for_pending(gate, 2);
+                        Ok::<_, rusqlite::Error>(())
+                    })
+                    .unwrap();
+            });
+            holding.recv().unwrap();
+            assert_eq!(put(&victim, "t-v").unwrap(), 1);
+        });
+        assert_eq!(keys_in_order(&victim), ["t-h", "t-v"]);
+    }
+
+    #[test]
+    fn a_writer_that_asks_again_at_once_goes_behind_the_one_waiting() {
+        // The starvation case: a thread that commits and at once writes again must not
+        // overtake a writer that was already waiting.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let busy = shared(&path);
+        let waiting = shared(&path);
+        let gate = Arc::clone(busy.gate());
+        let (entered, holding) = mpsc::channel();
+        thread::scope(|s| {
+            let (busy, gate) = (&busy, &gate);
+            s.spawn(move || {
+                busy.write(|tx| {
+                    tx.execute(
+                        "INSERT INTO audit_settings(key, value) VALUES ('t-1', 'x')",
+                        [],
+                    )?;
+                    entered.send(()).unwrap();
+                    wait_for_pending(gate, 2);
+                    Ok::<_, rusqlite::Error>(())
+                })
+                .unwrap();
+                put(busy, "t-3").unwrap();
+            });
+            holding.recv().unwrap();
+            put(&waiting, "t-2").unwrap();
+        });
+        assert_eq!(keys_in_order(&busy), ["t-1", "t-2", "t-3"]);
+    }
+
+    #[test]
+    fn back_to_back_commits_and_the_audit_writer_never_starve_a_writer_without_busy_budget() {
+        // The shape of the CI failure: one thread commits fsynced transactions back to back
+        // while the audit writer and another component write the same file. The victim has
+        // no busy budget at all, so it only succeeds because writers of the process never
+        // meet inside SQLite.
+        const HAMMER: usize = 200;
+        const VICTIM: usize = 40;
+        const EVENTS: usize = 40;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let log = AuditLog::open(&path, None).unwrap();
+        let hammer = shared(&path);
+        let victim = shared(&path);
+        impatient(&victim);
+        let start = Barrier::new(3);
+        thread::scope(|s| {
+            s.spawn(|| {
+                start.wait();
+                for i in 0..HAMMER {
+                    put(&hammer, &format!("t-hammer-{i}")).unwrap();
+                }
+            });
+            s.spawn(|| {
+                start.wait();
+                for i in 0..EVENTS {
+                    log.submit(AuditRecord::new(
+                        AuditEventType::Question,
+                        json!({ "text": format!("question {i}") }),
+                    ));
+                }
+            });
+            start.wait();
+            for i in 0..VICTIM {
+                if let Err(e) = put(&victim, &format!("t-victim-{i}")) {
+                    panic!("write {i} of the victim failed: {e}");
+                }
+            }
+        });
+        // A waited-for append is a barrier: the writer has handled every earlier submit.
+        log.append(AuditRecord::new(AuditEventType::Question, json!({})))
+            .unwrap();
+        assert_eq!(log.unrecorded(), None);
+        assert_eq!(keys_in_order(&victim).len(), HAMMER + VICTIM);
+        let events: i64 = victim
+            .read()
+            .query_row("SELECT count(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(events, EVENTS as i64 + 1);
+    }
+
+    #[test]
+    fn a_failed_or_panicking_write_rolls_back_and_passes_the_turn_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let conn = shared(&path);
+        let failed = conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO audit_settings(key, value) VALUES ('t-gone', 'x')",
+                [],
+            )?;
+            Err::<(), _>(rusqlite::Error::InvalidQuery)
+        });
+        assert!(matches!(failed, Err(rusqlite::Error::InvalidQuery)));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            conn.write(|tx| -> rusqlite::Result<()> {
+                tx.execute(
+                    "INSERT INTO audit_settings(key, value) VALUES ('t-gone-too', 'x')",
+                    [],
+                )?;
+                panic!("the closure panics mid-write");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert!(!holding_write_turn());
+        assert_eq!(conn.gate().pending(), 0);
+        // Another handle gets the next turn at once, and neither write was kept.
+        assert_eq!(put(&shared(&path), "t-after").unwrap(), 1);
+        assert_eq!(keys_in_order(&conn), ["t-after"]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_write_outside_a_turn_is_refused_in_debug_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = shared(&dir.path().join("shodh.db"));
+        let refused = conn
+            .read()
+            .execute(
+                "INSERT INTO audit_settings(key, value) VALUES ('t-x', 'x')",
+                [],
+            )
+            .unwrap_err();
+        assert_eq!(refused.sqlite_error_code(), Some(ErrorCode::ReadOnly));
+        // A turn lifts it for its own transaction only.
+        assert_eq!(put(&conn, "t-y").unwrap(), 1);
+        let after = conn
+            .read()
+            .execute("DELETE FROM audit_settings WHERE key = 't-y'", [])
+            .unwrap_err();
+        assert_eq!(after.sqlite_error_code(), Some(ErrorCode::ReadOnly));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "inside another write")]
+    fn a_write_inside_a_write_panics_instead_of_deadlocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let outer = shared(&path);
+        let inner = shared(&path);
+        let _ = outer.write(|_| put(&inner, "t-nested"));
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "read through another connection inside a write")]
+    fn a_read_of_another_connection_inside_a_write_panics_instead_of_deadlocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let outer = shared(&path);
+        let other = shared(&path);
+        let _ = outer.write(|_| {
+            other
+                .read()
+                .query_row("SELECT count(*) FROM audit_settings", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "use AuditLog::submit there")]
+    fn awaiting_the_audit_writer_inside_a_write_panics_instead_of_deadlocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let log = AuditLog::open(&path, None).unwrap();
+        let conn = shared(&path);
+        let _ = conn.write(|_| {
+            log.append(AuditRecord::new(AuditEventType::Question, json!({})))
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        });
+    }
+
+    #[test]
+    fn a_queued_audit_event_inside_a_write_is_recorded_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shodh.db");
+        let log = AuditLog::open(&path, None).unwrap();
+        let conn = shared(&path);
+        conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO audit_settings(key, value) VALUES ('t-w', 'x')",
+                [],
+            )?;
+            log.submit(AuditRecord::new(AuditEventType::Question, json!({})));
+            Ok::<_, rusqlite::Error>(())
+        })
+        .unwrap();
+        assert_eq!(
+            log.append(AuditRecord::new(AuditEventType::Question, json!({})))
+                .unwrap(),
+            2
+        );
+        assert_eq!(log.unrecorded(), None);
+        assert_eq!(keys_in_order(&conn), ["t-w"]);
+    }
+}

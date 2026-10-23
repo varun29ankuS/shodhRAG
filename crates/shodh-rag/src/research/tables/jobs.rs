@@ -30,7 +30,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use rusqlite::types::Type;
-use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
 use super::calls::{next_utc_midnight, utc_day, CallCounter, Clock, DailyCap, SystemClock};
@@ -171,7 +171,7 @@ pub enum PauseReason {
     Unreachable,
     /// Papers in a row failed; waits for the user.
     Failing,
-    /// The database stayed locked by another writer; resumes in a minute.
+    /// The database stayed locked by another process's writer; resumes in a minute.
     Busy,
     /// No usable model (none set, Local-only mode against a cloud model, no API key, or a
     /// model whose reasoning cannot be bounded); `last_error` holds which. Waits for the
@@ -539,17 +539,17 @@ fn cancel_in(conn: &Connection, job: &FillJob) -> rusqlite::Result<()> {
 impl TableStore {
     /// One fill job.
     pub fn fill_job(&self, id: &str) -> ResearchResult<Option<FillJob>> {
-        Ok(job_in(&self.lock(), id)?)
+        Ok(job_in(&self.conn().read(), id)?)
     }
 
     /// The table's active (queued, running or paused) job.
     pub fn active_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
-        Ok(active_in(&self.lock(), table_id)?)
+        Ok(active_in(&self.conn().read(), table_id)?)
     }
 
     /// A job with the token of the run that holds it.
     fn fill_job_owned(&self, id: &str) -> ResearchResult<Option<(FillJob, Option<String>)>> {
-        let conn = self.lock();
+        let conn = self.conn().read();
         let Some(job) = job_in(&conn, id)? else {
             return Ok(None);
         };
@@ -563,11 +563,13 @@ impl TableStore {
     /// queued ones stay queued; a cancel asked meanwhile is finished by the next claim.
     /// Returns the jobs given back.
     pub fn release_fill_jobs_held_by(&self, token: &str) -> ResearchResult<usize> {
-        Ok(self.lock().execute(
-            "UPDATE table_fill_job SET state = 'queued', run_token = NULL, heartbeat_at = NULL
-              WHERE state = 'running' AND run_token = ?1",
-            params![token],
-        )?)
+        Ok(self.conn().write(|tx| {
+            tx.execute(
+                "UPDATE table_fill_job SET state = 'queued', run_token = NULL, heartbeat_at = NULL
+                  WHERE state = 'running' AND run_token = ?1",
+                params![token],
+            )
+        })?)
     }
 
     /// Pauses a job that cannot get a model (`model_unavailable`, `code` as its error,
@@ -582,35 +584,34 @@ impl TableStore {
         cutoff: &str,
         code: &str,
     ) -> ResearchResult<Option<FillJob>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(job) = job_in(&tx, id)? else {
-            return Ok(None);
-        };
-        let free = match job.state {
-            JobState::Queued | JobState::Paused => true,
-            JobState::Running => {
-                let owner = owner_in(&tx, id)?;
-                run_is_gone(&job, owner.as_deref(), token, live_here, cutoff)
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let Some(job) = job_in(tx, id)? else {
+                return Ok(None);
+            };
+            let free = match job.state {
+                JobState::Queued | JobState::Paused => true,
+                JobState::Running => {
+                    let owner = owner_in(tx, id)?;
+                    run_is_gone(&job, owner.as_deref(), token, live_here, cutoff)
+                }
+                JobState::Done | JobState::Cancelled | JobState::Failed => false,
+            };
+            if free {
+                if job.cancel_requested {
+                    cancel_in(tx, &job)?;
+                } else {
+                    tx.execute(
+                        "UPDATE table_fill_job SET state = 'paused',
+                           pause_reason = 'model_unavailable', next_attempt_at = NULL,
+                           last_error = ?2, run_token = NULL, heartbeat_at = NULL
+                         WHERE id = ?1",
+                        params![id, code],
+                    )?;
+                }
             }
-            JobState::Done | JobState::Cancelled | JobState::Failed => false,
-        };
-        if free {
-            if job.cancel_requested {
-                cancel_in(&tx, &job)?;
-            } else {
-                tx.execute(
-                    "UPDATE table_fill_job SET state = 'paused',
-                       pause_reason = 'model_unavailable', next_attempt_at = NULL,
-                       last_error = ?2, run_token = NULL, heartbeat_at = NULL
-                     WHERE id = ?1",
-                    params![id, code],
-                )?;
-            }
-        }
-        let job = job_in(&tx, id)?;
-        tx.commit()?;
-        Ok(job)
+            let job = job_in(tx, id)?;
+            Ok(job)
+        })
     }
 
     /// Makes the jobs paused for `reason` due at `now` (the cap was raised; a model can be
@@ -620,28 +621,27 @@ impl TableStore {
         reason: PauseReason,
         now: &str,
     ) -> ResearchResult<Vec<FillJob>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let jobs: Vec<FillJob> = {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT {JOB_COLS} FROM table_fill_job
-                  WHERE state = 'paused' AND pause_reason = ?1 ORDER BY created_at, id"
-            ))?;
-            let rows = stmt.query_map(params![reason.as_str()], job_from)?;
-            rows.collect::<Result<_, _>>()?
-        };
-        tx.execute(
-            "UPDATE table_fill_job SET next_attempt_at = ?2
-              WHERE state = 'paused' AND pause_reason = ?1",
-            params![reason.as_str(), now],
-        )?;
-        tx.commit()?;
-        Ok(jobs)
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let jobs: Vec<FillJob> = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {JOB_COLS} FROM table_fill_job
+                      WHERE state = 'paused' AND pause_reason = ?1 ORDER BY created_at, id"
+                ))?;
+                let rows = stmt.query_map(params![reason.as_str()], job_from)?;
+                rows.collect::<Result<_, _>>()?
+            };
+            tx.execute(
+                "UPDATE table_fill_job SET next_attempt_at = ?2
+                  WHERE state = 'paused' AND pause_reason = ?1",
+                params![reason.as_str(), now],
+            )?;
+            Ok(jobs)
+        })
     }
 
     /// The jobs paused for `reason`, oldest first.
     pub fn paused_fill_jobs(&self, reason: PauseReason) -> ResearchResult<Vec<FillJob>> {
-        let conn = self.lock();
+        let conn = self.conn().read();
         let mut stmt = conn.prepare(&format!(
             "SELECT {JOB_COLS} FROM table_fill_job
               WHERE state = 'paused' AND pause_reason = ?1 ORDER BY created_at, id"
@@ -653,7 +653,8 @@ impl TableStore {
     /// The table's newest job, active or finished: how its last fill ended.
     pub fn latest_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
         Ok(self
-            .lock()
+            .conn()
+            .read()
             .query_row(
                 &format!(
                     "SELECT {JOB_COLS} FROM table_fill_job WHERE table_id = ?1
@@ -674,29 +675,28 @@ impl TableStore {
     ) -> ResearchResult<FillJob> {
         let planned = i64::try_from(planned_calls)
             .map_err(|_| ResearchError::Invalid(format!("{planned_calls} calls is too many.")))?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM evidence_table WHERE id = ?1)",
-            params![table_id],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            return Err(ResearchError::NotFound(format!("No table {table_id}.")));
-        }
-        if let Some(job) = active_in(&tx, table_id)? {
-            return Ok(job);
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        tx.execute(
-            "INSERT INTO table_fill_job(id, table_id, created_at, state, planned_calls, done_calls)
-             VALUES (?1, ?2, ?3, 'queued', ?4, 0)",
-            params![id, table_id, now, planned],
-        )?;
-        let job = job_in(&tx, &id)?
-            .ok_or_else(|| ResearchError::NotFound(format!("No fill job {id}.")))?;
-        tx.commit()?;
-        Ok(job)
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM evidence_table WHERE id = ?1)",
+                params![table_id],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err(ResearchError::NotFound(format!("No table {table_id}.")));
+            }
+            if let Some(job) = active_in(tx, table_id)? {
+                return Ok(job);
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO table_fill_job(id, table_id, created_at, state, planned_calls, done_calls)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, 0)",
+                params![id, table_id, now, planned],
+            )?;
+            let job = job_in(tx, &id)?
+                .ok_or_else(|| ResearchError::NotFound(format!("No fill job {id}.")))?;
+            Ok(job)
+        })
     }
 
     /// Claims a job for the run holding `token` and queues its table's cells, in one
@@ -711,64 +711,66 @@ impl TableStore {
         now: &str,
         cutoff: &str,
     ) -> ResearchResult<Claim> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(job) = job_in(&tx, id)? else {
-            return Ok(Claim::Refused(None));
-        };
-        let owner = owner_in(&tx, id)?;
-        let claimable = match job.state {
-            JobState::Queued | JobState::Paused => true,
-            JobState::Running => run_is_gone(&job, owner.as_deref(), token, false, cutoff),
-            JobState::Done | JobState::Cancelled | JobState::Failed => false,
-        };
-        if !claimable {
-            return Ok(Claim::Refused(Some(job)));
-        }
-        if job.cancel_requested {
-            cancel_in(&tx, &job)?;
-            let cancelled = job_in(&tx, id)?;
-            tx.commit()?;
-            return Ok(Claim::Refused(cancelled));
-        }
-        let claimed = tx.execute(
-            "UPDATE table_fill_job SET state = 'running', run_token = ?2, heartbeat_at = ?3,
-               next_attempt_at = NULL, pause_reason = NULL, last_error = NULL
-             WHERE id = ?1 AND cancel_requested = 0
-               AND (state IN ('queued', 'paused')
-                    OR (state = 'running'
-                        AND (run_token IS NULL OR run_token = ?2
-                             OR heartbeat_at IS NULL OR heartbeat_at <= ?4)))",
-            params![id, token, now, cutoff],
-        )?;
-        if claimed == 0 {
-            return Ok(Claim::Refused(Some(job)));
-        }
-        queue_in(&tx, &job.table_id)?;
-        let job = job_in(&tx, id)?
-            .ok_or_else(|| ResearchError::NotFound(format!("No fill job {id}.")))?;
-        tx.commit()?;
-        Ok(Claim::Claimed(job))
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let Some(job) = job_in(tx, id)? else {
+                return Ok(Claim::Refused(None));
+            };
+            let owner = owner_in(tx, id)?;
+            let claimable = match job.state {
+                JobState::Queued | JobState::Paused => true,
+                JobState::Running => run_is_gone(&job, owner.as_deref(), token, false, cutoff),
+                JobState::Done | JobState::Cancelled | JobState::Failed => false,
+            };
+            if !claimable {
+                return Ok(Claim::Refused(Some(job)));
+            }
+            if job.cancel_requested {
+                cancel_in(tx, &job)?;
+                let cancelled = job_in(tx, id)?;
+                return Ok(Claim::Refused(cancelled));
+            }
+            let claimed = tx.execute(
+                "UPDATE table_fill_job SET state = 'running', run_token = ?2, heartbeat_at = ?3,
+                   next_attempt_at = NULL, pause_reason = NULL, last_error = NULL
+                 WHERE id = ?1 AND cancel_requested = 0
+                   AND (state IN ('queued', 'paused')
+                        OR (state = 'running'
+                            AND (run_token IS NULL OR run_token = ?2
+                                 OR heartbeat_at IS NULL OR heartbeat_at <= ?4)))",
+                params![id, token, now, cutoff],
+            )?;
+            if claimed == 0 {
+                return Ok(Claim::Refused(Some(job)));
+            }
+            queue_in(tx, &job.table_id)?;
+            let job = job_in(tx, id)?
+                .ok_or_else(|| ResearchError::NotFound(format!("No fill job {id}.")))?;
+            Ok(Claim::Claimed(job))
+        })
     }
 
     /// Renews the run's lease. True while the run holding `token` owns the job and no
     /// cancel is pending.
     pub(super) fn beat_fill_job(&self, id: &str, token: &str, now: &str) -> ResearchResult<bool> {
-        let renewed = self.lock().execute(
-            "UPDATE table_fill_job SET heartbeat_at = ?3
-              WHERE id = ?1 AND state = 'running' AND run_token = ?2 AND cancel_requested = 0",
-            params![id, token, now],
-        )?;
+        let renewed = self.conn().write(|tx| {
+            tx.execute(
+                "UPDATE table_fill_job SET heartbeat_at = ?3
+                  WHERE id = ?1 AND state = 'running' AND run_token = ?2 AND cancel_requested = 0",
+                params![id, token, now],
+            )
+        })?;
         Ok(renewed > 0)
     }
 
     /// Adds one call to the job's progress.
     pub(super) fn count_fill_call(&self, id: &str, token: &str) -> ResearchResult<()> {
-        self.lock().execute(
-            "UPDATE table_fill_job SET done_calls = done_calls + 1
-              WHERE id = ?1 AND state = 'running' AND run_token = ?2",
-            params![id, token],
-        )?;
+        self.conn().write(|tx| {
+            tx.execute(
+                "UPDATE table_fill_job SET done_calls = done_calls + 1
+                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+                params![id, token],
+            )
+        })?;
         Ok(())
     }
 
@@ -780,11 +782,13 @@ impl TableStore {
         backoff_step: usize,
         failure_streak: usize,
     ) -> ResearchResult<()> {
-        self.lock().execute(
-            "UPDATE table_fill_job SET backoff_step = ?3, failure_streak = ?4
-              WHERE id = ?1 AND state = 'running' AND run_token = ?2",
-            params![id, token, as_sql(backoff_step), as_sql(failure_streak)],
-        )?;
+        self.conn().write(|tx| {
+            tx.execute(
+                "UPDATE table_fill_job SET backoff_step = ?3, failure_streak = ?4
+                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+                params![id, token, as_sql(backoff_step), as_sql(failure_streak)],
+            )
+        })?;
         Ok(())
     }
 
@@ -798,68 +802,69 @@ impl TableStore {
         token: &str,
         end: &End,
     ) -> ResearchResult<Option<End>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let owned: Option<(String, i64)> = tx
-            .query_row(
-                "SELECT table_id, cancel_requested FROM table_fill_job
-                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
-                params![id, token],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let Some((table_id, cancel)) = owned else {
-            return Ok(None);
-        };
-        let end = match end {
-            End::Paused { .. } if cancel != 0 => End::Cancelled,
-            other => other.clone(),
-        };
-        match &end {
-            End::Done => tx.execute(
-                "UPDATE table_fill_job SET state = 'done', run_token = NULL,
-                   next_attempt_at = NULL, pause_reason = NULL, last_error = NULL
-                 WHERE id = ?1",
-                params![id],
-            )?,
-            End::Cancelled => tx.execute(
-                "UPDATE table_fill_job SET state = 'cancelled', run_token = NULL,
-                   next_attempt_at = NULL, pause_reason = NULL
-                 WHERE id = ?1",
-                params![id],
-            )?,
-            End::Failed(error) => tx.execute(
-                "UPDATE table_fill_job SET state = 'failed', run_token = NULL,
-                   next_attempt_at = NULL, pause_reason = NULL, last_error = ?2
-                 WHERE id = ?1",
-                params![id, error],
-            )?,
-            End::Paused {
-                reason,
-                until,
-                error,
-            } => tx.execute(
-                "UPDATE table_fill_job SET state = 'paused', run_token = NULL,
-                   next_attempt_at = ?2, pause_reason = ?3, last_error = ?4
-                 WHERE id = ?1",
-                params![id, (*until).map(timestamp), reason.as_str(), error],
-            )?,
-        };
-        if !matches!(end, End::Paused { .. }) {
-            unqueue_in(&tx, &table_id)?;
-        }
-        tx.commit()?;
-        Ok(Some(end))
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let owned: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT table_id, cancel_requested FROM table_fill_job
+                      WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+                    params![id, token],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((table_id, cancel)) = owned else {
+                return Ok(None);
+            };
+            let end = match end {
+                End::Paused { .. } if cancel != 0 => End::Cancelled,
+                other => other.clone(),
+            };
+            match &end {
+                End::Done => tx.execute(
+                    "UPDATE table_fill_job SET state = 'done', run_token = NULL,
+                       next_attempt_at = NULL, pause_reason = NULL, last_error = NULL
+                     WHERE id = ?1",
+                    params![id],
+                )?,
+                End::Cancelled => tx.execute(
+                    "UPDATE table_fill_job SET state = 'cancelled', run_token = NULL,
+                       next_attempt_at = NULL, pause_reason = NULL
+                     WHERE id = ?1",
+                    params![id],
+                )?,
+                End::Failed(error) => tx.execute(
+                    "UPDATE table_fill_job SET state = 'failed', run_token = NULL,
+                       next_attempt_at = NULL, pause_reason = NULL, last_error = ?2
+                     WHERE id = ?1",
+                    params![id, error],
+                )?,
+                End::Paused {
+                    reason,
+                    until,
+                    error,
+                } => tx.execute(
+                    "UPDATE table_fill_job SET state = 'paused', run_token = NULL,
+                       next_attempt_at = ?2, pause_reason = ?3, last_error = ?4
+                     WHERE id = ?1",
+                    params![id, (*until).map(timestamp), reason.as_str(), error],
+                )?,
+            };
+            if !matches!(end, End::Paused { .. }) {
+                unqueue_in(tx, &table_id)?;
+            }
+            Ok(Some(end))
+        })
     }
 
     /// Gives back a job whose run ended without writing its end (an error in the last
     /// write): it is queued again, with its queued cells, and the next resume takes it up.
     pub(super) fn release_fill_job(&self, id: &str, token: &str) -> ResearchResult<bool> {
-        let released = self.lock().execute(
-            "UPDATE table_fill_job SET state = 'queued', run_token = NULL
-              WHERE id = ?1 AND state = 'running' AND run_token = ?2",
-            params![id, token],
-        )?;
+        let released = self.conn().write(|tx| {
+            tx.execute(
+                "UPDATE table_fill_job SET state = 'queued', run_token = NULL
+                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+                params![id, token],
+            )
+        })?;
         Ok(released > 0)
     }
 
@@ -871,38 +876,37 @@ impl TableStore {
         id: &str,
         token: &str,
     ) -> ResearchResult<Option<FillJob>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let owned = tx
-            .query_row(
-                "SELECT table_id, panics FROM table_fill_job
-                  WHERE id = ?1 AND state = 'running' AND run_token = ?2",
-                params![id, token],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-            )
-            .optional()?;
-        let Some((table_id, panics)) = owned else {
-            return Ok(job_in(&tx, id)?);
-        };
-        let panics = as_count(panics) + 1;
-        if panics >= MAX_PANICS {
-            tx.execute(
-                "UPDATE table_fill_job SET state = 'failed', run_token = NULL, panics = ?2,
-                   next_attempt_at = NULL, pause_reason = NULL, last_error = ?3
-                 WHERE id = ?1",
-                params![id, as_sql(panics), FILL_PANICKED],
-            )?;
-            unqueue_in(&tx, &table_id)?;
-        } else {
-            tx.execute(
-                "UPDATE table_fill_job SET state = 'queued', run_token = NULL, panics = ?2
-                 WHERE id = ?1",
-                params![id, as_sql(panics)],
-            )?;
-        }
-        let job = job_in(&tx, id)?;
-        tx.commit()?;
-        Ok(job)
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let owned = tx
+                .query_row(
+                    "SELECT table_id, panics FROM table_fill_job
+                      WHERE id = ?1 AND state = 'running' AND run_token = ?2",
+                    params![id, token],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .optional()?;
+            let Some((table_id, panics)) = owned else {
+                return Ok(job_in(tx, id)?);
+            };
+            let panics = as_count(panics) + 1;
+            if panics >= MAX_PANICS {
+                tx.execute(
+                    "UPDATE table_fill_job SET state = 'failed', run_token = NULL, panics = ?2,
+                       next_attempt_at = NULL, pause_reason = NULL, last_error = ?3
+                     WHERE id = ?1",
+                    params![id, as_sql(panics), FILL_PANICKED],
+                )?;
+                unqueue_in(tx, &table_id)?;
+            } else {
+                tx.execute(
+                    "UPDATE table_fill_job SET state = 'queued', run_token = NULL, panics = ?2
+                     WHERE id = ?1",
+                    params![id, as_sql(panics)],
+                )?;
+            }
+            let job = job_in(tx, id)?;
+            Ok(job)
+        })
     }
 
     /// Cancels a job. A queued or paused job is cancelled at once and its table's queued
@@ -918,29 +922,28 @@ impl TableStore {
         live_here: bool,
         cutoff: &str,
     ) -> ResearchResult<Option<FillJob>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let Some(job) = job_in(&tx, id)? else {
-            return Ok(None);
-        };
-        match job.state {
-            JobState::Queued | JobState::Paused => cancel_in(&tx, &job)?,
-            JobState::Running => {
-                let owner = owner_in(&tx, id)?;
-                if run_is_gone(&job, owner.as_deref(), token, live_here, cutoff) {
-                    cancel_in(&tx, &job)?;
-                } else {
-                    tx.execute(
-                        "UPDATE table_fill_job SET cancel_requested = 1 WHERE id = ?1",
-                        params![id],
-                    )?;
+        self.conn().write(|tx| -> ResearchResult<_> {
+            let Some(job) = job_in(tx, id)? else {
+                return Ok(None);
+            };
+            match job.state {
+                JobState::Queued | JobState::Paused => cancel_in(tx, &job)?,
+                JobState::Running => {
+                    let owner = owner_in(tx, id)?;
+                    if run_is_gone(&job, owner.as_deref(), token, live_here, cutoff) {
+                        cancel_in(tx, &job)?;
+                    } else {
+                        tx.execute(
+                            "UPDATE table_fill_job SET cancel_requested = 1 WHERE id = ?1",
+                            params![id],
+                        )?;
+                    }
                 }
+                JobState::Done | JobState::Cancelled | JobState::Failed => {}
             }
-            JobState::Done | JobState::Cancelled | JobState::Failed => {}
-        }
-        let job = job_in(&tx, id)?;
-        tx.commit()?;
-        Ok(job)
+            let job = job_in(tx, id)?;
+            Ok(job)
+        })
     }
 
     /// The jobs a runner holding `token` could run now: queued ones, paused ones that are
@@ -953,7 +956,7 @@ impl TableStore {
         now: &str,
         cutoff: &str,
     ) -> ResearchResult<Vec<(String, bool)>> {
-        let conn = self.lock();
+        let conn = self.conn().read();
         let mut stmt = conn.prepare(
             "SELECT id, COALESCE(state = 'running' AND run_token = ?1, 0) FROM table_fill_job
               WHERE state = 'queued'

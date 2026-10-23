@@ -1,11 +1,10 @@
 //! SQLite storage of generated visuals in the shared `shodh.db`.
 
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use super::{
     clean_note, clean_title, content_hash, fts_query, validate_params, validate_source,
@@ -14,7 +13,7 @@ use super::{
     VisualVersionInfo, DEFAULT_LIST_LIMIT, MAX_CAPTURE_BLOCKS, MAX_INSTRUCTION_CHARS,
     MAX_LIST_CONVERSATIONS, MAX_LIST_LIMIT,
 };
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 
 /// Key of the one-time backfill of conversations saved before the gallery existed.
 const BACKFILL_KEY: &str = "backfill_v1";
@@ -28,11 +27,12 @@ const COLUMNS: &str = "id, root_id, parent_id, version, conversation_id, message
 
 /// The visuals gallery, in `shodh.db`.
 ///
-/// Read-then-write transactions are `IMMEDIATE`: the audit writer commits to the same
-/// database, and a deferred transaction upgraded after its commit would fail with
+/// Every write is one `IMMEDIATE` transaction during the database's in-process write turn
+/// ([`SharedConnection::write`]): the audit writer commits to the same database, and a
+/// deferred transaction upgraded after its commit would fail with
 /// `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry.
 pub struct VisualStore {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for VisualStore {
@@ -135,14 +135,9 @@ impl VisualStore {
     /// Opens `shodh.db` at `path` with the audit database key (if the database is
     /// encrypted), applying any pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> VisualResult<Self> {
-        let conn = open_shared_connection(path, key)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Records the visual blocks of one answer. Blocks this origin already has (same kind
@@ -163,44 +158,43 @@ impl VisualStore {
         let message_id = opt_id(origin.message_id.as_deref())?;
         let thread_id = opt_id(origin.thread_id.as_deref())?;
         let turn_id = opt_id(origin.turn_id.as_deref())?;
-        let mut report = CaptureReport::default();
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let at = now();
-        for (index, block) in blocks.iter().enumerate() {
-            let prepared = validate_source(block.kind, &block.source)
-                .and_then(|source| Ok((source, validate_params(block.params.as_ref())?)));
-            let (source, params) = match prepared {
-                Ok(v) => v,
-                Err(e) => {
-                    report.skipped.push(SkippedBlock {
-                        index,
-                        reason: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-            let hash = content_hash(block.kind, &source);
-            let existing: Option<String> = tx
-                .query_row(
-                    "SELECT id FROM generated_visuals
+        self.conn.write(|tx| {
+            let mut report = CaptureReport::default();
+            for (index, block) in blocks.iter().enumerate() {
+                let prepared = validate_source(block.kind, &block.source)
+                    .and_then(|source| Ok((source, validate_params(block.params.as_ref())?)));
+                let (source, params) = match prepared {
+                    Ok(v) => v,
+                    Err(e) => {
+                        report.skipped.push(SkippedBlock {
+                            index,
+                            reason: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                let hash = content_hash(block.kind, &source);
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM generated_visuals
                      WHERE parent_id IS NULL AND conversation_id = ?1
                        AND IFNULL(message_id, '') = IFNULL(?2, '')
                        AND IFNULL(thread_id, '') = IFNULL(?3, '')
                        AND IFNULL(turn_id, '') = IFNULL(?4, '')
                        AND content_hash = ?5",
-                    params![conversation_id, message_id, thread_id, turn_id, hash],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if let Some(id) = existing {
-                if !report.existing.contains(&id) {
-                    report.existing.push(id);
+                        params![conversation_id, message_id, thread_id, turn_id, hash],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(id) = existing {
+                    if !report.existing.contains(&id) {
+                        report.existing.push(id);
+                    }
+                    continue;
                 }
-                continue;
-            }
-            let id = uuid::Uuid::new_v4().to_string();
-            tx.execute(
+                let id = uuid::Uuid::new_v4().to_string();
+                tx.execute(
                 "INSERT INTO generated_visuals(id, root_id, parent_id, version, conversation_id,
                     message_id, thread_id, turn_id, kind, title, source, params_json, content_hash,
                     pinned, note, instruction, created_by, created_at, updated_at)
@@ -220,10 +214,10 @@ impl VisualStore {
                     at,
                 ],
             )?;
-            report.created.push(id);
-        }
-        tx.commit()?;
-        Ok(report)
+                report.created.push(id);
+            }
+            Ok(report)
+        })
     }
 
     /// One page of visuals (one card per chain, showing its latest version), pinned first,
@@ -285,7 +279,7 @@ impl VisualStore {
         filters.push(latest.to_string());
         let filter = filters.join(" AND ");
 
-        let conn = self.lock();
+        let conn = self.conn.read();
         let total: i64 = conn.query_row(
             &format!("SELECT count(*) FROM generated_visuals v WHERE {filter}"),
             params_from_iter(args.iter()),
@@ -331,7 +325,7 @@ impl VisualStore {
 
     /// Visuals of one conversation that are not deleted (one per chain).
     pub fn count_for_conversation(&self, conversation_id: &str) -> VisualResult<u64> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let n: i64 = conn.query_row(
             "SELECT count(DISTINCT root_id) FROM generated_visuals
              WHERE conversation_id = ?1 AND deleted_at IS NULL",
@@ -345,7 +339,7 @@ impl VisualStore {
     /// found.
     pub fn get(&self, id: &str) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
-        let conn = self.lock();
+        let conn = self.conn.read();
         let (root, deleted) = chain_of(&conn, id)?;
         if deleted {
             return Err(VisualError::Deleted(id.to_string()));
@@ -377,7 +371,7 @@ impl VisualStore {
     pub fn latest(&self, id: &str) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
         let latest_id: String = {
-            let conn = self.lock();
+            let conn = self.conn.read();
             let (root, _) = chain_of(&conn, id)?;
             conn.query_row(
                 "SELECT id FROM generated_visuals WHERE root_id = ?1 ORDER BY version DESC LIMIT 1",
@@ -392,7 +386,7 @@ impl VisualStore {
     pub fn version(&self, id: &str, version: u32) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
         let version_id: String = {
-            let conn = self.lock();
+            let conn = self.conn.read();
             let (root, _) = chain_of(&conn, id)?;
             conn.query_row(
                 "SELECT id FROM generated_visuals WHERE root_id = ?1 AND version = ?2",
@@ -425,12 +419,10 @@ impl VisualStore {
                 }
             });
         let params = validate_params(new.params.as_ref())?;
-        let id = {
-            let mut conn = self.lock();
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let base = record_by_id(&tx, base_id)?
+        let id = self.conn.write(|tx| -> VisualResult<String> {
+            let base = record_by_id(tx, base_id)?
                 .ok_or_else(|| VisualError::NotFound(base_id.to_string()))?;
-            let (_, deleted) = chain_of(&tx, base_id)?;
+            let (_, deleted) = chain_of(tx, base_id)?;
             if deleted {
                 return Err(VisualError::Deleted(base_id.to_string()));
             }
@@ -482,9 +474,8 @@ impl VisualStore {
                 "UPDATE generated_visuals SET updated_at = ?2 WHERE root_id = ?1",
                 params![base.root_id, at],
             )?;
-            tx.commit()?;
-            id
-        };
+            Ok(id)
+        })?;
         self.get(&id)
     }
 
@@ -492,19 +483,18 @@ impl VisualStore {
     /// of the chain `id` belongs to. Deleted chains are not changed.
     fn update_chain(&self, id: &str, set: &str, value: SqlValue) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
-        {
-            let mut conn = self.lock();
-            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let (root, deleted) = chain_of(&tx, id)?;
+        let at = now();
+        self.conn.write(|tx| -> VisualResult<()> {
+            let (root, deleted) = chain_of(tx, id)?;
             if deleted {
                 return Err(VisualError::Deleted(id.to_string()));
             }
             tx.execute(
                 &format!("UPDATE generated_visuals SET {set}, updated_at = ?3 WHERE root_id = ?1"),
-                params![root, value, now()],
+                params![root, value, at],
             )?;
-            tx.commit()?;
-        }
+            Ok(())
+        })?;
         self.get(id)
     }
 
@@ -540,10 +530,9 @@ impl VisualStore {
 
     fn set_deleted(&self, id: &str, deleted: bool) -> VisualResult<String> {
         let id = check_id(id)?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (root, _) = chain_of(&tx, id)?;
         let at = now();
+        self.conn.write(|tx| {
+        let (root, _) = chain_of(tx, id)?;
         if deleted {
             tx.execute(
                 "UPDATE generated_visuals SET deleted_at = ?2 WHERE root_id = ?1 AND deleted_at IS NULL",
@@ -557,13 +546,13 @@ impl VisualStore {
                 params![root],
             )?;
         }
-        tx.commit()?;
         Ok(root)
+        })
     }
 
     /// Whether the one-time backfill of earlier conversations has run.
     pub fn backfill_done(&self) -> VisualResult<bool> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let value: Option<String> = conn
             .query_row(
                 "SELECT value FROM visual_settings WHERE key = ?1",
@@ -576,13 +565,15 @@ impl VisualStore {
 
     /// Records that the backfill ran.
     pub fn mark_backfill_done(&self) -> VisualResult<()> {
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO visual_settings(key, value) VALUES (?1, ?2)
+        let at = now();
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO visual_settings(key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![BACKFILL_KEY, now()],
-        )?;
-        Ok(())
+                params![BACKFILL_KEY, at],
+            )?;
+            Ok(())
+        })
     }
 }
 

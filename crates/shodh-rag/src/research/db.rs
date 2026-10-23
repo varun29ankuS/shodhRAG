@@ -11,14 +11,13 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use chrono::{SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use super::{ResearchError, ResearchResult};
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 
 /// Largest PNG accepted for one snippet, in bytes.
 pub const MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
@@ -76,7 +75,7 @@ pub fn png_size(bytes: &[u8]) -> ResearchResult<(u32, u32)> {
 
 /// The research tables of `shodh.db`.
 pub struct ResearchDb {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for ResearchDb {
@@ -93,25 +92,22 @@ impl ResearchDb {
     /// Opens `shodh.db` at `path` with the audit database key (if it is encrypted),
     /// applying pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> ResearchResult<Self> {
-        let conn = open_shared_connection(path, key)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Stores a PNG (once per content) and returns its hash and size.
     pub fn put_image(&self, png: &[u8]) -> ResearchResult<ImageInfo> {
         let (width, height) = png_size(png)?;
         let hash = hex::encode(Sha256::digest(png));
-        self.lock().execute(
-            "INSERT OR IGNORE INTO snippet_images(hash, png, width, height, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![hash, png, width, height, now_text()],
-        )?;
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO snippet_images(hash, png, width, height, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![hash, png, width, height, now_text()],
+            )
+        })?;
         Ok(ImageInfo {
             hash,
             width,
@@ -122,7 +118,8 @@ impl ResearchDb {
     /// The PNG bytes of a stored image.
     pub fn image(&self, hash: &str) -> ResearchResult<Option<Vec<u8>>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 "SELECT png FROM snippet_images WHERE hash = ?1",
                 params![hash],
@@ -133,28 +130,31 @@ impl ResearchDb {
 
     /// Removes a stored image (callers check that nothing references it).
     pub fn delete_image(&self, hash: &str) -> ResearchResult<bool> {
-        Ok(self
-            .lock()
-            .execute("DELETE FROM snippet_images WHERE hash = ?1", params![hash])?
-            > 0)
+        let removed = self
+            .conn
+            .write(|tx| tx.execute("DELETE FROM snippet_images WHERE hash = ?1", params![hash]))?;
+        Ok(removed > 0)
     }
 
     /// Saves the report of the last extraction of `file_path` (JSON).
     pub fn put_report(&self, file_path: &str, report_json: &str) -> ResearchResult<()> {
-        self.lock().execute(
-            "INSERT INTO result_extractions(file_path, report_json, extracted_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(file_path) DO UPDATE SET
-               report_json = excluded.report_json, extracted_at = excluded.extracted_at",
-            params![file_path, report_json, now_text()],
-        )?;
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO result_extractions(file_path, report_json, extracted_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(file_path) DO UPDATE SET
+                   report_json = excluded.report_json, extracted_at = excluded.extracted_at",
+                params![file_path, report_json, now_text()],
+            )
+        })?;
         Ok(())
     }
 
     /// The report of the last extraction of `file_path`, if it was ever extracted.
     pub fn report(&self, file_path: &str) -> ResearchResult<Option<String>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 "SELECT report_json FROM result_extractions WHERE file_path = ?1",
                 params![file_path],
@@ -165,7 +165,7 @@ impl ResearchDb {
 
     /// Every stored extraction report as `(file path, JSON)`.
     pub fn reports(&self) -> ResearchResult<Vec<(String, String)>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt = conn
             .prepare("SELECT file_path, report_json FROM result_extractions ORDER BY file_path")?;
         let rows = stmt
@@ -176,17 +176,19 @@ impl ResearchDb {
 
     /// Remembers that the user rejected the Result with this fingerprint.
     pub fn reject(&self, fingerprint: &str, file_path: &str) -> ResearchResult<()> {
-        self.lock().execute(
-            "INSERT OR IGNORE INTO result_rejections(fingerprint, file_path, rejected_at)
-             VALUES (?1, ?2, ?3)",
-            params![fingerprint, file_path, now_text()],
-        )?;
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT OR IGNORE INTO result_rejections(fingerprint, file_path, rejected_at)
+                 VALUES (?1, ?2, ?3)",
+                params![fingerprint, file_path, now_text()],
+            )
+        })?;
         Ok(())
     }
 
     /// Fingerprints of the Results of `file_path` the user rejected.
     pub fn rejected(&self, file_path: &str) -> ResearchResult<HashSet<String>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt =
             conn.prepare("SELECT fingerprint FROM result_rejections WHERE file_path = ?1")?;
         let rows = stmt
@@ -200,7 +202,8 @@ impl ResearchDb {
     /// A cached scholarly API answer (status and body) that has not expired.
     pub fn cached_answer(&self, key: &str) -> ResearchResult<Option<(u16, Vec<u8>)>> {
         let row: Option<(i64, Vec<u8>)> = self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 "SELECT status, body FROM scholarly_cache WHERE key = ?1 AND expires_at > ?2",
                 params![key, now_text()],
@@ -221,34 +224,34 @@ impl ResearchDb {
         let now = Utc::now();
         let expires =
             (now + chrono::Duration::days(ttl_days)).to_rfc3339_opts(SecondsFormat::Millis, true);
-        self.lock().execute(
-            "INSERT INTO scholarly_cache(key, status, body, fetched_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(key) DO UPDATE SET status = excluded.status, body = excluded.body,
-               fetched_at = excluded.fetched_at, expires_at = excluded.expires_at",
-            params![
-                key,
-                i64::from(status),
-                body,
-                now.to_rfc3339_opts(SecondsFormat::Millis, true),
-                expires
-            ],
-        )?;
+        let fetched = now.to_rfc3339_opts(SecondsFormat::Millis, true);
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO scholarly_cache(key, status, body, fetched_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(key) DO UPDATE SET status = excluded.status, body = excluded.body,
+                   fetched_at = excluded.fetched_at, expires_at = excluded.expires_at",
+                params![key, i64::from(status), body, fetched, expires],
+            )
+        })?;
         Ok(())
     }
 
     /// Removes expired cache entries; returns how many.
     pub fn prune_answers(&self) -> ResearchResult<usize> {
-        Ok(self.lock().execute(
-            "DELETE FROM scholarly_cache WHERE expires_at <= ?1",
-            params![now_text()],
-        )?)
+        Ok(self.conn.write(|tx| {
+            tx.execute(
+                "DELETE FROM scholarly_cache WHERE expires_at <= ?1",
+                params![now_text()],
+            )
+        })?)
     }
 
     /// The stored scan of a file (fingerprint and JSON), if any.
     pub fn citation_scan(&self, file_key: &str) -> ResearchResult<Option<(String, String)>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 "SELECT fingerprint, scan_json FROM citation_scans WHERE file_path = ?1",
                 params![file_key],
@@ -264,40 +267,44 @@ impl ResearchDb {
         fingerprint: &str,
         scan_json: &str,
     ) -> ResearchResult<()> {
-        self.lock().execute(
-            "INSERT INTO citation_scans(file_path, fingerprint, scan_json, scanned_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(file_path) DO UPDATE SET fingerprint = excluded.fingerprint,
-               scan_json = excluded.scan_json, scanned_at = excluded.scanned_at",
-            params![file_key, fingerprint, scan_json, now_text()],
-        )?;
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO citation_scans(file_path, fingerprint, scan_json, scanned_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(file_path) DO UPDATE SET fingerprint = excluded.fingerprint,
+                   scan_json = excluded.scan_json, scanned_at = excluded.scanned_at",
+                params![file_key, fingerprint, scan_json, now_text()],
+            )
+        })?;
         Ok(())
     }
 
-    /// Removes the scans of files not in `keep`; returns how many.
+    /// Removes the scans of files not in `keep`, in one transaction; returns how many.
     pub fn retain_citation_scans(&self, keep: &HashSet<String>) -> ResearchResult<usize> {
-        let conn = self.lock();
-        let stored: Vec<String> = {
-            let mut stmt = conn.prepare("SELECT file_path FROM citation_scans")?;
-            let rows = stmt
-                .query_map([], |r| r.get(0))?
-                .collect::<Result<Vec<String>, _>>()?;
-            rows
-        };
-        let mut removed = 0;
-        for key in stored.iter().filter(|k| !keep.contains(*k)) {
-            removed += conn.execute(
-                "DELETE FROM citation_scans WHERE file_path = ?1",
-                params![key],
-            )?;
-        }
-        Ok(removed)
+        self.conn.write(|tx| {
+            let stored: Vec<String> = {
+                let mut stmt = tx.prepare("SELECT file_path FROM citation_scans")?;
+                let rows = stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<Result<Vec<String>, _>>()?;
+                rows
+            };
+            let mut removed = 0;
+            for key in stored.iter().filter(|k| !keep.contains(*k)) {
+                removed += tx.execute(
+                    "DELETE FROM citation_scans WHERE file_path = ?1",
+                    params![key],
+                )?;
+            }
+            Ok(removed)
+        })
     }
 
     /// A value of the citation graph's state (`report`, ...), as JSON.
     pub fn graph_state(&self, key: &str) -> ResearchResult<Option<String>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 "SELECT value_json FROM citation_graph_state WHERE key = ?1",
                 params![key],
@@ -308,12 +315,14 @@ impl ResearchDb {
 
     /// Stores a value of the citation graph's state.
     pub fn put_graph_state(&self, key: &str, value_json: &str) -> ResearchResult<()> {
-        self.lock().execute(
-            "INSERT INTO citation_graph_state(key, value_json, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
-               updated_at = excluded.updated_at",
-            params![key, value_json, now_text()],
-        )?;
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO citation_graph_state(key, value_json, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,
+                   updated_at = excluded.updated_at",
+                params![key, value_json, now_text()],
+            )
+        })?;
         Ok(())
     }
 }

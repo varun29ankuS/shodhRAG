@@ -16,13 +16,13 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::budget::MAX_CALLS_PER_PAPER;
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 use crate::research::{ResearchError, ResearchResult};
 
 /// The daily cap of table calls when the user has not set one.
@@ -139,7 +139,7 @@ fn count_in(conn: &Connection, day: &str) -> rusqlite::Result<i64> {
 
 /// Table model calls per UTC day, in `shodh.db`.
 pub struct CallCounter {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for CallCounter {
@@ -153,33 +153,29 @@ impl CallCounter {
     /// applying pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> ResearchResult<Self> {
         Ok(Self {
-            conn: Mutex::new(open_shared_connection(path, key)?),
+            conn: open_shared_connection(path, key)?,
         })
     }
 
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// How long a write waits for another writer (tests make it short to meet a lock).
+    /// How long a write waits for a writer of another process (tests make it short to meet
+    /// a lock).
     #[cfg(test)]
     pub(crate) fn set_busy_timeout(&self, timeout: std::time::Duration) {
-        self.lock().busy_timeout(timeout).unwrap();
+        self.conn.read().busy_timeout(timeout).unwrap();
     }
 
     /// Adds `n` calls to `day`. Returns the day's total.
     pub fn record(&self, day: NaiveDate, n: usize) -> ResearchResult<usize> {
         let n = as_sql(n)?;
         let key = day_key(day);
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)
-             ON CONFLICT(utc_day) DO UPDATE SET calls = calls + excluded.calls",
-            params![key, n],
-        )?;
-        let total = count_in(&tx, &key)?;
-        tx.commit()?;
+        let total = self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)
+                 ON CONFLICT(utc_day) DO UPDATE SET calls = calls + excluded.calls",
+                params![key, n],
+            )?;
+            count_in(tx, &key)
+        })?;
         Ok(as_count(total))
     }
 
@@ -195,25 +191,23 @@ impl CallCounter {
     ) -> ResearchResult<Option<usize>> {
         let n_sql = as_sql(n)?;
         let key = day_key(day);
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = as_count(count_in(&tx, &key)?);
-        if current.saturating_add(n) > cap {
-            return Ok(None);
-        }
-        tx.execute(
-            "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)
-             ON CONFLICT(utc_day) DO UPDATE SET calls = calls + excluded.calls",
-            params![key, n_sql],
-        )?;
-        let total = count_in(&tx, &key)?;
-        tx.commit()?;
-        Ok(Some(as_count(total)))
+        self.conn.write(|tx| {
+            let current = as_count(count_in(tx, &key)?);
+            if current.saturating_add(n) > cap {
+                return Ok(None);
+            }
+            tx.execute(
+                "INSERT INTO table_calls(utc_day, calls) VALUES (?1, ?2)
+                 ON CONFLICT(utc_day) DO UPDATE SET calls = calls + excluded.calls",
+                params![key, n_sql],
+            )?;
+            Ok(Some(as_count(count_in(tx, &key)?)))
+        })
     }
 
     /// The calls recorded for `day`.
     pub fn count(&self, day: NaiveDate) -> ResearchResult<usize> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         Ok(as_count(count_in(&conn, &day_key(day))?))
     }
 }

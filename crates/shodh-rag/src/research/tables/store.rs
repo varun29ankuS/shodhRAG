@@ -10,18 +10,18 @@
 //! that showed it.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use chrono::{SecondsFormat, Utc};
 use rusqlite::types::Type;
-use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use super::validate::{parse_edit, typed_value, VALUE_NO_LONGER_FITS};
 use super::{
     collapse, Cell, CellStatus, CellValue, Column, ColumnKind, ColumnSpec, EvidenceTable, TableRow,
     MAX_COLUMNS, MAX_NAME_CHARS,
 };
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 use crate::research::{path_key, ResearchError, ResearchResult};
 
 /// The error prefix of a cell that holds a result a refill could not replace:
@@ -66,7 +66,7 @@ pub struct CacheEntry {
 
 /// The evidence tables of `shodh.db`.
 pub struct TableStore {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for TableStore {
@@ -311,13 +311,13 @@ impl TableStore {
     /// applying pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> ResearchResult<Self> {
         Ok(Self {
-            conn: Mutex::new(open_shared_connection(path, key)?),
+            conn: open_shared_connection(path, key)?,
         })
     }
 
     /// The connection, for the job store ([`super::jobs`]) on the same tables.
-    pub(super) fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    pub(super) fn conn(&self) -> &SharedConnection {
+        &self.conn
     }
 
     pub fn create_table(&self, workspace_id: &str, name: &str) -> ResearchResult<EvidenceTable> {
@@ -332,18 +332,20 @@ impl TableStore {
         };
         // One statement: the workspace is checked and the table inserted in the same
         // write, so a workspace deleted meanwhile never keeps a table.
-        let inserted = self.lock().execute(
-            "INSERT INTO evidence_table(id, workspace_id, name, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, ?5
-              WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ?2)",
-            params![
-                table.id,
-                table.workspace_id,
-                table.name,
-                table.created_at,
-                table.updated_at
-            ],
-        )?;
+        let inserted = self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO evidence_table(id, workspace_id, name, created_at, updated_at)
+                 SELECT ?1, ?2, ?3, ?4, ?5
+                  WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ?2)",
+                params![
+                    table.id,
+                    table.workspace_id,
+                    table.name,
+                    table.created_at,
+                    table.updated_at
+                ],
+            )
+        })?;
         if inserted == 0 {
             return Err(ResearchError::NotFound(format!(
                 "No workspace {workspace_id}."
@@ -353,7 +355,7 @@ impl TableStore {
     }
 
     pub fn tables(&self, workspace_id: &str) -> ResearchResult<Vec<EvidenceTable>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt = conn.prepare(&format!(
             "SELECT {TABLE_COLS} FROM evidence_table WHERE workspace_id = ?1 ORDER BY created_at, id"
         ))?;
@@ -363,7 +365,8 @@ impl TableStore {
 
     pub fn table(&self, id: &str) -> ResearchResult<Option<EvidenceTable>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 &format!("SELECT {TABLE_COLS} FROM evidence_table WHERE id = ?1"),
                 params![id],
@@ -374,10 +377,12 @@ impl TableStore {
 
     pub fn rename_table(&self, id: &str, name: &str) -> ResearchResult<EvidenceTable> {
         let name = clean_name(name)?;
-        let changed = self.lock().execute(
-            "UPDATE evidence_table SET name = ?2, updated_at = ?3 WHERE id = ?1",
-            params![id, name, now_text()],
-        )?;
+        let changed = self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE evidence_table SET name = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, name, now_text()],
+            )
+        })?;
         if changed == 0 {
             return Err(ResearchError::NotFound(format!("No table {id}.")));
         }
@@ -386,80 +391,79 @@ impl TableStore {
     }
 
     pub fn delete_table(&self, id: &str) -> ResearchResult<bool> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let removed = delete_table_in(&tx, id)?;
-        tx.commit()?;
-        Ok(removed > 0)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let removed = delete_table_in(tx, id)?;
+            Ok(removed > 0)
+        })
     }
 
     pub fn add_column(&self, table_id: &str, spec: &ColumnSpec) -> ResearchResult<Column> {
         let spec = spec.cleaned()?;
         let options_json = serde_json::to_string(&spec.options)
             .map_err(|e| ResearchError::Invalid(e.to_string()))?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM evidence_table WHERE id = ?1)",
-            params![table_id],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            return Err(ResearchError::NotFound(format!("No table {table_id}.")));
-        }
-        let position: i64 = tx.query_row(
-            "SELECT IFNULL(MAX(position), -1) + 1 FROM table_column WHERE table_id = ?1",
-            params![table_id],
-            |r| r.get(0),
-        )?;
-        let count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM table_column WHERE table_id = ?1",
-            params![table_id],
-            |r| r.get(0),
-        )?;
-        if usize::try_from(count).map_or(true, |count| count >= MAX_COLUMNS) {
-            return Err(ResearchError::Invalid(format!(
-                "A table has at most {MAX_COLUMNS} columns."
-            )));
-        }
-        let now = now_text();
-        let column = Column {
-            id: new_id(),
-            table_id: table_id.to_string(),
-            position,
-            key: spec.key(),
-            spec,
-            revision: 1,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        };
-        tx.execute(
-            &format!("INSERT INTO table_column({COLUMN_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
-            params![
-                column.id,
-                column.table_id,
-                column.position,
-                column.spec.question,
-                column.spec.kind.as_str(),
-                options_json,
-                column.spec.instructions,
-                column.key,
-                column.revision,
-                column.created_at,
-                column.updated_at
-            ],
-        )?;
-        tx.execute(
-            "UPDATE evidence_table SET updated_at = ?2 WHERE id = ?1",
-            params![table_id, now],
-        )?;
-        tx.commit()?;
-        Ok(column)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM evidence_table WHERE id = ?1)",
+                params![table_id],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err(ResearchError::NotFound(format!("No table {table_id}.")));
+            }
+            let position: i64 = tx.query_row(
+                "SELECT IFNULL(MAX(position), -1) + 1 FROM table_column WHERE table_id = ?1",
+                params![table_id],
+                |r| r.get(0),
+            )?;
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM table_column WHERE table_id = ?1",
+                params![table_id],
+                |r| r.get(0),
+            )?;
+            if usize::try_from(count).map_or(true, |count| count >= MAX_COLUMNS) {
+                return Err(ResearchError::Invalid(format!(
+                    "A table has at most {MAX_COLUMNS} columns."
+                )));
+            }
+            let now = now_text();
+            let column = Column {
+                id: new_id(),
+                table_id: table_id.to_string(),
+                position,
+                key: spec.key(),
+                spec,
+                revision: 1,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            tx.execute(
+                &format!("INSERT INTO table_column({COLUMN_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"),
+                params![
+                    column.id,
+                    column.table_id,
+                    column.position,
+                    column.spec.question,
+                    column.spec.kind.as_str(),
+                    options_json,
+                    column.spec.instructions,
+                    column.key,
+                    column.revision,
+                    column.created_at,
+                    column.updated_at
+                ],
+            )?;
+            tx.execute(
+                "UPDATE evidence_table SET updated_at = ?2 WHERE id = ?1",
+                params![table_id, now],
+            )?;
+            Ok(column)
+        })
     }
 
     pub fn column(&self, column_id: &str) -> ResearchResult<Option<Column>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
                 params![column_id],
@@ -469,7 +473,7 @@ impl TableStore {
     }
 
     pub fn columns(&self, table_id: &str) -> ResearchResult<Vec<Column>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMN_COLS} FROM table_column WHERE table_id = ?1 ORDER BY position, created_at"
         ))?;
@@ -486,45 +490,44 @@ impl TableStore {
         let key = spec.key();
         let options_json = serde_json::to_string(&spec.options)
             .map_err(|e| ResearchError::Invalid(e.to_string()))?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current = tx
-            .query_row(
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let current = tx
+                .query_row(
+                    &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
+                    params![column_id],
+                    column_from,
+                )
+                .optional()?
+                .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
+            if current.key == key {
+                return Ok(current);
+            }
+            let now = now_text();
+            tx.execute(
+                "UPDATE table_column SET question = ?2, kind = ?3, options_json = ?4,
+                   instructions = ?5, column_key = ?6, revision = revision + 1, updated_at = ?7
+                 WHERE id = ?1",
+                params![
+                    column_id,
+                    spec.question,
+                    spec.kind.as_str(),
+                    options_json,
+                    spec.instructions,
+                    key,
+                    now
+                ],
+            )?;
+            sweep_cache(tx)?;
+            if current.spec.kind != spec.kind || current.spec.options != spec.options {
+                refit_edited_cells(tx, column_id, &spec)?;
+            }
+            let updated = tx.query_row(
                 &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
                 params![column_id],
                 column_from,
-            )
-            .optional()?
-            .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
-        if current.key == key {
-            return Ok(current);
-        }
-        let now = now_text();
-        tx.execute(
-            "UPDATE table_column SET question = ?2, kind = ?3, options_json = ?4,
-               instructions = ?5, column_key = ?6, revision = revision + 1, updated_at = ?7
-             WHERE id = ?1",
-            params![
-                column_id,
-                spec.question,
-                spec.kind.as_str(),
-                options_json,
-                spec.instructions,
-                key,
-                now
-            ],
-        )?;
-        sweep_cache(&tx)?;
-        if current.spec.kind != spec.kind || current.spec.options != spec.options {
-            refit_edited_cells(&tx, column_id, &spec)?;
-        }
-        let updated = tx.query_row(
-            &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
-            params![column_id],
-            column_from,
-        )?;
-        tx.commit()?;
-        Ok(updated)
+            )?;
+            Ok(updated)
+        })
     }
 
     /// Moves a column to `position` (0 is first; a position past the end is last) and
@@ -532,115 +535,115 @@ impl TableStore {
     /// column's key and revision do not change, so no cell becomes stale. Returns the
     /// table's columns in order.
     pub fn move_column(&self, column_id: &str, position: usize) -> ResearchResult<Vec<Column>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let table_id: String = tx
-            .query_row(
-                "SELECT table_id FROM table_column WHERE id = ?1",
-                params![column_id],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
-        let mut order: Vec<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT id FROM table_column WHERE table_id = ?1 ORDER BY position, created_at",
-            )?;
-            let ids = stmt.query_map(params![table_id], |r| r.get(0))?;
-            ids.collect::<Result<_, _>>()?
-        };
-        order.retain(|id| id != column_id);
-        order.insert(position.min(order.len()), column_id.to_string());
-        let now = now_text();
-        for (at, id) in order.iter().enumerate() {
-            let at = i64::try_from(at)
-                .map_err(|_| ResearchError::Invalid("Too many columns.".to_string()))?;
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let table_id: String = tx
+                .query_row(
+                    "SELECT table_id FROM table_column WHERE id = ?1",
+                    params![column_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
+            let mut order: Vec<String> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM table_column WHERE table_id = ?1 ORDER BY position, created_at",
+                )?;
+                let ids = stmt.query_map(params![table_id], |r| r.get(0))?;
+                ids.collect::<Result<_, _>>()?
+            };
+            order.retain(|id| id != column_id);
+            order.insert(position.min(order.len()), column_id.to_string());
+            let now = now_text();
+            for (at, id) in order.iter().enumerate() {
+                let at = i64::try_from(at)
+                    .map_err(|_| ResearchError::Invalid("Too many columns.".to_string()))?;
+                tx.execute(
+                    "UPDATE table_column SET position = ?2 WHERE id = ?1 AND position <> ?2",
+                    params![id, at],
+                )?;
+            }
             tx.execute(
-                "UPDATE table_column SET position = ?2 WHERE id = ?1 AND position <> ?2",
-                params![id, at],
+                "UPDATE evidence_table SET updated_at = ?2 WHERE id = ?1",
+                params![table_id, now],
             )?;
-        }
-        tx.execute(
-            "UPDATE evidence_table SET updated_at = ?2 WHERE id = ?1",
-            params![table_id, now],
-        )?;
-        let columns = {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT {COLUMN_COLS} FROM table_column WHERE table_id = ?1 ORDER BY position, created_at"
-            ))?;
-            let rows = stmt.query_map(params![table_id], column_from)?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        tx.commit()?;
-        Ok(columns)
+            let columns = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {COLUMN_COLS} FROM table_column WHERE table_id = ?1 ORDER BY position, created_at"
+                ))?;
+                let rows = stmt.query_map(params![table_id], column_from)?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            Ok(columns)
+        })
     }
 
     pub fn delete_column(&self, column_id: &str) -> ResearchResult<bool> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM table_cell WHERE column_id = ?1",
-            params![column_id],
-        )?;
-        let removed = tx.execute("DELETE FROM table_column WHERE id = ?1", params![column_id])?;
-        sweep_cache(&tx)?;
-        tx.commit()?;
-        Ok(removed > 0)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            tx.execute(
+                "DELETE FROM table_cell WHERE column_id = ?1",
+                params![column_id],
+            )?;
+            let removed =
+                tx.execute("DELETE FROM table_column WHERE id = ?1", params![column_id])?;
+            sweep_cache(tx)?;
+            Ok(removed > 0)
+        })
     }
 
     /// Adds papers (file paths, stored by their library identity) as rows; a paper the
     /// table already has is skipped. Returns the rows added.
     pub fn add_rows(&self, table_id: &str, documents: &[String]) -> ResearchResult<Vec<TableRow>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM evidence_table WHERE id = ?1)",
-            params![table_id],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            return Err(ResearchError::NotFound(format!("No table {table_id}.")));
-        }
-        let mut position: i64 = tx.query_row(
-            "SELECT IFNULL(MAX(position), -1) + 1 FROM table_row WHERE table_id = ?1",
-            params![table_id],
-            |r| r.get(0),
-        )?;
-        let now = now_text();
-        let mut added = Vec::new();
-        for document in documents {
-            let document_id = path_key(document);
-            if document_id.is_empty() {
-                continue;
-            }
-            let row = TableRow {
-                id: new_id(),
-                table_id: table_id.to_string(),
-                position,
-                document_id,
-                added_at: now.clone(),
-            };
-            let inserted = tx.execute(
-                &format!("INSERT OR IGNORE INTO table_row({ROW_COLS}) VALUES (?1, ?2, ?3, ?4, ?5)"),
-                params![
-                    row.id,
-                    row.table_id,
-                    row.position,
-                    row.document_id,
-                    row.added_at
-                ],
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM evidence_table WHERE id = ?1)",
+                params![table_id],
+                |r| r.get(0),
             )?;
-            if inserted > 0 {
-                position += 1;
-                added.push(row);
+            if !exists {
+                return Err(ResearchError::NotFound(format!("No table {table_id}.")));
             }
-        }
-        tx.commit()?;
-        Ok(added)
+            let mut position: i64 = tx.query_row(
+                "SELECT IFNULL(MAX(position), -1) + 1 FROM table_row WHERE table_id = ?1",
+                params![table_id],
+                |r| r.get(0),
+            )?;
+            let now = now_text();
+            let mut added = Vec::new();
+            for document in documents {
+                let document_id = path_key(document);
+                if document_id.is_empty() {
+                    continue;
+                }
+                let row = TableRow {
+                    id: new_id(),
+                    table_id: table_id.to_string(),
+                    position,
+                    document_id,
+                    added_at: now.clone(),
+                };
+                let inserted = tx.execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO table_row({ROW_COLS}) VALUES (?1, ?2, ?3, ?4, ?5)"
+                    ),
+                    params![
+                        row.id,
+                        row.table_id,
+                        row.position,
+                        row.document_id,
+                        row.added_at
+                    ],
+                )?;
+                if inserted > 0 {
+                    position += 1;
+                    added.push(row);
+                }
+            }
+            Ok(added)
+        })
     }
 
     pub fn rows(&self, table_id: &str) -> ResearchResult<Vec<TableRow>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt = conn.prepare(&format!(
             "SELECT {ROW_COLS} FROM table_row WHERE table_id = ?1 ORDER BY position, added_at"
         ))?;
@@ -649,15 +652,14 @@ impl TableStore {
     }
 
     pub fn remove_row(&self, row_id: &str) -> ResearchResult<bool> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let removed = delete_row_in(&tx, row_id)?;
-        tx.commit()?;
-        Ok(removed > 0)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let removed = delete_row_in(tx, row_id)?;
+            Ok(removed > 0)
+        })
     }
 
     pub fn cells(&self, table_id: &str) -> ResearchResult<Vec<Cell>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt = conn.prepare(&format!(
             "SELECT {CELL_COLS} FROM table_cell WHERE table_id = ?1"
         ))?;
@@ -667,7 +669,8 @@ impl TableStore {
 
     pub fn cell(&self, row_id: &str, column_id: &str) -> ResearchResult<Option<Cell>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 &format!("SELECT {CELL_COLS} FROM table_cell WHERE row_id = ?1 AND column_id = ?2"),
                 params![row_id, column_id],
@@ -684,141 +687,137 @@ impl TableStore {
     /// answer could not be refreshed and the next fill tries again.
     pub fn store_fill(&self, cell: &Cell, cache: Option<&CacheEntry>) -> ResearchResult<bool> {
         let value = value_json(&cell.value)?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current: Option<i64> = tx
-            .query_row(
-                "SELECT k.revision FROM table_column k JOIN table_row r ON r.table_id = k.table_id
-                 WHERE k.id = ?1 AND r.id = ?2 AND k.table_id = ?3",
-                params![cell.column_id, cell.row_id, cell.table_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if current.is_none() || current != cell.column_revision {
-            return Ok(false);
-        }
-        if cell.status == CellStatus::Failed {
-            let flagged = tx.execute(
-                "UPDATE table_cell SET error = ?3
-                  WHERE row_id = ?1 AND column_id = ?2
-                    AND status IN ('verified', 'unverified', 'not_found')",
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let current: Option<i64> = tx
+                .query_row(
+                    "SELECT k.revision FROM table_column k JOIN table_row r ON r.table_id = k.table_id
+                     WHERE k.id = ?1 AND r.id = ?2 AND k.table_id = ?3",
+                    params![cell.column_id, cell.row_id, cell.table_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if current.is_none() || current != cell.column_revision {
+                return Ok(false);
+            }
+            if cell.status == CellStatus::Failed {
+                let flagged = tx.execute(
+                    "UPDATE table_cell SET error = ?3
+                      WHERE row_id = ?1 AND column_id = ?2
+                        AND status IN ('verified', 'unverified', 'not_found')",
+                    params![
+                        cell.row_id,
+                        cell.column_id,
+                        format!("{REFILL_FAILED}:{}", failure_code(cell.error.as_deref()))
+                    ],
+                )?;
+                if flagged > 0 {
+                    return Ok(true);
+                }
+            }
+            let written = tx.execute(
+                &format!(
+                    "INSERT INTO table_cell({CELL_COLS})
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14)
+                     ON CONFLICT(row_id, column_id) DO UPDATE SET
+                       status = excluded.status, value_json = excluded.value_json,
+                       quote = excluded.quote, chunk_id = excluded.chunk_id, page = excluded.page,
+                       bbox_json = excluded.bbox_json, model = excluded.model,
+                       column_revision = excluded.column_revision, paper_hash = excluded.paper_hash,
+                       filled_at = excluded.filled_at, error = excluded.error
+                     WHERE table_cell.status <> 'edited'"
+                ),
                 params![
+                    cell.table_id,
                     cell.row_id,
                     cell.column_id,
-                    format!("{REFILL_FAILED}:{}", failure_code(cell.error.as_deref()))
+                    cell.status.as_str(),
+                    value,
+                    cell.quote,
+                    cell.chunk_id,
+                    cell.page,
+                    cell.bboxes,
+                    cell.model,
+                    cell.column_revision,
+                    cell.paper_hash,
+                    cell.filled_at,
+                    cell.error
                 ],
             )?;
-            if flagged > 0 {
-                tx.commit()?;
-                return Ok(true);
+            if written == 0 {
+                return Ok(false);
             }
-        }
-        let written = tx.execute(
-            &format!(
-                "INSERT INTO table_cell({CELL_COLS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, ?14)
-                 ON CONFLICT(row_id, column_id) DO UPDATE SET
-                   status = excluded.status, value_json = excluded.value_json,
-                   quote = excluded.quote, chunk_id = excluded.chunk_id, page = excluded.page,
-                   bbox_json = excluded.bbox_json, model = excluded.model,
-                   column_revision = excluded.column_revision, paper_hash = excluded.paper_hash,
-                   filled_at = excluded.filled_at, error = excluded.error
-                 WHERE table_cell.status <> 'edited'"
-            ),
-            params![
-                cell.table_id,
-                cell.row_id,
-                cell.column_id,
-                cell.status.as_str(),
-                value,
-                cell.quote,
-                cell.chunk_id,
-                cell.page,
-                cell.bboxes,
-                cell.model,
-                cell.column_revision,
-                cell.paper_hash,
-                cell.filled_at,
-                cell.error
-            ],
-        )?;
-        if written == 0 {
-            return Ok(false);
-        }
-        if let Some(entry) = cache {
-            tx.execute(
-                "INSERT OR REPLACE INTO fill_cache(paper_hash, column_key, model, response_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![entry.paper_hash, entry.column_key, entry.model, entry.response_json, now_text()],
-            )?;
-        }
-        // A refill with a new paper hash leaves the old hash's entries unused.
-        sweep_cache(&tx)?;
-        tx.commit()?;
-        Ok(true)
+            if let Some(entry) = cache {
+                tx.execute(
+                    "INSERT OR REPLACE INTO fill_cache(paper_hash, column_key, model, response_json, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![entry.paper_hash, entry.column_key, entry.model, entry.response_json, now_text()],
+                )?;
+            }
+            // A refill with a new paper hash leaves the old hash's entries unused.
+            sweep_cache(tx)?;
+            Ok(true)
+        })
     }
 
     /// The user's value for a cell, under its column's type rule. The model's quote and
     /// passage no longer back it and are cleared; the paper hash stays.
     pub fn edit_cell(&self, row_id: &str, column_id: &str, input: &str) -> ResearchResult<Cell> {
-        let mut conn = self.lock();
         // The column is read in the transaction that writes the cell, so a column change
         // (and the re-check of the edited cells it makes) cannot come between them.
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let column = tx
-            .query_row(
-                &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
-                params![column_id],
-                column_from,
-            )
-            .optional()?
-            .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
-        let value = parse_edit(&column.spec, input)?;
-        let value = value_json(&Some(value))?;
-        let row_table: Option<String> = tx
-            .query_row(
-                "SELECT table_id FROM table_row WHERE id = ?1",
-                params![row_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if row_table.as_deref() != Some(column.table_id.as_str()) {
-            return Err(ResearchError::NotFound(format!(
-                "No row {row_id} in this table."
-            )));
-        }
-        tx.execute(
-            "INSERT INTO table_cell(table_id, row_id, column_id, status, value_json, column_revision, edited_at)
-             VALUES (?1, ?2, ?3, 'edited', ?4, ?5, ?6)
-             ON CONFLICT(row_id, column_id) DO UPDATE SET status = 'edited',
-               value_json = excluded.value_json, quote = NULL, chunk_id = NULL, page = NULL,
-               bbox_json = NULL, model = NULL, column_revision = excluded.column_revision,
-               edited_at = excluded.edited_at, error = NULL",
-            params![column.table_id, row_id, column_id, value, column.revision, now_text()],
-        )?;
-        let cell = tx
-            .query_row(
-                &format!("SELECT {CELL_COLS} FROM table_cell WHERE row_id = ?1 AND column_id = ?2"),
-                params![row_id, column_id],
-                cell_from,
-            )
-            .optional()?
-            .ok_or_else(|| ResearchError::NotFound(format!("No cell {row_id}/{column_id}.")))?;
-        tx.commit()?;
-        Ok(cell)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let column = tx
+                .query_row(
+                    &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
+                    params![column_id],
+                    column_from,
+                )
+                .optional()?
+                .ok_or_else(|| ResearchError::NotFound(format!("No column {column_id}.")))?;
+            let value = parse_edit(&column.spec, input)?;
+            let value = value_json(&Some(value))?;
+            let row_table: Option<String> = tx
+                .query_row(
+                    "SELECT table_id FROM table_row WHERE id = ?1",
+                    params![row_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if row_table.as_deref() != Some(column.table_id.as_str()) {
+                return Err(ResearchError::NotFound(format!(
+                    "No row {row_id} in this table."
+                )));
+            }
+            tx.execute(
+                "INSERT INTO table_cell(table_id, row_id, column_id, status, value_json, column_revision, edited_at)
+                 VALUES (?1, ?2, ?3, 'edited', ?4, ?5, ?6)
+                 ON CONFLICT(row_id, column_id) DO UPDATE SET status = 'edited',
+                   value_json = excluded.value_json, quote = NULL, chunk_id = NULL, page = NULL,
+                   bbox_json = NULL, model = NULL, column_revision = excluded.column_revision,
+                   edited_at = excluded.edited_at, error = NULL",
+                params![column.table_id, row_id, column_id, value, column.revision, now_text()],
+            )?;
+            let cell = tx
+                .query_row(
+                    &format!("SELECT {CELL_COLS} FROM table_cell WHERE row_id = ?1 AND column_id = ?2"),
+                    params![row_id, column_id],
+                    cell_from,
+                )
+                .optional()?
+                .ok_or_else(|| ResearchError::NotFound(format!("No cell {row_id}/{column_id}.")))?;
+            Ok(cell)
+        })
     }
 
     /// Empties a cell (an edit included); the next fill fills it.
     pub fn clear_cell(&self, row_id: &str, column_id: &str) -> ResearchResult<bool> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let removed = tx.execute(
-            "DELETE FROM table_cell WHERE row_id = ?1 AND column_id = ?2",
-            params![row_id, column_id],
-        )?;
-        sweep_cache(&tx)?;
-        tx.commit()?;
-        Ok(removed > 0)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let removed = tx.execute(
+                "DELETE FROM table_cell WHERE row_id = ?1 AND column_id = ?2",
+                params![row_id, column_id],
+            )?;
+            sweep_cache(tx)?;
+            Ok(removed > 0)
+        })
     }
 
     /// Keeps a capture of a fill by hand of `row_id` (a row of `table_id`), and only the
@@ -830,40 +829,39 @@ impl TableStore {
         captured_at: &str,
         capture_json: &str,
     ) -> ResearchResult<String> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT table_id FROM table_row WHERE id = ?1",
-                params![row_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if owner.as_deref() != Some(table_id) {
-            return Err(ResearchError::NotFound(format!(
-                "No row {row_id} in this table."
-            )));
-        }
-        let id = new_id();
-        tx.execute(
-            "INSERT INTO table_fill_capture(id, table_id, row_id, captured_at, capture_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, table_id, row_id, captured_at, capture_json],
-        )?;
-        let keep = i64::try_from(CAPTURES_PER_ROW).unwrap_or(i64::MAX);
-        tx.execute(
-            "DELETE FROM table_fill_capture WHERE row_id = ?1 AND id NOT IN (
-                SELECT id FROM table_fill_capture WHERE row_id = ?1
-                 ORDER BY captured_at DESC, rowid DESC LIMIT ?2)",
-            params![row_id, keep],
-        )?;
-        tx.commit()?;
-        Ok(id)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let owner: Option<String> = tx
+                .query_row(
+                    "SELECT table_id FROM table_row WHERE id = ?1",
+                    params![row_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if owner.as_deref() != Some(table_id) {
+                return Err(ResearchError::NotFound(format!(
+                    "No row {row_id} in this table."
+                )));
+            }
+            let id = new_id();
+            tx.execute(
+                "INSERT INTO table_fill_capture(id, table_id, row_id, captured_at, capture_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, table_id, row_id, captured_at, capture_json],
+            )?;
+            let keep = i64::try_from(CAPTURES_PER_ROW).unwrap_or(i64::MAX);
+            tx.execute(
+                "DELETE FROM table_fill_capture WHERE row_id = ?1 AND id NOT IN (
+                    SELECT id FROM table_fill_capture WHERE row_id = ?1
+                     ORDER BY captured_at DESC, rowid DESC LIMIT ?2)",
+                params![row_id, keep],
+            )?;
+            Ok(id)
+        })
     }
 
     /// The table's captures, by row and then oldest first.
     pub fn captures(&self, table_id: &str) -> ResearchResult<Vec<StoredCapture>> {
-        let conn = self.lock();
+        let conn = self.conn.read();
         let mut stmt = conn.prepare(
             "SELECT id, table_id, row_id, captured_at, capture_json FROM table_fill_capture
               WHERE table_id = ?1 ORDER BY row_id, captured_at, rowid",
@@ -887,7 +885,8 @@ impl TableStore {
         model: &str,
     ) -> ResearchResult<Option<String>> {
         Ok(self
-            .lock()
+            .conn
+            .read()
             .query_row(
                 "SELECT response_json FROM fill_cache
                  WHERE paper_hash = ?1 AND column_key = ?2 AND model = ?3",
@@ -900,35 +899,33 @@ impl TableStore {
     /// Forgets papers removed from the library: their rows in every table, their cells,
     /// and every cache entry no remaining cell uses. Returns the rows removed.
     pub fn forget_documents(&self, documents: &[String]) -> ResearchResult<usize> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut removed = 0;
-        for document in documents {
-            let row_ids: Vec<String> = {
-                let mut stmt = tx.prepare("SELECT id FROM table_row WHERE document_id = ?1")?;
-                let rows = stmt.query_map(params![path_key(document)], |r| r.get(0))?;
-                rows.collect::<Result<_, _>>()?
-            };
-            for id in &row_ids {
-                removed += delete_row_unswept(&tx, id)?;
+        self.conn.write(|tx| -> ResearchResult<_> {
+            let mut removed = 0;
+            for document in documents {
+                let row_ids: Vec<String> = {
+                    let mut stmt = tx.prepare("SELECT id FROM table_row WHERE document_id = ?1")?;
+                    let rows = stmt.query_map(params![path_key(document)], |r| r.get(0))?;
+                    rows.collect::<Result<_, _>>()?
+                };
+                for id in &row_ids {
+                    removed += delete_row_unswept(tx, id)?;
+                }
             }
-        }
-        sweep_cache(&tx)?;
-        tx.commit()?;
-        Ok(removed)
+            sweep_cache(tx)?;
+            Ok(removed)
+        })
     }
 
     /// Forgets every paper (the library was reset): all rows and cells of every table
     /// and every cache entry. Tables and columns stay. Returns the rows removed.
     pub fn forget_all(&self) -> ResearchResult<usize> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM table_cell", [])?;
-        tx.execute("DELETE FROM table_fill_capture", [])?;
-        let removed = tx.execute("DELETE FROM table_row", [])?;
-        sweep_cache(&tx)?;
-        tx.commit()?;
-        Ok(removed)
+        self.conn.write(|tx| -> ResearchResult<_> {
+            tx.execute("DELETE FROM table_cell", [])?;
+            tx.execute("DELETE FROM table_fill_capture", [])?;
+            let removed = tx.execute("DELETE FROM table_row", [])?;
+            sweep_cache(tx)?;
+            Ok(removed)
+        })
     }
 }
 
@@ -1081,7 +1078,8 @@ mod tests {
 
     fn cache_rows(f: &Fixture) -> i64 {
         f.store
-            .lock()
+            .conn
+            .read()
             .query_row("SELECT count(*) FROM fill_cache", [], |r| r.get(0))
             .unwrap()
     }
@@ -1680,7 +1678,8 @@ mod tests {
 
     fn capture_count(f: &Fixture) -> i64 {
         f.store
-            .lock()
+            .conn
+            .read()
             .query_row("SELECT count(*) FROM table_fill_capture", [], |r| r.get(0))
             .unwrap()
     }

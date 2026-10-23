@@ -822,12 +822,17 @@ async fn one_active_job_per_table() {
     let b = r.start(&e.table, 5).await.unwrap();
     assert_eq!(a.id, b.id, "starting again returns the active job");
     assert_eq!(e.store.active_fill_job(&e.table).unwrap(), Some(a.clone()));
-    let second = e.store.lock().execute(
-        "INSERT INTO table_fill_job(id, table_id, created_at, state, planned_calls, done_calls)
-         VALUES ('second', ?1, '2026-10-22T09:00:00.000Z', 'paused', 0, 0)",
-        params![e.table],
+    let second = e.store.conn().write(|tx| {
+        tx.execute(
+            "INSERT INTO table_fill_job(id, table_id, created_at, state, planned_calls, done_calls)
+             VALUES ('second', ?1, '2026-10-22T09:00:00.000Z', 'paused', 0, 0)",
+            params![e.table],
+        )
+    });
+    assert!(
+        matches!(&second, Err(err) if err.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)),
+        "the database refuses a second active job: {second:?}"
     );
-    assert!(second.is_err(), "the database refuses a second active job");
 
     // Two runs of one job at once in one process: one runs it, the other is turned away.
     let (one, two) = tokio::join!(r.run(&a.id), r.run(&a.id));
@@ -1078,19 +1083,21 @@ async fn a_failing_last_write_gives_the_job_back_at_once() {
     let r = runner(&e, paper_index(), replies(vec![Ok(CORRECT)]), 30, "p");
     let job = r.start(&e.table, 1).await.unwrap();
     e.store
-        .lock()
-        .execute_batch(
-            "CREATE TRIGGER refuse_done BEFORE UPDATE OF state ON table_fill_job
-             WHEN NEW.state = 'done' BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
-        )
+        .conn()
+        .write(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER refuse_done BEFORE UPDATE OF state ON table_fill_job
+                 WHEN NEW.state = 'done' BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
+            )
+        })
         .unwrap();
     assert!(r.run(&job.id).await.is_err());
     assert_eq!(job_of(&e, &job.id).state, JobState::Queued);
     assert_eq!(statuses(&e, 0), all(CellStatus::Verified));
     assert_eq!(r.resume_due().await.unwrap(), vec![job.id.clone()]);
     e.store
-        .lock()
-        .execute_batch("DROP TRIGGER refuse_done;")
+        .conn()
+        .write(|tx| tx.execute_batch("DROP TRIGGER refuse_done;"))
         .unwrap();
     assert_eq!(r.run(&job.id).await.unwrap().outcome, JobOutcome::Done);
 }
@@ -1102,17 +1109,22 @@ async fn a_job_held_here_with_no_live_run_is_resumed_or_cancelled_without_a_rest
     let job = r.start(&e.table, 2).await.unwrap();
     // Neither the end nor the give-back can be written: the job stays `running` here.
     e.store
-        .lock()
-        .execute_batch(
-            "CREATE TRIGGER stuck BEFORE UPDATE OF state ON table_fill_job
-             WHEN OLD.state = 'running' BEGIN SELECT RAISE(ABORT, 'stuck'); END;",
-        )
+        .conn()
+        .write(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER stuck BEFORE UPDATE OF state ON table_fill_job
+                 WHEN OLD.state = 'running' BEGIN SELECT RAISE(ABORT, 'stuck'); END;",
+            )
+        })
         .unwrap();
     let model = replies(vec![Ok(CORRECT), Err(BAD_REQUEST)]);
     let stuck = runner(&e, paper_index(), model, 30, "p");
     assert!(stuck.run(&job.id).await.is_err());
     assert_eq!(job_of(&e, &job.id).state, JobState::Running);
-    e.store.lock().execute_batch("DROP TRIGGER stuck;").unwrap();
+    e.store
+        .conn()
+        .write(|tx| tx.execute_batch("DROP TRIGGER stuck;"))
+        .unwrap();
 
     // No run of it is live here: it is due now, and a cancel takes effect at once.
     assert_eq!(r.resume_due().await.unwrap(), vec![job.id.clone()]);
@@ -1196,7 +1208,9 @@ async fn a_locked_counter_pauses_the_job_for_a_minute() {
 fn migration_15_keeps_one_active_job_per_table() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shodh.db");
-    let conn = crate::audit::open_shared_connection(&path, None).unwrap();
+    drop(crate::audit::open_shared_connection(&path, None).unwrap());
+    // A plain connection, as the older app that wrote the database.
+    let conn = rusqlite::Connection::open(&path).unwrap();
     // Back to schema 14, with two active jobs for one table (migration 16 runs again
     // after 15 and rebuilds the job table with its rows).
     conn.execute_batch(
@@ -1226,6 +1240,7 @@ fn migration_15_keeps_one_active_job_per_table() {
     drop(conn);
     let conn = crate::audit::open_shared_connection(&path, None).unwrap();
     let states: Vec<(String, String)> = conn
+        .read()
         .prepare("SELECT id, state FROM table_fill_job ORDER BY id")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -1242,12 +1257,17 @@ fn migration_15_keeps_one_active_job_per_table() {
     .map(|(id, state)| (id.to_string(), state.to_string()))
     .collect();
     assert_eq!(states, expected);
-    let duplicate = conn.execute(
-        "INSERT INTO table_fill_job(id, table_id, created_at, state, planned_calls, done_calls)
-         VALUES ('again', 't1', '2026-10-04T00:00:00.000Z', 'queued', 0, 0)",
-        [],
+    let duplicate = conn.write(|tx| {
+        tx.execute(
+            "INSERT INTO table_fill_job(id, table_id, created_at, state, planned_calls, done_calls)
+             VALUES ('again', 't1', '2026-10-04T00:00:00.000Z', 'queued', 0, 0)",
+            [],
+        )
+    });
+    assert!(
+        matches!(&duplicate, Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)),
+        "{duplicate:?}"
     );
-    assert!(duplicate.is_err());
 }
 
 #[test]

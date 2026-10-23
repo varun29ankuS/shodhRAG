@@ -20,6 +20,7 @@ import type { LibraryFolder } from './SourcesTab';
 import { deleteWorkspaceQuestion, pathWithin, sourceSummary, WORKSPACE_TAB_LABELS, WORKSPACE_TABS } from './model';
 import type { WorkspaceDetail, WorkspaceTab } from './types';
 import { WorkspaceIcon } from './WorkspaceIcon';
+import { SlackAnswersBadge, useSlackAnswerSource } from '../connectors/SlackAnswersBadge';
 import { FOCUS_RING, PRIMARY_BUTTON, QUIET_BUTTON, SECTION_TITLE } from './ui';
 
 // Loaded when the Tables tab is first opened.
@@ -140,6 +141,7 @@ export function WorkspacePage({
 }) {
   const { conversations, switchConversation, detachWorkspace } = useChatSession();
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
+  const slack = useSlackAnswerSource();
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const tabRefs = useRef<Partial<Record<WorkspaceTab, HTMLButtonElement | null>>>({});
@@ -259,6 +261,7 @@ export function WorkspacePage({
           <h2 className="m-0 text-[20px] font-semibold text-shodh-text truncate">
             {detail.name}
             {detail.archived && <span className="ml-2 align-middle text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
+            <span className="ml-2 align-middle"><SlackAnswersBadge source={slack} workspaceId={detail.id} /></span>
           </h2>
           {detail.description && <p className="m-0 mt-0.5 text-[13px] text-shodh-text-secondary">{detail.description}</p>}
           <p className="m-0 mt-1 text-[12px] text-shodh-text-muted">

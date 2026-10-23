@@ -805,14 +805,27 @@ impl HostTool for AddToWorkspaceTool {
             .iter()
             .map(|s| json!({"kind": s.kind, "label": s.label, "path": s.path}))
             .collect();
+        // Growing the workspace Slack answers from widens what people in Slack can read:
+        // the prompt says so.
+        let slack =
+            crate::connectors::slack::slack_exposure_of(&self.host.data_dir, &d.workspace.id).await;
+        let mut details = json!({ "workspace": d.workspace.name, "add": listed });
+        if let (Some(note), Some(map)) = (&slack, details.as_object_mut()) {
+            map.insert("slack".to_string(), json!(note));
+        }
         Ok(ApprovalPreview {
             label: Some(format!(
-                "Add {} source{} to “{}”",
+                "Add {} source{} to “{}”{}",
                 sources.len(),
                 if sources.len() == 1 { "" } else { "s" },
-                d.workspace.name
+                d.workspace.name,
+                if slack.is_some() {
+                    " (answers in Slack)"
+                } else {
+                    ""
+                }
             )),
-            details: json!({ "workspace": d.workspace.name, "add": listed }),
+            details,
         })
     }
 

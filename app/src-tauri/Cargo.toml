@@ -94,6 +94,8 @@ windows = { version = "0.58", features = [
     "Globalization",
     # The user's regional format for WebView2's date fields (profile.rs).
     "Win32_Globalization",
+    # The account's display name, kept out of Slack answers (connectors/slack.rs).
+    "Win32_Security_Authentication_Identity",
 ] }
 
 [dev-dependencies]

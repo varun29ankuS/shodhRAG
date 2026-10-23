@@ -28,10 +28,11 @@ pub const SHOW_AUDIT: &str = "show_audit";
 pub const SHOW_SOURCE: &str = "show_source";
 
 /// Views the agent may open.
-pub const VIEWS: [&str; 6] = [
+pub const VIEWS: [&str; 7] = [
     "ask",
     "workspaces",
     "library",
+    "connectors",
     "tasks",
     "activity",
     "settings",
@@ -92,8 +93,9 @@ impl HostTool for OpenViewTool {
     }
     fn description(&self) -> &'static str {
         "Switch the app to a view so the user can see a result: ask (conversation), library \
-         (indexed folders and their files), tasks (the calendar: tasks and events), activity \
-         (usage and the audit log), settings. Optionally focus an item by id, e.g. the id of a \
+         (indexed folders and their files), connectors (Slack and other connected tools), \
+         tasks (the calendar: tasks and events), activity (usage and the audit log), settings. \
+         Optionally focus an item by id, e.g. the id of a \
          task you just created."
     }
     fn schema(&self) -> Value {

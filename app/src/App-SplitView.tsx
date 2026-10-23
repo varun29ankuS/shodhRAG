@@ -24,6 +24,7 @@ const ActivityView = lazy(() => import('./features/activity/ActivityView'));
 const SettingsView = lazy(() => import('./components/shell/SettingsView'));
 const WorkspacesView = lazy(() => import('./features/workspaces/WorkspacesView'));
 const LibraryView = lazy(() => import('./features/library/LibraryView').then(m => ({ default: m.LibraryView })));
+const ConnectorsView = lazy(() => import('./features/connectors/ConnectorsView'));
 // The New task / New event dialog brings the Tasks store with it: loaded when first opened.
 const QuickCreateDialog = lazy(() => import('./features/tasks/QuickCreateDialog').then(m => ({ default: m.QuickCreateDialog })));
 
@@ -1843,6 +1844,9 @@ function AppSplitView() {
               unlistedBusy={unlistedBusy}
             />
           )}
+
+          {/* Connectors: Slack and other tools Shodh answers in */}
+          {activeTab === 'connectors' && <ConnectorsView />}
 
           </Suspense>
         </main>

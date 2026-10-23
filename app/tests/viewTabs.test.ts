@@ -14,7 +14,7 @@ import {
 } from '../src/lib/viewTabs.ts';
 
 test('the shell has exactly the shipped views, in sidebar order', () => {
-  assert.deepEqual([...VIEW_TABS], ['ask', 'workspaces', 'library', 'tasks', 'activity', 'settings']);
+  assert.deepEqual([...VIEW_TABS], ['ask', 'workspaces', 'library', 'connectors', 'tasks', 'activity', 'settings']);
 });
 
 test('every view has a label, a description and keywords', () => {

@@ -14,6 +14,7 @@ import { WorkspacePage } from './WorkspacePage';
 import { lastWorkspacePlace, rememberWorkspacePlace } from './place';
 import type { LibraryFolder } from './SourcesTab';
 import { FOCUS_RING, PRIMARY_BUTTON, QUIET_BUTTON } from './ui';
+import { SlackAnswersBadge, useSlackAnswerSource, type SlackAnswerSource } from '../connectors/SlackAnswersBadge';
 
 function isTab(value: string | null): value is WorkspaceTab {
   return value !== null && (WORKSPACE_TABS as readonly string[]).includes(value);
@@ -25,7 +26,15 @@ function lastActive(w: WorkspaceListing): string | null {
   return times.sort().pop() ?? null;
 }
 
-function WorkspaceCard({ workspace, onOpen }: { workspace: WorkspaceListing; onOpen: () => void }) {
+function WorkspaceCard({
+  workspace,
+  slack,
+  onOpen,
+}: {
+  workspace: WorkspaceListing;
+  slack: SlackAnswerSource | null;
+  onOpen: () => void;
+}) {
   const active = lastActive(workspace);
   return (
     <li>
@@ -40,6 +49,7 @@ function WorkspaceCard({ workspace, onOpen }: { workspace: WorkspaceListing; onO
         <span className="flex items-center gap-2 min-w-0">
           <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-4 h-4" />
           <span className="text-[14px] font-semibold text-shodh-text truncate">{workspace.name}</span>
+          <SlackAnswersBadge source={slack} workspaceId={workspace.id} />
           {workspace.pinned && <Pin className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Pinned" />}
           {workspace.archived && <Archive className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Archived" />}
         </span>
@@ -94,6 +104,7 @@ export default function WorkspacesView({
     return () => window.removeEventListener(SHOW_ARCHIVED_WORKSPACES, show);
   }, []);
   const archived = useMemo(() => sortWorkspaces(allWorkspaces.filter(w => w.archived)), [allWorkspaces]);
+  const slack = useSlackAnswerSource();
   const [templates, setTemplates] = useState<WorkspaceTemplate[]>([]);
 
   useNavigationTarget('workspace', target => {
@@ -193,7 +204,7 @@ export default function WorkspacesView({
             ) : (
               <ul aria-label="Workspaces" className="m-0 p-0 list-none grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {sorted.map(w => (
-                  <WorkspaceCard key={w.id} workspace={w} onOpen={() => { setSelected(w.id); setTab('overview'); }} />
+                  <WorkspaceCard key={w.id} workspace={w} slack={slack} onOpen={() => { setSelected(w.id); setTab('overview'); }} />
                 ))}
               </ul>
             )}
@@ -214,7 +225,7 @@ export default function WorkspacesView({
                 ) : (
                   <ul aria-label="Archived workspaces" className="m-0 p-0 list-none grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                     {archived.map(w => (
-                      <WorkspaceCard key={w.id} workspace={w} onOpen={() => { setSelected(w.id); setTab('overview'); }} />
+                      <WorkspaceCard key={w.id} workspace={w} slack={slack} onOpen={() => { setSelected(w.id); setTab('overview'); }} />
                     ))}
                   </ul>
                 )

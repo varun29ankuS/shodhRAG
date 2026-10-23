@@ -1,0 +1,14 @@
+//! Connectors: Shodh working inside other tools (the Connectors view). One module per
+//! connector; their settings live under `connectors` in `app_settings.json`.
+
+pub mod slack;
+mod slack_usage;
+
+use serde::{Deserialize, Serialize};
+
+/// Every connector's settings. User-only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConnectorsPrefs {
+    pub slack: slack::SlackPrefs,
+}

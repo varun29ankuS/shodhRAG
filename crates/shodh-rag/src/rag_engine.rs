@@ -2378,10 +2378,47 @@ impl RAGEngine {
             .map(|h| (h.id.clone(), h.score))
             .collect();
 
-        // Full-text search via Tantivy — use SAME candidate count for balanced fusion
-        let fts_results =
+        // Full-text search via Tantivy — use SAME candidate count for balanced fusion.
+        // The keyword index has no space field, so under a space or workspace limit it
+        // ranks the whole library: it is asked for more, and its candidates outside the
+        // limit are dropped here, before the fusion, so the in-scope keyword hits keep
+        // their places (exact terms, names, clause numbers).
+        let scoped = filter
+            .as_ref()
+            .is_some_and(|f| f.any_of.is_some() || f.space_id.is_some());
+        let keyword_fetch = if scoped {
+            (candidate_count * KEYWORD_SCOPE_OVERFETCH)
+                .min(MAX_KEYWORD_FETCH)
+                .max(candidate_count)
+        } else {
+            candidate_count
+        };
+        let mut fts_results =
             self.text_search
-                .search_filtered(query, candidate_count, source_filter)?;
+                .search_filtered(query, keyword_fetch, source_filter)?;
+        let mut prefetched: Option<Vec<crate::storage::SearchHit>> = None;
+        if let (true, Some(limit)) = (scoped, filter.as_ref()) {
+            let in_vector: std::collections::HashSet<&str> =
+                vector_hits.iter().map(|h| h.id.as_str()).collect();
+            let unknown: Vec<String> = fts_results
+                .iter()
+                .filter(|(id, _)| !in_vector.contains(id.as_str()))
+                .map(|(id, _)| id.clone())
+                .collect();
+            let fetched = if unknown.is_empty() {
+                Vec::new()
+            } else {
+                self.store.get_by_ids(&unknown).await?
+            };
+            fts_results = admitted_keyword_candidates(
+                fts_results,
+                &in_vector,
+                &fetched,
+                limit,
+                candidate_count,
+            );
+            prefetched = Some(fetched);
+        }
 
         // Log source diversity at each stage for diagnostics
         let vector_sources: std::collections::HashSet<&str> =
@@ -2422,11 +2459,19 @@ impl RAGEngine {
             .map(|(id, _, _)| id.clone())
             .collect();
 
-        // Fetch full data for FTS-only results from LanceDB
-        let fts_only_hits = if !fts_only_ids.is_empty() {
-            self.store.get_by_ids(&fts_only_ids).await?
-        } else {
-            Vec::new()
+        // Fetch full data for FTS-only results from LanceDB (already fetched when the
+        // keyword candidates were checked against the limit)
+        let fts_only_hits = match prefetched {
+            Some(fetched) => {
+                let wanted: std::collections::HashSet<&str> =
+                    fts_only_ids.iter().map(String::as_str).collect();
+                fetched
+                    .into_iter()
+                    .filter(|h| wanted.contains(h.id.as_str()))
+                    .collect()
+            }
+            None if !fts_only_ids.is_empty() => self.store.get_by_ids(&fts_only_ids).await?,
+            None => Vec::new(),
         };
         let fts_only_map: HashMap<String, &crate::storage::SearchHit> =
             fts_only_hits.iter().map(|h| (h.id.clone(), h)).collect();
@@ -5822,6 +5867,90 @@ mod lazy_embedder_tests {
             !engine.has_search_models(),
             "a model that cannot load offers setup again"
         );
+    }
+}
+
+/// How many more keyword candidates are fetched when the search is limited to some
+/// sources (the keyword index cannot filter by space itself).
+const KEYWORD_SCOPE_OVERFETCH: usize = 4;
+/// The most keyword candidates fetched for one limited search.
+const MAX_KEYWORD_FETCH: usize = 1_000;
+
+/// The keyword candidates (best first) that `filter` admits, at most `limit`. A candidate
+/// the vector search also returned is in (that search ran with the filter); any other is
+/// judged by its stored space and source in `hits`, and dropped when it is not there.
+fn admitted_keyword_candidates(
+    candidates: Vec<(String, f32)>,
+    in_vector: &std::collections::HashSet<&str>,
+    hits: &[crate::storage::SearchHit],
+    filter: &MetadataFilter,
+    limit: usize,
+) -> Vec<(String, f32)> {
+    let stored: HashMap<&str, &crate::storage::SearchHit> =
+        hits.iter().map(|h| (h.id.as_str(), h)).collect();
+    candidates
+        .into_iter()
+        .filter(|(id, _)| {
+            in_vector.contains(id.as_str())
+                || stored
+                    .get(id.as_str())
+                    .is_some_and(|h| filter.admits(&h.space_id, &h.source))
+        })
+        .take(limit)
+        .collect()
+}
+
+#[cfg(test)]
+mod keyword_scope_tests {
+    use super::*;
+    use crate::storage::SearchHit;
+    use crate::types::SourceSet;
+
+    fn hit(id: &str, space: &str, source: &str) -> SearchHit {
+        SearchHit {
+            id: id.into(),
+            doc_id: "d".into(),
+            chunk_index: 0,
+            text: String::new(),
+            title: String::new(),
+            source: source.into(),
+            heading: String::new(),
+            space_id: space.into(),
+            metadata_json: "{}".into(),
+            citation_json: "{}".into(),
+            score: 0.0,
+        }
+    }
+
+    /// The library outranks the workspace on a keyword: the workspace's hits still take
+    /// the keyword places, in rank order.
+    #[test]
+    fn keyword_candidates_outside_the_limit_do_not_take_places() {
+        let filter = MetadataFilter {
+            any_of: Some(SourceSet {
+                space_ids: vec!["ws-space".into()],
+                source_paths: vec!["c:/docs/memo.pdf".into()],
+            }),
+            ..MetadataFilter::default()
+        };
+        let mut candidates: Vec<(String, f32)> = (0..20)
+            .map(|i| (format!("out{i}"), 10.0 - i as f32 * 0.1))
+            .collect();
+        candidates.push(("in-space".into(), 5.0));
+        candidates.push(("in-file".into(), 4.0));
+        candidates.push(("in-vector".into(), 3.0));
+        candidates.push(("vanished".into(), 2.0));
+        let mut hits: Vec<SearchHit> = (0..20)
+            .map(|i| hit(&format!("out{i}"), "other", "c:/other.pdf"))
+            .collect();
+        hits.push(hit("in-space", "ws-space", "c:/a.pdf"));
+        hits.push(hit("in-file", "elsewhere", "c:/docs/memo.pdf"));
+        let in_vector: std::collections::HashSet<&str> = ["in-vector"].into_iter().collect();
+        let kept = admitted_keyword_candidates(candidates.clone(), &in_vector, &hits, &filter, 6);
+        let ids: Vec<&str> = kept.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["in-space", "in-file", "in-vector"]);
+        let kept = admitted_keyword_candidates(candidates, &in_vector, &hits, &filter, 2);
+        assert_eq!(kept.len(), 2, "at most the limit");
     }
 }
 

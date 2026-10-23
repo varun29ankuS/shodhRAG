@@ -5,7 +5,7 @@
  * Pure module (no runtime imports) so it is unit-tested directly with Node
  * (`app/tests/viewTabs.test.ts`).
  */
-export const VIEW_TABS = ['ask', 'workspaces', 'library', 'tasks', 'activity', 'settings'] as const;
+export const VIEW_TABS = ['ask', 'workspaces', 'library', 'connectors', 'tasks', 'activity', 'settings'] as const;
 
 export type ViewTab = typeof VIEW_TABS[number];
 
@@ -14,6 +14,7 @@ export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
   ask: 'Ask',
   workspaces: 'Workspaces',
   library: 'Library',
+  connectors: 'Connectors',
   tasks: 'Tasks',
   activity: 'Activity',
   settings: 'Settings',
@@ -24,6 +25,7 @@ export const VIEW_TAB_DESCRIPTIONS: Record<ViewTab, string> = {
   ask: 'Ask questions about your sources',
   workspaces: 'Sources, instructions and chats for one piece of work',
   library: 'Folders and files Shodh can search',
+  connectors: 'Slack and other tools Shodh answers in',
   tasks: 'Tasks and events, as a list or a calendar',
   activity: 'Usage and the tamper-evident audit log',
   settings: 'Models, search and stored data',
@@ -34,6 +36,7 @@ export const VIEW_TAB_KEYWORDS: Record<ViewTab, string> = {
   ask: 'ask chat messages conversation question',
   workspaces: 'workspaces workspace project projects instructions sources scope',
   library: 'library documents files sources folders index',
+  connectors: 'connectors connector slack integrations apps bot connect',
   tasks: 'tasks todo calendar events schedule agenda',
   activity: 'activity audit usage log history tools retrieved',
   settings: 'settings preferences models llm provider search data',

@@ -118,4 +118,4 @@ export interface AddReport {
 }
 
 /** Tabs of a workspace page. */
-export type WorkspaceTab = 'overview' | 'sources' | 'chats' | 'tasks' | 'memory' | 'visuals' | 'results';
+export type WorkspaceTab = 'overview' | 'sources' | 'chats' | 'tasks' | 'memory' | 'visuals' | 'results' | 'tables';

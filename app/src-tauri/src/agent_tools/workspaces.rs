@@ -32,8 +32,8 @@ use crate::workspace_commands::{list_with_chats, WorkspaceCommandError};
 /// Most sources one call may add.
 const MAX_ADD: usize = 50;
 /// Tabs of a workspace page.
-const TABS: [&str; 7] = [
-    "overview", "sources", "chats", "tasks", "memory", "visuals", "results",
+const TABS: [&str; 8] = [
+    "overview", "sources", "chats", "tasks", "memory", "visuals", "results", "tables",
 ];
 
 pub(super) fn register(
@@ -208,7 +208,7 @@ impl HostTool for OpenWorkspaceTool {
     }
     fn description(&self) -> &'static str {
         "Open a workspace's page for the user (id from list_workspaces), optionally at a tab: \
-         overview, sources, chats, tasks (its task board), memory, visuals or results."
+         overview, sources, chats, tasks (its task board), memory, visuals, results or tables (its evidence tables)."
     }
     fn schema(&self) -> Value {
         json!({

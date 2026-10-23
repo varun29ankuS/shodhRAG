@@ -4569,6 +4569,89 @@ Branch: `feat/evidence-table-ui`. The files are under `app/src/features/tables/`
 
 **PR 4 end:** CI green, with the TypeScript check and `npm test`.
 
+## PR 4 — as built (the Tables tab)
+
+Branch: `feat/evidence-table-ui` from origin/master (2b2ed03). Frontend only, apart from one line of the agent's workspace tool. These decisions replace the outline above where they differ.
+
+**Files** (`app/src/features/tables/`):
+- `types.ts`: the serialised shapes of `table_commands.rs` (`JobView` with `heartbeatAt`, `FillStart.start` = `started | already_running | held_elsewhere | at_cap`, `FillCancel.pending` with `leaseExpiresAt`, `HandFill`, `PaperCapture`, `TablesSettings`). `CellValue` is discriminated by `kind`.
+- `api.ts`: one `invoke` wrapper per command; `tableError` keeps the error code as sent (the research API's `toResearchError` maps unknown codes to `unknown`, which would erase `model_refused`, `fill_running` and the rest); `onTableChanged`.
+- `model.ts` (pure): `inKind`/`typedValue` (the TypeScript form of `typed_value(spec, display())`, with Unicode digits as in Rust's `\d`), `cellValue` (null for `value_no_longer_fits`), `sortRows`, `filterRows`, `cellMark`, `isStale` (revision only: the paper hash is not known to the interface), `nextCell` (arrows, Home/End, Ctrl+Home/End, PageUp/PageDown), `quoteSegments` (the answer's words marked in the quote; a symbol such as `%` has no word edge), `cellSource`, `specProblem`/`cleanSpec` (the backend's spec checks), `paperKey`, `addBatches`, `PRESET_COLUMNS`.
+- `format.ts` (pure): `REASONS`, the single list of every code with its words (`REASON_CODES`); `reasonText` (generic but non-empty for an unknown code; `refill_failed:<code>` reads "Couldn't refresh: …"); `splitError`; `pauseText`, `fillStatusText`, `fillStartOutcome`, `cancelOutcome`, `handFillOutcome`, `cellExplanation`; `localTime`/`callsLine`/`capNotice` (the UTC reset shown in the user's locale and time zone: "05:30", "05:30 tomorrow", "05:30 on Sat 24 Oct").
+- Components: `TablesTab` (list, New table with presets, one open table), `TableGrid`, `CellPanel`, `ColumnDialog`, `FillDialog` (with `ModelProblem`), `AddPapersDialog`, `NewTableDialog`, `useFillStatus`, `ui.ts`.
+- `app/src/components/EvidenceTableSettings.tsx`: Settings → Tables (a new section).
+
+**Decisions**
+- **Fill status.** `useFillStatus` reads `fill_status` at once and on every `table_changed` of the table. It polls only while a job is active: every 2 s while queued or running, every 15 s while paused (the scheduler takes a paused job up without a change event at the run's start). Nothing is polled while the window is hidden; the status is read again when it is shown. The next poll is scheduled when the last one answered, and only the newest answer is shown. A change in the job's state, calls or papers done reloads the table, so cells appear as papers finish.
+- **Pause wording.** A quota pause whose resume is at most an hour away is the rate limit ("goes on at 15:32"); a later one is the provider's daily quota; none is the ladder's end (needs you). `model_unavailable` names its `last_error` code (`refused_reasoning`: "This model always thinks at length and can't be capped; pick another model for tables"). A `running` job whose heartbeat is more than 6 minutes old (one call's timeout plus margin) is shown as held by a run that stopped answering, with the lease's end (heartbeat + 10 minutes).
+- **Refused models** are said in the Fill dialog (from `fill_estimate` and `fill_start`), kept as a banner on the table after the dialog closes, and in the paused job's status. Each has "Open Settings → Model".
+- **Hand-fill refusals** (`fill_running`, `hand_fill_running`, `diagnostics_off`) are inline notes in the cell panel, not error toasts.
+- **Settings → Tables** holds the daily cap (`tables_settings_set` always sends the cap; diagnostics only when toggled) and the diagnostics switch. With diagnostics on, a paper's panel offers "Run quality check on this paper" (`table_fill_paper`), and the table's menu offers "Export captures…", written as JSON through the save dialog and `writeTextFile`, as visuals are exported.
+- **Open in PDF** dispatches `showSourceBox` (the app-wide source-box dialog: `FileViewer` at the page with the boxes outlined), with the row's `documentId` as the path. `path_key` lower-cases on Windows; the viewer canonicalises the path, so the file opens on a case-insensitive file system. A cell with boxes but no page opens at its first boxed page.
+- **Adding papers.** The dialog lists the workspace's file and paper sources with a path, and a folder's indexed files when asked (`get_source_files`, as the Library does). Papers the table has are shown and cannot be picked again. More than 500 are sent in batches.
+- **Workspace wiring.** `'tables'` is in `WorkspaceTab`, `WORKSPACE_TABS`, the labels, the agent's navigation target list (`features/agent/navigation.ts`) and the agent tool's `TABS` (`agent_tools/workspaces.rs`). `WorkspacePage` loads `TablesTab` lazily.
+
+**Tests** (`node --test`)
+- `tablesModel.test.ts`:
+  - `inKind`: a Text "2021" in a number column, a Number in a text column, the number rule, case-blind yes/no and options, text length in characters;
+  - sorting with units, empties last both ways, a flagged cell last, pick-list order and titles;
+  - filters through `inKind`, status filters;
+  - marks, staleness, keyboard movement at the edges;
+  - quote marking, the cell's source;
+  - presets and spec checks, paper keys, batches.
+- `tablesFormat.test.ts`:
+  - **every code the Rust sources send has words of its own.** The test reads `research/tables/*.rs` (`pub const …: &str`), `table_commands.rs` (`coded(…)`, `model_error`, `halt_code`), `memory_learn.rs` (`TableModelError::code`) and `research_commands.rs` (the error codes), so a new backend code fails the test until it is worded;
+  - the validate reasons equal `validate::reason`'s words, read from `validate.rs`;
+  - every `PauseReason` (read from `jobs.rs`) has its own words; rate limit against daily quota; needs-you pauses; each `model_unavailable` code;
+  - local-time reset in fixed time zones (Asia/Kolkata, America/New_York);
+  - each `fill_start` result, a pending cancel with and without a lease, hand-fill outcomes, cap notices, cell explanations (including `refill_failed`).
+
+**Agent coverage.** `agent-coverage.json` excludes the 22 table commands, each with its reason. The commands that spend model calls (`fill_start`, `cell_refill`, `table_fill_paper`) and the cap (`tables_settings_set`) are user-only. The reading and editing commands are recorded as having no agent tools yet; their exclusions point to "Agent tools for tables" under Follow-ups below.
+
+**Open risks**
+- **The model picker does not warn** about a model tables refuse. No command says whether a model id is refused, and tables use the app's model, so the refusal is shown when a fill is estimated or started, and on a paused job. A picker warning needs a backend query of the reasoning rule.
+- **Staleness from a changed paper file** (`paper_hash`) is not shown: the interface does not know the file's hash. Such cells refill on the next run, as before.
+- **No component tests:** the React components are checked by the type check only. All the logic they show is in the pure modules above.
+
+### Fix round (review of #92)
+
+Fifteen findings (two major). These decisions replace the ones above where they differ.
+
+1. **Outcomes follow the cells (F1).**
+   - `handFillOutcome(fill, columnName)` reads `HandFill.cells`. A reply that could not be read, or a column the reply left out, sets no model or paper error; only the stored cell says it.
+   - Every cell answered → success. Some failed (`failed`, or `refill_failed:<code>` on a kept result) → a warning naming each column and its reason. All failed → an error.
+   - A finished fill counts the cells it left failed (`failedCellsSince(cells, job.createdAt)`, the same string comparison `papers_done` makes) and says "Filled N papers with M calls; K cells couldn't be filled" in the warning tone when K > 0.
+2. **The place survives a trip to Settings (F2).** `features/workspaces/place.ts` keeps the open workspace, its tab and each workspace's open table at module level for the app's run. `WorkspacesView` starts from it, and `TablesTab` opens the remembered table. A navigation target still wins.
+3. **The backend says what the UI had guessed (F3).**
+   - **(a) The limit window is kept with the pause.** `quota_pause` stores `model_quota:daily|short|unknown` in `last_error` (`LimitWindow::as_str`). `pauseText` words the daily quota only for `daily`; the one-hour guess is gone, so the wording never changes category as time passes.
+   - **(b) Who runs a running job.** `fill_status` adds `run` (`here | elsewhere | stopped`, from `job_hold` and the scheduler; `run_holder`, tested) and `leaseExpiresAt`.
+     - `elsewhere`: "Another run of Shodh is filling this table (last heard from at …); if it stops, the fill goes on here by <lease end>". It becomes "Not responding … goes on here by <lease end>" once the heartbeat is older than `QUIET_RUN_MS` (6 minutes, above the 300 s client timeout).
+     - `stopped`: "goes on here within a minute".
+     - A spinner shows only for `here`.
+4. **Grid (F4, F5, F9, F10).**
+   - The grid is one tab stop. The header row is row 0 of the arrow-key model; on a header, Enter or Space sorts and Shift+F10 or the menu key opens the column's options. The table's `aria-describedby` says so.
+   - Focus moves only after a key really moved it, and only while the focus is in the grid.
+   - The column menu is a portal at fixed coordinates, so the scroll box cannot clip it. It closes on scroll or resize and gives the focus back to its header.
+   - Empty cells read "Not filled yet" through `sr-only` text.
+5. **Loads (F6).**
+   - `table_get` runs one at a time with at most one queued, and only the newest answer is shown.
+   - The table list is not reread while a table is open.
+   - `table_get` still scans the index for file names (`file_names`, `document_sources`/`document_names`) on every call. Caching it needs invalidation on indexing and `rows_add`, so it is a follow-up below, not part of this PR.
+6. **Status line (F7, F8).**
+   - A failed refresh after the first one says "Couldn't refresh the fill status" under the line.
+   - The live region carries only the state text (`StatusText.text`, which changes with the job's state, pause reason and cancel). The counts (`progress`) are plain text.
+7. **Fills by hand outlive the panel (F11).** `TableEditor` keeps each Refill (per cell) and quality check (per paper): busy and outcome. Moving the selection keeps both, and an outcome that ends while its cell is not shown also comes as a toast.
+8. **Smaller fixes:**
+   - **F13:** Settings → Tables names the reset in local time.
+   - **F15:** `onFill` takes no argument.
+   - **F14:** `tablesConstants.test.ts` reads the Rust sources and checks every mirrored limit: `MAX_COLUMNS` evaluated from `MAX_COLUMNS_PER_CALL × MAX_CALLS_PER_PAPER`, the option and text limits, `MAX_EDIT_CHARS`, `MAX_ROWS_PER_ADD`, `LEAST_PAPER_CALLS`, `LEASE_MINUTES`, and `QUIET_RUN_MS` against the client timeout. The DST case of "tomorrow" is tested; "tomorrow" is now the next calendar day, not 24 hours on.
+
+## Follow-ups
+
+- **Agent tools for tables: read-only tables_list/table_get first.** They let the assistant answer from verified cells with their quotes ("which of these papers use SIFT1M?"), in the pattern of `agent_tools/research.rs`. Fills stay user-only, because they spend the daily cap. `agent-coverage.json` points here from each table exclusion.
+- **`table_get` without a full index scan.** Keep the rows' file names per table, invalidated on `rows_add` and on indexing, instead of `document_sources()`/`document_names()` on every call.
+- **The model picker warns about a model tables refuse,** through a backend query of the `ReasoningRule`.
+
 # PR 5 — Export and the accuracy eval (outline)
 
 Branch: `feat/evidence-table-export-eval`.

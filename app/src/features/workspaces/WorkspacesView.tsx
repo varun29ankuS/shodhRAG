@@ -11,6 +11,7 @@ import { useWorkspaces } from './WorkspaceContext';
 import { SHOW_ARCHIVED_WORKSPACES, takeArchivedRequest } from './archivedRequest';
 import { WorkspaceIcon } from './WorkspaceIcon';
 import { WorkspacePage } from './WorkspacePage';
+import { lastWorkspacePlace, rememberWorkspacePlace } from './place';
 import type { LibraryFolder } from './SourcesTab';
 import { FOCUS_RING, PRIMARY_BUTTON, QUIET_BUTTON } from './ui';
 
@@ -73,8 +74,12 @@ export default function WorkspacesView({
   onOpenChat: (conversationId: string) => void;
 }) {
   const { workspaces, allWorkspaces, status, error, refresh, setOpenWorkspaceId, newWorkspacePending, takeNewWorkspaceRequest } = useWorkspaces();
-  const [selected, setSelected] = useState<string | null>(null);
-  const [tab, setTab] = useState<WorkspaceTab>('overview');
+  // Back where the user was when this view was last shown (a trip to Settings and back).
+  const [selected, setSelected] = useState<string | null>(() => lastWorkspacePlace().workspaceId);
+  const [tab, setTab] = useState<WorkspaceTab>(() => lastWorkspacePlace().tab);
+  useEffect(() => {
+    rememberWorkspacePlace({ workspaceId: selected, tab });
+  }, [selected, tab]);
   const [creating, setCreating] = useState(false);
   const [createTemplate, setCreateTemplate] = useState<string | null>(null);
   // Also opened from the sidebar when every chat is in an archived workspace.

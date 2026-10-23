@@ -381,7 +381,7 @@ async fn a_quota_error_pauses_until_the_reset_and_resumes_after_it() {
     );
     let job_now = job_of(&e, &job.id);
     assert_eq!(job_now.state, JobState::Paused);
-    assert_eq!(job_now.last_error.as_deref(), Some(MODEL_QUOTA));
+    assert_eq!(job_now.last_error.as_deref(), Some("model_quota:daily"));
     assert_eq!(
         e.counter.count(today(&e)).unwrap(),
         2,
@@ -1329,9 +1329,14 @@ async fn lowering_the_cap_mid_run_pauses_before_the_next_paper() {
 #[tokio::test]
 async fn a_quota_pause_reports_which_limit_it_was() {
     let now = utc(2099, 1, 1, 12, 0);
-    for (error, window) in [
-        (DAILY_LIMIT, LimitWindow::Daily),
-        (UPSTREAM_LIMIT, LimitWindow::Short),
+    for (error, window, stored) in [
+        (DAILY_LIMIT, LimitWindow::Daily, "model_quota:daily"),
+        (UPSTREAM_LIMIT, LimitWindow::Short, "model_quota:short"),
+        (
+            "HTTP 429 Too Many Requests: rate limit, retry after 20 seconds",
+            LimitWindow::Unknown,
+            "model_quota:unknown",
+        ),
     ] {
         let e = env_at(1, now);
         let r = runner(&e, paper_index(), replies(vec![Err(error)]), 30, "p");
@@ -1345,6 +1350,8 @@ async fn a_quota_pause_reports_which_limit_it_was() {
             }
         ));
         assert_eq!(report.quota_window, Some(window));
+        // The pause keeps which limit it was, for the interface to word.
+        assert_eq!(job_of(&e, &job.id).last_error.as_deref(), Some(stored));
     }
     let e = env(1);
     let r = runner(&e, paper_index(), replies(vec![Err(AUTH_ERROR)]), 30, "p");

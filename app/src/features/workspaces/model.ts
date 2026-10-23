@@ -10,7 +10,7 @@
 import type { AnswerScope } from '../agent/useAgentSession';
 import type { SourceCounts, SourceKind, SourceState, Workspace, WorkspaceTab, WorkspaceTemplate } from './types';
 
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results'];
+export const WORKSPACE_TABS: readonly WorkspaceTab[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results', 'tables'];
 
 export const WORKSPACE_TAB_LABELS: Record<WorkspaceTab, string> = {
   overview: 'Overview',
@@ -20,6 +20,7 @@ export const WORKSPACE_TAB_LABELS: Record<WorkspaceTab, string> = {
   memory: 'Memory',
   visuals: 'Visuals',
   results: 'Results & graph',
+  tables: 'Tables',
 };
 
 /** Icons a workspace may use (mirrors `shodh_rag::workspaces::ICONS`). */

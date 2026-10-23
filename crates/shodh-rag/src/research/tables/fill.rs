@@ -99,6 +99,17 @@ pub enum LimitWindow {
     Unknown,
 }
 
+impl LimitWindow {
+    /// The window as a paused job's `last_error` names it (`model_quota:<window>`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Short => "short",
+            Self::Daily => "daily",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// A failed model call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFailure {

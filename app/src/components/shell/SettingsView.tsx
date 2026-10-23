@@ -9,12 +9,13 @@ import NotificationSettings from '../NotificationSettings';
 import MemorySettings from '../MemorySettings';
 import AnswerCheckSettings from '../AnswerCheckSettings';
 import TableModelSettings from '../TableModelSettings';
+import EvidenceTableSettings from '../EvidenceTableSettings';
 import ScanReaderSettings from '../ScanReaderSettings';
 import ToolsSettings from '../ToolsSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 
-export type SettingsSection = 'models' | 'search' | 'tools' | 'general' | 'notifications' | 'privacy' | 'memory' | 'data';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'tables' | 'general' | 'notifications' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -31,6 +32,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'tools',
     label: 'Tools & connections',
     description: 'What the assistant can use: its built-in tools, MCP servers you connect (with which tools ask first), and skills.',
+  },
+  {
+    id: 'tables',
+    label: 'Tables',
+    description: 'How many model calls evidence tables may make per day, and the diagnostics that keep a fill’s model calls for checking.',
   },
   {
     id: 'general',
@@ -169,6 +175,8 @@ export default function SettingsView({
                 </>
               ) : section === 'tools' ? (
                 <ToolsSettings />
+              ) : section === 'tables' ? (
+                <EvidenceTableSettings />
               ) : section === 'general' ? (
                 <BackgroundSettings />
               ) : section === 'notifications' ? (

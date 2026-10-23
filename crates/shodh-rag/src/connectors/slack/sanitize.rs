@@ -177,9 +177,12 @@ fn path_patterns() -> &'static [PathPattern] {
             (format!(r"(?i)\b[a-z]:[\\/]{tail}"), false),
             // Root-relative Windows paths of two parts or more: \Users\…, \Clients\acme\…
             (
-                // The first part has no spaces and no TeX characters, so `\alpha \beta` or
+                // The first part neither ends in a space (Windows forbids it in a name) nor
+                // holds TeX characters, so `\Program Files\…` goes but `\alpha \beta` or
                 // `\frac{a}{b}\cdot` quoted from a paper stays.
-                format!(r#"(?P<pre>^|[^\\\w:])\\{first}[^\s{NOT_IN_PART}{{}}$^]*\\{tail}"#),
+                format!(
+                    r#"(?P<pre>^|[^\\\w:])\\[^\s{NOT_IN_PART}{{}}$^](?:[^{NOT_IN_PART}{{}}$^]*[^\s{NOT_IN_PART}{{}}$^])?\\{tail}"#
+                ),
                 true,
             ),
             // Home folders on macOS, Linux and WSL, even alone: /Users, /home/x, /mnt/c/Users/…
@@ -541,6 +544,17 @@ mod tests {
             "Dates 12/03/2024 and km/h stay.",
         ] {
             assert_eq!(sanitize(text, &terms()), text);
+        }
+    }
+
+    #[test]
+    fn root_relative_paths_with_spaces_in_their_first_part_are_removed() {
+        for text in [
+            r"see \Program Files\Acme\Clients\plan.pdf today",
+            r"see \OneDrive - Acme\Clients\Board.pdf today",
+        ] {
+            let out = sanitize(text, &PrivateTerms::default());
+            assert_eq!(out, "see [local path] today", "{text}");
         }
     }
 

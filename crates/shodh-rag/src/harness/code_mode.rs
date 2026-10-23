@@ -24,9 +24,16 @@
 //!   and returns to the original one ([`discard_changes`]). Files git
 //!   ignores are not in that commit, so changes to them always ask
 //!   ([`change_target`]).
-//! - Files that can run programs by themselves (`.vscode/`, `.envrc`,
-//!   `package.json`, ...: [`execution_risk`]) always ask, with a warning;
+//! - Files that can run programs by themselves or through a build or test
+//!   command (`.vscode/`, `.envrc`, `package.json`, `build.rs`,
+//!   `conftest.py`, ...: [`execution_risk`]) always ask, with a warning;
 //!   the guard refuses edits and writes in `.git/`.
+//! - A command a test or build runs can run any file of the folder, so the
+//!   files that changed without the user seeing the change (edits applied
+//!   without asking, cut previews, what commands and MCP tools wrote) are
+//!   listed per conversation, and allowlisted commands ask until the user
+//!   approves one whose prompt showed every listed file ([`ReviewState`],
+//!   [`tree_snapshot`]).
 //! - Shodh's own git commands run without hooks, the file system monitor or
 //!   content filters ([`git`], [`run_git`]), so files in the folder cannot
 //!   make them run programs.
@@ -156,7 +163,12 @@ fn code_settings() -> Value {
         "grep": { "enabled": true },
         "glob": { "enabled": true },
         "astGrep": { "enabled": true },
-        "bash": { "enabled": true, "patterns": [] },
+        // No background jobs or services: a command ends with its tool call,
+        // so an edit applied without asking cannot land while a command is
+        // still running ([`ReviewState`]).
+        "async": { "enabled": false },
+        "launch": { "enabled": false },
+        "bash": { "enabled": true, "patterns": [], "autoBackground": { "enabled": false } },
         "bashInterceptor": { "enabled": false },
         "lsp": { "enabled": false },
         "workspace": { "additionalDirectories": [] },
@@ -642,30 +654,201 @@ pub fn execution_risk(relative: &Path) -> Option<&'static str> {
     if parts.len() >= 3 && parts[0] == ".github" && parts[1] == "workflows" {
         return Some("CI workflows run commands when the change is pushed.");
     }
-    match name {
-        ".envrc" => Some("direnv runs .envrc in the shell before each command."),
-        "mcp-arch.yaml" | "mcp-arch.yml" => {
-            Some("enola runs the programs mcp-arch.yaml names when it builds a snapshot.")
+    if parts.iter().any(|p| p == ".mvn") {
+        return Some("Maven settings and extensions here run with every Maven command.");
+    }
+    if parent == Some(".cargo") && (name == "config" || name == "config.toml") {
+        return Some("Cargo settings can run programs with every cargo command.");
+    }
+    RUNS_PROGRAMS
+        .iter()
+        .find(|(patterns, _)| patterns.iter().any(|pattern| pattern.matches(name)))
+        .map(|(_, risk)| *risk)
+}
+
+/// How [`RUNS_PROGRAMS`] names a file (lowercase, compared with the
+/// lowercased file name).
+enum FileName {
+    /// Exactly this name.
+    Is(&'static str),
+    /// A name with this ending (dot included).
+    EndsWith(&'static str),
+    /// A name with this beginning, such as `jest.config.` for every
+    /// `jest.config.*`.
+    StartsWith(&'static str),
+}
+
+impl FileName {
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            FileName::Is(exact) => name == *exact,
+            FileName::EndsWith(end) => name.ends_with(end),
+            FileName::StartsWith(start) => name.starts_with(start),
         }
-        "package.json" => Some("Its scripts run with npm commands, tests included."),
-        ".npmrc" => Some("npm settings can choose the program that runs scripts."),
-        ".pre-commit-config.yaml" | ".pre-commit-config.yml" => {
-            Some("pre-commit runs the hooks this file names on every commit.")
-        }
-        "lefthook.yml"
-        | "lefthook.yaml"
-        | ".lefthook.yml"
-        | ".lefthook.yaml"
-        | "lefthook-local.yml"
-        | "lefthook-local.yaml" => {
-            Some("lefthook runs the commands this file names on git events.")
-        }
-        "config" | "config.toml" if parent == Some(".cargo") => {
-            Some("Cargo settings can run programs with every cargo command.")
-        }
-        _ => None,
     }
 }
+
+/// Files, wherever they are in the code folder, whose change can run
+/// programs by itself or when a build or test command runs (the allowlist's
+/// `cargo test`, `npm test` and `pytest` included), with the reason the
+/// prompt shows. Folder rules (`.git`, `.vscode`, hooks folders, CI
+/// workflows, `.cargo/config`) are in [`execution_risk`]; every file rule is
+/// here.
+const RUNS_PROGRAMS: &[(&[FileName], &str)] = {
+    use FileName::{EndsWith, Is, StartsWith};
+    &[
+        (
+            &[Is(".envrc")],
+            "direnv runs .envrc in the shell before each command.",
+        ),
+        (
+            &[Is("mcp-arch.yaml"), Is("mcp-arch.yml")],
+            "enola runs the programs mcp-arch.yaml names when it builds a snapshot.",
+        ),
+        (
+            &[Is("package.json")],
+            "Its scripts run with npm commands, tests included.",
+        ),
+        (
+            &[Is(".npmrc")],
+            "npm settings can choose the program that runs scripts.",
+        ),
+        (
+            &[Is(".yarnrc"), Is(".yarnrc.yml"), Is(".pnpmfile.cjs")],
+            "Yarn and pnpm settings can choose code that runs with every install and script.",
+        ),
+        (
+            &[
+                StartsWith("jest.config."),
+                StartsWith("vitest.config."),
+                StartsWith("vitest.workspace."),
+                StartsWith(".mocharc."),
+            ],
+            "The test runner loads the code this file names when the tests run.",
+        ),
+        (
+            &[Is(".pre-commit-config.yaml"), Is(".pre-commit-config.yml")],
+            "pre-commit runs the hooks this file names on every commit.",
+        ),
+        (
+            &[
+                Is("lefthook.yml"),
+                Is("lefthook.yaml"),
+                Is(".lefthook.yml"),
+                Is(".lefthook.yaml"),
+                Is("lefthook-local.yml"),
+                Is("lefthook-local.yaml"),
+            ],
+            "lefthook runs the commands this file names on git events.",
+        ),
+        (
+            &[Is("build.rs")],
+            "Cargo compiles and runs build.rs with every build, tests included.",
+        ),
+        (
+            &[Is("cargo.toml")],
+            "Cargo.toml chooses the build scripts, macros and dependencies that run with \
+             every cargo command, tests included.",
+        ),
+        (
+            &[Is("rust-toolchain"), Is("rust-toolchain.toml")],
+            "rustup reads this file to choose the compiler programs cargo runs.",
+        ),
+        (
+            &[Is("conftest.py")],
+            "pytest runs conftest.py when the tests run.",
+        ),
+        (
+            &[
+                Is("pytest.ini"),
+                Is(".pytest.ini"),
+                Is("pyproject.toml"),
+                Is("setup.cfg"),
+                Is("tox.ini"),
+            ],
+            "pytest and Python build tools read these settings, which can load plugins \
+             and run code.",
+        ),
+        (
+            &[Is("setup.py"), Is("noxfile.py")],
+            "Python runs this file when the project is built, installed or tested.",
+        ),
+        (
+            &[
+                Is("sitecustomize.py"),
+                Is("usercustomize.py"),
+                EndsWith(".pth"),
+            ],
+            "Python runs this file at start-up, before any script or test.",
+        ),
+        (
+            &[Is("pyvenv.cfg")],
+            "It chooses the Python program a virtual environment runs.",
+        ),
+        (
+            &[Is("makefile"), Is("gnumakefile"), EndsWith(".mk")],
+            "make runs the commands this file names.",
+        ),
+        (
+            &[Is("cmakelists.txt"), EndsWith(".cmake")],
+            "CMake runs the commands this file names when the project is configured or built.",
+        ),
+        (
+            &[Is("justfile"), Is(".justfile")],
+            "just runs the recipes this file names.",
+        ),
+        (
+            &[
+                StartsWith("vite.config."),
+                StartsWith("babel.config."),
+                Is(".babelrc"),
+                StartsWith(".babelrc."),
+                StartsWith("playwright.config."),
+                StartsWith("karma.conf."),
+                StartsWith("webpack.config."),
+                Is(".nycrc"),
+                StartsWith(".nycrc."),
+            ],
+            "JavaScript build and test tools load the code this file names when they run.",
+        ),
+        (
+            &[EndsWith(".code-workspace")],
+            "Editor workspace tasks can run commands when the workspace is opened.",
+        ),
+        (
+            &[
+                Is("build.gradle"),
+                Is("build.gradle.kts"),
+                Is("settings.gradle"),
+                Is("settings.gradle.kts"),
+                Is("gradle.properties"),
+                Is("gradle-wrapper.properties"),
+                Is("gradlew"),
+                Is("gradlew.bat"),
+            ],
+            "Gradle runs this build logic, or downloads the Gradle it names, with every build and test.",
+        ),
+        (
+            &[Is("pom.xml"), Is("mvnw"), Is("mvnw.cmd")],
+            "Maven runs the plugins this file names with every build and test.",
+        ),
+        (
+            &[
+                EndsWith(".csproj"),
+                EndsWith(".fsproj"),
+                EndsWith(".vbproj"),
+                Is("directory.build.props"),
+                Is("directory.build.targets"),
+                Is("global.json"),
+            ],
+            "MSBuild runs the targets these files name with every dotnet build and test.",
+        ),
+        (
+            &[Is("go.mod"), Is("go.work")],
+            "go.mod can name the Go toolchain that runs every go command.",
+        ),
+    ]
+};
 
 /// `target` relative to `root`, when it is inside it. Compared without
 /// case on Windows, where the guard and Rust may spell a folder differently.
@@ -855,32 +1038,387 @@ fn git_takes_changes(folder: &Path, relative: &Path) -> Result<bool, String> {
 pub const UNTRACKED_UNDO: &str =
     "This file is not tracked by git; this change cannot be undone by Discard.";
 
+/// What the user has not reviewed in a conversation's code folder. A
+/// command can run any file of the folder (a test, a module a test imports,
+/// a file a script reads), so an allowlisted command runs without asking
+/// only while nothing here is listed ([`auto_approval`]). Files are cleared
+/// only when the user approves an allowlisted command whose prompt showed
+/// every one of them ([`ShownReview`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReviewState {
+    /// Files changed without the user seeing the change (relative to the
+    /// folder, `/`-separated): edits applied without asking, edits whose
+    /// prompt cut the content, and files commands and MCP tools changed.
+    pub files: Vec<String>,
+    /// Why Shodh cannot tell what changed (a command ran outside git, a
+    /// snapshot failed, a call stopped before it could be compared); while
+    /// set, allowlisted commands ask.
+    pub unknown: Option<String>,
+    /// Commands the user approved that start a process that keeps running.
+    /// Shodh cannot see when such a process stops, so while any is listed,
+    /// every edit and write of the conversation asks.
+    pub background: Vec<String>,
+    /// Commands and MCP tool calls allowed to run whose changes have not
+    /// been compared yet (call id → label). Written before the call may
+    /// start and removed with its result, so a call cut off by a crash or a
+    /// closed session still counts: while any is listed, commands ask.
+    pub uncompared: std::collections::BTreeMap<String, String>,
+}
+
+impl ReviewState {
+    /// The state when the conversation's record cannot be read: counted as
+    /// changed, so commands ask.
+    pub fn unreadable(reason: &str) -> Self {
+        ReviewState {
+            unknown: Some(format!(
+                "Shodh could not read which files changed without your review ({reason})"
+            )),
+            ..ReviewState::default()
+        }
+    }
+
+    /// Whether the user has seen every change, so an allowlisted command
+    /// may run by itself.
+    pub fn is_clear(&self) -> bool {
+        self.files.is_empty() && self.unknown.is_none() && self.uncompared.is_empty()
+    }
+
+    /// List `changed` (folder-relative paths) as not reviewed.
+    pub fn add_files<I: IntoIterator<Item = String>>(&mut self, changed: I) {
+        for file in changed {
+            if !self.files.contains(&file) {
+                self.files.push(file);
+            }
+        }
+    }
+
+    /// Record that Shodh cannot tell what changed, and why.
+    pub fn mark_unknown(&mut self, reason: String) {
+        self.unknown = Some(reason);
+    }
+
+    /// The user approved an allowlisted command whose prompt showed `shown`:
+    /// exactly those files, and the unknown note if it was the one shown,
+    /// count as reviewed. Anything listed after the prompt opened stays.
+    pub fn clear_shown(&mut self, shown: &ShownReview) {
+        self.files.retain(|file| !shown.files.contains(file));
+        if shown.unknown.is_some() && self.unknown == shown.unknown {
+            self.unknown = None;
+        }
+        self.uncompared
+            .retain(|id, _| !shown.uncompared.contains(id));
+    }
+
+    /// The call `id` (`label`) may change files: until its result is
+    /// recorded ([`ReviewState::compared`]), commands ask.
+    pub fn start_call(&mut self, id: &str, label: &str) {
+        self.uncompared.insert(id.to_string(), label.to_string());
+    }
+
+    /// The call `id` was compared: list what it changed, or why that cannot
+    /// be told.
+    pub fn compared(&mut self, id: &str, changed: Result<Vec<String>, String>) {
+        self.uncompared.remove(id);
+        match changed {
+            Ok(files) => self.add_files(files),
+            Err(reason) => self.mark_unknown(reason),
+        }
+    }
+}
+
+/// What a command prompt showed of the [`ReviewState`]: every listed file,
+/// and the unknown note. Approving that prompt clears exactly this.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShownReview {
+    pub files: Vec<String>,
+    pub unknown: Option<String>,
+    /// Ids of the uncompared calls the prompt named.
+    pub uncompared: Vec<String>,
+}
+
+/// Preview key of the files a command prompt lists as changed without
+/// review: every one of them, as an array.
+pub const UNREVIEWED_KEY: &str = "changed_without_review";
+
+/// Preview key of what approving does with those files.
+pub const REVIEW_NOTE_KEY: &str = "review_note";
+
+/// Preview key of the token the prompt that showed the files sends back with
+/// its approval; only then is [`ShownReview`] cleared. An approval without
+/// it (the Inbox, a keyboard shortcut) runs the command and clears nothing.
+pub const REVIEW_TOKEN_KEY: &str = "review_token";
+
+/// What is going on in the session that bears on a guarded call.
+#[derive(Debug, Clone, Copy)]
+pub struct GateContext<'a> {
+    /// The conversation's [`ReviewState`].
+    pub review: &'a ReviewState,
+    /// The code folder.
+    pub root: &'a Path,
+    /// A command or MCP tool call allowed earlier that is still running (its
+    /// label): it may run, or be changed by, what this call does.
+    pub running: Option<&'a str>,
+    /// An MCP tool of the session that can change files without asking (its
+    /// name): omp runs it in the same step as a command, at the same time.
+    pub unasked_writer: Option<&'a str>,
+}
+
+/// Bash arguments that do nothing when given as these (some model layers
+/// send every optional argument, empty).
+fn unset(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(false) => true,
+        Value::String(text) => text.trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// `path` with `.` and `..` resolved without touching the disk.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Whether a command's `cwd` is the code folder itself (or not given).
+fn runs_in_root(cwd: &Value, root: &Path) -> bool {
+    if unset(cwd) {
+        return true;
+    }
+    let Some(cwd) = cwd.as_str() else {
+        return false;
+    };
+    let path = Path::new(cwd.trim());
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    same_path(&lexical(&joined), &lexical(root))
+}
+
+/// Whether a bash call is only a command run in the code folder: no time
+/// limit, terminal, background job, service or any other argument.
+pub fn plain_command_input(input: &Value, root: &Path) -> bool {
+    let Some(map) = input.as_object() else {
+        return false;
+    };
+    map.get("command").and_then(Value::as_str).is_some()
+        && map.iter().all(|(key, value)| match key.as_str() {
+            "command" => true,
+            "cwd" => runs_in_root(value, root),
+            _ => unset(value),
+        })
+}
+
+/// Why a command's arguments are refused, or `None`: Code mode starts no
+/// background job (`async`) or service (`name`, `ready`). omp's settings
+/// switch both off; this refuses them even if a setting were missed.
+pub fn background_arguments(request: &GuardRequest) -> Option<&'static str> {
+    if request.tool != "bash" {
+        return None;
+    }
+    let input = &request.input;
+    let set = |key: &str| input.get(key).is_some_and(|value| !unset(value));
+    (set("async") || set("name") || set("ready")).then_some(
+        "Code mode does not start background jobs or services. Run the command in the foreground, or ask the user to start it outside Shodh.",
+    )
+}
+
+/// Programs that start something that keeps running after the command
+/// returns.
+const DETACHING_PROGRAMS: [&str; 12] = [
+    "nohup",
+    "setsid",
+    "disown",
+    "start-process",
+    "saps",
+    "start-job",
+    "sajb",
+    "screen",
+    "tmux",
+    "systemd-run",
+    "daemonize",
+    "launchctl",
+];
+
+/// Whether `command` starts a process that keeps running after it returns:
+/// a lone `&` outside quotes, `start`, or a program that detaches one. A
+/// heuristic for the prompt's note; it never lets a command run unasked.
+pub fn starts_background(command: &str) -> bool {
+    let chars: Vec<char> = command.chars().collect();
+    let mut quote: Option<char> = None;
+    for (at, &c) in chars.iter().enumerate() {
+        match quote {
+            Some(open) if c == open => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '&' => {
+                let before = at.checked_sub(1).map(|i| chars[i]);
+                let after = chars.get(at + 1).copied();
+                if !matches!(before, Some('&' | '>' | '<' | '|'))
+                    && !matches!(after, Some('&' | '>'))
+                {
+                    return true;
+                }
+            }
+            None => {}
+        }
+    }
+    segments(command).iter().any(|words| {
+        let first = words.first().map(|w| program_name(w)).unwrap_or("");
+        first == "start"
+            || (first == "cmd"
+                && words
+                    .windows(2)
+                    .any(|pair| matches!(pair[0].as_str(), "/c" | "/k") && pair[1] == "start"))
+            || words
+                .iter()
+                .any(|word| DETACHING_PROGRAMS.contains(&program_name(word)))
+    })
+}
+
+/// Whether Trusted would run this command without asking if nothing were
+/// listed as unreviewed: exactly an allowlist entry, run in the code folder
+/// with no other argument, not destructive, starting nothing that keeps
+/// running. Only approving such a command marks files reviewed: it is the
+/// action the list protects.
+pub fn command_eligible(
+    settings: &CodeSettings,
+    request: &GuardRequest,
+    plan: &ChangePlan,
+    root: &Path,
+) -> bool {
+    let command = str_arg(&request.input, "command");
+    request.tool == "bash"
+        && !matches!(plan, ChangePlan::Refuse(_))
+        && destructive_reason(command).is_none()
+        && !starts_background(command)
+        && plain_command_input(&request.input, root)
+        && settings.allows(command)
+}
+
 /// Why a guarded call may run without asking under `settings`, or `None`
-/// when the user decides. Destructive commands always ask; edits run by
-/// themselves only while a branch can undo them, and only in files that
-/// cannot run programs (`target`, [`change_target`]).
+/// when the user decides. Destructive commands always ask. Edits run by
+/// themselves only while a branch can undo them, only in files that cannot
+/// run programs (`target`, [`change_target`]) and only while no process the
+/// user started may still be running. An allowlisted command
+/// ([`command_eligible`]) runs by itself only while the user has seen every
+/// change ([`ReviewState::is_clear`]), nothing else is running and no MCP
+/// tool can change files without asking.
 pub fn auto_approval(
     settings: &CodeSettings,
     request: &GuardRequest,
     plan: &ChangePlan,
     target: ChangeTarget,
+    gate: &GateContext<'_>,
 ) -> Option<&'static str> {
     let undoable = matches!(plan, ChangePlan::Continue(_) | ChangePlan::CreateBranch);
     match request.tool.as_str() {
         "edit" | "write" => (undoable
             && settings.approval != ApprovalLevel::AskEveryTime
-            && target == ChangeTarget::Plain)
-            .then_some("the workspace applies edits automatically"),
-        "bash" => {
-            let command = str_arg(&request.input, "command");
-            let trusted = settings.approval == ApprovalLevel::Trusted
-                && !matches!(plan, ChangePlan::Refuse(_))
-                && destructive_reason(command).is_none()
-                && settings.allows(command);
-            trusted.then_some("the command is on the workspace's allowlist")
-        }
+            && target == ChangeTarget::Plain
+            && gate.review.background.is_empty())
+        .then_some("the workspace applies edits automatically"),
+        "bash" => (settings.approval == ApprovalLevel::Trusted
+            && command_eligible(settings, request, plan, gate.root)
+            && gate.review.is_clear()
+            && gate.running.is_none()
+            && gate.unasked_writer.is_none())
+        .then_some("the command is on the workspace's allowlist"),
         _ => None,
     }
+}
+
+/// Add what the session knows to a prompt. A command prompt gets the files
+/// changed without review (all of them), what approving does with them, and
+/// what is running alongside; an edit or write prompt, a process that may
+/// run it. `eligible` is [`command_eligible`] for this call; `token` goes on
+/// a command prompt whose approval can clear files ([`REVIEW_TOKEN_KEY`]).
+/// Returns what an approval carrying that token clears.
+pub fn note_review(
+    approval: &mut CodeApproval,
+    request: &GuardRequest,
+    gate: &GateContext<'_>,
+    eligible: bool,
+    token: &str,
+) -> Option<ShownReview> {
+    let map = approval.preview.as_object_mut()?;
+    if request.tool != "bash" {
+        if let Some(process) = gate.review.background.last() {
+            map.insert(
+                "running_process".to_string(),
+                json!(format!(
+                    "{process} was started earlier in this conversation and may still be \
+                     running; it may run this change. Shodh cannot tell when it stops, so \
+                     every edit asks."
+                )),
+            );
+        }
+        return None;
+    }
+    if let Some(running) = gate.running {
+        map.insert(
+            "running_now".to_string(),
+            json!(format!(
+                "{running} is still running and may run files this command changes."
+            )),
+        );
+    }
+    if starts_background(str_arg(&request.input, "command")) {
+        map.insert(
+            "keeps_running".to_string(),
+            json!(
+                "This starts a process that keeps running after this step. Shodh cannot \
+                 tell when it stops, so every edit in this conversation will ask from now on."
+            ),
+        );
+    }
+    let review = gate.review;
+    if review.is_clear() {
+        return None;
+    }
+    let mut note = String::new();
+    if let Some(reason) = &review.unknown {
+        note.push_str(&format!(
+            "Shodh cannot tell which files changed: {reason}. "
+        ));
+    }
+    if !review.uncompared.is_empty() {
+        let calls: Vec<&str> = review.uncompared.values().map(String::as_str).collect();
+        note.push_str(&format!(
+            "Shodh has not compared what {} changed (still running, or cut off). ",
+            calls.join(", ")
+        ));
+    }
+    if !review.files.is_empty() {
+        map.insert(UNREVIEWED_KEY.to_string(), json!(review.files));
+        note.push_str("The files listed changed without your review. ");
+    }
+    if eligible {
+        note.push_str("Approving runs this command, which may run them, and marks them reviewed.");
+        map.insert(REVIEW_TOKEN_KEY.to_string(), json!(token));
+    } else {
+        note.push_str(
+            "Approving this command does not mark them reviewed; only approving a command \
+             on the workspace's allowlist does.",
+        );
+    }
+    map.insert(REVIEW_NOTE_KEY.to_string(), json!(note));
+    eligible.then(|| ShownReview {
+        files: review.files.clone(),
+        unknown: review.unknown.clone(),
+        uncompared: review.uncompared.keys().cloned().collect(),
+    })
 }
 
 /// What an approval prompt shows for a guarded call.
@@ -889,6 +1427,25 @@ pub struct CodeApproval {
     pub label: String,
     pub tier: RiskTier,
     pub preview: Value,
+    /// An edit's or write's content was cut in the preview: approving it is
+    /// no review of the file ([`PREVIEW_CUT_NOTE`]).
+    pub preview_cut: bool,
+}
+
+/// What an edit or write prompt whose content was cut says.
+pub const PREVIEW_CUT_NOTE: &str = "The preview is cut, so approving does not count as reviewing this file: it stays listed as changed without your review until you approve an allowlisted command that lists it.";
+
+/// What a command prompt says about a `timeout` argument (seconds; 0 is
+/// none), or `None` without one.
+fn time_limit(input: &Value) -> Option<String> {
+    let timeout = input.get("timeout").filter(|value| !unset(value))?;
+    Some(match timeout.as_f64() {
+        Some(seconds) if seconds.abs() < f64::EPSILON => {
+            "None: it runs until it finishes or the answer is stopped.".to_string()
+        }
+        Some(seconds) => format!("{seconds} seconds"),
+        None => format!("{timeout} (not a number of seconds)"),
+    })
 }
 
 fn clipped(text: &str, max: usize) -> String {
@@ -930,6 +1487,13 @@ pub fn approval_for(
     let file_tier = match target {
         ChangeTarget::RunsPrograms { .. } => RiskTier::Destructive,
         _ => RiskTier::Write,
+    };
+    let preview_cut = match request.tool.as_str() {
+        "write" => str_arg(input, "content").chars().count() > MAX_PREVIEW_CHARS,
+        "edit" => ["old_string", "new_string"]
+            .iter()
+            .any(|key| str_arg(input, key).chars().count() > MAX_PREVIEW_CHARS / 2),
+        _ => false,
     };
     let (label, tier, mut preview) = match request.tool.as_str() {
         "write" => {
@@ -975,6 +1539,8 @@ pub fn approval_for(
                     "warning": warning,
                     "command": clipped(command, MAX_PREVIEW_CHARS),
                     "runs_in": folder,
+                    "time_limit": time_limit(input),
+                    "terminal": input.get("pty").and_then(Value::as_bool).unwrap_or(false),
                 }),
             )
         }
@@ -988,10 +1554,14 @@ pub fn approval_for(
         if let Some(undo) = undo {
             map.insert("undo".to_string(), json!(undo));
         }
+        if preview_cut {
+            map.insert("preview_cut".to_string(), json!(PREVIEW_CUT_NOTE));
+        }
     }
     CodeApproval {
         label,
         tier,
+        preview_cut,
         preview,
     }
 }
@@ -1420,26 +1990,7 @@ fn filters_off(folder: &Path) -> Result<Vec<String>, String> {
 
 /// Run git; `Ok(stdout)` on success, `Err(stderr)` otherwise.
 fn run_git(folder: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = git(folder)?;
-    if git_subcommand(args).is_some_and(|a| FILTERED_COMMANDS.contains(&a)) {
-        for setting in filters_off(folder)? {
-            command.arg("-c").arg(setting);
-        }
-    }
-    let output = command
-        .args(args)
-        .output()
-        .map_err(|e| format!("git could not be started: {e}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            format!("git {} failed", args.join(" "))
-        } else {
-            stderr
-        })
-    }
+    run_git_raw(folder, args).map(|out| String::from_utf8_lossy(&out).trim().to_string())
 }
 
 /// The folder's git state (blocking).
@@ -1701,6 +2252,268 @@ impl CodeBranchStore {
         }
         Ok(removed)
     }
+}
+
+/// [`ReviewState`]s by conversation, in one JSON file beside the branch
+/// records. Kept apart from them: a folder outside git has no branch, and
+/// "Discard changes" removing a branch is no review.
+#[derive(Debug, Clone)]
+pub struct ReviewStore {
+    path: PathBuf,
+}
+
+static REVIEW_LOCK: Mutex<()> = Mutex::new(());
+
+impl ReviewStore {
+    pub const FILE: &'static str = "code_reviews.json";
+
+    pub fn in_dir(data_dir: &Path) -> Self {
+        Self {
+            path: data_dir.join(Self::FILE),
+        }
+    }
+
+    /// The store in the folder of `branches`.
+    pub fn beside(branches: &CodeBranchStore) -> Self {
+        Self {
+            path: branches.path.with_file_name(Self::FILE),
+        }
+    }
+
+    fn read(&self) -> Result<HashMap<String, ReviewState>, String> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|e| format!("{} is not readable: {e}", self.path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+            Err(e) => Err(format!("{} is not readable: {e}", self.path.display())),
+        }
+    }
+
+    fn write(&self, records: &HashMap<String, ReviewState>) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(records).map_err(|e| e.to_string())?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &self.path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e.to_string()
+        })
+    }
+
+    /// The conversation's state; clear when it has none.
+    pub fn get(&self, conversation_id: &str) -> Result<ReviewState, String> {
+        let _guard = REVIEW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(self.read()?.remove(conversation_id).unwrap_or_default())
+    }
+
+    /// Change the conversation's state with `change` and save it; returns
+    /// the saved state.
+    pub fn update<F: FnOnce(&mut ReviewState)>(
+        &self,
+        conversation_id: &str,
+        change: F,
+    ) -> Result<ReviewState, String> {
+        let _guard = REVIEW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut records = self.read()?;
+        let mut state = records.remove(conversation_id).unwrap_or_default();
+        change(&mut state);
+        if state != ReviewState::default() {
+            records.insert(conversation_id.to_string(), state.clone());
+        }
+        self.write(&records)?;
+        Ok(state)
+    }
+}
+
+// ── What commands and tools change ─────────────────────────────────────────
+
+/// Most changed files a snapshot compares; past it, what changed is unknown.
+const MAX_SNAPSHOT_FILES: usize = 20_000;
+
+/// What git shows of the code folder: the commit checked out and every
+/// changed or untracked file under the folder (files git ignores are not
+/// shown), each with its status and a hash of its content. Two snapshots
+/// around a command name what it changed ([`changed_between`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeSnapshot {
+    head: Option<String>,
+    /// The folder's path in the repository (`git rev-parse --show-prefix`).
+    prefix: String,
+    /// Folder-relative path (`/`-separated) → status and content hash.
+    files: std::collections::BTreeMap<String, String>,
+}
+
+/// Run git; `Ok(stdout)` untouched on success, `Err(stderr)` otherwise.
+fn run_git_raw(folder: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let mut command = git(folder)?;
+    if git_subcommand(args).is_some_and(|a| FILTERED_COMMANDS.contains(&a)) {
+        for setting in filters_off(folder)? {
+            command.arg("-c").arg(setting);
+        }
+    }
+    let output = command
+        .args(args)
+        .output()
+        .map_err(|e| format!("git could not be started: {e}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            format!("git {} failed", args.join(" "))
+        } else {
+            stderr
+        })
+    }
+}
+
+/// A hash of what is at `path` now: a file's bytes, a link's target, or
+/// that it is a folder or missing.
+fn content_hash(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    match std::fs::symlink_metadata(path) {
+        Err(_) => "missing".to_string(),
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::read_link(path) {
+            Ok(target) => format!("link {}", target.display()),
+            Err(e) => format!("unreadable link {e}"),
+        },
+        Ok(meta) if meta.is_dir() => "folder".to_string(),
+        // A large file (a dataset, a build output) is told apart by its size
+        // and modification time, so a snapshot stays fast.
+        Ok(meta) if meta.len() > MAX_HASHED_BYTES => {
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_nanos());
+            format!("{} bytes, modified {modified}", meta.len())
+        }
+        Ok(_) => {
+            let hashed = std::fs::File::open(path).and_then(|mut file| {
+                let mut hasher = Sha256::new();
+                std::io::copy(&mut file, &mut hasher)?;
+                Ok(hex::encode(hasher.finalize()))
+            });
+            hashed.unwrap_or_else(|e| format!("unreadable {e}"))
+        }
+    }
+}
+
+/// Largest file whose content a snapshot hashes ([`content_hash`]).
+const MAX_HASHED_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The NUL-separated paths in `raw`, relative to the folder whose
+/// repository path is `prefix` (paths outside it are left out).
+fn folder_paths(raw: &[u8], prefix: &str) -> Vec<String> {
+    raw.split(|b| *b == 0)
+        .filter(|entry| !entry.is_empty())
+        .filter_map(|entry| {
+            let path = String::from_utf8_lossy(entry);
+            path.strip_prefix(prefix)
+                .map(|rest| rest.trim_end_matches('/').to_string())
+        })
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+/// What git shows of `folder` now (blocking). `Err` outside git, or when
+/// git cannot tell: then what a command changes is unknown.
+pub fn tree_snapshot(folder: &Path) -> Result<TreeSnapshot, String> {
+    match run_git(folder, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(out) if out == "true" => {}
+        _ => {
+            return Err(
+                "the code folder is not a git repository, so Shodh cannot see what a command \
+                 or tool changed"
+                    .to_string(),
+            )
+        }
+    }
+    let prefix = run_git(folder, &["rev-parse", "--show-prefix"])?;
+    let top = PathBuf::from(run_git(folder, &["rev-parse", "--show-toplevel"])?);
+    let head = run_git(folder, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok();
+    let raw = run_git_raw(
+        folder,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+            "--",
+            ".",
+        ],
+    )?;
+    let mut files = std::collections::BTreeMap::new();
+    for entry in raw.split(|b| *b == 0).filter(|entry| !entry.is_empty()) {
+        if entry.len() < 4 || entry[2] != b' ' {
+            return Err("git status gave a line Shodh cannot read".to_string());
+        }
+        let status = String::from_utf8_lossy(&entry[..2]).to_string();
+        let path = String::from_utf8_lossy(&entry[3..]).to_string();
+        let Some(relative) = path.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        let relative = relative.trim_end_matches('/');
+        if relative.is_empty() {
+            continue;
+        }
+        if files.len() >= MAX_SNAPSHOT_FILES {
+            return Err(format!(
+                "more than {MAX_SNAPSHOT_FILES} files are changed or untracked, too many to compare"
+            ));
+        }
+        files.insert(
+            relative.to_string(),
+            format!("{status} {}", content_hash(&top.join(&path))),
+        );
+    }
+    Ok(TreeSnapshot {
+        head,
+        prefix,
+        files,
+    })
+}
+
+/// The files of `folder` that changed between two snapshots (blocking):
+/// every file whose status or content differs, and when the checked-out
+/// commit moved, every file that differs between the two commits.
+pub fn changed_between(
+    folder: &Path,
+    before: &TreeSnapshot,
+    after: &TreeSnapshot,
+) -> Result<Vec<String>, String> {
+    let mut changed: Vec<String> = before
+        .files
+        .keys()
+        .chain(after.files.keys())
+        .filter(|path| before.files.get(*path) != after.files.get(*path))
+        .cloned()
+        .collect();
+    if before.head != after.head {
+        let (Some(from), Some(to)) = (&before.head, &after.head) else {
+            return Err(
+                "the repository's commits changed in a way Shodh cannot compare".to_string(),
+            );
+        };
+        let raw = run_git_raw(
+            folder,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                from.as_str(),
+                to.as_str(),
+                "--",
+                ".",
+            ],
+        )?;
+        changed.extend(folder_paths(&raw, &after.prefix));
+    }
+    changed.sort_unstable();
+    changed.dedup();
+    Ok(changed)
 }
 
 #[cfg(test)]

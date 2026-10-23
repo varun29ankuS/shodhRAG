@@ -232,7 +232,7 @@ export interface FocusContextValue {
   /** Interrupt the side answer. */
   stop: () => void;
   /** Answer a pending approval of the side answer (`forConversation`: allow what it offered for the session). */
-  approve: (stepId: string, approved: boolean, forConversation?: boolean) => void;
+  approve: (stepId: string, approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   /** The side answer being produced, for rendering. */
   sideLive: SideLiveView | null;
 }
@@ -886,11 +886,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     });
   }, [api, beginRun, enqueue, placeOf, setRuntimeInstalled, stop]);
 
-  const approve = useCallback((stepId: string, approved: boolean, forConversation = false) => {
+  const approve = useCallback((stepId: string, approved: boolean, forConversation = false, reviewToken?: string) => {
     const live = liveRef.current;
     if (!live || live.settled || live.sessionId === null) return;
     enqueue(live, { type: 'local_approval', stepId, approved }, true);
-    api.approve(live.sessionId, stepId, approved, approved && forConversation)
+    api.approve(live.sessionId, stepId, approved, approved && forConversation, approved ? reviewToken : undefined)
       .catch(error => notify.error('The decision did not reach the agent', { description: toAgentError(error).message }));
   }, [api, enqueue]);
 

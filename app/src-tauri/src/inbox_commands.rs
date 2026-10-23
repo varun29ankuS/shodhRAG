@@ -18,6 +18,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use serde_json::json;
 use shodh_rag::audit::AuditKey;
+use shodh_rag::harness::code_mode::REVIEW_NOTE_KEY;
 use shodh_rag::inbox::{
     aggregate, InboxItem, InboxKind, InboxLink, InboxResult, InboxStatus, InboxStore, NewInboxItem,
 };
@@ -218,14 +219,26 @@ pub fn approval_id(session_id: &str, step_id: &str) -> String {
     format!("{}{step_id}", approval_prefix(session_id))
 }
 
-/// The Inbox item of an approval the assistant is waiting for.
+/// The Inbox item of an approval the assistant is waiting for. A Code
+/// command prompt that lists files changed without review (`preview`) is
+/// only shown in full in the conversation, so approving from the Inbox
+/// marks nothing reviewed; the item says so.
 pub fn approval_item(
     session_id: &str,
     conversation_id: &str,
     step_id: &str,
     label: &str,
     tool: &str,
+    preview: &serde_json::Value,
 ) -> NewInboxItem {
+    let unreviewed = preview.get(REVIEW_NOTE_KEY).is_some();
+    let detail = if unreviewed {
+        format!(
+            "The assistant waits for your approval ({tool}). Files changed without your review are listed in the conversation; approving here runs it but does not mark them reviewed."
+        )
+    } else {
+        format!("The assistant waits for your approval ({tool}).")
+    };
     NewInboxItem {
         id: approval_id(session_id, step_id),
         kind: InboxKind::Approval,
@@ -235,7 +248,7 @@ pub fn approval_item(
         } else {
             label.to_string()
         },
-        detail: Some(format!("The assistant waits for your approval ({tool}).")),
+        detail: Some(detail),
         link: Some(conversation_link(conversation_id)),
         data: json!({ "sessionId": session_id, "stepId": step_id }),
     }
@@ -366,7 +379,14 @@ mod tests {
 
     #[test]
     fn approvals_of_a_session_share_a_prefix_no_other_session_has() {
-        let item = approval_item("s1", "conv-1", "step-9", "Write notes.md", "write_file");
+        let item = approval_item(
+            "s1",
+            "conv-1",
+            "step-9",
+            "Write notes.md",
+            "write_file",
+            &json!({}),
+        );
         assert_eq!(item.id, "approval:s1:step-9");
         assert!(item.id.starts_with(&approval_prefix("s1")));
         assert!(!approval_id("s11", "x").starts_with(&approval_prefix("s1")));
@@ -379,8 +399,26 @@ mod tests {
             ))
         );
         assert_eq!(item.data["stepId"], "step-9");
-        let unnamed = approval_item("s1", "c", "a", " ", "run_command");
+        let unnamed = approval_item("s1", "c", "a", " ", "run_command", &json!({}));
         assert_eq!(unnamed.title, "Approve run_command?");
+    }
+
+    #[test]
+    fn an_inbox_approval_says_it_marks_nothing_reviewed() {
+        let plain = approval_item("s1", "c", "a", "Run: pytest", "bash", &json!({}));
+        assert!(!plain.detail.unwrap().contains("reviewed"));
+        let listed = approval_item(
+            "s1",
+            "c",
+            "a",
+            "Run: pytest",
+            "bash",
+            &json!({ REVIEW_NOTE_KEY: "Approving runs this command", "changed_without_review": ["conftest.py"] }),
+        );
+        assert!(listed
+            .detail
+            .unwrap()
+            .contains("approving here runs it but does not mark them reviewed"));
     }
 
     #[test]

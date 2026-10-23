@@ -118,7 +118,7 @@ const AnswerTurn = React.memo(function AnswerTurn({
   /** The stored answer turn; null for the answer being written. */
   turnId: string | null;
   onOpenCitation: (hit: SearchHit) => void;
-  onDecide?: (stepId: string, approved: boolean) => void;
+  onDecide?: (stepId: string, approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   /** "Cite N instead" on a miscited claim of a stored answer. */

@@ -453,6 +453,16 @@ pub trait HostTool: Send + Sync {
     fn session_grant(&self, _args: &Value) -> Option<SessionGrant> {
         None
     }
+    /// Whether a call can change files in a Code session's folder (an MCP
+    /// server's tools can): the session compares the folder before and after
+    /// each call and lists what changed as not reviewed.
+    fn may_change_files(&self) -> bool {
+        false
+    }
+    /// Whether it can do so without the user approving the call.
+    fn changes_files_unasked(&self) -> bool {
+        false
+    }
     /// What the approval prompt shows. Runs after validation and before the
     /// prompt; an error fails the call without asking the user (e.g. an
     /// unknown id). Defaults to the arguments and the rendered label.
@@ -776,6 +786,9 @@ pub struct ApprovalGate {
     offered: Mutex<HashMap<String, SessionGrant>>,
     /// Keys of the grants the user gave in this session.
     granted: Mutex<std::collections::HashSet<String>>,
+    /// The review token an approval came with, by step id
+    /// ([`ApprovalGate::resolve_reviewed`]).
+    review_tokens: Mutex<HashMap<String, String>>,
     timeout: Duration,
 }
 
@@ -804,6 +817,7 @@ impl ApprovalGate {
             pending: Mutex::new(HashMap::new()),
             offered: Mutex::new(HashMap::new()),
             granted: Mutex::new(std::collections::HashSet::new()),
+            review_tokens: Mutex::new(HashMap::new()),
             timeout,
         }
     }
@@ -868,6 +882,27 @@ impl ApprovalGate {
         sender
             .send(approved)
             .map_err(|_| ApprovalError::NotPending(step_id.to_string()))
+    }
+
+    fn lock_review_tokens(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+        self.review_tokens.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Approve the pending `step_id` from the prompt that showed what it
+    /// marks reviewed, which sends back the prompt's `token`. Fails when the
+    /// step is not pending.
+    pub fn resolve_reviewed(&self, step_id: &str, token: &str) -> Result<(), ApprovalError> {
+        // Kept before the decision is sent, so the waiting side finds it.
+        self.lock_review_tokens()
+            .insert(step_id.to_string(), token.to_string());
+        self.resolve(step_id, true).inspect_err(|_| {
+            self.lock_review_tokens().remove(step_id);
+        })
+    }
+
+    /// The review token `step_id`'s approval came with, if any (taken).
+    pub fn take_review_token(&self, step_id: &str) -> Option<String> {
+        self.lock_review_tokens().remove(step_id)
     }
 
     /// Cancel one pending approval (e.g. omp cancelled the tool call).
@@ -1014,6 +1049,20 @@ impl ToolRegistry {
                 r.tool.tier(),
             )
         })
+    }
+
+    /// Whether a call of `name` can change files ([`HostTool::may_change_files`]).
+    pub fn may_change_files(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|r| r.tool.may_change_files())
+    }
+
+    /// The label of a tool `profile` may use that can change files without
+    /// asking ([`HostTool::changes_files_unasked`]), if there is one.
+    pub fn unasked_file_writer(&self, profile: &AgentProfile) -> Option<String> {
+        self.tools
+            .iter()
+            .find(|r| profile.allows(r.tool.name()) && r.tool.changes_files_unasked())
+            .map(|r| r.tool.label().to_string())
     }
 
     /// Whether no tool is registered.

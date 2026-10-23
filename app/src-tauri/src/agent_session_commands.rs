@@ -1808,10 +1808,17 @@ async fn track_inbox(
             step_id,
             tool,
             label,
+            preview,
             ..
         } => {
-            let item =
-                inbox_commands::approval_item(session_id, conversation_id, step_id, label, tool);
+            let item = inbox_commands::approval_item(
+                session_id,
+                conversation_id,
+                step_id,
+                label,
+                tool,
+                preview,
+            );
             crate::notifications::approval_requested(app, conversation_id);
             inbox_commands::post(app, item).await;
         }
@@ -2279,21 +2286,29 @@ pub async fn agent_abort(
 /// Approve or decline a pending write/destructive step. `for_conversation`
 /// approves it and gives the yes its prompt offered (`allowForConversation`)
 /// for the rest of the session; a prompt that offered none is not approved.
+/// `review_token` is sent by a Code command prompt that listed every file
+/// changed without review: approving with it marks those files reviewed.
 #[tauri::command]
 pub async fn agent_approve(
     session_id: String,
     step_id: String,
     approved: bool,
     for_conversation: Option<bool>,
+    review_token: Option<String>,
     app: AppHandle,
     sessions: State<'_, AgentSessions>,
 ) -> CommandResult<()> {
     check_id("step id", &step_id)?;
     let session = sessions.get(&session_id)?;
-    if approved && for_conversation == Some(true) {
-        session.approve_for_conversation(&step_id)?;
-    } else {
-        session.approve(&step_id, approved)?;
+    // A review token comes only from the prompt that showed every file it
+    // marks reviewed; the Inbox sends none, so its yes clears nothing.
+    let review_token = review_token.filter(|token| !token.trim().is_empty());
+    match (approved, for_conversation == Some(true), review_token) {
+        (true, true, _) => {
+            session.approve_for_conversation(&step_id)?;
+        }
+        (true, false, Some(token)) => session.approve_reviewed(&step_id, &token)?,
+        _ => session.approve(&step_id, approved)?,
     }
     // Answered here (the chat or the Inbox): the Inbox item is done with.
     inbox_commands::resolve(&app, inbox_commands::approval_id(&session_id, &step_id)).await;

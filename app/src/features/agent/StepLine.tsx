@@ -80,7 +80,7 @@ function DetailView({ step }: { step: TranscriptStep }) {
 interface StepLineProps {
   step: TranscriptStep;
   steps: Record<string, TranscriptStep>;
-  onDecide?: (stepId: string, approved: boolean, forConversation?: boolean) => void;
+  onDecide?: (stepId: string, approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   compact?: boolean;
   depth?: number;
   /** The run is still going (a call refused for its arguments may yet be retried). */
@@ -185,7 +185,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
       {attribution && <AttributionFrame html={attribution} />}
       {step.approval && onDecide && (
         <div className="mt-2 ml-[17px]">
-          <ApprovalPrompt approval={step.approval} onDecide={(approved, forConversation) => onDecide(step.id, approved, forConversation)} compact={compact} />
+          <ApprovalPrompt approval={step.approval} onDecide={(approved, forConversation, reviewToken) => onDecide(step.id, approved, forConversation, reviewToken)} compact={compact} />
         </div>
       )}
       {step.children.length > 0 && (

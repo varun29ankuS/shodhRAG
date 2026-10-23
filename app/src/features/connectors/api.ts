@@ -4,7 +4,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { SLACK_STATUS_EVENT, type SlackStatus } from './slackModel';
+import { SLACK_STATUS_EVENT, type ChannelChoice, type SlackStatus } from './slackModel';
 
 export const slackApi = {
   status: () => invoke<SlackStatus>('slack_status'),
@@ -12,6 +12,8 @@ export const slackApi = {
   setEnabled: (enabled: boolean) => invoke<SlackStatus>('slack_set_enabled', { enabled }),
   setAnswerWorkspace: (workspaceId: string | null) =>
     invoke<SlackStatus>('slack_set_answer_workspace', { workspaceId }),
+  listChannels: () => invoke<ChannelChoice[]>('slack_list_channels'),
+  setAnswerChannels: (channelIds: string[]) => invoke<SlackStatus>('slack_set_answer_channels', { channelIds }),
   setDailyCap: (dailyCap: number) => invoke<SlackStatus>('slack_set_daily_cap', { dailyCap }),
   disconnect: () => invoke<SlackStatus>('slack_disconnect'),
 };

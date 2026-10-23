@@ -11,8 +11,12 @@ import { onSlackStatus, slackApi, slackError } from './api';
 import {
   MODEL_PRIVACY_NOTE,
   RUNNING_HINT,
+  answerPlacesLine,
   answerSourceLine,
   canConnect,
+  channelLabel,
+  exposureLine,
+  slackWarnings,
   checkAppToken,
   checkBotToken,
   lastEventLine,
@@ -21,6 +25,7 @@ import {
   tokenHint,
   usageLine,
   validCap,
+  type ChannelChoice,
   type SlackStatus,
   type Tone,
 } from './slackModel';
@@ -171,6 +176,99 @@ function Setup({ status, onStatus }: { status: SlackStatus; onStatus: (s: SlackS
   );
 }
 
+/** The channels Shodh answers in: loaded from Slack on request, saved together. */
+function ChannelPicker({
+  status,
+  onStatus,
+  busy,
+  setBusy,
+}: {
+  status: SlackStatus;
+  onStatus: (s: SlackStatus) => void;
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+}) {
+  const [choices, setChoices] = useState<ChannelChoice[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const headingId = useId();
+  const places = answerPlacesLine(status);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await slackApi.listChannels();
+      setChoices(list);
+      // A channel that became shared since it was chosen must be chosen again.
+      const nowShared = new Set(status.answerChannels.filter(c => c.nowShared).map(c => c.id));
+      setPicked(new Set(list.filter(c => c.selected && !nowShared.has(c.id)).map(c => c.id)));
+    } catch (err) {
+      setError(slackError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      onStatus(await slackApi.setAnswerChannels([...picked]));
+      setChoices(null);
+    } catch (err) {
+      notify.error('The channels were not saved', { description: slackError(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = (id: string) =>
+    setPicked(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  return (
+    <div className="flex flex-col gap-1.5" role="group" aria-labelledby={headingId}>
+      <p id={headingId} className="m-0 text-[13.5px] font-semibold text-shodh-text">Answer in these channels</p>
+      <p className={cn('m-0 text-[12.5px]', TONE_TEXT[places.tone])}>{places.text}</p>
+      {choices === null ? (
+        <div>
+          <button type="button" className={BUTTON} disabled={busy || loading || status.state === 'local_only'} onClick={() => void load()}>
+            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+            {loading ? 'Asking Slack…' : 'Choose channels…'}
+          </button>
+        </div>
+      ) : choices.length === 0 ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          The bot is in no channel yet. Invite it in Slack with /invite @{status.installation?.botName ?? 'shodh'}, then choose again.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <ul className="m-0 p-0 list-none flex flex-col gap-1 max-h-56 overflow-y-auto scrollbar-thin">
+            {choices.map(c => (
+              <li key={c.id}>
+                <label className="inline-flex items-center gap-2 text-[12.5px] text-shodh-text-secondary">
+                  <input type="checkbox" checked={picked.has(c.id)} disabled={busy} onChange={() => toggle(c.id)} />
+                  <span className={c.shared ? 'text-shodh-warning' : undefined}>{channelLabel(c)}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="flex items-center gap-2">
+            <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => void save()}>Save channels</button>
+            <button type="button" className={BUTTON} disabled={busy} onClick={() => setChoices(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+    </div>
+  );
+}
+
 function Connected({
   status,
   onStatus,
@@ -184,6 +282,8 @@ function Connected({
   const [capInput, setCapInput] = useState(String(status.dailyCap));
   const [busy, setBusy] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  /** A workspace picked but not confirmed yet, with what choosing it exposes. */
+  const [pending, setPending] = useState<{ id: string; line: string } | null>(null);
   const pickerId = useId();
   const capId = useId();
   const capHelpId = useId();
@@ -220,7 +320,25 @@ function Connected({
     }
   };
 
+  const pick = async (id: string) => {
+    if (!id) {
+      setPending(null);
+      void run(() => slackApi.setAnswerWorkspace(null), 'The workspace could not be chosen');
+      return;
+    }
+    setBusy(true);
+    try {
+      const detail = await workspacesApi.get(id);
+      setPending({ id, line: exposureLine(status.installation?.teamName ?? 'Slack', detail.name, detail.sources) });
+    } catch (err) {
+      notify.error('The workspace could not be read', { description: slackError(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const on = status.state !== 'off' && status.state !== 'local_only';
+  const warnings = slackWarnings(status, now);
   const source = answerSourceLine(status);
   const cap = validCap(capInput, status);
   const chosen = status.answerWorkspace?.id ?? '';
@@ -228,9 +346,16 @@ function Connected({
 
   return (
     <div className="flex flex-col gap-5">
+      {warnings.length > 0 && (
+        <ul role="alert" className="m-0 pl-0 list-none flex flex-col gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface-2 px-3.5 py-3">
+          {warnings.map(w => (
+            <li key={w} className="text-[12.5px] text-shodh-warning">{w}</li>
+          ))}
+        </ul>
+      )}
       <SwitchRow
         label="Answer in Slack"
-        description="When on, Shodh keeps a connection to Slack and answers mentions of the bot and direct messages to it."
+        description="When on, Shodh keeps a connection to Slack and answers mentions of the bot in the channels chosen below, and direct messages from members of your Slack workspace."
         checked={on}
         disabled={busy || status.state === 'local_only'}
         onChange={next => void run(() => slackApi.setEnabled(next), 'The Slack connector could not be switched')}
@@ -240,9 +365,9 @@ function Connected({
         <label htmlFor={pickerId} className="text-[13.5px] font-semibold text-shodh-text">Slack answers from</label>
         <select
           id={pickerId}
-          value={chosen}
+          value={pending?.id ?? chosen}
           disabled={busy || workspaces === null}
-          onChange={e => void run(() => slackApi.setAnswerWorkspace(e.target.value || null), 'The workspace could not be chosen')}
+          onChange={e => void pick(e.target.value)}
           className={cn(INPUT, 'max-w-sm')}
         >
           <option value="">Choose a workspace…</option>
@@ -251,8 +376,31 @@ function Connected({
             <option key={w.id} value={w.id}>{w.name}</option>
           ))}
         </select>
-        <p className={cn('m-0 text-[12.5px]', TONE_TEXT[source.tone])}>{source.text}</p>
+        {pending ? (
+          <div role="alertdialog" aria-label="Confirm the workspace Slack answers from" className="flex flex-col gap-2 rounded-lg bg-shodh-surface-2 px-3.5 py-3">
+            <p className="m-0 text-[12.5px] text-shodh-text-secondary">{pending.line}</p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className={PRIMARY_BUTTON}
+                disabled={busy}
+                onClick={() => {
+                  const id = pending.id;
+                  setPending(null);
+                  void run(() => slackApi.setAnswerWorkspace(id), 'The workspace could not be chosen');
+                }}
+              >
+                Answer from this workspace
+              </button>
+              <button type="button" className={BUTTON} disabled={busy} onClick={() => setPending(null)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <p className={cn('m-0 text-[12.5px]', TONE_TEXT[source.tone])}>{source.text}</p>
+        )}
       </div>
+
+      <ChannelPicker status={status} onStatus={onStatus} busy={busy} setBusy={setBusy} />
 
       <form
         className="flex items-start justify-between gap-6"

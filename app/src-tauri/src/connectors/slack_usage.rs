@@ -126,6 +126,17 @@ impl AnswerQuota for SlackUsage {
         self.write(&mut value, &origin)?;
         Ok(true)
     }
+
+    fn release(&self, day: NaiveDate) -> Result<(), String> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let Loaded { mut value, origin } = self.read()?;
+        let key = day_key(day);
+        let Some(used) = value.days.get(&key).copied().filter(|&n| n > 0) else {
+            return Ok(());
+        };
+        value.days.insert(key, used - 1);
+        self.write(&mut value, &origin)
+    }
 }
 
 #[cfg(test)]
@@ -160,6 +171,46 @@ mod tests {
         assert_eq!(again.used(day(23)).unwrap(), 2);
         assert!(again.try_reserve(day(23)).unwrap());
         assert_eq!(again.used(day(24)).unwrap(), 1);
+    }
+
+    #[test]
+    fn an_answer_whose_call_was_never_made_is_given_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = SlackUsage::new(dir.path(), Arc::new(AtomicUsize::new(1)));
+        assert!(usage.try_reserve(day(23)).unwrap());
+        assert!(!usage.try_reserve(day(23)).unwrap());
+        usage.release(day(23)).unwrap();
+        assert_eq!(usage.used(day(23)).unwrap(), 0);
+        assert!(
+            usage.try_reserve(day(23)).unwrap(),
+            "the place is free again"
+        );
+        // Nothing to give back on a day without answers: no underflow.
+        usage.release(day(24)).unwrap();
+        assert_eq!(usage.used(day(24)).unwrap(), 0);
+    }
+
+    /// Counted on the day passed in (the responder passes the UTC day the call is made
+    /// on): the last second of a day and the first of the next are two days.
+    #[test]
+    fn the_utc_day_boundary_separates_the_counts() {
+        use chrono::TimeZone;
+        use shodh_rag::research::tables::calls::utc_day;
+        let dir = tempfile::tempdir().unwrap();
+        let usage = SlackUsage::new(dir.path(), Arc::new(AtomicUsize::new(1)));
+        let before = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 23, 23, 59, 59)
+            .unwrap();
+        let after = chrono::Utc.with_ymd_and_hms(2026, 10, 24, 0, 0, 0).unwrap();
+        assert!(usage.try_reserve(utc_day(before)).unwrap());
+        assert!(
+            !usage.try_reserve(utc_day(before)).unwrap(),
+            "the old day is full"
+        );
+        assert!(
+            usage.try_reserve(utc_day(after)).unwrap(),
+            "the new day is not"
+        );
     }
 
     #[test]

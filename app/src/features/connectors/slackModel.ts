@@ -20,6 +20,25 @@ export type SlackState =
   | 'error'
   | 'local_only';
 
+/** A channel Shodh answers mentions in (`connectors::slack::ChannelView`). */
+export interface AnswerChannelView {
+  id: string;
+  name: string;
+  /** Shared with other organizations (Slack Connect). */
+  shared: boolean;
+  /** Chosen while not shared, shared now: refused until chosen again. */
+  nowShared: boolean;
+}
+
+/** A channel the bot is in, offered on the card (`connectors::slack::ChannelChoice`). */
+export interface ChannelChoice {
+  id: string;
+  name: string;
+  private: boolean;
+  shared: boolean;
+  selected: boolean;
+}
+
 /** `connectors::slack::SlackStatus`. Never holds a token. */
 export interface SlackStatus {
   state: SlackState;
@@ -34,6 +53,12 @@ export interface SlackStatus {
   maxDailyCap: number;
   resetsAt: string;
   answerWorkspace: { id: string; name: string; available: boolean } | null;
+  answerChannels: AnswerChannelView[];
+  /** Another connection (another Shodh) uses the same Slack app. */
+  otherConnections: boolean;
+  lastPostFailedAt: string | null;
+  /** Scopes the bot lacks (an app created from an earlier manifest). */
+  missingScopes: string[];
   createAppUrl: string;
   botScopes: string[];
   botEvents: string[];
@@ -139,6 +164,81 @@ export function answerSourceLine(status: SlackStatus): { tone: Tone; text: strin
     tone: 'ok',
     text: `Slack answers come only from the documents of “${ws.name}”. Nothing else in Shodh (other workspaces, memories, notes, tasks, chats) is used.`,
   };
+}
+
+/** The reply to a mention where Shodh does not answer (`access::NOT_ALLOWED`). */
+export const NOT_ALLOWED_REPLY = 'Shodh isn’t set to answer in this channel.';
+
+/** A channel as the card names it: `#name`, and whether it is private or shared. */
+export function channelLabel(channel: { name: string; private?: boolean; shared: boolean }): string {
+  const parts = [`#${channel.name}`];
+  if (channel.private) parts.push('private');
+  if (channel.shared) parts.push('shared with other organizations');
+  return parts.join(' · ');
+}
+
+/** Where Shodh answers, and who may DM it. */
+export function answerPlacesLine(status: SlackStatus): { tone: Tone; text: string } {
+  const team = status.installation?.teamName ?? 'your Slack workspace';
+  const dms = `Direct messages are answered only for members of ${team}: not guests, and not people from other organizations.`;
+  if (status.answerChannels.length === 0) {
+    return {
+      tone: 'warning',
+      text: `Shodh answers mentions in no channel yet: a mention gets “${NOT_ALLOWED_REPLY}” Choose the channels below. ${dms}`,
+    };
+  }
+  const names = status.answerChannels.map(c => channelLabel(c)).join(', ');
+  const shared = status.answerChannels.some(c => c.shared);
+  return {
+    tone: shared ? 'warning' : 'ok',
+    text:
+      `Shodh answers mentions in ${names}; anywhere else a mention gets “${NOT_ALLOWED_REPLY}” ` +
+      (shared ? 'People from other organizations in a shared channel can ask too. ' : '') +
+      dms,
+  };
+}
+
+/** Problems the user should know about, beyond the connection state. */
+export function slackWarnings(status: SlackStatus, now: number, options: TimeOptions = {}): string[] {
+  const warnings: string[] = [];
+  if (status.missingScopes.length > 0) {
+    warnings.push(
+      `The Slack app is missing these permissions: ${status.missingScopes.join(', ')}. Until it has them Shodh cannot list ` +
+        'channels or check who sent a DM, so it answers nowhere. Add them under OAuth & Permissions → Bot Token Scopes ' +
+        '(or create the app again from Shodh’s manifest), reinstall the app, and connect again with the new bot token.',
+    );
+  }
+  if (status.otherConnections) {
+    warnings.push(
+      'Another Shodh is connected to this Slack app. Slack sends each question to only one of them, so answers may come ' +
+        'from the other computer and its chosen workspace. Disconnect the other one.',
+    );
+  }
+  const failed = parseTime(status.lastPostFailedAt);
+  if (failed !== null) {
+    warnings.push(`The last answer failed to post to Slack (${localTime(failed, now, options)}). Details are in the app log.`);
+  }
+  for (const c of status.answerChannels.filter(c => c.nowShared)) {
+    warnings.push(
+      `#${c.name} is now shared with other organizations, so Shodh stopped answering there. Choose it again below to answer there.`,
+    );
+  }
+  return warnings;
+}
+
+/** What choosing `workspace` exposes, for the confirmation on the card. */
+export function exposureLine(
+  team: string,
+  workspace: string,
+  sources: ReadonlyArray<{ kind: string }>,
+): string {
+  const folders = sources.filter(s => s.kind === 'folder').length;
+  const files = sources.filter(s => s.kind === 'file' || s.kind === 'paper').length;
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  return (
+    `People in ${team} will get answers from ${count(folders, 'folder', 'folders')} and ${count(files, 'file', 'files')} ` +
+    `in “${workspace}”, in the channels chosen below and in DMs.`
+  );
 }
 
 // ── Setup ───────────────────────────────────────────────────────────

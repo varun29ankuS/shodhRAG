@@ -4,19 +4,23 @@
 //!
 //! - **Settings** (`connectors.slack` in `app_settings.json`, user-only): the installations
 //!   (one per Slack workspace, by team id; the card shows one), whether each is on, the
-//!   Shodh workspace it answers from, and the daily cap of answers.
+//!   Shodh workspace it answers from, the Slack channels it answers in (none at first),
+//!   and the daily cap of answers.
 //! - **Tokens** in the OS credential store (`slack-app-token:<team>`,
 //!   `slack-bot-token:<team>`); never logged, never sent to the frontend, deleted on
 //!   Disconnect.
 //! - **Connection**: only while the connector is on and Local-only mode is off. Turning
 //!   Local-only mode on stops it; turning it off again resumes it. Closed on exit.
-//! - **Answers** come from the selected workspace only ([`AppAnswerSource`]); until one
-//!   is selected, or after it was deleted or archived, the bot says it isn't set up.
+//! - **Answers** come from the selected workspace only ([`AppAnswerSource`]), in the
+//!   chosen channels and to DMs from members of the installing Slack workspace only
+//!   ([`AppAccessRules`]). Until a workspace is selected, or after it was deleted or
+//!   archived, the bot says it isn't set up. Switching off, Disconnect, Local-only mode and
+//!   new tokens cancel every answer queued or running at once.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -24,22 +28,30 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::connectors::slack::access::{
+    AccessRules, AccessRulesSource, AllowedChannel, SlackAccessGate,
+};
 use shodh_rag::connectors::slack::answer::{retrieve_passages, AnswerPassage, AnswerScope};
-use shodh_rag::connectors::slack::respond::{AnswerQuota, AnswerSource, Responder, SlackPoster};
+use shodh_rag::connectors::slack::events::{EventRouter, SeenEntry, SeenStore};
+use shodh_rag::connectors::slack::respond::{
+    AnswerQuota, AnswerSource, Outcome, Responder, SlackPoster,
+};
 use shodh_rag::connectors::slack::sanitize::PrivateTerms;
-use shodh_rag::connectors::slack::service::AnswerService;
+use shodh_rag::connectors::slack::service::{AnswerService, OutcomeSink, SeenPersister};
 use shodh_rag::connectors::slack::setup::{
     check_scopes, create_app_url, missing_scopes_message, ScopeCheck, APP_TOKEN_SCOPE, BOT_EVENTS,
     REQUIRED_BOT_SCOPES,
 };
 use shodh_rag::connectors::slack::socket::{
-    supervise, LinkState, SlackSocketOpener, StatusSink, Timing,
+    supervise, LinkState, SlackSocketOpener, StatusSink, Timing, WRONG_APP,
 };
 use shodh_rag::connectors::slack::tokens::{
     SlackAppToken, SlackBotToken, SlackCredentialStore, SlackCredentials,
 };
-use shodh_rag::connectors::slack::web::{BotPoster, SlackApiError, SlackWeb};
-use shodh_rag::connectors::slack::SlackInstallation;
+use shodh_rag::connectors::slack::web::{
+    app_id_of_connection_url, BotChannel, BotDirectory, BotPoster, SlackApiError, SlackWeb,
+};
+use shodh_rag::connectors::slack::{CancellationToken, SlackInstallation};
 use shodh_rag::research::results::TextModel;
 use shodh_rag::research::tables::calls::{next_utc_midnight, utc_day, SystemClock};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -48,6 +60,7 @@ use tokio::sync::watch;
 use super::slack_usage::SlackUsage;
 use crate::app_settings::{broadcast, AppSettings, SettingsStore};
 use crate::audit_commands::AuditState;
+use crate::durable_file::{self, Loaded, ReadFailure};
 use crate::llm_commands::LLMState;
 use crate::rag_commands::RagState;
 use crate::workspace_commands::{answer_sources, WorkspaceState};
@@ -69,10 +82,24 @@ const BOT_TOKEN_USER: &str = "slack-bot-token";
 /// The longest wait for a connection to close when the app exits.
 const EXIT_WAIT: Duration = Duration::from_secs(3);
 
+/// The card's status is sent at most this often while Slack events stream in.
+const STATUS_EVERY: Duration = Duration::from_secs(1);
+
 const LOCAL_ONLY: &str =
     "Local-only mode is on, so Shodh does not connect to Slack. Turn it off in Settings → Privacy to use the Slack connector.";
 
 // ── Settings ────────────────────────────────────────────────────────
+
+/// A Slack channel Shodh answers mentions in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerChannel {
+    pub id: String,
+    pub name: String,
+    /// Shared with other organizations (Slack Connect) when the user chose it.
+    #[serde(default)]
+    pub shared: bool,
+}
 
 /// One Slack workspace the connector is installed in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +112,9 @@ pub struct SlackInstallationPrefs {
     /// The Shodh workspace answers come from; `None` until the user selects one.
     #[serde(default)]
     pub answer_workspace: Option<String>,
+    /// The channels mentions are answered in; empty (nowhere) until the user chooses.
+    #[serde(default)]
+    pub answer_channels: Vec<AnswerChannel>,
 }
 
 /// The Slack connector's settings. User-only.
@@ -153,6 +183,60 @@ pub fn should_run(settings: &AppSettings, installation: &SlackInstallationPrefs)
     installation.enabled && !settings.policy.local_only
 }
 
+/// The answer rules of `installation`: its team, and the channels the user chose.
+pub fn access_rules(installation: &SlackInstallationPrefs) -> AccessRules {
+    AccessRules {
+        team_id: installation.installation.team_id.clone(),
+        channels: installation
+            .answer_channels
+            .iter()
+            .map(|c| AllowedChannel {
+                id: c.id.clone(),
+                shared: c.shared,
+            })
+            .collect(),
+    }
+}
+
+/// The channels `chosen` (ids) among the channels the bot is in, as kept in settings.
+/// An id the bot is not in is refused: it cannot be chosen from the card.
+pub fn choose_channels(
+    chosen: &[String],
+    available: &[BotChannel],
+) -> Result<Vec<AnswerChannel>, String> {
+    let mut channels = Vec::new();
+    for id in chosen {
+        let id = id.trim();
+        if id.is_empty() || channels.iter().any(|c: &AnswerChannel| c.id == id) {
+            continue;
+        }
+        let Some(channel) = available.iter().find(|c| c.id == id) else {
+            return Err(
+                "Shodh is not in one of those channels any more. Reload the list and choose again."
+                    .into(),
+            );
+        };
+        channels.push(AnswerChannel {
+            id: channel.id.clone(),
+            name: channel.name.clone(),
+            shared: channel.shared,
+        });
+    }
+    Ok(channels)
+}
+
+/// The required scopes the installation's bot was not granted when it connected (none
+/// when Slack did not list them).
+pub fn missing_scopes(installation: &SlackInstallation) -> Vec<String> {
+    if installation.scopes.is_empty() {
+        return Vec::new();
+    }
+    match check_scopes(Some(&installation.scopes)) {
+        ScopeCheck::Missing(missing) => missing,
+        ScopeCheck::Complete | ScopeCheck::Unknown => Vec::new(),
+    }
+}
+
 // ── Tokens ──────────────────────────────────────────────────────────
 
 /// The OS credential store, under this profile's service.
@@ -195,6 +279,55 @@ impl SlackCredentialStore for KeyringCredentials {
     }
 }
 
+// ── Names ───────────────────────────────────────────────────────────
+
+/// The OS account's display name ("Ada Lovelace"), when the OS keeps one: never to appear
+/// in Slack. Read once.
+fn os_display_name() -> Option<String> {
+    static NAME: OnceLock<Option<String>> = OnceLock::new();
+    NAME.get_or_init(read_os_display_name).clone()
+}
+
+#[cfg(windows)]
+fn read_os_display_name() -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Security::Authentication::Identity::{GetUserNameExW, NameDisplay};
+    let mut buffer = [0u16; 512];
+    let mut size = u32::try_from(buffer.len()).unwrap_or(0);
+    // SAFETY: the buffer holds `size` UTF-16 units; the call writes at most that many and
+    // sets `size` to the length written (without the NUL), or fails and writes nothing
+    // usable (an account without a display name fails with ERROR_NONE_MAPPED).
+    let ok = unsafe { GetUserNameExW(NameDisplay, PWSTR(buffer.as_mut_ptr()), &mut size) };
+    if ok.0 == 0 {
+        return None;
+    }
+    let len = usize::try_from(size).ok()?.min(buffer.len());
+    let name = String::from_utf16_lossy(&buffer[..len]);
+    let name = name.trim_end_matches('\0').trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+#[cfg(not(windows))]
+fn read_os_display_name() -> Option<String> {
+    let user = std::env::var("USER").ok()?;
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd_display_name(&passwd, &user)
+}
+
+/// The display name of `user` in an `/etc/passwd` text (the first part of the GECOS
+/// field).
+#[cfg_attr(windows, allow(dead_code))]
+fn passwd_display_name(passwd: &str, user: &str) -> Option<String> {
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.first() != Some(&user) {
+            return None;
+        }
+        let name = fields.get(4)?.split(',').next()?.trim();
+        (!name.is_empty()).then(|| name.to_string())
+    })
+}
+
 // ── State ───────────────────────────────────────────────────────────
 
 /// What is known about a connection now (not stored).
@@ -204,11 +337,59 @@ struct Live {
     last_event: Option<DateTime<Utc>>,
     /// Slack refused a reply (a missing scope, a revoked bot token): shown on the card.
     problem: Option<String>,
+    /// The app's open connections, from the last `hello`.
+    connections: Option<u32>,
+    /// The last answer could not be posted in Slack, after its retries.
+    post_failed_at: Option<DateTime<Utc>>,
+    /// Channels chosen while not shared that are shared with other organizations now.
+    now_shared: BTreeSet<String>,
 }
 
 struct Running {
     stop: watch::Sender<bool>,
+    /// Cancels every answer of this connection, queued or running.
+    answers: CancellationToken,
     task: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// One installation's event router and the file its seen event ids are kept in: they
+/// outlive restarts of the connection, so a retry delivered across one costs nothing.
+struct Routing {
+    router: Arc<EventRouter>,
+    seen: Arc<SeenPersister>,
+}
+
+/// Sends the card's status at most once per [`STATUS_EVERY`]: the first request is sent
+/// at once, the ones during the wait are sent together after it.
+#[derive(Default)]
+struct StatusPacer {
+    running: AtomicBool,
+    again: AtomicBool,
+}
+
+impl StatusPacer {
+    /// True when the caller should start sending (no round is running).
+    fn request(&self) -> bool {
+        self.again.store(true, Ordering::SeqCst);
+        !self.running.swap(true, Ordering::SeqCst)
+    }
+
+    /// Called before each send: takes the pending request.
+    fn take(&self) -> bool {
+        self.again.swap(false, Ordering::SeqCst)
+    }
+
+    /// Called after a round's wait: true when another request came meanwhile and this
+    /// sender goes on.
+    fn finish_round(&self) -> bool {
+        if self.again.load(Ordering::SeqCst) {
+            return true;
+        }
+        self.running.store(false, Ordering::SeqCst);
+        // A request between the check and the store found `running` true and left it to
+        // this sender: take it back.
+        self.again.load(Ordering::SeqCst) && !self.running.swap(true, Ordering::SeqCst)
+    }
 }
 
 /// Managed state of the Slack connector.
@@ -217,7 +398,9 @@ pub struct SlackState {
     cap: Arc<AtomicUsize>,
     usage: Arc<SlackUsage>,
     running: Mutex<HashMap<String, Running>>,
+    routing: Mutex<HashMap<String, Routing>>,
     live: Arc<Mutex<HashMap<String, Live>>>,
+    pacer: Arc<StatusPacer>,
     /// One change at a time (connect, switch, disconnect, follow the settings).
     op: tokio::sync::Mutex<()>,
 }
@@ -236,14 +419,19 @@ impl SlackState {
             usage: Arc::new(SlackUsage::new(data_dir, cap.clone())),
             cap,
             running: Mutex::new(HashMap::new()),
+            routing: Mutex::new(HashMap::new()),
             live: Arc::new(Mutex::new(HashMap::new())),
+            pacer: Arc::new(StatusPacer::default()),
             op: tokio::sync::Mutex::new(()),
         }
     }
 
-    fn settings(&self) -> Result<AppSettings, String> {
-        SettingsStore::in_dir(&self.data_dir)
-            .load()
+    /// The settings, read off the async workers.
+    async fn settings(&self) -> Result<AppSettings, String> {
+        let store = SettingsStore::in_dir(&self.data_dir);
+        tokio::task::spawn_blocking(move || store.load())
+            .await
+            .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())
     }
 
@@ -271,6 +459,64 @@ impl SlackState {
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(team_id)
     }
+
+    /// Cancels every answer of `team_id`, queued or running, at once (before the settings
+    /// change that stops the connection is even saved).
+    fn cancel_answers(&self, team_id: &str) {
+        if let Some(running) = self
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(team_id)
+        {
+            running.answers.cancel();
+        }
+    }
+}
+
+// ── Seen events on disk ─────────────────────────────────────────────
+
+/// The seen event ids of one installation, next to the settings
+/// (`connectors/slack_seen_<team>.json`, written atomically with a backup).
+struct FileSeenStore {
+    path: PathBuf,
+}
+
+impl FileSeenStore {
+    fn new(data_dir: &Path, team_id: &str) -> Self {
+        let safe: String = team_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect();
+        Self {
+            path: data_dir
+                .join("connectors")
+                .join(format!("slack_seen_{safe}.json")),
+        }
+    }
+}
+
+impl SeenStore for FileSeenStore {
+    fn load(&self) -> Result<Vec<SeenEntry>, String> {
+        match durable_file::read_with_backup(
+            &self.path,
+            |text| serde_json::from_str::<Vec<SeenEntry>>(text).map_err(|e| e.to_string()),
+            Vec::new,
+        ) {
+            Ok(Loaded { value, .. }) => Ok(value),
+            // A damaged list starts empty: at worst one retry is answered twice.
+            Err(ReadFailure::Damaged { problem, .. }) => {
+                tracing::warn!(target: "shodh::slack", %problem, "the seen Slack events were damaged; starting empty");
+                Ok(Vec::new())
+            }
+            Err(ReadFailure::Io { message, .. }) => Err(message),
+        }
+    }
+
+    fn save(&self, entries: &[SeenEntry]) -> Result<(), String> {
+        let text = serde_json::to_string(entries).map_err(|e| e.to_string())?;
+        durable_file::write_atomic(&self.path, text.as_bytes()).map_err(|e| e.to_string())
+    }
 }
 
 // ── Status ──────────────────────────────────────────────────────────
@@ -292,6 +538,29 @@ pub struct WorkspaceRef {
     pub available: bool,
 }
 
+/// A channel Shodh answers in, as the card shows it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelView {
+    pub id: String,
+    pub name: String,
+    /// Shared with other organizations (Slack Connect).
+    pub shared: bool,
+    /// Chosen while not shared, shared now: refused until chosen again.
+    pub now_shared: bool,
+}
+
+/// A channel the bot is in, offered on the card.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelChoice {
+    pub id: String,
+    pub name: String,
+    pub private: bool,
+    pub shared: bool,
+    pub selected: bool,
+}
+
 /// What the card shows. Never a token.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -310,6 +579,13 @@ pub struct SlackStatus {
     pub max_daily_cap: usize,
     pub resets_at: String,
     pub answer_workspace: Option<WorkspaceRef>,
+    pub answer_channels: Vec<ChannelView>,
+    /// Another connection (another Shodh) uses the same Slack app.
+    pub other_connections: bool,
+    /// When the last answer could not be posted in Slack.
+    pub last_post_failed_at: Option<String>,
+    /// Scopes the bot lacks (an app created from an earlier manifest).
+    pub missing_scopes: Vec<String>,
     pub create_app_url: String,
     pub bot_scopes: Vec<&'static str>,
     pub bot_events: Vec<&'static str>,
@@ -367,7 +643,7 @@ async fn workspace_ref(app: &AppHandle, id: &str) -> WorkspaceRef {
 /// The card's status now.
 pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
     let state = app.state::<SlackState>();
-    let settings = state.settings()?;
+    let settings = state.settings().await?;
     let prefs = &settings.connectors.slack;
     let current = prefs.current();
     let live = current
@@ -391,10 +667,17 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
         None => None,
     };
     let now = Utc::now();
-    let answers_today = state.usage.used(utc_day(now)).unwrap_or_else(|e| {
-        tracing::warn!(target: "shodh::slack", error = %e, "the Slack answer count could not be read");
-        0
-    });
+    let usage = state.usage.clone();
+    let today = utc_day(now);
+    let answers_today = tokio::task::spawn_blocking(move || usage.used(today))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r)
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::slack", error = %e, "the Slack answer count could not be read");
+            0
+        });
+    let running = word == "connected" || word == "reconnecting" || word == "connecting";
     Ok(SlackStatus {
         state: word,
         installation: current.map(|i| InstallationView {
@@ -411,6 +694,24 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
         max_daily_cap: MAX_DAILY_ANSWER_CAP,
         resets_at: rfc3339(next_utc_midnight(now)),
         answer_workspace,
+        answer_channels: current
+            .map(|i| {
+                i.answer_channels
+                    .iter()
+                    .map(|c| ChannelView {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        shared: c.shared,
+                        now_shared: live.now_shared.contains(&c.id),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        other_connections: running && live.connections.is_some_and(|n| n > 1),
+        last_post_failed_at: live.post_failed_at.map(rfc3339),
+        missing_scopes: current
+            .map(|i| missing_scopes(&i.installation))
+            .unwrap_or_default(),
         create_app_url: create_app_url(),
         bot_scopes: REQUIRED_BOT_SCOPES.to_vec(),
         bot_events: BOT_EVENTS.to_vec(),
@@ -418,18 +719,34 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
     })
 }
 
-/// Tells the card the status changed (computed in the background).
+/// Tells the card the status changed (computed in the background, at most once per
+/// [`STATUS_EVERY`]).
 pub fn emit_status(app: &AppHandle) {
+    let Some(state) = app.try_state::<SlackState>() else {
+        return;
+    };
+    let pacer = state.pacer.clone();
+    if !pacer.request() {
+        return;
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        match status(&app).await {
-            Ok(status) => {
-                if let Err(e) = app.emit(SLACK_STATUS_EVENT, status) {
-                    tracing::warn!(target: "shodh::slack", error = %e, "Slack status not emitted");
+        loop {
+            if pacer.take() {
+                match status(&app).await {
+                    Ok(status) => {
+                        if let Err(e) = app.emit(SLACK_STATUS_EVENT, status) {
+                            tracing::warn!(target: "shodh::slack", error = %e, "Slack status not emitted");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "shodh::slack", error = %e, "Slack status unavailable")
+                    }
                 }
             }
-            Err(e) => {
-                tracing::warn!(target: "shodh::slack", error = %e, "Slack status unavailable")
+            tokio::time::sleep(STATUS_EVERY).await;
+            if !pacer.finish_round() {
+                return;
             }
         }
     });
@@ -442,6 +759,16 @@ struct AppStatusSink {
     live: Arc<Mutex<HashMap<String, Live>>>,
 }
 
+impl AppStatusSink {
+    fn update(&self, change: impl FnOnce(&mut Live)) {
+        {
+            let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+            change(live.entry(self.team_id.clone()).or_default());
+        }
+        emit_status(&self.app);
+    }
+}
+
 impl StatusSink for AppStatusSink {
     fn link(&self, state: LinkState) {
         match &state {
@@ -451,25 +778,23 @@ impl StatusSink for AppStatusSink {
             LinkState::Connected => tracing::info!(target: "shodh::slack", "connected to Slack"),
             _ => {}
         }
-        {
-            let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
-            let entry = live.entry(self.team_id.clone()).or_default();
+        self.update(|entry| {
             if state == LinkState::Connected {
                 entry.problem = None;
             }
             entry.link = Some(state);
-        }
-        emit_status(&self.app);
+        });
     }
 
     fn event_seen(&self, at: DateTime<Utc>) {
-        self.live
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(self.team_id.clone())
-            .or_default()
-            .last_event = Some(at);
-        emit_status(&self.app);
+        self.update(|entry| entry.last_event = Some(at));
+    }
+
+    fn connections(&self, count: u32) {
+        if count > 1 {
+            tracing::warn!(target: "shodh::slack", count, "another connection uses this Slack app; Slack splits the events between them");
+        }
+        self.update(|entry| entry.connections = Some(count));
     }
 }
 
@@ -482,21 +807,25 @@ struct ObservedPoster {
     live: Arc<Mutex<HashMap<String, Live>>>,
 }
 
+/// The card's words for a refusal the user must fix, if it is one.
+fn refusal_problem(e: &SlackApiError) -> Option<String> {
+    match e {
+        SlackApiError::Api {
+            code,
+            needed: Some(scope),
+        } if code == "missing_scope" => Some(missing_scopes_message(std::slice::from_ref(scope))),
+        e if e.is_auth() => Some(format!(
+            "Slack refused the bot token ({}). Reinstall the Slack app and connect again with the new bot token.",
+            e.code().unwrap_or("refused")
+        )),
+        _ => None,
+    }
+}
+
 impl ObservedPoster {
     fn observe<T>(&self, result: Result<T, SlackApiError>) -> Result<T, SlackApiError> {
         if let Err(e) = &result {
-            let problem = match e {
-                SlackApiError::Api {
-                    code,
-                    needed: Some(scope),
-                } if code == "missing_scope" => Some(missing_scopes_message(std::slice::from_ref(scope))),
-                e if e.is_auth() => Some(format!(
-                    "Slack refused the bot token ({}). Reinstall the Slack app and connect again with the new bot token.",
-                    e.code().unwrap_or("refused")
-                )),
-                _ => None,
-            };
-            if let Some(problem) = problem {
+            if let Some(problem) = refusal_problem(e) {
                 self.live
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -528,7 +857,81 @@ impl SlackPoster for ObservedPoster {
     }
 }
 
+/// Shows on the card when the last answer could not be posted in Slack.
+struct AppOutcomes {
+    app: AppHandle,
+    team_id: String,
+    live: Arc<Mutex<HashMap<String, Live>>>,
+}
+
+impl OutcomeSink for AppOutcomes {
+    fn handled(&self, outcome: &Outcome) {
+        let changed = {
+            let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = live.entry(self.team_id.clone()).or_default();
+            match outcome {
+                Outcome::SlackFailed(_) => {
+                    entry.post_failed_at = Some(Utc::now());
+                    true
+                }
+                Outcome::Cancelled => false,
+                _ => entry.post_failed_at.take().is_some(),
+            }
+        };
+        if changed {
+            emit_status(&self.app);
+        }
+    }
+}
+
 // ── Answers ─────────────────────────────────────────────────────────
+
+/// Reads the installation's settings off the async workers.
+async fn installation_prefs(
+    data_dir: &Path,
+    team_id: &str,
+) -> Result<Option<SlackInstallationPrefs>, String> {
+    let store = SettingsStore::in_dir(data_dir);
+    let settings = tokio::task::spawn_blocking(move || store.load())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(settings.connectors.slack.find(team_id).cloned())
+}
+
+/// Where one installation answers: read at every question (a change on the card applies
+/// to the next one).
+struct AppAccessRules {
+    app: AppHandle,
+    team_id: String,
+    data_dir: PathBuf,
+    live: Arc<Mutex<HashMap<String, Live>>>,
+}
+
+#[async_trait]
+impl AccessRulesSource for AppAccessRules {
+    async fn rules(&self) -> Result<AccessRules, String> {
+        installation_prefs(&self.data_dir, &self.team_id)
+            .await?
+            .map(|i| access_rules(&i))
+            .ok_or_else(|| "the Slack installation is gone".to_string())
+    }
+
+    fn channel_now_shared(&self, channel: &str) {
+        tracing::warn!(target: "shodh::slack", "a channel chosen for answers is shared with another organization now; not answered there until chosen again");
+        let inserted = self
+            .live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(self.team_id.clone())
+            .or_default()
+            .now_shared
+            .insert(channel.to_string());
+        if inserted {
+            emit_status(&self.app);
+        }
+    }
+}
 
 /// Answers from the Shodh workspace selected for one installation, read at every
 /// question (a change on the card applies to the next question).
@@ -541,16 +944,9 @@ struct AppAnswerSource {
 #[async_trait]
 impl AnswerSource for AppAnswerSource {
     async fn scope(&self) -> Result<Option<AnswerScope>, String> {
-        let store = SettingsStore::in_dir(&self.data_dir);
-        let settings = tokio::task::spawn_blocking(move || store.load())
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
-        let Some(id) = settings
-            .connectors
-            .slack
-            .find(&self.team_id)
-            .and_then(|i| i.answer_workspace.clone())
+        let Some(id) = installation_prefs(&self.data_dir, &self.team_id)
+            .await?
+            .and_then(|i| i.answer_workspace)
         else {
             return Ok(None);
         };
@@ -591,6 +987,9 @@ impl AnswerSource for AppAnswerSource {
 
     fn private_terms(&self) -> PrivateTerms {
         let mut terms = PrivateTerms::of_this_computer();
+        if let Some(name) = os_display_name() {
+            terms.add_name(&name);
+        }
         terms
             .home_dirs
             .push(self.data_dir.to_string_lossy().into_owned());
@@ -600,7 +999,8 @@ impl AnswerSource for AppAnswerSource {
 
 // ── Running ─────────────────────────────────────────────────────────
 
-/// Stops the connection of `team_id` (if any) and waits for it to close.
+/// Stops the connection of `team_id` (if any): its answers are cancelled first, then the
+/// connection closes.
 async fn stop(app: &AppHandle, team_id: &str) {
     let running = app
         .state::<SlackState>()
@@ -609,12 +1009,52 @@ async fn stop(app: &AppHandle, team_id: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .remove(team_id);
     if let Some(running) = running {
+        running.answers.cancel();
         let _ = running.stop.send(true);
         if tokio::time::timeout(EXIT_WAIT, running.task).await.is_err() {
             tracing::warn!(target: "shodh::slack", "the Slack connection did not close in time");
         }
     }
     app.state::<SlackState>().set_link(team_id, LinkState::Off);
+}
+
+/// The router of `installation`, kept across restarts of its connection (a new one when
+/// the bot changed), with the event ids seen before.
+async fn routing(
+    state: &SlackState,
+    installation: &SlackInstallation,
+) -> (Arc<EventRouter>, Arc<SeenPersister>) {
+    let bot = installation.bot();
+    if let Some(r) = state
+        .routing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&installation.team_id)
+        .filter(|r| *r.router.bot() == bot)
+    {
+        return (r.router.clone(), r.seen.clone());
+    }
+    let seen = Arc::new(SeenPersister::new(Arc::new(FileSeenStore::new(
+        &state.data_dir,
+        &installation.team_id,
+    ))));
+    let loader = seen.clone();
+    let entries = tokio::task::spawn_blocking(move || loader.load())
+        .await
+        .unwrap_or_default();
+    let router = Arc::new(EventRouter::restored(bot, entries, Utc::now()));
+    state
+        .routing
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            installation.team_id.clone(),
+            Routing {
+                router: router.clone(),
+                seen: seen.clone(),
+            },
+        );
+    (router, seen)
 }
 
 /// Starts the connection of `prefs` (its tokens from the credential store).
@@ -656,30 +1096,55 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
             return;
         }
     };
+    let answers = CancellationToken::new();
     let poster = ObservedPoster {
         inner: BotPoster {
             web: web.clone(),
-            token: credentials.bot_token,
+            token: credentials.bot_token.clone(),
         },
         app: app.clone(),
         team_id: team_id.clone(),
         live: state.live.clone(),
     };
-    let responder = Responder {
-        source: Arc::new(AppAnswerSource {
+    let gate = SlackAccessGate::new(
+        Arc::new(AppAccessRules {
+            app: app.clone(),
+            team_id: team_id.clone(),
+            data_dir: state.data_dir.clone(),
+            live: state.live.clone(),
+        }),
+        Arc::new(BotDirectory {
+            web: web.clone(),
+            token: credentials.bot_token,
+        }),
+        Arc::new(SystemClock),
+    );
+    let responder = Responder::new(
+        Arc::new(AppAnswerSource {
             app: app.clone(),
             team_id: team_id.clone(),
             data_dir: state.data_dir.clone(),
         }),
-        quota: state.usage.clone(),
-        poster: Arc::new(poster),
-        clock: Arc::new(SystemClock),
-    };
-    let service = Arc::new(AnswerService::new(
-        prefs.installation.bot(),
-        responder,
-        runtime,
-    ));
+        Arc::new(gate),
+        state.usage.clone(),
+        Arc::new(poster),
+        Arc::new(SystemClock),
+        answers.clone(),
+    );
+    let (router, seen) = routing(&state, &prefs.installation).await;
+    let service = Arc::new(
+        AnswerService::new(
+            router,
+            responder,
+            runtime,
+            Arc::new(AppOutcomes {
+                app: app.clone(),
+                team_id: team_id.clone(),
+                live: state.live.clone(),
+            }),
+        )
+        .with_seen_store(seen),
+    );
     let opener = Arc::new(SlackSocketOpener {
         web,
         app_token: credentials.app_token,
@@ -690,8 +1155,14 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
         live: state.live.clone(),
     });
     let (stop_tx, stop_rx) = watch::channel(false);
-    let task =
-        tauri::async_runtime::spawn(supervise(opener, service, sink, stop_rx, Timing::default()));
+    let task = tauri::async_runtime::spawn(supervise(
+        opener,
+        service,
+        sink,
+        stop_rx,
+        Timing::default(),
+        prefs.installation.app_id.clone(),
+    ));
     state
         .running
         .lock()
@@ -700,6 +1171,7 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
             team_id,
             Running {
                 stop: stop_tx,
+                answers,
                 task,
             },
         );
@@ -716,7 +1188,7 @@ async fn sync(app: &AppHandle) {
 
 async fn sync_locked(app: &AppHandle) {
     let state = app.state::<SlackState>();
-    let settings = match state.settings() {
+    let settings = match state.settings().await {
         Ok(settings) => settings,
         Err(e) => {
             tracing::warn!(target: "shodh::slack", error = %e, "settings unreadable; the Slack connector stays as it is");
@@ -753,9 +1225,11 @@ async fn sync_locked(app: &AppHandle) {
 /// At startup: connects the installations the user left on (nothing when the connector
 /// is off).
 pub fn start_saved(app: &AppHandle) {
-    let wanted = app
-        .state::<SlackState>()
-        .settings()
+    let Some(state) = app.try_state::<SlackState>() else {
+        return;
+    };
+    let wanted = SettingsStore::in_dir(&state.data_dir)
+        .load()
         .map(|s| {
             s.connectors
                 .slack
@@ -770,29 +1244,43 @@ pub fn start_saved(app: &AppHandle) {
     }
 }
 
-/// After any settings change (Local-only mode switched): follow it.
+/// After any settings change (Local-only mode switched): follow it. Answers of an
+/// installation that must stop are cancelled here, at once; the connection closes after.
 pub fn settings_changed(app: &AppHandle, settings: &AppSettings) {
     let Some(state) = app.try_state::<SlackState>() else {
         return;
     };
-    let any_running = !state
+    let running: Vec<String> = state
         .running
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .is_empty();
+        .keys()
+        .cloned()
+        .collect();
+    for team_id in &running {
+        if !settings
+            .connectors
+            .slack
+            .find(team_id)
+            .is_some_and(|i| should_run(settings, i))
+        {
+            state.cancel_answers(team_id);
+        }
+    }
     let any_wanted = settings
         .connectors
         .slack
         .installations
         .iter()
         .any(|i| should_run(settings, i));
-    if any_running || any_wanted {
+    if !running.is_empty() || any_wanted {
         let app = app.clone();
         tauri::async_runtime::spawn(async move { sync(&app).await });
     }
 }
 
-/// When the app exits: every connection is closed (a close frame, bounded wait).
+/// When the app exits: every answer is cancelled and every connection closed (a close
+/// frame, bounded wait).
 pub fn shutdown(app: &AppHandle) {
     let Some(state) = app.try_state::<SlackState>() else {
         return;
@@ -808,6 +1296,7 @@ pub fn shutdown(app: &AppHandle) {
         return;
     }
     for r in &running {
+        r.answers.cancel();
         let _ = r.stop.send(true);
     }
     tauri::async_runtime::block_on(async move {
@@ -815,6 +1304,44 @@ pub fn shutdown(app: &AppHandle) {
             let _ = tokio::time::timeout(EXIT_WAIT, r.task).await;
         }
     });
+}
+
+// ── Exposure ────────────────────────────────────────────────────────
+
+/// The Slack workspaces (by name) whose questions are answered from Shodh workspace
+/// `workspace_id`.
+pub fn slack_teams_answering_from(settings: &AppSettings, workspace_id: &str) -> Vec<String> {
+    settings
+        .connectors
+        .slack
+        .installations
+        .iter()
+        .filter(|i| i.answer_workspace.as_deref() == Some(workspace_id))
+        .map(|i| i.installation.team_name.clone())
+        .collect()
+}
+
+/// What adding sources to a workspace Slack answers from means, for an approval prompt;
+/// `None` when no Slack workspace answers from it.
+pub fn slack_exposure_note(teams: &[String]) -> Option<String> {
+    if teams.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Slack answers come from this workspace: people in {} will be able to get answers from what is added here.",
+        teams.join(", ")
+    ))
+}
+
+/// [`slack_exposure_note`] for `workspace_id`, with the settings of `data_dir` read off
+/// the async workers (none when they cannot be read).
+pub async fn slack_exposure_of(data_dir: &Path, workspace_id: &str) -> Option<String> {
+    let store = SettingsStore::in_dir(data_dir);
+    let settings = tokio::task::spawn_blocking(move || store.load())
+        .await
+        .ok()?
+        .ok()?;
+    slack_exposure_note(&slack_teams_answering_from(&settings, workspace_id))
 }
 
 // ── Commands ────────────────────────────────────────────────────────
@@ -854,12 +1381,26 @@ async fn save(
 /// What a refused setup call tells the user.
 fn setup_error(which: &str, error: SlackApiError) -> String {
     match &error {
+        SlackApiError::Api {
+            code,
+            needed: Some(scope),
+        } if code == "missing_scope" => missing_scopes_message(std::slice::from_ref(scope)),
         e if e.is_auth() => format!(
             "Slack refused the {which} ({}). Check that the whole token was copied, and that the app is installed to the workspace.",
             e.code().unwrap_or("refused")
         ),
         SlackApiError::Network(_) => format!("{error}. Check the internet connection and try again."),
         _ => error.to_string(),
+    }
+}
+
+/// Whether the two tokens are of the same Slack app: the app-level token's app (from
+/// the connection URL) and the bot's (`bots.info`). `Ok(None)` when either side could
+/// not say; the connection's `hello` is checked against the bot's app later anyway.
+pub fn same_app(token_app: Option<&str>, bot_app: Option<&str>) -> Result<(), String> {
+    match (token_app, bot_app) {
+        (Some(a), Some(b)) if a != b => Err(WRONG_APP.to_string()),
+        _ => Ok(()),
     }
 }
 
@@ -870,8 +1411,9 @@ pub async fn slack_status(app: AppHandle) -> Result<SlackStatus, String> {
 }
 
 /// Connects a Slack workspace with the tokens the user pasted: both are checked with
-/// Slack (`auth.test`, its scopes, `apps.connections.open`) before anything is saved, then
-/// kept in the OS credential store and the connector is switched on. User-only.
+/// Slack (`auth.test`, its scopes, `bots.info`, `apps.connections.open`, and that both
+/// belong to the same Slack app) before anything is saved, then kept in the OS credential
+/// store and the connector is switched on. User-only.
 #[tauri::command]
 pub async fn slack_connect(
     app: AppHandle,
@@ -881,7 +1423,7 @@ pub async fn slack_connect(
     bot_token: String,
 ) -> Result<SlackStatus, String> {
     let _op = state.op.lock().await;
-    let settings = state.settings()?;
+    let settings = state.settings().await?;
     if settings.policy.local_only {
         return Err(LOCAL_ONLY.into());
     }
@@ -895,9 +1437,22 @@ pub async fn slack_connect(
     if let ScopeCheck::Missing(missing) = check_scopes(info.scopes.as_deref()) {
         return Err(missing_scopes_message(&missing));
     }
-    web.open_connection(&app_token)
+    let bot_app = match &info.bot_id {
+        Some(bot_id) => Some(
+            web.bot_app_id(&bot_token, bot_id)
+                .await
+                .map_err(|e| setup_error("bot token", e))?,
+        ),
+        None => None,
+    };
+    let url = web
+        .open_connection(&app_token)
         .await
         .map_err(|e| setup_error("app-level token", e))?;
+    same_app(
+        app_id_of_connection_url(&url).as_deref(),
+        bot_app.as_deref(),
+    )?;
     if let Some(other) = settings
         .connectors
         .slack
@@ -911,6 +1466,8 @@ pub async fn slack_connect(
         ));
     }
     let team_id = info.team_id.clone();
+    // New tokens: answers of the old ones stop now, before anything else changes.
+    state.cancel_answers(&team_id);
     let credentials = SlackCredentials {
         app_token,
         bot_token,
@@ -926,12 +1483,11 @@ pub async fn slack_connect(
         bot_name: info.user.clone(),
         bot_id: info.bot_id.clone(),
         scopes: info.scopes.clone().unwrap_or_default(),
+        app_id: bot_app,
         connected_at: Utc::now(),
     };
     let settings = save(&state, move |prefs| {
-        let answer_workspace = prefs
-            .find(&installation.team_id)
-            .and_then(|i| i.answer_workspace.clone());
+        let kept = prefs.find(&installation.team_id).cloned();
         prefs
             .installations
             .retain(|i| i.installation.team_id != installation.team_id);
@@ -940,7 +1496,8 @@ pub async fn slack_connect(
             SlackInstallationPrefs {
                 installation,
                 enabled: true,
-                answer_workspace,
+                answer_workspace: kept.as_ref().and_then(|k| k.answer_workspace.clone()),
+                answer_channels: kept.map(|k| k.answer_channels).unwrap_or_default(),
             },
         );
         Ok(())
@@ -951,7 +1508,7 @@ pub async fn slack_connect(
         "slack_connect",
         json!({ "slackWorkspace": info.team, "bot": info.user }),
     );
-    // New tokens: a running connection of this workspace starts again with them.
+    // A running connection of this workspace starts again with the new tokens.
     stop(&app, &team_id).await;
     state
         .live
@@ -972,7 +1529,7 @@ pub async fn slack_set_enabled(
     enabled: bool,
 ) -> Result<SlackStatus, String> {
     let _op = state.op.lock().await;
-    let settings = state.settings()?;
+    let settings = state.settings().await?;
     if enabled && settings.policy.local_only {
         return Err(LOCAL_ONLY.into());
     }
@@ -982,6 +1539,10 @@ pub async fn slack_set_enabled(
         .current()
         .map(|i| i.installation.team_id.clone())
         .ok_or_else(|| "Connect a Slack workspace first.".to_string())?;
+    if !enabled {
+        // Off means off now: queued and running answers stop before the switch is saved.
+        state.cancel_answers(&team_id);
+    }
     let team = team_id.clone();
     let settings = save(&state, move |prefs| {
         if let Some(i) = prefs.find_mut(&team) {
@@ -1029,7 +1590,7 @@ pub async fn slack_set_answer_workspace(
         }
         workspace_name = Some(detail.workspace.name);
     }
-    let settings = state.settings()?;
+    let settings = state.settings().await?;
     let team_id = settings
         .connectors
         .slack
@@ -1048,6 +1609,110 @@ pub async fn slack_set_answer_workspace(
         &audit,
         "slack_set_answer_workspace",
         json!({ "workspaceId": workspace_id, "workspace": workspace_name }),
+    );
+    broadcast(&app, &settings);
+    status(&app).await
+}
+
+/// The bot token of the installation the card manages, for a call the user asked for.
+async fn current_bot_token(
+    state: &SlackState,
+) -> Result<(AppSettings, SlackInstallationPrefs, SlackBotToken), String> {
+    let settings = state.settings().await?;
+    if settings.policy.local_only {
+        return Err(LOCAL_ONLY.into());
+    }
+    let current = settings
+        .connectors
+        .slack
+        .current()
+        .cloned()
+        .ok_or_else(|| "Connect a Slack workspace first.".to_string())?;
+    let lookup = current.installation.team_id.clone();
+    let credentials = tokio::task::spawn_blocking(move || KeyringCredentials.load(&lookup))
+        .await
+        .map_err(|e| e.to_string())??
+        .ok_or_else(|| {
+            "The Slack tokens are no longer saved on this computer. Connect again.".to_string()
+        })?;
+    Ok((settings, current, credentials.bot_token))
+}
+
+/// The channels the bot is in, from Slack, with the ones Shodh answers in marked.
+/// User-only (the card's channel list).
+#[tauri::command]
+pub async fn slack_list_channels(
+    state: State<'_, SlackState>,
+) -> Result<Vec<ChannelChoice>, String> {
+    let (_, current, token) = current_bot_token(&state).await?;
+    let web = SlackWeb::new().map_err(|e| e.to_string())?;
+    let channels = web
+        .bot_channels(&token)
+        .await
+        .map_err(|e| setup_error("bot token", e))?;
+    Ok(channels
+        .into_iter()
+        .map(|c| ChannelChoice {
+            selected: current.answer_channels.iter().any(|a| a.id == c.id),
+            id: c.id,
+            name: c.name,
+            private: c.private,
+            shared: c.shared,
+        })
+        .collect())
+}
+
+/// Chooses the channels Shodh answers mentions in (empty: none). Each must be a channel
+/// the bot is in now; whether it is shared with other organizations is read from Slack
+/// at this moment. User-only.
+#[tauri::command]
+pub async fn slack_set_answer_channels(
+    app: AppHandle,
+    state: State<'_, SlackState>,
+    audit: State<'_, AuditState>,
+    channel_ids: Vec<String>,
+) -> Result<SlackStatus, String> {
+    let _op = state.op.lock().await;
+    let (_, current, token) = current_bot_token(&state).await?;
+    let available = if channel_ids.iter().all(|id| id.trim().is_empty()) {
+        Vec::new()
+    } else {
+        SlackWeb::new()
+            .map_err(|e| e.to_string())?
+            .bot_channels(&token)
+            .await
+            .map_err(|e| setup_error("bot token", e))?
+    };
+    let chosen = choose_channels(&channel_ids, &available)?;
+    let team_id = current.installation.team_id.clone();
+    let team = team_id.clone();
+    let names: Vec<String> = chosen.iter().map(|c| c.name.clone()).collect();
+    let shared: Vec<String> = chosen
+        .iter()
+        .filter(|c| c.shared)
+        .map(|c| c.name.clone())
+        .collect();
+    let ids: BTreeSet<String> = chosen.iter().map(|c| c.id.clone()).collect();
+    let settings = save(&state, move |prefs| {
+        if let Some(i) = prefs.find_mut(&team) {
+            i.answer_channels = chosen;
+        }
+        Ok(())
+    })
+    .await?;
+    // A channel chosen again with its sharing read now is no longer flagged.
+    if let Some(live) = state
+        .live
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(&team_id)
+    {
+        live.now_shared.retain(|c| !ids.contains(c));
+    }
+    audit_change(
+        &audit,
+        "slack_set_answer_channels",
+        json!({ "channels": names, "sharedWithOtherOrganizations": shared }),
     );
     broadcast(&app, &settings);
     status(&app).await
@@ -1081,8 +1746,10 @@ pub async fn slack_set_daily_cap(
     status(&app).await
 }
 
-/// Disconnects the Slack workspace: stops the connection, deletes both tokens from the
-/// credential store and forgets the installation. User-only.
+/// Disconnects the Slack workspace: cancels its answers, stops the connection, switches
+/// the connector off (saved first, so nothing reconnects it), deletes both tokens from the
+/// credential store, and only then forgets the installation. When the tokens cannot be
+/// deleted, the connector stays off and the card says so. User-only.
 #[tauri::command]
 pub async fn slack_disconnect(
     app: AppHandle,
@@ -1090,16 +1757,33 @@ pub async fn slack_disconnect(
     audit: State<'_, AuditState>,
 ) -> Result<SlackStatus, String> {
     let _op = state.op.lock().await;
-    let settings = state.settings()?;
+    let settings = state.settings().await?;
     let Some(current) = settings.connectors.slack.current().cloned() else {
         return status(&app).await;
     };
     let team_id = current.installation.team_id.clone();
+    state.cancel_answers(&team_id);
+    let off = team_id.clone();
+    let settings = save(&state, move |prefs| {
+        if let Some(i) = prefs.find_mut(&off) {
+            i.enabled = false;
+        }
+        Ok(())
+    })
+    .await?;
     stop(&app, &team_id).await;
+    broadcast(&app, &settings);
     let remove_team = team_id.clone();
-    tokio::task::spawn_blocking(move || KeyringCredentials.remove(&remove_team))
+    let removed = tokio::task::spawn_blocking(move || KeyringCredentials.remove(&remove_team))
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|e| e.to_string())
+        .and_then(|r| r);
+    if let Err(e) = removed {
+        tracing::warn!(target: "shodh::slack", error = %e, "the Slack tokens could not be deleted");
+        return Err(format!(
+            "The Slack connector is off, but its tokens could not be deleted from this computer's credential store ({e}). Try Disconnect again."
+        ));
+    }
     let forget = team_id.clone();
     let settings = save(&state, move |prefs| {
         prefs
@@ -1135,10 +1819,12 @@ mod tests {
                 bot_name: "shodh".into(),
                 bot_id: Some("BBOT".into()),
                 scopes: REQUIRED_BOT_SCOPES.iter().map(|s| s.to_string()).collect(),
+                app_id: Some("A1".into()),
                 connected_at: Utc::now(),
             },
             enabled,
             answer_workspace: None,
+            answer_channels: Vec::new(),
         }
     }
 
@@ -1157,6 +1843,24 @@ mod tests {
         // Settings written before the connector existed load with it off.
         let old: AppSettings = serde_json::from_str(r#"{"seeded": true}"#).unwrap();
         assert_eq!(old.connectors.slack, SlackPrefs::default());
+    }
+
+    #[test]
+    fn an_installation_saved_before_channels_existed_answers_in_none() {
+        let saved = json!({
+            "installation": {
+                "teamId": "T1", "teamName": "Acme", "botUserId": "UBOT", "botName": "shodh",
+                "connectedAt": "2026-10-23T09:00:00Z"
+            },
+            "enabled": true,
+            "answerWorkspace": "ws-1"
+        });
+        let prefs: SlackInstallationPrefs = serde_json::from_value(saved).unwrap();
+        assert!(prefs.answer_channels.is_empty());
+        assert_eq!(prefs.installation.app_id, None);
+        let rules = access_rules(&prefs);
+        assert_eq!(rules.team_id, "T1");
+        assert!(rules.channels.is_empty(), "deny by default");
     }
 
     #[test]
@@ -1196,6 +1900,158 @@ mod tests {
         );
     }
 
+    fn bot_channel(id: &str, name: &str, shared: bool) -> BotChannel {
+        BotChannel {
+            id: id.into(),
+            name: name.into(),
+            private: false,
+            shared,
+        }
+    }
+
+    #[test]
+    fn only_channels_the_bot_is_in_can_be_chosen_with_their_sharing() {
+        let available = [
+            bot_channel("C1", "research", false),
+            bot_channel("C2", "client-a", true),
+        ];
+        let chosen = choose_channels(
+            &["C2".into(), " C1 ".into(), "C2".into(), "".into()],
+            &available,
+        )
+        .unwrap();
+        assert_eq!(
+            chosen,
+            vec![
+                AnswerChannel {
+                    id: "C2".into(),
+                    name: "client-a".into(),
+                    shared: true
+                },
+                AnswerChannel {
+                    id: "C1".into(),
+                    name: "research".into(),
+                    shared: false
+                },
+            ]
+        );
+        assert!(choose_channels(&["C9".into()], &available).is_err());
+        assert!(choose_channels(&[], &available).unwrap().is_empty());
+        let mut prefs = installation(true);
+        prefs.answer_channels = chosen;
+        let rules = access_rules(&prefs);
+        assert_eq!(
+            rules.channels,
+            vec![
+                AllowedChannel {
+                    id: "C2".into(),
+                    shared: true
+                },
+                AllowedChannel {
+                    id: "C1".into(),
+                    shared: false
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn scopes_missing_since_the_manifest_grew_are_listed() {
+        let mut prefs = installation(true);
+        assert!(missing_scopes(&prefs.installation).is_empty());
+        prefs.installation.scopes = [
+            "app_mentions:read",
+            "chat:write",
+            "im:history",
+            "im:read",
+            "im:write",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            missing_scopes(&prefs.installation),
+            vec!["channels:read", "groups:read", "users:read"]
+        );
+        prefs.installation.scopes.clear();
+        assert!(
+            missing_scopes(&prefs.installation).is_empty(),
+            "unknown is not missing"
+        );
+    }
+
+    #[test]
+    fn growing_the_workspace_slack_answers_from_is_flagged() {
+        let mut settings = AppSettings::default();
+        let mut prefs = installation(true);
+        prefs.answer_workspace = Some("ws-client-a".into());
+        settings.connectors.slack.installations.push(prefs);
+        assert_eq!(
+            slack_teams_answering_from(&settings, "ws-client-a"),
+            vec!["Acme".to_string()]
+        );
+        assert!(slack_teams_answering_from(&settings, "ws-other").is_empty());
+        let note = slack_exposure_note(&["Acme".into()]).unwrap();
+        assert!(note.contains("people in Acme"), "{note}");
+        assert_eq!(slack_exposure_note(&[]), None);
+    }
+
+    #[test]
+    fn tokens_of_two_apps_are_refused() {
+        assert!(same_app(Some("A1"), Some("A1")).is_ok());
+        assert_eq!(same_app(Some("A1"), Some("A2")), Err(WRONG_APP.to_string()));
+        assert!(same_app(None, Some("A2")).is_ok(), "checked again at hello");
+        assert!(same_app(Some("A1"), None).is_ok());
+    }
+
+    #[test]
+    fn the_status_pacer_sends_once_then_once_more_for_what_came_meanwhile() {
+        let pacer = StatusPacer::default();
+        assert!(pacer.request(), "the first request starts a sender");
+        assert!(pacer.take());
+        assert!(!pacer.request(), "a sender is running");
+        assert!(!pacer.request());
+        assert!(pacer.finish_round(), "requests came during the wait");
+        assert!(pacer.take());
+        assert!(!pacer.take(), "taken once");
+        assert!(!pacer.finish_round(), "nothing more: the sender stops");
+        assert!(pacer.request(), "the next request starts a sender again");
+    }
+
+    #[test]
+    fn the_display_name_is_read_from_passwd() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\nqm:x:1000:1000:Quill Marrow,,,:/home/qm:/bin/bash\nnobody:x:65534:65534::/:/usr/sbin/nologin\n";
+        assert_eq!(
+            passwd_display_name(passwd, "qm").as_deref(),
+            Some("Quill Marrow")
+        );
+        assert_eq!(passwd_display_name(passwd, "nobody"), None);
+        assert_eq!(passwd_display_name(passwd, "absent"), None);
+    }
+
+    #[test]
+    fn seen_events_survive_in_their_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSeenStore::new(dir.path(), "T1/../x");
+        assert!(
+            store.path.ends_with("slack_seen_T1x.json"),
+            "{:?}",
+            store.path
+        );
+        assert!(store.load().unwrap().is_empty());
+        let entries = vec![SeenEntry {
+            id: "Ev1".into(),
+            at: Utc::now(),
+        }];
+        store.save(&entries).unwrap();
+        assert_eq!(
+            FileSeenStore::new(dir.path(), "T1/../x").load().unwrap(),
+            entries
+        );
+        std::fs::write(&store.path, "{damaged").unwrap();
+        assert!(store.load().unwrap().is_empty(), "damaged starts empty");
+    }
+
     #[test]
     fn the_status_never_carries_a_token() {
         // The status type has no field a token could be in; its JSON is checked here so a
@@ -1216,6 +2072,15 @@ mod tests {
             max_daily_cap: 1_000,
             resets_at: "2026-10-24T00:00:00Z".into(),
             answer_workspace: None,
+            answer_channels: vec![ChannelView {
+                id: "C1".into(),
+                name: "research".into(),
+                shared: false,
+                now_shared: false,
+            }],
+            other_connections: false,
+            last_post_failed_at: None,
+            missing_scopes: Vec::new(),
             create_app_url: create_app_url(),
             bot_scopes: REQUIRED_BOT_SCOPES.to_vec(),
             bot_events: BOT_EVENTS.to_vec(),
@@ -1224,6 +2089,7 @@ mod tests {
         let text = serde_json::to_string(&status).unwrap();
         assert!(!text.contains("xoxb-") && !text.contains("xapp-"));
         assert!(text.contains("\"teamName\":\"Acme\""));
+        assert!(text.contains("\"answerChannels\":[{\"id\":\"C1\""));
         // The settings hold no token either.
         let mut settings = AppSettings::default();
         settings

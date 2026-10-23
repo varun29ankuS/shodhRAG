@@ -10,9 +10,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   MODEL_PRIVACY_NOTE,
+  NOT_ALLOWED_REPLY,
   RUNNING_HINT,
+  answerPlacesLine,
   answerSourceLine,
   canConnect,
+  channelLabel,
+  exposureLine,
+  slackWarnings,
   checkAppToken,
   checkBotToken,
   lastEventLine,
@@ -46,8 +51,21 @@ function status(state: SlackState, patch: Partial<SlackStatus> = {}): SlackStatu
     maxDailyCap: 1000,
     resetsAt: '2026-10-24T00:00:00Z',
     answerWorkspace: null,
+    answerChannels: [],
+    otherConnections: false,
+    lastPostFailedAt: null,
+    missingScopes: [],
     createAppUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%7D',
-    botScopes: ['app_mentions:read', 'chat:write', 'im:history', 'im:read', 'im:write'],
+    botScopes: [
+      'app_mentions:read',
+      'channels:read',
+      'chat:write',
+      'groups:read',
+      'im:history',
+      'im:read',
+      'im:write',
+      'users:read',
+    ],
     botEvents: ['app_mention', 'message.im'],
     appTokenScope: 'connections:write',
     ...patch,
@@ -110,6 +128,64 @@ test('the answer workspace line says what answers come from, and what happens wi
   assert.match(chosen.text, /memories, notes, tasks, chats/);
 });
 
+test('the card says where Shodh answers, and that it answers nowhere until channels are chosen', () => {
+  const none = answerPlacesLine(status('connected'));
+  assert.equal(none.tone, 'warning');
+  assert.match(none.text, /no channel yet/);
+  assert.ok(none.text.includes(NOT_ALLOWED_REPLY));
+  assert.match(none.text, /only for members of Acme: not guests, and not people from other organizations/);
+  const some = answerPlacesLine(
+    status('connected', {
+      answerChannels: [
+        { id: 'C1', name: 'research', shared: false, nowShared: false },
+      ],
+    }),
+  );
+  assert.equal(some.tone, 'ok');
+  assert.match(some.text, /answers mentions in #research;/);
+  const shared = answerPlacesLine(
+    status('connected', {
+      answerChannels: [
+        { id: 'C1', name: 'research', shared: false, nowShared: false },
+        { id: 'C2', name: 'client-a', shared: true, nowShared: false },
+      ],
+    }),
+  );
+  assert.equal(shared.tone, 'warning');
+  assert.match(shared.text, /#client-a · shared with other organizations/);
+  assert.match(shared.text, /People from other organizations in a shared channel can ask too/);
+  assert.equal(channelLabel({ name: 'board', private: true, shared: true }), '#board · private · shared with other organizations');
+  assert.equal(channelLabel({ name: 'general', shared: false }), '#general');
+  assert.equal(NOT_ALLOWED_REPLY, 'Shodh isn’t set to answer in this channel.');
+});
+
+test('missing scopes, another connection, a failed post and a newly shared channel are warned about', () => {
+  assert.deepEqual(slackWarnings(status('connected'), NOW, UTC), []);
+  const warnings = slackWarnings(
+    status('connected', {
+      missingScopes: ['channels:read', 'groups:read', 'users:read'],
+      otherConnections: true,
+      lastPostFailedAt: '2026-10-23T08:59:00Z',
+      answerChannels: [{ id: 'C1', name: 'research', shared: false, nowShared: true }],
+    }),
+    NOW,
+    UTC,
+  );
+  assert.equal(warnings.length, 4);
+  assert.match(warnings[0], /missing these permissions: channels:read, groups:read, users:read/);
+  assert.match(warnings[1], /Another Shodh is connected to this Slack app/);
+  assert.match(warnings[2], /^The last answer failed to post to Slack \(0?8:59\)/);
+  assert.match(warnings[3], /#research is now shared with other organizations/);
+});
+
+test('choosing a workspace says what people in Slack will be able to read', () => {
+  assert.equal(
+    exposureLine('Acme', 'Client A', [{ kind: 'folder' }, { kind: 'file' }, { kind: 'paper' }, { kind: 'snippet' }]),
+    'People in Acme will get answers from 1 folder and 2 files in “Client A”, in the channels chosen below and in DMs.',
+  );
+  assert.match(exposureLine('Acme', 'Empty', []), /0 folders and 0 files/);
+});
+
 test('tokens are checked like the Rust token types', () => {
   assert.deepEqual(checkAppToken(' xapp-1-A1-2-abc '), { ok: true, message: null });
   assert.deepEqual(checkBotToken('xoxb-1-2-abc'), { ok: true, message: null });
@@ -134,7 +210,10 @@ test('the setup steps name the scopes the manifest asks for', () => {
     steps.map(s => s.title),
     ['Create the Slack app', 'Create the app-level token', 'Install the app', 'Paste both tokens'],
   );
-  assert.match(steps[0].detail, /app_mentions:read, chat:write, im:history, im:read, im:write/);
+  assert.match(
+    steps[0].detail,
+    /app_mentions:read, channels:read, chat:write, groups:read, im:history, im:read, im:write, users:read/,
+  );
   assert.match(steps[1].detail, /connections:write/);
   assert.match(steps[2].detail, /xoxb-/);
 });

@@ -778,6 +778,8 @@ pub fn run() {
             slack::slack_connect,
             slack::slack_set_enabled,
             slack::slack_set_answer_workspace,
+            slack::slack_list_channels,
+            slack::slack_set_answer_channels,
             slack::slack_set_daily_cap,
             slack::slack_disconnect,
             visual_commands::visuals_backfill_status,

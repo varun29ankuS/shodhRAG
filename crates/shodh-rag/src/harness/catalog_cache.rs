@@ -5,13 +5,12 @@
 //! until then (and offline) the cached list is used, so prices stay visible.
 
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 
 use super::model_catalog::CatalogModel;
-use crate::audit::{open_shared_connection, AuditError, AuditKey};
+use crate::audit::{open_shared_connection, AuditError, AuditKey, SharedConnection};
 
 /// How long a fetched model list is used before it is fetched again.
 pub const CATALOG_TTL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -43,7 +42,7 @@ impl CachedCatalog {
 }
 
 pub struct CatalogCache {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for CatalogCache {
@@ -56,17 +55,14 @@ impl CatalogCache {
     /// Open `shodh.db` at `path` with the app database key, if it has one.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> Result<Self, CatalogCacheError> {
         Ok(Self {
-            conn: Mutex::new(open_shared_connection(path, key)?),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn get(&self, source: &str) -> Result<Option<CachedCatalog>, CatalogCacheError> {
         let row: Option<(String, i64)> = self
-            .lock()
+            .conn
+            .read()?
             .query_row(
                 "SELECT models_json, fetched_at_ms FROM model_catalog_cache WHERE source = ?1",
                 params![source],
@@ -90,13 +86,15 @@ impl CatalogCache {
     ) -> Result<(), CatalogCacheError> {
         let json = serde_json::to_string(models)?;
         let at = i64::try_from(fetched_at_ms).unwrap_or(i64::MAX);
-        self.lock().execute(
-            "INSERT INTO model_catalog_cache(source, models_json, fetched_at_ms) VALUES (?1, ?2, ?3)
-             ON CONFLICT(source) DO UPDATE SET models_json = excluded.models_json,
-                 fetched_at_ms = excluded.fetched_at_ms",
-            params![source, json, at],
-        )?;
-        Ok(())
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO model_catalog_cache(source, models_json, fetched_at_ms) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(source) DO UPDATE SET models_json = excluded.models_json,
+                     fetched_at_ms = excluded.fetched_at_ms",
+                params![source, json, at],
+            )?;
+            Ok(())
+        })
     }
 }
 

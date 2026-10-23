@@ -1,10 +1,9 @@
 //! SQLite storage of workspaces in the shared `shodh.db`.
 
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use chrono::{SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::templates::{template, BLANK};
 use super::{
@@ -14,7 +13,7 @@ use super::{
     WorkspacePatch, WorkspaceResult, WorkspaceSource, MAX_LABEL_CHARS, MAX_REF_CHARS,
     MAX_SOURCES_PER_CALL,
 };
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 
 const COLUMNS: &str = "w.id, w.name, w.description, w.icon, w.color, w.template, w.pinned, \
     w.archived, w.created_at, w.updated_at, w.last_active_at, \
@@ -26,11 +25,12 @@ const COLUMNS: &str = "w.id, w.name, w.description, w.icon, w.color, w.template,
 
 /// Workspaces, in `shodh.db`.
 ///
-/// Read-then-write transactions are `IMMEDIATE`: other components commit to the same
-/// database, and a deferred transaction upgraded after their commit would fail with
+/// Every write is one `IMMEDIATE` transaction during the database's in-process write turn
+/// ([`SharedConnection::write`]): other components commit to the same database, and a
+/// deferred transaction upgraded after their commit would fail with
 /// `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry.
 pub struct WorkspaceStore {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for WorkspaceStore {
@@ -256,20 +256,15 @@ impl WorkspaceStore {
     /// Opens `shodh.db` at `path` with the audit database key (if the database is
     /// encrypted), applying any pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> WorkspaceResult<Self> {
-        let conn = open_shared_connection(path, key)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Workspaces, pinned first, then most recently active or changed. Archived ones only
     /// when `include_archived`.
     pub fn list(&self, include_archived: bool) -> WorkspaceResult<Vec<Workspace>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM workspaces w
              WHERE ?1 OR w.archived = 0
@@ -284,13 +279,14 @@ impl WorkspaceStore {
     /// One workspace.
     pub fn get(&self, id: &str) -> WorkspaceResult<Workspace> {
         let id = check_id(id)?;
-        workspace_in(&self.lock(), id)
+        let conn = self.conn.read()?;
+        workspace_in(&conn, id)
     }
 
     /// One workspace with its current instructions and its sources.
     pub fn detail(&self, id: &str) -> WorkspaceResult<WorkspaceDetail> {
         let id = check_id(id)?;
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let workspace = workspace_in(&conn, id)?;
         let (_, instructions) = current_instructions(&conn, id)?;
         let mut stmt = conn.prepare(
@@ -361,30 +357,29 @@ impl WorkspaceStore {
             ),
         };
         let at = now();
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let taken: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
-            params![id],
-            |r| r.get(0),
-        )?;
-        if taken {
-            return Err(WorkspaceError::Invalid(format!(
-                "a workspace with id {id} already exists"
-            )));
-        }
-        tx.execute(
-            "INSERT INTO workspaces(id, name, description, icon, color, template, pinned,
+        self.conn.write(|tx| {
+            let taken: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
+                params![id],
+                |r| r.get(0),
+            )?;
+            if taken {
+                return Err(WorkspaceError::Invalid(format!(
+                    "a workspace with id {id} already exists"
+                )));
+            }
+            tx.execute(
+                "INSERT INTO workspaces(id, name, description, icon, color, template, pinned,
                                     archived, created_at, updated_at, last_active_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7, ?7, NULL)",
-            params![id, name, description, icon, color, template.id, at],
-        )?;
-        if !instructions.is_empty() {
-            insert_version(&tx, id, 1, &instructions, instructions_author, None, &at)?;
-        }
-        insert_sources(&tx, id, cleaned, author, &at)?;
-        tx.commit()?;
-        workspace_in(&conn, id)
+                params![id, name, description, icon, color, template.id, at],
+            )?;
+            if !instructions.is_empty() {
+                insert_version(tx, id, 1, &instructions, instructions_author, None, &at)?;
+            }
+            insert_sources(tx, id, cleaned, author, &at)?;
+            workspace_in(tx, id)
+        })
     }
 
     /// Changes name, description, icon, colour, pin or archive state.
@@ -401,10 +396,10 @@ impl WorkspaceStore {
             .transpose()?;
         let icon = patch.icon.as_deref().map(clean_icon).transpose()?;
         let color = patch.color.as_deref().map(clean_color).transpose()?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let changed = tx.execute(
-            "UPDATE workspaces SET
+        let at = now();
+        self.conn.write(|tx| {
+            let changed = tx.execute(
+                "UPDATE workspaces SET
                 name = IFNULL(?2, name),
                 description = IFNULL(?3, description),
                 icon = IFNULL(?4, icon),
@@ -413,22 +408,22 @@ impl WorkspaceStore {
                 archived = IFNULL(?7, archived),
                 updated_at = ?8
              WHERE id = ?1",
-            params![
-                id,
-                name,
-                description,
-                icon,
-                color,
-                patch.pinned.map(i64::from),
-                patch.archived.map(i64::from),
-                now()
-            ],
-        )?;
-        if changed == 0 {
-            return Err(WorkspaceError::NotFound(id.to_string()));
-        }
-        tx.commit()?;
-        workspace_in(&conn, id)
+                params![
+                    id,
+                    name,
+                    description,
+                    icon,
+                    color,
+                    patch.pinned.map(i64::from),
+                    patch.archived.map(i64::from),
+                    at
+                ],
+            )?;
+            if changed == 0 {
+                return Err(WorkspaceError::NotFound(id.to_string()));
+            }
+            workspace_in(tx, id)
+        })
     }
 
     /// Records new instructions as the next version. `expected_version` (the version the
@@ -445,55 +440,54 @@ impl WorkspaceStore {
         let id = check_id(id)?;
         let text = clean_instructions(text)?;
         let note = clean_note(note)?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        workspace_in(&tx, id)?;
-        let (current, current_text) = current_instructions(&tx, id)?;
-        if let Some(expected) = expected_version {
-            if expected != current {
-                return Err(WorkspaceError::Stale { expected, current });
-            }
-        }
-        if current_text == text {
-            let unchanged = tx
-                .query_row(
-                    "SELECT version, text, author, note, created_at FROM workspace_instructions
-                     WHERE workspace_id = ?1 AND version = ?2",
-                    params![id, current],
-                    read_version,
-                )
-                .optional()?;
-            return match unchanged {
-                Some(version) => Ok((version, false)),
-                None => Err(WorkspaceError::Invalid(
-                    "the workspace has no instructions yet; write some first".into(),
-                )),
-            };
-        }
         let at = now();
-        let version = current + 1;
-        insert_version(&tx, id, version, &text, author, note.as_deref(), &at)?;
-        tx.execute(
-            "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",
-            params![id, at],
-        )?;
-        tx.commit()?;
-        Ok((
-            InstructionVersion {
-                version,
-                text,
-                author,
-                note,
-                created_at: at,
-            },
-            true,
-        ))
+        self.conn.write(|tx| {
+            workspace_in(tx, id)?;
+            let (current, current_text) = current_instructions(tx, id)?;
+            if let Some(expected) = expected_version {
+                if expected != current {
+                    return Err(WorkspaceError::Stale { expected, current });
+                }
+            }
+            if current_text == text {
+                let unchanged = tx
+                    .query_row(
+                        "SELECT version, text, author, note, created_at FROM workspace_instructions
+                     WHERE workspace_id = ?1 AND version = ?2",
+                        params![id, current],
+                        read_version,
+                    )
+                    .optional()?;
+                return match unchanged {
+                    Some(version) => Ok((version, false)),
+                    None => Err(WorkspaceError::Invalid(
+                        "the workspace has no instructions yet; write some first".into(),
+                    )),
+                };
+            }
+            let version = current + 1;
+            insert_version(tx, id, version, &text, author, note.as_deref(), &at)?;
+            tx.execute(
+                "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",
+                params![id, at],
+            )?;
+            Ok((
+                InstructionVersion {
+                    version,
+                    text,
+                    author,
+                    note,
+                    created_at: at,
+                },
+                true,
+            ))
+        })
     }
 
     /// The current instructions and their version (0 and empty when none).
     pub fn instructions(&self, id: &str) -> WorkspaceResult<(u32, String)> {
         let id = check_id(id)?;
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         workspace_in(&conn, id)?;
         current_instructions(&conn, id)
     }
@@ -501,7 +495,7 @@ impl WorkspaceStore {
     /// Every instruction version, newest first.
     pub fn instruction_history(&self, id: &str) -> WorkspaceResult<Vec<InstructionVersion>> {
         let id = check_id(id)?;
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         workspace_in(&conn, id)?;
         let mut stmt = conn.prepare(
             "SELECT version, text, author, note, created_at FROM workspace_instructions
@@ -526,18 +520,17 @@ impl WorkspaceStore {
         }
         let cleaned = clean_sources(sources)?;
         let at = now();
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        workspace_in(&tx, id)?;
-        let report = insert_sources(&tx, id, cleaned, added_by, &at)?;
-        if report.added > 0 {
-            tx.execute(
-                "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",
-                params![id, at],
-            )?;
-        }
-        tx.commit()?;
-        Ok(report)
+        self.conn.write(|tx| {
+            workspace_in(tx, id)?;
+            let report = insert_sources(tx, id, cleaned, added_by, &at)?;
+            if report.added > 0 {
+                tx.execute(
+                    "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",
+                    params![id, at],
+                )?;
+            }
+            Ok(report)
+        })
     }
 
     /// Removes one source. Returns whether the workspace had it.
@@ -552,54 +545,57 @@ impl WorkspaceStore {
             SourceKind::File => normalize_path(reference),
             _ => reference.trim().to_string(),
         };
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        workspace_in(&tx, id)?;
-        let removed = tx.execute(
-            "DELETE FROM workspace_sources WHERE workspace_id = ?1 AND kind = ?2 AND ref = ?3",
-            params![id, kind.as_str(), reference],
-        )?;
-        if removed > 0 {
-            tx.execute(
-                "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",
-                params![id, now()],
+        let at = now();
+        self.conn.write(|tx| {
+            workspace_in(tx, id)?;
+            let removed = tx.execute(
+                "DELETE FROM workspace_sources WHERE workspace_id = ?1 AND kind = ?2 AND ref = ?3",
+                params![id, kind.as_str(), reference],
             )?;
-        }
-        tx.commit()?;
-        Ok(removed > 0)
+            if removed > 0 {
+                tx.execute(
+                    "UPDATE workspaces SET updated_at = ?2 WHERE id = ?1",
+                    params![id, at],
+                )?;
+            }
+            Ok(removed > 0)
+        })
     }
 
     /// Records that a chat of the workspace asked something now.
     pub fn touch(&self, id: &str) -> WorkspaceResult<()> {
         let id = check_id(id)?;
-        let changed = self.lock().execute(
-            "UPDATE workspaces SET last_active_at = ?2 WHERE id = ?1",
-            params![id, now()],
-        )?;
-        if changed == 0 {
-            return Err(WorkspaceError::NotFound(id.to_string()));
-        }
-        Ok(())
+        let at = now();
+        self.conn.write(|tx| {
+            let changed = tx.execute(
+                "UPDATE workspaces SET last_active_at = ?2 WHERE id = ?1",
+                params![id, at],
+            )?;
+            if changed == 0 {
+                return Err(WorkspaceError::NotFound(id.to_string()));
+            }
+            Ok(())
+        })
     }
 
     /// Deletes a workspace, its instruction history, its source list and its evidence
     /// tables (never the sources themselves). Returns whether it existed.
     pub fn delete(&self, id: &str) -> WorkspaceResult<bool> {
         let id = check_id(id)?;
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM workspace_sources WHERE workspace_id = ?1",
-            params![id],
-        )?;
-        tx.execute(
-            "DELETE FROM workspace_instructions WHERE workspace_id = ?1",
-            params![id],
-        )?;
-        crate::research::tables::store::delete_workspace_tables(&tx, id)?;
-        let removed = tx.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
-        tx.commit()?;
-        Ok(removed > 0)
+        // The evidence tables go in the same transaction on this connection: one turn.
+        self.conn.write(|tx| {
+            tx.execute(
+                "DELETE FROM workspace_sources WHERE workspace_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM workspace_instructions WHERE workspace_id = ?1",
+                params![id],
+            )?;
+            crate::research::tables::store::delete_workspace_tables(tx, id)?;
+            let removed = tx.execute("DELETE FROM workspaces WHERE id = ?1", params![id])?;
+            Ok(removed > 0)
+        })
     }
 
     /// Ids of workspaces that hold `kind` `reference` (e.g. a folder about to be removed).
@@ -608,7 +604,7 @@ impl WorkspaceStore {
             SourceKind::File => normalize_path(reference),
             _ => reference.trim().to_string(),
         };
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(
             "SELECT workspace_id FROM workspace_sources WHERE kind = ?1 AND ref = ?2
              ORDER BY workspace_id",
@@ -622,7 +618,8 @@ impl WorkspaceStore {
     /// A bookkeeping value (e.g. whether the legacy import ran).
     pub fn state(&self, key: &str) -> WorkspaceResult<Option<String>> {
         Ok(self
-            .lock()
+            .conn
+            .read()?
             .query_row(
                 "SELECT value FROM workspace_state WHERE key = ?1",
                 params![key],
@@ -633,11 +630,14 @@ impl WorkspaceStore {
 
     /// Sets a bookkeeping value.
     pub fn set_state(&self, key: &str, value: &str) -> WorkspaceResult<()> {
-        self.lock().execute(
-            "INSERT INTO workspace_state(key, value, updated_at) VALUES (?1, ?2, ?3)
+        let at = now();
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO workspace_state(key, value, updated_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-            params![key, value, now()],
-        )?;
-        Ok(())
+                params![key, value, at],
+            )?;
+            Ok(())
+        })
     }
 }

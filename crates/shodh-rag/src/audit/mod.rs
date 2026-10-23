@@ -31,7 +31,7 @@ use serde_json::Value;
 
 pub use canonical::canonical_json;
 pub use store::{
-    open_shared_connection, AuditLog, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS,
+    open_shared_connection, AuditLog, UnrecordedEvents, DEFAULT_RETENTION_DAYS, MAX_RETENTION_DAYS,
     MIN_RETENTION_DAYS,
 };
 pub use tap::RunAuditTap;

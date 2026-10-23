@@ -161,7 +161,11 @@ fn code_settings() -> Value {
         "grep": { "enabled": true },
         "glob": { "enabled": true },
         "astGrep": { "enabled": true },
-        "bash": { "enabled": true, "patterns": [] },
+        // No background jobs: a command finishes before the next tool call is
+        // decided, so an edit applied without asking cannot land while an
+        // allowlisted command is still running ([`Unreviewed`]).
+        "async": { "enabled": false },
+        "bash": { "enabled": true, "patterns": [], "autoBackground": { "enabled": false } },
         "bashInterceptor": { "enabled": false },
         "lsp": { "enabled": false },
         "workspace": { "additionalDirectories": [] },

@@ -148,6 +148,9 @@ fn the_overlay_lets_the_guard_ask_and_pins_the_risky_settings() {
     // Single-file edits only: the guard checks one `path`.
     assert_eq!(overlay["edit"]["mode"], "replace");
     assert_eq!(overlay["bash"]["patterns"], json!([]));
+    // Commands never keep running in the background past their tool call.
+    assert_eq!(overlay["async"]["enabled"], false);
+    assert_eq!(overlay["bash"]["autoBackground"]["enabled"], false);
     assert_eq!(overlay["workspace"]["additionalDirectories"], json!([]));
     assert_eq!(overlay["lsp"]["enabled"], false);
     let disabled = overlay["disabledProviders"].as_array().unwrap();

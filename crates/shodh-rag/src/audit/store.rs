@@ -1628,30 +1628,41 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let busy = Duration::from_millis(50);
         let (mut writer, holder) = writer_behind_a_held_write_lock(&dir, busy);
-        // A single append in the writer's place fails busy, and nothing is written.
+        // One append in the writer's place fails busy, and nothing is written.
         assert!(is_busy(&writer.append(&question(1)).unwrap_err()));
         assert_eq!(writer.head_id, 0);
 
+        // The writer thread as `AuditLog` runs it: a submitted event, then a waited-for one.
         let shared = Arc::new(WriterShared::default());
-        let queued = std::thread::spawn({
+        let (inbox, rx) = mpsc::channel();
+        let thread = std::thread::spawn({
             let shared = Arc::clone(&shared);
-            move || {
-                writer.append_queued(&question(1), &shared);
-                writer
-            }
+            move || writer.run(rx, &shared)
         });
-        // Held for many busy timeouts: the queued event fails busy again and again.
+        inbox.send(WriterMsg::Append(question(1), None)).unwrap();
+        // Held for many busy timeouts: the submitted event finds the database busy again
+        // and again while it waits.
         std::thread::sleep(busy * 20);
         holder.execute_batch("COMMIT").unwrap();
-        let writer = queued.join().unwrap();
-
-        assert_eq!(writer.head_id, 1);
+        let (reply, response) = mpsc::channel();
+        inbox
+            .send(WriterMsg::Append(question(2), Some(reply)))
+            .unwrap();
+        // Written after the submitted event, which was not dropped.
+        assert_eq!(response.recv().unwrap().unwrap(), 2);
+        drop(inbox);
+        thread.join().unwrap();
         assert_eq!(lock(&shared.unrecorded).clone(), None);
-        drop(writer);
+
         let log = AuditLog::open(dir.path().join("shodh.db"), None).unwrap();
-        let rows = log.query(&AuditQuery::default()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].payload["text"], "question 1");
+        let texts: Vec<Value> = log
+            .query(&AuditQuery::default())
+            .unwrap()
+            .into_iter()
+            .rev()
+            .map(|row| row.payload["text"].clone())
+            .collect();
+        assert_eq!(texts, vec![json!("question 1"), json!("question 2")]);
         assert!(log.verify().unwrap().ok);
     }
 

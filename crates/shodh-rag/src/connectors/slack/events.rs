@@ -361,7 +361,7 @@ impl SeenEvents {
                 at: *at,
             })
             .collect();
-        entries.sort_by_key(|e| e.at);
+        entries.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
         entries
     }
 

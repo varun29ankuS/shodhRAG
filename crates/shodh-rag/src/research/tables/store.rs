@@ -1876,4 +1876,44 @@ mod tests {
             .unwrap()
             .is_none());
     }
+
+    #[test]
+    fn deleting_a_workspace_while_another_table_is_written_finishes_both() {
+        // The workspace delete runs the table deletes inside its own write (one turn on
+        // one connection) while the table store writes the same file from another thread.
+        const ROWS: usize = 50;
+        let f = fixture();
+        let doomed = f.store.create_table(&f.workspace, "Doomed").unwrap();
+        f.store
+            .add_rows(&doomed.id, &["/p/a.pdf".to_string()])
+            .unwrap();
+        let workspaces = WorkspaceStore::open(&f.path, None).unwrap();
+        let kept_workspace = workspaces
+            .create(
+                &NewWorkspace {
+                    name: "Kept".to_string(),
+                    ..Default::default()
+                },
+                WorkspaceAuthor::User,
+            )
+            .unwrap()
+            .id;
+        let kept = f.store.create_table(&kept_workspace, "Kept").unwrap();
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                start.wait();
+                for i in 0..ROWS {
+                    f.store
+                        .add_rows(&kept.id, &[format!("/p/{i}.pdf")])
+                        .unwrap();
+                }
+            });
+            start.wait();
+            assert!(workspaces.delete(&f.workspace).unwrap());
+        });
+        assert!(f.store.tables(&f.workspace).unwrap().is_empty());
+        assert!(f.store.rows(&doomed.id).unwrap().is_empty());
+        assert_eq!(f.store.rows(&kept.id).unwrap().len(), ROWS);
+    }
 }

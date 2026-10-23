@@ -27,11 +27,12 @@ use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
-    approval_for, auto_approval, change_target, code_catalog, create_branch, git_state,
-    inventory_matches, note_unreviewed, parse_guard_request, plan_change, target_in_folder,
+    approval_for, auto_approval, background_arguments, change_target, changed_between,
+    code_catalog, command_eligible, create_branch, git_state, inventory_matches, note_review,
+    parse_guard_request, plan_change, starts_background, target_in_folder, tree_snapshot,
     ApprovalLevel, ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings,
-    GuardRequest, Unreviewed, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO,
-    UNTRACKED_UNDO,
+    GateContext, GuardRequest, ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, CODE_TOOLS,
+    GUARD_COMMAND, IGNORE_RULES_UNDO, UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -107,12 +108,70 @@ pub struct CodeSession {
     pub settings_dir: Option<std::path::PathBuf>,
 }
 
+/// A command allowed to run whose end the session waits for: the folder as
+/// it was before (or why that is not known), compared once it ends.
+struct RunningCommand {
+    label: String,
+    before: Result<TreeSnapshot, String>,
+}
+
+/// A comparison of the code folder still to be recorded. While any is
+/// pending, decisions wait ([`CodeRuntime::settled`]), so the next command
+/// is never decided before the last one's changes are listed. Dropped
+/// before [`PendingCompare::done`] (the task was stopped), what changed is
+/// recorded as unknown.
+struct PendingCompare {
+    code: Arc<CodeRuntime>,
+    what: String,
+    done: bool,
+}
+
+impl PendingCompare {
+    fn new(code: &Arc<CodeRuntime>, what: String) -> Self {
+        code.compares.send_modify(|pending| *pending += 1);
+        PendingCompare {
+            code: Arc::clone(code),
+            what,
+            done: false,
+        }
+    }
+
+    fn done(mut self) {
+        self.done = true;
+    }
+}
+
+impl Drop for PendingCompare {
+    fn drop(&mut self) {
+        if !self.done {
+            let reason = format!(
+                "{} stopped before Shodh could see what it changed",
+                self.what
+            );
+            if let Err(e) = self
+                .code
+                .reviews
+                .update(&self.code.conversation_id, |state| {
+                    state.mark_unknown(reason)
+                })
+            {
+                tracing::warn!(target: "shodh::harness", error = %e, "could not record an unknown change; the record is unreadable, so commands ask");
+            }
+        }
+        self.code
+            .compares
+            .send_modify(|pending| *pending = pending.saturating_sub(1));
+    }
+}
+
 /// A Code session's state: its folder and branch, the guard's presence,
-/// open approval dialogs and running tool calls (for the audit log).
+/// open approval dialogs and running tool calls (for the audit log), and
+/// what the user has not reviewed ([`ReviewState`]).
 struct CodeRuntime {
     folder: CodeFolder,
     conversation_id: String,
     branches: CodeBranchStore,
+    reviews: ReviewStore,
     settings_dir: Option<std::path::PathBuf>,
     /// One change decision at a time: planning, the prompt and the branch
     /// switch of a change finish before the next change is considered.
@@ -122,9 +181,34 @@ struct CodeRuntime {
     dialogs: Mutex<HashMap<String, String>>,
     /// Running tool call id → (tool, arguments, start).
     calls: Mutex<HashMap<String, (String, serde_json::Value, std::time::Instant)>>,
+    /// Commands allowed to run that have not ended, by tool call id.
+    running: Mutex<HashMap<String, RunningCommand>>,
+    /// Comparisons of the folder not yet recorded ([`PendingCompare`]).
+    compares: tokio::sync::watch::Sender<usize>,
 }
 
 impl CodeRuntime {
+    fn new(
+        folder: CodeFolder,
+        conversation_id: String,
+        branches: CodeBranchStore,
+        settings_dir: Option<std::path::PathBuf>,
+    ) -> Self {
+        CodeRuntime {
+            folder,
+            conversation_id,
+            reviews: ReviewStore::beside(&branches),
+            branches,
+            settings_dir,
+            turn: tokio::sync::Mutex::new(()),
+            guard_loaded: tokio::sync::watch::channel(false).0,
+            dialogs: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+            running: Mutex::new(HashMap::new()),
+            compares: tokio::sync::watch::channel(0).0,
+        }
+    }
+
     /// The workspace's Code settings now (asking for everything when they
     /// cannot be read).
     fn settings(&self) -> CodeSettings {
@@ -172,97 +256,182 @@ impl CodeRuntime {
             .unwrap_or(ChangeTarget::Unknown)
     }
 
-    /// The files changed without the user's review since they last approved
-    /// a command in this conversation (read off the runtime). A record that
-    /// cannot be read counts as changed.
-    async fn unreviewed(&self) -> Unreviewed {
-        let store = self.branches.clone();
-        let conversation = self.conversation_id.clone();
-        tokio::task::spawn_blocking(move || match store.get(&conversation) {
-            Ok(Some(record)) => Unreviewed::Files(record.unreviewed),
-            Ok(None) => Unreviewed::none(),
-            Err(e) => Unreviewed::Unknown(e),
-        })
-        .await
-        .unwrap_or_else(|e| Unreviewed::Unknown(format!("reading the record did not finish: {e}")))
+    /// Wait until every comparison of the folder is recorded.
+    async fn settled(&self) {
+        let mut pending = self.compares.subscribe();
+        // The sender lives as long as `self`, so the wait cannot fail.
+        let _ = pending.wait_for(|count| *count == 0).await;
     }
 
-    /// The user approved a command whose prompt named `seen`: those files
-    /// count as reviewed. A file changed again later is listed again.
-    async fn mark_reviewed(&self, seen: Vec<String>) -> Result<(), String> {
-        if seen.is_empty() {
-            return Ok(());
-        }
-        let store = self.branches.clone();
+    /// What the user has not reviewed in this conversation (read off the
+    /// runtime). A record that cannot be read counts as changed.
+    async fn review(&self) -> ReviewState {
+        let store = self.reviews.clone();
         let conversation = self.conversation_id.clone();
         tokio::task::spawn_blocking(move || {
-            let Some(mut record) = store.get(&conversation)? else {
-                return Ok(());
-            };
-            let before = record.unreviewed.len();
-            record.unreviewed.retain(|file| !seen.contains(file));
-            if record.unreviewed.len() != before {
-                store.put(&conversation, record)?;
-            }
-            Ok(())
+            store
+                .get(&conversation)
+                .unwrap_or_else(|e| ReviewState::unreadable(&e))
         })
         .await
-        .map_err(|e| format!("recording the review did not finish: {e}"))?
+        .unwrap_or_else(|e| ReviewState::unreadable(&format!("reading it did not finish: {e}")))
+    }
+
+    /// Change what the user has not reviewed (off the runtime).
+    async fn update_review<F>(&self, change: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut ReviewState) + Send + 'static,
+    {
+        let store = self.reviews.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || store.update(&conversation, change).map(|_| ()))
+            .await
+            .map_err(|e| format!("recording what changed did not finish: {e}"))?
+    }
+
+    /// `request`'s file relative to the folder (`/`-separated), when the
+    /// guard named one inside it.
+    fn relative_target(&self, request: &GuardRequest) -> Option<String> {
+        target_in_folder(self.folder.root(), request).map(|relative| {
+            relative
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
     }
 
     /// Record that `request`'s file changed without asking, so "Discard
     /// changes" commits it even if git later ignores it, and so commands ask
-    /// until the user approves one that names it ([`Unreviewed`]).
+    /// until the user approves one whose prompt lists it ([`ReviewState`]).
     async fn remember_auto_applied(&self, request: &GuardRequest) -> Result<(), String> {
-        let relative = target_in_folder(self.folder.root(), request)
+        let relative = self
+            .relative_target(request)
             .ok_or_else(|| "the changed file is not known".to_string())?;
-        let relative = relative
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
         let store = self.branches.clone();
         let conversation = self.conversation_id.clone();
+        let file = relative.clone();
         tokio::task::spawn_blocking(move || {
             let mut record = store
                 .get(&conversation)?
                 .ok_or_else(|| "the conversation has no branch".to_string())?;
-            let mut changed = false;
-            if !record.auto_applied.contains(&relative) {
-                record.auto_applied.push(relative.clone());
-                changed = true;
-            }
-            if !record.unreviewed.contains(&relative) {
-                record.unreviewed.push(relative);
-                changed = true;
-            }
-            if changed {
+            if !record.auto_applied.contains(&file) {
+                record.auto_applied.push(file);
                 store.put(&conversation, record)?;
             }
-            Ok(())
+            Ok::<(), String>(())
         })
         .await
-        .map_err(|e| format!("recording the change did not finish: {e}"))?
+        .map_err(|e| format!("recording the change did not finish: {e}"))??;
+        self.update_review(move |state| state.add_files([relative]))
+            .await
     }
 
-    /// Switch to a new branch and record it for the conversation. Files the
-    /// user has not reviewed stay listed: a new branch is no review.
+    /// Switch to a new branch and record it for the conversation.
     async fn switch_branch(&self) -> Result<CodeBranch, String> {
         let folder = self.folder.clone();
         let store = self.branches.clone();
         let conversation = self.conversation_id.clone();
         tokio::task::spawn_blocking(move || {
-            let unreviewed = store
-                .get(&conversation)?
-                .map(|previous| previous.unreviewed)
-                .unwrap_or_default();
-            let mut branch = create_branch(&folder, &chrono::Utc::now().to_rfc3339())?;
-            branch.unreviewed = unreviewed;
+            let branch = create_branch(&folder, &chrono::Utc::now().to_rfc3339())?;
             store.put(&conversation, branch.clone())?;
             Ok(branch)
         })
         .await
         .map_err(|e| format!("the branch switch did not finish: {e}"))?
+    }
+
+    /// What git shows of the folder now (off the runtime).
+    async fn snapshot(&self) -> Result<TreeSnapshot, String> {
+        let root = self.folder.root().to_path_buf();
+        tokio::task::spawn_blocking(move || tree_snapshot(&root))
+            .await
+            .map_err(|e| format!("looking at the folder did not finish: {e}"))?
+    }
+
+    /// A command allowed to run that has not ended, if any (its label).
+    fn running_label(&self) -> Option<String> {
+        lock(&self.running)
+            .values()
+            .next()
+            .map(|running| running.label.clone())
+    }
+
+    /// The command of `request` is allowed: note how the folder looks, and
+    /// that it runs until its tool call ends ([`CodeRuntime::command_ended`]).
+    async fn command_allowed(&self, request: &GuardRequest) {
+        let before = self.snapshot().await;
+        let command = request
+            .input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let label = format!(
+            "`{}`",
+            truncate_chars(
+                &command.split_whitespace().collect::<Vec<_>>().join(" "),
+                80
+            )
+        );
+        lock(&self.running).insert(
+            request.tool_call_id.clone(),
+            RunningCommand { label, before },
+        );
+    }
+
+    /// The tool call `tool_call_id` ended: when it was a command allowed to
+    /// run, list what it changed in the folder (compared off the runtime).
+    fn command_ended(self: &Arc<Self>, tool_call_id: &str) {
+        let Some(running) = lock(&self.running).remove(tool_call_id) else {
+            return;
+        };
+        let pending = PendingCompare::new(self, format!("The command {}", running.label));
+        let code = Arc::clone(self);
+        tokio::spawn(async move {
+            let what = format!("the command {}", running.label);
+            code.record_changes(running.before, &what).await;
+            pending.done();
+        });
+    }
+
+    /// Every command still listed as running ended with the run or the
+    /// session: list what they changed.
+    fn commands_ended(self: &Arc<Self>) {
+        let ids: Vec<String> = lock(&self.running).keys().cloned().collect();
+        for id in ids {
+            self.command_ended(&id);
+        }
+    }
+
+    /// Compare the folder with `before` and list what changed as not
+    /// reviewed; when that cannot be told, record why.
+    async fn record_changes(&self, before: Result<TreeSnapshot, String>, what: &str) {
+        let after = self.snapshot().await;
+        let root = self.folder.root().to_path_buf();
+        let changed = match (before, after) {
+            (Ok(before), Ok(after)) => {
+                tokio::task::spawn_blocking(move || changed_between(&root, &before, &after))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("comparing did not finish: {e}")))
+            }
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        };
+        let what = what.to_string();
+        let recorded = match changed {
+            Ok(files) if files.is_empty() => Ok(()),
+            Ok(files) => {
+                self.update_review(move |state| state.add_files(files))
+                    .await
+            }
+            Err(e) => {
+                let reason = format!("after {what}, {e}");
+                self.update_review(move |state| state.mark_unknown(reason))
+                    .await
+            }
+        };
+        if let Err(e) = recorded {
+            tracing::warn!(target: "shodh::harness", error = %e, "could not record what changed; the record is unreadable, so commands ask");
+        }
     }
 }
 
@@ -476,6 +645,8 @@ impl Inner {
             }
             InboundFrame::ToolExecutionEnd(end) => {
                 if let Some(code) = &self.code {
+                    // Before the next frame (the next decision) is handled.
+                    code.command_ended(&end.tool_call_id);
                     let call = lock(&code.calls).remove(&end.tool_call_id);
                     let run_id = lock(&self.state).active_run_id().map(str::to_string);
                     if let (Some((tool, args, started)), Some(run_id)) = (call, run_id) {
@@ -518,6 +689,9 @@ impl Inner {
         if run_ended {
             self.approvals.cancel_all();
             self.abort_inflight();
+            if let Some(code) = &self.code {
+                code.commands_ended();
+            }
         }
         if let Some(held) = settled {
             let inner = Arc::clone(self);
@@ -652,20 +826,13 @@ impl Inner {
             self.emit(event);
         }
         let _turn = code.turn.lock().await;
+        // What earlier commands and tools changed is listed before anything
+        // is decided on it.
+        code.settled().await;
         let plan = code.plan().await;
         let undo = match &plan {
             ChangePlan::Refuse(reason) => {
-                self.audit(
-                    &run_id,
-                    AuditEventType::Approval,
-                    json!({
-                        "tool": request.tool,
-                        "label": approval_for(request, None, ChangeTarget::Unknown).label,
-                        "decision": "refused",
-                        "who": SYSTEM_PRINCIPAL,
-                        "reason": reason,
-                    }),
-                );
+                self.refuse(&run_id, request, ChangeTarget::Unknown, reason);
                 return Err(reason.clone());
             }
             ChangePlan::Continue(branch) => format!(
@@ -679,20 +846,14 @@ impl Inner {
                 "Not possible: the code folder is not a git repository.".to_string()
             }
         };
+        if let Some(reason) = background_arguments(request) {
+            self.refuse(&run_id, request, ChangeTarget::Unknown, reason);
+            return Err(reason.to_string());
+        }
         let target = code.target(request, &plan).await;
         if target == ChangeTarget::GitFolder {
             let reason = "Code mode does not change files in the repository's .git folder.";
-            self.audit(
-                &run_id,
-                AuditEventType::Approval,
-                json!({
-                    "tool": request.tool,
-                    "label": approval_for(request, None, target).label,
-                    "decision": "refused",
-                    "who": SYSTEM_PRINCIPAL,
-                    "reason": reason,
-                }),
-            );
+            self.refuse(&run_id, request, target, reason);
             return Err(reason.to_string());
         }
         // An ignored file is not in the branch's commit: Discard cannot restore
@@ -703,15 +864,23 @@ impl Inner {
             ChangeTarget::IgnoreRules => IGNORE_RULES_UNDO.to_string(),
             _ => undo,
         };
-        // Only commands depend on unreviewed files; edits never read them.
-        let unreviewed = if request.tool == "bash" {
-            code.unreviewed().await
-        } else {
-            Unreviewed::none()
+        let settings = code.settings();
+        let review = code.review().await;
+        let running = code.running_label();
+        let unasked_writer = self.registry.unasked_file_writer(&self.profile);
+        let gate = GateContext {
+            review: &review,
+            root: code.folder.root(),
+            running: running.as_deref(),
+            unasked_writer: unasked_writer.as_deref(),
         };
+        // Decided once, before the prompt: the settings may change while it
+        // waits, and what is cleared must match what was shown.
+        let eligible = command_eligible(&settings, request, &plan, code.folder.root());
+        let token = uuid::Uuid::new_v4().simple().to_string();
         let mut approval = approval_for(request, Some(&undo), target);
-        note_unreviewed(&mut approval, request, &unreviewed);
-        if let Some(reason) = auto_approval(&code.settings(), request, &plan, target, &unreviewed) {
+        let shown = note_review(&mut approval, request, &gate, eligible, &token);
+        if let Some(reason) = auto_approval(&settings, request, &plan, target, &gate) {
             self.audit(
                 &run_id,
                 AuditEventType::Approval,
@@ -738,6 +907,8 @@ impl Inner {
                          not made: {e}"
                     )
                 })?;
+            } else {
+                code.command_allowed(request).await;
             }
             return Ok(());
         }
@@ -751,6 +922,7 @@ impl Inner {
             preview: approval.preview.clone(),
         });
         let decision = self.approvals.wait(&request.tool_call_id).await;
+        let token_back = self.approvals.take_review_token(&request.tool_call_id);
         lock(&code.dialogs).remove(&request.ui_id);
         let who = match decision {
             ApprovalDecision::Approved | ApprovalDecision::Denied => self.principal(),
@@ -783,14 +955,77 @@ impl Inner {
             })?;
             self.announce_branch(&run_id, &branch);
         }
-        // The user approved a command whose prompt named these files. If
-        // this cannot be recorded, later commands only ask again.
-        if let Unreviewed::Files(seen) = unreviewed {
-            if let Err(e) = code.mark_reviewed(seen).await {
+        if matches!(request.tool.as_str(), "edit" | "write") {
+            // The user saw only part of the content: no review of the file.
+            if approval.preview_cut {
+                let file = code.relative_target(request);
+                code.update_review(move |state| match file {
+                    Some(file) => state.add_files([file]),
+                    None => state.mark_unknown(
+                        "a change whose preview was cut landed in a file Shodh could not name"
+                            .to_string(),
+                    ),
+                })
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Shodh could not record that this change was not fully shown, so it \
+                         was not made: {e}"
+                    )
+                })?;
+            }
+            return Ok(());
+        }
+        // Only the prompt that showed every listed file sends the token back
+        // (not the Inbox, not a shortcut): then exactly what it showed counts
+        // as reviewed. If this cannot be recorded, later commands ask again.
+        if let Some(shown) = shown.filter(|_| token_back.as_deref() == Some(token.as_str())) {
+            if let Err(e) = code
+                .update_review(move |state| state.clear_shown(&shown))
+                .await
+            {
                 tracing::warn!(target: "shodh::harness", session = %self.session_id, error = %e, "could not record the review of unreviewed files; commands keep asking");
             }
         }
+        let command = request
+            .input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if starts_background(command) {
+            let started = format!(
+                "`{}`",
+                truncate_chars(
+                    &command.split_whitespace().collect::<Vec<_>>().join(" "),
+                    80
+                )
+            );
+            code.update_review(move |state| state.background.push(started))
+                .await
+                .map_err(|e| {
+                    format!(
+                        "Shodh could not record that this command keeps running, so it was not \
+                         run: {e}"
+                    )
+                })?;
+        }
+        code.command_allowed(request).await;
         Ok(())
+    }
+
+    /// Audit a guarded call Shodh refuses without asking.
+    fn refuse(&self, run_id: &str, request: &GuardRequest, target: ChangeTarget, reason: &str) {
+        self.audit(
+            run_id,
+            AuditEventType::Approval,
+            json!({
+                "tool": request.tool,
+                "label": approval_for(request, None, target).label,
+                "decision": "refused",
+                "who": SYSTEM_PRINCIPAL,
+                "reason": reason,
+            }),
+        );
     }
 
     /// Show and audit the switch to the conversation's branch.
@@ -862,6 +1097,20 @@ impl Inner {
             call_index,
         };
 
+        // A tool that can change the code folder (an MCP server's): what it
+        // changed is listed as not reviewed. Registered before the task, so
+        // the next decision waits for the comparison.
+        let compare = self
+            .code
+            .as_ref()
+            .filter(|_| self.registry.may_change_files(&tool_call.tool))
+            .map(|code| {
+                (
+                    Arc::clone(code),
+                    PendingCompare::new(code, format!("The tool {}", tool_call.tool)),
+                )
+            });
+
         // Hold the map while spawning so a fast task cannot finish (and try
         // to remove its entry) before the entry exists.
         let mut inflight = lock(&self.inflight);
@@ -869,10 +1118,19 @@ impl Inner {
         let task_host_id = host_id.clone();
         let task_step_id = step_id.clone();
         let handle = tokio::spawn(async move {
+            let before = match &compare {
+                Some((code, _)) => Some(code.snapshot().await),
+                None => None,
+            };
             let outcome = inner
                 .registry
                 .dispatch(tool_call, &inner.profile, &inner.approvals, &ctx)
                 .await;
+            if let (Some((code, pending)), Some(before)) = (compare, before) {
+                code.record_changes(before, &format!("the tool {task_tool}"))
+                    .await;
+                pending.done();
+            }
             if outcome.ok {
                 lock(&inner.tools_ok_in_run).insert(task_tool);
             }
@@ -942,6 +1200,9 @@ impl Inner {
         }
         self.approvals.cancel_all();
         self.abort_inflight();
+        if let Some(code) = &self.code {
+            code.commands_ended();
+        }
         lock(&self.pending).clear();
         if !self.closing.load(Ordering::SeqCst) {
             tracing::warn!(target: "shodh::harness", session = %self.session_id, "omp exited unexpectedly");
@@ -1617,16 +1878,12 @@ impl OmpSession {
         } = config;
         let code = match (&launch.code, code) {
             (None, None) => None,
-            (Some(folder), Some(session)) => Some(Arc::new(CodeRuntime {
-                folder: folder.clone(),
-                conversation_id: session.conversation_id,
-                branches: session.branches,
-                settings_dir: session.settings_dir,
-                turn: tokio::sync::Mutex::new(()),
-                guard_loaded: tokio::sync::watch::channel(false).0,
-                dialogs: Mutex::new(HashMap::new()),
-                calls: Mutex::new(HashMap::new()),
-            })),
+            (Some(folder), Some(session)) => Some(Arc::new(CodeRuntime::new(
+                folder.clone(),
+                session.conversation_id,
+                session.branches,
+                session.settings_dir,
+            ))),
             _ => {
                 return Err(HarnessError::CodeGuard(
                     "the code folder and its conversation must be set together".to_string(),
@@ -1993,6 +2250,15 @@ impl AgentHarness for OmpSession {
             .resolve(step_id, approved)
             .map_err(|_| HarnessError::NoPendingApproval(step_id.to_string()))?;
         tracing::info!(target: "shodh::audit", event = "approval", session = %self.inner.session_id, step_id, approved, "approval decision");
+        Ok(())
+    }
+
+    fn approve_reviewed(&self, step_id: &str, token: &str) -> Result<(), HarnessError> {
+        self.inner
+            .approvals
+            .resolve_reviewed(step_id, token)
+            .map_err(|_| HarnessError::NoPendingApproval(step_id.to_string()))?;
+        tracing::info!(target: "shodh::audit", event = "approval", session = %self.inner.session_id, step_id, approved = true, reviewed = true, "approval decision");
         Ok(())
     }
 
@@ -3354,16 +3620,12 @@ mod tests {
 
     /// A Code session over `folder` (not a git repository: no branch work).
     fn code_runtime(folder: &std::path::Path, data: &std::path::Path) -> Arc<CodeRuntime> {
-        Arc::new(CodeRuntime {
-            folder: CodeFolder::open(folder).unwrap(),
-            conversation_id: "conv-1".into(),
-            branches: CodeBranchStore::in_dir(data),
-            settings_dir: Some(data.to_path_buf()),
-            turn: tokio::sync::Mutex::new(()),
-            guard_loaded: tokio::sync::watch::channel(false).0,
-            dialogs: Mutex::new(HashMap::new()),
-            calls: Mutex::new(HashMap::new()),
-        })
+        Arc::new(CodeRuntime::new(
+            CodeFolder::open(folder).unwrap(),
+            "conv-1".into(),
+            CodeBranchStore::in_dir(data),
+            Some(data.to_path_buf()),
+        ))
     }
 
     fn guard_dialog(
@@ -3702,6 +3964,16 @@ mod tests {
         )
     }
 
+    /// omp ran the tool call `call-{n}` to its end.
+    fn ended(inner: &Arc<Inner>, n: &str) {
+        feed(
+            inner,
+            &format!(
+                r#"{{"type":"tool_execution_end","toolCallId":"call-{n}","toolName":"bash","isError":false}}"#
+            ),
+        );
+    }
+
     /// Feed a guard request ([`guard_request`]) and expect it to run
     /// without a prompt.
     async fn runs_unasked(
@@ -3719,15 +3991,27 @@ mod tests {
         }
     }
 
+    /// How a test answers a prompt.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Answer {
+        Deny,
+        /// A yes without the review token: the Inbox, a keyboard shortcut.
+        ApproveElsewhere,
+        /// The prompt's own Approve button: sends the token when the prompt
+        /// has one (`ApprovalPrompt`, `reviewTokenFor`).
+        ApproveInPrompt,
+    }
+
     /// Feed a guard request ([`guard_request`]), expect a prompt, answer it
-    /// with `approve` and return the prompt's preview.
+    /// and return the prompt's preview.
     async fn asks(
         inner: &Arc<Inner>,
         events: &mut mpsc::UnboundedReceiver<AgentEvent>,
         out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
         (n, dialog): (String, String),
-        approve: bool,
+        answer: Answer,
     ) -> serde_json::Value {
+        use crate::harness::code_mode::REVIEW_TOKEN_KEY;
         feed(inner, &dialog);
         let seen = events_until(events, |e| {
             matches!(e, AgentEvent::ApprovalRequested { .. })
@@ -3746,23 +4030,47 @@ mod tests {
             out.try_recv().is_err(),
             "call-{n} was answered before the user decided"
         );
-        inner
-            .approvals
-            .resolve(&format!("call-{n}"), approve)
-            .unwrap();
+        let step = format!("call-{n}");
+        match (
+            answer,
+            preview.get(REVIEW_TOKEN_KEY).and_then(|t| t.as_str()),
+        ) {
+            (Answer::Deny, _) => inner.approvals.resolve(&step, false).unwrap(),
+            (Answer::ApproveInPrompt, Some(token)) => {
+                inner.approvals.resolve_reviewed(&step, token).unwrap()
+            }
+            _ => inner.approvals.resolve(&step, true).unwrap(),
+        }
         match next_frame(out).await {
             OutboundFrame::ExtensionUiResponse { id, value, .. } => {
                 assert_eq!(id, format!("ui-{n}"));
-                assert_eq!(value.as_deref() == Some(ALLOW_ANSWER), approve);
+                assert_eq!(
+                    value.as_deref() == Some(ALLOW_ANSWER),
+                    answer != Answer::Deny
+                );
             }
             other => panic!("expected the answer to call-{n}, got {other:?}"),
         }
         preview
     }
 
-    #[tokio::test]
-    async fn allowlisted_commands_ask_again_after_edits_the_user_did_not_review() {
+    /// The files a command prompt listed as changed without review.
+    fn listed(preview: &serde_json::Value) -> Vec<String> {
         use crate::harness::code_mode::UNREVIEWED_KEY;
+        preview[UNREVIEWED_KEY]
+            .as_array()
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| f.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// A git repository with one commit (`lib.rs`), at Trusted with
+    /// `cargo test -p app` allowed.
+    fn trusted_repo() -> (tempfile::TempDir, tempfile::TempDir) {
         let folder = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let git = |args: &[&str]| {
@@ -3783,119 +4091,228 @@ mod tests {
         std::fs::write(folder.path().join("lib.rs"), "fn a() {}\n").unwrap();
         git(&["add", "--all"]);
         git(&["commit", "--quiet", "-m", "first"]);
-        let trusted = || CodeSettings {
+        CodeSettings {
             approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
-        };
-        trusted().save(data.path()).unwrap();
+        }
+        .save(data.path())
+        .unwrap();
+        (folder, data)
+    }
+
+    fn test_command() -> serde_json::Value {
+        json!({"command": "cargo test -p app"})
+    }
+
+    fn edit_of(path: &str) -> serde_json::Value {
+        json!({"path": path, "old_string": "a", "new_string": "b"})
+    }
+
+    #[tokio::test]
+    async fn files_count_as_reviewed_only_from_the_prompt_that_listed_them() {
+        use crate::harness::code_mode::{REVIEW_NOTE_KEY, REVIEW_TOKEN_KEY};
+        let (folder, data) = trusted_repo();
         let code = code_runtime(folder.path(), data.path());
         let root = code.folder.root().to_path_buf();
         let lib = root.join("lib.rs");
-        let edit =
-            |from: &str, to: &str| json!({"path": "lib.rs", "old_string": from, "new_string": to});
-        let test = || json!({"command": "cargo test -p app"});
         let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
+        let (ev, o) = (&mut events, &mut out);
 
         // Nothing changed yet: the allowlisted command runs by itself.
-        runs_unasked(&inner, &mut out, guard_request("1", "bash", test(), None)).await;
+        runs_unasked(&inner, o, guard_request("1", "bash", test_command(), None)).await;
+        ended(&inner, "1");
 
-        // An edit applied without asking, then the same command: it asks,
-        // naming the file.
+        // An edit applied without asking: the command asks and lists it.
         runs_unasked(
             &inner,
-            &mut out,
-            guard_request("2", "edit", edit("a", "b"), Some(&lib)),
+            o,
+            guard_request("2", "edit", edit_of("lib.rs"), Some(&lib)),
         )
         .await;
         let preview = asks(
             &inner,
-            &mut events,
-            &mut out,
-            guard_request("3", "bash", test(), None),
-            false,
+            ev,
+            o,
+            guard_request("3", "bash", test_command(), None),
+            Answer::Deny,
         )
         .await;
-        let note = preview[UNREVIEWED_KEY].as_str().unwrap();
-        assert!(note.contains("without your review"), "{note}");
-        assert!(note.contains("lib.rs"), "{note}");
+        assert_eq!(listed(&preview), ["lib.rs"]);
+        assert!(preview[REVIEW_NOTE_KEY]
+            .as_str()
+            .unwrap()
+            .contains("marks them reviewed"));
+        assert!(preview.get(REVIEW_TOKEN_KEY).is_some());
 
-        // Declining reviews nothing: it asks again. Approving does.
+        // A yes from the Inbox runs the command but reviews nothing.
         asks(
             &inner,
-            &mut events,
-            &mut out,
-            guard_request("4", "bash", test(), None),
-            true,
+            ev,
+            o,
+            guard_request("4", "bash", test_command(), None),
+            Answer::ApproveElsewhere,
         )
         .await;
-        runs_unasked(&inner, &mut out, guard_request("5", "bash", test(), None)).await;
+        ended(&inner, "4");
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("5", "bash", test_command(), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert_eq!(listed(&preview), ["lib.rs"]);
+        ended(&inner, "5");
+        // The prompt's own yes did.
+        runs_unasked(&inner, o, guard_request("6", "bash", test_command(), None)).await;
+        ended(&inner, "6");
 
-        // Another edit without asking: the command asks again.
+        // Approving another command reviews nothing, and says so.
         runs_unasked(
             &inner,
-            &mut out,
-            guard_request("6", "edit", edit("b", "c"), Some(&lib)),
-        )
-        .await;
-        // Approving an edit prompt (a file that can run programs) is no
-        // review of the earlier edit: the next command still asks.
-        let package = root.join("package.json");
-        asks(
-            &inner,
-            &mut events,
-            &mut out,
-            guard_request(
-                "7",
-                "write",
-                json!({"path": "package.json", "content": "{}"}),
-                Some(&package),
-            ),
-            true,
+            o,
+            guard_request("7", "edit", edit_of("lib.rs"), Some(&lib)),
         )
         .await;
         let preview = asks(
             &inner,
-            &mut events,
-            &mut out,
-            guard_request("8", "bash", test(), None),
-            true,
+            ev,
+            o,
+            guard_request("8", "bash", json!({"command": "git status"}), None),
+            Answer::ApproveInPrompt,
         )
         .await;
-        let note = preview[UNREVIEWED_KEY].as_str().unwrap();
-        assert!(note.contains("lib.rs"), "{note}");
-        assert!(!note.contains("package.json"), "{note}");
-        runs_unasked(&inner, &mut out, guard_request("9", "bash", test(), None)).await;
+        assert_eq!(listed(&preview), ["lib.rs"]);
+        assert!(preview.get(REVIEW_TOKEN_KEY).is_none());
+        assert!(preview[REVIEW_NOTE_KEY]
+            .as_str()
+            .unwrap()
+            .contains("does not mark them reviewed"));
+        ended(&inner, "8");
+        asks(
+            &inner,
+            ev,
+            o,
+            guard_request("9", "bash", test_command(), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        ended(&inner, "9");
 
-        // An edit applied at "Apply edits automatically" counts the same
-        // once the workspace is switched to Trusted.
-        CodeSettings {
-            approval: ApprovalLevel::AutoApplyEdits,
-            ..trusted()
+        // Twelve files: every one is listed, and every one is cleared.
+        for i in 0..12 {
+            let path = format!("f{i}.rs");
+            let target = root.join(&path);
+            runs_unasked(
+                &inner,
+                o,
+                guard_request(&format!("e{i}"), "edit", edit_of(&path), Some(&target)),
+            )
+            .await;
         }
-        .save(data.path())
-        .unwrap();
-        runs_unasked(
+        let preview = asks(
             &inner,
-            &mut out,
-            guard_request("10", "edit", edit("c", "d"), Some(&lib)),
+            ev,
+            o,
+            guard_request("10", "bash", test_command(), None),
+            Answer::ApproveInPrompt,
         )
         .await;
-        trusted().save(data.path()).unwrap();
+        let files = listed(&preview);
+        assert_eq!(files.len(), 12, "{files:?}");
+        assert!(files.iter().any(|f| f == "f11.rs"));
+        ended(&inner, "10");
+        runs_unasked(&inner, o, guard_request("11", "bash", test_command(), None)).await;
+        ended(&inner, "11");
+
+        // An approved write whose preview was cut is no review of the file.
+        let conftest = root.join("conftest.py");
+        let long = format!(
+            "import os\n{}\nos.system('payload')\n",
+            "# fixture\n".repeat(300)
+        );
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request(
+                "12",
+                "write",
+                json!({"path": "conftest.py", "content": long}),
+                Some(&conftest),
+            ),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert!(preview["preview_cut"].as_str().is_some());
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("13", "bash", test_command(), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert_eq!(listed(&preview), ["conftest.py"]);
+        ended(&inner, "13");
+
+        // What an approved command changes is listed: a file it created,
+        // and a file it renamed into conftest.py.
         asks(
             &inner,
-            &mut events,
-            &mut out,
-            guard_request("11", "bash", test(), None),
-            false,
+            ev,
+            o,
+            guard_request(
+                "14",
+                "bash",
+                json!({"command": "python gen.py && git mv lib.rs conftest.py"}),
+                None,
+            ),
+            Answer::ApproveInPrompt,
         )
         .await;
+        std::fs::create_dir_all(root.join("generated")).unwrap();
+        std::fs::write(root.join("generated").join("test_gen.py"), "import os\n").unwrap();
+        let moved = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["mv", "lib.rs", "conftest.py"])
+            .status()
+            .unwrap();
+        assert!(moved.success());
+        ended(&inner, "14");
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("15", "bash", test_command(), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        let files = listed(&preview);
+        for file in ["generated/test_gen.py", "conftest.py", "lib.rs"] {
+            assert!(files.iter().any(|f| f == file), "{file} in {files:?}");
+        }
+        ended(&inner, "15");
+        runs_unasked(&inner, o, guard_request("16", "bash", test_command(), None)).await;
+        ended(&inner, "16");
 
-        // The record outlives the session: a new one for the conversation
-        // still asks.
+        // The list outlives the session: a new one for the conversation asks.
+        asks(
+            &inner,
+            ev,
+            o,
+            guard_request("17", "bash", json!({"command": "python gen.py"}), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        std::fs::write(root.join("generated").join("test_more.py"), "x = 2\n").unwrap();
+        ended(&inner, "17");
         let (again, mut again_events, mut again_out) =
             offline_session(None, Some(code_runtime(folder.path(), data.path())));
         again
@@ -3906,11 +4323,259 @@ mod tests {
             &again,
             &mut again_events,
             &mut again_out,
-            guard_request("12", "bash", test(), None),
-            false,
+            guard_request("18", "bash", test_command(), None),
+            Answer::Deny,
         )
         .await;
-        assert!(preview[UNREVIEWED_KEY].as_str().unwrap().contains("lib.rs"));
+        assert_eq!(listed(&preview), ["generated/test_more.py"]);
+    }
+
+    #[tokio::test]
+    async fn commands_alongside_others_or_outside_the_folder_root_ask() {
+        let (folder, data) = trusted_repo();
+        let code = code_runtime(folder.path(), data.path());
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        let (ev, o) = (&mut events, &mut out);
+
+        // In another folder: its package.json or conftest.py is not the project's.
+        for (n, cwd) in [("1", "node_modules/left-pad"), ("2", "examples/demo")] {
+            let preview = asks(
+                &inner,
+                ev,
+                o,
+                guard_request(
+                    n,
+                    "bash",
+                    json!({"command": "cargo test -p app", "cwd": cwd}),
+                    None,
+                ),
+                Answer::Deny,
+            )
+            .await;
+            assert_eq!(preview["runs_in"], cwd);
+        }
+        // With no time limit: asks, and says so.
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request(
+                "3",
+                "bash",
+                json!({"command": "cargo test -p app", "timeout": 0}),
+                None,
+            ),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview["time_limit"].as_str().unwrap().starts_with("None"));
+        // A background job or service is refused outright.
+        feed(
+            &inner,
+            &guard_request(
+                "4",
+                "bash",
+                json!({"command": "cargo test -p app", "name": "t"}),
+                None,
+            )
+            .1,
+        );
+        match next_frame(o).await {
+            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                assert_eq!(id, "ui-4");
+                assert!(value.unwrap().contains("background jobs or services"));
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
+        // Two commands in one step run at the same time: the second asks.
+        runs_unasked(&inner, o, guard_request("5", "bash", test_command(), None)).await;
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("6", "bash", test_command(), None),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview["running_now"]
+            .as_str()
+            .unwrap()
+            .contains("cargo test -p app"));
+        ended(&inner, "5");
+        runs_unasked(&inner, o, guard_request("7", "bash", test_command(), None)).await;
+        ended(&inner, "7");
+
+        // A process that keeps running: the prompt says so, and from then on
+        // every edit asks, in this session and the next.
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("8", "bash", json!({"command": "npm run dev &"}), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert!(preview["keeps_running"].as_str().is_some());
+        ended(&inner, "8");
+        let root = code.folder.root().to_path_buf();
+        let lib = root.join("lib.rs");
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("9", "edit", edit_of("lib.rs"), Some(&lib)),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview["running_process"]
+            .as_str()
+            .unwrap()
+            .contains("npm run dev"));
+        let (again, mut again_events, mut again_out) =
+            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        again
+            .start_run("Go on", Some("run-2".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut again_out);
+        asks(
+            &again,
+            &mut again_events,
+            &mut again_out,
+            guard_request("10", "edit", edit_of("lib.rs"), Some(&lib)),
+            Answer::Deny,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn outside_git_what_a_command_changed_is_unknown() {
+        use crate::harness::code_mode::REVIEW_NOTE_KEY;
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        CodeSettings {
+            approval: ApprovalLevel::Trusted,
+            allowlist: vec!["cargo test -p app".into()],
+        }
+        .save(data.path())
+        .unwrap();
+        let code = code_runtime(folder.path(), data.path());
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        let (ev, o) = (&mut events, &mut out);
+
+        runs_unasked(&inner, o, guard_request("1", "bash", test_command(), None)).await;
+        ended(&inner, "1");
+        let preview = asks(
+            &inner,
+            ev,
+            o,
+            guard_request("2", "bash", test_command(), None),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert!(preview[REVIEW_NOTE_KEY]
+            .as_str()
+            .unwrap()
+            .contains("not a git repository"));
+        // The prompt's yes cleared what it showed...
+        assert!(code.reviews.get("conv-1").unwrap().is_clear());
+        // ...and once the command ends, what it changed is unknown again.
+        ended(&inner, "2");
+        asks(
+            &inner,
+            ev,
+            o,
+            guard_request("3", "bash", test_command(), None),
+            Answer::Deny,
+        )
+        .await;
+    }
+
+    /// Stands in for an MCP server's write tool: writes a test file into the
+    /// code folder when called (named as a tool the profile allows).
+    struct WritesATest {
+        folder: std::path::PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::harness::tools::HostTool for WritesATest {
+        fn name(&self) -> &str {
+            crate::harness::profile::app_tools::LIST_TASKS
+        }
+        fn label(&self) -> &str {
+            "files: write_file"
+        }
+        fn label_template(&self) -> &str {
+            "Writing a file"
+        }
+        fn description(&self) -> &str {
+            "Write a file."
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false})
+        }
+        fn tier(&self) -> RiskTier {
+            RiskTier::Read
+        }
+        fn may_change_files(&self) -> bool {
+            true
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &crate::harness::tools::ToolContext,
+        ) -> Result<crate::harness::tools::ToolOutput, crate::harness::tools::ToolError> {
+            std::fs::create_dir_all(self.folder.join("tests")).unwrap();
+            std::fs::write(self.folder.join("tests").join("test_mcp.py"), "import os\n").unwrap();
+            Ok(crate::harness::tools::ToolOutput {
+                text_for_model: "Wrote tests/test_mcp.py".to_string(),
+                summary_for_ui: "Wrote a file".to_string(),
+                detail: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn files_an_mcp_tool_writes_are_listed() {
+        let (folder, data) = trusted_repo();
+        let code = code_runtime(folder.path(), data.path());
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(WritesATest {
+                folder: code.folder.root().to_path_buf(),
+            }))
+            .unwrap();
+        let (inner, mut events, mut out) =
+            offline_session_with(None, Some(Arc::clone(&code)), registry);
+        inner
+            .start_run("Add a test", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        feed(
+            &inner,
+            r#"{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"list_tasks","arguments":{}}"#,
+        );
+        match next_frame(&mut out).await {
+            OutboundFrame::HostToolResult { is_error, .. } => assert!(!is_error),
+            other => panic!("expected the tool result, got {other:?}"),
+        }
+        let preview = asks(
+            &inner,
+            &mut events,
+            &mut out,
+            guard_request("1", "bash", test_command(), None),
+            Answer::Deny,
+        )
+        .await;
+        assert_eq!(listed(&preview), ["tests/test_mcp.py"]);
     }
 
     #[tokio::test]

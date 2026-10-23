@@ -16,7 +16,7 @@ export const APPROVAL_LEVELS: readonly { id: ApprovalLevel; label: string; hint:
   {
     id: 'trusted',
     label: 'Trusted',
-    hint: 'As Auto-apply edits, and a command that is exactly one of the lines below runs without asking, unless a file changed without your review since you last approved a command: then it asks and names the files.',
+    hint: 'As Auto-apply edits, and a command that is exactly one of the lines below runs without asking, unless files changed without your review (edits, or what other commands and tools wrote): then it asks and lists them, and approving it in the conversation marks them reviewed.',
   },
 ];
 
@@ -123,7 +123,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
               className={cn(TEXTAREA, 'font-mono text-[12.5px]')}
             />
             <p className="m-0 text-[12px] text-shodh-text-muted">
-              A command runs by itself only when it is exactly a line here, with nothing added, and has no ; | &amp; &gt; $ or backticks. Tests run code the assistant may have changed, so after an edit you did not review, the command asks first.
+              A command runs by itself only when it is exactly a line here, with nothing added, and has no ; | &amp; &gt; $ or backticks. It also needs no other options, must run in the code folder itself, and asks while another command is running. Tests run code the assistant may have changed, so after a change you did not review, the command asks first.
             </p>
           </div>
         )}

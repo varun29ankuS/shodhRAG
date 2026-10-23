@@ -24,9 +24,14 @@
 //!   and returns to the original one ([`discard_changes`]). Files git
 //!   ignores are not in that commit, so changes to them always ask
 //!   ([`change_target`]).
-//! - Files that can run programs by themselves (`.vscode/`, `.envrc`,
-//!   `package.json`, ...: [`execution_risk`]) always ask, with a warning;
+//! - Files that can run programs by themselves or through a build or test
+//!   command (`.vscode/`, `.envrc`, `package.json`, `build.rs`,
+//!   `conftest.py`, ...: [`execution_risk`]) always ask, with a warning;
 //!   the guard refuses edits and writes in `.git/`.
+//! - A command a test or build runs can run any file of the folder, so once
+//!   an edit was applied without asking, allowlisted commands ask again
+//!   until the user approves a command that names those files
+//!   ([`Unreviewed`]).
 //! - Shodh's own git commands run without hooks, the file system monitor or
 //!   content filters ([`git`], [`run_git`]), so files in the folder cannot
 //!   make them run programs.
@@ -642,30 +647,148 @@ pub fn execution_risk(relative: &Path) -> Option<&'static str> {
     if parts.len() >= 3 && parts[0] == ".github" && parts[1] == "workflows" {
         return Some("CI workflows run commands when the change is pushed.");
     }
-    match name {
-        ".envrc" => Some("direnv runs .envrc in the shell before each command."),
-        "mcp-arch.yaml" | "mcp-arch.yml" => {
-            Some("enola runs the programs mcp-arch.yaml names when it builds a snapshot.")
+    if parent == Some(".cargo") && (name == "config" || name == "config.toml") {
+        return Some("Cargo settings can run programs with every cargo command.");
+    }
+    RUNS_PROGRAMS
+        .iter()
+        .find(|(patterns, _)| patterns.iter().any(|pattern| pattern.matches(name)))
+        .map(|(_, risk)| *risk)
+}
+
+/// How [`RUNS_PROGRAMS`] names a file (lowercase, compared with the
+/// lowercased file name).
+enum FileName {
+    /// Exactly this name.
+    Is(&'static str),
+    /// A name with this ending (dot included).
+    EndsWith(&'static str),
+    /// A name with this beginning, such as `jest.config.` for every
+    /// `jest.config.*`.
+    StartsWith(&'static str),
+}
+
+impl FileName {
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            FileName::Is(exact) => name == *exact,
+            FileName::EndsWith(end) => name.ends_with(end),
+            FileName::StartsWith(start) => name.starts_with(start),
         }
-        "package.json" => Some("Its scripts run with npm commands, tests included."),
-        ".npmrc" => Some("npm settings can choose the program that runs scripts."),
-        ".pre-commit-config.yaml" | ".pre-commit-config.yml" => {
-            Some("pre-commit runs the hooks this file names on every commit.")
-        }
-        "lefthook.yml"
-        | "lefthook.yaml"
-        | ".lefthook.yml"
-        | ".lefthook.yaml"
-        | "lefthook-local.yml"
-        | "lefthook-local.yaml" => {
-            Some("lefthook runs the commands this file names on git events.")
-        }
-        "config" | "config.toml" if parent == Some(".cargo") => {
-            Some("Cargo settings can run programs with every cargo command.")
-        }
-        _ => None,
     }
 }
+
+/// Files, wherever they are in the code folder, whose change can run
+/// programs by itself or when a build or test command runs (the allowlist's
+/// `cargo test`, `npm test` and `pytest` included), with the reason the
+/// prompt shows. Folder rules (`.git`, `.vscode`, hooks folders, CI
+/// workflows, `.cargo/config`) are in [`execution_risk`]; every file rule is
+/// here.
+const RUNS_PROGRAMS: &[(&[FileName], &str)] = {
+    use FileName::{EndsWith, Is, StartsWith};
+    &[
+        (
+            &[Is(".envrc")],
+            "direnv runs .envrc in the shell before each command.",
+        ),
+        (
+            &[Is("mcp-arch.yaml"), Is("mcp-arch.yml")],
+            "enola runs the programs mcp-arch.yaml names when it builds a snapshot.",
+        ),
+        (
+            &[Is("package.json")],
+            "Its scripts run with npm commands, tests included.",
+        ),
+        (
+            &[Is(".npmrc")],
+            "npm settings can choose the program that runs scripts.",
+        ),
+        (
+            &[Is(".yarnrc"), Is(".yarnrc.yml"), Is(".pnpmfile.cjs")],
+            "Yarn and pnpm settings can choose code that runs with every install and script.",
+        ),
+        (
+            &[
+                StartsWith("jest.config."),
+                StartsWith("vitest.config."),
+                StartsWith("vitest.workspace."),
+                StartsWith(".mocharc."),
+            ],
+            "The test runner loads the code this file names when the tests run.",
+        ),
+        (
+            &[Is(".pre-commit-config.yaml"), Is(".pre-commit-config.yml")],
+            "pre-commit runs the hooks this file names on every commit.",
+        ),
+        (
+            &[
+                Is("lefthook.yml"),
+                Is("lefthook.yaml"),
+                Is(".lefthook.yml"),
+                Is(".lefthook.yaml"),
+                Is("lefthook-local.yml"),
+                Is("lefthook-local.yaml"),
+            ],
+            "lefthook runs the commands this file names on git events.",
+        ),
+        (
+            &[Is("build.rs")],
+            "Cargo compiles and runs build.rs with every build, tests included.",
+        ),
+        (
+            &[Is("cargo.toml")],
+            "Cargo.toml chooses the build scripts, macros and dependencies that run with \
+             every cargo command, tests included.",
+        ),
+        (
+            &[Is("rust-toolchain"), Is("rust-toolchain.toml")],
+            "rustup reads this file to choose the compiler programs cargo runs.",
+        ),
+        (
+            &[Is("conftest.py")],
+            "pytest runs conftest.py when the tests run.",
+        ),
+        (
+            &[
+                Is("pytest.ini"),
+                Is(".pytest.ini"),
+                Is("pyproject.toml"),
+                Is("setup.cfg"),
+                Is("tox.ini"),
+            ],
+            "pytest and Python build tools read these settings, which can load plugins \
+             and run code.",
+        ),
+        (
+            &[Is("setup.py"), Is("noxfile.py")],
+            "Python runs this file when the project is built, installed or tested.",
+        ),
+        (
+            &[
+                Is("sitecustomize.py"),
+                Is("usercustomize.py"),
+                EndsWith(".pth"),
+            ],
+            "Python runs this file at start-up, before any script or test.",
+        ),
+        (
+            &[Is("pyvenv.cfg")],
+            "It chooses the Python program a virtual environment runs.",
+        ),
+        (
+            &[Is("makefile"), Is("gnumakefile"), EndsWith(".mk")],
+            "make runs the commands this file names.",
+        ),
+        (
+            &[Is("cmakelists.txt"), EndsWith(".cmake")],
+            "CMake runs the commands this file names when the project is configured or built.",
+        ),
+        (
+            &[Is("justfile"), Is(".justfile")],
+            "just runs the recipes this file names.",
+        ),
+    ]
+};
 
 /// `target` relative to `root`, when it is inside it. Compared without
 /// case on Windows, where the guard and Rust may spell a folder differently.
@@ -855,15 +978,92 @@ fn git_takes_changes(folder: &Path, relative: &Path) -> Result<bool, String> {
 pub const UNTRACKED_UNDO: &str =
     "This file is not tracked by git; this change cannot be undone by Discard.";
 
+/// The files edits and writes changed without asking since the user last
+/// approved a command in the conversation ([`CodeBranch::unreviewed`]). A
+/// command can run any of them (a test file, a module a test imports), so
+/// while there are any, no command runs without asking ([`auto_approval`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unreviewed {
+    /// These files (none: the user has seen every change).
+    Files(Vec<String>),
+    /// The conversation's record could not be read (the reason); counted
+    /// as changed, so commands ask.
+    Unknown(String),
+}
+
+/// Most unreviewed files a prompt names; the rest are counted.
+const MAX_UNREVIEWED_NAMED: usize = 10;
+
+/// Preview key of the note on a command prompt that names the files changed
+/// without review ([`note_unreviewed`]).
+pub const UNREVIEWED_KEY: &str = "changed_without_review";
+
+impl Unreviewed {
+    /// No file changed without the user's review.
+    pub fn none() -> Self {
+        Unreviewed::Files(Vec::new())
+    }
+
+    /// Whether every change was reviewed (and the record could be read).
+    pub fn is_clear(&self) -> bool {
+        matches!(self, Unreviewed::Files(files) if files.is_empty())
+    }
+
+    /// What a command prompt says about the files, or `None` when clear.
+    pub fn note(&self) -> Option<String> {
+        match self {
+            Unreviewed::Files(files) if files.is_empty() => None,
+            Unreviewed::Files(files) => {
+                let mut named = files
+                    .iter()
+                    .take(MAX_UNREVIEWED_NAMED)
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if files.len() > MAX_UNREVIEWED_NAMED {
+                    named.push_str(&format!(" and {} more", files.len() - MAX_UNREVIEWED_NAMED));
+                }
+                Some(format!(
+                    "Files changed without your review since you last approved a command: \
+                     {named}. This command may run them."
+                ))
+            }
+            Unreviewed::Unknown(reason) => Some(format!(
+                "Shodh could not read which files changed without your review ({reason}), \
+                 so it asks before running any command."
+            )),
+        }
+    }
+}
+
+/// Add the unreviewed-files note ([`Unreviewed::note`]) to a command's
+/// prompt; edits and writes, and prompts with nothing to note, are left as
+/// they are.
+pub fn note_unreviewed(
+    approval: &mut CodeApproval,
+    request: &GuardRequest,
+    unreviewed: &Unreviewed,
+) {
+    if request.tool != "bash" {
+        return;
+    }
+    if let (Some(note), Some(map)) = (unreviewed.note(), approval.preview.as_object_mut()) {
+        map.insert(UNREVIEWED_KEY.to_string(), json!(note));
+    }
+}
+
 /// Why a guarded call may run without asking under `settings`, or `None`
 /// when the user decides. Destructive commands always ask; edits run by
 /// themselves only while a branch can undo them, and only in files that
-/// cannot run programs (`target`, [`change_target`]).
+/// cannot run programs (`target`, [`change_target`]); an allowlisted
+/// command runs by itself only while no file changed without the user's
+/// review since they last approved a command (`unreviewed`).
 pub fn auto_approval(
     settings: &CodeSettings,
     request: &GuardRequest,
     plan: &ChangePlan,
     target: ChangeTarget,
+    unreviewed: &Unreviewed,
 ) -> Option<&'static str> {
     let undoable = matches!(plan, ChangePlan::Continue(_) | ChangePlan::CreateBranch);
     match request.tool.as_str() {
@@ -876,7 +1076,8 @@ pub fn auto_approval(
             let trusted = settings.approval == ApprovalLevel::Trusted
                 && !matches!(plan, ChangePlan::Refuse(_))
                 && destructive_reason(command).is_none()
-                && settings.allows(command);
+                && settings.allows(command)
+                && unreviewed.is_clear();
             trusted.then_some("the command is on the workspace's allowlist")
         }
         _ => None,
@@ -1213,6 +1414,13 @@ pub struct CodeBranch {
     /// `.gitignore` change hid them from git.
     #[serde(default)]
     pub auto_applied: Vec<String>,
+    /// Files edits and writes changed without asking since the user last
+    /// approved a command in the conversation (`/`-separated, relative to
+    /// the folder): while there are any, allowlisted commands ask
+    /// ([`Unreviewed`]). Approving a command prompt that named them clears
+    /// them; nothing else does.
+    #[serde(default)]
+    pub unreviewed: Vec<String>,
 }
 
 /// What must happen before a guarded change may run.
@@ -1568,6 +1776,7 @@ pub fn create_branch(folder: &CodeFolder, now_rfc3339: &str) -> Result<CodeBranc
         base_is_commit,
         created_at: now_rfc3339.to_string(),
         auto_applied: Vec::new(),
+        unreviewed: Vec::new(),
     })
 }
 

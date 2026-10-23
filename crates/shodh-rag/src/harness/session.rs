@@ -28,9 +28,10 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
     approval_for, auto_approval, change_target, code_catalog, create_branch, git_state,
-    inventory_matches, parse_guard_request, plan_change, target_in_folder, ApprovalLevel,
-    ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GuardRequest,
-    ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, UNTRACKED_UNDO,
+    inventory_matches, note_unreviewed, parse_guard_request, plan_change, target_in_folder,
+    ApprovalLevel, ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings,
+    GuardRequest, Unreviewed, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO,
+    UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -171,8 +172,47 @@ impl CodeRuntime {
             .unwrap_or(ChangeTarget::Unknown)
     }
 
+    /// The files changed without the user's review since they last approved
+    /// a command in this conversation (read off the runtime). A record that
+    /// cannot be read counts as changed.
+    async fn unreviewed(&self) -> Unreviewed {
+        let store = self.branches.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || match store.get(&conversation) {
+            Ok(Some(record)) => Unreviewed::Files(record.unreviewed),
+            Ok(None) => Unreviewed::none(),
+            Err(e) => Unreviewed::Unknown(e),
+        })
+        .await
+        .unwrap_or_else(|e| Unreviewed::Unknown(format!("reading the record did not finish: {e}")))
+    }
+
+    /// The user approved a command whose prompt named `seen`: those files
+    /// count as reviewed. A file changed again later is listed again.
+    async fn mark_reviewed(&self, seen: Vec<String>) -> Result<(), String> {
+        if seen.is_empty() {
+            return Ok(());
+        }
+        let store = self.branches.clone();
+        let conversation = self.conversation_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(mut record) = store.get(&conversation)? else {
+                return Ok(());
+            };
+            let before = record.unreviewed.len();
+            record.unreviewed.retain(|file| !seen.contains(file));
+            if record.unreviewed.len() != before {
+                store.put(&conversation, record)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("recording the review did not finish: {e}"))?
+    }
+
     /// Record that `request`'s file changed without asking, so "Discard
-    /// changes" commits it even if git later ignores it.
+    /// changes" commits it even if git later ignores it, and so commands ask
+    /// until the user approves one that names it ([`Unreviewed`]).
     async fn remember_auto_applied(&self, request: &GuardRequest) -> Result<(), String> {
         let relative = target_in_folder(self.folder.root(), request)
             .ok_or_else(|| "the changed file is not known".to_string())?;
@@ -187,8 +227,16 @@ impl CodeRuntime {
             let mut record = store
                 .get(&conversation)?
                 .ok_or_else(|| "the conversation has no branch".to_string())?;
+            let mut changed = false;
             if !record.auto_applied.contains(&relative) {
-                record.auto_applied.push(relative);
+                record.auto_applied.push(relative.clone());
+                changed = true;
+            }
+            if !record.unreviewed.contains(&relative) {
+                record.unreviewed.push(relative);
+                changed = true;
+            }
+            if changed {
                 store.put(&conversation, record)?;
             }
             Ok(())
@@ -197,13 +245,19 @@ impl CodeRuntime {
         .map_err(|e| format!("recording the change did not finish: {e}"))?
     }
 
-    /// Switch to a new branch and record it for the conversation.
+    /// Switch to a new branch and record it for the conversation. Files the
+    /// user has not reviewed stay listed: a new branch is no review.
     async fn switch_branch(&self) -> Result<CodeBranch, String> {
         let folder = self.folder.clone();
         let store = self.branches.clone();
         let conversation = self.conversation_id.clone();
         tokio::task::spawn_blocking(move || {
-            let branch = create_branch(&folder, &chrono::Utc::now().to_rfc3339())?;
+            let unreviewed = store
+                .get(&conversation)?
+                .map(|previous| previous.unreviewed)
+                .unwrap_or_default();
+            let mut branch = create_branch(&folder, &chrono::Utc::now().to_rfc3339())?;
+            branch.unreviewed = unreviewed;
             store.put(&conversation, branch.clone())?;
             Ok(branch)
         })
@@ -649,8 +703,15 @@ impl Inner {
             ChangeTarget::IgnoreRules => IGNORE_RULES_UNDO.to_string(),
             _ => undo,
         };
-        let approval = approval_for(request, Some(&undo), target);
-        if let Some(reason) = auto_approval(&code.settings(), request, &plan, target) {
+        // Only commands depend on unreviewed files; edits never read them.
+        let unreviewed = if request.tool == "bash" {
+            code.unreviewed().await
+        } else {
+            Unreviewed::none()
+        };
+        let mut approval = approval_for(request, Some(&undo), target);
+        note_unreviewed(&mut approval, request, &unreviewed);
+        if let Some(reason) = auto_approval(&code.settings(), request, &plan, target, &unreviewed) {
             self.audit(
                 &run_id,
                 AuditEventType::Approval,
@@ -721,6 +782,13 @@ impl Inner {
                 format!("Shodh could not switch to a new branch, so the change was not made: {e}")
             })?;
             self.announce_branch(&run_id, &branch);
+        }
+        // The user approved a command whose prompt named these files. If
+        // this cannot be recorded, later commands only ask again.
+        if let Unreviewed::Files(seen) = unreviewed {
+            if let Err(e) = code.mark_reviewed(seen).await {
+                tracing::warn!(target: "shodh::harness", session = %self.session_id, error = %e, "could not record the review of unreviewed files; commands keep asking");
+            }
         }
         Ok(())
     }
@@ -3613,6 +3681,236 @@ mod tests {
         .await;
         inner.approvals.resolve("call-5", true).unwrap();
         let _ = next_frame(&mut out).await;
+    }
+
+    /// Guard request `n` (dialog `ui-{n}`, tool call `call-{n}`).
+    fn guard_request(
+        n: &str,
+        tool: &str,
+        input: serde_json::Value,
+        target: Option<&std::path::Path>,
+    ) -> (String, String) {
+        (
+            n.to_string(),
+            guard_dialog_at(
+                &format!("ui-{n}"),
+                &format!("call-{n}"),
+                tool,
+                input,
+                target,
+            ),
+        )
+    }
+
+    /// Feed a guard request ([`guard_request`]) and expect it to run
+    /// without a prompt.
+    async fn runs_unasked(
+        inner: &Arc<Inner>,
+        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
+        (n, dialog): (String, String),
+    ) {
+        feed(inner, &dialog);
+        match next_frame(out).await {
+            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                assert_eq!(id, format!("ui-{n}"));
+                assert_eq!(value.as_deref(), Some(ALLOW_ANSWER), "call-{n}");
+            }
+            other => panic!("expected call-{n} to run unasked, got {other:?}"),
+        }
+    }
+
+    /// Feed a guard request ([`guard_request`]), expect a prompt, answer it
+    /// with `approve` and return the prompt's preview.
+    async fn asks(
+        inner: &Arc<Inner>,
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
+        (n, dialog): (String, String),
+        approve: bool,
+    ) -> serde_json::Value {
+        feed(inner, &dialog);
+        let seen = events_until(events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        let preview = match seen.last() {
+            Some(AgentEvent::ApprovalRequested {
+                step_id, preview, ..
+            }) => {
+                assert_eq!(*step_id, format!("call-{n}"));
+                preview.clone()
+            }
+            other => panic!("expected a prompt for call-{n}, got {other:?}"),
+        };
+        assert!(
+            out.try_recv().is_err(),
+            "call-{n} was answered before the user decided"
+        );
+        inner
+            .approvals
+            .resolve(&format!("call-{n}"), approve)
+            .unwrap();
+        match next_frame(out).await {
+            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                assert_eq!(id, format!("ui-{n}"));
+                assert_eq!(value.as_deref() == Some(ALLOW_ANSWER), approve);
+            }
+            other => panic!("expected the answer to call-{n}, got {other:?}"),
+        }
+        preview
+    }
+
+    #[tokio::test]
+    async fn allowlisted_commands_ask_again_after_edits_the_user_did_not_review() {
+        use crate::harness::code_mode::UNREVIEWED_KEY;
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(folder.path())
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["-c", "init.defaultBranch=main", "init", "--quiet"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(folder.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "first"]);
+        let trusted = || CodeSettings {
+            approval: ApprovalLevel::Trusted,
+            allowlist: vec!["cargo test -p app".into()],
+        };
+        trusted().save(data.path()).unwrap();
+        let code = code_runtime(folder.path(), data.path());
+        let root = code.folder.root().to_path_buf();
+        let lib = root.join("lib.rs");
+        let edit =
+            |from: &str, to: &str| json!({"path": "lib.rs", "old_string": from, "new_string": to});
+        let test = || json!({"command": "cargo test -p app"});
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+
+        // Nothing changed yet: the allowlisted command runs by itself.
+        runs_unasked(&inner, &mut out, guard_request("1", "bash", test(), None)).await;
+
+        // An edit applied without asking, then the same command: it asks,
+        // naming the file.
+        runs_unasked(
+            &inner,
+            &mut out,
+            guard_request("2", "edit", edit("a", "b"), Some(&lib)),
+        )
+        .await;
+        let preview = asks(
+            &inner,
+            &mut events,
+            &mut out,
+            guard_request("3", "bash", test(), None),
+            false,
+        )
+        .await;
+        let note = preview[UNREVIEWED_KEY].as_str().unwrap();
+        assert!(note.contains("without your review"), "{note}");
+        assert!(note.contains("lib.rs"), "{note}");
+
+        // Declining reviews nothing: it asks again. Approving does.
+        asks(
+            &inner,
+            &mut events,
+            &mut out,
+            guard_request("4", "bash", test(), None),
+            true,
+        )
+        .await;
+        runs_unasked(&inner, &mut out, guard_request("5", "bash", test(), None)).await;
+
+        // Another edit without asking: the command asks again.
+        runs_unasked(
+            &inner,
+            &mut out,
+            guard_request("6", "edit", edit("b", "c"), Some(&lib)),
+        )
+        .await;
+        // Approving an edit prompt (a file that can run programs) is no
+        // review of the earlier edit: the next command still asks.
+        let package = root.join("package.json");
+        asks(
+            &inner,
+            &mut events,
+            &mut out,
+            guard_request(
+                "7",
+                "write",
+                json!({"path": "package.json", "content": "{}"}),
+                Some(&package),
+            ),
+            true,
+        )
+        .await;
+        let preview = asks(
+            &inner,
+            &mut events,
+            &mut out,
+            guard_request("8", "bash", test(), None),
+            true,
+        )
+        .await;
+        let note = preview[UNREVIEWED_KEY].as_str().unwrap();
+        assert!(note.contains("lib.rs"), "{note}");
+        assert!(!note.contains("package.json"), "{note}");
+        runs_unasked(&inner, &mut out, guard_request("9", "bash", test(), None)).await;
+
+        // An edit applied at "Apply edits automatically" counts the same
+        // once the workspace is switched to Trusted.
+        CodeSettings {
+            approval: ApprovalLevel::AutoApplyEdits,
+            ..trusted()
+        }
+        .save(data.path())
+        .unwrap();
+        runs_unasked(
+            &inner,
+            &mut out,
+            guard_request("10", "edit", edit("c", "d"), Some(&lib)),
+        )
+        .await;
+        trusted().save(data.path()).unwrap();
+        asks(
+            &inner,
+            &mut events,
+            &mut out,
+            guard_request("11", "bash", test(), None),
+            false,
+        )
+        .await;
+
+        // The record outlives the session: a new one for the conversation
+        // still asks.
+        let (again, mut again_events, mut again_out) =
+            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        again
+            .start_run("Run the tests", Some("run-2".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut again_out);
+        let preview = asks(
+            &again,
+            &mut again_events,
+            &mut again_out,
+            guard_request("12", "bash", test(), None),
+            false,
+        )
+        .await;
+        assert!(preview[UNREVIEWED_KEY].as_str().unwrap().contains("lib.rs"));
     }
 
     #[tokio::test]

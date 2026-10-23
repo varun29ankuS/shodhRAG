@@ -453,6 +453,39 @@ fn files_that_can_run_programs_are_recognised() {
         ".pre-commit-config.yaml",
         "lefthook.yml",
         "app/.lefthook.yaml",
+        // Build and test configuration: a test or build command runs it.
+        ".yarnrc.yml",
+        ".pnpmfile.cjs",
+        "jest.config.js",
+        "web/vitest.config.ts",
+        ".mocharc.yml",
+        "build.rs",
+        "crates/x/build.rs",
+        "Cargo.toml",
+        "crates/x/Cargo.toml",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "conftest.py",
+        "tests/unit/conftest.py",
+        "pytest.ini",
+        ".pytest.ini",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "tox.ini",
+        "noxfile.py",
+        "sitecustomize.py",
+        "usercustomize.py",
+        ".venv/Lib/site-packages/evil.pth",
+        ".venv/pyvenv.cfg",
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "rules/common.mk",
+        "CMakeLists.txt",
+        "cmake/deps.cmake",
+        "justfile",
+        ".justfile",
     ] {
         assert!(execution_risk(Path::new(risky)).is_some(), "{risky}");
     }
@@ -464,6 +497,15 @@ fn files_that_can_run_programs_are_recognised() {
         "config.toml",
         "package-lock.json.md",
         "src/.vscode-notes",
+        "docs/makefile.md",
+        "cargo.toml.md",
+        "Cargo.lock",
+        "src/conftest_helpers.py",
+        "tests/test_a.py",
+        "a.pth.txt",
+        "build.rs.orig",
+        "jest.config",
+        "src/setup_test.py",
     ] {
         assert_eq!(execution_risk(Path::new(plain)), None, "{plain}");
     }
@@ -766,6 +808,7 @@ fn branch(folder: &str, name: &str) -> CodeBranch {
         base_is_commit: false,
         created_at: "2026-10-07T00:00:00Z".into(),
         auto_applied: Vec::new(),
+        unreviewed: Vec::new(),
     }
 }
 
@@ -1012,23 +1055,30 @@ fn approval_levels_decide_what_runs_without_asking() {
     let refuse = ChangePlan::Refuse("dirty".into());
 
     let plain = ChangeTarget::Plain;
+    let clear = Unreviewed::none();
     let none = ChangeTarget::Unknown;
 
     let ask = level(ApprovalLevel::AskEveryTime);
     for request in [&edit, &write, &test] {
-        assert_eq!(auto_approval(&ask, request, &continuing, plain), None);
+        assert_eq!(
+            auto_approval(&ask, request, &continuing, plain, &clear),
+            None
+        );
     }
 
     let edits = level(ApprovalLevel::AutoApplyEdits);
-    assert!(auto_approval(&edits, &edit, &continuing, plain).is_some());
-    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch, plain).is_some());
+    assert!(auto_approval(&edits, &edit, &continuing, plain, &clear).is_some());
+    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch, plain, &clear).is_some());
     // Without git nothing can undo an edit, so it asks.
     assert_eq!(
-        auto_approval(&edits, &edit, &ChangePlan::NotRepo, plain),
+        auto_approval(&edits, &edit, &ChangePlan::NotRepo, plain, &clear),
         None
     );
-    assert_eq!(auto_approval(&edits, &edit, &refuse, plain), None);
-    assert_eq!(auto_approval(&edits, &test, &continuing, none), None);
+    assert_eq!(auto_approval(&edits, &edit, &refuse, plain, &clear), None);
+    assert_eq!(
+        auto_approval(&edits, &test, &continuing, none, &clear),
+        None
+    );
     // Files that can run programs, files Discard cannot restore and files
     // the guard did not name always ask.
     for target in [
@@ -1042,7 +1092,7 @@ fn approval_levels_decide_what_runs_without_asking() {
     ] {
         for approval in [ApprovalLevel::AutoApplyEdits, ApprovalLevel::Trusted] {
             assert_eq!(
-                auto_approval(&level_of(approval), &edit, &continuing, target),
+                auto_approval(&level_of(approval), &edit, &continuing, target, &clear),
                 None,
                 "{target:?}"
             );
@@ -1050,22 +1100,160 @@ fn approval_levels_decide_what_runs_without_asking() {
     }
 
     let trusted = level(ApprovalLevel::Trusted);
-    assert!(auto_approval(&trusted, &edit, &continuing, plain).is_some());
-    assert!(auto_approval(&trusted, &test, &continuing, none).is_some());
-    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo, none).is_some());
-    assert_eq!(auto_approval(&trusted, &test, &refuse, none), None);
+    assert!(auto_approval(&trusted, &edit, &continuing, plain, &clear).is_some());
+    assert!(auto_approval(&trusted, &test, &continuing, none, &clear).is_some());
+    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo, none, &clear).is_some());
+    assert_eq!(auto_approval(&trusted, &test, &refuse, none, &clear), None);
     // Destructive commands always ask, even when the user listed them.
-    assert_eq!(auto_approval(&trusted, &wipe, &continuing, none), None);
+    assert_eq!(
+        auto_approval(&trusted, &wipe, &continuing, none, &clear),
+        None
+    );
     for approval in [
         ApprovalLevel::AskEveryTime,
         ApprovalLevel::AutoApplyEdits,
         ApprovalLevel::Trusted,
     ] {
         assert_eq!(
-            auto_approval(&level(approval), &delete, &continuing, none),
+            auto_approval(&level(approval), &delete, &continuing, none, &clear),
             None
         );
     }
+}
+
+#[test]
+fn allowlisted_commands_ask_again_after_unreviewed_edits() {
+    let edit = guarded(
+        "edit",
+        json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+    );
+    let test = guarded("bash", json!({"command": "pytest"}));
+    let settings = |approval| CodeSettings {
+        approval,
+        allowlist: vec!["pytest".into()],
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let clear = Unreviewed::none();
+    let changed = Unreviewed::Files(vec!["conftest.py".into()]);
+    let unknown = Unreviewed::Unknown("code_branches.json is not readable".into());
+    let none = ChangeTarget::Unknown;
+    let plain = ChangeTarget::Plain;
+
+    // Trusted: the allowlist runs by itself only while nothing changed
+    // without review, and an unreadable record counts as changed.
+    let trusted = settings(ApprovalLevel::Trusted);
+    assert!(auto_approval(&trusted, &test, &continuing, none, &clear).is_some());
+    for (unreviewed, plan) in [
+        (&changed, &continuing),
+        (&unknown, &continuing),
+        (&changed, &ChangePlan::NotRepo),
+        (&changed, &ChangePlan::CreateBranch),
+    ] {
+        assert_eq!(
+            auto_approval(&trusted, &test, plan, none, unreviewed),
+            None,
+            "{unreviewed:?} {plan:?}"
+        );
+    }
+    // Edits are decided as before, whatever changed earlier.
+    for unreviewed in [&clear, &changed, &unknown] {
+        assert!(auto_approval(&trusted, &edit, &continuing, plain, unreviewed).is_some());
+        assert!(auto_approval(
+            &settings(ApprovalLevel::AutoApplyEdits),
+            &edit,
+            &continuing,
+            plain,
+            unreviewed
+        )
+        .is_some());
+    }
+    // The other levels ask for every command, as before.
+    for approval in [ApprovalLevel::AskEveryTime, ApprovalLevel::AutoApplyEdits] {
+        for unreviewed in [&clear, &changed, &unknown] {
+            assert_eq!(
+                auto_approval(&settings(approval), &test, &continuing, none, unreviewed),
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn command_prompts_name_the_files_changed_without_review() {
+    let test = guarded("bash", json!({"command": "pytest"}));
+    let edit = guarded(
+        "edit",
+        json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+    );
+    let prompt = |request: &GuardRequest, unreviewed: &Unreviewed| {
+        let mut approval = approval_for(request, None, ChangeTarget::Unknown);
+        note_unreviewed(&mut approval, request, unreviewed);
+        approval
+    };
+
+    let changed = Unreviewed::Files(vec!["conftest.py".into(), "tests/test_a.py".into()]);
+    let note = prompt(&test, &changed).preview[UNREVIEWED_KEY]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        note.contains("changed without your review since you last approved"),
+        "{note}"
+    );
+    assert!(note.contains("conftest.py, tests/test_a.py"), "{note}");
+    // The note adds to the prompt; the command's own warning stays.
+    let wipe = guarded("bash", json!({"command": "rm -rf build"}));
+    let wiped = prompt(&wipe, &changed);
+    assert_eq!(
+        wiped.preview["warning"],
+        "Deletes files and folders recursively."
+    );
+    assert!(wiped.preview.get(UNREVIEWED_KEY).is_some());
+
+    // Nothing to note, or not a command: the prompt is as before.
+    for (request, unreviewed) in [(&test, Unreviewed::none()), (&edit, changed.clone())] {
+        assert_eq!(
+            prompt(request, &unreviewed),
+            approval_for(request, None, ChangeTarget::Unknown)
+        );
+    }
+
+    // Many files: the first ten are named, the rest counted.
+    let many = Unreviewed::Files((0..13).map(|i| format!("t{i}.py")).collect());
+    let note = many.note().unwrap();
+    assert!(note.contains("t9.py and 3 more"), "{note}");
+    assert!(!note.contains("t10.py"), "{note}");
+
+    let unknown = Unreviewed::Unknown("code_branches.json is not readable".into());
+    let note = prompt(&test, &unknown).preview[UNREVIEWED_KEY]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        note.contains("code_branches.json is not readable"),
+        "{note}"
+    );
+}
+
+#[test]
+fn unreviewed_files_are_kept_in_the_branch_record() {
+    // Records written before the field existed read as "nothing unreviewed".
+    let old: CodeBranch = serde_json::from_value(json!({
+        "folder": "/a",
+        "branch": "shodh/1",
+        "base": "main",
+        "createdAt": "2026-10-07T00:00:00Z",
+        "autoApplied": ["a.rs"],
+    }))
+    .unwrap();
+    assert!(old.unreviewed.is_empty());
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeBranchStore::in_dir(dir.path());
+    let mut record = branch("/a", "shodh/1");
+    record.unreviewed = vec!["conftest.py".into()];
+    store.put("conv", record.clone()).unwrap();
+    assert_eq!(store.get("conv").unwrap(), Some(record));
 }
 
 fn level_of(approval: ApprovalLevel) -> CodeSettings {

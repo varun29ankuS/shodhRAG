@@ -404,7 +404,7 @@ mod tests {
         assert!(seen[0]
             .head
             .to_lowercase()
-            .contains(&format!("authorization: bearer {BOT}")));
+            .contains(&format!("authorization: bearer {}", BOT.to_lowercase())));
         assert!(!seen[0].path.contains("secret") && !seen[0].body.contains("secret"));
     }
 
@@ -516,7 +516,7 @@ mod tests {
         assert!(seen[0]
             .head
             .to_lowercase()
-            .contains(&format!("authorization: bearer {APP}")));
+            .contains(&format!("authorization: bearer {}", APP.to_lowercase())));
         let post: Value = serde_json::from_str(&seen[1].body).unwrap();
         assert_eq!(post["channel"], "C1");
         assert_eq!(post["thread_ts"], "100.1");

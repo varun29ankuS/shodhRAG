@@ -161,7 +161,7 @@ impl CallCounter {
     /// a lock).
     #[cfg(test)]
     pub(crate) fn set_busy_timeout(&self, timeout: std::time::Duration) {
-        self.conn.read().busy_timeout(timeout).unwrap();
+        self.conn.read().unwrap().busy_timeout(timeout).unwrap();
     }
 
     /// Adds `n` calls to `day`. Returns the day's total.
@@ -207,7 +207,7 @@ impl CallCounter {
 
     /// The calls recorded for `day`.
     pub fn count(&self, day: NaiveDate) -> ResearchResult<usize> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         Ok(as_count(count_in(&conn, &day_key(day))?))
     }
 }

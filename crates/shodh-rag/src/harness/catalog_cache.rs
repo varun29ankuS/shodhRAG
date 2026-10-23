@@ -62,7 +62,7 @@ impl CatalogCache {
     pub fn get(&self, source: &str) -> Result<Option<CachedCatalog>, CatalogCacheError> {
         let row: Option<(String, i64)> = self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT models_json, fetched_at_ms FROM model_catalog_cache WHERE source = ?1",
                 params![source],

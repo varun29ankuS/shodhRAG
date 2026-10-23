@@ -355,7 +355,7 @@ impl TableStore {
     }
 
     pub fn tables(&self, workspace_id: &str) -> ResearchResult<Vec<EvidenceTable>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {TABLE_COLS} FROM evidence_table WHERE workspace_id = ?1 ORDER BY created_at, id"
         ))?;
@@ -366,7 +366,7 @@ impl TableStore {
     pub fn table(&self, id: &str) -> ResearchResult<Option<EvidenceTable>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 &format!("SELECT {TABLE_COLS} FROM evidence_table WHERE id = ?1"),
                 params![id],
@@ -463,7 +463,7 @@ impl TableStore {
     pub fn column(&self, column_id: &str) -> ResearchResult<Option<Column>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 &format!("SELECT {COLUMN_COLS} FROM table_column WHERE id = ?1"),
                 params![column_id],
@@ -473,7 +473,7 @@ impl TableStore {
     }
 
     pub fn columns(&self, table_id: &str) -> ResearchResult<Vec<Column>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMN_COLS} FROM table_column WHERE table_id = ?1 ORDER BY position, created_at"
         ))?;
@@ -643,7 +643,7 @@ impl TableStore {
     }
 
     pub fn rows(&self, table_id: &str) -> ResearchResult<Vec<TableRow>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {ROW_COLS} FROM table_row WHERE table_id = ?1 ORDER BY position, added_at"
         ))?;
@@ -659,7 +659,7 @@ impl TableStore {
     }
 
     pub fn cells(&self, table_id: &str) -> ResearchResult<Vec<Cell>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {CELL_COLS} FROM table_cell WHERE table_id = ?1"
         ))?;
@@ -670,7 +670,7 @@ impl TableStore {
     pub fn cell(&self, row_id: &str, column_id: &str) -> ResearchResult<Option<Cell>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 &format!("SELECT {CELL_COLS} FROM table_cell WHERE row_id = ?1 AND column_id = ?2"),
                 params![row_id, column_id],
@@ -861,7 +861,7 @@ impl TableStore {
 
     /// The table's captures, by row and then oldest first.
     pub fn captures(&self, table_id: &str) -> ResearchResult<Vec<StoredCapture>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(
             "SELECT id, table_id, row_id, captured_at, capture_json FROM table_fill_capture
               WHERE table_id = ?1 ORDER BY row_id, captured_at, rowid",
@@ -886,7 +886,7 @@ impl TableStore {
     ) -> ResearchResult<Option<String>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT response_json FROM fill_cache
                  WHERE paper_hash = ?1 AND column_key = ?2 AND model = ?3",
@@ -1080,6 +1080,7 @@ mod tests {
         f.store
             .conn
             .read()
+            .unwrap()
             .query_row("SELECT count(*) FROM fill_cache", [], |r| r.get(0))
             .unwrap()
     }
@@ -1680,6 +1681,7 @@ mod tests {
         f.store
             .conn
             .read()
+            .unwrap()
             .query_row("SELECT count(*) FROM table_fill_capture", [], |r| r.get(0))
             .unwrap()
     }

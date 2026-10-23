@@ -279,7 +279,7 @@ impl VisualStore {
         filters.push(latest.to_string());
         let filter = filters.join(" AND ");
 
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let total: i64 = conn.query_row(
             &format!("SELECT count(*) FROM generated_visuals v WHERE {filter}"),
             params_from_iter(args.iter()),
@@ -325,7 +325,7 @@ impl VisualStore {
 
     /// Visuals of one conversation that are not deleted (one per chain).
     pub fn count_for_conversation(&self, conversation_id: &str) -> VisualResult<u64> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let n: i64 = conn.query_row(
             "SELECT count(DISTINCT root_id) FROM generated_visuals
              WHERE conversation_id = ?1 AND deleted_at IS NULL",
@@ -339,7 +339,7 @@ impl VisualStore {
     /// found.
     pub fn get(&self, id: &str) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let (root, deleted) = chain_of(&conn, id)?;
         if deleted {
             return Err(VisualError::Deleted(id.to_string()));
@@ -371,7 +371,7 @@ impl VisualStore {
     pub fn latest(&self, id: &str) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
         let latest_id: String = {
-            let conn = self.conn.read();
+            let conn = self.conn.read()?;
             let (root, _) = chain_of(&conn, id)?;
             conn.query_row(
                 "SELECT id FROM generated_visuals WHERE root_id = ?1 ORDER BY version DESC LIMIT 1",
@@ -386,7 +386,7 @@ impl VisualStore {
     pub fn version(&self, id: &str, version: u32) -> VisualResult<VisualDetail> {
         let id = check_id(id)?;
         let version_id: String = {
-            let conn = self.conn.read();
+            let conn = self.conn.read()?;
             let (root, _) = chain_of(&conn, id)?;
             conn.query_row(
                 "SELECT id FROM generated_visuals WHERE root_id = ?1 AND version = ?2",
@@ -552,7 +552,7 @@ impl VisualStore {
 
     /// Whether the one-time backfill of earlier conversations has run.
     pub fn backfill_done(&self) -> VisualResult<bool> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let value: Option<String> = conn
             .query_row(
                 "SELECT value FROM visual_settings WHERE key = ?1",

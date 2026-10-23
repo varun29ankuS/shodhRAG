@@ -19,7 +19,7 @@ use rusqlite::{params, params_from_iter, Connection, ErrorCode, OpenFlags, Optio
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::write_gate::{guard_reads, holding_write_turn, misuse, write_in_turn, WriteGate};
+use super::write_gate::{guard_reads, may_wait_for_audit_writer, write_in_turn, WriteGate};
 use super::{
     canonical_json, AuditError, AuditEventType, AuditKey, AuditQuery, AuditRecord, AuditResult,
     AuditRow, AuditStats, MonthStats, SharedConnection, UnrecordedEvents, VerifyReport,
@@ -707,7 +707,7 @@ pub fn open_shared_connection(
     key: Option<&AuditKey>,
 ) -> AuditResult<SharedConnection> {
     let (conn, _) = open_connection(path, key)?;
-    let gate = WriteGate::for_database(path)?;
+    let gate = WriteGate::for_database(path);
     migrate(&conn, &gate)?;
     Ok(SharedConnection::new(conn, gate)?)
 }
@@ -1121,7 +1121,7 @@ impl AuditLog {
     pub fn open(path: impl AsRef<Path>, key: Option<&AuditKey>) -> AuditResult<Self> {
         let path = path.as_ref().to_path_buf();
         let (write_conn, encrypted) = open_connection(&path, key)?;
-        let gate = WriteGate::for_database(&path)?;
+        let gate = WriteGate::for_database(&path);
         migrate(&write_conn, &gate)?;
         let (reader, _) = open_connection(&path, key)?;
         reader.execute_batch("PRAGMA query_only = 1;")?;
@@ -1161,15 +1161,11 @@ impl AuditLog {
             .map_err(|_| AuditError::WriterStopped)
     }
 
-    /// Send `make`'s message to the writer and wait for its answer. Refused inside a write
-    /// turn: the writer needs a turn on the same database to answer, so the wait would
-    /// never end.
+    /// Send `make`'s message to the writer and wait for its answer. Refused while this
+    /// thread holds a write turn or a read of a shared connection: the writer needs a turn
+    /// on the same database to answer, so the wait might never end.
     fn request<T>(&self, make: impl FnOnce(Reply<T>) -> WriterMsg) -> AuditResult<T> {
-        if holding_write_turn() {
-            return Err(AuditError::Sqlite(misuse(
-                "an audit write was awaited inside a write to shodh.db (use AuditLog::submit there)",
-            )));
-        }
+        may_wait_for_audit_writer()?;
         let (reply, response) = mpsc::channel();
         self.send(make(reply))?;
         response.recv().map_err(|_| AuditError::WriterStopped)?
@@ -1545,7 +1541,7 @@ mod tests {
 
     /// A writer over `dir`'s database on a plain connection, with the database's gate.
     fn raw_writer(dir: &tempfile::TempDir) -> Writer {
-        let gate = WriteGate::for_database(&dir.path().join("shodh.db")).unwrap();
+        let gate = WriteGate::for_database(&dir.path().join("shodh.db"));
         Writer::new(raw(dir), gate).unwrap()
     }
 
@@ -1614,7 +1610,7 @@ mod tests {
         drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
         let conn = raw(dir);
         conn.busy_timeout(busy).unwrap();
-        let gate = WriteGate::for_database(&dir.path().join("shodh.db")).unwrap();
+        let gate = WriteGate::for_database(&dir.path().join("shodh.db"));
         let writer = Writer::new(conn, gate).unwrap();
         let holder = raw(dir);
         holder.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -2147,11 +2143,13 @@ mod tests {
         let shared = open_shared_connection(&path, None).unwrap();
         let version: i64 = shared
             .read()
+            .unwrap()
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, latest_schema_version());
         let tables: i64 = shared
             .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'                  AND name IN ('statement_dynamics', 'statement_links')",
                 [],
@@ -2161,6 +2159,7 @@ mod tests {
         assert_eq!(tables, 2);
         let learning: i64 = shared
             .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('memory_proposals', 'memory_learn_usage', 'memory_learn_state',
@@ -2172,6 +2171,7 @@ mod tests {
         assert_eq!(learning, 4);
         let research: i64 = shared
             .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('snippet_images', 'result_extractions', 'result_rejections')",
@@ -2182,6 +2182,7 @@ mod tests {
         assert_eq!(research, 3);
         let citations: i64 = shared
             .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('scholarly_cache', 'citation_scans', 'citation_graph_state')",
@@ -2192,6 +2193,7 @@ mod tests {
         assert_eq!(citations, 3);
         let workspaces: i64 = shared
             .read()
+            .unwrap()
             .query_row(
                 "SELECT count(*) FROM sqlite_master WHERE type = 'table'
                  AND name IN ('workspaces', 'workspace_instructions', 'workspace_sources',

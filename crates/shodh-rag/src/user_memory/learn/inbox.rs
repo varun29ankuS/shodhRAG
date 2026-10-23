@@ -949,7 +949,7 @@ impl Inbox {
     /// Memories that applied suggestions with `fingerprint` (accepted or learned) stored.
     /// They may have been forgotten since: the suggestions are not changed by a forget.
     pub fn applied_memories(&self, fingerprint: &str) -> LearnResult<Vec<String>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(
             "SELECT outcome_json FROM memory_proposals
              WHERE fingerprint = ?1 AND status IN ('accepted', 'learned')",
@@ -1019,7 +1019,7 @@ impl Inbox {
     /// note the user asked Shodh to remember in that turn, so the assistant's own
     /// `remember` of the same words in the same answer is recognised as done.
     pub fn saved_note_in_turn(&self, turn_id: &str, text: &str) -> LearnResult<Option<String>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM memory_proposals
              WHERE turn_id = ?1 AND kind = 'remember' AND status IN ('accepted', 'learned')
@@ -1053,7 +1053,7 @@ impl Inbox {
             return Ok(Vec::new());
         }
         let turns = &turn_ids[..turn_ids.len().min(MAX_TURNS_LISTED)];
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let placeholders = (2..turns.len() + 2)
             .map(|i| format!("?{i}"))
             .collect::<Vec<_>>()
@@ -1075,7 +1075,7 @@ impl Inbox {
 
     /// One suggestion.
     pub fn get(&self, id: &str) -> LearnResult<Proposal> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         conn.query_row(
             &format!("SELECT {COLUMNS} FROM memory_proposals WHERE id = ?1"),
             params![id],
@@ -1087,7 +1087,7 @@ impl Inbox {
 
     /// Suggestions with one of `statuses` (all when empty), newest first.
     pub fn list(&self, statuses: &[ProposalStatus], limit: usize) -> LearnResult<Vec<Proposal>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let limit = i64::try_from(limit.clamp(1, 1_000)).unwrap_or(1_000);
         let filter = if statuses.is_empty() {
             String::new()
@@ -1112,7 +1112,7 @@ impl Inbox {
 
     /// Number of suggestions waiting for the user.
     pub fn pending_count(&self) -> LearnResult<u32> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         Ok(conn.query_row(
             "SELECT count(*) FROM memory_proposals WHERE status = 'pending'",
             [],
@@ -1288,7 +1288,7 @@ impl Inbox {
 
     /// Model calls left of the legacy import's one-time allowance.
     pub fn legacy_calls_left(&self) -> LearnResult<u32> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         Ok(LEGACY_IMPORT_CALLS.saturating_sub(legacy_calls(&conn)?))
     }
 
@@ -1324,7 +1324,7 @@ impl Inbox {
 
     /// Today's usage.
     pub fn usage(&self, now: DateTime<Utc>) -> LearnResult<UsageToday> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let day = day_key(now);
         let usage = conn
             .query_row(
@@ -1424,7 +1424,7 @@ impl Inbox {
 
     /// A small stored value (for example the last consolidation time).
     pub fn state(&self, key: &str) -> LearnResult<Option<String>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         Ok(conn
             .query_row(
                 "SELECT value FROM memory_learn_state WHERE key = ?1",
@@ -1472,7 +1472,7 @@ impl Inbox {
         // The pragma answers with its new value, so it is read, not executed. It is a
         // setting of this connection, not a write.
         self.conn
-            .read()
+            .read()?
             .query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
         self.conn.write(|tx| {
             let mut candidates: Vec<Proposal> = Vec::new();
@@ -1564,7 +1564,7 @@ impl Inbox {
         // The pragma answers with its new value, so it is read, not executed. It is a
         // setting of this connection, not a write.
         self.conn
-            .read()
+            .read()?
             .query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
         self.conn.write(|tx| {
             let mut changed = 0;

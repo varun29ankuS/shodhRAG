@@ -1241,6 +1241,7 @@ fn migration_15_keeps_one_active_job_per_table() {
     let conn = crate::audit::open_shared_connection(&path, None).unwrap();
     let states: Vec<(String, String)> = conn
         .read()
+        .unwrap()
         .prepare("SELECT id, state FROM table_fill_job ORDER BY id")
         .unwrap()
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))

@@ -307,7 +307,7 @@ impl InboxStore {
 
     /// Every stored item, in Inbox order.
     pub fn list(&self) -> InboxResult<Vec<InboxItem>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM inbox_items"))?;
         let items = stmt
             .query_map([], read_item)?

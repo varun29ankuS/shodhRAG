@@ -264,7 +264,7 @@ impl WorkspaceStore {
     /// Workspaces, pinned first, then most recently active or changed. Archived ones only
     /// when `include_archived`.
     pub fn list(&self, include_archived: bool) -> WorkspaceResult<Vec<Workspace>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM workspaces w
              WHERE ?1 OR w.archived = 0
@@ -279,13 +279,13 @@ impl WorkspaceStore {
     /// One workspace.
     pub fn get(&self, id: &str) -> WorkspaceResult<Workspace> {
         let id = check_id(id)?;
-        workspace_in(&self.conn.read(), id)
+        workspace_in(&self.conn.read()?, id)
     }
 
     /// One workspace with its current instructions and its sources.
     pub fn detail(&self, id: &str) -> WorkspaceResult<WorkspaceDetail> {
         let id = check_id(id)?;
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let workspace = workspace_in(&conn, id)?;
         let (_, instructions) = current_instructions(&conn, id)?;
         let mut stmt = conn.prepare(
@@ -486,7 +486,7 @@ impl WorkspaceStore {
     /// The current instructions and their version (0 and empty when none).
     pub fn instructions(&self, id: &str) -> WorkspaceResult<(u32, String)> {
         let id = check_id(id)?;
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         workspace_in(&conn, id)?;
         current_instructions(&conn, id)
     }
@@ -494,7 +494,7 @@ impl WorkspaceStore {
     /// Every instruction version, newest first.
     pub fn instruction_history(&self, id: &str) -> WorkspaceResult<Vec<InstructionVersion>> {
         let id = check_id(id)?;
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         workspace_in(&conn, id)?;
         let mut stmt = conn.prepare(
             "SELECT version, text, author, note, created_at FROM workspace_instructions
@@ -603,7 +603,7 @@ impl WorkspaceStore {
             SourceKind::File => normalize_path(reference),
             _ => reference.trim().to_string(),
         };
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(
             "SELECT workspace_id FROM workspace_sources WHERE kind = ?1 AND ref = ?2
              ORDER BY workspace_id",
@@ -618,7 +618,7 @@ impl WorkspaceStore {
     pub fn state(&self, key: &str) -> WorkspaceResult<Option<String>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT value FROM workspace_state WHERE key = ?1",
                 params![key],

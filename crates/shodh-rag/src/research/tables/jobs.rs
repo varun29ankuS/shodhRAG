@@ -539,17 +539,17 @@ fn cancel_in(conn: &Connection, job: &FillJob) -> rusqlite::Result<()> {
 impl TableStore {
     /// One fill job.
     pub fn fill_job(&self, id: &str) -> ResearchResult<Option<FillJob>> {
-        Ok(job_in(&self.conn().read(), id)?)
+        Ok(job_in(&self.conn().read()?, id)?)
     }
 
     /// The table's active (queued, running or paused) job.
     pub fn active_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
-        Ok(active_in(&self.conn().read(), table_id)?)
+        Ok(active_in(&self.conn().read()?, table_id)?)
     }
 
     /// A job with the token of the run that holds it.
     fn fill_job_owned(&self, id: &str) -> ResearchResult<Option<(FillJob, Option<String>)>> {
-        let conn = self.conn().read();
+        let conn = self.conn().read()?;
         let Some(job) = job_in(&conn, id)? else {
             return Ok(None);
         };
@@ -641,7 +641,7 @@ impl TableStore {
 
     /// The jobs paused for `reason`, oldest first.
     pub fn paused_fill_jobs(&self, reason: PauseReason) -> ResearchResult<Vec<FillJob>> {
-        let conn = self.conn().read();
+        let conn = self.conn().read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {JOB_COLS} FROM table_fill_job
               WHERE state = 'paused' AND pause_reason = ?1 ORDER BY created_at, id"
@@ -654,7 +654,7 @@ impl TableStore {
     pub fn latest_fill_job(&self, table_id: &str) -> ResearchResult<Option<FillJob>> {
         Ok(self
             .conn()
-            .read()
+            .read()?
             .query_row(
                 &format!(
                     "SELECT {JOB_COLS} FROM table_fill_job WHERE table_id = ?1
@@ -956,7 +956,7 @@ impl TableStore {
         now: &str,
         cutoff: &str,
     ) -> ResearchResult<Vec<(String, bool)>> {
-        let conn = self.conn().read();
+        let conn = self.conn().read()?;
         let mut stmt = conn.prepare(
             "SELECT id, COALESCE(state = 'running' AND run_token = ?1, 0) FROM table_fill_job
               WHERE state = 'queued'

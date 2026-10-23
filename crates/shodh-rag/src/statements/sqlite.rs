@@ -79,7 +79,7 @@ impl DynamicsStore {
 
     /// Stored state of one statement, if any.
     pub fn get(&self, id: &str) -> StatementResult<Option<DynamicsState>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         conn.query_row(
             "SELECT strength, anchor_at, importance, use_count, last_used_at, pinned
              FROM statement_dynamics WHERE statement_id = ?1",
@@ -92,7 +92,7 @@ impl DynamicsStore {
 
     /// Stored states of several statements. Statements without a row are absent.
     pub fn get_many(&self, ids: &[String]) -> StatementResult<HashMap<String, DynamicsState>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut out = HashMap::new();
         for chunk in ids.chunks(LOOKUP_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
@@ -177,7 +177,7 @@ impl DynamicsStore {
         &self,
         ids: &[String],
     ) -> StatementResult<Vec<(String, String, LinkState)>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for chunk in ids.chunks(LOOKUP_CHUNK / 2) {
@@ -277,7 +277,7 @@ impl DynamicsStore {
     /// The link between `a` and `b`, if any.
     pub fn link(&self, a: &str, b: &str) -> StatementResult<Option<LinkState>> {
         let (from, to) = super::dynamics::ordered_pair(a, b);
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         Ok(conn
             .query_row(
                 "SELECT from_id, to_id, weight, co_activations, updated_at
@@ -433,7 +433,7 @@ impl DynamicsStore {
         run_ids: &[String],
         kind: RunMemoryKind,
     ) -> StatementResult<BTreeSet<String>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut out = BTreeSet::new();
         for chunk in run_ids.chunks(LOOKUP_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
@@ -462,7 +462,7 @@ impl DynamicsStore {
 
     /// A small stored value of the statement store (`statement_state`), if set.
     pub fn state(&self, key: &str) -> StatementResult<Option<String>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         Ok(conn
             .query_row(
                 "SELECT value FROM statement_state WHERE key = ?1",
@@ -502,7 +502,7 @@ impl DynamicsStore {
         // The pragma answers with its new value, so it is read, not executed. It is a
         // setting of this connection, not a write to the database.
         self.conn
-            .read()
+            .read()?
             .query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
         self.conn.write(|tx| {
             let mut removed = 0;

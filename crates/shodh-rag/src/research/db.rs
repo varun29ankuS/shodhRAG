@@ -119,7 +119,7 @@ impl ResearchDb {
     pub fn image(&self, hash: &str) -> ResearchResult<Option<Vec<u8>>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT png FROM snippet_images WHERE hash = ?1",
                 params![hash],
@@ -154,7 +154,7 @@ impl ResearchDb {
     pub fn report(&self, file_path: &str) -> ResearchResult<Option<String>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT report_json FROM result_extractions WHERE file_path = ?1",
                 params![file_path],
@@ -165,7 +165,7 @@ impl ResearchDb {
 
     /// Every stored extraction report as `(file path, JSON)`.
     pub fn reports(&self) -> ResearchResult<Vec<(String, String)>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt = conn
             .prepare("SELECT file_path, report_json FROM result_extractions ORDER BY file_path")?;
         let rows = stmt
@@ -188,7 +188,7 @@ impl ResearchDb {
 
     /// Fingerprints of the Results of `file_path` the user rejected.
     pub fn rejected(&self, file_path: &str) -> ResearchResult<HashSet<String>> {
-        let conn = self.conn.read();
+        let conn = self.conn.read()?;
         let mut stmt =
             conn.prepare("SELECT fingerprint FROM result_rejections WHERE file_path = ?1")?;
         let rows = stmt
@@ -203,7 +203,7 @@ impl ResearchDb {
     pub fn cached_answer(&self, key: &str) -> ResearchResult<Option<(u16, Vec<u8>)>> {
         let row: Option<(i64, Vec<u8>)> = self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT status, body FROM scholarly_cache WHERE key = ?1 AND expires_at > ?2",
                 params![key, now_text()],
@@ -251,7 +251,7 @@ impl ResearchDb {
     pub fn citation_scan(&self, file_key: &str) -> ResearchResult<Option<(String, String)>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT fingerprint, scan_json FROM citation_scans WHERE file_path = ?1",
                 params![file_key],
@@ -304,7 +304,7 @@ impl ResearchDb {
     pub fn graph_state(&self, key: &str) -> ResearchResult<Option<String>> {
         Ok(self
             .conn
-            .read()
+            .read()?
             .query_row(
                 "SELECT value_json FROM citation_graph_state WHERE key = ?1",
                 params![key],

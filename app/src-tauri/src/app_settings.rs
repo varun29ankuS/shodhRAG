@@ -374,6 +374,10 @@ pub struct AppSettings {
     pub notifications: NotificationPrefs,
     /// Evidence tables: the daily cap of table model calls. User-only.
     pub tables: TablesPrefs,
+    /// Connectors (the Connectors view): the Slack connector's installations, the
+    /// workspace it answers from and its daily cap. User-only; no tokens (those stay in
+    /// the OS credential store).
+    pub connectors: crate::connectors::ConnectorsPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
     /// Learning from conversations was moved, once, from Ask (the earlier default) to
@@ -434,7 +438,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 25] = [
+pub const AGENT_DENIED: [(&str, &str); 26] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -460,6 +464,7 @@ pub const AGENT_DENIED: [(&str, &str); 25] = [
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
     ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
     ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
+    ("connectors", "Connectors decide which documents people outside this computer (in Slack) can get answers from and how many model calls they may spend; only the user may change that."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -666,6 +671,8 @@ fn store(app: &AppHandle) -> Result<SettingsStore, String> {
 /// Tell open windows the settings changed.
 pub fn broadcast(app: &AppHandle, settings: &AppSettings) {
     crate::notifications::settings_changed(app, &settings.notifications);
+    // Local-only mode switched on stops the Slack connection; off again resumes it.
+    crate::connectors::slack::settings_changed(app, settings);
     if let Err(e) = app.emit(APP_SETTINGS_CHANGED_EVENT, settings) {
         tracing::warn!("Failed to emit {}: {}", APP_SETTINGS_CHANGED_EVENT, e);
     }

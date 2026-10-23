@@ -85,6 +85,16 @@ pub fn store_secret(user: &str, value: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to save {user} to the OS credential store: {e}"))
 }
 
+/// Remove a non-provider secret. Removing one that does not exist is not an error.
+pub fn remove_secret(user: &str) -> Result<(), String> {
+    match entry(user)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(format!(
+            "Failed to remove {user} from the OS credential store: {e}"
+        )),
+    }
+}
+
 /// Load every stored provider key. Providers whose entry cannot be read are
 /// logged and skipped so one broken entry does not hide the others.
 pub fn load_all() -> Vec<(&'static str, String)> {

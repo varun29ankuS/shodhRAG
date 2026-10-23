@@ -5,6 +5,7 @@ mod audit_commands;
 mod background;
 mod connect_commands;
 mod connection_health;
+mod connectors;
 mod database_commands;
 mod document_upload_commands;
 mod durable_file;
@@ -51,6 +52,10 @@ mod conversation_commands;
 mod event_emitter;
 
 use tauri::Manager;
+
+// The Slack card's commands are registered as `slack::…` (one module level, as the
+// agent coverage check reads them).
+use connectors::slack;
 
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
@@ -471,6 +476,10 @@ pub fn run() {
                 &app.state::<audit_commands::AuditState>(),
             ));
             inbox_commands::recover_on_launch(app.handle());
+            // The Slack connector: connects only when the user left it on (and
+            // Local-only mode is off); otherwise nothing runs.
+            app.manage(connectors::slack::SlackState::new(&app_data_dir));
+            connectors::slack::start_saved(app.handle());
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
 
@@ -764,6 +773,13 @@ pub fn run() {
             workspace_commands::workspaces_remove_source,
             workspace_commands::workspaces_delete,
             workspace_commands::workspaces_source_health,
+            // Connectors (the Slack card)
+            slack::slack_status,
+            slack::slack_connect,
+            slack::slack_set_enabled,
+            slack::slack_set_answer_workspace,
+            slack::slack_set_daily_cap,
+            slack::slack_disconnect,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,
@@ -867,6 +883,8 @@ pub fn run() {
             // Evidence table fills held by this process go back to the queue, so the
             // next start takes them up at once.
             table_commands::release_on_exit(app_handle);
+            // Slack connections are closed (a close frame, bounded wait).
+            connectors::slack::shutdown(app_handle);
             // Stop every omp sidecar before the process exits.
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());

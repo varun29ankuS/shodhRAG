@@ -239,6 +239,12 @@
     "table_fill_paper": { "excluded": "A diagnostics tool (Settings → Tables) that keeps a fill's prompts and raw replies; user-only, and refused unless the user turned diagnostics on." },
     "table_captures_export": { "excluded": "Exports the kept prompts and raw replies of the user's quality checks to a file the user chooses; diagnostics data never reaches the agent." },
     "tables_settings_get": { "excluded": "Shows the daily cap of table calls and the diagnostics switch in Settings → Tables; user-only settings about spending." },
-    "tables_settings_set": { "excluded": "The daily cap of table calls bounds what tables may spend; the agent must never raise its own spending limit, so only the user changes it." }
+    "tables_settings_set": { "excluded": "The daily cap of table calls bounds what tables may spend; the agent must never raise its own spending limit, so only the user changes it." },
+    "slack_status": { "excluded": "Shows the Slack card in the Connectors view (connection state, today's Slack answers); a user-facing view of a connection the agent has no part in." },
+    "slack_connect": { "excluded": "Token entry: the user pastes the Slack app-level and bot tokens, which go straight to the OS credential store; an agent must never handle or supply credentials." },
+    "slack_set_enabled": { "excluded": "Switching the Slack connector on lets people outside this computer get answers and spend model calls; only the user may decide that." },
+    "slack_set_answer_workspace": { "excluded": "Choosing the workspace Slack answers come from decides which documents people in Slack can read; only the user may change that." },
+    "slack_set_daily_cap": { "excluded": "The daily limit of Slack answers bounds what Slack may spend of the model quota; the agent must never raise a spending limit." },
+    "slack_disconnect": { "excluded": "Disconnecting deletes the Slack tokens and stops answers for everyone in Slack; an account action only the user takes." }
   }
 }

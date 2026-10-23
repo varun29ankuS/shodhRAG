@@ -6,6 +6,7 @@
 pub mod audit;
 pub mod chat;
 pub mod config;
+pub mod connectors;
 pub mod embeddings;
 pub mod folder_sync;
 pub mod harness;

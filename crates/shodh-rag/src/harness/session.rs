@@ -122,15 +122,18 @@ struct RunningCommand {
 /// recorded as unknown.
 struct PendingCompare {
     code: Arc<CodeRuntime>,
+    /// The call compared ([`ReviewState::uncompared`]).
+    id: String,
     what: String,
     done: bool,
 }
 
 impl PendingCompare {
-    fn new(code: &Arc<CodeRuntime>, what: String) -> Self {
+    fn new(code: &Arc<CodeRuntime>, id: String, what: String) -> Self {
         code.compares.send_modify(|pending| *pending += 1);
         PendingCompare {
             code: Arc::clone(code),
+            id,
             what,
             done: false,
         }
@@ -148,11 +151,12 @@ impl Drop for PendingCompare {
                 "{} stopped before Shodh could see what it changed",
                 self.what
             );
+            let id = self.id.clone();
             if let Err(e) = self
                 .code
                 .reviews
                 .update(&self.code.conversation_id, |state| {
-                    state.mark_unknown(reason)
+                    state.compared(&id, Err(reason))
                 })
             {
                 tracing::warn!(target: "shodh::harness", error = %e, "could not record an unknown change; the record is unreadable, so commands ask");
@@ -358,8 +362,11 @@ impl CodeRuntime {
     }
 
     /// The command of `request` is allowed: note how the folder looks, and
-    /// that it runs until its tool call ends ([`CodeRuntime::command_ended`]).
-    async fn command_allowed(&self, request: &GuardRequest) {
+    /// record, before it may start, that its changes are not compared yet
+    /// ([`ReviewState::uncompared`]; removed when it ends,
+    /// [`CodeRuntime::command_ended`]). `Err` when that cannot be recorded:
+    /// the command must not run.
+    async fn command_allowed(&self, request: &GuardRequest) -> Result<(), String> {
         let before = self.snapshot().await;
         let command = request
             .input
@@ -373,10 +380,15 @@ impl CodeRuntime {
                 80
             )
         );
+        let id = request.tool_call_id.clone();
+        let entry = label.clone();
+        self.update_review(move |state| state.start_call(&id, &entry))
+            .await?;
         lock(&self.running).insert(
             request.tool_call_id.clone(),
             RunningCommand { label, before },
         );
+        Ok(())
     }
 
     /// The tool call `tool_call_id` ended: when it was a command allowed to
@@ -385,11 +397,16 @@ impl CodeRuntime {
         let Some(running) = lock(&self.running).remove(tool_call_id) else {
             return;
         };
-        let pending = PendingCompare::new(self, format!("The command {}", running.label));
+        let pending = PendingCompare::new(
+            self,
+            tool_call_id.to_string(),
+            format!("The command {}", running.label),
+        );
         let code = Arc::clone(self);
+        let id = tool_call_id.to_string();
         tokio::spawn(async move {
             let what = format!("the command {}", running.label);
-            code.record_changes(running.before, &what).await;
+            code.record_changes(&id, running.before, &what).await;
             pending.done();
         });
     }
@@ -403,9 +420,9 @@ impl CodeRuntime {
         }
     }
 
-    /// Compare the folder with `before` and list what changed as not
-    /// reviewed; when that cannot be told, record why.
-    async fn record_changes(&self, before: Result<TreeSnapshot, String>, what: &str) {
+    /// Compare the folder with `before` and record the result of call `id`:
+    /// what changed is listed as not reviewed, or why that cannot be told.
+    async fn record_changes(&self, id: &str, before: Result<TreeSnapshot, String>, what: &str) {
         let after = self.snapshot().await;
         let root = self.folder.root().to_path_buf();
         let changed = match (before, after) {
@@ -416,20 +433,12 @@ impl CodeRuntime {
             }
             (Err(e), _) | (_, Err(e)) => Err(e),
         };
-        let what = what.to_string();
-        let recorded = match changed {
-            Ok(files) if files.is_empty() => Ok(()),
-            Ok(files) => {
-                self.update_review(move |state| state.add_files(files))
-                    .await
-            }
-            Err(e) => {
-                let reason = format!("after {what}, {e}");
-                self.update_review(move |state| state.mark_unknown(reason))
-                    .await
-            }
-        };
-        if let Err(e) = recorded {
+        let changed = changed.map_err(|e| format!("after {what}, {e}"));
+        let id = id.to_string();
+        if let Err(e) = self
+            .update_review(move |state| state.compared(&id, changed))
+            .await
+        {
             tracing::warn!(target: "shodh::harness", error = %e, "could not record what changed; the record is unreadable, so commands ask");
         }
     }
@@ -908,7 +917,9 @@ impl Inner {
                     )
                 })?;
             } else {
-                code.command_allowed(request).await;
+                code.command_allowed(request).await.map_err(|e| {
+                    format!("Shodh could not record this command, so it was not run: {e}")
+                })?;
             }
             return Ok(());
         }
@@ -1009,7 +1020,9 @@ impl Inner {
                     )
                 })?;
         }
-        code.command_allowed(request).await;
+        code.command_allowed(request)
+            .await
+            .map_err(|e| format!("Shodh could not record this command, so it was not run: {e}"))?;
         Ok(())
     }
 
@@ -1107,7 +1120,11 @@ impl Inner {
             .map(|code| {
                 (
                     Arc::clone(code),
-                    PendingCompare::new(code, format!("The tool {}", tool_call.tool)),
+                    PendingCompare::new(
+                        code,
+                        step_id.clone(),
+                        format!("The tool {}", tool_call.tool),
+                    ),
                 )
             });
 
@@ -1119,7 +1136,18 @@ impl Inner {
         let task_step_id = step_id.clone();
         let handle = tokio::spawn(async move {
             let before = match &compare {
-                Some((code, _)) => Some(code.snapshot().await),
+                Some((code, _)) => {
+                    // Recorded before the call: one cut off by a crash still counts.
+                    let id = task_step_id.clone();
+                    let label = format!("the tool {task_tool}");
+                    if let Err(e) = code
+                        .update_review(move |state| state.start_call(&id, &label))
+                        .await
+                    {
+                        tracing::warn!(target: "shodh::harness", error = %e, "could not record a tool call before it ran; the record is unreadable, so commands ask");
+                    }
+                    Some(code.snapshot().await)
+                }
                 None => None,
             };
             let outcome = inner
@@ -1127,7 +1155,7 @@ impl Inner {
                 .dispatch(tool_call, &inner.profile, &inner.approvals, &ctx)
                 .await;
             if let (Some((code, pending)), Some(before)) = (compare, before) {
-                code.record_changes(before, &format!("the tool {task_tool}"))
+                code.record_changes(&task_step_id, before, &format!("the tool {task_tool}"))
                     .await;
                 pending.done();
             }
@@ -4000,6 +4028,8 @@ mod tests {
         /// The prompt's own Approve button: sends the token when the prompt
         /// has one (`ApprovalPrompt`, `reviewTokenFor`).
         ApproveInPrompt,
+        /// A yes with a token this prompt did not issue.
+        ApproveWithStaleToken,
     }
 
     /// Feed a guard request ([`guard_request`]), expect a prompt, answer it
@@ -4039,6 +4069,10 @@ mod tests {
             (Answer::ApproveInPrompt, Some(token)) => {
                 inner.approvals.resolve_reviewed(&step, token).unwrap()
             }
+            (Answer::ApproveWithStaleToken, _) => inner
+                .approvals
+                .resolve_reviewed(&step, "0123456789abcdef")
+                .unwrap(),
             _ => inner.approvals.resolve(&step, true).unwrap(),
         }
         match next_frame(out).await {
@@ -4158,6 +4192,16 @@ mod tests {
         )
         .await;
         ended(&inner, "4");
+        // Neither does a yes with a token this prompt did not issue.
+        asks(
+            &inner,
+            ev,
+            o,
+            guard_request("4b", "bash", test_command(), None),
+            Answer::ApproveWithStaleToken,
+        )
+        .await;
+        ended(&inner, "4b");
         let preview = asks(
             &inner,
             ev,
@@ -4313,6 +4357,7 @@ mod tests {
         .await;
         std::fs::write(root.join("generated").join("test_more.py"), "x = 2\n").unwrap();
         ended(&inner, "17");
+        code.settled().await;
         let (again, mut again_events, mut again_out) =
             offline_session(None, Some(code_runtime(folder.path(), data.path())));
         again
@@ -4485,8 +4530,11 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("not a git repository"));
-        // The prompt's yes cleared what it showed...
-        assert!(code.reviews.get("conv-1").unwrap().is_clear());
+        // The prompt's yes cleared what it showed; the command it allowed is
+        // listed until it ends...
+        let state = code.reviews.get("conv-1").unwrap();
+        assert!(state.unknown.is_none() && state.files.is_empty());
+        assert_eq!(state.uncompared.keys().collect::<Vec<_>>(), ["call-2"]);
         // ...and once the command ends, what it changed is unknown again.
         ended(&inner, "2");
         asks(
@@ -4497,6 +4545,43 @@ mod tests {
             Answer::Deny,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_command_cut_off_before_its_end_still_makes_the_next_ask() {
+        use crate::harness::code_mode::REVIEW_NOTE_KEY;
+        let (folder, data) = trusted_repo();
+        let code = code_runtime(folder.path(), data.path());
+        let (inner, _events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        runs_unasked(
+            &inner,
+            &mut out,
+            guard_request("1", "bash", test_command(), None),
+        )
+        .await;
+        // No end frame: the app quit, or the session closed, mid-command.
+        let (again, mut again_events, mut again_out) =
+            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        again
+            .start_run("Go on", Some("run-2".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut again_out);
+        let preview = asks(
+            &again,
+            &mut again_events,
+            &mut again_out,
+            guard_request("2", "bash", test_command(), None),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview[REVIEW_NOTE_KEY]
+            .as_str()
+            .unwrap()
+            .contains("has not compared what `cargo test -p app` changed"));
     }
 
     /// Stands in for an MCP server's write tool: writes a test file into the

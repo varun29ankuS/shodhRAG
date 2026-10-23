@@ -1059,6 +1059,11 @@ pub struct ReviewState {
     /// Shodh cannot see when such a process stops, so while any is listed,
     /// every edit and write of the conversation asks.
     pub background: Vec<String>,
+    /// Commands and MCP tool calls allowed to run whose changes have not
+    /// been compared yet (call id → label). Written before the call may
+    /// start and removed with its result, so a call cut off by a crash or a
+    /// closed session still counts: while any is listed, commands ask.
+    pub uncompared: std::collections::BTreeMap<String, String>,
 }
 
 impl ReviewState {
@@ -1076,7 +1081,7 @@ impl ReviewState {
     /// Whether the user has seen every change, so an allowlisted command
     /// may run by itself.
     pub fn is_clear(&self) -> bool {
-        self.files.is_empty() && self.unknown.is_none()
+        self.files.is_empty() && self.unknown.is_none() && self.uncompared.is_empty()
     }
 
     /// List `changed` (folder-relative paths) as not reviewed.
@@ -1101,6 +1106,24 @@ impl ReviewState {
         if shown.unknown.is_some() && self.unknown == shown.unknown {
             self.unknown = None;
         }
+        self.uncompared
+            .retain(|id, _| !shown.uncompared.contains(id));
+    }
+
+    /// The call `id` (`label`) may change files: until its result is
+    /// recorded ([`ReviewState::compared`]), commands ask.
+    pub fn start_call(&mut self, id: &str, label: &str) {
+        self.uncompared.insert(id.to_string(), label.to_string());
+    }
+
+    /// The call `id` was compared: list what it changed, or why that cannot
+    /// be told.
+    pub fn compared(&mut self, id: &str, changed: Result<Vec<String>, String>) {
+        self.uncompared.remove(id);
+        match changed {
+            Ok(files) => self.add_files(files),
+            Err(reason) => self.mark_unknown(reason),
+        }
     }
 }
 
@@ -1110,6 +1133,8 @@ impl ReviewState {
 pub struct ShownReview {
     pub files: Vec<String>,
     pub unknown: Option<String>,
+    /// Ids of the uncompared calls the prompt named.
+    pub uncompared: Vec<String>,
 }
 
 /// Preview key of the files a command prompt lists as changed without
@@ -1240,7 +1265,9 @@ pub fn starts_background(command: &str) -> bool {
             None if c == '&' => {
                 let before = at.checked_sub(1).map(|i| chars[i]);
                 let after = chars.get(at + 1).copied();
-                if !matches!(before, Some('&' | '>' | '<')) && !matches!(after, Some('&' | '>')) {
+                if !matches!(before, Some('&' | '>' | '<' | '|'))
+                    && !matches!(after, Some('&' | '>'))
+                {
                     return true;
                 }
             }
@@ -1366,6 +1393,13 @@ pub fn note_review(
             "Shodh cannot tell which files changed: {reason}. "
         ));
     }
+    if !review.uncompared.is_empty() {
+        let calls: Vec<&str> = review.uncompared.values().map(String::as_str).collect();
+        note.push_str(&format!(
+            "Shodh has not compared what {} changed (still running, or cut off). ",
+            calls.join(", ")
+        ));
+    }
     if !review.files.is_empty() {
         map.insert(UNREVIEWED_KEY.to_string(), json!(review.files));
         note.push_str("The files listed changed without your review. ");
@@ -1383,6 +1417,7 @@ pub fn note_review(
     eligible.then(|| ShownReview {
         files: review.files.clone(),
         unknown: review.unknown.clone(),
+        uncompared: review.uncompared.keys().cloned().collect(),
     })
 }
 
@@ -2342,12 +2377,29 @@ fn content_hash(path: &Path) -> String {
             Err(e) => format!("unreadable link {e}"),
         },
         Ok(meta) if meta.is_dir() => "folder".to_string(),
-        Ok(_) => match std::fs::read(path) {
-            Ok(bytes) => hex::encode(Sha256::digest(&bytes)),
-            Err(e) => format!("unreadable {e}"),
-        },
+        // A large file (a dataset, a build output) is told apart by its size
+        // and modification time, so a snapshot stays fast.
+        Ok(meta) if meta.len() > MAX_HASHED_BYTES => {
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |since| since.as_nanos());
+            format!("{} bytes, modified {modified}", meta.len())
+        }
+        Ok(_) => {
+            let hashed = std::fs::File::open(path).and_then(|mut file| {
+                let mut hasher = Sha256::new();
+                std::io::copy(&mut file, &mut hasher)?;
+                Ok(hex::encode(hasher.finalize()))
+            });
+            hashed.unwrap_or_else(|e| format!("unreadable {e}"))
+        }
     }
 }
+
+/// Largest file whose content a snapshot hashes ([`content_hash`]).
+const MAX_HASHED_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The NUL-separated paths in `raw`, relative to the folder whose
 /// repository path is `prefix` (paths outside it are left out).

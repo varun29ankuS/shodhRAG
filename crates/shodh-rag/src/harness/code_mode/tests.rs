@@ -1419,7 +1419,8 @@ fn command_prompts_list_every_unreviewed_file_and_what_approving_does() {
         shown,
         Some(ShownReview {
             files: files.clone(),
-            unknown: None
+            unknown: None,
+            uncompared: Vec::new(),
         })
     );
 
@@ -1481,18 +1482,39 @@ fn approving_clears_exactly_what_the_prompt_showed() {
         files: vec!["a.py".into(), "b.py".into()],
         unknown: Some("x".into()),
         background: vec!["`npm run dev &`".into()],
+        ..ReviewState::default()
     };
+    state.start_call("call-1", "`python gen.py`");
+    state.start_call("call-2", "`git apply x.patch`");
     let shown = ShownReview {
         files: vec!["a.py".into()],
         unknown: Some("y".into()),
+        uncompared: vec!["call-1".into()],
     };
-    // b.py was listed after the prompt opened; a different unknown note.
+    // b.py and call-2 were listed after the prompt opened; a different
+    // unknown note.
     state.clear_shown(&shown);
     assert_eq!(state.files, ["b.py"]);
     assert_eq!(state.unknown.as_deref(), Some("x"));
+    assert_eq!(state.uncompared.keys().collect::<Vec<_>>(), ["call-2"]);
+    // A call not yet compared keeps commands asking.
     state.clear_shown(&ShownReview {
         files: vec!["b.py".into()],
         unknown: Some("x".into()),
+        uncompared: Vec::new(),
+    });
+    assert!(!state.is_clear());
+    // Its result: what it changed is listed, or why that is not known.
+    state.compared("call-2", Ok(vec!["tests/conftest.py".to_string()]));
+    assert_eq!(state.files, ["tests/conftest.py"]);
+    assert!(state.uncompared.is_empty());
+    state.start_call("call-3", "`make`");
+    state.compared("call-3", Err("git status failed".to_string()));
+    assert_eq!(state.unknown.as_deref(), Some("git status failed"));
+    state.clear_shown(&ShownReview {
+        files: vec!["tests/conftest.py".into()],
+        unknown: Some("git status failed".into()),
+        uncompared: Vec::new(),
     });
     assert!(state.is_clear());
     // A process that may still run is never cleared by a review.

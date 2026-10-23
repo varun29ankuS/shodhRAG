@@ -9,15 +9,23 @@ use serde_json::{json, Value};
 
 /// The bot scopes answering in Slack needs, and nothing more:
 /// - `app_mentions:read`: the `app_mention` event (a mention in a channel);
+/// - `channels:read`, `groups:read`: list the public and private channels the bot is in
+///   (`users.conversations`), so the user picks where it answers, and see which are
+///   shared with other organizations;
 /// - `chat:write`: post the answer and edit the placeholder into it;
 /// - `im:history`: the `message.im` event (a DM to the bot);
-/// - `im:read`, `im:write`: the bot's DM conversations.
-pub const REQUIRED_BOT_SCOPES: [&str; 5] = [
+/// - `im:read`, `im:write`: the bot's DM conversations;
+/// - `users:read`: who sent a DM (`users.info`: their workspace, guest or not), and which
+///   app the bot belongs to (`bots.info`), to catch tokens of two different apps.
+pub const REQUIRED_BOT_SCOPES: [&str; 8] = [
     "app_mentions:read",
+    "channels:read",
     "chat:write",
+    "groups:read",
     "im:history",
     "im:read",
     "im:write",
+    "users:read",
 ];
 
 /// The events the app subscribes to.
@@ -157,12 +165,18 @@ mod tests {
             m["oauth_config"]["scopes"]["bot"],
             json!([
                 "app_mentions:read",
+                "channels:read",
                 "chat:write",
+                "groups:read",
                 "im:history",
                 "im:read",
-                "im:write"
+                "im:write",
+                "users:read"
             ])
         );
+        // No e-mail addresses and no channel history: neither is asked for.
+        let scopes = m["oauth_config"]["scopes"]["bot"].to_string();
+        assert!(!scopes.contains("users:read.email") && !scopes.contains("channels:history"));
         assert!(m["oauth_config"]["scopes"].get("user").is_none());
         assert!(m["settings"].get("event_subscriptions").unwrap()["request_url"].is_null());
         assert_eq!(m["features"]["app_home"]["messages_tab_enabled"], true);
@@ -197,7 +211,23 @@ mod tests {
         assert_eq!(granted, vec!["app_mentions:read", "chat:write", "im:read"]);
         assert_eq!(
             check_scopes(Some(&granted)),
-            ScopeCheck::Missing(vec!["im:history".into(), "im:write".into()])
+            ScopeCheck::Missing(vec![
+                "channels:read".into(),
+                "groups:read".into(),
+                "im:history".into(),
+                "im:write".into(),
+                "users:read".into()
+            ])
+        );
+        // An app created from the earlier manifest lacks the three scopes added since.
+        let earlier = parse_scopes("app_mentions:read,chat:write,im:history,im:read,im:write");
+        assert_eq!(
+            check_scopes(Some(&earlier)),
+            ScopeCheck::Missing(vec![
+                "channels:read".into(),
+                "groups:read".into(),
+                "users:read".into()
+            ])
         );
         let mut all: Vec<String> = REQUIRED_BOT_SCOPES.iter().map(|s| s.to_string()).collect();
         all.push("channels:read".into());

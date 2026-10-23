@@ -6,8 +6,16 @@
 //!   envelopes it sees no acknowledgement for, and a slow answer must never cause a retry.
 //! - `disconnect` (`refresh_requested`, `warning`): Slack is about to close the connection;
 //!   a new one is opened at once. `link_disabled`: Socket Mode was turned off for the app;
-//!   no new connection can work, so the connector stops with an error.
-//! - Any other drop: a new connection after an exponential backoff with jitter.
+//!   no new connection can work, so the connector stops with an error. Any other reason
+//!   is a drop.
+//! - Any other drop: a new connection after an exponential backoff with jitter. The
+//!   backoff starts over only after a connection proved itself (an envelope arrived, or it
+//!   stayed up for [`STABLE_AFTER`]), so a connection that says `hello` and drops at once
+//!   cannot reconnect in a tight loop.
+//! - `hello` names the app the connection belongs to: when it is not the app of the bot
+//!   token, the connector stops with an error ([`WRONG_APP`]). It also says how many
+//!   connections the app has open: more than one means another Shodh (or another program)
+//!   receives part of the events.
 //! - A connection silent for [`Timing::idle`] is pinged; silent again, it is replaced.
 //!
 //! The transport and how a connection is opened are traits, so this logic is tested over
@@ -22,7 +30,7 @@ use chrono::{DateTime, Utc};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::watch;
 
-use super::events::{ack, parse_frame, DisconnectReason, Envelope, Frame};
+use super::events::{ack, parse_frame, DisconnectReason, Envelope, Frame, Hello};
 use super::tokens::SlackAppToken;
 use super::web::{SlackApiError, SlackWeb};
 
@@ -86,7 +94,15 @@ pub enum LinkState {
 pub trait StatusSink: Send + Sync {
     fn link(&self, state: LinkState);
     fn event_seen(&self, at: DateTime<Utc>);
+    /// The app's open connections, this one included (from `hello`).
+    fn connections(&self, count: u32);
 }
+
+/// How long a connection must stay up for the backoff to start over.
+pub const STABLE_AFTER: Duration = Duration::from_secs(60);
+
+/// The message shown when the two tokens belong to different Slack apps.
+pub const WRONG_APP: &str = "The app-level token and the bot token belong to different Slack apps, so Shodh would never see the questions. Disconnect, then paste both tokens from the one app created from Shodh's manifest.";
 
 /// How long to wait for what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +134,19 @@ pub enum ConnectionEnd {
     Dropped(String),
     /// The connector was switched off.
     Stopped,
+    /// The connection belongs to another Slack app than the bot token.
+    WrongApp,
+}
+
+/// How one connection went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionReport {
+    pub end: ConnectionEnd,
+    /// Slack's `hello` arrived.
+    pub hello: bool,
+    /// An envelope arrived, or the connection stayed up for [`STABLE_AFTER`] after
+    /// `hello`: the backoff starts over.
+    pub stable: bool,
 }
 
 /// Exponential backoff: `start`, doubling, at most `max`, each with ±20 % jitter.
@@ -165,27 +194,56 @@ fn stopped(stop: &watch::Receiver<bool>) -> bool {
     *stop.borrow()
 }
 
+/// What a `hello` means for the connection: `Some(end)` when it must end now.
+fn on_hello(
+    hello: &Hello,
+    expected_app: Option<&str>,
+    status: &dyn StatusSink,
+) -> Option<ConnectionEnd> {
+    if let (Some(expected), Some(found)) = (expected_app, hello.app_id.as_deref()) {
+        if expected != found {
+            tracing::warn!(target: "shodh::slack", expected, found, "the Socket Mode connection belongs to another Slack app than the bot token");
+            return Some(ConnectionEnd::WrongApp);
+        }
+    }
+    if let Some(count) = hello.num_connections {
+        status.connections(count);
+    }
+    status.link(LinkState::Connected);
+    None
+}
+
 /// Runs one connection until it ends: acknowledges each envelope, then hands it to `sink`.
-/// Returns how it ended and whether Slack's `hello` was seen.
+/// `expected_app`: the app of the bot token, when known; a `hello` naming another app
+/// ends the connection ([`ConnectionEnd::WrongApp`]).
 pub async fn run_connection(
     transport: &mut dyn SocketTransport,
     sink: &dyn EnvelopeSink,
     status: &dyn StatusSink,
     stop: &mut watch::Receiver<bool>,
     idle: Duration,
-) -> (ConnectionEnd, bool) {
-    let mut hello = false;
+    expected_app: Option<&str>,
+) -> ConnectionReport {
+    let mut hello_at: Option<tokio::time::Instant> = None;
+    let mut envelopes = 0usize;
+    let report = |end: ConnectionEnd, hello_at: Option<tokio::time::Instant>, envelopes: usize| {
+        ConnectionReport {
+            end,
+            hello: hello_at.is_some(),
+            stable: envelopes > 0 || hello_at.is_some_and(|at| at.elapsed() >= STABLE_AFTER),
+        }
+    };
     let mut pinged = false;
     loop {
         if stopped(stop) {
             transport.close().await;
-            return (ConnectionEnd::Stopped, hello);
+            return report(ConnectionEnd::Stopped, hello_at, envelopes);
         }
         let next = tokio::select! {
             changed = stop.changed() => {
                 if changed.is_err() || stopped(stop) {
                     transport.close().await;
-                    return (ConnectionEnd::Stopped, hello);
+                    return report(ConnectionEnd::Stopped, hello_at, envelopes);
                 }
                 continue;
             }
@@ -194,25 +252,27 @@ pub async fn run_connection(
         let incoming = match next {
             Err(_) if pinged => {
                 transport.close().await;
-                return (
+                return report(
                     ConnectionEnd::Dropped("Slack stopped answering".into()),
-                    hello,
+                    hello_at,
+                    envelopes,
                 );
             }
             Err(_) => {
                 pinged = true;
                 if let Err(e) = transport.ping().await {
-                    return (ConnectionEnd::Dropped(e), hello);
+                    return report(ConnectionEnd::Dropped(e), hello_at, envelopes);
                 }
                 continue;
             }
             Ok(None) => {
-                return (
+                return report(
                     ConnectionEnd::Dropped("Slack closed the connection".into()),
-                    hello,
+                    hello_at,
+                    envelopes,
                 )
             }
-            Ok(Some(Err(e))) => return (ConnectionEnd::Dropped(e), hello),
+            Ok(Some(Err(e))) => return report(ConnectionEnd::Dropped(e), hello_at, envelopes),
             Ok(Some(Ok(incoming))) => incoming,
         };
         pinged = false;
@@ -220,24 +280,39 @@ pub async fn run_connection(
             continue;
         };
         match parse_frame(&text) {
-            Ok(Frame::Hello) => {
-                hello = true;
-                status.link(LinkState::Connected);
+            Ok(Frame::Hello(hello)) => {
+                if let Some(end) = on_hello(&hello, expected_app, status) {
+                    transport.close().await;
+                    return report(end, None, envelopes);
+                }
+                hello_at.get_or_insert_with(tokio::time::Instant::now);
             }
             Ok(Frame::Disconnect(DisconnectReason::LinkDisabled)) => {
                 transport.close().await;
-                return (ConnectionEnd::LinkDisabled, hello);
+                return report(ConnectionEnd::LinkDisabled, hello_at, envelopes);
             }
-            Ok(Frame::Disconnect(reason)) => {
+            Ok(Frame::Disconnect(
+                reason @ (DisconnectReason::Warning | DisconnectReason::RefreshRequested),
+            )) => {
                 tracing::debug!(target: "shodh::slack", ?reason, "Slack asked for a new connection");
                 transport.close().await;
-                return (ConnectionEnd::Refresh, hello);
+                return report(ConnectionEnd::Refresh, hello_at, envelopes);
+            }
+            Ok(Frame::Disconnect(DisconnectReason::Other(reason))) => {
+                // A reason this connector does not know: a drop, so it backs off.
+                transport.close().await;
+                return report(
+                    ConnectionEnd::Dropped(format!("Slack closed the connection ({reason})")),
+                    hello_at,
+                    envelopes,
+                );
             }
             Ok(Frame::Envelope(envelope)) => {
                 // Acknowledge first, always: nothing below may delay it.
                 if let Err(e) = transport.send(ack(&envelope.envelope_id)).await {
-                    return (ConnectionEnd::Dropped(e), hello);
+                    return report(ConnectionEnd::Dropped(e), hello_at, envelopes);
                 }
+                envelopes += 1;
                 status.event_seen(Utc::now());
                 sink.deliver(envelope);
             }
@@ -266,7 +341,8 @@ async fn wait_or_stop(delay: Duration, stop: &mut watch::Receiver<bool>) -> bool
 pub const LINK_DISABLED: &str = "Socket Mode was turned off for the Slack app. Turn it on again under Socket Mode in the app's settings on api.slack.com, then switch the connector on.";
 
 /// Keeps a connection open while the connector is on: connects, reconnects (at once when
-/// Slack asks, with backoff after a drop) and stops on a fatal error or when `stop` turns
+/// Slack asks, with backoff after a drop) and stops on a fatal error, a connection of
+/// another app than `expected_app` (the bot token's, when known), or when `stop` turns
 /// true.
 pub async fn supervise(
     opener: Arc<dyn SocketOpener>,
@@ -274,6 +350,7 @@ pub async fn supervise(
     status: Arc<dyn StatusSink>,
     mut stop: watch::Receiver<bool>,
     timing: Timing,
+    expected_app: Option<String>,
 ) {
     let mut backoff = Backoff::new(timing.backoff_start, timing.backoff_max);
     status.link(LinkState::Connecting);
@@ -294,24 +371,29 @@ pub async fn supervise(
         };
         let (delay, reason) = match opened {
             Ok(mut transport) => {
-                let (end, hello) = run_connection(
+                let report = run_connection(
                     transport.as_mut(),
                     sink.as_ref(),
                     status.as_ref(),
                     &mut stop,
                     timing.idle,
+                    expected_app.as_deref(),
                 )
                 .await;
-                if hello {
+                if report.stable {
                     backoff.reset();
                 }
-                match end {
+                match report.end {
                     ConnectionEnd::Stopped => {
                         status.link(LinkState::Off);
                         return;
                     }
                     ConnectionEnd::LinkDisabled => {
                         status.link(LinkState::Error(LINK_DISABLED.into()));
+                        return;
+                    }
+                    ConnectionEnd::WrongApp => {
+                        status.link(LinkState::Error(WRONG_APP.into()));
                         return;
                     }
                     ConnectionEnd::Refresh => {
@@ -503,13 +585,16 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct LogStatus(Mutex<Vec<LinkState>>, Mutex<usize>);
+    struct LogStatus(Mutex<Vec<LinkState>>, Mutex<usize>, Mutex<Vec<u32>>);
     impl StatusSink for LogStatus {
         fn link(&self, state: LinkState) {
             self.0.lock().unwrap().push(state);
         }
         fn event_seen(&self, _at: DateTime<Utc>) {
             *self.1.lock().unwrap() += 1;
+        }
+        fn connections(&self, count: u32) {
+            self.2.lock().unwrap().push(count);
         }
     }
 
@@ -528,7 +613,9 @@ mod tests {
         let log: Log = Default::default();
         let mut transport = FakeTransport {
             frames: VecDeque::from(vec![
-                text(json!({"type": "hello"})),
+                text(
+                    json!({"type": "hello", "num_connections": 1, "connection_info": {"app_id": "A1"}}),
+                ),
                 envelope("E1"),
                 Some(Ok(Incoming::Alive)),
                 envelope("E2"),
@@ -539,16 +626,19 @@ mod tests {
         };
         let status = LogStatus::default();
         let (_tx, mut stop) = watch::channel(false);
-        let (end, hello) = run_connection(
+        let report = run_connection(
             &mut transport,
             &LogSink(log.clone()),
             &status,
             &mut stop,
             Duration::from_secs(60),
+            Some("A1"),
         )
         .await;
-        assert_eq!(end, ConnectionEnd::Refresh);
-        assert!(hello);
+        assert_eq!(report.end, ConnectionEnd::Refresh);
+        assert!(report.hello);
+        assert!(report.stable, "envelopes arrived");
+        assert_eq!(*status.2.lock().unwrap(), vec![1]);
         assert_eq!(
             *log.lock().unwrap(),
             vec![
@@ -576,30 +666,32 @@ mod tests {
             hang: false,
         };
         let sink = LogSink(log.clone());
-        let (end, _) = run_connection(
+        let report = run_connection(
             &mut disabled,
             &sink,
             &status,
             &mut stop,
             Duration::from_secs(60),
+            None,
         )
         .await;
-        assert_eq!(end, ConnectionEnd::LinkDisabled);
+        assert_eq!(report.end, ConnectionEnd::LinkDisabled);
         let mut dropped = FakeTransport {
             frames: VecDeque::from(vec![Some(Err("reset by peer".into()))]),
             log: log.clone(),
             hang: false,
         };
-        let (end, hello) = run_connection(
+        let report = run_connection(
             &mut dropped,
             &sink,
             &status,
             &mut stop,
             Duration::from_secs(60),
+            None,
         )
         .await;
-        assert_eq!(end, ConnectionEnd::Dropped("reset by peer".into()));
-        assert!(!hello);
+        assert_eq!(report.end, ConnectionEnd::Dropped("reset by peer".into()));
+        assert!(!report.hello && !report.stable);
         // Unreadable frames are skipped, not fatal.
         let mut garbage = FakeTransport {
             frames: VecDeque::from(vec![
@@ -609,17 +701,77 @@ mod tests {
             log: log.clone(),
             hang: false,
         };
-        let (end, _) = run_connection(
+        let report = run_connection(
             &mut garbage,
             &sink,
             &status,
             &mut stop,
             Duration::from_secs(60),
+            None,
         )
         .await;
         assert_eq!(
-            end,
+            report.end,
             ConnectionEnd::Dropped("Slack closed the connection".into())
+        );
+        // A disconnect for a reason the connector does not know is a drop (backoff).
+        let mut unknown = FakeTransport {
+            frames: VecDeque::from(vec![
+                text(json!({"type": "hello"})),
+                text(json!({"type": "disconnect", "reason": "too_many_websockets"})),
+            ]),
+            log: log.clone(),
+            hang: false,
+        };
+        let report = run_connection(
+            &mut unknown,
+            &sink,
+            &status,
+            &mut stop,
+            Duration::from_secs(60),
+            None,
+        )
+        .await;
+        assert_eq!(
+            report.end,
+            ConnectionEnd::Dropped("Slack closed the connection (too_many_websockets)".into())
+        );
+        assert!(report.hello && !report.stable, "hello alone proves nothing");
+    }
+
+    #[tokio::test]
+    async fn a_connection_of_another_app_ends_at_hello() {
+        let log: Log = Default::default();
+        let (_tx, mut stop) = watch::channel(false);
+        let status = LogStatus::default();
+        let mut other_app = FakeTransport {
+            frames: VecDeque::from(vec![
+                text(
+                    json!({"type": "hello", "num_connections": 1, "connection_info": {"app_id": "A2"}}),
+                ),
+                envelope("E1"),
+            ]),
+            log: log.clone(),
+            hang: true,
+        };
+        let report = run_connection(
+            &mut other_app,
+            &LogSink(log.clone()),
+            &status,
+            &mut stop,
+            Duration::from_secs(60),
+            Some("A1"),
+        )
+        .await;
+        assert_eq!(report.end, ConnectionEnd::WrongApp);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["close".to_string()],
+            "nothing delivered"
+        );
+        assert!(
+            status.0.lock().unwrap().is_empty(),
+            "never shown as connected"
         );
     }
 
@@ -632,16 +784,17 @@ mod tests {
             log: log.clone(),
             hang: true,
         };
-        let (end, _) = run_connection(
+        let report = run_connection(
             &mut silent,
             &LogSink(log.clone()),
             &LogStatus::default(),
             &mut stop,
             Duration::from_secs(90),
+            None,
         )
         .await;
         assert_eq!(
-            end,
+            report.end,
             ConnectionEnd::Dropped("Slack stopped answering".into())
         );
         assert_eq!(
@@ -667,26 +820,52 @@ mod tests {
             &status,
             &mut stop,
             Duration::from_secs(600),
+            None,
         );
         let (result, _) = tokio::join!(run, async {
             tokio::task::yield_now().await;
             tx.send(true).unwrap();
         });
-        assert_eq!(result.0, ConnectionEnd::Stopped);
+        assert_eq!(result.end, ConnectionEnd::Stopped);
         assert_eq!(*log.lock().unwrap(), vec!["close".to_string()]);
     }
 
-    /// Opens scripted connections; counts the opens.
+    /// Opens scripted connections; counts the opens and when they happened.
     struct ScriptedOpener {
         script: Mutex<VecDeque<Result<Vec<Option<Result<Incoming, String>>>, OpenError>>>,
         log: Log,
         opens: Mutex<usize>,
+        opened_at: Mutex<Vec<tokio::time::Instant>>,
+    }
+
+    impl ScriptedOpener {
+        fn new(
+            script: Vec<Result<Vec<Option<Result<Incoming, String>>>, OpenError>>,
+            log: Log,
+        ) -> Self {
+            Self {
+                script: Mutex::new(script.into()),
+                log,
+                opens: Mutex::new(0),
+                opened_at: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The waits between consecutive opens.
+        fn gaps(&self) -> Vec<Duration> {
+            let at = self.opened_at.lock().unwrap();
+            at.windows(2).map(|w| w[1] - w[0]).collect()
+        }
     }
 
     #[async_trait]
     impl SocketOpener for ScriptedOpener {
         async fn open(&self) -> Result<Box<dyn SocketTransport>, OpenError> {
             *self.opens.lock().unwrap() += 1;
+            self.opened_at
+                .lock()
+                .unwrap()
+                .push(tokio::time::Instant::now());
             let next = self.script.lock().unwrap().pop_front();
             match next {
                 Some(Ok(frames)) => Ok(Box::new(FakeTransport {
@@ -711,8 +890,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn refreshes_reconnect_at_once_and_drops_back_off() {
         let log: Log = Default::default();
-        let opener = Arc::new(ScriptedOpener {
-            script: Mutex::new(VecDeque::from(vec![
+        let opener = Arc::new(ScriptedOpener::new(
+            vec![
                 Ok(vec![
                     text(json!({"type": "hello"})),
                     text(json!({"type": "disconnect", "reason": "warning"})),
@@ -728,10 +907,9 @@ mod tests {
                 Ok(vec![text(
                     json!({"type": "disconnect", "reason": "link_disabled"}),
                 )]),
-            ])),
-            log: log.clone(),
-            opens: Mutex::new(0),
-        });
+            ],
+            log.clone(),
+        ));
         let status = Arc::new(LogStatus::default());
         let (_tx, stop) = watch::channel(false);
         supervise(
@@ -740,6 +918,7 @@ mod tests {
             status.clone(),
             stop,
             timing(),
+            None,
         )
         .await;
         assert_eq!(*opener.opens.lock().unwrap(), 4);
@@ -775,16 +954,66 @@ mod tests {
         assert_eq!(states.last(), Some(&LinkState::Error(LINK_DISABLED.into())));
     }
 
+    /// Connections that say hello and drop at once back off further each time; one that
+    /// delivered an envelope starts the backoff over.
+    #[tokio::test(start_paused = true)]
+    async fn the_backoff_starts_over_only_after_a_stable_connection() {
+        let log: Log = Default::default();
+        let hello_then_drop = || {
+            Ok(vec![
+                text(json!({"type": "hello"})),
+                Some(Err("reset".into())),
+            ])
+        };
+        let opener = Arc::new(ScriptedOpener::new(
+            vec![
+                hello_then_drop(),
+                hello_then_drop(),
+                hello_then_drop(),
+                Ok(vec![
+                    text(json!({"type": "hello"})),
+                    envelope("E1"),
+                    Some(Err("reset".into())),
+                ]),
+                hello_then_drop(),
+            ],
+            log.clone(),
+        ));
+        let status = Arc::new(LogStatus::default());
+        let (_tx, stop) = watch::channel(false);
+        supervise(
+            opener.clone(),
+            Arc::new(LogSink(log.clone())),
+            status.clone(),
+            stop,
+            Timing {
+                idle: Duration::from_secs(90),
+                backoff_start: Duration::from_millis(100),
+                backoff_max: Duration::from_secs(10),
+            },
+            None,
+        )
+        .await;
+        let gaps = opener.gaps();
+        assert_eq!(gaps.len(), 5, "{gaps:?}");
+        let within = |gap: Duration, base_ms: u64| {
+            gap >= Duration::from_millis(base_ms * 8 / 10)
+                && gap <= Duration::from_millis(base_ms * 12 / 10 + 1)
+        };
+        assert!(within(gaps[0], 100), "{gaps:?}");
+        assert!(within(gaps[1], 200), "not reset by hello: {gaps:?}");
+        assert!(within(gaps[2], 400), "{gaps:?}");
+        assert!(within(gaps[3], 100), "reset after an envelope: {gaps:?}");
+    }
+
     #[tokio::test]
-    async fn a_refused_token_stops_without_retrying() {
-        let opener = Arc::new(ScriptedOpener {
-            script: Mutex::new(VecDeque::from(vec![Err(open_error(SlackApiError::Api {
-                code: "invalid_auth".into(),
-                needed: None,
-            }))])),
-            log: Default::default(),
-            opens: Mutex::new(0),
-        });
+    async fn a_connection_of_another_app_stops_the_connector() {
+        let opener = Arc::new(ScriptedOpener::new(
+            vec![Ok(vec![text(
+                json!({"type": "hello", "num_connections": 2, "connection_info": {"app_id": "A2"}}),
+            )])],
+            Default::default(),
+        ));
         let status = Arc::new(LogStatus::default());
         let (_tx, stop) = watch::channel(false);
         supervise(
@@ -793,6 +1022,59 @@ mod tests {
             status.clone(),
             stop,
             timing(),
+            Some("A1".into()),
+        )
+        .await;
+        assert_eq!(*opener.opens.lock().unwrap(), 1, "not retried");
+        assert_eq!(
+            status.0.lock().unwrap().last(),
+            Some(&LinkState::Error(WRONG_APP.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn more_than_one_connection_is_reported() {
+        let opener = Arc::new(ScriptedOpener::new(
+            vec![Ok(vec![
+                text(
+                    json!({"type": "hello", "num_connections": 2, "connection_info": {"app_id": "A1"}}),
+                ),
+                text(json!({"type": "disconnect", "reason": "link_disabled"})),
+            ])],
+            Default::default(),
+        ));
+        let status = Arc::new(LogStatus::default());
+        let (_tx, stop) = watch::channel(false);
+        supervise(
+            opener,
+            Arc::new(LogSink(Default::default())),
+            status.clone(),
+            stop,
+            timing(),
+            Some("A1".into()),
+        )
+        .await;
+        assert_eq!(*status.2.lock().unwrap(), vec![2]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_token_stops_without_retrying() {
+        let opener = Arc::new(ScriptedOpener::new(
+            vec![Err(open_error(SlackApiError::Api {
+                code: "invalid_auth".into(),
+                needed: None,
+            }))],
+            Default::default(),
+        ));
+        let status = Arc::new(LogStatus::default());
+        let (_tx, stop) = watch::channel(false);
+        supervise(
+            opener.clone(),
+            Arc::new(LogSink(Default::default())),
+            status.clone(),
+            stop,
+            timing(),
+            None,
         )
         .await;
         assert_eq!(*opener.opens.lock().unwrap(), 1);
@@ -805,14 +1087,13 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn switching_off_during_a_backoff_stops_at_once() {
-        let opener = Arc::new(ScriptedOpener {
-            script: Mutex::new(VecDeque::from(vec![Err(OpenError::Retry {
+        let opener = Arc::new(ScriptedOpener::new(
+            vec![Err(OpenError::Retry {
                 message: "offline".into(),
                 after: Some(Duration::from_secs(3_600)),
-            })])),
-            log: Default::default(),
-            opens: Mutex::new(0),
-        });
+            })],
+            Default::default(),
+        ));
         let status = Arc::new(LogStatus::default());
         let (tx, stop) = watch::channel(false);
         let run = supervise(
@@ -821,6 +1102,7 @@ mod tests {
             status.clone(),
             stop,
             timing(),
+            None,
         );
         tokio::join!(run, async {
             tokio::time::sleep(Duration::from_secs(5)).await;

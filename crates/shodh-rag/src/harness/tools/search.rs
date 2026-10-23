@@ -132,6 +132,11 @@ struct Passage {
     /// detail, never in the text the model reads.
     #[serde(skip)]
     display_path: Option<String>,
+    /// The document's title from its metadata, when it has one: sent in the
+    /// step detail (a Slack citation names the document by it), not to the
+    /// model, which has `file`.
+    #[serde(skip)]
+    title: Option<String>,
 }
 
 impl Passage {
@@ -146,9 +151,24 @@ impl Passage {
             if let Some(display_path) = &self.display_path {
                 map.insert("display_path".to_string(), json!(display_path));
             }
+            if let Some(title) = &self.title {
+                map.insert("title".to_string(), json!(title));
+            }
         }
         value
     }
+}
+
+/// The document title of `result` from its metadata (`title`, else the
+/// citation's), `None` when it has none.
+fn document_title(result: &ComprehensiveResult) -> Option<String> {
+    result
+        .metadata
+        .get("title")
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .or_else(|| Some(result.citation.title.trim()).filter(|t| !t.is_empty()))
+        .map(str::to_string)
 }
 
 /// The chunk's stored boxes (`[{"page":3,"x0":..}]`), when valid JSON.
@@ -563,6 +583,7 @@ fn passage(
         text: passage_text(result, max_chars, neighbor_pages, terms),
         regions: passage_regions(result),
         display_path,
+        title: document_title(result),
     }
 }
 
@@ -1160,6 +1181,25 @@ mod tests {
         let for_ui = p.detail_value();
         assert_eq!(for_ui["regions"][0]["page"], 5);
         assert_eq!(for_ui["regions"][0]["x0"], 72.0);
+        assert!(
+            for_ui.get("title").is_none(),
+            "no title in this chunk's metadata"
+        );
+    }
+
+    #[test]
+    fn the_document_title_goes_to_the_detail_not_to_the_model() {
+        let result = file_result(
+            "c:/papers/q3 plan.pdf",
+            &[("title", " Quarterly plan ")],
+            "",
+        );
+        let p = passage(1, &result, MAX_PASSAGE_CHARS, &[], &HashSet::new());
+        assert_eq!(p.detail_value()["title"], "Quarterly plan");
+        assert!(serde_json::to_value(&p).unwrap().get("title").is_none());
+        let untitled = file_result("c:/papers/q3 plan.pdf", &[], "  ");
+        let p = passage(1, &untitled, MAX_PASSAGE_CHARS, &[], &HashSet::new());
+        assert!(p.detail_value().get("title").is_none());
     }
 
     fn file_result(source: &str, metadata: &[(&str, &str)], title: &str) -> ComprehensiveResult {

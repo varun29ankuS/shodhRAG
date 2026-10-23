@@ -7,18 +7,32 @@
 //!
 //! Every event that is not a real question to the bot is dropped here, before anything
 //! that costs a model call: retries of an event already seen, the bot's own messages and
-//! every other bot's, edits, deletions, joins and every other message subtype, and
-//! messages that are neither a mention of the bot nor a DM to it.
+//! every other bot's, edits, deletions, joins and every other message subtype (a message
+//! with a file and a thread reply also sent to the channel are questions: their text is
+//! read, the files are not), and messages that are neither a mention of the bot nor a DM
+//! to it. Who may ask, and where, is decided later ([`super::access`]).
 
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use chrono::{DateTime, Utc};
 use lru::LruCache;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Event ids remembered to drop Slack's retries of an event already seen.
 pub const SEEN_EVENTS: usize = 1_024;
+
+/// How long an event id is remembered. Slack retries an unacknowledged event a few
+/// times within minutes (<https://docs.slack.dev/apis/events-api/using-socket-mode>);
+/// an hour covers that with room, also across a restart of the connector.
+pub const SEEN_TTL_MINUTES: i64 = 60;
+
+/// Message subtypes that are still a person asking: a message with a file (its text is
+/// read, the file is not) and a thread reply also sent to the channel.
+pub const QUESTION_SUBTYPES: [&str; 2] = ["file_share", "thread_broadcast"];
 
 /// Why Slack closes a connection (`disconnect` frame).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,10 +68,19 @@ pub struct Envelope {
     pub retry_attempt: u32,
 }
 
+/// What Slack says in `hello`: the app the connection belongs to and how many
+/// connections that app has open now, this one included
+/// (<https://docs.slack.dev/apis/events-api/using-socket-mode>).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hello {
+    pub app_id: Option<String>,
+    pub num_connections: Option<u32>,
+}
+
 /// A text frame from Slack.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
-    Hello,
+    Hello(Hello),
     Disconnect(DisconnectReason),
     Envelope(Envelope),
     /// A frame type the connector does not use.
@@ -73,7 +96,17 @@ pub fn parse_frame(text: &str) -> Result<Frame, String> {
         .and_then(Value::as_str)
         .unwrap_or_default();
     match kind {
-        "hello" => Ok(Frame::Hello),
+        "hello" => Ok(Frame::Hello(Hello {
+            app_id: value
+                .pointer("/connection_info/app_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            num_connections: value
+                .get("num_connections")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok()),
+        })),
         "disconnect" => Ok(Frame::Disconnect(DisconnectReason::parse(
             value
                 .get("reason")
@@ -139,6 +172,16 @@ pub struct Question {
     pub thread: ThreadKey,
     /// The asker's user id (logged as an id only, never sent to the model).
     pub user: String,
+    /// The Slack workspace the asker belongs to, when the event says (`user_team`, else
+    /// `team`). Slack does not document it on every event, so [`super::access`] uses it
+    /// only to refuse early, never as proof of membership.
+    pub asker_team: Option<String>,
+    /// Slack marks the event as from a channel shared with another organization
+    /// (`is_ext_shared_channel` on the event wrapper,
+    /// <https://docs.slack.dev/apis/events-api/>).
+    pub ext_shared: bool,
+    /// The message carried files (`file_share`); only its text is read.
+    pub has_files: bool,
     /// The question with the bot's mention removed. Untrusted text.
     pub text: String,
 }
@@ -199,8 +242,14 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
     if event.get("bot_id").is_some_and(|v| !v.is_null()) || event.get("bot_profile").is_some() {
         return Decision::Ignore("a bot's message");
     }
-    if event.get("subtype").is_some_and(|v| !v.is_null()) {
-        return Decision::Ignore("a message subtype (edit, deletion, join, …)");
+    let subtype = event.get("subtype").filter(|v| !v.is_null());
+    if let Some(subtype) = subtype {
+        if !subtype
+            .as_str()
+            .is_some_and(|s| QUESTION_SUBTYPES.contains(&s))
+        {
+            return Decision::Ignore("a message subtype (edit, deletion, join, …)");
+        }
     }
     if event.get("hidden").and_then(Value::as_bool) == Some(true) {
         return Decision::Ignore("a hidden message");
@@ -246,27 +295,93 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
             thread,
         },
         user: user.to_string(),
+        asker_team: str_field(event, "user_team")
+            .or_else(|| str_field(event, "team"))
+            .map(str::to_string),
+        ext_shared: payload
+            .get("is_ext_shared_channel")
+            .and_then(Value::as_bool)
+            == Some(true),
+        has_files: subtype.and_then(Value::as_str) == Some("file_share")
+            || event
+                .get("files")
+                .and_then(Value::as_array)
+                .is_some_and(|f| !f.is_empty()),
         text: strip_bot_mention(str_field(event, "text").unwrap_or_default(), &bot.user_id),
     })
 }
 
-/// Event ids already handled, the most recent [`SEEN_EVENTS`].
-pub struct SeenEvents(LruCache<String, ()>);
+/// One remembered event id, as kept on disk (an id and a time, no message content).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeenEntry {
+    pub id: String,
+    pub at: DateTime<Utc>,
+}
+
+/// Event ids already handled: the most recent [`SEEN_EVENTS`], each for
+/// [`SEEN_TTL_MINUTES`].
+pub struct SeenEvents {
+    ids: LruCache<String, DateTime<Utc>>,
+    ttl: chrono::Duration,
+}
 
 impl SeenEvents {
     pub fn new(capacity: usize) -> Self {
         let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
-        Self(LruCache::new(capacity))
+        Self {
+            ids: LruCache::new(capacity),
+            ttl: chrono::Duration::minutes(SEEN_TTL_MINUTES),
+        }
     }
 
-    /// True the first time `event_id` is seen (and remembers it).
-    pub fn first_time(&mut self, event_id: &str) -> bool {
-        // `get` also marks the id as recently seen.
-        if self.0.get(event_id).is_some() {
-            return false;
+    fn fresh(&self, at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        at <= now && now.signed_duration_since(at) < self.ttl
+    }
+
+    /// True the first time `event_id` is seen within the TTL (and remembers it at `now`).
+    pub fn first_time(&mut self, event_id: &str, now: DateTime<Utc>) -> bool {
+        // `peek` keeps the order; an id seen again is re-inserted as the newest.
+        if let Some(at) = self.ids.peek(event_id).copied() {
+            if self.fresh(at, now) {
+                return false;
+            }
         }
-        self.0.put(event_id.to_string(), ());
+        self.ids.put(event_id.to_string(), now);
         true
+    }
+
+    /// The ids still within the TTL at `now`, oldest first (what is kept on disk).
+    pub fn snapshot(&self, now: DateTime<Utc>) -> Vec<SeenEntry> {
+        let mut entries: Vec<SeenEntry> = self
+            .ids
+            .iter()
+            .filter(|(_, at)| self.fresh(**at, now))
+            .map(|(id, at)| SeenEntry {
+                id: id.clone(),
+                at: *at,
+            })
+            .collect();
+        entries.sort_by_key(|e| e.at);
+        entries
+    }
+
+    /// Remembers the `entries` kept on disk that are still within the TTL at `now` (the
+    /// newest when there are more than the capacity).
+    pub fn restore(&mut self, mut entries: Vec<SeenEntry>, now: DateTime<Utc>) {
+        entries.sort_by_key(|e| e.at);
+        for entry in entries {
+            if self.fresh(entry.at, now) {
+                self.ids.put(entry.id, entry.at);
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
     }
 }
 
@@ -274,6 +389,13 @@ impl Default for SeenEvents {
     fn default() -> Self {
         Self::new(SEEN_EVENTS)
     }
+}
+
+/// Where the seen event ids are kept between runs of the connector (the app keeps a
+/// small file). Called on a blocking thread, never on an async worker.
+pub trait SeenStore: Send + Sync {
+    fn load(&self) -> Result<Vec<SeenEntry>, String>;
+    fn save(&self, entries: &[SeenEntry]) -> Result<(), String>;
 }
 
 /// Threads with an answer in flight.
@@ -336,11 +458,14 @@ impl std::fmt::Debug for Routed {
     }
 }
 
-/// Filters, dedupes and claims threads for one connection's events (and the connections
-/// after it: the seen ids and threads in flight outlive a reconnect).
+/// Filters, dedupes and claims threads for one installation's events, across its
+/// connections and restarts of the connector: the app keeps one router per Slack
+/// workspace, and the seen ids are also kept on disk ([`SeenStore`]).
 pub struct EventRouter {
     bot: BotIdentity,
     seen: Mutex<SeenEvents>,
+    /// Bumped with every new id, so the newest snapshot written wins.
+    seen_generation: AtomicU64,
     in_flight: InFlight,
 }
 
@@ -349,24 +474,57 @@ impl EventRouter {
         Self {
             bot,
             seen: Mutex::new(SeenEvents::default()),
+            seen_generation: AtomicU64::new(0),
             in_flight: InFlight::default(),
         }
+    }
+
+    /// A router that starts with the ids kept on disk (those still within the TTL).
+    pub fn restored(bot: BotIdentity, entries: Vec<SeenEntry>, now: DateTime<Utc>) -> Self {
+        let router = Self::new(bot);
+        router
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .restore(entries, now);
+        router
+    }
+
+    pub fn bot(&self) -> &BotIdentity {
+        &self.bot
     }
 
     pub fn in_flight(&self) -> &InFlight {
         &self.in_flight
     }
 
+    /// The seen ids to keep on disk now, and their generation: a snapshot replaces an
+    /// older one, never a newer one.
+    pub fn seen_snapshot(&self, now: DateTime<Utc>) -> (u64, Vec<SeenEntry>) {
+        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            self.seen_generation.load(Ordering::SeqCst),
+            seen.snapshot(now),
+        )
+    }
+
     pub fn route(&self, envelope: &Envelope) -> Routed {
+        self.route_at(envelope, Utc::now())
+    }
+
+    pub fn route_at(&self, envelope: &Envelope, now: DateTime<Utc>) -> Routed {
         let question = match decide(envelope, &self.bot) {
             Decision::Ignore(why) => return Routed::Ignore(why),
             Decision::Ask(question) => question,
         };
-        let first = self
-            .seen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .first_time(&question.event_id);
+        let first = {
+            let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+            let first = seen.first_time(&question.event_id, now);
+            if first {
+                self.seen_generation.fetch_add(1, Ordering::SeqCst);
+            }
+            first
+        };
         if !first {
             return Routed::Ignore("a retry of an event already handled");
         }
@@ -414,10 +572,17 @@ mod tests {
     fn frames_are_read() {
         assert_eq!(
             parse_frame(
-                r#"{"type":"hello","num_connections":1,"connection_info":{"app_id":"A1"}}"#
+                r#"{"type":"hello","num_connections":2,"connection_info":{"app_id":"A1"}}"#
             )
             .unwrap(),
-            Frame::Hello
+            Frame::Hello(Hello {
+                app_id: Some("A1".into()),
+                num_connections: Some(2)
+            })
+        );
+        assert_eq!(
+            parse_frame(r#"{"type":"hello"}"#).unwrap(),
+            Frame::Hello(Hello::default())
         );
         assert_eq!(
             parse_frame(r#"{"type":"disconnect","reason":"refresh_requested","debug_info":{}}"#)
@@ -521,6 +686,14 @@ mod tests {
                 json!({"type": "message", "channel_type": "im", "subtype": "message_changed", "message": {"user": "U1", "text": "x"}, "ts": "1.5", "channel": "D1"}),
             ),
             (
+                "file comment",
+                json!({"type": "message", "channel_type": "im", "subtype": "file_comment", "user": "U1", "text": "x", "ts": "1.55", "channel": "D1"}),
+            ),
+            (
+                "channel broadcast without a mention",
+                json!({"type": "message", "channel_type": "channel", "subtype": "thread_broadcast", "user": "U1", "text": "x", "ts": "1.56", "thread_ts": "1.0", "channel": "C1"}),
+            ),
+            (
                 "delete",
                 json!({"type": "message", "channel_type": "im", "subtype": "message_deleted", "ts": "1.6", "channel": "D1"}),
             ),
@@ -567,6 +740,60 @@ mod tests {
     }
 
     #[test]
+    fn a_message_with_a_file_and_a_thread_broadcast_are_questions() {
+        let mut with_file = dm("what does our policy say about this?");
+        with_file["subtype"] = json!("file_share");
+        with_file["files"] = json!([{"id": "F1", "name": "screenshot.png"}]);
+        let Decision::Ask(q) = decide(&envelope("E1", "Ev1", with_file), &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(q.text, "what does our policy say about this?");
+        assert!(q.has_files);
+
+        let mut only_file = dm("");
+        only_file["subtype"] = json!("file_share");
+        let Decision::Ask(q) = decide(&envelope("E2", "Ev2", only_file), &bot()) else {
+            panic!("a question, answered with a hint")
+        };
+        assert!(q.text.is_empty() && q.has_files);
+
+        let mut broadcast = dm("<@UBOT> and the rent?");
+        broadcast["subtype"] = json!("thread_broadcast");
+        broadcast["thread_ts"] = json!("190.0");
+        let Decision::Ask(q) = decide(&envelope("E3", "Ev3", broadcast), &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(q.reply_thread_ts.as_deref(), Some("190.0"));
+        assert!(!q.has_files);
+    }
+
+    #[test]
+    fn the_askers_team_and_a_shared_channel_are_read() {
+        let mut external = mention("<@UBOT> hi");
+        external["user_team"] = json!("TCLIENT");
+        external["team"] = json!("THOME");
+        let mut env = envelope("E1", "Ev1", external);
+        env.payload["is_ext_shared_channel"] = json!(true);
+        let Decision::Ask(q) = decide(&env, &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(q.asker_team.as_deref(), Some("TCLIENT"), "user_team first");
+        assert!(q.ext_shared);
+
+        let mut plain = dm("hi");
+        plain["team"] = json!("THOME");
+        let Decision::Ask(q) = decide(&envelope("E2", "Ev2", plain), &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(q.asker_team.as_deref(), Some("THOME"));
+        assert!(!q.ext_shared);
+        let Decision::Ask(q) = decide(&envelope("E3", "Ev3", dm("hi")), &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(q.asker_team, None);
+    }
+
+    #[test]
     fn only_the_bots_own_mention_is_removed() {
         assert_eq!(
             strip_bot_mention("<@UBOT> hi <@UBOT2> and <@UOTHER>", "UBOT"),
@@ -599,14 +826,83 @@ mod tests {
         assert!(matches!(router.route(&no_id), Routed::Ignore(_)));
     }
 
+    fn at(minute: i64) -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(2026, 10, 23, 9, 0, 0).unwrap() + chrono::Duration::minutes(minute)
+    }
+
     #[test]
     fn the_seen_list_is_bounded() {
         let mut seen = SeenEvents::new(3);
         for id in ["a", "b", "c", "d"] {
-            assert!(seen.first_time(id));
+            assert!(seen.first_time(id, at(0)));
         }
-        assert!(!seen.first_time("d"));
-        assert!(seen.first_time("a"), "the oldest id was forgotten");
+        assert!(!seen.first_time("d", at(1)));
+        assert!(seen.first_time("a", at(1)), "the oldest id was forgotten");
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[test]
+    fn seen_ids_expire_after_the_ttl() {
+        let mut seen = SeenEvents::new(10);
+        assert!(seen.first_time("a", at(0)));
+        assert!(!seen.first_time("a", at(SEEN_TTL_MINUTES - 1)));
+        assert!(
+            seen.first_time("a", at(SEEN_TTL_MINUTES)),
+            "an id older than the TTL is new again"
+        );
+        assert!(seen.first_time("b", at(SEEN_TTL_MINUTES)));
+        assert_eq!(
+            seen.snapshot(at(2 * SEEN_TTL_MINUTES - 1)),
+            vec![
+                SeenEntry {
+                    id: "a".into(),
+                    at: at(SEEN_TTL_MINUTES)
+                },
+                SeenEntry {
+                    id: "b".into(),
+                    at: at(SEEN_TTL_MINUTES)
+                }
+            ]
+        );
+        assert!(
+            seen.snapshot(at(2 * SEEN_TTL_MINUTES)).is_empty(),
+            "expired ids are not kept"
+        );
+    }
+
+    #[test]
+    fn seen_ids_survive_a_restart_of_the_router() {
+        let first = EventRouter::new(bot());
+        let Routed::Ask(_, guard) =
+            first.route_at(&envelope("E1", "Ev1", mention("<@UBOT> q")), at(0))
+        else {
+            panic!("asked")
+        };
+        drop(guard);
+        let (generation, kept) = first.seen_snapshot(at(1));
+        assert_eq!(generation, 1);
+        assert_eq!(kept.len(), 1);
+        // A retry delivered after the connector restarted costs nothing.
+        let second = EventRouter::restored(bot(), kept.clone(), at(2));
+        let mut retry = envelope("E2", "Ev1", mention("<@UBOT> q"));
+        retry.retry_attempt = 1;
+        assert!(matches!(second.route_at(&retry, at(2)), Routed::Ignore(_)));
+        // Entries past the TTL, or from the future, are not restored.
+        let stale = EventRouter::restored(bot(), kept, at(SEEN_TTL_MINUTES + 1));
+        assert!(matches!(
+            stale.route_at(&retry, at(SEEN_TTL_MINUTES + 1)),
+            Routed::Ask(..)
+        ));
+        let future = EventRouter::restored(
+            bot(),
+            vec![SeenEntry {
+                id: "Ev9".into(),
+                at: at(30),
+            }],
+            at(0),
+        );
+        assert_eq!(future.seen_snapshot(at(0)).1.len(), 0);
     }
 
     #[test]

@@ -11,8 +11,11 @@
 //! - the search receives only `{"query": question}`: the question is never read for
 //!   sources, so "search all my workspaces" in it is just words of a query;
 //! - passages whose source is not a file (`calendar://…`, `note://…` records) are
-//!   dropped, even if such a source was added to the workspace;
-//! - the model sees each passage's title, page and text, never its path;
+//!   dropped, even if such a source was added to the workspace; when that leaves fewer
+//!   passages than wanted, the search is made again for more, so records cannot crowd the
+//!   documents out;
+//! - the model sees each passage's title (the document's title from its metadata, else
+//!   its file name without the extension), page and text, never its path;
 //! - the model has no tools, so text in a question or a passage cannot make it act;
 //! - what goes back to Slack is escaped for Slack and sanitized
 //!   ([`super::sanitize::sanitize`]).
@@ -21,7 +24,7 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::sanitize::{sanitize, PrivateTerms};
@@ -31,6 +34,11 @@ use crate::RAGEngine;
 
 /// Passages retrieved per question: enough to answer, few enough to keep the call small.
 pub const PASSAGES_PER_ANSWER: usize = 6;
+/// Passages asked for when in-app records took places among the first ones (the search
+/// tool's maximum).
+pub const RECORD_OVERFETCH: usize = 20;
+/// The title of a passage whose document has neither a title nor a file name.
+pub const UNTITLED: &str = "Untitled document";
 /// Longest question sent to the model; Slack messages can be far longer.
 pub const MAX_QUESTION_CHARS: usize = 1_000;
 /// The model's reply limit.
@@ -66,42 +74,112 @@ impl AnswerScope {
 pub struct AnswerPassage {
     /// The citation number (1-based, in retrieval order).
     pub n: u32,
-    /// The document's display name.
+    /// The document's title ([`citation_title`]); sanitized wherever it is shown.
     pub title: String,
     pub page: Option<String>,
     pub text: String,
 }
 
-/// Searches the documents of `scope` for `question`.
+/// `name` without its extension (`Board plan.docx` → `Board plan`).
+fn without_extension(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(dot)
+            if dot > 0
+                && dot + 1 < name.len()
+                && name.len() - dot - 1 <= 8
+                && name[dot + 1..].chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            &name[..dot]
+        }
+        _ => name,
+    }
+}
+
+/// The name a citation shows: the document's title from its metadata; when it has none,
+/// or the title is only its file name, the file name without its extension. The caller
+/// sanitizes it (a file name can carry a person's name).
+pub fn citation_title(title: Option<&str>, file: &str) -> String {
+    let file = file.trim();
+    let name = match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(title) if !title.eq_ignore_ascii_case(file) => title,
+        _ => without_extension(file),
+    };
+    if name.trim().is_empty() {
+        UNTITLED.to_string()
+    } else {
+        name.trim().to_string()
+    }
+}
+
+/// The file passages of one search for `question` within `scope`, and how many in-app
+/// records the search returned (dropped).
+async fn search_files(
+    rag: Arc<RwLock<RAGEngine>>,
+    scope: &AnswerScope,
+    question: &str,
+    k: usize,
+) -> Result<(Vec<AnswerPassage>, usize), String> {
+    let tool = SearchDocumentsTool::new(rag);
+    // The search reports progress events to an agent run; nobody listens here.
+    let (events, _unheard) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = ToolContext::new("slack-answer", "search", events)
+        .with_scope(Arc::new(scope.run_scope()))
+        .with_run_passages(Arc::new(RunPassages::new()));
+    // Only the question, as the query: never `sources`.
+    let args = json!({ "query": question, "k": k });
+    // Boxed: the search future is large.
+    let output = Box::pin(tool.execute(args, &ctx))
+        .await
+        .map_err(|e| e.to_string())?;
+    let detail = output.detail.unwrap_or(Value::Null);
+    let text = |p: &Value, key: &str| p.get(key).and_then(Value::as_str).map(str::to_string);
+    let mut records = 0;
+    let mut files = Vec::new();
+    for p in detail
+        .get("passages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let path = text(p, "path").unwrap_or_default();
+        let body = text(p, "text").unwrap_or_default();
+        if path.contains("://") {
+            records += 1;
+            continue;
+        }
+        if body.trim().is_empty() {
+            continue;
+        }
+        files.push(AnswerPassage {
+            n: 0,
+            title: citation_title(
+                text(p, "title").as_deref(),
+                &text(p, "file").unwrap_or_default(),
+            ),
+            page: text(p, "page"),
+            text: body,
+        });
+    }
+    Ok((files, records))
+}
+
+/// Searches the documents of `scope` for `question`: up to [`PASSAGES_PER_ANSWER`] file
+/// passages, numbered from 1.
 pub async fn retrieve_passages(
     rag: Arc<RwLock<RAGEngine>>,
     scope: &AnswerScope,
     question: &str,
 ) -> Result<Vec<AnswerPassage>, String> {
-    let tool = SearchDocumentsTool::new(rag);
-    let passages = Arc::new(RunPassages::new());
-    // The search reports progress events to an agent run; nobody listens here.
-    let (events, _unheard) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = ToolContext::new("slack-answer", "search", events)
-        .with_scope(Arc::new(scope.run_scope()))
-        .with_run_passages(passages.clone());
-    // Only the question, as the query: never `sources`.
-    let args = json!({ "query": question, "k": PASSAGES_PER_ANSWER });
-    // Boxed: the search future is large.
-    Box::pin(tool.execute(args, &ctx))
-        .await
-        .map_err(|e| e.to_string())?;
-    let mut found: Vec<AnswerPassage> = passages
-        .all()
-        .into_iter()
-        .filter(|p| !p.web && !p.path.contains("://") && !p.text.trim().is_empty())
-        .map(|p| AnswerPassage {
-            n: 0,
-            title: p.file,
-            page: p.page,
-            text: p.text,
-        })
-        .collect();
+    let (mut found, records) =
+        search_files(rag.clone(), scope, question, PASSAGES_PER_ANSWER).await?;
+    if records > 0 && found.len() < PASSAGES_PER_ANSWER {
+        // In-app records took places: ask for more, so they cannot crowd the documents
+        // out.
+        found = search_files(rag, scope, question, RECORD_OVERFETCH)
+            .await?
+            .0;
+    }
+    found.truncate(PASSAGES_PER_ANSWER);
     for (i, p) in found.iter_mut().enumerate() {
         p.n = u32::try_from(i + 1).unwrap_or(u32::MAX);
     }
@@ -307,6 +385,43 @@ mod tests {
         assert!(prompt.contains("untrusted text"));
         let long = answer_prompt(&[], &"x".repeat(5_000), &PrivateTerms::default());
         assert!(long.len() < 3_000, "the question is cut");
+    }
+
+    #[test]
+    fn citations_name_the_document_by_its_title() {
+        assert_eq!(
+            citation_title(Some("Office lease 2026"), "lease.pdf"),
+            "Office lease 2026"
+        );
+        assert_eq!(
+            citation_title(Some("Board plan.docx"), "Board plan.docx"),
+            "Board plan",
+            "a title that is only the file name loses the extension"
+        );
+        assert_eq!(citation_title(None, "Board plan.docx"), "Board plan");
+        assert_eq!(citation_title(Some("  "), "notes.v2.pdf"), "notes.v2");
+        assert_eq!(citation_title(None, "README"), "README");
+        assert_eq!(citation_title(None, ".env"), ".env");
+        assert_eq!(citation_title(None, ""), UNTITLED);
+    }
+
+    #[test]
+    fn a_file_name_title_still_loses_the_users_name() {
+        let private = PrivateTerms {
+            home_dirs: vec![],
+            user_names: vec!["Quill Marrow".into()],
+        };
+        let title = citation_title(None, "Quill_Marrow_CV.pdf");
+        assert_eq!(title, "Quill_Marrow_CV");
+        let out = slack_answer(
+            "Ten years of experience [1].",
+            &[passage(1, &title, Some("1"), "Ten years.")],
+            &private,
+        );
+        assert!(out.contains("[1] [name]_CV, p. 1"), "{out}");
+        assert!(!out.to_lowercase().contains("quill") && !out.to_lowercase().contains("marrow"));
+        let prompt = answer_prompt(&[passage(1, &title, None, "Ten years.")], "q", &private);
+        assert!(prompt.contains("[1] [name]_CV\n"), "{prompt}");
     }
 
     #[test]

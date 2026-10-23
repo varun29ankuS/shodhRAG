@@ -31,7 +31,11 @@
 //!
 //! Another process holding the database's write lock is covered by the busy timeout. When
 //! the writer holding the turn runs out of it, the writers already queued behind it fail at
-//! once with the same `SQLITE_BUSY` instead of each waiting out the timeout in turn.
+//! once with the same `SQLITE_BUSY` instead of each waiting out the timeout in turn. That
+//! covers writers already queued at that moment. A thread that writes again afterwards (the
+//! audit writer working through its queue one event at a time) asks for a new turn and
+//! waits out the timeout once more, so N queued audit events against a lock another
+//! process keeps take N busy timeouts.
 
 use std::cell::Cell;
 use std::collections::HashMap;

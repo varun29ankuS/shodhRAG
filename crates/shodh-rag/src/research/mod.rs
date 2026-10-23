@@ -57,9 +57,9 @@ pub enum ResearchError {
     /// `shodh.db` failed.
     #[error("research database error: {0}")]
     Database(String),
-    /// `shodh.db` stayed locked by a writer of another process past the busy timeout
-    /// (writers of this process wait their turn instead): trying again
-    /// shortly is expected to work.
+    /// `shodh.db` stayed locked by a writer of another process past the busy timeout, for
+    /// this write or for one queued ahead of it (writers of this process wait their turn
+    /// instead): trying again shortly is expected to work.
     #[error("research database is busy: {0}")]
     Busy(String),
     /// The PDF could not be read.

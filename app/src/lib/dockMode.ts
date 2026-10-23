@@ -61,6 +61,7 @@ export function defaultDockRequest(view: ViewTab): DockRequest {
     case 'ask':
     case 'workspaces':
     case 'library':
+    case 'connectors':
     case 'tasks':
     case 'activity':
     case 'settings':

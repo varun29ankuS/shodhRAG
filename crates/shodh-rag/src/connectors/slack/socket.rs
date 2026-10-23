@@ -154,7 +154,7 @@ impl Backoff {
         base.mul_f64(0.8 + 0.4 * r.clamp(0.0, 1.0))
     }
 
-    pub fn next(&mut self) -> Duration {
+    pub fn next_delay(&mut self) -> Duration {
         use rand::Rng;
         let r: f64 = rand::thread_rng().gen();
         self.next_with(r)
@@ -318,7 +318,7 @@ pub async fn supervise(
                         status.link(LinkState::Connecting);
                         continue;
                     }
-                    ConnectionEnd::Dropped(reason) => (backoff.next(), reason),
+                    ConnectionEnd::Dropped(reason) => (backoff.next_delay(), reason),
                 }
             }
             Err(OpenError::Fatal(message)) => {
@@ -326,7 +326,7 @@ pub async fn supervise(
                 return;
             }
             Err(OpenError::Retry { message, after }) => {
-                let delay = after.unwrap_or_else(|| backoff.next());
+                let delay = after.unwrap_or_else(|| backoff.next_delay());
                 (delay, message)
             }
         };
@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(b.next_with(0.0), Duration::from_millis(800));
         assert_eq!(b.next_with(1.0), Duration::from_millis(2_400));
         for _ in 0..50 {
-            let d = b.next();
+            let d = b.next_delay();
             assert!(d <= Duration::from_secs(360), "{d:?}");
         }
     }

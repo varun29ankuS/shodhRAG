@@ -489,7 +489,7 @@ impl ObservedPoster {
                 SlackApiError::Api {
                     code,
                     needed: Some(scope),
-                } if code == "missing_scope" => Some(missing_scopes_message(&[scope.clone()])),
+                } if code == "missing_scope" => Some(missing_scopes_message(std::slice::from_ref(scope))),
                 e if e.is_auth() => Some(format!(
                     "Slack refused the bot token ({}). Reinstall the Slack app and connect again with the new bot token.",
                     e.code().unwrap_or("refused")

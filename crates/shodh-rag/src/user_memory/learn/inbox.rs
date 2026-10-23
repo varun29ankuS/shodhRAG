@@ -17,16 +17,15 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::decide::{DecidedBy, Decision};
 use super::sensitivity::SensitiveReason;
 use super::{day_key, normalise_text, LearnCaps, LearnError, LearnResult};
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 use crate::statements::{PutOutcome, Scope};
 use crate::user_memory::MemoryContent;
 
@@ -803,9 +802,10 @@ pub enum UsageCounter {
     Refused,
 }
 
-/// The inbox in `shodh.db`.
+/// The inbox in `shodh.db`. Every write is one `IMMEDIATE` transaction during the
+/// database's in-process write turn ([`SharedConnection::write`]).
 pub struct Inbox {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -902,12 +902,8 @@ impl Inbox {
     /// Opens the inbox in `shodh.db` at `path` (applying pending migrations).
     pub fn open(path: &Path, key: Option<&AuditKey>) -> LearnResult<Self> {
         Ok(Self {
-            conn: Mutex::new(open_shared_connection(path, key)?),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Stores a suggestion unless the same one is already waiting or applied, or the user
@@ -919,42 +915,41 @@ impl Inbox {
         caps: &LearnCaps,
         now: DateTime<Utc>,
     ) -> LearnResult<Option<Proposal>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let since = ts(now - Duration::days(REJECTION_MEMORY_DAYS));
-        let duplicate: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
+        self.conn.write(|tx| {
+            let duplicate: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM memory_proposals WHERE fingerprint = ?1 AND (
                 status IN ('pending', 'accepted', 'learned', 'failed')
                 OR (status IN ('rejected', 'undone') AND decided_at >= ?2)))",
-            params![new.fingerprint, since],
-            |r| r.get(0),
-        )?;
-        if duplicate {
-            return Ok(None);
-        }
-        let made: u32 = tx
-            .query_row(
-                "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
-                params![day_key(now)],
+                params![new.fingerprint, since],
                 |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if made >= caps.max_proposals_per_day {
-            return Err(LearnError::BudgetExhausted(format!(
-                "{} suggestions per day",
-                caps.max_proposals_per_day
-            )));
-        }
-        let proposal = write_proposal(&tx, new, now)?;
-        tx.commit()?;
-        Ok(Some(proposal))
+            )?;
+            if duplicate {
+                return Ok(None);
+            }
+            let made: u32 = tx
+                .query_row(
+                    "SELECT proposals FROM memory_learn_usage WHERE day = ?1",
+                    params![day_key(now)],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0);
+            if made >= caps.max_proposals_per_day {
+                return Err(LearnError::BudgetExhausted(format!(
+                    "{} suggestions per day",
+                    caps.max_proposals_per_day
+                )));
+            }
+            let proposal = write_proposal(tx, new, now)?;
+            Ok(Some(proposal))
+        })
     }
 
     /// Memories that applied suggestions with `fingerprint` (accepted or learned) stored.
     /// They may have been forgotten since: the suggestions are not changed by a forget.
     pub fn applied_memories(&self, fingerprint: &str) -> LearnResult<Vec<String>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(
             "SELECT outcome_json FROM memory_proposals
              WHERE fingerprint = ?1 AND status IN ('accepted', 'learned')",
@@ -992,32 +987,31 @@ impl Inbox {
         if applied_kept {
             return Ok(RequestedFiling::Kept);
         }
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut stmt = tx.prepare(&format!(
-            "SELECT {COLUMNS} FROM memory_proposals WHERE fingerprint = ?1
+        self.conn.write(|tx| {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT {COLUMNS} FROM memory_proposals WHERE fingerprint = ?1
              AND status IN ('pending', 'failed') ORDER BY created_at, id"
-        ))?;
-        let waiting = stmt
-            .query_map(params![new.fingerprint], read_proposal)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(stmt);
-        if let Some(sensitive) = waiting
-            .iter()
-            .find(|w| !w.sensitive.is_empty() || !new.sensitive.is_empty())
-        {
-            return Ok(RequestedFiling::Waiting(Box::new(sensitive.clone())));
-        }
-        for replaced in &waiting {
-            tx.execute(
-                "UPDATE memory_proposals SET status = 'stale', decided_at = ?1, error = ?2
+            ))?;
+            let waiting = stmt
+                .query_map(params![new.fingerprint], read_proposal)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            if let Some(sensitive) = waiting
+                .iter()
+                .find(|w| !w.sensitive.is_empty() || !new.sensitive.is_empty())
+            {
+                return Ok(RequestedFiling::Waiting(Box::new(sensitive.clone())));
+            }
+            for replaced in &waiting {
+                tx.execute(
+                    "UPDATE memory_proposals SET status = 'stale', decided_at = ?1, error = ?2
                  WHERE id = ?3 AND status IN ('pending', 'failed')",
-                params![ts(now), REPLACED_BY_REQUEST, replaced.id],
-            )?;
-        }
-        let proposal = write_proposal(&tx, new, now)?;
-        tx.commit()?;
-        Ok(RequestedFiling::Inserted(Box::new(proposal)))
+                    params![ts(now), REPLACED_BY_REQUEST, replaced.id],
+                )?;
+            }
+            let proposal = write_proposal(tx, new, now)?;
+            Ok(RequestedFiling::Inserted(Box::new(proposal)))
+        })
     }
 
     /// The memory a note suggestion applied in turn `turn_id` (accepted or learned, and
@@ -1025,7 +1019,7 @@ impl Inbox {
     /// note the user asked Shodh to remember in that turn, so the assistant's own
     /// `remember` of the same words in the same answer is recognised as done.
     pub fn saved_note_in_turn(&self, turn_id: &str, text: &str) -> LearnResult<Option<String>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM memory_proposals
              WHERE turn_id = ?1 AND kind = 'remember' AND status IN ('accepted', 'learned')
@@ -1059,7 +1053,7 @@ impl Inbox {
             return Ok(Vec::new());
         }
         let turns = &turn_ids[..turn_ids.len().min(MAX_TURNS_LISTED)];
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let placeholders = (2..turns.len() + 2)
             .map(|i| format!("?{i}"))
             .collect::<Vec<_>>()
@@ -1081,7 +1075,7 @@ impl Inbox {
 
     /// One suggestion.
     pub fn get(&self, id: &str) -> LearnResult<Proposal> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         conn.query_row(
             &format!("SELECT {COLUMNS} FROM memory_proposals WHERE id = ?1"),
             params![id],
@@ -1093,7 +1087,7 @@ impl Inbox {
 
     /// Suggestions with one of `statuses` (all when empty), newest first.
     pub fn list(&self, statuses: &[ProposalStatus], limit: usize) -> LearnResult<Vec<Proposal>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let limit = i64::try_from(limit.clamp(1, 1_000)).unwrap_or(1_000);
         let filter = if statuses.is_empty() {
             String::new()
@@ -1118,7 +1112,7 @@ impl Inbox {
 
     /// Number of suggestions waiting for the user.
     pub fn pending_count(&self) -> LearnResult<u32> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         Ok(conn.query_row(
             "SELECT count(*) FROM memory_proposals WHERE status = 'pending'",
             [],
@@ -1134,37 +1128,36 @@ impl Inbox {
         event: StatusEvent,
         now: DateTime<Utc>,
     ) -> LearnResult<Proposal> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let before = tx
-            .query_row(
-                &format!("SELECT {COLUMNS} FROM memory_proposals WHERE id = ?1"),
-                params![id],
-                read_proposal,
-            )
-            .optional()?
-            .ok_or_else(|| LearnError::NotFound(id.to_string()))?;
-        let next = before.status.after(event)?;
-        let sources = ProposalStatus::sources(event)
-            .iter()
-            .map(|s| format!("'{}'", s.as_str()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let changed = tx.execute(
-            &format!(
-                "UPDATE memory_proposals SET status = ?1, decided_at = ?2
+        self.conn.write(|tx| {
+            let before = tx
+                .query_row(
+                    &format!("SELECT {COLUMNS} FROM memory_proposals WHERE id = ?1"),
+                    params![id],
+                    read_proposal,
+                )
+                .optional()?
+                .ok_or_else(|| LearnError::NotFound(id.to_string()))?;
+            let next = before.status.after(event)?;
+            let sources = ProposalStatus::sources(event)
+                .iter()
+                .map(|s| format!("'{}'", s.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let changed = tx.execute(
+                &format!(
+                    "UPDATE memory_proposals SET status = ?1, decided_at = ?2
                  WHERE id = ?3 AND status IN ({sources})"
-            ),
-            params![next.as_str(), ts(now), id],
-        )?;
-        if changed != 1 {
-            return Err(LearnError::InvalidTransition {
-                from: before.status,
-                action: event.verb(),
-            });
-        }
-        tx.commit()?;
-        Ok(before)
+                ),
+                params![next.as_str(), ts(now), id],
+            )?;
+            if changed != 1 {
+                return Err(LearnError::InvalidTransition {
+                    from: before.status,
+                    action: event.verb(),
+                });
+            }
+            Ok(before)
+        })
     }
 
     /// Puts a suggestion back to `status` (after a failed undo), only from `from`.
@@ -1174,12 +1167,13 @@ impl Inbox {
         from: ProposalStatus,
         status: ProposalStatus,
     ) -> LearnResult<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE memory_proposals SET status = ?1 WHERE id = ?2 AND status = ?3",
-            params![status.as_str(), id, from.as_str()],
-        )?;
-        Ok(())
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE memory_proposals SET status = ?1 WHERE id = ?2 AND status = ?3",
+                params![status.as_str(), id, from.as_str()],
+            )?;
+            Ok(())
+        })
     }
 
     /// Records what applying suggestion `id` did (and the edited action, if it was edited).
@@ -1189,37 +1183,42 @@ impl Inbox {
         outcome: &AppliedOutcome,
         action: Option<&ProposalAction>,
     ) -> LearnResult<()> {
-        let conn = self.lock();
         let outcome =
             serde_json::to_string(outcome).map_err(|e| LearnError::Database(e.to_string()))?;
-        match action {
-            Some(action) => {
-                let payload = serde_json::to_string(action)
-                    .map_err(|e| LearnError::Database(e.to_string()))?;
-                conn.execute(
-                    "UPDATE memory_proposals SET outcome_json = ?1, payload_json = ?2, error = NULL
+        let payload = action
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| LearnError::Database(e.to_string()))?;
+        self.conn.write(|tx| {
+            match payload {
+                Some(payload) => {
+                    tx.execute(
+                        "UPDATE memory_proposals SET outcome_json = ?1, payload_json = ?2, error = NULL
                      WHERE id = ?3",
-                    params![outcome, payload, id],
-                )?;
+                        params![outcome, payload, id],
+                    )?;
+                }
+                None => {
+                    tx.execute(
+                        "UPDATE memory_proposals SET outcome_json = ?1, error = NULL WHERE id = ?2",
+                        params![outcome, id],
+                    )?;
+                }
             }
-            None => {
-                conn.execute(
-                    "UPDATE memory_proposals SET outcome_json = ?1, error = NULL WHERE id = ?2",
-                    params![outcome, id],
-                )?;
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Records why suggestion `id` failed or went stale.
     pub fn record_error(&self, id: &str, error: &str) -> LearnResult<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE memory_proposals SET error = ?1 WHERE id = ?2",
-            params![crate::harness::truncate_chars(error, 500), id],
-        )?;
-        Ok(())
+        let error = crate::harness::truncate_chars(error, 500);
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE memory_proposals SET error = ?1 WHERE id = ?2",
+                params![error, id],
+            )?;
+            Ok(())
+        })
     }
 
     /// Reserves one model call with a prompt of `input_chars` against today's caps.
@@ -1229,82 +1228,82 @@ impl Inbox {
         caps: &LearnCaps,
         now: DateTime<Utc>,
     ) -> LearnResult<()> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let day = day_key(now);
-        let (calls, chars): (u32, u64) = tx
-            .query_row(
-                "SELECT llm_calls, input_chars FROM memory_learn_usage WHERE day = ?1",
-                params![day],
-                |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get::<_, i64>(1).map(|c| u64::try_from(c).unwrap_or(0))?,
-                    ))
-                },
-            )
-            .optional()?
-            .unwrap_or((0, 0));
-        let input = u64::try_from(input_chars).unwrap_or(u64::MAX);
-        if calls >= caps.max_calls_per_day {
-            return Err(LearnError::BudgetExhausted(format!(
-                "{} model calls per day",
-                caps.max_calls_per_day
-            )));
-        }
-        if chars.saturating_add(input) > caps.max_input_chars_per_day {
-            return Err(LearnError::BudgetExhausted(format!(
-                "{} prompt characters per day",
-                caps.max_input_chars_per_day
-            )));
-        }
-        bump(&tx, &day, "llm_calls", 1)?;
-        bump(
-            &tx,
-            &day,
-            "input_chars",
-            i64::try_from(input).unwrap_or(i64::MAX),
-        )?;
-        tx.commit()?;
-        Ok(())
+        self.conn.write(|tx| {
+            let (calls, chars): (u32, u64) = tx
+                .query_row(
+                    "SELECT llm_calls, input_chars FROM memory_learn_usage WHERE day = ?1",
+                    params![day],
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get::<_, i64>(1).map(|c| u64::try_from(c).unwrap_or(0))?,
+                        ))
+                    },
+                )
+                .optional()?
+                .unwrap_or((0, 0));
+            let input = u64::try_from(input_chars).unwrap_or(u64::MAX);
+            if calls >= caps.max_calls_per_day {
+                return Err(LearnError::BudgetExhausted(format!(
+                    "{} model calls per day",
+                    caps.max_calls_per_day
+                )));
+            }
+            if chars.saturating_add(input) > caps.max_input_chars_per_day {
+                return Err(LearnError::BudgetExhausted(format!(
+                    "{} prompt characters per day",
+                    caps.max_input_chars_per_day
+                )));
+            }
+            bump(tx, &day, "llm_calls", 1)?;
+            bump(
+                tx,
+                &day,
+                "input_chars",
+                i64::try_from(input).unwrap_or(i64::MAX),
+            )?;
+            Ok(())
+        })
     }
 
     /// Reserves one model call of the legacy import's one-time allowance
     /// ([`LEGACY_IMPORT_CALLS`]); today's caps are not touched.
     pub fn reserve_legacy_call(&self) -> LearnResult<()> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let used = legacy_calls(&tx)?;
-        if used >= LEGACY_IMPORT_CALLS {
-            return Err(LearnError::BudgetExhausted(format!(
-                "the {LEGACY_IMPORT_CALLS} model calls for learning from old memories"
-            )));
-        }
-        tx.execute(
-            "INSERT INTO memory_learn_state(key, value) VALUES (?1, ?2)
+        self.conn.write(|tx| {
+            let used = legacy_calls(tx)?;
+            if used >= LEGACY_IMPORT_CALLS {
+                return Err(LearnError::BudgetExhausted(format!(
+                    "the {LEGACY_IMPORT_CALLS} model calls for learning from old memories"
+                )));
+            }
+            tx.execute(
+                "INSERT INTO memory_learn_state(key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![LEGACY_CALLS_KEY, (used + 1).to_string()],
-        )?;
-        tx.commit()?;
-        Ok(())
+                params![LEGACY_CALLS_KEY, (used + 1).to_string()],
+            )?;
+            Ok(())
+        })
     }
 
     /// Model calls left of the legacy import's one-time allowance.
     pub fn legacy_calls_left(&self) -> LearnResult<u32> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         Ok(LEGACY_IMPORT_CALLS.saturating_sub(legacy_calls(&conn)?))
     }
 
     /// Records the size of a model answer.
     pub fn record_output(&self, output_chars: usize, now: DateTime<Utc>) -> LearnResult<()> {
-        let conn = self.lock();
-        bump(
-            &conn,
-            &day_key(now),
-            "output_chars",
-            i64::try_from(output_chars).unwrap_or(i64::MAX),
-        )?;
-        Ok(())
+        let day = day_key(now);
+        self.conn.write(|tx| {
+            bump(
+                tx,
+                &day,
+                "output_chars",
+                i64::try_from(output_chars).unwrap_or(i64::MAX),
+            )?;
+            Ok(())
+        })
     }
 
     /// Counts dropped or refused candidates.
@@ -1316,19 +1315,16 @@ impl Inbox {
             UsageCounter::Invalid => "invalid",
             UsageCounter::Refused => "refused",
         };
-        let conn = self.lock();
-        bump(
-            &conn,
-            &day_key(now),
-            column,
-            i64::try_from(n).unwrap_or(i64::MAX),
-        )?;
-        Ok(())
+        let day = day_key(now);
+        self.conn.write(|tx| {
+            bump(tx, &day, column, i64::try_from(n).unwrap_or(i64::MAX))?;
+            Ok(())
+        })
     }
 
     /// Today's usage.
     pub fn usage(&self, now: DateTime<Utc>) -> LearnResult<UsageToday> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let day = day_key(now);
         let usage = conn
             .query_row(
@@ -1368,67 +1364,67 @@ impl Inbox {
         if rejections.is_empty() {
             return Ok(());
         }
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
-            params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
-        )?;
         let day = day_key(now);
         let at = ts(now);
-        for rejection in rejections.iter().take(MAX_REJECTIONS_PER_ANSWER) {
+        self.conn.write(|tx| {
             tx.execute(
-                "INSERT INTO memory_learn_rejections(day, turn_id, model, code, detail,
+                "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
+                params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
+            )?;
+            for rejection in rejections.iter().take(MAX_REJECTIONS_PER_ANSWER) {
+                tx.execute(
+                    "INSERT INTO memory_learn_rejections(day, turn_id, model, code, detail,
                     raw_excerpt, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    day,
-                    rejection.turn_id,
-                    crate::harness::truncate_chars(model, 200),
-                    crate::harness::truncate_chars(&rejection.code, 64),
-                    if rejection.app_detail {
-                        safe_cut(&rejection.detail, MAX_DETAIL_BYTES)
-                    } else {
-                        masked(&rejection.detail, MAX_DETAIL_BYTES)
-                    },
-                    masked(&rejection.excerpt, MAX_EXCERPT_BYTES),
-                    at,
-                ],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+                    params![
+                        day,
+                        rejection.turn_id,
+                        crate::harness::truncate_chars(model, 200),
+                        crate::harness::truncate_chars(&rejection.code, 64),
+                        if rejection.app_detail {
+                            safe_cut(&rejection.detail, MAX_DETAIL_BYTES)
+                        } else {
+                            masked(&rejection.detail, MAX_DETAIL_BYTES)
+                        },
+                        masked(&rejection.excerpt, MAX_EXCERPT_BYTES),
+                        at,
+                    ],
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// Today's rejections by reason, most frequent first (forgetting those older than
-    /// [`REJECTION_LOG_DAYS`]).
+    /// [`REJECTION_LOG_DAYS`], so this is a write).
     pub fn rejections_today(&self, now: DateTime<Utc>) -> LearnResult<Vec<RejectionCount>> {
-        let conn = self.lock();
-        // Kept 14 days even on a day nothing is rejected.
-        conn.execute(
-            "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
-            params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
-        )?;
-        let mut stmt = conn.prepare(
-            "SELECT code, count(*) FROM memory_learn_rejections WHERE day = ?1
+        self.conn.write(|tx| {
+            // Kept 14 days even on a day nothing is rejected.
+            tx.execute(
+                "DELETE FROM memory_learn_rejections WHERE created_at < ?1",
+                params![ts(now - Duration::days(REJECTION_LOG_DAYS))],
+            )?;
+            let mut stmt = tx.prepare(
+                "SELECT code, count(*) FROM memory_learn_rejections WHERE day = ?1
              GROUP BY code ORDER BY count(*) DESC, code",
-        )?;
-        let rows = stmt
-            .query_map(params![day_key(now)], |r| {
-                let code: String = r.get(0)?;
-                Ok(RejectionCount {
-                    reason: rejection_reason(&code).to_string(),
-                    code,
-                    count: r.get(1)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+            )?;
+            let rows = stmt
+                .query_map(params![day_key(now)], |r| {
+                    let code: String = r.get(0)?;
+                    Ok(RejectionCount {
+                        reason: rejection_reason(&code).to_string(),
+                        code,
+                        count: r.get(1)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
     }
 
     /// A small stored value (for example the last consolidation time).
     pub fn state(&self, key: &str) -> LearnResult<Option<String>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         Ok(conn
             .query_row(
                 "SELECT value FROM memory_learn_state WHERE key = ?1",
@@ -1440,13 +1436,14 @@ impl Inbox {
 
     /// Sets a small stored value.
     pub fn set_state(&self, key: &str, value: &str) -> LearnResult<()> {
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO memory_learn_state(key, value) VALUES (?1, ?2)
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO memory_learn_state(key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
-        Ok(())
+                params![key, value],
+            )?;
+            Ok(())
+        })
     }
 
     /// Forgets memories in the suggestions. Each suggestion that stored, superseded or is
@@ -1472,86 +1469,90 @@ impl Inbox {
         if forgotten.ids.is_empty() && forgotten.turns.is_empty() && forgotten.sources.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.lock();
-        // The pragma answers with its new value, so it is read, not executed.
-        conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut candidates: Vec<Proposal> = Vec::new();
-        {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT {COLUMNS} FROM memory_proposals
+        // The pragma answers with its new value, so it is read, not executed. It is a
+        // setting of this connection, not a write.
+        self.conn
+            .read()?
+            .query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
+        self.conn.write(|tx| {
+            let mut candidates: Vec<Proposal> = Vec::new();
+            {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {COLUMNS} FROM memory_proposals
                  WHERE payload_json LIKE ?1 ESCAPE '!' OR outcome_json LIKE ?1 ESCAPE '!'"
-            ))?;
-            for id in &forgotten.ids {
-                let pattern = format!("%{}%", like_literal(id));
-                for proposal in stmt.query_map(params![pattern], read_proposal)? {
+                ))?;
+                for id in &forgotten.ids {
+                    let pattern = format!("%{}%", like_literal(id));
+                    for proposal in stmt.query_map(params![pattern], read_proposal)? {
+                        let proposal = proposal?;
+                        if !candidates.iter().any(|c| c.id == proposal.id) {
+                            candidates.push(proposal);
+                        }
+                    }
+                }
+            }
+            if !forgotten.sources.is_empty() {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT {COLUMNS} FROM memory_proposals
+                 WHERE kind = 'revise' AND origin = 'evolve' AND status IN ('pending', 'failed')"
+                ))?;
+                for proposal in stmt.query_map([], read_proposal)? {
                     let proposal = proposal?;
                     if !candidates.iter().any(|c| c.id == proposal.id) {
                         candidates.push(proposal);
                     }
                 }
             }
-        }
-        if !forgotten.sources.is_empty() {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT {COLUMNS} FROM memory_proposals
-                 WHERE kind = 'revise' AND origin = 'evolve' AND status IN ('pending', 'failed')"
-            ))?;
-            for proposal in stmt.query_map([], read_proposal)? {
-                let proposal = proposal?;
-                if !candidates.iter().any(|c| c.id == proposal.id) {
-                    candidates.push(proposal);
-                }
-            }
-        }
-        let wanted: HashSet<&str> = forgotten.ids.iter().map(String::as_str).collect();
-        let mut changed = 0;
-        for proposal in &candidates {
-            let about = proposal
-                .action
-                .memory_ids()
-                .into_iter()
-                .chain(proposal.outcome.iter().flat_map(AppliedOutcome::memory_ids))
-                .any(|id| wanted.contains(id));
-            let waiting = matches!(
-                proposal.status,
-                ProposalStatus::Pending | ProposalStatus::Failed
-            );
-            let untraced_revision = waiting
-                && matches!(
-                    &proposal.action,
-                    ProposalAction::Revise { trigger: None, source, .. }
-                        if forgotten.sources.contains(source)
+            let wanted: HashSet<&str> = forgotten.ids.iter().map(String::as_str).collect();
+            let mut changed = 0;
+            for proposal in &candidates {
+                let about = proposal
+                    .action
+                    .memory_ids()
+                    .into_iter()
+                    .chain(proposal.outcome.iter().flat_map(AppliedOutcome::memory_ids))
+                    .any(|id| wanted.contains(id));
+                let waiting = matches!(
+                    proposal.status,
+                    ProposalStatus::Pending | ProposalStatus::Failed
                 );
-            if !about && !untraced_revision {
-                // The id only appears inside a text (a reason quoting it).
-                continue;
-            }
-            let payload = serde_json::to_string(&proposal.action.redacted())
-                .map_err(|e| LearnError::Database(e.to_string()))?;
-            let (status, decided_at) = if waiting {
-                (ProposalStatus::Stale, Some(ts(now)))
-            } else {
-                (proposal.status, proposal.decided_at.map(ts))
-            };
-            tx.execute(
-                "UPDATE memory_proposals SET payload_json = ?1, status = ?2, decided_at = ?3,
+                let untraced_revision = waiting
+                    && matches!(
+                        &proposal.action,
+                        ProposalAction::Revise { trigger: None, source, .. }
+                            if forgotten.sources.contains(source)
+                    );
+                if !about && !untraced_revision {
+                    // The id only appears inside a text (a reason quoting it).
+                    continue;
+                }
+                let payload = serde_json::to_string(&proposal.action.redacted())
+                    .map_err(|e| LearnError::Database(e.to_string()))?;
+                let (status, decided_at) = if waiting {
+                    (ProposalStatus::Stale, Some(ts(now)))
+                } else {
+                    (proposal.status, proposal.decided_at.map(ts))
+                };
+                tx.execute(
+                    "UPDATE memory_proposals SET payload_json = ?1, status = ?2, decided_at = ?3,
                     error = NULL, forgotten_at = COALESCE(forgotten_at, ?4),
                     fingerprint = 'forgotten:' || id
                  WHERE id = ?5",
-                params![payload, status.as_str(), decided_at, ts(now), proposal.id],
-            )?;
-            changed += 1;
-        }
-        for chunk in forgotten.turns.chunks(400) {
-            let placeholders = vec!["?"; chunk.len()].join(", ");
-            tx.execute(
-                &format!("DELETE FROM memory_learn_rejections WHERE turn_id IN ({placeholders})"),
-                params_from_iter(chunk.iter()),
-            )?;
-        }
-        tx.commit()?;
-        Ok(changed)
+                    params![payload, status.as_str(), decided_at, ts(now), proposal.id],
+                )?;
+                changed += 1;
+            }
+            for chunk in forgotten.turns.chunks(400) {
+                let placeholders = vec!["?"; chunk.len()].join(", ");
+                tx.execute(
+                    &format!(
+                        "DELETE FROM memory_learn_rejections WHERE turn_id IN ({placeholders})"
+                    ),
+                    params_from_iter(chunk.iter()),
+                )?;
+            }
+            Ok(changed)
+        })
     }
 
     /// Gives the Inbox's approval items of the memory tools the wordless titles their
@@ -1560,37 +1561,40 @@ impl Inbox {
     /// detail the app writes for approvals ("The assistant waits for your approval
     /// (<tool>)."). Returns how many changed.
     pub fn clear_memory_approval_titles(&self) -> LearnResult<usize> {
-        let mut conn = self.lock();
-        // The pragma answers with its new value, so it is read, not executed.
-        conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut changed = 0;
-        for (tool, title) in [
-            ("remember", "Remember this"),
-            ("update_memory", "Update a memory"),
-            ("forget", "Forget a memory"),
-        ] {
-            changed += tx.execute(
-                "UPDATE inbox_items SET title = ?1
+        // The pragma answers with its new value, so it is read, not executed. It is a
+        // setting of this connection, not a write.
+        self.conn
+            .read()?
+            .query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
+        self.conn.write(|tx| {
+            let mut changed = 0;
+            for (tool, title) in [
+                ("remember", "Remember this"),
+                ("update_memory", "Update a memory"),
+                ("forget", "Forget a memory"),
+            ] {
+                changed += tx.execute(
+                    "UPDATE inbox_items SET title = ?1
                  WHERE kind = 'approval' AND detail = ?2 AND title <> ?1",
-                params![
-                    title,
-                    format!("The assistant waits for your approval ({tool}).")
-                ],
-            )?;
-        }
-        tx.commit()?;
-        Ok(changed)
+                    params![
+                        title,
+                        format!("The assistant waits for your approval ({tool}).")
+                    ],
+                )?;
+            }
+            Ok(changed)
+        })
     }
 
     /// Rejects every waiting suggestion (the kill switch). Returns how many.
     pub fn reject_all_pending(&self, now: DateTime<Utc>) -> LearnResult<usize> {
-        let conn = self.lock();
-        Ok(conn.execute(
-            "UPDATE memory_proposals SET status = 'rejected', decided_at = ?1
+        self.conn.write(|tx| {
+            Ok(tx.execute(
+                "UPDATE memory_proposals SET status = 'rejected', decided_at = ?1
              WHERE status = 'pending'",
-            params![ts(now)],
-        )?)
+                params![ts(now)],
+            )?)
+        })
     }
 }
 

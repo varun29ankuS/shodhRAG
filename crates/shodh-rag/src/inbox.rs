@@ -14,13 +14,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-use crate::audit::{open_shared_connection, AuditError, AuditKey};
+use crate::audit::{open_shared_connection, AuditError, AuditKey, SharedConnection};
 
 /// Days a done or failed item stays in the Inbox after it last changed.
 pub const DONE_RETENTION_DAYS: i64 = 30;
@@ -235,7 +234,7 @@ const COLUMNS: &str =
 
 /// Inbox items in `shodh.db`.
 pub struct InboxStore {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for InboxStore {
@@ -248,14 +247,9 @@ impl InboxStore {
     /// Opens `shodh.db` at `path` with the audit database key (if the database is
     /// encrypted), applying any pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> InboxResult<Self> {
-        let conn = open_shared_connection(path, key)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Adds `item`, or updates the item with its id (keeping when it was created).
@@ -282,37 +276,38 @@ impl InboxStore {
         let data =
             serde_json::to_string(&item.data).map_err(|e| InboxError::Invalid(e.to_string()))?;
         let at = format_ts(now);
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO inbox_items(id, kind, status, title, detail, link_json, data_json,
-                                     created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-             ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, status = excluded.status,
-                 title = excluded.title, detail = excluded.detail,
-                 link_json = excluded.link_json, data_json = excluded.data_json,
-                 updated_at = excluded.updated_at",
-            params![
-                id,
-                item.kind.as_str(),
-                item.status.as_str(),
-                title,
-                detail,
-                link,
-                data,
-                at
-            ],
-        )?;
-        let stored = conn.query_row(
-            &format!("SELECT {COLUMNS} FROM inbox_items WHERE id = ?1"),
-            params![id],
-            read_item,
-        )?;
-        Ok(stored)
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO inbox_items(id, kind, status, title, detail, link_json, data_json,
+                                         created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                 ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, status = excluded.status,
+                     title = excluded.title, detail = excluded.detail,
+                     link_json = excluded.link_json, data_json = excluded.data_json,
+                     updated_at = excluded.updated_at",
+                params![
+                    id,
+                    item.kind.as_str(),
+                    item.status.as_str(),
+                    title,
+                    detail,
+                    link,
+                    data,
+                    at
+                ],
+            )?;
+            let stored = tx.query_row(
+                &format!("SELECT {COLUMNS} FROM inbox_items WHERE id = ?1"),
+                params![id],
+                read_item,
+            )?;
+            Ok(stored)
+        })
     }
 
     /// Every stored item, in Inbox order.
     pub fn list(&self) -> InboxResult<Vec<InboxItem>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut stmt = conn.prepare(&format!("SELECT {COLUMNS} FROM inbox_items"))?;
         let items = stmt
             .query_map([], read_item)?
@@ -322,10 +317,8 @@ impl InboxStore {
 
     /// Removes the item `id`. False when there was none.
     pub fn remove(&self, id: &str) -> InboxResult<bool> {
-        Ok(self
-            .lock()
-            .execute("DELETE FROM inbox_items WHERE id = ?1", params![id])?
-            > 0)
+        self.conn
+            .write(|tx| Ok(tx.execute("DELETE FROM inbox_items WHERE id = ?1", params![id])? > 0))
     }
 
     /// Removes the items of `kind` whose id starts with `prefix` (the approvals of
@@ -338,40 +331,47 @@ impl InboxStore {
                 .replace('%', "\\%")
                 .replace('_', "\\_")
         );
-        Ok(self.lock().execute(
-            "DELETE FROM inbox_items WHERE kind = ?1 AND id LIKE ?2 ESCAPE '\\'",
-            params![kind.as_str(), pattern],
-        )?)
+        self.conn.write(|tx| {
+            Ok(tx.execute(
+                "DELETE FROM inbox_items WHERE kind = ?1 AND id LIKE ?2 ESCAPE '\\'",
+                params![kind.as_str(), pattern],
+            )?)
+        })
     }
 
     /// Removes done and failed items that last changed more than
     /// [`DONE_RETENTION_DAYS`] before `now`. Returns how many.
     pub fn purge(&self, now: DateTime<Utc>) -> InboxResult<usize> {
-        let cutoff = format_ts(now - Duration::days(DONE_RETENTION_DAYS));
-        Ok(self.lock().execute(
-            "DELETE FROM inbox_items WHERE status IN ('done', 'failed') AND updated_at < ?1",
-            params![cutoff],
-        )?)
+        self.conn.write(|tx| Ok(purge_in(tx, now)?))
     }
 
     /// After a launch: approvals of the previous run cannot be answered any more
     /// (their sessions ended with it) and are removed; work that was still running
-    /// is marked failed. Then prunes old items. Returns how many items changed.
+    /// is marked failed. Then prunes old items, all in one transaction. Returns how many
+    /// items changed.
     pub fn recover(&self, now: DateTime<Utc>) -> InboxResult<usize> {
         let at = format_ts(now);
-        let changed = {
-            let conn = self.lock();
-            let removed = conn.execute("DELETE FROM inbox_items WHERE kind = 'approval'", [])?;
-            let stopped = conn.execute(
+        self.conn.write(|tx| {
+            let removed = tx.execute("DELETE FROM inbox_items WHERE kind = 'approval'", [])?;
+            let stopped = tx.execute(
                 "UPDATE inbox_items SET status = 'failed',
                      detail = 'Stopped when Shodh closed before it finished.', updated_at = ?1
                  WHERE status = 'working'",
                 params![at],
             )?;
-            removed + stopped
-        };
-        Ok(changed + self.purge(now)?)
+            Ok(removed + stopped + purge_in(tx, now)?)
+        })
     }
+}
+
+/// Deletes done and failed items that last changed more than [`DONE_RETENTION_DAYS`]
+/// before `now`, inside the caller's write.
+fn purge_in(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<usize> {
+    let cutoff = format_ts(now - Duration::days(DONE_RETENTION_DAYS));
+    conn.execute(
+        "DELETE FROM inbox_items WHERE status IN ('done', 'failed') AND updated_at < ?1",
+        params![cutoff],
+    )
 }
 
 /// One Inbox list from the stored items and the derived (`live`) ones: an id

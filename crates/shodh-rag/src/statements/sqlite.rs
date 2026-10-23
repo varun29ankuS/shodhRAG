@@ -5,14 +5,13 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use super::dynamics::{DynamicsState, LinkState, LINK_PRUNE_FLOOR, MAX_LINKS_PER_STATEMENT};
 use super::StatementResult;
-use crate::audit::{open_shared_connection, AuditKey};
+use crate::audit::{open_shared_connection, AuditKey, SharedConnection};
 
 /// Rows per `IN (...)` lookup.
 const LOOKUP_CHUNK: usize = 400;
@@ -44,11 +43,11 @@ impl RunMemoryKind {
 
 /// Dynamics and links of statements, in the shared `shodh.db`.
 ///
-/// Transactions that read before they write are `IMMEDIATE`: the audit writer commits to
-/// the same database, and a deferred transaction upgraded after its commit would fail with
-/// `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry.
+/// Every write is one `IMMEDIATE` transaction during the database's in-process write turn
+/// ([`SharedConnection::write`]), so the audit writer and the other components of this
+/// process that write to `shodh.db` wait for it in order instead of polling a busy lock.
 pub struct DynamicsStore {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl std::fmt::Debug for DynamicsStore {
@@ -73,19 +72,14 @@ impl DynamicsStore {
     /// Opens `shodh.db` at `path` with the audit database key (if the database is
     /// encrypted), applying any pending migrations.
     pub fn open(path: &Path, key: Option<&AuditKey>) -> StatementResult<Self> {
-        let conn = open_shared_connection(path, key)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: open_shared_connection(path, key)?,
         })
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Stored state of one statement, if any.
     pub fn get(&self, id: &str) -> StatementResult<Option<DynamicsState>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         conn.query_row(
             "SELECT strength, anchor_at, importance, use_count, last_used_at, pinned
              FROM statement_dynamics WHERE statement_id = ?1",
@@ -98,7 +92,7 @@ impl DynamicsStore {
 
     /// Stored states of several statements. Statements without a row are absent.
     pub fn get_many(&self, ids: &[String]) -> StatementResult<HashMap<String, DynamicsState>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut out = HashMap::new();
         for chunk in ids.chunks(LOOKUP_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
@@ -138,9 +132,10 @@ impl DynamicsStore {
         state: &DynamicsState,
         now: DateTime<Utc>,
     ) -> StatementResult<()> {
-        let conn = self.lock();
-        write_state(&conn, id, scope, class, state, now)?;
-        Ok(())
+        self.conn.write(|tx| {
+            write_state(tx, id, scope, class, state, now)?;
+            Ok(())
+        })
     }
 
     /// Inserts or replaces several states in one transaction.
@@ -149,34 +144,32 @@ impl DynamicsStore {
         rows: &[(String, String, String, DynamicsState)],
         now: DateTime<Utc>,
     ) -> StatementResult<()> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for (id, scope, class, state) in rows {
-            write_state(&tx, id, scope, class, state, now)?;
-        }
-        tx.commit()?;
-        Ok(())
+        self.conn.write(|tx| {
+            for (id, scope, class, state) in rows {
+                write_state(tx, id, scope, class, state, now)?;
+            }
+            Ok(())
+        })
     }
 
     /// Records `scope` (its stored form) as the scope of the statements `ids`, in one
     /// transaction. Statements without dynamics are skipped.
     pub fn set_scope(&self, ids: &[String], scope: &str) -> StatementResult<()> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for chunk in ids.chunks(LOOKUP_CHUNK) {
-            let placeholders = vec!["?"; chunk.len()].join(", ");
-            let mut values: Vec<&str> = Vec::with_capacity(chunk.len() + 1);
-            values.push(scope);
-            values.extend(chunk.iter().map(String::as_str));
-            tx.execute(
-                &format!(
+        self.conn.write(|tx| {
+            for chunk in ids.chunks(LOOKUP_CHUNK) {
+                let placeholders = vec!["?"; chunk.len()].join(", ");
+                let mut values: Vec<&str> = Vec::with_capacity(chunk.len() + 1);
+                values.push(scope);
+                values.extend(chunk.iter().map(String::as_str));
+                tx.execute(
+                    &format!(
                     "UPDATE statement_dynamics SET scope = ? WHERE statement_id IN ({placeholders})"
                 ),
-                params_from_iter(values),
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+                    params_from_iter(values),
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// Links touching any of `ids`, as `(from, to, state)` with `from < to`.
@@ -184,7 +177,7 @@ impl DynamicsStore {
         &self,
         ids: &[String],
     ) -> StatementResult<Vec<(String, String, LinkState)>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut seen = BTreeSet::new();
         let mut out = Vec::new();
         for chunk in ids.chunks(LOOKUP_CHUNK / 2) {
@@ -217,31 +210,30 @@ impl DynamicsStore {
         if pairs.is_empty() {
             return Ok(());
         }
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut touched = BTreeSet::new();
-        for (from, to) in pairs {
-            if from == to {
-                continue;
-            }
-            let (from, to) = super::dynamics::ordered_pair(from, to);
-            let existing = tx
-                .query_row(
-                    "SELECT from_id, to_id, weight, co_activations, updated_at
+        self.conn.write(|tx| {
+            let mut touched = BTreeSet::new();
+            for (from, to) in pairs {
+                if from == to {
+                    continue;
+                }
+                let (from, to) = super::dynamics::ordered_pair(from, to);
+                let existing = tx
+                    .query_row(
+                        "SELECT from_id, to_id, weight, co_activations, updated_at
                      FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
-                    params![from, to],
-                    read_link,
-                )
-                .optional()?
-                .map(|(_, _, link)| link);
-            // The pair's boost is scaled by the more important of the two memories.
-            let scale = importance
-                .get(&from)
-                .copied()
-                .unwrap_or(0.0)
-                .max(importance.get(&to).copied().unwrap_or(0.0));
-            let link = LinkState::strengthen(existing.as_ref(), scale, now);
-            tx.execute(
+                        params![from, to],
+                        read_link,
+                    )
+                    .optional()?
+                    .map(|(_, _, link)| link);
+                // The pair's boost is scaled by the more important of the two memories.
+                let scale = importance
+                    .get(&from)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .max(importance.get(&to).copied().unwrap_or(0.0));
+                let link = LinkState::strengthen(existing.as_ref(), scale, now);
+                tx.execute(
                 "INSERT INTO statement_links(from_id, to_id, weight, co_activations, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(from_id, to_id) DO UPDATE SET
@@ -250,42 +242,42 @@ impl DynamicsStore {
                     updated_at = excluded.updated_at",
                 params![from, to, link.weight, link.co_activations, format_ts(now)],
             )?;
-            touched.insert(from);
-            touched.insert(to);
-        }
-        for id in &touched {
-            let mut stmt = tx.prepare(
-                "SELECT from_id, to_id, weight, co_activations, updated_at FROM statement_links
+                touched.insert(from);
+                touched.insert(to);
+            }
+            for id in &touched {
+                let mut stmt = tx.prepare(
+                    "SELECT from_id, to_id, weight, co_activations, updated_at FROM statement_links
                  WHERE from_id = ?1 OR to_id = ?1",
-            )?;
-            let mut links: Vec<(String, String, f64)> = stmt
-                .query_map(params![id], read_link)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-                .into_iter()
-                .map(|(from, to, link)| {
-                    let weight = link.weight_at(now);
-                    (from, to, weight)
-                })
-                .collect();
-            drop(stmt);
-            links.sort_by(|a, b| b.2.total_cmp(&a.2));
-            for (i, (from, to, weight)) in links.iter().enumerate() {
-                if i >= MAX_LINKS_PER_STATEMENT || *weight < LINK_PRUNE_FLOOR {
-                    tx.execute(
-                        "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
-                        params![from, to],
-                    )?;
+                )?;
+                let mut links: Vec<(String, String, f64)> = stmt
+                    .query_map(params![id], read_link)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .into_iter()
+                    .map(|(from, to, link)| {
+                        let weight = link.weight_at(now);
+                        (from, to, weight)
+                    })
+                    .collect();
+                drop(stmt);
+                links.sort_by(|a, b| b.2.total_cmp(&a.2));
+                for (i, (from, to, weight)) in links.iter().enumerate() {
+                    if i >= MAX_LINKS_PER_STATEMENT || *weight < LINK_PRUNE_FLOOR {
+                        tx.execute(
+                            "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                            params![from, to],
+                        )?;
+                    }
                 }
             }
-        }
-        tx.commit()?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// The link between `a` and `b`, if any.
     pub fn link(&self, a: &str, b: &str) -> StatementResult<Option<LinkState>> {
         let (from, to) = super::dynamics::ordered_pair(a, b);
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         Ok(conn
             .query_row(
                 "SELECT from_id, to_id, weight, co_activations, updated_at
@@ -304,16 +296,16 @@ impl DynamicsStore {
             return Ok(());
         }
         let (from, to) = super::dynamics::ordered_pair(a, b);
-        let conn = self.lock();
-        match link {
-            None => {
-                conn.execute(
-                    "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
-                    params![from, to],
-                )?;
-            }
-            Some(link) => {
-                conn.execute(
+        self.conn.write(|tx| {
+            match link {
+                None => {
+                    tx.execute(
+                        "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                        params![from, to],
+                    )?;
+                }
+                Some(link) => {
+                    tx.execute(
                     "INSERT INTO statement_links(from_id, to_id, weight, co_activations, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)
                      ON CONFLICT(from_id, to_id) DO UPDATE SET
@@ -328,9 +320,10 @@ impl DynamicsStore {
                         format_ts(link.updated_at)
                     ],
                 )?;
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Applies the user's "Not relevant" on memory `id` in run `run_id` once, in one
@@ -351,64 +344,63 @@ impl DynamicsStore {
         co_injected: &[String],
         now: DateTime<Utc>,
     ) -> StatementResult<Option<DynamicsState>> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let inserted = tx.execute(
-            "INSERT INTO run_memories(run_id, statement_id, kind, created_at)
+        self.conn.write(|tx| {
+            let inserted = tx.execute(
+                "INSERT INTO run_memories(run_id, statement_id, kind, created_at)
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(run_id, statement_id, kind) DO NOTHING",
-            params![
-                run_id,
-                id,
-                RunMemoryKind::Irrelevant.as_str(),
-                format_ts(now)
-            ],
-        )?;
-        if inserted == 0 {
-            tx.commit()?;
-            return Ok(None);
-        }
-        let mut state = tx
-            .query_row(
-                "SELECT strength, anchor_at, importance, use_count, last_used_at, pinned
-                 FROM statement_dynamics WHERE statement_id = ?1",
-                params![id],
-                read_state,
-            )
-            .optional()?
-            .unwrap_or_else(|| fallback.clone());
-        state.mark_irrelevant();
-        write_state(&tx, id, scope, class, &state, now)?;
-        let others: BTreeSet<&String> = co_injected.iter().filter(|o| o.as_str() != id).collect();
-        for other in others {
-            let (from, to) = super::dynamics::ordered_pair(id, other.as_str());
-            let existing = tx
-                .query_row(
-                    "SELECT from_id, to_id, weight, co_activations, updated_at
-                     FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
-                    params![from, to],
-                    read_link,
-                )
-                .optional()?;
-            let Some((_, _, link)) = existing else {
-                continue;
-            };
-            let weakened = link.weaken(now);
-            if weakened.weight < LINK_PRUNE_FLOOR {
-                tx.execute(
-                    "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
-                    params![from, to],
-                )?;
-            } else {
-                tx.execute(
-                    "UPDATE statement_links SET weight = ?3, updated_at = ?4
-                     WHERE from_id = ?1 AND to_id = ?2",
-                    params![from, to, weakened.weight, format_ts(now)],
-                )?;
+                params![
+                    run_id,
+                    id,
+                    RunMemoryKind::Irrelevant.as_str(),
+                    format_ts(now)
+                ],
+            )?;
+            if inserted == 0 {
+                return Ok(None);
             }
-        }
-        tx.commit()?;
-        Ok(Some(state))
+            let mut state = tx
+                .query_row(
+                    "SELECT strength, anchor_at, importance, use_count, last_used_at, pinned
+                 FROM statement_dynamics WHERE statement_id = ?1",
+                    params![id],
+                    read_state,
+                )
+                .optional()?
+                .unwrap_or_else(|| fallback.clone());
+            state.mark_irrelevant();
+            write_state(tx, id, scope, class, &state, now)?;
+            let others: BTreeSet<&String> =
+                co_injected.iter().filter(|o| o.as_str() != id).collect();
+            for other in others {
+                let (from, to) = super::dynamics::ordered_pair(id, other.as_str());
+                let existing = tx
+                    .query_row(
+                        "SELECT from_id, to_id, weight, co_activations, updated_at
+                     FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                        params![from, to],
+                        read_link,
+                    )
+                    .optional()?;
+                let Some((_, _, link)) = existing else {
+                    continue;
+                };
+                let weakened = link.weaken(now);
+                if weakened.weight < LINK_PRUNE_FLOOR {
+                    tx.execute(
+                        "DELETE FROM statement_links WHERE from_id = ?1 AND to_id = ?2",
+                        params![from, to],
+                    )?;
+                } else {
+                    tx.execute(
+                        "UPDATE statement_links SET weight = ?3, updated_at = ?4
+                     WHERE from_id = ?1 AND to_id = ?2",
+                        params![from, to, weakened.weight, format_ts(now)],
+                    )?;
+                }
+            }
+            Ok(Some(state))
+        })
     }
 
     /// Records that `ids` had `kind` in run `run_id` (already recorded ones are kept).
@@ -422,18 +414,17 @@ impl DynamicsStore {
         if ids.is_empty() {
             return Ok(());
         }
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for id in ids {
-            tx.execute(
-                "INSERT INTO run_memories(run_id, statement_id, kind, created_at)
+        self.conn.write(|tx| {
+            for id in ids {
+                tx.execute(
+                    "INSERT INTO run_memories(run_id, statement_id, kind, created_at)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(run_id, statement_id, kind) DO NOTHING",
-                params![run_id, id, kind.as_str(), format_ts(now)],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
+                    params![run_id, id, kind.as_str(), format_ts(now)],
+                )?;
+            }
+            Ok(())
+        })
     }
 
     /// The memories recorded with `kind` in any of the runs `run_ids`.
@@ -442,7 +433,7 @@ impl DynamicsStore {
         run_ids: &[String],
         kind: RunMemoryKind,
     ) -> StatementResult<BTreeSet<String>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         let mut out = BTreeSet::new();
         for chunk in run_ids.chunks(LOOKUP_CHUNK) {
             let placeholders = vec!["?"; chunk.len()].join(", ");
@@ -461,16 +452,17 @@ impl DynamicsStore {
 
     /// Removes every link of a statement (it was forgotten).
     pub fn remove_links(&self, id: &str) -> StatementResult<usize> {
-        let conn = self.lock();
-        Ok(conn.execute(
-            "DELETE FROM statement_links WHERE from_id = ?1 OR to_id = ?1",
-            params![id],
-        )?)
+        self.conn.write(|tx| {
+            Ok(tx.execute(
+                "DELETE FROM statement_links WHERE from_id = ?1 OR to_id = ?1",
+                params![id],
+            )?)
+        })
     }
 
     /// A small stored value of the statement store (`statement_state`), if set.
     pub fn state(&self, key: &str) -> StatementResult<Option<String>> {
-        let conn = self.lock();
+        let conn = self.conn.read()?;
         Ok(conn
             .query_row(
                 "SELECT value FROM statement_state WHERE key = ?1",
@@ -482,20 +474,22 @@ impl DynamicsStore {
 
     /// Sets a small stored value of the statement store.
     pub fn set_state(&self, key: &str, value: &str) -> StatementResult<()> {
-        let conn = self.lock();
-        conn.execute(
-            "INSERT INTO statement_state(key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
-        Ok(())
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO statement_state(key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+            Ok(())
+        })
     }
 
     /// Removes a stored value of the statement store.
     pub fn clear_state(&self, key: &str) -> StatementResult<()> {
-        let conn = self.lock();
-        conn.execute("DELETE FROM statement_state WHERE key = ?1", params![key])?;
-        Ok(())
+        self.conn.write(|tx| {
+            tx.execute("DELETE FROM statement_state WHERE key = ?1", params![key])?;
+            Ok(())
+        })
     }
 
     /// Deletes the dynamics (strength, use count, pin), every link and the feedback of
@@ -505,31 +499,35 @@ impl DynamicsStore {
         if ids.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.lock();
-        // The pragma answers with its new value, so it is read, not executed.
-        conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut removed = 0;
-        for chunk in ids.chunks(LOOKUP_CHUNK) {
-            let placeholders = vec!["?"; chunk.len()].join(", ");
-            removed += tx.execute(
-                &format!("DELETE FROM statement_dynamics WHERE statement_id IN ({placeholders})"),
-                params_from_iter(chunk.iter()),
-            )?;
-            tx.execute(
-                &format!(
-                    "DELETE FROM statement_links
+        // The pragma answers with its new value, so it is read, not executed. It is a
+        // setting of this connection, not a write to the database.
+        self.conn
+            .read()?
+            .query_row("PRAGMA secure_delete = ON", [], |r| r.get::<_, i64>(0))?;
+        self.conn.write(|tx| {
+            let mut removed = 0;
+            for chunk in ids.chunks(LOOKUP_CHUNK) {
+                let placeholders = vec!["?"; chunk.len()].join(", ");
+                removed += tx.execute(
+                    &format!(
+                        "DELETE FROM statement_dynamics WHERE statement_id IN ({placeholders})"
+                    ),
+                    params_from_iter(chunk.iter()),
+                )?;
+                tx.execute(
+                    &format!(
+                        "DELETE FROM statement_links
                      WHERE from_id IN ({placeholders}) OR to_id IN ({placeholders})"
-                ),
-                params_from_iter(chunk.iter().chain(chunk.iter())),
-            )?;
-            tx.execute(
-                &format!("DELETE FROM run_memories WHERE statement_id IN ({placeholders})"),
-                params_from_iter(chunk.iter()),
-            )?;
-        }
-        tx.commit()?;
-        Ok(removed)
+                    ),
+                    params_from_iter(chunk.iter().chain(chunk.iter())),
+                )?;
+                tx.execute(
+                    &format!("DELETE FROM run_memories WHERE statement_id IN ({placeholders})"),
+                    params_from_iter(chunk.iter()),
+                )?;
+            }
+            Ok(removed)
+        })
     }
 }
 

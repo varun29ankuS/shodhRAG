@@ -234,7 +234,7 @@ pub fn approval_item(
     let unreviewed = preview.get(REVIEW_NOTE_KEY).is_some();
     let detail = if unreviewed {
         format!(
-            "The assistant waits for your approval ({tool}). Files changed without your              review are listed in the conversation; approving here runs it but does not mark              them reviewed."
+            "The assistant waits for your approval ({tool}). Files changed without your review are listed in the conversation; approving here runs it but does not mark them reviewed."
         )
     } else {
         format!("The assistant waits for your approval ({tool}).")

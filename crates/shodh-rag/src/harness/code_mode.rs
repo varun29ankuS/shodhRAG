@@ -826,7 +826,7 @@ const RUNS_PROGRAMS: &[(&[FileName], &str)] = {
                 Is("gradlew"),
                 Is("gradlew.bat"),
             ],
-            "Gradle runs this build logic, or downloads the Gradle it names, with every              build and test.",
+            "Gradle runs this build logic, or downloads the Gradle it names, with every build and test.",
         ),
         (
             &[Is("pom.xml"), Is("mvnw"), Is("mvnw.cmd")],
@@ -1230,7 +1230,7 @@ pub fn background_arguments(request: &GuardRequest) -> Option<&'static str> {
     let input = &request.input;
     let set = |key: &str| input.get(key).is_some_and(|value| !unset(value));
     (set("async") || set("name") || set("ready")).then_some(
-        "Code mode does not start background jobs or services. Run the command in the          foreground, or ask the user to start it outside Shodh.",
+        "Code mode does not start background jobs or services. Run the command in the foreground, or ask the user to start it outside Shodh.",
     )
 }
 
@@ -1433,7 +1433,7 @@ pub struct CodeApproval {
 }
 
 /// What an edit or write prompt whose content was cut says.
-pub const PREVIEW_CUT_NOTE: &str = "The preview is cut, so approving does not count as      reviewing this file: it stays listed as changed without your review until you approve      an allowlisted command that lists it.";
+pub const PREVIEW_CUT_NOTE: &str = "The preview is cut, so approving does not count as reviewing this file: it stays listed as changed without your review until you approve an allowlisted command that lists it.";
 
 /// What a command prompt says about a `timeout` argument (seconds; 0 is
 /// none), or `None` without one.

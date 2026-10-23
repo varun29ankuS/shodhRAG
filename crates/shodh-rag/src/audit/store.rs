@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -24,7 +24,8 @@ use sha2::{Digest, Sha256};
 
 use super::{
     canonical_json, AuditError, AuditEventType, AuditKey, AuditQuery, AuditRecord, AuditResult,
-    AuditRow, AuditStats, MonthStats, VerifyReport, GENESIS_HASH, LOCAL_OWNER, SYSTEM_PRINCIPAL,
+    AuditRow, AuditStats, MonthStats, UnrecordedEvents, VerifyReport, GENESIS_HASH, LOCAL_OWNER,
+    SYSTEM_PRINCIPAL,
 };
 
 pub const DEFAULT_RETENTION_DAYS: u32 = 365;
@@ -746,6 +747,25 @@ enum WriterMsg {
     },
 }
 
+/// Queued events the writer failed to record, shared by the log and its writer thread.
+#[derive(Default)]
+struct UnrecordedTally(Mutex<Option<UnrecordedEvents>>);
+
+impl UnrecordedTally {
+    fn note(&self, error: &AuditError) {
+        let mut unrecorded = lock(&self.0);
+        let count = unrecorded.as_ref().map_or(0, |u| u.count) + 1;
+        *unrecorded = Some(UnrecordedEvents {
+            count,
+            last_error: error.to_string(),
+        });
+    }
+
+    fn get(&self) -> Option<UnrecordedEvents> {
+        lock(&self.0).clone()
+    }
+}
+
 /// The single writer: owns the write connection and the chain head.
 struct Writer {
     conn: Connection,
@@ -899,22 +919,23 @@ impl Writer {
         Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
     }
 
-    fn run(mut self, inbox: mpsc::Receiver<WriterMsg>) {
+    /// Append a queued event, one no caller waits for ([`AuditLog::submit`]). A failure
+    /// has nobody to return to: it is logged and counted in [`AuditLog::unrecorded`], so
+    /// the event is not lost silently.
+    fn append_queued(&mut self, record: &AuditRecord, unrecorded: &UnrecordedTally) {
+        if let Err(e) = self.append(record) {
+            tracing::error!(target: "shodh::audit", event_type = %record.event_type, error = %e, "audit event was not recorded");
+            unrecorded.note(&e);
+        }
+    }
+
+    fn run(mut self, inbox: mpsc::Receiver<WriterMsg>, unrecorded: &UnrecordedTally) {
         for msg in inbox {
             match msg {
-                WriterMsg::Append(record, reply) => {
-                    let result = self.append(&record);
-                    match reply {
-                        Some(reply) => {
-                            let _ = reply.send(result);
-                        }
-                        None => {
-                            if let Err(e) = result {
-                                tracing::error!(target: "shodh::audit", event_type = %record.event_type, error = %e, "audit event was not recorded");
-                            }
-                        }
-                    }
+                WriterMsg::Append(record, Some(reply)) => {
+                    let _ = reply.send(self.append(&record));
                 }
+                WriterMsg::Append(record, None) => self.append_queued(&record, unrecorded),
                 WriterMsg::Retention { days, now, reply } => {
                     let _ = reply.send(self.retention(days, now));
                 }
@@ -1061,6 +1082,7 @@ pub struct AuditLog {
     encrypted: bool,
     writer: Mutex<Option<mpsc::Sender<WriterMsg>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    unrecorded: Arc<UnrecordedTally>,
     reader: Mutex<Connection>,
 }
 
@@ -1090,14 +1112,19 @@ impl AuditLog {
         reader.execute_batch("PRAGMA query_only = 1;")?;
         let writer = Writer::new(write_conn)?;
         let (tx, rx) = mpsc::channel();
+        let unrecorded = Arc::new(UnrecordedTally::default());
         let thread = std::thread::Builder::new()
             .name("shodh-audit-writer".to_string())
-            .spawn(move || writer.run(rx))?;
+            .spawn({
+                let unrecorded = Arc::clone(&unrecorded);
+                move || writer.run(rx, &unrecorded)
+            })?;
         Ok(Self {
             path,
             encrypted,
             writer: Mutex::new(Some(tx)),
             thread: Mutex::new(Some(thread)),
+            unrecorded,
             reader: Mutex::new(reader),
         })
     }
@@ -1131,13 +1158,20 @@ impl AuditLog {
         self.request(|reply| WriterMsg::Append(record, Some(reply)))
     }
 
-    /// Queue an event without waiting. Write failures are logged by the
-    /// writer. Safe on async and UI threads.
+    /// Queue an event without waiting. Write failures are logged by the writer
+    /// and counted in [`unrecorded`](Self::unrecorded). Safe on async and UI
+    /// threads.
     pub fn submit(&self, record: AuditRecord) {
         let event_type = record.event_type;
         if let Err(e) = self.send(WriterMsg::Append(record, None)) {
             tracing::error!(target: "shodh::audit", %event_type, error = %e, "audit event was not queued");
         }
+    }
+
+    /// Queued events ([`submit`](Self::submit)) the writer could not record since
+    /// the log was opened, with the latest error; `None` when every one was.
+    pub fn unrecorded(&self) -> Option<UnrecordedEvents> {
+        self.unrecorded.get()
     }
 
     /// Delete events older than `days` and record a checkpoint. Returns the
@@ -1453,6 +1487,7 @@ impl AuditLog {
             },
             retention_days,
             encrypted: self.encrypted,
+            unrecorded: self.unrecorded.get(),
         })
     }
 }
@@ -1538,6 +1573,61 @@ mod tests {
         // The chain continues across reopen.
         assert_eq!(log.append(question(4)).unwrap(), 4);
         assert!(log.verify().unwrap().ok);
+    }
+
+    /// A writer over `dir`'s migrated database whose busy timeout is `busy`, and a second
+    /// connection holding the database's write lock, as the statement store's does while
+    /// it commits.
+    fn writer_behind_a_held_write_lock(
+        dir: &tempfile::TempDir,
+        busy: Duration,
+    ) -> (Writer, Connection) {
+        drop(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let conn = raw(dir);
+        conn.busy_timeout(busy).unwrap();
+        let writer = Writer::new(conn).unwrap();
+        let holder = raw(dir);
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        (writer, holder)
+    }
+
+    #[test]
+    fn a_queued_event_that_finds_the_database_busy_is_counted_with_its_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let (writer, holder) = writer_behind_a_held_write_lock(&dir, Duration::from_millis(50));
+        // The writer thread as `AuditLog` runs it: two submitted events while another
+        // connection holds the write lock, a waited-for one while it is still held, and one
+        // after it is released.
+        let unrecorded = Arc::new(UnrecordedTally::default());
+        let (inbox, rx) = mpsc::channel();
+        let thread = std::thread::spawn({
+            let unrecorded = Arc::clone(&unrecorded);
+            move || writer.run(rx, &unrecorded)
+        });
+        inbox.send(WriterMsg::Append(question(1), None)).unwrap();
+        inbox.send(WriterMsg::Append(question(2), None)).unwrap();
+        let (reply, response) = mpsc::channel();
+        inbox
+            .send(WriterMsg::Append(question(3), Some(reply.clone())))
+            .unwrap();
+        // The waited-for append fails busy too, and goes back to its caller uncounted.
+        let error = response.recv().unwrap().unwrap_err();
+        assert!(
+            matches!(&error, AuditError::Sqlite(e) if e.sqlite_error_code() == Some(ErrorCode::DatabaseBusy)),
+            "{error}"
+        );
+        let counted = unrecorded.get().unwrap();
+        assert_eq!(counted.count, 2);
+        assert_eq!(counted.last_error, error.to_string());
+
+        holder.execute_batch("COMMIT").unwrap();
+        inbox
+            .send(WriterMsg::Append(question(4), Some(reply)))
+            .unwrap();
+        assert_eq!(response.recv().unwrap().unwrap(), 1);
+        drop(inbox);
+        thread.join().unwrap();
+        assert_eq!(unrecorded.get().unwrap().count, 2);
     }
 
     #[test]

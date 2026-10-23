@@ -886,6 +886,8 @@ mod tests {
                 serde_json::json!({}),
             ))
             .unwrap();
+        // A queued event the writer failed to record would be missing below; name its error.
+        assert_eq!(audit.unrecorded(), None);
         audit
             .query(&AuditQuery {
                 types: vec![AuditEventType::MemoryUse],

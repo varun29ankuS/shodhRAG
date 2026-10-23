@@ -322,6 +322,13 @@ export default function AuditView() {
               : 'The audit database is not encrypted in this build; protect it with disk encryption (BitLocker or FileVault).'
             : null}
         </p>
+        {stats?.unrecorded && (
+          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+            {stats.unrecorded.count.toLocaleString()}{' '}
+            {stats.unrecorded.count === 1 ? 'event' : 'events'} could not be recorded since Shodh started. Latest
+            error: {stats.unrecorded.lastError}
+          </p>
+        )}
       </section>
 
       <div role="group" aria-label="Filter events" className="flex flex-col gap-2.5">

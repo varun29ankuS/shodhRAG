@@ -321,6 +321,18 @@ pub struct AuditStats {
     pub retention_days: u32,
     /// The database is encrypted (SQLCipher confirmed at open).
     pub encrypted: bool,
+    /// Queued events the writer failed to record since the app started.
+    pub unrecorded: Option<UnrecordedEvents>,
+}
+
+/// Queued events ([`AuditLog::submit`]) the writer failed to record since the log was
+/// opened: missing from the chain, so the Usage & Audit page says so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnrecordedEvents {
+    pub count: u64,
+    /// The error of the latest one.
+    pub last_error: String,
 }
 
 /// A 256-bit database key. Never printed.

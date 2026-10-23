@@ -131,6 +131,14 @@ export interface AuditStats {
   month: MonthStats;
   retentionDays: number;
   encrypted: boolean;
+  /** Queued events the writer failed to record since the app started. */
+  unrecorded: UnrecordedEvents | null;
+}
+
+export interface UnrecordedEvents {
+  count: number;
+  /** The error of the latest one. */
+  lastError: string;
 }
 
 export const MIN_RETENTION_DAYS = 1;

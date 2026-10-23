@@ -59,6 +59,8 @@ impl Mem {
                 json!({"text": "barrier"}),
             ))
             .unwrap();
+        // A queued event the writer failed to record would be missing below; name its error.
+        assert_eq!(self.audit.unrecorded(), None);
         let mut rows = self
             .audit
             .query(&AuditQuery {

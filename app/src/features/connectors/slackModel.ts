@@ -143,7 +143,13 @@ export function answerSourceLine(status: SlackStatus): { tone: Tone; text: strin
 
 // ── Setup ───────────────────────────────────────────────────────────
 
-export type TokenCheck = { ok: true } | { ok: false; message: string };
+/** `message` says what is wrong, `null` when the token is fine. */
+export interface TokenCheck {
+  ok: boolean;
+  message: string | null;
+}
+
+const OK: TokenCheck = { ok: true, message: null };
 
 const TOKEN_CHARS = /^[A-Za-z0-9._-]+$/;
 const MAX_TOKEN_CHARS = 512;
@@ -160,7 +166,7 @@ function shape(raw: string, kind: string): TokenCheck {
   if (token.startsWith('xoxe.') || token.startsWith('xoxe-')) {
     return { ok: false, message: `That is a rotating token (xoxe.). Turn token rotation off for the app and paste the ${kind}.` };
   }
-  return { ok: true };
+  return OK;
 }
 
 /** The app-level token: `xapp-…`. */
@@ -172,7 +178,7 @@ export function checkAppToken(raw: string): TokenCheck {
   if (!token.startsWith('xapp-') || token.length <= 5) {
     return { ok: false, message: 'The app-level token starts with xapp-. Check that the whole token was copied.' };
   }
-  return { ok: true };
+  return OK;
 }
 
 /** The bot token: `xoxb-…`. */
@@ -184,7 +190,7 @@ export function checkBotToken(raw: string): TokenCheck {
   if (!token.startsWith('xoxb-') || token.length <= 5) {
     return { ok: false, message: 'The bot token starts with xoxb-. Check that the whole token was copied.' };
   }
-  return { ok: true };
+  return OK;
 }
 
 /** The message to show under a token field: none while it is empty (not yet pasted). */

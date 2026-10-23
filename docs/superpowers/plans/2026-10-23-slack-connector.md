@@ -184,14 +184,22 @@ Disconnect stops the connection and deletes both credential entries and the inst
    and the OS user name, and UUIDs are replaced.
 6. Slack text is capped to Slack's 4 000-character limit for `chat.update`.
 
-Until a workspace is chosen on the card, every question gets "Shodh isn't set up to answer here yet."
-with no model call.
+Until a workspace is chosen on the card, or after the chosen one was deleted or archived, every
+question gets "Shodh isn't set up to answer here yet." with no model call (the card says why).
+
+Local-only mode: the connector does not connect, and switching Local-only mode on stops a running
+connection (switching it off resumes it).
 
 ### Quota
 
 Own daily cap (Connectors card, default 20, 1–1 000), on the same UTC day as the tables cap. A call is
 reserved before it is made (a crash over-counts by at most one, never under-counts). At the cap: "Shodh
 has used today's answer limit; it resets at 00:00 UTC." with no model call. The card shows used / cap.
+
+**Quota interplay.** The Slack cap (20) and the tables cap (30) are separate and add up: on a free
+OpenRouter key of about 50 requests a day, a day on which both are used up leaves nothing for the user's
+own questions in Ask. The caps are bounds, not reservations; lower the Slack cap on the card when the
+quota is shared.
 
 ### Model errors
 
@@ -207,8 +215,9 @@ The details go to the app log only.
   ([Slack Connect](https://docs.slack.dev/apis/slack-connect)). So people from a client's organization
   in a **Slack Connect channel** that the bot was added to can @mention it, and Shodh answers them like
   anyone else in that channel. Slack does not document that external users can open a DM with a bot
-  installed only in your organization; plan on the shared channel, not DMs. Guests can mention the bot
-  in channels they belong to. Not every workspace allows Slack Connect (it is not available to all free
+  installed only in your organization; plan on the shared channel, not DMs. Slack's pages fetched for
+  this plan say nothing specific about guest accounts; treat guests like external members (a channel
+  both they and the bot are in) and test it. Not every workspace allows Slack Connect (it is not available to all free
   workspaces), and the bot only sees a channel it was invited to (`/invite @shodh`). Test the exact
   channel before relying on it.
 - **Where questions go.** A Slack question and the retrieved passages go to the model provider set in

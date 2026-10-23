@@ -111,8 +111,8 @@ test('the answer workspace line says what answers come from, and what happens wi
 });
 
 test('tokens are checked like the Rust token types', () => {
-  assert.deepEqual(checkAppToken(' xapp-1-A1-2-abc '), { ok: true });
-  assert.deepEqual(checkBotToken('xoxb-1-2-abc'), { ok: true });
+  assert.deepEqual(checkAppToken(' xapp-1-A1-2-abc '), { ok: true, message: null });
+  assert.deepEqual(checkBotToken('xoxb-1-2-abc'), { ok: true, message: null });
   assert.match((checkBotToken('xoxp-1-2-3') as { message: string }).message, /user token/);
   assert.match((checkAppToken('xoxp-1-2-3') as { message: string }).message, /user token/);
   assert.match((checkBotToken('xoxe.xoxb-1-abc') as { message: string }).message, /rotating/);

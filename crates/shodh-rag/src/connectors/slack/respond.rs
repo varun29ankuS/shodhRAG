@@ -1411,7 +1411,8 @@ mod tests {
         let (responder, slack) = flaky(vec![], vec![limited(20)]);
         let cancel = responder.cancel.clone();
         let waiting = slack.clone();
-        let (outcome, _) = tokio::join!(responder.respond(&question("q?")), async {
+        let asked = question("q?");
+        let (outcome, _) = tokio::join!(responder.respond(&asked), async {
             // Switched off once the edit was refused and the 20 s wait began.
             while *waiting.updates.lock().unwrap() == 0 {
                 tokio::time::sleep(Duration::from_millis(10)).await;

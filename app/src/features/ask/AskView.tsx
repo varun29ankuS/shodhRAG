@@ -355,7 +355,7 @@ interface AssistantMessageProps {
   onOpenSource: (messageId: string, hit: SearchHit, trigger: HTMLElement) => void;
   onOpenArtifact: (artifactId: string) => void;
   onRetry: (message: ChatMessage, fallback?: FallbackRun | null) => void;
-  onDecide: (stepId: string, approved: boolean) => void;
+  onDecide: (stepId: string, approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   onRuntimeInstalled: () => void;
   onOpenSettings: () => void;
   onOpenThread: (messageId: string, thread: FocusThread, trigger: HTMLElement) => void;

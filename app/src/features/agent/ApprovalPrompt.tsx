@@ -4,6 +4,7 @@ import { cn } from '../../lib/utils';
 import type { StepApproval } from './reducer';
 import { DiffView } from '../workspaces/DiffView';
 import { parseDiff } from '../workspaces/model';
+import { REVIEW_BLOCK_KEYS, reviewTokenFor, unreviewedFiles } from './reviewList';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -60,7 +61,7 @@ function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
     return Object.entries(preview)
       // Shown as their own blocks: field changes and an instruction diff.
-      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE)
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE && !REVIEW_BLOCK_KEYS.includes(k))
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
@@ -95,8 +96,12 @@ function isTextEntry(element: Element | null): boolean {
 
 interface ApprovalPromptProps {
   approval: StepApproval;
-  /** `forConversation`: the user chose the prompt's yes for the rest of the conversation. */
-  onDecide: (approved: boolean, forConversation?: boolean) => void;
+  /**
+   * `forConversation`: the user chose the prompt's yes for the rest of the
+   * conversation. `reviewToken`: the prompt showed every file it lists as
+   * changed without review, so approving marks them reviewed.
+   */
+  onDecide: (approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   compact?: boolean;
 }
 
@@ -117,6 +122,9 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const allowance = conversationAllowance(approval.preview);
   const allowanceNote = conversationAllowanceNote(approval.preview);
   const allowanceNoteId = useId();
+  const unreviewed = unreviewedFiles(approval.preview);
+  // The whole list is rendered below, so this prompt may send the token.
+  const reviewToken = reviewTokenFor(approval.preview, true);
 
   useEffect(() => {
     if (!pending) return;
@@ -184,12 +192,25 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           ))}
         </dl>
       )}
+      {unreviewed.length > 0 && (
+        <div className="rounded-lg bg-shodh-raised px-3 py-2 text-[12.5px]">
+          <p className="m-0 mb-1 text-shodh-text-muted">{`Changed without your review (${unreviewed.length})`}</p>
+          <ul
+            aria-label="Files changed without your review"
+            className="m-0 p-0 list-none max-h-40 overflow-y-auto flex flex-col gap-0.5 font-mono text-[12px]"
+          >
+            {unreviewed.map(file => (
+              <li key={file} className="text-shodh-text break-all">{file}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {diff && <DiffView lines={diff} label="Proposed change to the instructions" />}
       <div className="flex items-center gap-2">
         <button
           ref={approveRef}
           type="button"
-          onClick={() => onDecide(true)}
+          onClick={() => onDecide(true, false, reviewToken)}
           className={cn(
             'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[12.5px] font-semibold transition-colors duration-micro',
             destructive

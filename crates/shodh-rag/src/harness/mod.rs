@@ -84,6 +84,12 @@ pub trait AgentHarness: Send + Sync {
     /// Resolve a pending approval.
     fn approve(&self, step_id: &str, approved: bool) -> Result<(), HarnessError>;
 
+    /// Approve a pending step from the prompt that showed what approving
+    /// marks reviewed (a Code command prompt listing files changed without
+    /// review), which sends back its `token`. A plain [`AgentHarness::approve`]
+    /// runs the step and marks nothing reviewed.
+    fn approve_reviewed(&self, step_id: &str, token: &str) -> Result<(), HarnessError>;
+
     /// Approve a pending step and give the yes its prompt offered
     /// (`allowForConversation`) for the rest of this session: kept in memory
     /// only, and audited. Returns what was allowed.

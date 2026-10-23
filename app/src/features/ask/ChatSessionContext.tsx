@@ -165,7 +165,7 @@ export interface ChatSessionValue {
   /** Interrupt the running answer. */
   cancel: () => void;
   /** Answer a pending approval of the running answer (`forConversation`: allow what it offered for the session). */
-  approve: (stepId: string, approved: boolean, forConversation?: boolean) => void;
+  approve: (stepId: string, approved: boolean, forConversation?: boolean, reviewToken?: string) => void;
   /** Append a non-chat message (e.g. OCR or upload notices) to the active conversation. */
   appendMessage: (message: ChatMessage) => void;
   /**
@@ -713,11 +713,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     });
   }, [api, enqueue]);
 
-  const approve = useCallback((stepId: string, approved: boolean, forConversation = false) => {
+  const approve = useCallback((stepId: string, approved: boolean, forConversation = false, reviewToken?: string) => {
     const live = liveRef.current;
     if (!live || live.settled || live.sessionId === null) return;
     enqueue(live, { type: 'local_approval', stepId, approved }, true);
-    api.approve(live.sessionId, stepId, approved, approved && forConversation)
+    api.approve(live.sessionId, stepId, approved, approved && forConversation, approved ? reviewToken : undefined)
       .catch(error => notify.error('The decision did not reach the agent', { description: toAgentError(error).message }));
   }, [api, enqueue]);
 

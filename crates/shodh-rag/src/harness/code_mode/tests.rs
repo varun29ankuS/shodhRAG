@@ -148,6 +148,10 @@ fn the_overlay_lets_the_guard_ask_and_pins_the_risky_settings() {
     // Single-file edits only: the guard checks one `path`.
     assert_eq!(overlay["edit"]["mode"], "replace");
     assert_eq!(overlay["bash"]["patterns"], json!([]));
+    // Commands never keep running in the background past their tool call.
+    assert_eq!(overlay["async"]["enabled"], false);
+    assert_eq!(overlay["launch"]["enabled"], false);
+    assert_eq!(overlay["bash"]["autoBackground"]["enabled"], false);
     assert_eq!(overlay["workspace"]["additionalDirectories"], json!([]));
     assert_eq!(overlay["lsp"]["enabled"], false);
     let disabled = overlay["disabledProviders"].as_array().unwrap();
@@ -399,6 +403,9 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
     assert!(write.preview.get("warning").is_none());
     let content = write.preview["content"].as_str().unwrap();
     assert!(content.ends_with("(3000 more characters)"), "{content}");
+    // Approving a cut preview is no review of the file.
+    assert!(write.preview_cut);
+    assert_eq!(write.preview["preview_cut"], PREVIEW_CUT_NOTE);
 
     let edit = approval_for(
         &request(
@@ -412,6 +419,8 @@ fn approvals_show_what_will_change_and_how_to_undo_it() {
     assert_eq!(edit.preview["replace"], "a");
     assert_eq!(edit.preview["with"], "b");
     assert_eq!(edit.preview["every_match"], true);
+    assert!(!edit.preview_cut);
+    assert!(edit.preview.get("preview_cut").is_none());
 
     // A file that can run programs: destructive, with the reason.
     let risky = approval_for(
@@ -453,6 +462,64 @@ fn files_that_can_run_programs_are_recognised() {
         ".pre-commit-config.yaml",
         "lefthook.yml",
         "app/.lefthook.yaml",
+        // Build and test configuration: a test or build command runs it.
+        ".yarnrc.yml",
+        ".pnpmfile.cjs",
+        "jest.config.js",
+        "web/vitest.config.ts",
+        ".mocharc.yml",
+        "build.rs",
+        "crates/x/build.rs",
+        "Cargo.toml",
+        "crates/x/Cargo.toml",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "conftest.py",
+        "tests/unit/conftest.py",
+        "pytest.ini",
+        ".pytest.ini",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "tox.ini",
+        "noxfile.py",
+        "sitecustomize.py",
+        "usercustomize.py",
+        ".venv/Lib/site-packages/evil.pth",
+        ".venv/pyvenv.cfg",
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "rules/common.mk",
+        "CMakeLists.txt",
+        "cmake/deps.cmake",
+        "justfile",
+        ".justfile",
+        "web/vite.config.ts",
+        "babel.config.js",
+        ".babelrc",
+        ".babelrc.cjs",
+        "playwright.config.ts",
+        "karma.conf.js",
+        "webpack.config.js",
+        ".nycrc.json",
+        "shodh.code-workspace",
+        "build.gradle",
+        "app/build.gradle.kts",
+        "settings.gradle.kts",
+        "gradle.properties",
+        "gradle/wrapper/gradle-wrapper.properties",
+        "gradlew",
+        "pom.xml",
+        "mvnw.cmd",
+        ".mvn/jvm.config",
+        ".mvn/extensions.xml",
+        "src/App/App.csproj",
+        "Directory.Build.props",
+        "Directory.Build.targets",
+        "global.json",
+        "go.mod",
+        "go.work",
     ] {
         assert!(execution_risk(Path::new(risky)).is_some(), "{risky}");
     }
@@ -464,6 +531,20 @@ fn files_that_can_run_programs_are_recognised() {
         "config.toml",
         "package-lock.json.md",
         "src/.vscode-notes",
+        "docs/makefile.md",
+        "cargo.toml.md",
+        "Cargo.lock",
+        "src/conftest_helpers.py",
+        "tests/test_a.py",
+        "a.pth.txt",
+        "docs/vite.md",
+        "go.sum",
+        "pom.xml.orig",
+        "README.gradle.md",
+        "src/App/App.cs",
+        "build.rs.orig",
+        "jest.config",
+        "src/setup_test.py",
     ] {
         assert_eq!(execution_risk(Path::new(plain)), None, "{plain}");
     }
@@ -1012,23 +1093,31 @@ fn approval_levels_decide_what_runs_without_asking() {
     let refuse = ChangePlan::Refuse("dirty".into());
 
     let plain = ChangeTarget::Plain;
+    let reviewed = ReviewState::default();
+    let clear = gate(&reviewed);
     let none = ChangeTarget::Unknown;
 
     let ask = level(ApprovalLevel::AskEveryTime);
     for request in [&edit, &write, &test] {
-        assert_eq!(auto_approval(&ask, request, &continuing, plain), None);
+        assert_eq!(
+            auto_approval(&ask, request, &continuing, plain, &clear),
+            None
+        );
     }
 
     let edits = level(ApprovalLevel::AutoApplyEdits);
-    assert!(auto_approval(&edits, &edit, &continuing, plain).is_some());
-    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch, plain).is_some());
+    assert!(auto_approval(&edits, &edit, &continuing, plain, &clear).is_some());
+    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch, plain, &clear).is_some());
     // Without git nothing can undo an edit, so it asks.
     assert_eq!(
-        auto_approval(&edits, &edit, &ChangePlan::NotRepo, plain),
+        auto_approval(&edits, &edit, &ChangePlan::NotRepo, plain, &clear),
         None
     );
-    assert_eq!(auto_approval(&edits, &edit, &refuse, plain), None);
-    assert_eq!(auto_approval(&edits, &test, &continuing, none), None);
+    assert_eq!(auto_approval(&edits, &edit, &refuse, plain, &clear), None);
+    assert_eq!(
+        auto_approval(&edits, &test, &continuing, none, &clear),
+        None
+    );
     // Files that can run programs, files Discard cannot restore and files
     // the guard did not name always ask.
     for target in [
@@ -1042,7 +1131,7 @@ fn approval_levels_decide_what_runs_without_asking() {
     ] {
         for approval in [ApprovalLevel::AutoApplyEdits, ApprovalLevel::Trusted] {
             assert_eq!(
-                auto_approval(&level_of(approval), &edit, &continuing, target),
+                auto_approval(&level_of(approval), &edit, &continuing, target, &clear),
                 None,
                 "{target:?}"
             );
@@ -1050,21 +1139,478 @@ fn approval_levels_decide_what_runs_without_asking() {
     }
 
     let trusted = level(ApprovalLevel::Trusted);
-    assert!(auto_approval(&trusted, &edit, &continuing, plain).is_some());
-    assert!(auto_approval(&trusted, &test, &continuing, none).is_some());
-    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo, none).is_some());
-    assert_eq!(auto_approval(&trusted, &test, &refuse, none), None);
+    assert!(auto_approval(&trusted, &edit, &continuing, plain, &clear).is_some());
+    assert!(auto_approval(&trusted, &test, &continuing, none, &clear).is_some());
+    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo, none, &clear).is_some());
+    assert_eq!(auto_approval(&trusted, &test, &refuse, none, &clear), None);
     // Destructive commands always ask, even when the user listed them.
-    assert_eq!(auto_approval(&trusted, &wipe, &continuing, none), None);
+    assert_eq!(
+        auto_approval(&trusted, &wipe, &continuing, none, &clear),
+        None
+    );
     for approval in [
         ApprovalLevel::AskEveryTime,
         ApprovalLevel::AutoApplyEdits,
         ApprovalLevel::Trusted,
     ] {
         assert_eq!(
-            auto_approval(&level(approval), &delete, &continuing, none),
+            auto_approval(&level(approval), &delete, &continuing, none, &clear),
             None
         );
+    }
+}
+
+#[test]
+fn allowlisted_commands_ask_again_after_unreviewed_changes() {
+    let edit = guarded(
+        "edit",
+        json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+    );
+    let test = guarded("bash", json!({"command": "pytest"}));
+    let settings = |approval| CodeSettings {
+        approval,
+        allowlist: vec!["pytest".into()],
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let reviewed = ReviewState::default();
+    let changed = ReviewState {
+        files: vec!["conftest.py".into()],
+        ..ReviewState::default()
+    };
+    let unknown = ReviewState::unreadable("code_reviews.json is not readable");
+    let none = ChangeTarget::Unknown;
+    let plain = ChangeTarget::Plain;
+
+    // Trusted: the allowlist runs by itself only while nothing changed
+    // without review, and an unreadable record counts as changed.
+    let trusted = settings(ApprovalLevel::Trusted);
+    assert!(auto_approval(&trusted, &test, &continuing, none, &gate(&reviewed)).is_some());
+    for (state, plan) in [
+        (&changed, &continuing),
+        (&unknown, &continuing),
+        (&changed, &ChangePlan::NotRepo),
+        (&changed, &ChangePlan::CreateBranch),
+    ] {
+        assert_eq!(
+            auto_approval(&trusted, &test, plan, none, &gate(state)),
+            None,
+            "{state:?} {plan:?}"
+        );
+    }
+    // Edits are decided as before, whatever changed earlier.
+    for state in [&reviewed, &changed, &unknown] {
+        assert!(auto_approval(&trusted, &edit, &continuing, plain, &gate(state)).is_some());
+        assert!(auto_approval(
+            &settings(ApprovalLevel::AutoApplyEdits),
+            &edit,
+            &continuing,
+            plain,
+            &gate(state)
+        )
+        .is_some());
+    }
+    // The other levels ask for every command, as before.
+    for approval in [ApprovalLevel::AskEveryTime, ApprovalLevel::AutoApplyEdits] {
+        for state in [&reviewed, &changed, &unknown] {
+            assert_eq!(
+                auto_approval(&settings(approval), &test, &continuing, none, &gate(state)),
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
+    let test = guarded("bash", json!({"command": "pytest"}));
+    let edit = guarded(
+        "edit",
+        json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+    );
+    let trusted = CodeSettings {
+        approval: ApprovalLevel::Trusted,
+        allowlist: vec!["pytest".into()],
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let reviewed = ReviewState::default();
+    let base = gate(&reviewed);
+    // Another command of the same step runs at the same time.
+    let running = GateContext {
+        running: Some("`git apply x.patch`"),
+        ..base
+    };
+    assert_eq!(
+        auto_approval(
+            &trusted,
+            &test,
+            &continuing,
+            ChangeTarget::Unknown,
+            &running
+        ),
+        None
+    );
+    // An MCP tool that changes files without asking runs alongside too.
+    let writer = GateContext {
+        unasked_writer: Some("files: write_file"),
+        ..base
+    };
+    assert_eq!(
+        auto_approval(&trusted, &test, &continuing, ChangeTarget::Unknown, &writer),
+        None
+    );
+    // A process the user started may still run: edits ask, commands do not
+    // depend on it.
+    let started = ReviewState {
+        background: vec!["`npm run dev &`".into()],
+        ..ReviewState::default()
+    };
+    let background = gate(&started);
+    assert_eq!(
+        auto_approval(
+            &trusted,
+            &edit,
+            &continuing,
+            ChangeTarget::Plain,
+            &background
+        ),
+        None
+    );
+    assert!(auto_approval(
+        &trusted,
+        &test,
+        &continuing,
+        ChangeTarget::Unknown,
+        &background
+    )
+    .is_some());
+    let mut approval = approval_for(&edit, None, ChangeTarget::Plain);
+    note_review(&mut approval, &edit, &background, false, "t");
+    assert!(approval.preview["running_process"]
+        .as_str()
+        .unwrap()
+        .contains("npm run dev"));
+}
+
+#[test]
+fn only_a_plain_allowlisted_command_in_the_folder_is_eligible() {
+    let root = if cfg!(windows) {
+        Path::new(r"C:\work\repo")
+    } else {
+        Path::new("/work/repo")
+    };
+    let settings = CodeSettings {
+        approval: ApprovalLevel::Trusted,
+        allowlist: vec!["npm test".into(), "nohup pytest".into()],
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let eligible =
+        |input: Value| command_eligible(&settings, &guarded("bash", input), &continuing, root);
+    for input in [
+        json!({"command": "npm test"}),
+        // Optional arguments some model layers send empty.
+        json!({"command": "npm test", "cwd": null, "timeout": null, "pty": false, "async": false, "name": ""}),
+        json!({"command": "npm test", "cwd": ""}),
+        json!({"command": "npm test", "cwd": "."}),
+        json!({"command": "npm test", "cwd": root.display().to_string()}),
+        json!({"command": "npm test", "cwd": "sub/.."}),
+    ] {
+        assert!(eligible(input.clone()), "{input}");
+    }
+    for input in [
+        // Another folder's package.json or conftest.py is not the project's.
+        json!({"command": "npm test", "cwd": "node_modules/left-pad"}),
+        json!({"command": "npm test", "cwd": "examples/x"}),
+        json!({"command": "npm test", "cwd": ".."}),
+        // A time limit (0 is none), a terminal, a job or a service always asks.
+        json!({"command": "npm test", "timeout": 0}),
+        json!({"command": "npm test", "timeout": 900}),
+        json!({"command": "npm test", "pty": true}),
+        json!({"command": "npm test", "async": true}),
+        json!({"command": "npm test", "name": "web"}),
+        json!({"command": "npm test", "ready": {"port": 3000}}),
+        json!({"command": "npm test", "anything": 1}),
+        // Detaching is never eligible, even when listed.
+        json!({"command": "nohup pytest"}),
+        json!({"command": "npm run build"}),
+    ] {
+        assert!(!eligible(input.clone()), "{input}");
+    }
+    assert!(!command_eligible(
+        &settings,
+        &guarded("bash", json!({"command": "npm test"})),
+        &ChangePlan::Refuse("dirty".into()),
+        root
+    ));
+    assert!(!command_eligible(
+        &settings,
+        &guarded("edit", json!({"command": "npm test"})),
+        &continuing,
+        root
+    ));
+}
+
+#[test]
+fn background_starts_are_recognised_and_services_refused() {
+    for detached in [
+        "npm run dev &",
+        "python server.py & echo started",
+        "nohup cargo watch",
+        "setsid node app.js",
+        "start /b pythonw x.py",
+        "cmd /c start http://localhost",
+        "Start-Process node -ArgumentList app.js",
+        "tmux new -d npm run dev",
+    ] {
+        assert!(starts_background(detached), "{detached}");
+    }
+    for foreground in [
+        "cargo test && cargo build",
+        "pytest 2>&1",
+        "npm test &> out.txt",
+        "echo 'a & b'",
+        "npm start",
+        "git status",
+    ] {
+        assert!(!starts_background(foreground), "{foreground}");
+    }
+    for input in [
+        json!({"command": "npm run dev", "async": true}),
+        json!({"command": "npm run dev", "name": "web"}),
+        json!({"command": "npm run dev", "ready": {"port": 5173}}),
+    ] {
+        assert!(
+            background_arguments(&guarded("bash", input.clone())).is_some(),
+            "{input}"
+        );
+    }
+    assert!(background_arguments(&guarded(
+        "bash",
+        json!({"command": "npm test", "async": false, "name": "", "ready": null})
+    ))
+    .is_none());
+}
+
+#[test]
+fn command_prompts_list_every_unreviewed_file_and_what_approving_does() {
+    let test = guarded("bash", json!({"command": "pytest"}));
+    let status = guarded("bash", json!({"command": "git status"}));
+    let edit = guarded(
+        "edit",
+        json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
+    );
+    let files: Vec<String> = (0..13).map(|i| format!("tests/test_{i}.py")).collect();
+    let changed = ReviewState {
+        files: files.clone(),
+        ..ReviewState::default()
+    };
+    let prompt = |request: &GuardRequest, state: &ReviewState, eligible: bool| {
+        let mut approval = approval_for(request, None, ChangeTarget::Unknown);
+        let shown = note_review(&mut approval, request, &gate(state), eligible, "tok");
+        (approval, shown)
+    };
+
+    // An allowlisted command: every file listed, the token, and what a yes does.
+    let (approval, shown) = prompt(&test, &changed, true);
+    assert_eq!(approval.preview[UNREVIEWED_KEY], json!(files));
+    assert_eq!(approval.preview[REVIEW_TOKEN_KEY], "tok");
+    let note = approval.preview[REVIEW_NOTE_KEY].as_str().unwrap();
+    assert!(note.contains("marks them reviewed"), "{note}");
+    assert_eq!(
+        shown,
+        Some(ShownReview {
+            files: files.clone(),
+            unknown: None,
+            uncompared: Vec::new(),
+        })
+    );
+
+    // Any other command: the files are listed, approving clears nothing.
+    let (approval, shown) = prompt(&status, &changed, false);
+    assert_eq!(approval.preview[UNREVIEWED_KEY], json!(files));
+    assert!(approval.preview.get(REVIEW_TOKEN_KEY).is_none());
+    let note = approval.preview[REVIEW_NOTE_KEY].as_str().unwrap();
+    assert!(note.contains("does not mark them reviewed"), "{note}");
+    assert!(!note.contains("may run them"), "{note}");
+    assert_eq!(shown, None);
+
+    // The command's own warning stays.
+    let wipe = guarded("bash", json!({"command": "rm -rf build"}));
+    let (wiped, _) = prompt(&wipe, &changed, false);
+    assert_eq!(
+        wiped.preview["warning"],
+        "Deletes files and folders recursively."
+    );
+
+    // Nothing to note, or an edit: the prompt is as before.
+    for (request, state) in [(&test, ReviewState::default()), (&edit, changed.clone())] {
+        let (approval, shown) = prompt(request, &state, true);
+        assert_eq!(approval, approval_for(request, None, ChangeTarget::Unknown));
+        assert_eq!(shown, None);
+    }
+
+    // Shodh cannot tell what changed: said so, and a yes clears exactly that.
+    let unknown = ReviewState::unreadable("code_reviews.json is not readable");
+    let (approval, shown) = prompt(&test, &unknown, true);
+    let note = approval.preview[REVIEW_NOTE_KEY].as_str().unwrap();
+    assert!(note.contains("code_reviews.json is not readable"), "{note}");
+    assert!(approval.preview.get(UNREVIEWED_KEY).is_none());
+    assert_eq!(shown.unwrap().unknown, unknown.unknown);
+
+    // A time limit, a terminal and a detached start are shown.
+    let long = guarded(
+        "bash",
+        json!({"command": "npm run dev &", "timeout": 0, "pty": true}),
+    );
+    let (approval, _) = prompt(&long, &ReviewState::default(), false);
+    assert!(approval.preview["time_limit"]
+        .as_str()
+        .unwrap()
+        .starts_with("None"));
+    assert_eq!(approval.preview["terminal"], true);
+    assert!(approval.preview["keeps_running"]
+        .as_str()
+        .unwrap()
+        .contains("keeps running"));
+    let timed = guarded("bash", json!({"command": "cargo build", "timeout": 900}));
+    let (approval, _) = prompt(&timed, &ReviewState::default(), false);
+    assert_eq!(approval.preview["time_limit"], "900 seconds");
+}
+
+#[test]
+fn approving_clears_exactly_what_the_prompt_showed() {
+    let mut state = ReviewState {
+        files: vec!["a.py".into(), "b.py".into()],
+        unknown: Some("x".into()),
+        background: vec!["`npm run dev &`".into()],
+        ..ReviewState::default()
+    };
+    state.start_call("call-1", "`python gen.py`");
+    state.start_call("call-2", "`git apply x.patch`");
+    let shown = ShownReview {
+        files: vec!["a.py".into()],
+        unknown: Some("y".into()),
+        uncompared: vec!["call-1".into()],
+    };
+    // b.py and call-2 were listed after the prompt opened; a different
+    // unknown note.
+    state.clear_shown(&shown);
+    assert_eq!(state.files, ["b.py"]);
+    assert_eq!(state.unknown.as_deref(), Some("x"));
+    assert_eq!(state.uncompared.keys().collect::<Vec<_>>(), ["call-2"]);
+    // A call not yet compared keeps commands asking.
+    state.clear_shown(&ShownReview {
+        files: vec!["b.py".into()],
+        unknown: Some("x".into()),
+        uncompared: Vec::new(),
+    });
+    assert!(!state.is_clear());
+    // Its result: what it changed is listed, or why that is not known.
+    state.compared("call-2", Ok(vec!["tests/conftest.py".to_string()]));
+    assert_eq!(state.files, ["tests/conftest.py"]);
+    assert!(state.uncompared.is_empty());
+    state.start_call("call-3", "`make`");
+    state.compared("call-3", Err("git status failed".to_string()));
+    assert_eq!(state.unknown.as_deref(), Some("git status failed"));
+    state.clear_shown(&ShownReview {
+        files: vec!["tests/conftest.py".into()],
+        unknown: Some("git status failed".into()),
+        uncompared: Vec::new(),
+    });
+    assert!(state.is_clear());
+    // A process that may still run is never cleared by a review.
+    assert_eq!(state.background, ["`npm run dev &`"]);
+    state.add_files(["c.py".to_string(), "c.py".to_string()]);
+    assert_eq!(state.files, ["c.py"]);
+}
+
+#[test]
+fn review_states_are_kept_per_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ReviewStore::in_dir(dir.path());
+    // None yet: clear.
+    assert_eq!(store.get("conv").unwrap(), ReviewState::default());
+    let saved = store
+        .update("conv", |state| state.add_files(["conftest.py".to_string()]))
+        .unwrap();
+    assert_eq!(saved.files, ["conftest.py"]);
+    assert_eq!(store.get("conv").unwrap(), saved);
+    assert!(store.get("other").unwrap().is_clear());
+    // Beside the branch records, in the same folder.
+    let beside = ReviewStore::beside(&CodeBranchStore::in_dir(dir.path()));
+    assert_eq!(beside.get("conv").unwrap(), saved);
+    // An unreadable file is an error, never "clear".
+    std::fs::write(dir.path().join(ReviewStore::FILE), "{not json").unwrap();
+    assert!(store.get("conv").is_err());
+}
+
+#[test]
+fn snapshots_name_what_a_command_changed() {
+    let dir = repo();
+    let root = dir.path();
+    let before = tree_snapshot(root).unwrap();
+    // Nothing changed.
+    assert!(
+        changed_between(root, &before, &tree_snapshot(root).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+
+    // A file a command created, and one it renamed into conftest.py.
+    std::fs::create_dir_all(root.join("tests")).unwrap();
+    std::fs::write(root.join("tests").join("fixture.txt"), "x = 1\n").unwrap();
+    git_ok(root, &["add", "--all"]);
+    git_ok(root, &["commit", "--quiet", "-m", "fixture"]);
+    let before = tree_snapshot(root).unwrap();
+    git_ok(root, &["mv", "tests/fixture.txt", "tests/conftest.py"]);
+    std::fs::write(root.join("made.py"), "print('hi')\n").unwrap();
+    let after = tree_snapshot(root).unwrap();
+    let changed = changed_between(root, &before, &after).unwrap();
+    for file in ["tests/conftest.py", "tests/fixture.txt", "made.py"] {
+        assert!(changed.iter().any(|c| c == file), "{file} in {changed:?}");
+    }
+
+    // A file already changed and changed again.
+    let before = tree_snapshot(root).unwrap();
+    std::fs::write(root.join("made.py"), "print('again')\n").unwrap();
+    let changed = changed_between(root, &before, &tree_snapshot(root).unwrap()).unwrap();
+    assert_eq!(changed, ["made.py"]);
+
+    // A commit moved HEAD: the files it changed, though the tree is clean.
+    git_ok(root, &["add", "--all"]);
+    git_ok(root, &["commit", "--quiet", "-m", "move"]);
+    let before = tree_snapshot(root).unwrap();
+    git_ok(root, &["checkout", "--quiet", "HEAD~1"]);
+    let changed = changed_between(root, &before, &tree_snapshot(root).unwrap()).unwrap();
+    for file in ["tests/conftest.py", "tests/fixture.txt", "made.py"] {
+        assert!(changed.iter().any(|c| c == file), "{file} in {changed:?}");
+    }
+
+    // Outside git, what changed cannot be told.
+    let plain = tempfile::tempdir().unwrap();
+    assert!(tree_snapshot(plain.path()).is_err());
+}
+
+#[test]
+fn snapshots_of_a_subfolder_are_relative_to_it() {
+    let dir = repo();
+    let sub = dir.path().join("pkg");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("keep.py"), "").unwrap();
+    git_ok(dir.path(), &["add", "--all"]);
+    git_ok(dir.path(), &["commit", "--quiet", "-m", "pkg"]);
+    let before = tree_snapshot(&sub).unwrap();
+    std::fs::write(sub.join("conftest.py"), "import os\n").unwrap();
+    std::fs::write(dir.path().join("outside.py"), "").unwrap();
+    let changed = changed_between(&sub, &before, &tree_snapshot(&sub).unwrap()).unwrap();
+    assert_eq!(changed, ["conftest.py"]);
+}
+
+fn gate(review: &ReviewState) -> GateContext<'_> {
+    GateContext {
+        review,
+        root: Path::new("/a"),
+        running: None,
+        unasked_writer: None,
     }
 }
 

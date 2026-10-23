@@ -142,6 +142,8 @@ pub struct McpTool {
     /// computer can still reach the network. Otherwise a call asks once the
     /// session has had private content it could carry away.
     closed_world: bool,
+    /// The server says (or Shodh verified) that the tool changes nothing.
+    read_only: bool,
     destructive: bool,
     load_mode: ToolLoadMode,
     caller: Arc<dyn McpCaller>,
@@ -188,6 +190,12 @@ impl HostTool for McpTool {
     }
     fn load_mode(&self) -> ToolLoadMode {
         self.load_mode
+    }
+    fn may_change_files(&self) -> bool {
+        true
+    }
+    fn changes_files_unasked(&self) -> bool {
+        self.approval == Approval::Auto && !self.read_only
     }
     async fn must_confirm(&self, args: &Value) -> Result<bool, ToolError> {
         if self.approval == Approval::Ask {
@@ -304,6 +312,7 @@ pub fn server_tools(
                 ask_when,
                 warning,
                 closed_world,
+                read_only,
                 destructive: !read_only && info.destructive(),
                 load_mode,
                 caller: caller.clone(),

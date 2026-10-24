@@ -72,6 +72,14 @@ export interface Passage {
   regions?: PdfRegion[] | null;
   /** `path` as the file system spells it (`path` is lowercased on Windows); absent when unknown. */
   displayPath?: string | null;
+  /** An indexed Slack thread's permalink (`path` is `slack://…`): its citation opens it. */
+  url?: string | null;
+}
+
+/** The permalink a Slack thread's passage carries: only for a `slack://` passage, only https. */
+export function slackPermalink(path: string, url: string | null): string | null {
+  if (!path.startsWith('slack://') || !url) return null;
+  return /^https:\/\/[^\s]+$/i.test(url) ? url : null;
 }
 
 /** A web source as returned in a web tool's `detail.webSources`. */
@@ -357,6 +365,7 @@ export function passagesFromDetail(detail: unknown): Passage[] {
     if (typeof n !== 'number' || !Number.isInteger(n) || n < 1 || !path) continue;
     const page = typeof entry.page === 'number' ? String(entry.page) : str(entry.page);
     const displayPath = str(entry.display_path);
+    const permalink = slackPermalink(path, str(entry.url));
     out.push({
       n,
       file: str(entry.file) ?? path,
@@ -368,6 +377,7 @@ export function passagesFromDetail(detail: unknown): Passage[] {
       section: str(entry.section),
       regions: parseRegions(entry.regions),
       ...(displayPath ? { displayPath } : {}),
+      ...(permalink ? { url: permalink } : {}),
     });
   }
   return out;

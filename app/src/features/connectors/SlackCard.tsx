@@ -9,6 +9,7 @@ import type { WorkspaceListing } from '../workspaces/types';
 import { listen } from '@tauri-apps/api/event';
 import { onSlackStatus, slackApi, slackError } from './api';
 import {
+  INDEX_PRIVACY_NOTE,
   MODEL_PRIVACY_NOTE,
   RUNNING_HINT,
   answerPlacesLine,
@@ -25,7 +26,16 @@ import {
   tokenHint,
   usageLine,
   validCap,
+  indexChannelLine,
+  memoriesCountLine,
+  memoryPlace,
+  memoryProvenance,
+  ownerLine,
+  sharedIndexLine,
+  validWindow,
   type ChannelChoice,
+  type Person,
+  type SlackMemoryView,
   type SlackStatus,
   type Tone,
 } from './slackModel';
@@ -269,6 +279,410 @@ function ChannelPicker({
   );
 }
 
+/** Channels indexed into Shodh workspaces: their sync, adding one, forgetting one. */
+function IndexSection({
+  status,
+  onStatus,
+  busy,
+  setBusy,
+  workspaces,
+  now,
+}: {
+  status: SlackStatus;
+  onStatus: (s: SlackStatus) => void;
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+  workspaces: WorkspaceListing[] | null;
+  now: number;
+}) {
+  const index = status.index;
+  const headingId = useId();
+  const channelPickerId = useId();
+  const workspacePickerId = useId();
+  const windowId = useId();
+  const [choices, setChoices] = useState<ChannelChoice[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [channelId, setChannelId] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
+  const [sharedConfirmed, setSharedConfirmed] = useState(false);
+  const [forgetting, setForgetting] = useState<string | null>(null);
+  const [windowInput, setWindowInput] = useState(String(index.windowDays));
+
+  useEffect(() => setWindowInput(String(index.windowDays)), [index.windowDays]);
+
+  const indexed = new Set(index.channels.map(c => c.id));
+  const offered = (choices ?? []).filter(c => !indexed.has(c.id));
+  const chosen = offered.find(c => c.id === channelId) ?? null;
+  const windowDays = validWindow(windowInput, index);
+  const blocked = !index.available || index.missingScopes.length > 0 || status.state === 'local_only';
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setChoices(await slackApi.listChannels());
+      setChannelId('');
+      setSharedConfirmed(false);
+    } catch (err) {
+      setError(slackError(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const act = async (action: () => Promise<SlackStatus>, failure: string): Promise<boolean> => {
+    setBusy(true);
+    try {
+      onStatus(await action());
+      return true;
+    } catch (err) {
+      notify.error(failure, { description: slackError(err) });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async () => {
+    if (!chosen || !workspaceId) return;
+    const ok = await act(
+      () => slackApi.indexChannel(chosen.id, workspaceId, chosen.shared && sharedConfirmed),
+      'The channel could not be indexed',
+    );
+    if (ok) setChoices(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-2" role="group" aria-labelledby={headingId}>
+      <p id={headingId} className="m-0 text-[13.5px] font-semibold text-shodh-text">Index these channels</p>
+      <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        Shodh reads the channels you choose here into a workspace, so their threads can be searched and cited like its
+        documents. This list is separate from where Shodh answers. {index.costNote}
+      </p>
+      <p className="m-0 text-[12.5px] text-shodh-text-muted">{INDEX_PRIVACY_NOTE}</p>
+      {!index.available && (
+        <p role="alert" className="m-0 text-[12.5px] text-shodh-warning">
+          Indexing needs the app database, which could not be opened; see the audit page.
+        </p>
+      )}
+      {index.missingScopesMessage && (
+        <p role="alert" className="m-0 text-[12.5px] text-shodh-warning">{index.missingScopesMessage}</p>
+      )}
+
+      {index.channels.length > 0 && (
+        <ul className="m-0 p-0 list-none flex flex-col gap-2">
+          {index.channels.map(c => {
+            const line = indexChannelLine(c, now);
+            return (
+              <li key={c.id} className="flex flex-col gap-1 rounded-lg bg-shodh-surface-2 px-3.5 py-2.5">
+                <div className="flex items-start gap-2.5">
+                  <span aria-hidden="true" className={cn('mt-1.5 inline-block w-2 h-2 rounded-full shrink-0', TONE_DOT[line.tone])} />
+                  <div className="min-w-0 flex-1">
+                    <p className="m-0 text-[12.5px] font-semibold text-shodh-text">
+                      {channelLabel(c)} → {c.workspace.name || 'a deleted workspace'}
+                    </p>
+                    <p className="m-0 text-[12.5px] text-shodh-text-secondary">{line.title}</p>
+                    {line.detail && <p className={cn('m-0 text-[12px] break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
+                  </div>
+                </div>
+                {forgetting === c.id ? (
+                  <div role="alertdialog" aria-label={`Forget #${c.name}`} className="flex flex-wrap items-center gap-2">
+                    <p className="m-0 text-[12px] text-shodh-text-secondary">
+                      Stop indexing #{c.name} and forget its {c.threads} threads, its sync state and the memories saved there?
+                    </p>
+                    <button
+                      type="button"
+                      className={cn(BUTTON, 'text-shodh-error')}
+                      disabled={busy}
+                      onClick={() => {
+                        setForgetting(null);
+                        void act(() => slackApi.forgetChannel(c.id), 'The channel could not be forgotten');
+                      }}
+                    >
+                      Forget
+                    </button>
+                    <button type="button" className={BUTTON} disabled={busy} onClick={() => setForgetting(null)}>Cancel</button>
+                  </div>
+                ) : (
+                  <div>
+                    <button type="button" className={BUTTON} disabled={busy || c.state === 'forgetting'} onClick={() => setForgetting(c.id)}>
+                      Stop indexing and forget
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {choices === null ? (
+        <div>
+          <button type="button" className={BUTTON} disabled={busy || loading || blocked} onClick={() => void load()}>
+            {loading && <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+            {loading ? 'Asking Slack…' : 'Index a channel…'}
+          </button>
+        </div>
+      ) : offered.length === 0 ? (
+        <div className="flex items-center gap-2">
+          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+            No other channel to index. Invite the bot in Slack with /invite @{status.installation?.botName ?? 'shodh'}, then try again.
+          </p>
+          <button type="button" className={BUTTON} onClick={() => setChoices(null)}>Close</button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 rounded-lg bg-shodh-surface-2 px-3.5 py-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <label htmlFor={channelPickerId} className="text-[12.5px] font-semibold text-shodh-text">Channel</label>
+              <select
+                id={channelPickerId}
+                value={channelId}
+                disabled={busy}
+                onChange={e => { setChannelId(e.target.value); setSharedConfirmed(false); }}
+                className={cn(INPUT, 'max-w-xs')}
+              >
+                <option value="">Choose a channel…</option>
+                {offered.map(c => (
+                  <option key={c.id} value={c.id}>{channelLabel(c)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor={workspacePickerId} className="text-[12.5px] font-semibold text-shodh-text">Into workspace</label>
+              <select
+                id={workspacePickerId}
+                value={workspaceId}
+                disabled={busy || workspaces === null}
+                onChange={e => setWorkspaceId(e.target.value)}
+                className={cn(INPUT, 'max-w-xs')}
+              >
+                <option value="">Choose a workspace…</option>
+                {(workspaces ?? []).map(w => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {chosen?.shared && (
+            <label className="inline-flex items-start gap-2 text-[12.5px] text-shodh-warning">
+              <input type="checkbox" checked={sharedConfirmed} disabled={busy} onChange={e => setSharedConfirmed(e.target.checked)} />
+              <span>{sharedIndexLine(chosen)}</span>
+            </label>
+          )}
+          {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={PRIMARY_BUTTON}
+              disabled={busy || !chosen || !workspaceId || (chosen.shared && !sharedConfirmed)}
+              onClick={() => void add()}
+            >
+              Index this channel
+            </button>
+            <button type="button" className={BUTTON} disabled={busy} onClick={() => setChoices(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {choices === null && error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+
+      <form
+        className="flex items-center gap-2"
+        onSubmit={e => {
+          e.preventDefault();
+          if (windowDays !== null && windowDays !== index.windowDays) {
+            void act(() => slackApi.setIndexWindow(windowDays), 'The history window was not saved');
+          }
+        }}
+      >
+        <label htmlFor={windowId} className="text-[12.5px] text-shodh-text-secondary">
+          A newly indexed channel is read back
+        </label>
+        <input
+          id={windowId}
+          type="number"
+          inputMode="numeric"
+          min={index.minWindowDays}
+          max={index.maxWindowDays}
+          step={1}
+          value={windowInput}
+          disabled={busy}
+          aria-invalid={windowDays === null}
+          onChange={e => setWindowInput(e.target.value)}
+          className={cn(INPUT, 'w-20 tabular-nums')}
+        />
+        <span className="text-[12.5px] text-shodh-text-secondary">days</span>
+        <button type="submit" className={BUTTON} disabled={busy || windowDays === null || windowDays === index.windowDays}>Save</button>
+      </form>
+    </div>
+  );
+}
+
+/** "This is me": the Slack member whose `remember:` goes into the user's memories. */
+function OwnerSection({
+  status,
+  onStatus,
+  busy,
+  setBusy,
+}: {
+  status: SlackStatus;
+  onStatus: (s: SlackStatus) => void;
+  busy: boolean;
+  setBusy: (busy: boolean) => void;
+}) {
+  const [people, setPeople] = useState<Person[] | null>(null);
+  const [picked, setPicked] = useState('');
+  const [filter, setFilter] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const headingId = useId();
+  const filterId = useId();
+
+  const load = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const list = await slackApi.listPeople();
+      setPeople(list);
+      setPicked(status.index.owner?.userId ?? '');
+    } catch (err) {
+      setError(slackError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async (userId: string | null) => {
+    setBusy(true);
+    try {
+      onStatus(await slackApi.setOwner(userId));
+      setPeople(null);
+    } catch (err) {
+      notify.error('The choice was not saved', { description: slackError(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const shown = (people ?? []).filter(p => p.name.toLowerCase().includes(filter.trim().toLowerCase()));
+
+  return (
+    <div className="flex flex-col gap-1.5" role="group" aria-labelledby={headingId}>
+      <p id={headingId} className="m-0 text-[13.5px] font-semibold text-shodh-text">You in Slack</p>
+      <p className="m-0 text-[12.5px] text-shodh-text-muted">{ownerLine(status.index)}</p>
+      {people === null ? (
+        <div className="flex items-center gap-2">
+          <button type="button" className={BUTTON} disabled={busy || status.state === 'local_only'} onClick={() => void load()}>
+            {status.index.owner ? 'Change…' : 'This is me…'}
+          </button>
+          {status.index.owner && (
+            <button type="button" className={BUTTON} disabled={busy} onClick={() => void save(null)}>Clear</button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 rounded-lg bg-shodh-surface-2 px-3.5 py-3">
+          <label htmlFor={filterId} className="text-[12.5px] font-semibold text-shodh-text">Find yourself</label>
+          <input id={filterId} value={filter} onChange={e => setFilter(e.target.value)} className={cn(INPUT, 'max-w-xs')} />
+          <ul className="m-0 p-0 list-none flex flex-col gap-1 max-h-48 overflow-y-auto scrollbar-thin">
+            {shown.map(p => (
+              <li key={p.id}>
+                <label className="inline-flex items-center gap-2 text-[12.5px] text-shodh-text-secondary">
+                  <input type="radio" name="slack-owner" checked={picked === p.id} disabled={busy} onChange={() => setPicked(p.id)} />
+                  {p.name}
+                </label>
+              </li>
+            ))}
+          </ul>
+          <div className="flex items-center gap-2">
+            <button type="button" className={PRIMARY_BUTTON} disabled={busy || !picked} onClick={() => void save(picked)}>This is me</button>
+            <button type="button" className={BUTTON} disabled={busy} onClick={() => setPeople(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+    </div>
+  );
+}
+
+/** "From Slack": every memory saved from Slack, to promote or delete. */
+function MemoriesSection({ status, busy, setBusy }: { status: SlackStatus; busy: boolean; setBusy: (busy: boolean) => void }) {
+  const [memories, setMemories] = useState<SlackMemoryView[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const headingId = useId();
+
+  const act = async (action: () => Promise<SlackMemoryView[]>, failure: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setMemories(await action());
+    } catch (err) {
+      if (failure) notify.error(failure, { description: slackError(err) });
+      else setError(slackError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5" role="group" aria-labelledby={headingId}>
+      <p id={headingId} className="m-0 text-[13.5px] font-semibold text-shodh-text">From Slack</p>
+      <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        {memoriesCountLine(status.index)} “@shodh remember: …” saves at once: yours into your memories, anyone else’s for
+        their channel only (used only for Slack answers there, never in Ask).
+      </p>
+      {memories === null ? (
+        <div>
+          <button
+            type="button"
+            className={BUTTON}
+            disabled={busy || !status.index.available || status.index.memories === 0}
+            onClick={() => void act(slackApi.memories, '')}
+          >
+            Show memories from Slack
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <ul className="m-0 p-0 list-none flex flex-col gap-2 max-h-72 overflow-y-auto scrollbar-thin">
+            {memories.map(m => (
+              <li key={m.id} className="flex flex-col gap-1 rounded-lg bg-shodh-surface-2 px-3.5 py-2.5">
+                <p className="m-0 text-[12.5px] text-shodh-text whitespace-pre-wrap break-words">{m.text}</p>
+                <p className="m-0 text-[12px] text-shodh-text-muted">
+                  {memoryProvenance(m)} · {memoryPlace(m)}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!m.inMemories && (
+                    <button type="button" className={BUTTON} disabled={busy} onClick={() => void act(() => slackApi.promoteMemory(m.id), 'The memory could not be added')}>
+                      Add to my memories
+                    </button>
+                  )}
+                  <button type="button" className={cn(BUTTON, 'text-shodh-error')} disabled={busy} onClick={() => void act(() => slackApi.deleteMemory(m.id), 'The memory could not be deleted')}>
+                    Delete
+                  </button>
+                  {m.permalink && (
+                    <button
+                      type="button"
+                      className={BUTTON}
+                      onClick={() => void openUrl(m.permalink as string).catch(err => notify.error('Slack could not be opened', { description: slackError(err) }))}
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+                      Open in Slack
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div>
+            <button type="button" className={BUTTON} disabled={busy} onClick={() => setMemories(null)}>Hide</button>
+          </div>
+        </div>
+      )}
+      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+    </div>
+  );
+}
+
 function Connected({
   status,
   onStatus,
@@ -402,6 +816,12 @@ function Connected({
 
       <ChannelPicker status={status} onStatus={onStatus} busy={busy} setBusy={setBusy} />
 
+      <IndexSection status={status} onStatus={onStatus} busy={busy} setBusy={setBusy} workspaces={workspaces} now={now} />
+
+      <OwnerSection status={status} onStatus={onStatus} busy={busy} setBusy={setBusy} />
+
+      <MemoriesSection status={status} busy={busy} setBusy={setBusy} />
+
       <form
         className="flex items-start justify-between gap-6"
         onSubmit={e => {
@@ -453,20 +873,32 @@ function Connected({
             Disconnect
           </button>
         ) : (
-          <>
+          <div role="alertdialog" aria-label={`Disconnect ${status.installation?.teamName ?? 'Slack'}`} className="flex flex-col gap-2">
             <p className="m-0 text-[12.5px] text-shodh-text-secondary">
               Disconnect {status.installation?.teamName}? The tokens are deleted from this computer and the bot stops answering.
+              Keep what was indexed from Slack ({status.index.channels.length} {status.index.channels.length === 1 ? 'channel' : 'channels'},{' '}
+              {status.index.memories} {status.index.memories === 1 ? 'memory' : 'memories'}), or forget all of it?
             </p>
-            <button
-              type="button"
-              className={cn(BUTTON, 'text-shodh-error')}
-              disabled={busy}
-              onClick={() => void run(slackApi.disconnect, 'Slack could not be disconnected').then(() => setConfirmDisconnect(false))}
-            >
-              Disconnect
-            </button>
-            <button type="button" className={BUTTON} disabled={busy} onClick={() => setConfirmDisconnect(false)}>Cancel</button>
-          </>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={BUTTON}
+                disabled={busy}
+                onClick={() => void run(() => slackApi.disconnect(false), 'Slack could not be disconnected').then(() => setConfirmDisconnect(false))}
+              >
+                Disconnect and keep it
+              </button>
+              <button
+                type="button"
+                className={cn(BUTTON, 'text-shodh-error')}
+                disabled={busy}
+                onClick={() => void run(() => slackApi.disconnect(true), 'Slack could not be disconnected').then(() => setConfirmDisconnect(false))}
+              >
+                Disconnect and forget everything from Slack
+              </button>
+              <button type="button" className={BUTTON} disabled={busy} onClick={() => setConfirmDisconnect(false)}>Cancel</button>
+            </div>
+          </div>
         )}
       </div>
     </div>

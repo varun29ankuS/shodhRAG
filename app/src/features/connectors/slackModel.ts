@@ -37,6 +37,74 @@ export interface ChannelChoice {
   private: boolean;
   shared: boolean;
   selected: boolean;
+  /** The Shodh workspace it is indexed into, if it is. */
+  indexedInto: string | null;
+}
+
+export type IndexChannelState =
+  | 'backfilling'
+  | 'up_to_date'
+  | 'paused'
+  | 'error'
+  | 'archived'
+  | 'removed'
+  | 'now_shared'
+  | 'forgetting';
+
+/** An indexed channel (`connectors::slack_index::IndexChannelView`). */
+export interface IndexChannelView {
+  id: string;
+  name: string;
+  shared: boolean;
+  private: boolean;
+  workspace: { id: string; name: string; available: boolean };
+  state: IndexChannelState;
+  detail: string | null;
+  threads: number;
+  estimatedThreads: number | null;
+  secondsLeft: number | null;
+  lastSyncAt: string | null;
+  pausedUntil: string | null;
+  windowDays: number;
+}
+
+/** The Slack member picked as the user. */
+export interface SlackOwner {
+  userId: string;
+  name: string;
+}
+
+/** The indexing part of the card (`connectors::slack_index::IndexStatus`). */
+export interface IndexStatus {
+  available: boolean;
+  channels: IndexChannelView[];
+  windowDays: number;
+  minWindowDays: number;
+  maxWindowDays: number;
+  missingScopes: string[];
+  missingScopesMessage: string | null;
+  memories: number;
+  owner: SlackOwner | null;
+  costNote: string;
+}
+
+/** A member of the Slack workspace, for the "This is me" pick. */
+export interface Person {
+  id: string;
+  name: string;
+}
+
+/** A memory saved from Slack (`connectors::slack_index::SlackMemoryView`). */
+export interface SlackMemoryView {
+  id: string;
+  channelName: string;
+  authorName: string;
+  text: string;
+  kind: 'text' | 'thread';
+  permalink: string | null;
+  savedAt: string;
+  owner: boolean;
+  inMemories: boolean;
 }
 
 /** `connectors::slack::SlackStatus`. Never holds a token. */
@@ -59,6 +127,8 @@ export interface SlackStatus {
   lastPostFailedAt: string | null;
   /** Scopes the bot lacks (an app created from an earlier manifest). */
   missingScopes: string[];
+  /** Indexed channels, memories from Slack, the owner. */
+  index: IndexStatus;
   createAppUrl: string;
   botScopes: string[];
   botEvents: string[];
@@ -338,4 +408,121 @@ export function validCap(input: string, status: Pick<SlackStatus, 'minDailyCap' 
   if (!/^\d+$/.test(input.trim())) return null;
   const n = Number(input.trim());
   return Number.isInteger(n) && n >= status.minDailyCap && n <= status.maxDailyCap ? n : null;
+}
+
+// ── Indexed channels ────────────────────────────────────────────────
+
+/** "about 3 minutes", "about 2 hours", "less than a minute". */
+export function durationWords(seconds: number): string {
+  if (seconds < 60) return 'less than a minute';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+  const hours = Math.round(minutes / 60);
+  return `about ${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+}
+
+function threads(n: number): string {
+  return `${n} ${n === 1 ? 'thread' : 'threads'}`;
+}
+
+/** What the card says about one indexed channel. */
+export function indexChannelLine(channel: IndexChannelView, now: number, options: TimeOptions = {}): StateLine {
+  switch (channel.state) {
+    case 'backfilling': {
+      const title =
+        channel.estimatedThreads !== null && channel.estimatedThreads > channel.threads
+          ? `Backfilling: ${channel.threads} of ~${channel.estimatedThreads} threads`
+          : `Backfilling: ${threads(channel.threads)} so far`;
+      const left =
+        channel.secondsLeft !== null && channel.secondsLeft > 0
+          ? `${durationWords(channel.secondsLeft)} left at Slack’s pace. `
+          : '';
+      return {
+        tone: 'active',
+        title,
+        detail: `${left}Reading the last ${channel.windowDays} days; it carries on where it stopped if Shodh closes.`,
+      };
+    }
+    case 'up_to_date': {
+      const at = parseTime(channel.lastSyncAt);
+      return {
+        tone: 'ok',
+        title: `Up to date: ${threads(channel.threads)}`,
+        detail: at === null ? null : `Last sync ${localTime(at, now, options)}.`,
+      };
+    }
+    case 'paused': {
+      const until = parseTime(channel.pausedUntil);
+      const when = until === null ? 'shortly' : localTime(until, now, options);
+      const rateLimited = channel.detail === 'Slack’s rate limit' || channel.detail === "Slack's rate limit";
+      return rateLimited
+        ? { tone: 'warning', title: `Paused: rate limit until ${when}`, detail: 'Slack asked Shodh to wait; it resumes on its own.' }
+        : { tone: 'warning', title: `Paused until ${when}`, detail: channel.detail };
+    }
+    case 'error':
+      return { tone: 'error', title: 'Error', detail: channel.detail ?? 'Indexing stopped. Connect again to retry.' };
+    case 'archived':
+      return { tone: 'neutral', title: 'Archived in Slack', detail: channel.detail };
+    case 'removed':
+      return { tone: 'warning', title: 'Shodh was removed from the channel', detail: channel.detail };
+    case 'now_shared':
+      return { tone: 'warning', title: 'Shared with other organizations now', detail: channel.detail };
+    case 'forgetting':
+      return { tone: 'active', title: 'Forgetting…', detail: null };
+  }
+}
+
+/** The confirmation a shared channel needs before it is indexed. */
+export function sharedIndexLine(channel: { name: string }): string {
+  return (
+    `#${channel.name} is shared with other organizations. Indexing it stores their messages on this computer ` +
+    'and puts them in the workspace you choose. Index it only if they agreed.'
+  );
+}
+
+/** What indexing does, and what it does not. */
+export const INDEX_PRIVACY_NOTE =
+  'Indexed threads are stored on this computer (use your disk’s encryption: BitLocker or FileVault) and show up in ' +
+  'Ask and the workspace like its documents, with links back to Slack. A Slack answer uses only the threads of the ' +
+  'channel it is asked in. Index channels of your own Slack workspace only: Slack’s terms do not allow copying a ' +
+  'client’s workspace with your app.';
+
+/** Who "remember:" saves for, on the card. */
+export function ownerLine(index: Pick<IndexStatus, 'owner'>): string {
+  return index.owner
+    ? `You are ${index.owner.name} in Slack: what you ask Shodh to remember goes into your memories. ` +
+        'What anyone else asks it to remember is kept for their channel only.'
+    : 'Pick yourself below so your “@shodh remember:” goes into your memories. Until then, everything saved from Slack ' +
+        'is kept for its channel only.';
+}
+
+/** Where a memory from Slack lives. */
+export function memoryPlace(memory: SlackMemoryView): string {
+  if (memory.owner) return 'In your memories';
+  if (memory.inMemories) return `For ${memory.channelName}, and in your memories`;
+  return `For ${memory.channelName} only`;
+}
+
+/** "Saved by Ann in #deals, 24 Oct" (a thread: "Thread saved by …"). */
+export function memoryProvenance(memory: SlackMemoryView, options: TimeOptions = {}): string {
+  const at = parseTime(memory.savedAt);
+  const date =
+    at === null
+      ? ''
+      : `, ${new Intl.DateTimeFormat(options.locale, { day: 'numeric', month: 'short', timeZone: options.timeZone }).format(new Date(at))}`;
+  const what = memory.kind === 'thread' ? 'Thread saved' : 'Saved';
+  return `${what} by ${memory.authorName} in ${memory.channelName}${date}`;
+}
+
+/** How many memories were saved from Slack. */
+export function memoriesCountLine(index: Pick<IndexStatus, 'memories'>): string {
+  if (index.memories === 0) return 'Nothing saved from Slack yet. People can say “@shodh remember: …” in an answer channel.';
+  return `${index.memories} ${index.memories === 1 ? 'memory' : 'memories'} saved from Slack.`;
+}
+
+/** Whether the window input holds a value the card accepts. */
+export function validWindow(input: string, index: Pick<IndexStatus, 'minWindowDays' | 'maxWindowDays'>): number | null {
+  if (!/^\d+$/.test(input.trim())) return null;
+  const n = Number(input.trim());
+  return Number.isInteger(n) && n >= index.minWindowDays && n <= index.maxWindowDays ? n : null;
 }

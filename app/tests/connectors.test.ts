@@ -26,9 +26,22 @@ import {
   tokenHint,
   usageLine,
   validCap,
+  INDEX_PRIVACY_NOTE,
+  durationWords,
+  indexChannelLine,
+  memoriesCountLine,
+  memoryPlace,
+  memoryProvenance,
+  ownerLine,
+  sharedIndexLine,
+  validWindow,
+  type IndexChannelView,
+  type IndexStatus,
+  type SlackMemoryView,
   type SlackState,
   type SlackStatus,
 } from '../src/features/connectors/slackModel.ts';
+import { passagesFromDetail, slackPermalink } from '../src/features/agent/reducer.ts';
 import { CONNECTORS } from '../src/features/connectors/registry.ts';
 import { VIEW_TABS, VIEW_TAB_LABELS, normalizeViewTab } from '../src/lib/viewTabs.ts';
 import { navigationFromEvent } from '../src/features/agent/navigation.ts';
@@ -36,6 +49,22 @@ import type { NavigatedEvent } from '../src/features/agent/events.ts';
 
 const UTC = { locale: 'en-GB', timeZone: 'UTC' };
 const NOW = Date.UTC(2026, 9, 23, 9, 0);
+
+function indexStatus(patch: Partial<IndexStatus> = {}): IndexStatus {
+  return {
+    available: true,
+    channels: [],
+    windowDays: 90,
+    minWindowDays: 7,
+    maxWindowDays: 365,
+    missingScopes: [],
+    missingScopesMessage: null,
+    memories: 0,
+    owner: null,
+    costNote: 'Indexing runs on this computer: no model calls, no answers spent.',
+    ...patch,
+  };
+}
 
 function status(state: SlackState, patch: Partial<SlackStatus> = {}): SlackStatus {
   return {
@@ -55,6 +84,7 @@ function status(state: SlackState, patch: Partial<SlackStatus> = {}): SlackStatu
     otherConnections: false,
     lastPostFailedAt: null,
     missingScopes: [],
+    index: indexStatus(),
     createAppUrl: 'https://api.slack.com/apps?new_app=1&manifest_json=%7B%7D',
     botScopes: [
       'app_mentions:read',
@@ -254,4 +284,125 @@ test('the Slack commands and event names match the Rust side', () => {
   for (const command of [...api.matchAll(/invoke<[^>]+>\('([a-z_]+)'/g)].map(m => m[1])) {
     assert.match(rust, new RegExp(`pub async fn ${command}\\(`), command);
   }
+});
+
+// ── Indexed channels and memories from Slack ────────────────────────
+
+function indexed(patch: Partial<IndexChannelView> = {}): IndexChannelView {
+  return {
+    id: 'C1',
+    name: 'deals',
+    shared: false,
+    private: false,
+    workspace: { id: 'w1', name: 'Client A', available: true },
+    state: 'backfilling',
+    detail: null,
+    threads: 120,
+    estimatedThreads: 360,
+    secondsLeft: 312,
+    lastSyncAt: null,
+    pausedUntil: null,
+    windowDays: 90,
+    ...patch,
+  };
+}
+
+test('an indexed channel says where its sync stands', () => {
+  assert.deepEqual(indexChannelLine(indexed(), NOW, UTC), {
+    tone: 'active',
+    title: 'Backfilling: 120 of ~360 threads',
+    detail: 'about 5 minutes left at Slack’s pace. Reading the last 90 days; it carries on where it stopped if Shodh closes.',
+  });
+  assert.equal(
+    indexChannelLine(indexed({ estimatedThreads: null, secondsLeft: null, threads: 1 }), NOW, UTC).title,
+    'Backfilling: 1 thread so far',
+  );
+  const upToDate = indexChannelLine(indexed({ state: 'up_to_date', lastSyncAt: '2026-10-23T08:45:00Z' }), NOW, UTC);
+  assert.equal(upToDate.tone, 'ok');
+  assert.equal(upToDate.title, 'Up to date: 120 threads');
+  assert.match(upToDate.detail ?? '', /^Last sync 0?8:45\.$/);
+  const paused = indexChannelLine(
+    indexed({ state: 'paused', pausedUntil: '2026-10-23T09:01:00Z', detail: "Slack's rate limit" }),
+    NOW,
+    UTC,
+  );
+  assert.match(paused.title, /^Paused: rate limit until 0?9:01$/);
+  assert.equal(paused.tone, 'warning');
+  const failing = indexChannelLine(
+    indexed({ state: 'paused', pausedUntil: '2026-10-23T09:05:00Z', detail: 'Slack could not be read (reset); trying again shortly.' }),
+    NOW,
+    UTC,
+  );
+  assert.match(failing.title, /^Paused until 0?9:05$/);
+  assert.match(failing.detail ?? '', /could not be read/);
+  assert.deepEqual(indexChannelLine(indexed({ state: 'error', detail: 'Slack refused the bot token (invalid_auth).' }), NOW, UTC), {
+    tone: 'error',
+    title: 'Error',
+    detail: 'Slack refused the bot token (invalid_auth).',
+  });
+  for (const [state, title] of [
+    ['archived', 'Archived in Slack'],
+    ['removed', 'Shodh was removed from the channel'],
+    ['now_shared', 'Shared with other organizations now'],
+    ['forgetting', 'Forgetting…'],
+  ] as const) {
+    assert.equal(indexChannelLine(indexed({ state }), NOW, UTC).title, title);
+  }
+});
+
+test('durations, the window and the shared-channel confirmation read plainly', () => {
+  assert.equal(durationWords(20), 'less than a minute');
+  assert.equal(durationWords(60), 'about 1 minute');
+  assert.equal(durationWords(3_000), 'about 50 minutes');
+  assert.equal(durationWords(7_200), 'about 2 hours');
+  const index = indexStatus();
+  assert.equal(validWindow('30', index), 30);
+  assert.equal(validWindow('3', index), null);
+  assert.equal(validWindow('400', index), null);
+  assert.equal(validWindow('9.5', index), null);
+  assert.match(sharedIndexLine({ name: 'client-b' }), /#client-b is shared with other organizations\. Indexing it stores their messages on this computer/);
+  assert.match(INDEX_PRIVACY_NOTE, /only the threads of the channel it is asked in/);
+  assert.match(INDEX_PRIVACY_NOTE, /client’s workspace/);
+});
+
+function memory(patch: Partial<SlackMemoryView> = {}): SlackMemoryView {
+  return {
+    id: 'm1',
+    channelName: '#deals',
+    authorName: 'Bob',
+    text: 'Standup moved to 10:30.',
+    kind: 'text',
+    permalink: 'https://acme.slack.com/archives/C1/p1',
+    savedAt: '2026-10-23T08:00:00Z',
+    owner: false,
+    inMemories: false,
+    ...patch,
+  };
+}
+
+test('memories from Slack say who saved them, where, and where they live', () => {
+  assert.equal(memoryProvenance(memory(), UTC), 'Saved by Bob in #deals, 23 Oct');
+  assert.equal(memoryProvenance(memory({ kind: 'thread' }), UTC), 'Thread saved by Bob in #deals, 23 Oct');
+  assert.equal(memoryPlace(memory()), 'For #deals only');
+  assert.equal(memoryPlace(memory({ inMemories: true })), 'For #deals, and in your memories');
+  assert.equal(memoryPlace(memory({ owner: true, inMemories: true })), 'In your memories');
+  assert.match(memoriesCountLine({ memories: 0 }), /Nothing saved from Slack yet/);
+  assert.equal(memoriesCountLine({ memories: 1 }), '1 memory saved from Slack.');
+  assert.equal(memoriesCountLine({ memories: 4 }), '4 memories saved from Slack.');
+  assert.match(ownerLine({ owner: null }), /Until then, everything saved from Slack is kept for its channel only/);
+  assert.match(ownerLine({ owner: { userId: 'U1', name: 'Ann' } }), /You are Ann in Slack/);
+});
+
+test('a Slack citation in Ask opens its permalink, never a path', () => {
+  const [slack, file] = passagesFromDetail({
+    passages: [
+      { n: 1, file: '#deals: budget', path: 'slack://T1/C1/1.1', text: 'ten', url: 'https://acme.slack.com/archives/C1/p11' },
+      { n: 2, file: 'lease.pdf', path: 'c:/docs/lease.pdf', text: 'sixty', url: 'https://evil.example/x' },
+    ],
+  });
+  assert.equal(slack.url, 'https://acme.slack.com/archives/C1/p11');
+  assert.equal(file.url, undefined, 'a file passage never carries a link');
+  assert.equal(slackPermalink('slack://T1/C1/1.1', 'javascript:alert(1)'), null);
+  assert.equal(slackPermalink('slack://T1/C1/1.1', 'http://acme.slack.com/x'), null);
+  assert.equal(slackPermalink('note://n1', 'https://acme.slack.com/x'), null);
 });

@@ -280,9 +280,13 @@ test('the agent can open the Connectors view, and its list matches the shell', (
 test('the Slack commands and event names match the Rust side', () => {
   const rust = readFileSync(new URL('../src-tauri/src/connectors/slack.rs', import.meta.url), 'utf8');
   assert.match(rust, /pub const SLACK_STATUS_EVENT: &str = "connectors-slack-status";/);
+  // The card's commands live in the connector's two modules: answering, and indexing and memories.
+  const commands = rust + readFileSync(new URL('../src-tauri/src/connectors/slack_index.rs', import.meta.url), 'utf8');
   const api = readFileSync(new URL('../src/features/connectors/api.ts', import.meta.url), 'utf8');
-  for (const command of [...api.matchAll(/invoke<[^>]+>\('([a-z_]+)'/g)].map(m => m[1])) {
-    assert.match(rust, new RegExp(`pub async fn ${command}\\(`), command);
+  const invoked = [...api.matchAll(/invoke<[^>]+>\('([a-z_]+)'/g)].map(m => m[1]);
+  assert.ok(invoked.includes('slack_index_channel') && invoked.includes('slack_delete_memory'), 'every command is read');
+  for (const command of invoked) {
+    assert.match(commands, new RegExp(`#\\[tauri::command\\]\\s+pub async fn ${command}\\(`), command);
   }
 });
 

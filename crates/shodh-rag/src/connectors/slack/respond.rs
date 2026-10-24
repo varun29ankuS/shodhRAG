@@ -776,8 +776,9 @@ impl Responder {
             self.quota_release(day).await;
             return Err(Outcome::Cancelled);
         }
+        let prompt = summary_prompt(&thread);
         let completion = tokio::select! {
-            completion = model.complete(&summary_prompt(&thread), SUMMARY_TOKENS) => completion,
+            completion = model.complete(&prompt, SUMMARY_TOKENS) => completion,
             _ = self.cancel.cancelled() => return Err(Outcome::Cancelled),
         };
         match completion {

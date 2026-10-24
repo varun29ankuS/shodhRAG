@@ -571,6 +571,7 @@ fn passage(
     };
     let file = display_name(&path, result);
     let display_path = stored_display_path(&path, result);
+    let url = slack_permalink(&path, result);
     Passage {
         n,
         file,
@@ -591,7 +592,7 @@ fn passage(
         regions: passage_regions(result),
         display_path,
         title: document_title(result),
-        url: slack_permalink(&path, result),
+        url,
     }
 }
 

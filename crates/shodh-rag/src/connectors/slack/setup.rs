@@ -92,12 +92,12 @@ pub fn missing_index_scopes(granted: &[String]) -> Vec<String> {
 /// What the card says when indexing lacks scopes.
 pub fn missing_index_scopes_message(missing: &[String]) -> String {
     format!(
-        "To index channels, the Slack app needs these permissions: {}. In Slack, open the \
-         app's settings, add them under OAuth & Permissions → Bot Token Scopes, add the \
-         events under Event Subscriptions (or paste Shodh's manifest under App Manifest), \
-         reinstall the app to the workspace, and connect again with the new bot token. \
-         Answering keeps working meanwhile.",
-        missing.join(", ")
+        "To index channels, the Slack app needs these permissions: {}. In Slack (api.slack.com/apps \
+         → your Shodh app), add them under OAuth & Permissions → Bot Token Scopes, and add these \
+         bot events under Event Subscriptions: {}. Reinstall the app to the workspace, then \
+         connect again here with the bot token. Answering keeps working meanwhile.",
+        missing.join(", "),
+        INDEX_EVENTS.join(", ")
     )
 }
 

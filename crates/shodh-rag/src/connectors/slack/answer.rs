@@ -14,6 +14,10 @@
 //!   dropped, even if such a source was added to the workspace; when that leaves fewer
 //!   passages than wanted, the search is made again for more, so records cannot crowd the
 //!   documents out;
+//! - indexed Slack threads (`slack://…`) are used only from the channel the question was
+//!   asked in: [`AnswerScope::for_channel`] takes every other Slack channel out of the
+//!   scope before the search (the index filters by it), and a thread of another channel
+//!   that still came back is dropped;
 //! - the model sees each passage's title (the document's title from its metadata, else
 //!   its file name without the extension), page and text, never its path;
 //! - the model has no tools, so text in a question or a passage cannot make it act;

@@ -1042,6 +1042,7 @@ impl AnswerSource for AppAnswerSource {
         Ok(Some(AnswerScope {
             source_ids: sources.source_ids,
             files: sources.files,
+            ..AnswerScope::default()
         }))
     }
 
@@ -1953,11 +1954,11 @@ pub async fn slack_disconnect(
             "The Slack connector is off, but its tokens could not be deleted from this computer's credential store ({e}). Try Disconnect again."
         ));
     }
-    let forget = team_id.clone();
+    let gone = team_id.clone();
     let settings = save(&state, move |prefs| {
         prefs
             .installations
-            .retain(|i| i.installation.team_id != forget);
+            .retain(|i| i.installation.team_id != gone);
         Ok(())
     })
     .await?;

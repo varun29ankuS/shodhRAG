@@ -2737,7 +2737,14 @@ impl RAGEngine {
     /// The source path is normalized the same way as during indexing so that
     /// Windows backslash / mixed-case paths always match.
     pub async fn delete_by_source(&mut self, source: &str) -> Result<usize> {
-        let normalized = normalize_source_path(Path::new(source));
+        // A pseudo-source (`calendar://…`, `note://…`, `slack://…`) is an id, not a path:
+        // stored as given, so it is matched as given (the path normaliser would turn its
+        // slashes and case into another string on Windows).
+        let normalized = if is_file_source(source) {
+            normalize_source_path(Path::new(source))
+        } else {
+            source.to_string()
+        };
         // A calendar item or a note is not a paper: nothing to forget, and no cost.
         let tracked = is_file_source(source) && is_file_source(&normalized);
         if tracked {
@@ -3496,6 +3503,11 @@ impl RAGEngine {
     /// One row per indexed document with its source path, space and chunk count.
     pub async fn document_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
         self.store.document_sources().await
+    }
+
+    /// One row per indexed source: its space and title.
+    pub async fn document_titles(&self) -> Result<Vec<crate::storage::DocumentTitleRow>> {
+        self.store.document_titles().await
     }
 
     /// Stored source paths that `path` refers to.

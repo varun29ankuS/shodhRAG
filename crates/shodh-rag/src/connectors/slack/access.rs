@@ -58,6 +58,9 @@ pub struct AccessRules {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
     pub team_id: String,
+    /// The name people see in Slack (display name, else real name, else user name); never
+    /// an e-mail address.
+    pub name: String,
     /// A multi- or single-channel guest.
     pub guest: bool,
     /// From another workspace than the app's (`is_stranger`).
@@ -111,6 +114,10 @@ pub trait MemberDirectory: Send + Sync {
 #[async_trait]
 pub trait AccessGate: Send + Sync {
     async fn check(&self, question: &Question) -> Access;
+    /// The asker, when they are a full member of the installing workspace (what saving a
+    /// memory needs, in a channel too: a shared channel on the list lets people of other
+    /// organizations ask, never save).
+    async fn member(&self, question: &Question) -> Result<Member, Refusal>;
 }
 
 /// A mention in a channel: only on the list, and a channel that became shared since it
@@ -174,7 +181,7 @@ impl SlackAccessGate {
         }
     }
 
-    async fn member(&self, user: &str) -> Result<Member, SlackApiError> {
+    async fn lookup(&self, user: &str) -> Result<Member, SlackApiError> {
         let now = self.clock.now();
         let cached = self
             .members
@@ -220,7 +227,7 @@ impl AccessGate for SlackAccessGate {
                 if let Some(refused) = direct_access_from_event(question, &rules) {
                     return refused;
                 }
-                match self.member(&question.user).await {
+                match self.lookup(&question.user).await {
                     Ok(member) => member_access(&member, &rules),
                     Err(e) => {
                         tracing::warn!(target: "shodh::slack", error = %e, "who sent a Slack DM could not be checked; not answered");
@@ -228,6 +235,42 @@ impl AccessGate for SlackAccessGate {
                     }
                 }
             }
+        }
+    }
+
+    async fn member(&self, question: &Question) -> Result<Member, Refusal> {
+        self.full_member(question).await
+    }
+}
+
+impl SlackAccessGate {
+    /// The rules, or why they could not be read.
+    async fn read_rules(&self) -> Result<AccessRules, Refusal> {
+        match self.rules.rules().await {
+            Ok(rules) if !rules.team_id.is_empty() => Ok(rules),
+            Ok(_) => Err(Refusal::RulesUnknown),
+            Err(e) => {
+                tracing::warn!(target: "shodh::slack", error = %e, "the Slack answer rules could not be read");
+                Err(Refusal::RulesUnknown)
+            }
+        }
+    }
+
+    /// The asker as a full member of the installing workspace.
+    pub async fn full_member(&self, question: &Question) -> Result<Member, Refusal> {
+        let rules = self.read_rules().await?;
+        if let Some(team) = &question.asker_team {
+            if *team != rules.team_id {
+                return Err(Refusal::OtherTeam);
+            }
+        }
+        let member = self.lookup(&question.user).await.map_err(|e| {
+            tracing::warn!(target: "shodh::slack", error = %e, "who wrote a Slack message could not be checked");
+            Refusal::AskerUnknown
+        })?;
+        match member_access(&member, &rules) {
+            Access::Allowed => Ok(member),
+            Access::Refused(refusal) => Err(refusal),
         }
     }
 }
@@ -304,6 +347,7 @@ pub(crate) mod testkit {
     pub fn member(team: &str) -> Member {
         Member {
             team_id: team.into(),
+            name: "Ann".into(),
             guest: false,
             stranger: false,
             bot: false,
@@ -340,6 +384,8 @@ mod tests {
                 thread: String::new(),
             },
             user: user.into(),
+            ts: "1.1".into(),
+            in_thread: false,
             asker_team: None,
             ext_shared: false,
             has_files: false,
@@ -427,6 +473,50 @@ mod tests {
             Access::Refused(Refusal::ChannelNowShared)
         );
         assert_eq!(*rules.now_shared.lock().unwrap(), vec!["C1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn only_full_members_may_save_even_in_a_shared_channel_on_the_list() {
+        let guest = Member {
+            guest: true,
+            ..member("T1")
+        };
+        let (gate, _, _, _) = make_gate(
+            FixedRules::allowing("T1", &[("CSHARED", true)]),
+            FixedDirectory::new(&[
+                ("U1", member("T1")),
+                ("UEXT", member("TCLIENT")),
+                ("UGUEST", guest),
+            ]),
+        );
+        let in_shared = |user: &str| {
+            let mut q = question(QuestionKind::Mention, "CSHARED", user);
+            q.ext_shared = true;
+            q
+        };
+        // People of the other organization may ask there…
+        assert_eq!(gate.check(&in_shared("UEXT")).await, Access::Allowed);
+        // …but not save.
+        assert_eq!(
+            AccessGate::member(&gate, &in_shared("UEXT")).await,
+            Err(Refusal::OtherTeam)
+        );
+        assert_eq!(
+            AccessGate::member(&gate, &in_shared("UGUEST")).await,
+            Err(Refusal::Guest)
+        );
+        assert_eq!(
+            AccessGate::member(&gate, &in_shared("UNOBODY")).await,
+            Err(Refusal::AskerUnknown)
+        );
+        let mut from_elsewhere = in_shared("U1");
+        from_elsewhere.asker_team = Some("TCLIENT".into());
+        assert_eq!(
+            AccessGate::member(&gate, &from_elsewhere).await,
+            Err(Refusal::OtherTeam)
+        );
+        let me = AccessGate::member(&gate, &in_shared("U1")).await.unwrap();
+        assert_eq!(me.name, "Ann");
     }
 
     #[tokio::test]

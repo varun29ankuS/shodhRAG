@@ -1,4 +1,5 @@
-//! The Slack connector, part A: Shodh answers questions in Slack.
+//! The Slack connector: Shodh answers questions in Slack, indexes the channels the user
+//! chooses, and saves memories people ask it to keep.
 //!
 //! People in one Slack workspace mention the bot in a channel (or DM it) and get an answer,
 //! with citations, from the documents of the one Shodh workspace the user selected. The
@@ -16,18 +17,26 @@
 //! - [`answer`]: retrieval over the selected workspace only, the prompt, the Slack text.
 //! - [`sanitize`]: no path, home folder, user name or id leaves for Slack.
 //! - [`respond`]: one question start to finish, cheapest checks first.
-//! - [`service`]: envelopes to answers.
+//! - [`service`]: envelopes to answers (and to the index's live updates).
+//! - [`ids`], [`content`], [`index`], [`store`]: channels as an indexed source (one thread
+//!   one document), the sync and its checkpoints in `shodh.db`.
+//! - [`remember`]: `@Shodh remember: …` saved directly, by who said it.
 //!
 //! Plan and decisions: `docs/superpowers/plans/2026-10-23-slack-connector.md`.
 
 pub mod access;
 pub mod answer;
+pub mod content;
 pub mod events;
+pub mod ids;
+pub mod index;
+pub mod remember;
 pub mod respond;
 pub mod sanitize;
 pub mod service;
 pub mod setup;
 pub mod socket;
+pub mod store;
 pub mod tokens;
 pub mod web;
 

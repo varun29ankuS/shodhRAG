@@ -172,6 +172,10 @@ pub struct Question {
     pub thread: ThreadKey,
     /// The asker's user id (logged as an id only, never sent to the model).
     pub user: String,
+    /// The message's own `ts` (its permalink, a memory's provenance).
+    pub ts: String,
+    /// The message was a reply in a thread (not the thread's first message).
+    pub in_thread: bool,
     /// The Slack workspace the asker belongs to, when the event says (`user_team`, else
     /// `team`). Slack does not document it on every event, so [`super::access`] uses it
     /// only to refuse early, never as proof of membership.
@@ -295,6 +299,8 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
             thread,
         },
         user: user.to_string(),
+        ts: ts.to_string(),
+        in_thread: thread_ts.is_some_and(|root| root != ts),
         asker_team: str_field(event, "user_team")
             .or_else(|| str_field(event, "team"))
             .map(str::to_string),

@@ -247,6 +247,14 @@
     "slack_list_channels": { "excluded": "Lists the Slack channels the bot is in for the user to choose where Shodh answers; a call to Slack with the bot token on the user's behalf, part of a setting only the user may change." },
     "slack_set_answer_channels": { "excluded": "Choosing the Slack channels Shodh answers in decides who in Slack (including other organizations in shared channels) can read the selected workspace; only the user may change that." },
     "slack_set_daily_cap": { "excluded": "The daily limit of Slack answers bounds what Slack may spend of the model quota; the agent must never raise a spending limit." },
-    "slack_disconnect": { "excluded": "Disconnecting deletes the Slack tokens and stops answers for everyone in Slack; an account action only the user takes." }
+    "slack_disconnect": { "excluded": "Disconnecting deletes the Slack tokens and stops answers for everyone in Slack, and can forget everything indexed and remembered from Slack; an account action only the user takes." },
+    "slack_index_channel": { "excluded": "Choosing a Slack channel to index copies its messages (other organizations' too, in a shared channel) onto this computer and into a Shodh workspace; only the user may decide that." },
+    "slack_forget_channel": { "excluded": "Stop indexing and forget deletes a channel's indexed threads and the memories saved from it; a destructive choice only the user makes on the Slack card." },
+    "slack_set_index_window": { "excluded": "How far back Slack channels are copied onto this computer is a privacy setting only the user may change." },
+    "slack_list_people": { "excluded": "Lists the Slack workspace's members for the user's own 'This is me' pick on the Slack card; a call to Slack with the bot token on the user's behalf." },
+    "slack_set_owner": { "excluded": "Picking which Slack member is the user decides whose Slack messages are saved straight into the user's memories; only the user may decide that." },
+    "slack_memories": { "excluded": "Shows the memories saved from Slack on the Slack card for the user to review, promote or delete; channel-scoped memories never reach the agent." },
+    "slack_promote_memory": { "excluded": "Moving someone else's Slack memory into the user's own memories is the user's decision, by their click; the agent must never promote content from Slack into memory." },
+    "slack_delete_memory": { "excluded": "Deletes a memory saved from Slack (from the user's memories too); a destructive choice only the user makes on the Slack card." }
   }
 }

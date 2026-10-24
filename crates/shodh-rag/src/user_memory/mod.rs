@@ -43,8 +43,8 @@ use crate::statements::{
 };
 
 pub use guard::{
-    check_write_origin, conversation_source, Origin, WriteAuthority, CONVERSATION_SOURCE_PREFIX,
-    SETTINGS_SOURCE,
+    check_write_origin, conversation_source, is_slack_memory_source, Origin, WriteAuthority,
+    CONVERSATION_SOURCE_PREFIX, SETTINGS_SOURCE, SLACK_MEMORY_SOURCE_PREFIX,
 };
 pub use recall::{
     render_injection, render_injection_counted, RecallMode, RecallRequest, RecalledMemory,
@@ -82,6 +82,7 @@ pub fn memory_source_prefixes() -> Vec<String> {
     vec![
         CONVERSATION_SOURCE_PREFIX.to_string(),
         SETTINGS_SOURCE.to_string(),
+        SLACK_MEMORY_SOURCE_PREFIX.to_string(),
     ]
 }
 
@@ -1101,7 +1102,9 @@ impl MemoryService {
                     "approval": match &origin.authority {
                         WriteAuthority::UserApproval { step_id } => Some(step_id.clone()),
                         WriteAuthority::LearnPolicy { proposal_id } => Some(proposal_id.clone()),
-                        WriteAuthority::UserInterface => None,
+                        WriteAuthority::UserInterface
+                        | WriteAuthority::SlackOwner { .. }
+                        | WriteAuthority::SlackPromoted => None,
                     },
                     "authority": origin.authority.label(),
                     "via": actor.via,

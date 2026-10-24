@@ -2,6 +2,7 @@
 //! connector; their settings live under `connectors` in `app_settings.json`.
 
 pub mod slack;
+pub mod slack_index;
 mod slack_usage;
 
 use serde::{Deserialize, Serialize};

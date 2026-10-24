@@ -1217,6 +1217,11 @@ fn migration_15_keeps_one_active_job_per_table() {
         "DROP TABLE table_fill_job;
          DROP TABLE table_calls;
          DROP TABLE table_fill_capture;
+         DROP TABLE slack_index_channel;
+         DROP TABLE slack_index_thread;
+         DROP TABLE slack_index_message;
+         DROP TABLE slack_memory;
+         DROP TABLE slack_thread_turn;
          DELETE FROM schema_version WHERE version >= 15;
          CREATE TABLE table_fill_job (
             id TEXT PRIMARY KEY,

@@ -28,8 +28,78 @@ pub const REQUIRED_BOT_SCOPES: [&str; 8] = [
     "users:read",
 ];
 
-/// The events the app subscribes to.
+/// The events answering needs.
 pub const BOT_EVENTS: [&str; 2] = ["app_mention", "message.im"];
+
+/// The bot scopes indexing channels needs besides the answer scopes, checked apart: an
+/// app without them still answers, and the card says what to add.
+/// - `channels:history`, `groups:history`: `conversations.history` and
+///   `conversations.replies` of the public and private channels the bot is in, and their
+///   `message.channels` / `message.groups` events (new messages, edits, deletions).
+///
+/// `users:read` (already an answer scope) gives the names mentions are shown with and
+/// the people of the "This is me" pick; `channels:read` / `groups:read` the archive,
+/// deletion and leave events. No e-mail scope.
+pub const INDEX_BOT_SCOPES: [&str; 2] = ["channels:history", "groups:history"];
+
+/// The events indexing listens to. A private channel's archive has no Events API event
+/// (`group_archive` is RTM-only): the sync sees it from `conversations.info`.
+pub const INDEX_EVENTS: [&str; 7] = [
+    "channel_archive",
+    "channel_deleted",
+    "channel_left",
+    "group_deleted",
+    "member_left_channel",
+    "message.channels",
+    "message.groups",
+];
+
+/// Every bot scope of the manifest.
+pub fn manifest_scopes() -> Vec<&'static str> {
+    let mut scopes: Vec<&'static str> = REQUIRED_BOT_SCOPES
+        .iter()
+        .chain(INDEX_BOT_SCOPES.iter())
+        .copied()
+        .collect();
+    scopes.sort_unstable();
+    scopes
+}
+
+/// Every event of the manifest.
+pub fn manifest_events() -> Vec<&'static str> {
+    let mut events: Vec<&'static str> = BOT_EVENTS
+        .iter()
+        .chain(INDEX_EVENTS.iter())
+        .copied()
+        .collect();
+    events.sort_unstable();
+    events
+}
+
+/// The index scopes the bot was not granted (`granted` empty: Slack did not say, none
+/// listed).
+pub fn missing_index_scopes(granted: &[String]) -> Vec<String> {
+    if granted.is_empty() {
+        return Vec::new();
+    }
+    INDEX_BOT_SCOPES
+        .iter()
+        .filter(|s| !granted.iter().any(|g| g == *s))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// What the card says when indexing lacks scopes.
+pub fn missing_index_scopes_message(missing: &[String]) -> String {
+    format!(
+        "To index channels, the Slack app needs these permissions: {}. In Slack, open the \
+         app's settings, add them under OAuth & Permissions → Bot Token Scopes, add the \
+         events under Event Subscriptions (or paste Shodh's manifest under App Manifest), \
+         reinstall the app to the workspace, and connect again with the new bot token. \
+         Answering keeps working meanwhile.",
+        missing.join(", ")
+    )
+}
 
 /// The scope the app-level token needs for Socket Mode.
 pub const APP_TOKEN_SCOPE: &str = "connections:write";
@@ -46,7 +116,7 @@ pub fn manifest() -> Value {
         "_metadata": { "major_version": 1, "minor_version": 1 },
         "display_information": {
             "name": APP_NAME,
-            "description": "Answers questions from the documents of one Shodh workspace, with citations.",
+            "description": "Answers questions from the documents of one Shodh workspace, with citations, and indexes the channels you choose.",
             "background_color": "#1f2933"
         },
         "features": {
@@ -61,10 +131,10 @@ pub fn manifest() -> Value {
             }
         },
         "oauth_config": {
-            "scopes": { "bot": REQUIRED_BOT_SCOPES }
+            "scopes": { "bot": manifest_scopes() }
         },
         "settings": {
-            "event_subscriptions": { "bot_events": BOT_EVENTS },
+            "event_subscriptions": { "bot_events": manifest_events() },
             "interactivity": { "is_enabled": false },
             "org_deploy_enabled": false,
             "socket_mode_enabled": true,
@@ -153,20 +223,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_manifest_asks_for_socket_mode_and_only_the_answer_scopes() {
+    fn the_manifest_asks_for_socket_mode_and_exactly_the_answer_and_index_scopes() {
         let m = manifest();
         assert_eq!(m["settings"]["socket_mode_enabled"], true);
         assert_eq!(m["settings"]["token_rotation_enabled"], false);
         assert_eq!(
             m["settings"]["event_subscriptions"]["bot_events"],
-            json!(["app_mention", "message.im"])
+            json!([
+                "app_mention",
+                "channel_archive",
+                "channel_deleted",
+                "channel_left",
+                "group_deleted",
+                "member_left_channel",
+                "message.channels",
+                "message.groups",
+                "message.im"
+            ])
         );
         assert_eq!(
             m["oauth_config"]["scopes"]["bot"],
             json!([
                 "app_mentions:read",
+                "channels:history",
                 "channels:read",
                 "chat:write",
+                "groups:history",
                 "groups:read",
                 "im:history",
                 "im:read",
@@ -174,9 +256,11 @@ mod tests {
                 "users:read"
             ])
         );
-        // No e-mail addresses and no channel history: neither is asked for.
+        // No e-mail addresses, no group DMs, no files: none is asked for.
         let scopes = m["oauth_config"]["scopes"]["bot"].to_string();
-        assert!(!scopes.contains("users:read.email") && !scopes.contains("channels:history"));
+        for absent in ["users:read.email", "mpim:", "files:", "search:"] {
+            assert!(!scopes.contains(absent), "{absent}");
+        }
         assert!(m["oauth_config"]["scopes"].get("user").is_none());
         assert!(m["settings"].get("event_subscriptions").unwrap()["request_url"].is_null());
         assert_eq!(m["features"]["app_home"]["messages_tab_enabled"], true);
@@ -239,5 +323,26 @@ mod tests {
         assert_eq!(check_scopes(None), ScopeCheck::Unknown);
         let message = missing_scopes_message(&["im:history".into(), "im:write".into()]);
         assert!(message.contains("im:history, im:write"));
+    }
+
+    #[test]
+    fn index_scopes_are_checked_apart_from_the_answer_scopes() {
+        // A 0.0.8 app: every answer scope, no history. It still answers.
+        let answering: Vec<String> = REQUIRED_BOT_SCOPES.iter().map(|s| s.to_string()).collect();
+        assert_eq!(check_scopes(Some(&answering)), ScopeCheck::Complete);
+        assert_eq!(
+            missing_index_scopes(&answering),
+            vec!["channels:history".to_string(), "groups:history".to_string()]
+        );
+        let mut all = answering.clone();
+        all.extend(INDEX_BOT_SCOPES.iter().map(|s| s.to_string()));
+        assert!(missing_index_scopes(&all).is_empty());
+        assert!(
+            missing_index_scopes(&[]).is_empty(),
+            "unknown is not missing"
+        );
+        let message = missing_index_scopes_message(&missing_index_scopes(&answering));
+        assert!(message.contains("channels:history, groups:history"));
+        assert!(message.contains("Answering keeps working"));
     }
 }

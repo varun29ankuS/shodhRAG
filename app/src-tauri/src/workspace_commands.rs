@@ -671,7 +671,9 @@ pub async fn source_health(
     let folders: HashMap<String, (usize, usize)> = match load_sources(&engine).await {
         Ok(sources) => sources
             .into_iter()
-            .filter(|s| s.kind == IndexKind::Folder)
+            // A Slack channel the Slack connector indexes is a folder source of its
+            // workspace too (its threads are its files).
+            .filter(|s| matches!(s.kind, IndexKind::Folder | IndexKind::Slack))
             .map(|s| (s.source_id, (s.files, s.chunks)))
             .collect(),
         Err(e) => {

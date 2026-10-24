@@ -554,6 +554,89 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
             WHERE state IN ('queued', 'running', 'paused');",
     ),
+    (
+        17,
+        // The Slack connector, part B. `slack_index_channel`: a Slack channel indexed into a
+        // Shodh workspace and its sync checkpoint (the backfill's fixed `latest` bound and
+        // the cursor of its next page, the newest message seen, a rate-limit pause).
+        // `slack_index_thread`: each indexed thread (one document) and whether it must be
+        // fetched again. `slack_index_message`: which thread a message belongs to, so a
+        // deletion finds its thread. `slack_memory`: memories saved from Slack (a person's
+        // channel-scoped note, or the owner's, recorded with the id it has in the user's
+        // memories). `slack_thread_turn`: the questions and Shodh's answers of a Slack
+        // thread, for follow-ups in that thread only.
+        "CREATE TABLE slack_index_channel (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            shared INTEGER NOT NULL DEFAULT 0 CHECK (shared IN (0, 1)),
+            private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)),
+            window_days INTEGER NOT NULL CHECK (window_days > 0),
+            state TEXT NOT NULL CHECK (state IN
+                ('active', 'archived', 'removed', 'now_shared', 'error', 'forgetting')),
+            backfill_latest TEXT NULL,
+            backfill_cursor TEXT NULL,
+            backfill_done INTEGER NOT NULL DEFAULT 0 CHECK (backfill_done IN (0, 1)),
+            oldest_seen TEXT NULL,
+            newest_ts TEXT NULL,
+            paused_until TEXT NULL,
+            error TEXT NULL,
+            permalink_base TEXT NULL,
+            last_sync_at TEXT NULL,
+            last_poll_at TEXT NULL,
+            last_slim_at TEXT NULL,
+            started_at TEXT NOT NULL,
+            PRIMARY KEY (team_id, channel_id)
+        );
+        CREATE TABLE slack_index_thread (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            thread_ts TEXT NOT NULL,
+            latest_reply TEXT NULL,
+            reply_count INTEGER NOT NULL DEFAULT 0 CHECK (reply_count >= 0),
+            dirty INTEGER NOT NULL DEFAULT 0 CHECK (dirty IN (0, 1)),
+            dirty_at TEXT NULL,
+            indexed_at TEXT NULL,
+            PRIMARY KEY (team_id, channel_id, thread_ts)
+        );
+        CREATE INDEX slack_index_thread_dirty ON slack_index_thread(team_id, dirty, dirty_at);
+        CREATE TABLE slack_index_message (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            thread_ts TEXT NOT NULL,
+            PRIMARY KEY (team_id, channel_id, ts)
+        );
+        CREATE INDEX slack_index_message_thread
+            ON slack_index_message(team_id, channel_id, thread_ts);
+        CREATE TABLE slack_memory (
+            id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_name TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            author_name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('text', 'thread')),
+            message_ts TEXT NOT NULL,
+            permalink TEXT NULL,
+            saved_at TEXT NOT NULL,
+            owner INTEGER NOT NULL CHECK (owner IN (0, 1)),
+            memory_id TEXT NULL
+        );
+        CREATE INDEX slack_memory_channel ON slack_memory(team_id, channel_id, saved_at);
+        CREATE TABLE slack_thread_turn (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            thread_key TEXT NOT NULL,
+            at TEXT NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL
+        );
+        CREATE INDEX slack_thread_turn_thread
+            ON slack_thread_turn(team_id, channel_id, thread_key, at);",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {
@@ -2135,6 +2218,11 @@ mod tests {
                  DROP TABLE fill_cache;
                  DROP TABLE table_calls;
                  DROP TABLE table_fill_capture;
+                 DROP TABLE slack_index_channel;
+                 DROP TABLE slack_index_thread;
+                 DROP TABLE slack_index_message;
+                 DROP TABLE slack_memory;
+                 DROP TABLE slack_thread_turn;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

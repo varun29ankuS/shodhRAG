@@ -137,6 +137,10 @@ struct Passage {
     /// model, which has `file`.
     #[serde(skip)]
     title: Option<String>,
+    /// The Slack permalink of an indexed Slack thread, which its citation opens: sent in
+    /// the step detail, never in the text the model reads.
+    #[serde(skip)]
+    url: Option<String>,
 }
 
 impl Passage {
@@ -153,6 +157,9 @@ impl Passage {
             }
             if let Some(title) = &self.title {
                 map.insert("title".to_string(), json!(title));
+            }
+            if let Some(url) = &self.url {
+                map.insert("url".to_string(), json!(url));
             }
         }
         value
@@ -584,7 +591,22 @@ fn passage(
         regions: passage_regions(result),
         display_path,
         title: document_title(result),
+        url: slack_permalink(&path, result),
     }
+}
+
+/// The permalink an indexed Slack thread (`slack://…`) carries in its metadata; only an
+/// `https://` link of a Slack thread.
+fn slack_permalink(path: &str, result: &ComprehensiveResult) -> Option<String> {
+    if !path.starts_with(crate::connectors::slack::ids::SOURCE_PREFIX) {
+        return None;
+    }
+    result
+        .metadata
+        .get("url")
+        .map(|u| u.trim())
+        .filter(|u| u.starts_with("https://") && !u.contains(char::is_whitespace))
+        .map(str::to_string)
 }
 
 /// The arguments of `search_documents`.

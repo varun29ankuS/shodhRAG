@@ -11,6 +11,8 @@
 //!   Disconnect.
 //! - **Connection**: only while the connector is on and Local-only mode is off. Turning
 //!   Local-only mode on stops it; turning it off again resumes it. Closed on exit.
+//! - **Indexing** chosen channels into Shodh workspaces and **memories** saved from Slack:
+//!   [`super::slack_index`] (state in `shodh.db`).
 //! - **Answers** come from the selected workspace only ([`AppAnswerSource`]), in the
 //!   chosen channels and to DMs from members of the installing Slack workspace only
 //!   ([`AppAccessRules`]). Until a workspace is selected, or after it was deleted or
@@ -31,20 +33,23 @@ use shodh_rag::audit::{AuditEventType, AuditRecord};
 use shodh_rag::connectors::slack::access::{
     AccessRules, AccessRulesSource, AllowedChannel, SlackAccessGate,
 };
-use shodh_rag::connectors::slack::answer::{retrieve_passages, AnswerPassage, AnswerScope};
-use shodh_rag::connectors::slack::events::{EventRouter, SeenEntry, SeenStore};
+use shodh_rag::connectors::slack::answer::{
+    library_listing, retrieve_passages, AnswerPassage, AnswerScope, LibraryListing, ThreadTurn,
+};
+use shodh_rag::connectors::slack::events::{EventRouter, SeenEntry, SeenStore, ThreadKey};
 use shodh_rag::connectors::slack::respond::{
     AnswerQuota, AnswerSource, Outcome, Responder, SlackPoster,
 };
 use shodh_rag::connectors::slack::sanitize::PrivateTerms;
 use shodh_rag::connectors::slack::service::{AnswerService, OutcomeSink, SeenPersister};
 use shodh_rag::connectors::slack::setup::{
-    check_scopes, create_app_url, missing_scopes_message, ScopeCheck, APP_TOKEN_SCOPE, BOT_EVENTS,
-    REQUIRED_BOT_SCOPES,
+    check_scopes, create_app_url, manifest_events, manifest_scopes, missing_scopes_message,
+    ScopeCheck, APP_TOKEN_SCOPE,
 };
 use shodh_rag::connectors::slack::socket::{
     supervise, LinkState, SlackSocketOpener, StatusSink, Timing,
 };
+use shodh_rag::connectors::slack::store::{SlackMemory, SlackStore};
 use shodh_rag::connectors::slack::tokens::{
     SlackAppToken, SlackBotToken, SlackCredentialStore, SlackCredentials,
 };
@@ -55,8 +60,9 @@ use shodh_rag::connectors::slack::{CancellationToken, SlackInstallation};
 use shodh_rag::research::results::TextModel;
 use shodh_rag::research::tables::calls::{next_utc_midnight, utc_day, SystemClock};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
+use super::slack_index::{self, AppMemories, Database, IndexStatus, SlackOwner};
 use super::slack_usage::SlackUsage;
 use crate::app_settings::{broadcast, AppSettings, SettingsStore};
 use crate::audit_commands::AuditState;
@@ -115,6 +121,10 @@ pub struct SlackInstallationPrefs {
     /// The channels mentions are answered in; empty (nowhere) until the user chooses.
     #[serde(default)]
     pub answer_channels: Vec<AnswerChannel>,
+    /// The Slack member the user picked as themselves: their `remember:` goes into the
+    /// user's memories. `None` until picked.
+    #[serde(default)]
+    pub owner: Option<SlackOwner>,
 }
 
 /// The Slack connector's settings. User-only.
@@ -125,6 +135,8 @@ pub struct SlackPrefs {
     pub daily_answer_cap: usize,
     /// By team id. The card shows and manages the first.
     pub installations: Vec<SlackInstallationPrefs>,
+    /// How far back a newly indexed channel's first backfill reaches, in days.
+    pub index_window_days: u32,
 }
 
 impl Default for SlackPrefs {
@@ -132,6 +144,7 @@ impl Default for SlackPrefs {
         Self {
             daily_answer_cap: DEFAULT_DAILY_ANSWER_CAP,
             installations: Vec::new(),
+            index_window_days: slack_index::default_window_days(),
         }
     }
 }
@@ -166,7 +179,15 @@ impl SlackPrefs {
             .find(|i| i.installation.team_id == team_id)
     }
 
-    fn find_mut(&mut self, team_id: &str) -> Option<&mut SlackInstallationPrefs> {
+    /// The history window to use: the stored one when in range, else the default.
+    pub fn index_window(&self) -> u32 {
+        match shodh_rag::connectors::slack::index::check_window_days(self.index_window_days) {
+            Ok(()) => self.index_window_days,
+            Err(_) => slack_index::default_window_days(),
+        }
+    }
+
+    pub(super) fn find_mut(&mut self, team_id: &str) -> Option<&mut SlackInstallationPrefs> {
         self.installations
             .iter_mut()
             .find(|i| i.installation.team_id == team_id)
@@ -403,12 +424,20 @@ pub struct SlackState {
     pacer: Arc<StatusPacer>,
     /// One change at a time (connect, switch, disconnect, follow the settings).
     op: tokio::sync::Mutex<()>,
+    /// `shodh.db`, where indexing and memories from Slack are kept (opened on first use).
+    database: Database,
+    store: tokio::sync::OnceCell<Arc<SlackStore>>,
+    /// Per Slack workspace: held by each sync step and by forgetting, so a step never
+    /// adds a thread back to a channel being forgotten.
+    gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Per Slack workspace: wakes its sync (an event, a channel chosen).
+    wakes: Mutex<HashMap<String, Arc<Notify>>>,
 }
 
 impl SlackState {
-    /// The connector of the app data directory `data_dir`. Reads the cap from the
-    /// settings; connects nothing.
-    pub fn new(data_dir: &Path) -> Self {
+    /// The connector of the app data directory `data_dir`, keeping its indexing state in
+    /// `database`. Reads the cap from the settings; connects nothing.
+    pub fn new(data_dir: &Path, database: Database) -> Self {
         let cap = SettingsStore::in_dir(data_dir)
             .load()
             .map(|s| s.connectors.slack.daily_cap())
@@ -423,11 +452,44 @@ impl SlackState {
             live: Arc::new(Mutex::new(HashMap::new())),
             pacer: Arc::new(StatusPacer::default()),
             op: tokio::sync::Mutex::new(()),
+            database,
+            store: tokio::sync::OnceCell::new(),
+            gates: Mutex::new(HashMap::new()),
+            wakes: Mutex::new(HashMap::new()),
         }
     }
 
+    /// The Slack tables of `shodh.db`, opened on first use (tried again on the next call
+    /// when it fails).
+    pub(super) async fn store(&self) -> Result<Arc<SlackStore>, String> {
+        self.store
+            .get_or_try_init(|| slack_index::open_store(&self.database))
+            .await
+            .cloned()
+    }
+
+    /// The sync gate of Slack workspace `team_id`.
+    pub(super) fn gate(&self, team_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.gates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(team_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// What wakes the sync of Slack workspace `team_id`.
+    pub(super) fn wake(&self, team_id: &str) -> Arc<Notify> {
+        self.wakes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(team_id.to_string())
+            .or_default()
+            .clone()
+    }
+
     /// The settings, read off the async workers.
-    async fn settings(&self) -> Result<AppSettings, String> {
+    pub(super) async fn settings(&self) -> Result<AppSettings, String> {
         let store = SettingsStore::in_dir(&self.data_dir);
         tokio::task::spawn_blocking(move || store.load())
             .await
@@ -559,6 +621,8 @@ pub struct ChannelChoice {
     pub private: bool,
     pub shared: bool,
     pub selected: bool,
+    /// The Shodh workspace the channel is indexed into, if it is.
+    pub indexed_into: Option<String>,
 }
 
 /// What the card shows. Never a token.
@@ -586,6 +650,8 @@ pub struct SlackStatus {
     pub last_post_failed_at: Option<String>,
     /// Scopes the bot lacks (an app created from an earlier manifest).
     pub missing_scopes: Vec<String>,
+    /// Channels indexed into Shodh workspaces, memories from Slack, the owner.
+    pub index: IndexStatus,
     pub create_app_url: String,
     pub bot_scopes: Vec<&'static str>,
     pub bot_events: Vec<&'static str>,
@@ -620,7 +686,7 @@ pub fn state_word(
     }
 }
 
-async fn workspace_ref(app: &AppHandle, id: &str) -> WorkspaceRef {
+pub(super) async fn workspace_ref(app: &AppHandle, id: &str) -> WorkspaceRef {
     let lookup = id.to_string();
     let detail = app
         .state::<WorkspaceState>()
@@ -678,6 +744,7 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
             0
         });
     let running = word == "connected" || word == "reconnecting" || word == "connecting";
+    let index = slack_index::index_status(app, current, prefs.index_window()).await;
     Ok(SlackStatus {
         state: word,
         installation: current.map(|i| InstallationView {
@@ -712,9 +779,10 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
         missing_scopes: current
             .map(|i| missing_scopes(&i.installation))
             .unwrap_or_default(),
+        index,
         create_app_url: create_app_url(),
-        bot_scopes: REQUIRED_BOT_SCOPES.to_vec(),
-        bot_events: BOT_EVENTS.to_vec(),
+        bot_scopes: manifest_scopes(),
+        bot_events: manifest_events(),
         app_token_scope: APP_TOKEN_SCOPE,
     })
 }
@@ -887,7 +955,7 @@ impl OutcomeSink for AppOutcomes {
 // ── Answers ─────────────────────────────────────────────────────────
 
 /// Reads the installation's settings off the async workers.
-async fn installation_prefs(
+pub(super) async fn installation_prefs(
     data_dir: &Path,
     team_id: &str,
 ) -> Result<Option<SlackInstallationPrefs>, String> {
@@ -941,6 +1009,12 @@ struct AppAnswerSource {
     data_dir: PathBuf,
 }
 
+impl AppAnswerSource {
+    async fn store(&self) -> Result<Arc<SlackStore>, String> {
+        self.app.state::<SlackState>().store().await
+    }
+}
+
 #[async_trait]
 impl AnswerSource for AppAnswerSource {
     async fn scope(&self) -> Result<Option<AnswerScope>, String> {
@@ -978,6 +1052,55 @@ impl AnswerSource for AppAnswerSource {
     ) -> Result<Vec<AnswerPassage>, String> {
         let rag = self.app.state::<RagState>().rag.clone();
         retrieve_passages(rag, scope, question).await
+    }
+
+    async fn listing(&self, scope: &AnswerScope) -> Result<LibraryListing, String> {
+        let rag = self.app.state::<RagState>().rag.clone();
+        library_listing(rag, scope).await
+    }
+
+    async fn thread_turns(&self, thread: &ThreadKey) -> Result<Vec<ThreadTurn>, String> {
+        let store = self.store().await?;
+        let (team, channel, key) = (
+            self.team_id.clone(),
+            thread.channel.clone(),
+            thread.thread.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            store
+                .thread_turns(&team, &channel, &key)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    async fn record_turn(&self, thread: &ThreadKey, turn: ThreadTurn) -> Result<(), String> {
+        let store = self.store().await?;
+        let (team, channel, key) = (
+            self.team_id.clone(),
+            thread.channel.clone(),
+            thread.thread.clone(),
+        );
+        tokio::task::spawn_blocking(move || {
+            store
+                .add_turn(&team, &channel, &key, &turn, Utc::now())
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String> {
+        let store = self.store().await?;
+        let (team, channel) = (self.team_id.clone(), channel.to_string());
+        tokio::task::spawn_blocking(move || {
+            store
+                .channel_memories(&team, &channel)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     fn model(&self) -> Result<Arc<dyn TextModel>, String> {
@@ -1106,6 +1229,16 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
         team_id: team_id.clone(),
         live: state.live.clone(),
     };
+    let memories = AppMemories {
+        app: app.clone(),
+        team_id: team_id.clone(),
+        bot_user_id: prefs.installation.bot_user_id.clone(),
+        data_dir: state.data_dir.clone(),
+        web: web.clone(),
+        token: credentials.bot_token.clone(),
+    };
+    let index_events =
+        slack_index::start_sync(app, prefs, &web, &credentials.bot_token, answers.clone()).await;
     let gate = SlackAccessGate::new(
         Arc::new(AppAccessRules {
             app: app.clone(),
@@ -1125,6 +1258,7 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
             team_id: team_id.clone(),
             data_dir: state.data_dir.clone(),
         }),
+        Arc::new(memories),
         Arc::new(gate),
         state.usage.clone(),
         Arc::new(poster),
@@ -1132,19 +1266,21 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
         answers.clone(),
     );
     let (router, seen) = routing(&state, &prefs.installation).await;
-    let service = Arc::new(
-        AnswerService::new(
-            router,
-            responder,
-            runtime,
-            Arc::new(AppOutcomes {
-                app: app.clone(),
-                team_id: team_id.clone(),
-                live: state.live.clone(),
-            }),
-        )
-        .with_seen_store(seen),
-    );
+    let mut service = AnswerService::new(
+        router,
+        responder,
+        runtime,
+        Arc::new(AppOutcomes {
+            app: app.clone(),
+            team_id: team_id.clone(),
+            live: state.live.clone(),
+        }),
+    )
+    .with_seen_store(seen);
+    if let Some(events) = index_events {
+        service = service.with_index_events(events);
+    }
+    let service = Arc::new(service);
     let opener = Arc::new(SlackSocketOpener {
         web,
         app_token: credentials.app_token,
@@ -1346,7 +1482,7 @@ pub async fn slack_exposure_of(data_dir: &Path, workspace_id: &str) -> Option<St
 
 // ── Commands ────────────────────────────────────────────────────────
 
-fn audit_change(audit: &AuditState, action: &str, detail: serde_json::Value) {
+pub(super) fn audit_change(audit: &AuditState, action: &str, detail: serde_json::Value) {
     let mut payload = json!({ "action": action, "via": "ui" });
     if let (Some(map), serde_json::Value::Object(extra)) = (payload.as_object_mut(), detail) {
         map.extend(extra);
@@ -1354,7 +1490,7 @@ fn audit_change(audit: &AuditState, action: &str, detail: serde_json::Value) {
     audit.record(AuditRecord::new(AuditEventType::SettingsChange, payload));
 }
 
-async fn save(
+pub(super) async fn save(
     state: &SlackState,
     change: impl FnOnce(&mut SlackPrefs) -> Result<(), String> + Send + 'static,
 ) -> Result<AppSettings, String> {
@@ -1379,7 +1515,7 @@ async fn save(
 }
 
 /// What a refused setup call tells the user.
-fn setup_error(which: &str, error: SlackApiError) -> String {
+pub(super) fn setup_error(which: &str, error: SlackApiError) -> String {
     match &error {
         SlackApiError::Api {
             code,
@@ -1485,6 +1621,7 @@ pub async fn slack_connect(
                 installation,
                 enabled: true,
                 answer_workspace: kept.as_ref().and_then(|k| k.answer_workspace.clone()),
+                owner: kept.as_ref().and_then(|k| k.owner.clone()),
                 answer_channels: kept.map(|k| k.answer_channels).unwrap_or_default(),
             },
         );
@@ -1496,6 +1633,8 @@ pub async fn slack_connect(
         "slack_connect",
         json!({ "slackWorkspace": info.team, "bot": info.user }),
     );
+    // Channels that stopped on a refused token or a missing scope try again with these.
+    retry_stopped_channels(&state, &team_id).await;
     // A running connection of this workspace starts again with the new tokens.
     stop(&app, &team_id).await;
     state
@@ -1540,6 +1679,9 @@ pub async fn slack_set_enabled(
     })
     .await?;
     audit_change(&audit, "slack_set_enabled", json!({ "enabled": enabled }));
+    if enabled {
+        retry_stopped_channels(&state, &team_id).await;
+    }
     // Switching on again retries a connection that stopped on an error.
     stop(&app, &team_id).await;
     state
@@ -1602,8 +1744,24 @@ pub async fn slack_set_answer_workspace(
     status(&app).await
 }
 
+/// Lets the indexed channels of `team_id` that stopped on an error try again (new
+/// tokens, or the connector switched on again).
+async fn retry_stopped_channels(state: &SlackState, team_id: &str) {
+    let Ok(store) = state.store().await else {
+        return;
+    };
+    let team = team_id.to_string();
+    let retried = tokio::task::spawn_blocking(move || store.retry_stopped(&team))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    if let Err(e) = retried {
+        tracing::warn!(target: "shodh::slack", error = %e, "stopped Slack channels could not be retried");
+    }
+}
+
 /// The bot token of the installation the card manages, for a call the user asked for.
-async fn current_bot_token(
+pub(super) async fn current_bot_token(
     state: &SlackState,
 ) -> Result<(AppSettings, SlackInstallationPrefs, SlackBotToken), String> {
     let settings = state.settings().await?;
@@ -1638,10 +1796,24 @@ pub async fn slack_list_channels(
         .bot_channels(&token)
         .await
         .map_err(|e| setup_error("bot token", e))?;
+    let indexed: HashMap<String, String> = match state.store().await {
+        Ok(store) => {
+            let team = current.installation.team_id.clone();
+            tokio::task::spawn_blocking(move || store.channels(&team))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|c| (c.channel_id, c.workspace_id))
+                .collect()
+        }
+        Err(_) => HashMap::new(),
+    };
     Ok(channels
         .into_iter()
         .map(|c| ChannelChoice {
             selected: current.answer_channels.iter().any(|a| a.id == c.id),
+            indexed_into: indexed.get(&c.id).cloned(),
             id: c.id,
             name: c.name,
             private: c.private,
@@ -1735,7 +1907,8 @@ pub async fn slack_set_daily_cap(
 }
 
 /// Disconnects the Slack workspace: cancels its answers, stops the connection, switches
-/// the connector off (saved first, so nothing reconnects it), deletes both tokens from the
+/// the connector off (saved first, so nothing reconnects it), with `forget` forgets what
+/// was indexed from Slack and every memory saved from it, deletes both tokens from the
 /// credential store, and only then forgets the installation. When the tokens cannot be
 /// deleted, the connector stays off and the card says so. User-only.
 #[tauri::command]
@@ -1743,6 +1916,7 @@ pub async fn slack_disconnect(
     app: AppHandle,
     state: State<'_, SlackState>,
     audit: State<'_, AuditState>,
+    forget: bool,
 ) -> Result<SlackStatus, String> {
     let _op = state.op.lock().await;
     let settings = state.settings().await?;
@@ -1761,6 +1935,13 @@ pub async fn slack_disconnect(
     .await?;
     stop(&app, &team_id).await;
     broadcast(&app, &settings);
+    let forgotten = if forget {
+        Some(slack_index::forget_team(&app, &team_id).await.map_err(|e| {
+            format!("The Slack connector is off, but what was indexed from Slack could not be forgotten ({e}). Try Disconnect again.")
+        })?)
+    } else {
+        None
+    };
     let remove_team = team_id.clone();
     let removed = tokio::task::spawn_blocking(move || KeyringCredentials.remove(&remove_team))
         .await
@@ -1788,7 +1969,12 @@ pub async fn slack_disconnect(
     audit_change(
         &audit,
         "slack_disconnect",
-        json!({ "slackWorkspace": current.installation.team_name }),
+        json!({
+            "slackWorkspace": current.installation.team_name,
+            "forgot": forget,
+            "threadsForgotten": forgotten.as_ref().map(|f| f.threads),
+            "memoriesForgotten": forgotten.as_ref().map(|f| f.memories),
+        }),
     );
     broadcast(&app, &settings);
     status(&app).await
@@ -1806,13 +1992,17 @@ mod tests {
                 bot_user_id: "UBOT".into(),
                 bot_name: "shodh".into(),
                 bot_id: Some("BBOT".into()),
-                scopes: REQUIRED_BOT_SCOPES.iter().map(|s| s.to_string()).collect(),
+                scopes: shodh_rag::connectors::slack::setup::REQUIRED_BOT_SCOPES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
                 app_id: Some("A1".into()),
                 connected_at: Utc::now(),
             },
             enabled,
             answer_workspace: None,
             answer_channels: Vec::new(),
+            owner: None,
         }
     }
 
@@ -1831,6 +2021,15 @@ mod tests {
         // Settings written before the connector existed load with it off.
         let old: AppSettings = serde_json::from_str(r#"{"seeded": true}"#).unwrap();
         assert_eq!(old.connectors.slack, SlackPrefs::default());
+        // Settings written by part A load with the default history window.
+        let part_a: SlackPrefs =
+            serde_json::from_value(json!({"dailyAnswerCap": 20, "installations": []})).unwrap();
+        assert_eq!(part_a.index_window(), 90);
+        let odd_window = SlackPrefs {
+            index_window_days: 3,
+            ..SlackPrefs::default()
+        };
+        assert_eq!(odd_window.index_window(), 90, "out of range falls back");
     }
 
     #[test]
@@ -1845,6 +2044,7 @@ mod tests {
         });
         let prefs: SlackInstallationPrefs = serde_json::from_value(saved).unwrap();
         assert!(prefs.answer_channels.is_empty());
+        assert_eq!(prefs.owner, None, "nobody is the owner until picked");
         assert_eq!(prefs.installation.app_id, None);
         let rules = access_rules(&prefs);
         assert_eq!(rules.team_id, "T1");
@@ -2061,9 +2261,10 @@ mod tests {
             other_connections: false,
             last_post_failed_at: None,
             missing_scopes: Vec::new(),
+            index: IndexStatus::default(),
             create_app_url: create_app_url(),
-            bot_scopes: REQUIRED_BOT_SCOPES.to_vec(),
-            bot_events: BOT_EVENTS.to_vec(),
+            bot_scopes: manifest_scopes(),
+            bot_events: manifest_events(),
             app_token_scope: APP_TOKEN_SCOPE,
         };
         let text = serde_json::to_string(&status).unwrap();

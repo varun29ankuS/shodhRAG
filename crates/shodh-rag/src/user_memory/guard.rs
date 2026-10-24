@@ -13,6 +13,25 @@ pub const SETTINGS_SOURCE: &str = "settings://memory";
 /// `conversation://<conversation id>/turn/<run id>`.
 pub const CONVERSATION_SOURCE_PREFIX: &str = "conversation://";
 
+/// Provenance source prefix of memories saved from Slack:
+/// `slack-memory://<team>/<channel>/<message ts>`.
+pub const SLACK_MEMORY_SOURCE_PREFIX: &str = "slack-memory://";
+
+/// Whether `source` is a well-formed Slack memory source: the prefix and exactly three
+/// parts of Slack ids (ASCII letters, digits, `.`, `_`, `-`).
+pub fn is_slack_memory_source(source: &str) -> bool {
+    let Some(rest) = source.strip_prefix(SLACK_MEMORY_SOURCE_PREFIX) else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    parts.len() == 3
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })
+}
+
 /// The provenance source of a memory written in a conversation turn.
 pub fn conversation_source(conversation_id: &str, run_id: &str) -> String {
     format!("{CONVERSATION_SOURCE_PREFIX}{conversation_id}/turn/{run_id}")
@@ -38,6 +57,17 @@ pub enum WriteAuthority {
         /// The suggestion the write applies.
         proposal_id: String,
     },
+    /// The user, as the Slack member they picked as themselves on the Slack card, said
+    /// `@Shodh remember: …` (or "remember this thread") in Slack. The connector checks
+    /// the author before writing; the source must be a Slack memory source.
+    SlackOwner {
+        /// The Slack workspace and the user's Slack id.
+        team_id: String,
+        user_id: String,
+    },
+    /// The user promoted a memory someone saved for one Slack channel into their own
+    /// memories, in the app.
+    SlackPromoted,
 }
 
 impl WriteAuthority {
@@ -47,6 +77,8 @@ impl WriteAuthority {
             WriteAuthority::UserInterface => "user_interface",
             WriteAuthority::UserApproval { .. } => "user_approval",
             WriteAuthority::LearnPolicy { .. } => "learn_policy",
+            WriteAuthority::SlackOwner { .. } => "slack_owner",
+            WriteAuthority::SlackPromoted => "slack_promoted",
         }
     }
 }
@@ -75,6 +107,24 @@ impl Origin {
             extractor_version: app_version.to_string(),
             confidence: 1.0,
             authority: WriteAuthority::UserInterface,
+        }
+    }
+
+    /// A memory saved from Slack (`source`: a [`SLACK_MEMORY_SOURCE_PREFIX`] source): typed
+    /// by the user (`extractor` user) or a model's summary of a thread the user asked to
+    /// remember (`extractor` LLM).
+    pub fn from_slack(
+        source: &str,
+        extractor: ExtractorKind,
+        version: &str,
+        authority: WriteAuthority,
+    ) -> Self {
+        Self {
+            source: source.to_string(),
+            extractor,
+            extractor_version: version.to_string(),
+            confidence: 1.0,
+            authority,
         }
     }
 
@@ -151,6 +201,26 @@ pub fn check_write_origin(origin: &Origin) -> Result<(), MemoryError> {
         (WriteAuthority::LearnPolicy { .. }, _) => forbidden(
             "automatic learning only stores statements an LLM formulated from the user's own conversation turn",
         ),
+        (
+            WriteAuthority::SlackOwner { team_id, user_id },
+            ExtractorKind::User | ExtractorKind::Llm,
+        ) if is_slack_memory_source(&origin.source)
+            && !team_id.trim().is_empty()
+            && !user_id.trim().is_empty() =>
+        {
+            Ok(())
+        }
+        (WriteAuthority::SlackOwner { .. }, _) => forbidden(
+            "a memory from Slack must come from the user's own Slack message and carry its Slack source",
+        ),
+        (WriteAuthority::SlackPromoted, ExtractorKind::User | ExtractorKind::Llm)
+            if is_slack_memory_source(&origin.source) =>
+        {
+            Ok(())
+        }
+        (WriteAuthority::SlackPromoted, _) => {
+            forbidden("only a memory saved from Slack can be promoted from Slack")
+        }
     }
 }
 
@@ -252,6 +322,58 @@ mod tests {
             learned("conversation://c1/turn/r1", ExtractorKind::Rule),
         ] {
             assert!(check_write_origin(&case).is_err(), "{case:?}");
+        }
+        // Slack: only with a Slack memory source, an owner and a user or model extractor.
+        let owner = || WriteAuthority::SlackOwner {
+            team_id: "T1".into(),
+            user_id: "U1".into(),
+        };
+        for (source, extractor, authority) in [
+            ("slack-memory://T1/C1/1.2", ExtractorKind::User, owner()),
+            ("slack-memory://T1/C1/1.2", ExtractorKind::Llm, owner()),
+            (
+                "slack-memory://T1/D1/1.2",
+                ExtractorKind::User,
+                WriteAuthority::SlackPromoted,
+            ),
+        ] {
+            let ok = Origin::from_slack(source, extractor, "1.0", authority);
+            assert!(check_write_origin(&ok).is_ok(), "{ok:?}");
+        }
+        for (source, extractor, authority) in [
+            ("slack://T1/C1/1.2", ExtractorKind::User, owner()),
+            ("slack-memory://T1/C1", ExtractorKind::User, owner()),
+            ("conversation://c1/turn/r1", ExtractorKind::User, owner()),
+            ("slack-memory://T1/C1/1.2", ExtractorKind::Gliner, owner()),
+            (
+                "slack-memory://T1/C1/1.2",
+                ExtractorKind::Rule,
+                WriteAuthority::SlackPromoted,
+            ),
+            (
+                "slack-memory://T1/C1/1.2",
+                ExtractorKind::User,
+                WriteAuthority::SlackOwner {
+                    team_id: "T1".into(),
+                    user_id: " ".into(),
+                },
+            ),
+            (
+                SETTINGS_SOURCE,
+                ExtractorKind::User,
+                WriteAuthority::SlackPromoted,
+            ),
+            (
+                "slack-memory://T1/C1/1.2",
+                ExtractorKind::User,
+                WriteAuthority::UserInterface,
+            ),
+        ] {
+            let bad = Origin::from_slack(source, extractor, "1.0", authority);
+            assert!(
+                matches!(check_write_origin(&bad), Err(MemoryError::Forbidden(_))),
+                "{bad:?}"
+            );
         }
         let mut bad_confidence = Origin::user_interface("1.0");
         bad_confidence.confidence = f64::NAN;

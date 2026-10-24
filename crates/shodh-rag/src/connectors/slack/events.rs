@@ -195,7 +195,8 @@ pub struct Question {
 pub enum Decision {
     /// Not a question to the bot; nothing is sent back.
     Ignore(&'static str),
-    Ask(Question),
+    /// Boxed: a question is far larger than the reason a message is ignored.
+    Ask(Box<Question>),
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -289,7 +290,7 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
     let event_id = str_field(payload, "event_id")
         .unwrap_or(&envelope.envelope_id)
         .to_string();
-    Decision::Ask(Question {
+    Decision::Ask(Box::new(Question {
         event_id,
         kind,
         channel: channel.to_string(),
@@ -314,7 +315,7 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
                 .and_then(Value::as_array)
                 .is_some_and(|f| !f.is_empty()),
         text: strip_bot_mention(str_field(event, "text").unwrap_or_default(), &bot.user_id),
-    })
+    }))
 }
 
 /// One remembered event id, as kept on disk (an id and a time, no message content).
@@ -521,7 +522,7 @@ impl EventRouter {
     pub fn route_at(&self, envelope: &Envelope, now: DateTime<Utc>) -> Routed {
         let question = match decide(envelope, &self.bot) {
             Decision::Ignore(why) => return Routed::Ignore(why),
-            Decision::Ask(question) => question,
+            Decision::Ask(question) => *question,
         };
         let first = {
             let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
@@ -645,6 +646,8 @@ mod tests {
             }
         );
         assert_eq!(q.event_id, "Ev1");
+        assert_eq!(q.ts, "100.1", "the message's own ts");
+        assert!(!q.in_thread, "the thread's first message");
 
         let mut in_thread = mention("<@UBOT|shodh> and the rent?");
         in_thread["thread_ts"] = json!("90.5");
@@ -653,6 +656,7 @@ mod tests {
         };
         assert_eq!(q.text, "and the rent?");
         assert_eq!(q.reply_thread_ts.as_deref(), Some("90.5"));
+        assert!(q.in_thread, "a reply in a thread");
 
         let Decision::Ask(q) = decide(&envelope("E3", "Ev3", dm("hello there")), &bot()) else {
             panic!("a question")

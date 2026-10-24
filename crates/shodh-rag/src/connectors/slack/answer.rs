@@ -257,7 +257,7 @@ fn page_label(page: &Option<String>) -> String {
     }
 }
 
-//// One earlier question in a Slack thread and Shodh's answer to it.
+/// One earlier question in a Slack thread and Shodh's answer to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadTurn {
     pub question: String,

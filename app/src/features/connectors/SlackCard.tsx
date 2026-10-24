@@ -161,8 +161,8 @@ function Setup({ status, onStatus }: { status: SlackStatus; onStatus: (s: SlackS
         ))}
       </ol>
       <div className="grid gap-3 sm:grid-cols-2">
-        <TokenField label="App-level token" value={appToken} onChange={setAppToken} check={checkAppToken} placeholder="xapp-…" disabled={busy || localOnly} />
-        <TokenField label="Bot token" value={botToken} onChange={setBotToken} check={checkBotToken} placeholder="xoxb-…" disabled={busy || localOnly} />
+        <TokenField label="App-level token" value={appToken} onChange={v => { setAppToken(v); setError(null); }} check={checkAppToken} placeholder="xapp-…" disabled={busy || localOnly} />
+        <TokenField label="Bot token" value={botToken} onChange={v => { setBotToken(v); setError(null); }} check={checkBotToken} placeholder="xoxb-…" disabled={busy || localOnly} />
       </div>
       {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
       <div className="flex items-center gap-3">

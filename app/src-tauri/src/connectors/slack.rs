@@ -43,13 +43,13 @@ use shodh_rag::connectors::slack::setup::{
     REQUIRED_BOT_SCOPES,
 };
 use shodh_rag::connectors::slack::socket::{
-    supervise, LinkState, SlackSocketOpener, StatusSink, Timing, WRONG_APP,
+    supervise, LinkState, SlackSocketOpener, StatusSink, Timing,
 };
 use shodh_rag::connectors::slack::tokens::{
     SlackAppToken, SlackBotToken, SlackCredentialStore, SlackCredentials,
 };
 use shodh_rag::connectors::slack::web::{
-    app_id_of_connection_url, BotChannel, BotDirectory, BotPoster, SlackApiError, SlackWeb,
+    BotChannel, BotDirectory, BotPoster, SlackApiError, SlackWeb,
 };
 use shodh_rag::connectors::slack::{CancellationToken, SlackInstallation};
 use shodh_rag::research::results::TextModel;
@@ -1394,16 +1394,6 @@ fn setup_error(which: &str, error: SlackApiError) -> String {
     }
 }
 
-/// Whether the two tokens are of the same Slack app: the app-level token's app (from
-/// the connection URL) and the bot's (`bots.info`). `Ok(None)` when either side could
-/// not say; the connection's `hello` is checked against the bot's app later anyway.
-pub fn same_app(token_app: Option<&str>, bot_app: Option<&str>) -> Result<(), String> {
-    match (token_app, bot_app) {
-        (Some(a), Some(b)) if a != b => Err(WRONG_APP.to_string()),
-        _ => Ok(()),
-    }
-}
-
 /// The Slack card's status.
 #[tauri::command]
 pub async fn slack_status(app: AppHandle) -> Result<SlackStatus, String> {
@@ -1411,9 +1401,9 @@ pub async fn slack_status(app: AppHandle) -> Result<SlackStatus, String> {
 }
 
 /// Connects a Slack workspace with the tokens the user pasted: both are checked with
-/// Slack (`auth.test`, its scopes, `bots.info`, `apps.connections.open`, and that both
-/// belong to the same Slack app) before anything is saved, then kept in the OS credential
-/// store and the connector is switched on. User-only.
+/// Slack (`auth.test`, its scopes, `bots.info`, `apps.connections.open`) before anything is
+/// saved, then kept in the OS credential store and the connector is switched on. That both
+/// belong to the same Slack app is checked on the connection's `hello`. User-only.
 #[tauri::command]
 pub async fn slack_connect(
     app: AppHandle,
@@ -1445,14 +1435,12 @@ pub async fn slack_connect(
         ),
         None => None,
     };
-    let url = web
-        .open_connection(&app_token)
+    // Proves the app-level token works. Which app it belongs to is checked against the
+    // bot's app on the connection's `hello`, the only place Slack names it: the `app_id`
+    // in this URL is an opaque value, not the app id.
+    web.open_connection(&app_token)
         .await
         .map_err(|e| setup_error("app-level token", e))?;
-    same_app(
-        app_id_of_connection_url(&url).as_deref(),
-        bot_app.as_deref(),
-    )?;
     if let Some(other) = settings
         .connectors
         .slack
@@ -1994,14 +1982,6 @@ mod tests {
         let note = slack_exposure_note(&["Acme".into()]).unwrap();
         assert!(note.contains("people in Acme"), "{note}");
         assert_eq!(slack_exposure_note(&[]), None);
-    }
-
-    #[test]
-    fn tokens_of_two_apps_are_refused() {
-        assert!(same_app(Some("A1"), Some("A1")).is_ok());
-        assert_eq!(same_app(Some("A1"), Some("A2")), Err(WRONG_APP.to_string()));
-        assert!(same_app(None, Some("A2")).is_ok(), "checked again at hello");
-        assert!(same_app(Some("A1"), None).is_ok());
     }
 
     #[test]

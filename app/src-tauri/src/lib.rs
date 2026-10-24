@@ -17,6 +17,7 @@ mod inbox_commands;
 mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
+mod log_file;
 mod mcp;
 mod mcp_commands;
 mod memory_commands;
@@ -148,6 +149,8 @@ pub fn run() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_ansi(false)
+        .with_writer(log_file::Writer::default)
         .init();
 
     // The data folder decides everything below, so it is fixed first.
@@ -186,6 +189,15 @@ pub fn run() {
         .on_window_event(background::on_window_event)
         .manage(shutdown::ShutdownState::default())
         .setup(|app| {
+            // Installed builds have no console: from here on the log is also kept in
+            // `<app data>/logs/shodh.log`. A folder that can't be written keeps stderr only.
+            match profile::app_data_dir(app.handle())
+                .map_err(|e| e.to_string())
+                .and_then(|dir| log_file::open(&dir.join("logs")).map_err(|e| e.to_string()))
+            {
+                Ok(path) => tracing::info!("Shodh {} log: {:?}", app.package_info().version, path),
+                Err(e) => tracing::warn!("The log file could not be opened: {}", e),
+            }
             // The main window is created here rather than from the config, so
             // its WebView storage follows the profile. Logged on both sides so
             // a startup that never shows a window says which side it stopped on.

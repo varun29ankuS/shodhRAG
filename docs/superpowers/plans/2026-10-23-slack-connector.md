@@ -348,3 +348,148 @@ user name in the output, path sanitizer, cap and not-set-up behaviour with zero 
 replies. Rust (app): the answer counter (UTC day, cap, persistence), settings defaults and user-only
 keys. TypeScript (`node --test`): card state wording, setup step logic, token prefix checks, the new view
 in the navigation lists.
+
+---
+
+# Part B: Slack channels as an indexed source, memories from Slack
+
+Date: 2026-10-24. Branch `feat/connectors-slack-index`, on top of part A (#97, #99).
+
+## Step 0: what Slack allows (checked 2026-10-24)
+
+- **Rate limits.** On 29 May 2025 Slack cut `conversations.history` and `conversations.replies` to
+  1 request a minute and 15 messages a request for *commercially distributed apps that are not in the
+  Marketplace* ("unlisted"), for new apps and new installs of existing ones. "Internal
+  customer-built applications are not impacted by these changes": they keep Tier 3 (50+ requests a
+  minute) and up to 1 000 messages a request
+  ([changelog](https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps),
+  [conversations.history](https://docs.slack.dev/reference/methods/conversations.history),
+  [conversations.replies](https://docs.slack.dev/reference/methods/conversations.replies)). The Shodh app
+  each user creates from the manifest and installs in their **own** workspace is an internal app.
+- **API Terms** ([slack.com/terms-of-service/api](https://slack.com/terms-of-service/api)): the
+  restrictions on data use sit under "Distribution beyond your organisation": when an app is offered to
+  others outside the organisation, it may not "use API Data to train a large language model" or "bulk
+  export Slack message and file data", and must limit use and retention of other organisations' data.
+  The Data Access / Real-Time Search API terms (no persistent indexes of *other organisations'* data)
+  are for those APIs, which Shodh does not use.
+- **Developer Policy** ([docs.slack.dev/developer-policy](https://docs.slack.dev/developer-policy)):
+  never "using Data to train an LLM under any circumstances"; data "stored and served using strong
+  encryption"; consent to store; delete all data within 14 business days when the app is removed;
+  never ignore a request for deletion. It names no exemption for internal apps.
+
+**What that means for Shodh.**
+
+| Setup | Indexing channels |
+|---|---|
+| The user's own Shodh app, installed in the user's own workspace | Allowed. Tier 3; Shodh paces itself below it (one history call every 1.3 s per Slack workspace, `limit=200` as Slack recommends) and honours `Retry-After`. |
+| A client creates their own Shodh app in their own workspace | Allowed for them, the same way (their internal app, their data, their computer). |
+| The user's app installed in a client's workspace | **Not allowed**: that is distribution outside the organisation (unlisted-app limits, no bulk export, retention limits). The card and the PR say so. |
+| A Slack Connect channel in the user's workspace | Its messages include the other organisation's. Allowed only with the confirm step, which says their messages will be stored on this computer. |
+
+Model calls: sync makes **none** (local embeddings only). Answering is not training, but Slack passages
+can now reach the model provider (in Ask too), so the card repeats the provider note: turn off training
+and logging (OpenRouter: openrouter.ai/settings/privacy). "Strongly encrypted" storage: `shodh.db` is
+encrypted when the audit key is set; the index lives on this computer's disk, so the card asks for the
+OS's disk encryption (BitLocker, FileVault). Disconnect asks whether to forget the indexed content;
+"Stop indexing and forget" deletes a channel's.
+
+## Scopes and events
+
+Answering keeps its eight scopes and keeps working on a 0.0.8 install. Indexing needs two more, checked
+separately (`INDEX_BOT_SCOPES`): without them the card says which to add and that the app must be
+reinstalled; answering is unaffected.
+
+- `channels:history`, `groups:history`: `conversations.history` / `conversations.replies` and the
+  `message.channels` / `message.groups` events of the public and private channels the bot is in.
+- Events added: `message.channels`, `message.groups`, `channel_archive`, `channel_deleted`,
+  `group_deleted`, `member_left_channel`, `channel_left`. `group_archive` is RTM-only, so a private
+  channel's archive is caught by `conversations.info` on every poll; a channel the bot was removed from
+  is also caught by `not_in_channel` / `channel_not_found` from history.
+- `users:read` (already granted) resolves `<@U…>` to display names (never e-mails: no
+  `users:read.email`) and lists people for the card's "This is me" pick (`users.list`).
+- An existing app: in Slack, open the app's manifest, add the two scopes and the events (the card shows
+  the manifest), reinstall, and paste the bot token again.
+
+## Indexing
+
+- **Per channel**: the card's "Index these channels" (separate from "Answer in these channels", empty
+  at first) offers the channels the bot is in; each goes into a Shodh workspace the user picks. A shared
+  channel needs the confirm step. A channel indexed while not shared and shared since stops syncing
+  (events say `is_ext_shared_channel`) until confirmed again.
+- **One index space per channel**: `slack:<team>:<channel>`. The workspace gets a Folder source with
+  that id and the label `#name (Slack)`, so Ask, workspace search and the workspace page treat Slack
+  threads like its other documents. Forget is `delete_by_space_id` (exact predicate; keyword entries
+  removed by chunk id).
+- **Thread = document**: parent and replies, `slack://<team>/<channel>/<thread_ts>`; a message without
+  replies is a thread of one. Replacing a thread deletes its old chunks by that exact source (a
+  pseudo-source is no longer run through the file-path normaliser, which mangled `scheme://` sources on
+  Windows) and adds the new ones; one thread per hold of the engine, so Ask is never blocked for long.
+  Metadata carries the permalink (`url`); citations in the app open the permalink. The permalink comes
+  from `chat.getPermalink` once per channel; the others are derived from it when it has the
+  `…/archives/<channel>/p<ts>` shape, else asked for each thread.
+- **Content**: people's messages, `file_share` (file names and titles, never downloaded),
+  `thread_broadcast`, `me_message`. Skipped: bot messages, the bot itself, joins, leaves, topic and
+  purpose changes and every other subtype. Mentions become `@Display Name`, channel links `#name`.
+- **Sync (Onyx shape)**, one worker per Slack workspace, while the connector runs:
+  1. *Backfill*: `conversations.history` from now back to the window (default 90 days), 200 a page,
+     `conversations.replies` for threaded parents. The page cursor and the fixed `latest` are
+     checkpointed after every page in `shodh.db`, so a sleeping laptop or a rate-limit pause resumes at
+     the page it stopped on (re-indexing a page is idempotent).
+  2. *Incremental*: history since the newest `ts` seen, on start and every 15 minutes.
+  3. *Live*: `message` (new, thread reply), `message_changed`, `message_deleted` mark the thread dirty
+     and it is fetched again; `channel_archive` stops syncing and keeps the content; `channel_deleted`,
+     `group_deleted` forget the channel; the bot leaving or removed (`member_left_channel` for the bot,
+     `channel_left`, `not_in_channel`) stops syncing and says so.
+  4. *Slim pass* every 6 hours: thread ids and their `latest_reply` across the window; a thread gone
+     from Slack is deleted, one with a newer reply is fetched again (edits made while offline are caught
+     only when the thread is touched again).
+  - 429: the channel pauses until `Retry-After` (stored, shown "Paused: rate limit until …"), then
+    resumes from its checkpoint.
+- **Card per channel**: Backfilling (n of ~N, about T left at this pace) / Up to date (last sync) /
+  Paused: rate limit until … / Error (plain reason) / Forgetting; threads indexed; "Indexing uses this
+  computer only: no model calls".
+- **Forget**: "Stop indexing and forget" removes the workspace source, every chunk of the space, the
+  sync state, checkpoints, thread follow-up turns and that channel's Slack memories. Disconnect asks
+  whether to keep or forget what was indexed from Slack.
+
+## Answering in Slack with Slack content
+
+- **Same channel only, in retrieval**: a Slack answer's scope is the answer workspace's sources with
+  every `slack:` space removed except the asking channel's own; a DM gets none. The search filters by
+  that scope in the index; the passage filter also drops any `slack://` passage of another channel.
+- **"List the documents"**: a question that is only about what the library holds ("what files do you
+  have", "list the documents", "how many papers are there") is answered from the workspace's document
+  list (exact count and titles, sanitized, cut to Slack's limit) with no model call. Anything less
+  certain is answered normally. The prompt now says the passages are a search sample, not the library.
+- **Thread follow-ups**: the last 3 questions and Shodh's answers of the same thread (at most 600
+  characters each, 2 400 in all), kept in `shodh.db` (`slack_thread_turn`, last 6 per thread, 30 days),
+  are in the prompt as untrusted context; the search query is the previous question plus the new one.
+- **Diagrams**: the prompt says Slack cannot show diagrams; a mermaid (or dot / plantuml) code block
+  that still comes back is replaced by "(A diagram was left out: Slack can't show diagrams.)".
+
+## Memories from Slack (saved directly, no review)
+
+`@Shodh remember: <text>` and, in a thread, `@Shodh remember this thread`, in a channel on the answer
+list or a DM, by a full member of the installing workspace (guests, people from other organizations
+and other channels are refused like questions):
+
+- **Owner** (the Slack user picked "This is me" on the card): saved at once into the user's memories
+  with a new write authority, `SlackOwner`, whose source must be `slack-memory://<team>/<channel>/<ts>`;
+  the memory guard accepts it only in that shape. Reply "Saved."
+- **Anyone else**: saved at once as a channel-scoped Slack memory in `shodh.db` (`slack_memory`), never
+  in the memory store: Ask, recall and other channels cannot see it. Used only in Slack answers in that
+  channel, as fenced untrusted passages. Reply "Saved for this channel." The card's "From Slack" list
+  can promote one into the user's memories (the user's click) or delete it.
+- Provenance kept: author display name, channel, permalink, time.
+- Explicit text: no model call. A thread: one model call (a summary), counted against the Slack cap.
+  The summary of a thread includes other people's words; for the owner it goes into main memory.
+
+## Tests
+
+Rust: backfill and resume from a checkpoint, incremental since `ts`, edit and delete events, slim pass
+deletions, archive / delete / bot removed, 429 pause and resume, same-channel rule over a real index
+with two channels for two clients, permalink citations, forget, remember (owner → memory store; others
+→ channel-scoped, never in Ask or another channel; external and non-allowlisted refused; provenance;
+promote / delete), the guard's new authority, list-the-documents with no model call, thread follow-ups
+from their own thread only, diagram stripping, pseudo-source deletion. TypeScript: card wording for
+channel states, the memory list, Slack citations open the permalink.

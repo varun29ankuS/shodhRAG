@@ -96,17 +96,6 @@ pub const CHANNELS_PER_PAGE: usize = 200;
 /// Pages read at most: 2 000 channels, far more than a bot is invited to.
 pub const MAX_CHANNEL_PAGES: usize = 10;
 
-/// The app id in an `apps.connections.open` URL (`…?ticket=…&app_id=A123`), the app the
-/// app-level token belongs to.
-pub fn app_id_of_connection_url(url: &str) -> Option<String> {
-    url::Url::parse(url)
-        .ok()?
-        .query_pairs()
-        .find(|(k, _)| k == "app_id")
-        .map(|(_, v)| v.into_owned())
-        .filter(|v| !v.is_empty())
-}
-
 /// What `auth.test` says about the bot token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthInfo {
@@ -688,22 +677,6 @@ mod tests {
             needed: None
         }
         .is_transient());
-    }
-
-    #[test]
-    fn the_app_id_is_read_from_the_connection_url() {
-        assert_eq!(
-            app_id_of_connection_url(
-                "wss://wss-primary.slack.com/link/?ticket=12348&app_id=A123ABC456"
-            )
-            .as_deref(),
-            Some("A123ABC456")
-        );
-        assert_eq!(
-            app_id_of_connection_url("wss://wss.slack.com/link/?ticket=1"),
-            None
-        );
-        assert_eq!(app_id_of_connection_url("not a url"), None);
     }
 
     #[tokio::test]

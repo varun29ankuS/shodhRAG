@@ -15,6 +15,7 @@ import {
   formatDate,
   groupByClass,
   matchesFilter,
+  memoryOrigin,
   relativeTime,
   scopeLabel,
   strengthDisplay,
@@ -232,6 +233,8 @@ function MemoryItem({
           >
             From “{conversationName ?? 'a deleted conversation'}”
           </button>
+        ) : memoryOrigin(memory) === 'slack' ? (
+          <span>From Slack</span>
         ) : (
           <span>Added in Settings</span>
         )}

@@ -18,7 +18,11 @@ export interface MemoryRecord {
   values: Record<string, string[]>;
   /** `global` or `workspace:<workspace id>`. */
   scope: string;
-  /** `settings://memory` or `conversation://<conversation>/turn/<run>`. */
+  /**
+   * `settings://memory`, `conversation://<conversation>/turn/<run>`, or
+   * `slack-memory://<team>/<channel>/<ts>` (said in Slack by the user, or promoted from a
+   * Slack channel by the user).
+   */
   source: string;
   conversationId: string | null;
   extractor: string;
@@ -221,6 +225,15 @@ export function formatDate(iso: string | null): string {
 }
 
 /** Where a memory is visible, in words. `workspaceName` resolves a workspace id. */
+/** Where a memory came from, for its provenance line. */
+export type MemoryOrigin = 'conversation' | 'slack' | 'settings';
+
+export function memoryOrigin(memory: Pick<MemoryRecord, 'source' | 'conversationId'>): MemoryOrigin {
+  if (memory.conversationId) return 'conversation';
+  if (memory.source.startsWith('slack-memory://')) return 'slack';
+  return 'settings';
+}
+
 export function scopeLabel(scope: string, workspaceName: (id: string) => string | undefined): string {
   if (scope === 'global') return 'All conversations';
   const id = scope.startsWith('workspace:') ? scope.slice('workspace:'.length) : scope;

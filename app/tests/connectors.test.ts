@@ -366,6 +366,7 @@ test('durations, the window and the shared-channel confirmation read plainly', (
   assert.equal(validWindow('9.5', index), null);
   assert.match(sharedIndexLine({ name: 'client-b' }), /#client-b is shared with other organizations\. Indexing it stores their messages on this computer/);
   assert.match(INDEX_PRIVACY_NOTE, /only the threads of the channel it is asked in/);
+  assert.match(INDEX_PRIVACY_NOTE, /indexed into the workspace Slack answers come from/);
   assert.match(INDEX_PRIVACY_NOTE, /client’s workspace/);
 });
 

@@ -11,6 +11,7 @@ import {
   forgetConfirmation,
   groupByClass,
   matchesFilter,
+  memoryOrigin,
   parseMemories,
   parseMemory,
   propertyLabel,
@@ -190,4 +191,10 @@ test('the forget confirmation says plainly what the Activity log keeps', () => {
   assert.match(now, /tool calls and approvals from before this version/);
   assert.doesNotMatch(now, /older entries/);
   assert.match(forgetConfirmation('x', true), /without its words; older entries may still show the words\./);
+});
+
+test('a memory says where it came from: a chat, Slack, or Settings', () => {
+  assert.equal(memoryOrigin({ source: 'conversation://c1/turn/r1', conversationId: 'c1' }), 'conversation');
+  assert.equal(memoryOrigin({ source: 'slack-memory://T1/C1/1700000000.000100', conversationId: null }), 'slack');
+  assert.equal(memoryOrigin({ source: 'settings://memory', conversationId: null }), 'settings');
 });

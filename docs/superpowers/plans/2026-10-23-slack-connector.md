@@ -443,8 +443,8 @@ reinstalled; answering is unaffected.
   4. *Slim pass* every 6 hours: thread ids and their `latest_reply` across the window; a thread gone
      from Slack is deleted, one with a newer reply is fetched again (edits made while offline are caught
      only when the thread is touched again).
-  - 429: the channel pauses until `Retry-After` (stored, shown "Paused: rate limit until …"), then
-    resumes from its checkpoint.
+  - 429: every channel of that Slack workspace pauses until `Retry-After` (Slack limits a method per
+    workspace; stored, shown "Paused: rate limit until …"), then resumes from its checkpoint.
 - **Card per channel**: Backfilling (n of ~N, about T left at this pace) / Up to date (last sync) /
   Paused: rate limit until … / Error (plain reason) / Forgetting; threads indexed; "Indexing uses this
   computer only: no model calls".
@@ -455,7 +455,9 @@ reinstalled; answering is unaffected.
 ## Answering in Slack with Slack content
 
 - **Same channel only, in retrieval**: a Slack answer's scope is the answer workspace's sources with
-  every `slack:` space removed except the asking channel's own; a DM gets none. The search filters by
+  every `slack:` space removed except the asking channel's own; a DM gets none. So a channel's threads
+  reach Slack answers only when the channel is indexed into the workspace Slack answers come from (part
+  A's rule: nothing outside that workspace reaches Slack). The search filters by
   that scope in the index; the passage filter also drops any `slack://` passage of another channel.
 - **"List the documents"**: a question that is only about what the library holds ("what files do you
   have", "list the documents", "how many papers are there") is answered from the workspace's document

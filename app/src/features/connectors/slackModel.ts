@@ -484,8 +484,8 @@ export function sharedIndexLine(channel: { name: string }): string {
 export const INDEX_PRIVACY_NOTE =
   'Indexed threads are stored on this computer (use your disk’s encryption: BitLocker or FileVault) and show up in ' +
   'Ask and the workspace like its documents, with links back to Slack. A Slack answer uses only the threads of the ' +
-  'channel it is asked in. Index channels of your own Slack workspace only: Slack’s terms do not allow copying a ' +
-  'client’s workspace with your app.';
+  'channel it is asked in, and only when that channel is indexed into the workspace Slack answers come from. Index ' +
+  'channels of your own Slack workspace only: Slack’s terms do not allow copying a client’s workspace with your app.';
 
 /** Who "remember:" saves for, on the card. */
 export function ownerLine(index: Pick<IndexStatus, 'owner'>): string {

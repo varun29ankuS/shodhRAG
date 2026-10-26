@@ -4,6 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import { notify } from '../lib/notify';
 import { removeWithUndo, restoreAt } from '../lib/undoToast';
 import { markStartup } from '../lib/startupTiming';
+import { diagramLedger } from '../features/ask/visual/diagramLedger';
+import { diagramKeysToForget } from '../features/ask/visual/diagramKeys';
 import { APP_QUITTING_EVENT, ConversationSaves, FailureLatch, loadFailureNotice, quitRequestId, updateRecord } from './conversationSaves';
 import type { LoadFailureNotice } from './conversationSaves';
 import { firstAskConversation } from '../features/connectors/conversations';
@@ -456,7 +458,11 @@ export function useConversations() {
           setList(restoreAt(listRef.current, conversation, index));
           if (wasActive) setActiveConversationId(id);
         },
-        commit: () => invoke('delete_conversation', { conversationId: id }),
+        commit: async () => {
+          await invoke('delete_conversation', { conversationId: id });
+          // Its diagrams' versions, notes and lists go with it (kept where another conversation draws the same diagram).
+          diagramLedger().forget(diagramKeysToForget(conversation, listRef.current.filter(c => c.id !== id)));
+        },
         onError: err => notify.error('The conversation was not deleted', { description: String(err) }),
       });
     },

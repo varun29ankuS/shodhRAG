@@ -374,8 +374,10 @@ impl LanceStore {
         Ok(doc_ids.len())
     }
 
-    /// One row per indexed source: its space and title (the title of its first chunk
-    /// read). Reads only the `source`, `space_id` and `title` columns.
+    /// One row per indexed source and space: its title (the title of its first chunk
+    /// read there). A source indexed into two spaces has a row in each, so a listing of
+    /// either space finds it. Reads only the `doc_id`, `source`, `space_id` and `title`
+    /// columns.
     pub async fn document_titles(&self) -> Result<Vec<DocumentTitleRow>> {
         let table = self.db.open_table(&self.table_name).execute().await?;
         let results = table
@@ -407,10 +409,11 @@ impl LanceStore {
                     if doc_id.is_empty() || doc_id == "__seed__" || source.is_empty() {
                         continue;
                     }
-                    if seen.insert(source.to_string()) {
+                    let space = spaces.value(i);
+                    if seen.insert((source.to_string(), space.to_string())) {
                         rows.push(DocumentTitleRow {
                             source: source.to_string(),
-                            space_id: spaces.value(i).to_string(),
+                            space_id: space.to_string(),
                             title: titles.value(i).to_string(),
                         });
                     }
@@ -700,7 +703,7 @@ pub(crate) fn like_escape(text: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// One indexed source as listed by [`LanceStore::document_titles`].
+/// One indexed source in one space, as listed by [`LanceStore::document_titles`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentTitleRow {
     /// Normalised file path (or a `scheme://` pseudo-source).

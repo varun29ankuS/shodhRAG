@@ -14,14 +14,14 @@
 //! summarized with one call, counted against the Slack cap. What is saved is untrusted
 //! text: it is quoted to the model as context, never followed.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 
 use super::answer::truncate_chars;
-use super::store::SlackMemoryKind;
+use super::store::{SlackMemory, SlackMemoryKind, SlackStore, SlackStoreError};
 
 pub const SAVED: &str = "Saved.";
 pub const SAVED_FOR_CHANNEL: &str = "Saved for this channel.";
@@ -105,7 +105,66 @@ pub trait SlackMemories: Send + Sync {
     /// Saves the owner's memory into the user's memories.
     async fn save_owner(&self, draft: &MemoryDraft) -> Result<(), String>;
     /// Saves someone else's memory for the channel only.
-    async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), String>;
+    async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), SaveError>;
+}
+
+/// Why a memory from Slack was not saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveError {
+    /// A limit was reached ([`super::store::MAX_CHANNEL_MEMORIES`],
+    /// [`super::store::MAX_MEMORIES_PER_PERSON_PER_DAY`]); the message is said to the asker.
+    Limited(String),
+    /// It could not be saved (logged; the asker is told to try again).
+    Failed(String),
+}
+
+impl From<SlackStoreError> for SaveError {
+    fn from(e: SlackStoreError) -> Self {
+        match e {
+            SlackStoreError::Limit(message) => SaveError::Limited(message),
+            other => SaveError::Failed(other.to_string()),
+        }
+    }
+}
+
+/// Writes memories from Slack into the user's memories (the app implements it over the
+/// memory service).
+#[async_trait]
+pub trait MemoryWriter: Send + Sync {
+    /// Writes `memory` (its text, with its Slack source) into the user's memories.
+    /// Returns its id when this write stored it; `None` when the same note was there
+    /// already (that one is the user's: nothing from Slack may remove it).
+    async fn write(&self, memory: &SlackMemory) -> Result<Option<String>, String>;
+    /// Forgets memory `id`, which [`MemoryWriter::write`] stored.
+    async fn erase(&self, id: &str) -> Result<(), String>;
+}
+
+/// Saves the owner's `memory`: into the user's memories, then its row, which links the
+/// two (what Forget and Delete go by). A row that cannot be saved takes back the memory
+/// this call stored, so no memory from Slack is left that nothing links to.
+pub async fn save_owner_memory(
+    store: &Arc<SlackStore>,
+    writer: &dyn MemoryWriter,
+    memory: SlackMemory,
+) -> Result<(), String> {
+    let mut memory = memory;
+    memory.owner = true;
+    memory.memory_id = writer.write(&memory).await?;
+    let stored = memory.memory_id.clone();
+    let store = store.clone();
+    let saved = tokio::task::spawn_blocking(move || store.save_memory(&memory))
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    if let Err(e) = saved {
+        if let Some(id) = stored {
+            if let Err(undo) = writer.erase(&id).await {
+                tracing::warn!(target: "shodh::slack", error = %undo, "a memory from Slack whose record failed could not be taken back");
+            }
+        }
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The text saved for `remember: <text>`: trimmed and bounded.

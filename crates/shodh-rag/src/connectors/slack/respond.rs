@@ -32,6 +32,7 @@
 //! times; a network error or a 5xx gets one more try. That is Slack's protocol, not a retry
 //! to hide flakiness: anything else fails at once and is reported.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,9 +48,9 @@ use super::answer::{
 };
 use super::events::{Question, QuestionKind, ThreadKey};
 use super::remember::{
-    memory_text, parse_remember, summary_prompt, MemoryDraft, RememberCommand, SlackMemories,
-    NOTHING_TO_SAVE, NOT_A_THREAD, NOT_SAVED, SAVED, SAVED_FOR_CHANNEL, SUMMARY_TOKENS,
-    THREAD_UNREADABLE,
+    memory_text, parse_remember, summary_prompt, MemoryDraft, RememberCommand, SaveError,
+    SlackMemories, NOTHING_TO_SAVE, NOT_A_THREAD, NOT_SAVED, SAVED, SAVED_FOR_CHANNEL,
+    SUMMARY_TOKENS, THREAD_UNREADABLE,
 };
 use super::sanitize::{sanitize, PrivateTerms};
 use super::store::{SlackMemory, SlackMemoryKind};
@@ -213,6 +214,9 @@ pub enum Outcome {
     NothingToSave,
     /// The memory could not be saved.
     SaveFailed,
+    /// Not saved: the channel keeps as many memories as it may, or the asker saved as
+    /// many as they may today.
+    SaveLimited,
     ModelFailed(ProviderErrorKind),
     SearchFailed,
     LimitUnknown,
@@ -252,7 +256,15 @@ pub struct Responder {
     pub clock: Arc<dyn Clock>,
     pub cancel: CancellationToken,
     pub retry: RetryPolicy,
+    /// The last library listing said in each channel, and when: said again for
+    /// [`LISTING_REUSE_SECONDS`] instead of reading the whole index again.
+    pub listings: Arc<std::sync::Mutex<HashMap<String, (DateTime<Utc>, String)>>>,
 }
+
+/// How long a channel's library listing is said again as it was. A listing reads the
+/// whole index and costs no model call, so nothing else bounds how often anyone in a
+/// channel can ask for one.
+pub const LISTING_REUSE_SECONDS: i64 = 60;
 
 impl Responder {
     pub fn new(
@@ -273,6 +285,7 @@ impl Responder {
             clock,
             cancel,
             retry: RetryPolicy::default(),
+            listings: Arc::default(),
         }
     }
 
@@ -436,9 +449,26 @@ impl Responder {
         }
         if is_library_question(&question.text) {
             // What the library holds is a list, not a search: exact, and no model call.
+            let now = self.clock.now();
+            let recent = self
+                .listings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&question.channel)
+                .filter(|(at, _)| {
+                    now - *at < chrono::Duration::seconds(LISTING_REUSE_SECONDS) && *at <= now
+                })
+                .map(|(_, text)| text.clone());
+            if let Some(text) = recent {
+                return self.reply(question, &text, Outcome::Listed).await;
+            }
             return match self.source.listing(&scope).await {
                 Ok(listing) => {
                     let text = library_listing_message(&listing, &self.source.private_terms());
+                    self.listings
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(question.channel.clone(), (now, text.clone()));
                     self.reply(question, &text, Outcome::Listed).await
                 }
                 Err(e) => {
@@ -478,7 +508,7 @@ impl Responder {
         // Earlier questions and answers of this thread only.
         let earlier = self
             .source
-            .thread_turns(&question.thread)
+            .thread_turns(&question.turns_key())
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(target: "shodh::slack", error = %e, "the earlier turns of a Slack thread could not be read");
@@ -586,7 +616,7 @@ impl Responder {
                         question: question.text.trim().to_string(),
                         answer: message,
                     };
-                    if let Err(e) = self.source.record_turn(&question.thread, turn).await {
+                    if let Err(e) = self.source.record_turn(&question.turns_key(), turn).await {
                         tracing::warn!(target: "shodh::slack", error = %e, "a Slack thread's turn could not be kept");
                     }
                 }
@@ -681,7 +711,10 @@ impl Responder {
             at: self.clock.now(),
         };
         let saved = if is_owner {
-            self.memories.save_owner(&draft).await
+            self.memories
+                .save_owner(&draft)
+                .await
+                .map_err(SaveError::Failed)
         } else {
             self.memories.save_channel(&draft).await
         };
@@ -694,7 +727,10 @@ impl Responder {
                 self.reply(question, SAVED_FOR_CHANNEL, Outcome::Saved { owner: false })
                     .await
             }
-            Err(e) => {
+            Err(SaveError::Limited(message)) => {
+                self.reply(question, &message, Outcome::SaveLimited).await
+            }
+            Err(SaveError::Failed(e)) => {
                 tracing::warn!(target: "shodh::slack", error = %e, "a memory from Slack could not be saved");
                 self.reply(question, NOT_SAVED, Outcome::SaveFailed).await
             }
@@ -993,6 +1029,8 @@ pub(crate) mod testkit {
         pub thread: Result<String, String>,
         pub owners: Mutex<Vec<MemoryDraft>>,
         pub channels: Mutex<Vec<MemoryDraft>>,
+        /// Set: a channel memory is refused with this (a limit reached).
+        pub limited: Mutex<Option<String>>,
     }
 
     impl RecordingMemories {
@@ -1002,6 +1040,7 @@ pub(crate) mod testkit {
                 thread: Ok("Ann: the budget is ten.\nBob: agreed, due Friday.".into()),
                 owners: Mutex::new(Vec::new()),
                 channels: Mutex::new(Vec::new()),
+                limited: Mutex::new(None),
             }
         }
     }
@@ -1031,7 +1070,10 @@ pub(crate) mod testkit {
             self.owners.lock().unwrap().push(draft.clone());
             Ok(())
         }
-        async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), String> {
+        async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), SaveError> {
+            if let Some(message) = self.limited.lock().unwrap().clone() {
+                return Err(SaveError::Limited(message));
+            }
             self.channels.lock().unwrap().push(draft.clone());
             Ok(())
         }
@@ -1663,6 +1705,7 @@ mod tests {
                     crate::connectors::slack::ids::space_id("T1", "C2"),
                 ],
                 files: vec![],
+                slack_team: "T1".into(),
                 ..AnswerScope::default()
             });
         });

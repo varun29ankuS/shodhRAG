@@ -65,6 +65,9 @@ pub struct AnswerScope {
     /// ([`super::ids::channel_source_prefix`]): only the channel the question was asked in,
     /// set by [`AnswerScope::for_channel`]. Empty: no Slack thread.
     pub slack_sources: Vec<String>,
+    /// The Slack workspace (team id) whose installation answers: only its channels'
+    /// threads can reach an answer ([`AnswerScope::for_channel`]). Empty: none.
+    pub slack_team: String,
 }
 
 impl AnswerScope {
@@ -79,9 +82,10 @@ impl AnswerScope {
     }
 
     /// This scope for a question asked in `channel` (`None`: a DM): every indexed Slack
-    /// channel of the workspace is taken out except `channel` itself, so a Slack answer
-    /// never uses what was said in another channel. The search then filters by the
-    /// narrowed spaces in the index.
+    /// channel of the workspace is taken out except `channel` itself, of
+    /// [`AnswerScope::slack_team`] (a channel id is only unique within its Slack
+    /// workspace), so a Slack answer never uses what was said in another channel. The
+    /// search then filters by the narrowed spaces in the index.
     pub fn for_channel(&self, channel: Option<&str>) -> AnswerScope {
         let mut source_ids = Vec::new();
         let mut slack_sources = Vec::new();
@@ -91,7 +95,9 @@ impl AnswerScope {
                 continue;
             }
             match (ids::parse_space(id), channel) {
-                (Some((team, indexed)), Some(asked)) if indexed == asked => {
+                (Some((team, indexed)), Some(asked))
+                    if indexed == asked && !team.is_empty() && team == self.slack_team =>
+                {
                     source_ids.push(id.clone());
                     slack_sources.push(ids::channel_source_prefix(&team, &indexed));
                 }
@@ -102,6 +108,7 @@ impl AnswerScope {
             source_ids,
             files: self.files.clone(),
             slack_sources,
+            slack_team: self.slack_team.clone(),
         }
     }
 
@@ -981,6 +988,7 @@ mod tests {
                 ids::space_id("T1", "CB"),
             ],
             files: vec!["C:/docs/x.pdf".into()],
+            slack_team: "T1".into(),
             ..AnswerScope::default()
         };
         let in_a = workspace.for_channel(Some("CA"));
@@ -1000,6 +1008,36 @@ mod tests {
         let dm = workspace.for_channel(None);
         assert_eq!(dm.source_ids, vec!["space-a".to_string()]);
         assert!(!dm.allows_slack_source(&ids::thread_source("T1", "CA", "1.1")));
+    }
+
+    #[test]
+    fn a_channel_of_another_slack_workspace_with_the_same_id_is_never_used() {
+        let workspace = AnswerScope {
+            source_ids: vec![
+                "space-a".into(),
+                ids::space_id("T2", "CA"),
+                ids::space_id("T1", "CA"),
+            ],
+            slack_team: "T1".into(),
+            ..AnswerScope::default()
+        };
+        let in_a = workspace.for_channel(Some("CA"));
+        assert_eq!(
+            in_a.source_ids,
+            vec!["space-a".to_string(), ids::space_id("T1", "CA")],
+            "the same channel id in another Slack workspace is another channel"
+        );
+        assert!(in_a.allows_slack_source(&ids::thread_source("T1", "CA", "1.1")));
+        assert!(!in_a.allows_slack_source(&ids::thread_source("T2", "CA", "1.1")));
+        // A scope that names no Slack workspace keeps no Slack channel.
+        let unnamed = AnswerScope {
+            slack_team: String::new(),
+            ..workspace
+        };
+        assert_eq!(
+            unnamed.for_channel(Some("CA")).source_ids,
+            vec!["space-a".to_string()]
+        );
     }
 
     #[test]

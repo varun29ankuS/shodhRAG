@@ -243,6 +243,19 @@ pub struct RememberOutcome {
     pub memory: Option<MemoryRecord>,
 }
 
+impl RememberOutcome {
+    /// The id of the memory this write added, and so owns: `None` when it stored
+    /// nothing new (the same note was there already, which may be the user's own), or
+    /// only changed or closed another memory. Forgetting a memory forgets its whole
+    /// history, so a caller that may forget what it wrote keeps only this id.
+    pub fn created_id(&self) -> Option<&str> {
+        match &self.outcome {
+            PutOutcome::Added { id } => Some(id),
+            _ => None,
+        }
+    }
+}
+
 /// Filters for [`MemoryService::list`].
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

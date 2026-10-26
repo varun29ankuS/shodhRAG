@@ -12,18 +12,26 @@
 //!    of the next page is saved after the page (a checkpoint: a laptop that sleeps, or a
 //!    rate-limit pause, resumes at that page);
 //! 4. an incremental poll: what came after the newest message seen (every
-//!    [`SyncTiming::poll_every`]), and whether the channel was archived or shared since;
-//! 5. a slim pass (every [`SyncTiming::slim_every`]): the ids and latest replies of the
-//!    window's threads; a thread gone from Slack is deleted, one with a reply Shodh has not
-//!    seen is fetched again.
+//!    [`SyncTiming::poll_every`]), up to a fixed `latest` bound, at most [`POLL_PAGES`] a
+//!    step; a poll with more to read saves its cursor and goes on at the next step, and
+//!    the newest message seen moves only once everything up to the bound was read;
+//! 5. a slim pass (every [`SyncTiming::slim_every`]): the ids and replies of the window's
+//!    threads, newest first, at most [`SLIM_PAGES`] a step (a longer window goes on at the
+//!    next step below the oldest message listed); a thread gone from the part listed is
+//!    deleted, one whose replies changed is fetched again.
+//!
+//! Whether the channel was archived, or shared with another organization since it was
+//! chosen, is asked at most every [`SyncTiming::poll_every`], during the backfill too.
 //!
 //! Slack's history methods are Tier 3 for an internal app (50+ a minute,
-//! <https://docs.slack.dev/apis/web-api/rate-limits>): calls are paced
-//! ([`SyncTiming::pace`], one every 1.3 s per Slack workspace), and a 429 pauses the
-//! channel for Slack's `Retry-After` (the pause is saved, the card shows it). No model is
-//! called anywhere here: embeddings are computed on this computer.
+//! <https://docs.slack.dev/apis/web-api/rate-limits>): every call (names and permalinks
+//! too) is paced ([`SyncTiming::pace`], one every 1.3 s per Slack workspace), and a 429
+//! pauses the workspace's channels for Slack's `Retry-After` (the pause is saved, the card
+//! shows it). No model is called anywhere here: embeddings are computed on this computer,
+//! outside the index's lock, which is taken only to store them.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,25 +42,32 @@ use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use super::content::{
-    derived_permalink, mentioned_users, permalink_base, thread_document, time_ts, ts_time,
-    HistoryPage, SlackMessage, ThreadDocument, MAX_THREAD_MESSAGES,
+    derived_permalink, mentioned_users, permalink_base, thread_document, thread_replies, time_ts,
+    ts_time, HistoryPage, SlackMessage, ThreadDocument, MAX_THREAD_MESSAGES,
 };
 use super::events::{BotIdentity, Envelope};
 use super::setup::missing_scopes_message;
-use super::store::{ts_value, ChannelState, Forgotten, IndexedChannel, SlackStore};
+use super::store::{
+    ts_value, ChannelState, Forgotten, IndexedChannel, NewIndexedChannel, SlackStore, ThreadRecord,
+};
 use super::tokens::SlackBotToken;
 use super::web::{ChannelInfo, SlackApiError, SlackWeb};
 use crate::research::tables::calls::Clock;
-use crate::types::{Citation, DocumentFormat};
+use crate::types::Citation;
+use crate::workspaces::{
+    NewSource, SourceKind as WorkspaceSourceKind, WorkspaceAuthor, WorkspaceStore,
+};
 use crate::RAGEngine;
 
 /// The history window when the user has not chosen one.
 pub const DEFAULT_WINDOW_DAYS: u32 = 90;
 pub const MIN_WINDOW_DAYS: u32 = 7;
 pub const MAX_WINDOW_DAYS: u32 = 365;
-/// Pages one incremental poll reads at most (the rest waits for the next poll).
+/// Pages one step of an incremental poll reads at most (a poll with more goes on at the
+/// next step, from its saved cursor).
 pub const POLL_PAGES: usize = 10;
-/// Pages one slim pass reads at most (10 000 messages).
+/// Pages one step of a slim pass reads at most (10 000 messages; a longer window goes on
+/// at the next step).
 pub const SLIM_PAGES: usize = 50;
 /// Pages of one thread's replies read at most.
 pub const REPLY_PAGES: usize = MAX_THREAD_MESSAGES / super::web::HISTORY_PAGE;
@@ -62,10 +77,16 @@ pub const NAME_TTL_HOURS: i64 = 24;
 /// What a person reads when indexing waits for a missing scope.
 pub const INDEX_SCOPES: [&str; 2] = ["channels:history", "groups:history"];
 
+/// Why an archived channel stopped.
+pub const ARCHIVED: &str =
+    "The channel was archived in Slack. What was indexed stays until you forget it.";
+/// Why a channel the bot left stopped.
+pub const REMOVED: &str = "Shodh is no longer in this channel. Invite it again (/invite @shodh) and choose the channel again.";
+
 /// How often and how fast the sync works.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncTiming {
-    /// The least time between two history calls of one Slack workspace.
+    /// The least time between two calls to Slack of one Slack workspace.
     pub pace: Duration,
     pub poll_every: chrono::Duration,
     pub slim_every: chrono::Duration,
@@ -167,11 +188,59 @@ impl SlackReader for BotReader {
     }
 }
 
+/// The sync gate of one Slack workspace. Each sync step holds it, and so does forgetting
+/// a channel, so no step adds a thread back to a channel being forgotten. A forget waiting
+/// for it ([`SyncGate::urgent_turn`]) asks the step to stop at its next thread
+/// ([`SyncGate::yield_requested`]): it waits for one thread, not a page of 200.
+#[derive(Debug, Default)]
+pub struct SyncGate {
+    lock: Arc<tokio::sync::Mutex<()>>,
+    urgent: AtomicUsize,
+}
+
+/// A turn of the [`SyncGate`]. A write that must finish whole once begun (a thread's
+/// document going into the index) keeps a clone: the gate stays taken until that write is
+/// done, also when the step that began it is cancelled (the connector stopped, a
+/// disconnect), so a forget that follows never runs before it.
+#[derive(Debug, Clone)]
+pub struct GateTurn(#[allow(dead_code)] Arc<tokio::sync::OwnedMutexGuard<()>>);
+
+/// Counts a waiter of an urgent turn while it waits (also when its wait is cancelled).
+struct Waiting<'a>(&'a AtomicUsize);
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl SyncGate {
+    /// Waits for the gate (a sync step).
+    pub async fn turn(&self) -> GateTurn {
+        GateTurn(Arc::new(self.lock.clone().lock_owned().await))
+    }
+
+    /// Waits for the gate and, while waiting, asks the step holding it to stop early (a
+    /// forget).
+    pub async fn urgent_turn(&self) -> GateTurn {
+        self.urgent.fetch_add(1, Ordering::SeqCst);
+        let _waiting = Waiting(&self.urgent);
+        self.turn().await
+    }
+
+    /// Someone waits for an urgent turn: a step stops at its next thread or page.
+    pub fn yield_requested(&self) -> bool {
+        self.urgent.load(Ordering::SeqCst) > 0
+    }
+}
+
 /// Where thread documents go.
 #[async_trait]
 pub trait ThreadIndex: Send + Sync {
-    /// Indexes `doc`; with `replace`, its earlier version (same source) is removed first.
-    async fn put(&self, doc: &ThreadDocument, replace: bool) -> Result<(), String>;
+    /// Indexes `doc`, replacing whatever the index holds under its source (an earlier
+    /// version, or a copy a cancelled step stored without recording it): a thread has one
+    /// document however often it is put. Finishes whole once begun, holding `turn`.
+    async fn put(&self, doc: &ThreadDocument, turn: &GateTurn) -> Result<(), String>;
     async fn delete_thread(&self, source: &str) -> Result<(), String>;
     /// Deletes every thread of a channel (its index space).
     async fn delete_space(&self, space_id: &str) -> Result<(), String>;
@@ -199,32 +268,36 @@ pub fn thread_metadata(doc: &ThreadDocument) -> HashMap<String, String> {
 
 #[async_trait]
 impl ThreadIndex for EngineIndex {
-    async fn put(&self, doc: &ThreadDocument, replace: bool) -> Result<(), String> {
+    async fn put(&self, doc: &ThreadDocument, turn: &GateTurn) -> Result<(), String> {
         let rag = self.rag.clone();
         let doc = doc.clone();
-        // Its own task: the removal and the new version are never split by a cancelled
-        // caller.
+        let turn = turn.clone();
+        // Its own task: a cancelled caller never leaves it half done, and it keeps the
+        // sync gate until it is done.
         tokio::spawn(async move {
+            let _turn = turn;
             let citation = Citation {
                 title: doc.title.clone(),
                 source: doc.source.clone(),
                 url: doc.permalink.clone(),
                 ..Citation::default()
             };
-            let mut engine = rag.write().await;
-            if replace {
-                engine
-                    .delete_by_source(&doc.source)
-                    .await
-                    .map_err(|e| format!("{e:#}"))?;
-            }
-            engine
-                .add_document(
-                    &doc.text,
-                    DocumentFormat::TXT,
-                    thread_metadata(&doc),
-                    citation,
-                )
+            // Chunked and embedded without the engine's lock: searches (Ask, Slack
+            // answers) are not held up; the lock is taken only to store the chunks.
+            let preparer = rag
+                .read()
+                .await
+                .file_preparer()
+                .map_err(|e| format!("{e:#}"))?;
+            let file = tokio::task::spawn_blocking(move || {
+                preparer.prepare_text(&doc.source, &doc.text, thread_metadata(&doc), &citation)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("{e:#}"))?;
+            rag.write()
+                .await
+                .commit_file(file)
                 .await
                 .map(|_| ())
                 .map_err(|e| format!("{e:#}"))
@@ -264,13 +337,19 @@ impl ThreadIndex for EngineIndex {
     }
 }
 
-/// Hears what the sync did, for the card and for what lives outside the connector.
+/// Hears what the sync did, and removes what a forgotten channel leaves outside the
+/// connector (the app implements it).
+#[async_trait]
 pub trait SyncObserver: Send + Sync {
     /// Something on the card changed.
     fn changed(&self);
-    /// A channel was forgotten (deleted in Slack): the app removes it from its workspace
-    /// and forgets its memories in the user's memories (`forgotten.memory_ids`).
-    fn channel_forgotten(&self, channel: &IndexedChannel, forgotten: &Forgotten);
+    /// Removes `channel` from its Shodh workspace (its folder source). Done when the
+    /// workspace or the source is gone already; an error leaves the forget to be tried
+    /// again.
+    async fn remove_from_workspace(&self, channel: &IndexedChannel) -> Result<(), String>;
+    /// Forgets `memory_ids` in the user's memories. One already gone is done; an error
+    /// leaves the forget to be tried again.
+    async fn forget_memories(&self, memory_ids: &[String]) -> Result<(), String>;
 }
 
 /// One store call off the async workers.
@@ -285,12 +364,19 @@ where
         .map_err(|e| e.to_string())?
 }
 
-/// Forgets everything of `channel`: its documents (its index space), sync state, threads,
-/// memories and thread follow-ups. The caller holds the installation's sync gate, so no
-/// sync step adds a thread back meanwhile.
+/// Forgets everything of `channel`: its documents (its index space), its source in its
+/// workspace, its memories in the user's memories, and then its sync state, threads,
+/// Slack memories and thread follow-ups. The caller holds the installation's sync gate,
+/// so no sync step adds a thread back meanwhile.
+///
+/// What lives outside the connector goes first: the rows that say what to remove are
+/// deleted only after it is gone. A failure returns the error and leaves the channel
+/// being forgotten (the card says so), with everything needed to try again: the next
+/// sync step does.
 pub async fn forget_channel(
     store: &Arc<SlackStore>,
     index: &dyn ThreadIndex,
+    observer: &dyn SyncObserver,
     channel: &IndexedChannel,
 ) -> Result<Forgotten, String> {
     let (team, id) = (channel.team_id.clone(), channel.channel_id.clone());
@@ -299,8 +385,75 @@ pub async fn forget_channel(
         move |s| s.set_state(&team, &id, ChannelState::Forgetting, None)
     })
     .await?;
+    let linked = blocking(store, {
+        let (team, id) = (team.clone(), id.clone());
+        move |s| s.linked_memories(&team, Some(&id))
+    })
+    .await?;
     index.delete_space(&channel.space_id()).await?;
-    blocking(store, move |s| s.forget_channel(&team, &id)).await
+    observer.remove_from_workspace(channel).await?;
+    observer.forget_memories(&linked).await?;
+    let mut forgotten = blocking(store, move |s| s.forget_channel(&team, &id)).await?;
+    // A memory saved in the channel while this ran (its row was read after `linked`).
+    let late: Vec<String> = forgotten
+        .memory_ids
+        .iter()
+        .filter(|m| !linked.contains(m))
+        .cloned()
+        .collect();
+    if !late.is_empty() {
+        observer.forget_memories(&late).await?;
+    }
+    forgotten.memory_ids = linked.into_iter().chain(late).collect();
+    Ok(forgotten)
+}
+
+/// A channel chosen for indexing ([`choose_channel`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChosenChannel {
+    /// The channel as it was before (indexed into another workspace), if it was indexed.
+    pub before: Option<IndexedChannel>,
+    pub channel: IndexedChannel,
+}
+
+/// Starts indexing `new` into its Shodh workspace, or moves it there
+/// ([`SlackStore::add_channel`]). The workspace gets the channel's folder source
+/// (`label`) first and the channel is saved after, so a channel never indexes into a
+/// space no workspace holds; when the channel cannot be saved, a source this call added
+/// is taken out again. Blocking.
+pub fn choose_channel(
+    slack: &SlackStore,
+    workspaces: &WorkspaceStore,
+    new: &NewIndexedChannel,
+    label: &str,
+    now: DateTime<Utc>,
+) -> Result<ChosenChannel, String> {
+    let before = slack
+        .channel(&new.team_id, &new.channel_id)
+        .map_err(|e| e.to_string())?;
+    let space = super::ids::space_id(&new.team_id, &new.channel_id);
+    let source = NewSource {
+        kind: WorkspaceSourceKind::Folder,
+        reference: space.clone(),
+        label: label.to_string(),
+        path: None,
+    };
+    let added = workspaces
+        .add_sources(&new.workspace_id, &[source], WorkspaceAuthor::User)
+        .map_err(|e| e.to_string())?;
+    match slack.add_channel(new, now) {
+        Ok(channel) => Ok(ChosenChannel { before, channel }),
+        Err(e) => {
+            if added.added > 0 {
+                if let Err(undo) =
+                    workspaces.remove_source(&new.workspace_id, WorkspaceSourceKind::Folder, &space)
+                {
+                    tracing::warn!(target: "shodh::slack", error = %undo, "a Slack channel's source could not be taken back from its workspace");
+                }
+            }
+            Err(e.to_string())
+        }
+    }
 }
 
 /// One unit of the sync's work (for the log and tests).
@@ -322,11 +475,15 @@ pub enum Work {
     Poll {
         channel: String,
         threads: usize,
+        /// Everything up to the poll's bound was read (else it goes on at the next step).
+        done: bool,
     },
     Slim {
         channel: String,
         deleted: usize,
         refetch: usize,
+        /// The whole window was listed (else the pass goes on at the next step).
+        done: bool,
     },
     /// Slack's rate limit: paused until then.
     Paused {
@@ -343,6 +500,16 @@ pub enum Work {
         channel: String,
         reason: String,
     },
+    /// Slack refused a saved cursor as stale: it was dropped, and the next step reads
+    /// again from the bound (skipping the threads that did not change).
+    Restarted {
+        channel: String,
+    },
+    /// Stopped early for a forget waiting for the gate; nothing of the unfinished page
+    /// was checkpointed, so the next step reads it again.
+    Yielded {
+        channel: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,7 +519,7 @@ pub enum Step {
     Idle(Option<DateTime<Utc>>),
 }
 
-/// Spaces calls to Slack's history methods.
+/// Spaces calls to Slack.
 struct Pacer {
     every: Duration,
     next: tokio::sync::Mutex<Option<tokio::time::Instant>>,
@@ -375,10 +542,12 @@ impl Pacer {
     }
 }
 
-/// Why a unit of work failed: Slack refused or failed, or this computer could not index.
+/// Why a unit of work failed: Slack refused or failed, this computer could not index, or
+/// a forget waits.
 enum StepError {
     Slack(SlackApiError),
     Local(String),
+    Yield,
 }
 
 impl From<SlackApiError> for StepError {
@@ -392,9 +561,29 @@ enum Halt {
     RateLimited(DateTime<Utc>),
     /// The channel is gone for the bot (`not_in_channel`, `channel_not_found`).
     Removed,
+    /// The channel was archived (`is_archived`).
+    Archived,
+    /// Slack refused a saved cursor (`invalid_cursor`) or, with `bounds`, a saved bound
+    /// (`invalid_ts_latest`, `invalid_ts_oldest`) as stale.
+    Stale {
+        bounds: bool,
+    },
     /// The token or a scope was refused: every channel waits for the user.
     Refused(String),
     Passing(String),
+    /// A forget waits for the gate.
+    Yield,
+}
+
+/// Whether `channel` has a saved cursor (or, with `bounds`, a saved bound) to drop.
+fn has_saved_position(channel: &IndexedChannel, bounds: bool) -> bool {
+    if bounds {
+        channel.backfill_latest.is_some()
+            || channel.poll_latest.is_some()
+            || channel.slim_latest.is_some()
+    } else {
+        channel.backfill_cursor.is_some() || channel.poll_cursor.is_some()
+    }
 }
 
 /// The sync of one Slack workspace.
@@ -406,11 +595,13 @@ pub struct SyncWorker {
     store: Arc<SlackStore>,
     clock: Arc<dyn Clock>,
     observer: Arc<dyn SyncObserver>,
-    gate: Arc<tokio::sync::Mutex<()>>,
+    gate: Arc<SyncGate>,
     wake: Arc<Notify>,
     timing: SyncTiming,
     pacer: Pacer,
     names: Mutex<HashMap<String, (String, DateTime<Utc>)>>,
+    /// When each channel was last found neither archived nor newly shared.
+    checked: Mutex<HashMap<String, DateTime<Utc>>>,
 }
 
 impl SyncWorker {
@@ -423,7 +614,7 @@ impl SyncWorker {
         store: Arc<SlackStore>,
         clock: Arc<dyn Clock>,
         observer: Arc<dyn SyncObserver>,
-        gate: Arc<tokio::sync::Mutex<()>>,
+        gate: Arc<SyncGate>,
         wake: Arc<Notify>,
         timing: SyncTiming,
     ) -> Self {
@@ -440,6 +631,7 @@ impl SyncWorker {
             pacer: Pacer::new(timing.pace),
             timing,
             names: Mutex::new(HashMap::new()),
+            checked: Mutex::new(HashMap::new()),
         }
     }
 
@@ -475,8 +667,9 @@ impl SyncWorker {
                     }
                 }
                 Err(e) => {
-                    // The store could not be read: wait, then try again.
-                    tracing::warn!(target: "shodh::slack", error = %e, "the Slack sync could not read its state");
+                    // The store could not be read, or a forget could not finish: wait,
+                    // then try again.
+                    tracing::warn!(target: "shodh::slack", error = %e, "the Slack sync could not go on");
                     tokio::select! {
                         _ = tokio::time::sleep(self.timing.idle_max) => {}
                         _ = cancel.cancelled() => return,
@@ -488,7 +681,7 @@ impl SyncWorker {
 
     /// Does one unit of work, or says when the next is due.
     pub async fn step(&self) -> Result<Step, String> {
-        let _turn = self.gate.lock().await;
+        let turn = self.gate.turn().await;
         let team = self.team.clone();
         let channels = blocking(&self.store, move |s| s.channels(&team)).await?;
         let now = self.clock.now();
@@ -496,8 +689,13 @@ impl SyncWorker {
             .iter()
             .find(|c| c.state == ChannelState::Forgetting)
         {
-            let forgotten = forget_channel(&self.store, self.index.as_ref(), channel).await?;
-            self.observer.channel_forgotten(channel, &forgotten);
+            forget_channel(
+                &self.store,
+                self.index.as_ref(),
+                self.observer.as_ref(),
+                channel,
+            )
+            .await?;
             return Ok(Step::Worked(Work::Forgotten {
                 channel: channel.channel_id.clone(),
             }));
@@ -512,44 +710,50 @@ impl SyncWorker {
                 .find(|c| &c.channel_id == channel_id)
             {
                 return self
-                    .refresh_thread(channel, thread_ts)
+                    .refresh_thread(channel, thread_ts, &turn)
                     .await
                     .map(Step::Worked);
             }
         }
         if let Some(channel) = channels.iter().filter(ready).find(|c| !c.backfill_done) {
-            return self.backfill_page(channel).await.map(Step::Worked);
+            return self.backfill_page(channel, &turn).await.map(Step::Worked);
         }
         let due = |last: Option<DateTime<Utc>>, every: chrono::Duration| {
             last.is_none_or(|at| now - at >= every)
         };
+        // A poll or slim pass in progress goes on at once.
         if let Some(channel) = channels
             .iter()
             .filter(ready)
-            .find(|c| due(c.last_poll_at, self.timing.poll_every))
+            .find(|c| c.poll_cursor.is_some() || due(c.last_poll_at, self.timing.poll_every))
         {
-            return self.poll(channel).await.map(Step::Worked);
+            return self.poll(channel, &turn).await.map(Step::Worked);
         }
         if let Some(channel) = channels
             .iter()
             .filter(ready)
-            .find(|c| due(c.last_slim_at, self.timing.slim_every))
+            .find(|c| c.slim_latest.is_some() || due(c.last_slim_at, self.timing.slim_every))
         {
             return self.slim(channel).await.map(Step::Worked);
         }
-        let next = channels
+        Ok(Step::Idle(self.next_due(&channels, now)))
+    }
+
+    /// When the next work of `channels` is due, after `now`. A paused channel's work,
+    /// however overdue, waits for the end of its pause.
+    fn next_due(&self, channels: &[IndexedChannel], now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        channels
             .iter()
             .filter(|c| c.state == ChannelState::Active)
-            .flat_map(|c| {
-                [
-                    c.paused_until.filter(|until| *until > now),
+            .flat_map(|c| match c.paused_until.filter(|until| *until > now) {
+                Some(until) => [Some(until), None],
+                None => [
                     c.last_poll_at.map(|at| at + self.timing.poll_every),
                     c.last_slim_at.map(|at| at + self.timing.slim_every),
-                ]
+                ],
             })
             .flatten()
-            .min();
-        Ok(Step::Idle(next))
+            .min()
     }
 
     // ── Slack calls ─────────────────────────────────────────────────
@@ -557,6 +761,7 @@ impl SyncWorker {
     fn halt(&self, error: StepError) -> Halt {
         let error = match error {
             StepError::Slack(error) => error,
+            StepError::Yield => return Halt::Yield,
             StepError::Local(e) => {
                 return Halt::Passing(format!(
                     "Shodh could not index this channel ({e}); trying again shortly."
@@ -572,12 +777,18 @@ impl SyncWorker {
                 Halt::RateLimited(now + wait)
             }
             SlackApiError::Api { code, .. }
-                if matches!(
-                    code.as_str(),
-                    "not_in_channel" | "channel_not_found" | "is_archived"
-                ) =>
+                if matches!(code.as_str(), "not_in_channel" | "channel_not_found") =>
             {
                 Halt::Removed
+            }
+            SlackApiError::Api { code, .. } if code == "is_archived" => Halt::Archived,
+            SlackApiError::Api { code, .. } if code == "invalid_cursor" => {
+                Halt::Stale { bounds: false }
+            }
+            SlackApiError::Api { code, .. }
+                if matches!(code.as_str(), "invalid_ts_latest" | "invalid_ts_oldest") =>
+            {
+                Halt::Stale { bounds: true }
             }
             SlackApiError::Api {
                 code,
@@ -598,6 +809,14 @@ impl SyncWorker {
     /// What a halted step leaves behind: the pause, the stop or the error, saved.
     async fn halted(&self, channel: &IndexedChannel, halt: Halt) -> Result<Work, String> {
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
+        let halt = match halt {
+            // Nothing saved to drop (a cursor within one step): wait as after any passing
+            // error, then read again, so a refusal that repeats never spins.
+            Halt::Stale { bounds } if !has_saved_position(channel, bounds) => Halt::Passing(
+                "Slack refused to go on reading this channel; trying again shortly.".into(),
+            ),
+            other => other,
+        };
         match halt {
             Halt::RateLimited(until) => {
                 // Slack limits each method per workspace: every channel waits.
@@ -609,17 +828,28 @@ impl SyncWorker {
             }
             Halt::Removed => {
                 blocking(&self.store, move |s| {
-                    s.set_state(
-                        &team,
-                        &id,
-                        ChannelState::Removed,
-                        Some("Shodh is no longer in this channel. Invite it again (/invite @shodh) and choose the channel again."),
-                    )
+                    s.set_state(&team, &id, ChannelState::Removed, Some(REMOVED))
                 })
                 .await?;
                 Ok(Work::Stopped {
                     channel: channel.channel_id.clone(),
                     state: ChannelState::Removed,
+                })
+            }
+            Halt::Archived => {
+                blocking(&self.store, move |s| {
+                    s.set_state(&team, &id, ChannelState::Archived, Some(ARCHIVED))
+                })
+                .await?;
+                Ok(Work::Stopped {
+                    channel: channel.channel_id.clone(),
+                    state: ChannelState::Archived,
+                })
+            }
+            Halt::Stale { bounds } => {
+                blocking(&self.store, move |s| s.reset_cursors(&team, &id, bounds)).await?;
+                Ok(Work::Restarted {
+                    channel: channel.channel_id.clone(),
                 })
             }
             Halt::Refused(reason) => {
@@ -638,6 +868,9 @@ impl SyncWorker {
                     reason,
                 })
             }
+            Halt::Yield => Ok(Work::Yielded {
+                channel: channel.channel_id.clone(),
+            }),
         }
     }
 
@@ -678,8 +911,13 @@ impl SyncWorker {
         Ok(messages)
     }
 
-    /// The names of the people who wrote or are mentioned in `messages`.
-    async fn names_for(&self, messages: &[SlackMessage]) -> HashMap<String, String> {
+    /// The names of the people who wrote or are mentioned in `messages`. Each lookup is
+    /// paced like every call; Slack's rate limit stops the step (the thread is indexed
+    /// after the pause, with the names), any other failure leaves that name out.
+    async fn names_for(
+        &self,
+        messages: &[SlackMessage],
+    ) -> Result<HashMap<String, String>, SlackApiError> {
         let mut wanted: BTreeSet<String> = BTreeSet::new();
         for m in messages {
             if let Some(user) = &m.user {
@@ -702,6 +940,7 @@ impl SyncWorker {
             }
         }
         for user in unknown {
+            self.pacer.wait().await;
             match self.reader.user_name(&user).await {
                 Ok(name) => {
                     self.names
@@ -710,16 +949,23 @@ impl SyncWorker {
                         .insert(user.clone(), (name.clone(), now));
                     names.insert(user, name);
                 }
+                Err(e @ SlackApiError::RateLimited { .. }) => return Err(e),
                 Err(e) => {
                     tracing::debug!(target: "shodh::slack", error = %e, "a Slack name could not be read");
                 }
             }
         }
-        names
+        Ok(names)
     }
 
     /// The permalink of message `ts`, derived from the channel's base when it has one.
-    async fn permalink(&self, channel: &IndexedChannel, ts: &str) -> Option<String> {
+    /// Asked of Slack (paced) otherwise; Slack's rate limit stops the step, any other
+    /// failure gives none.
+    async fn permalink(
+        &self,
+        channel: &IndexedChannel,
+        ts: &str,
+    ) -> Result<Option<String>, SlackApiError> {
         let team = self.team.clone();
         let id = channel.channel_id.clone();
         let base = blocking(&self.store, move |s| s.channel(&team, &id))
@@ -728,8 +974,9 @@ impl SyncWorker {
             .flatten()
             .and_then(|c| c.permalink_base);
         if let Some(base) = base {
-            return Some(derived_permalink(&base, ts));
+            return Ok(Some(derived_permalink(&base, ts)));
         }
+        self.pacer.wait().await;
         match self.reader.permalink(&channel.channel_id, ts).await {
             Ok(link) => {
                 if let Some(base) = permalink_base(&link, &channel.channel_id, ts) {
@@ -742,53 +989,57 @@ impl SyncWorker {
                         tracing::debug!(target: "shodh::slack", error = %e, "a permalink base could not be saved");
                     }
                 }
-                Some(link)
+                Ok(Some(link))
             }
+            Err(e @ SlackApiError::RateLimited { .. }) => Err(e),
             Err(e) => {
                 tracing::debug!(target: "shodh::slack", error = %e, "no permalink for a Slack thread");
-                None
+                Ok(None)
             }
         }
     }
 
     // ── Units of work ───────────────────────────────────────────────
 
-    /// Indexes the thread `parent` starts (its replies fetched when it has any); returns
-    /// whether a document was kept.
+    /// Indexes the thread `thread_ts` starts from `messages` (fetched when `None`);
+    /// returns whether a document was kept. A thread with nothing to index has its
+    /// document deleted when `had_document` says it may have one.
     async fn index_thread(
         &self,
         channel: &IndexedChannel,
         thread_ts: &str,
-        known: Option<Vec<SlackMessage>>,
-        replace: bool,
+        messages: Option<Vec<SlackMessage>>,
+        had_document: bool,
+        turn: &GateTurn,
     ) -> Result<bool, StepError> {
-        let messages = match known {
+        let messages = match messages {
             Some(messages) => messages,
             None => self.thread_messages(&channel.channel_id, thread_ts).await?,
         };
-        let names = self.names_for(&messages).await;
-        let permalink = self.permalink(channel, thread_ts).await;
-        let doc = thread_document(
-            &self.team,
-            &channel.channel_id,
-            &channel.name,
-            thread_ts,
-            &messages,
-            &names,
-            permalink,
-            &self.bot_user,
-        );
         let (team, id, ts) = (
             self.team.clone(),
             channel.channel_id.clone(),
             thread_ts.to_string(),
         );
+        let doc = if messages.iter().any(|m| m.indexed(&self.bot_user)) {
+            let names = self.names_for(&messages).await?;
+            let permalink = self.permalink(channel, thread_ts).await?;
+            thread_document(
+                &self.team,
+                &channel.channel_id,
+                &channel.name,
+                thread_ts,
+                &messages,
+                &names,
+                permalink,
+                &self.bot_user,
+            )
+        } else {
+            None
+        };
         match doc {
             Some(doc) => {
-                self.index
-                    .put(&doc, replace)
-                    .await
-                    .map_err(StepError::Local)?;
+                self.index.put(&doc, turn).await.map_err(StepError::Local)?;
                 let now = self.clock.now();
                 blocking(&self.store, move |s| {
                     s.record_thread(
@@ -806,15 +1057,32 @@ impl SyncWorker {
                 Ok(true)
             }
             None => {
-                if replace {
+                if had_document {
                     self.index
                         .delete_thread(&super::ids::thread_source(&team, &id, &ts))
                         .await
                         .map_err(StepError::Local)?;
                 }
-                blocking(&self.store, move |s| s.remove_thread(&team, &id, &ts))
+                let (latest_reply, reply_count) = thread_replies(&messages, thread_ts);
+                if reply_count > 0 {
+                    // Replies only bots wrote: kept with them, so the slim pass does not
+                    // fetch it again until they change.
+                    blocking(&self.store, move |s| {
+                        s.record_skipped_thread(
+                            &team,
+                            &id,
+                            &ts,
+                            latest_reply.as_deref(),
+                            reply_count,
+                        )
+                    })
                     .await
                     .map_err(StepError::Local)?;
+                } else {
+                    blocking(&self.store, move |s| s.remove_thread(&team, &id, &ts))
+                        .await
+                        .map_err(StepError::Local)?;
+                }
                 Ok(false)
             }
         }
@@ -826,20 +1094,17 @@ impl SyncWorker {
         &self,
         channel: &IndexedChannel,
         thread_ts: &str,
+        turn: &GateTurn,
     ) -> Result<Work, String> {
         let messages = match self.thread_messages(&channel.channel_id, thread_ts).await {
             Ok(messages) => Some(messages),
             Err(SlackApiError::Api { code, .. }) if code == "thread_not_found" => Some(Vec::new()),
             Err(e) => return self.halted(channel, self.halt(e.into())).await,
         };
-        let (team, id, ts) = (
-            self.team.clone(),
-            channel.channel_id.clone(),
-            thread_ts.to_string(),
-        );
-        let indexed = blocking(&self.store, move |s| s.is_indexed(&team, &id, &ts)).await?;
+        // A marked thread may have a document even when no record says so (a step
+        // cancelled after storing it): one left with nothing is always deleted.
         let kept = match self
-            .index_thread(channel, thread_ts, messages, indexed)
+            .index_thread(channel, thread_ts, messages, true, turn)
             .await
         {
             Ok(kept) => kept,
@@ -855,18 +1120,24 @@ impl SyncWorker {
         })
     }
 
-    /// Indexes the top-level messages of `page` (threads with replies fetched whole);
-    /// returns how many threads were kept and the oldest and newest `ts` it held.
+    /// Indexes the top-level messages of `page` (threads with replies fetched whole),
+    /// skipping the threads `known` holds with the same replies (a page read again);
+    /// returns how many threads were kept and the oldest and newest `ts` it held. Stops
+    /// with [`StepError::Yield`] between threads when a forget waits.
     async fn index_page(
         &self,
         channel: &IndexedChannel,
         page: &HistoryPage,
-        known: &HashMap<String, Option<String>>,
+        known: &HashMap<String, ThreadRecord>,
+        turn: &GateTurn,
     ) -> Result<(usize, Option<String>, Option<String>), StepError> {
         let mut kept = 0;
         let mut oldest: Option<String> = None;
         let mut newest: Option<String> = None;
         for message in &page.messages {
+            if self.gate.yield_requested() {
+                return Err(StepError::Yield);
+            }
             if oldest
                 .as_deref()
                 .is_none_or(|o| ts_value(&message.ts) < ts_value(o))
@@ -892,10 +1163,22 @@ impl SyncWorker {
                     .map_err(StepError::Local)?;
                 continue;
             }
-            let replace = known.contains_key(&message.ts);
+            let record = known.get(&message.ts);
+            if record
+                .is_some_and(|r| !r.changed(message.latest_reply.as_deref(), message.reply_count))
+            {
+                // Read already, and its replies did not change.
+                continue;
+            }
             let messages = (message.reply_count == 0).then(|| vec![message.clone()]);
             if self
-                .index_thread(channel, &message.ts, messages, replace)
+                .index_thread(
+                    channel,
+                    &message.ts,
+                    messages,
+                    record.is_some_and(|r| r.indexed),
+                    turn,
+                )
                 .await?
             {
                 kept += 1;
@@ -904,7 +1187,14 @@ impl SyncWorker {
         Ok((kept, oldest, newest))
     }
 
-    async fn backfill_page(&self, channel: &IndexedChannel) -> Result<Work, String> {
+    async fn backfill_page(
+        &self,
+        channel: &IndexedChannel,
+        turn: &GateTurn,
+    ) -> Result<Work, String> {
+        if let Some(stopped) = self.check_due(channel).await? {
+            return Ok(stopped);
+        }
         let now = self.clock.now();
         let latest = channel
             .backfill_latest
@@ -928,7 +1218,7 @@ impl SyncWorker {
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
         let known = blocking(&self.store, move |s| s.threads(&team, &id)).await?;
         let (threads, page_oldest, page_newest) =
-            match self.index_page(channel, &page, &known).await {
+            match self.index_page(channel, &page, &known, turn).await {
                 Ok(found) => found,
                 Err(e) => return self.halted(channel, self.halt(e)).await,
             };
@@ -962,6 +1252,29 @@ impl SyncWorker {
         })
     }
 
+    /// [`Self::check_channel`] when the channel was not checked in the last
+    /// [`SyncTiming::poll_every`] (by this worker).
+    async fn check_due(&self, channel: &IndexedChannel) -> Result<Option<Work>, String> {
+        let now = self.clock.now();
+        let due = self
+            .checked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&channel.channel_id)
+            .is_none_or(|at| now - *at >= self.timing.poll_every);
+        if !due {
+            return Ok(None);
+        }
+        let stopped = self.check_channel(channel).await?;
+        if stopped.is_none() {
+            self.checked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(channel.channel_id.clone(), now);
+        }
+        Ok(stopped)
+    }
+
     /// The channel as Slack has it now: archived or shared since it was chosen stops it.
     async fn check_channel(&self, channel: &IndexedChannel) -> Result<Option<Work>, String> {
         self.pacer.wait().await;
@@ -971,19 +1284,7 @@ impl SyncWorker {
         };
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
         if info.archived {
-            blocking(&self.store, move |s| {
-                s.set_state(
-                    &team,
-                    &id,
-                    ChannelState::Archived,
-                    Some("The channel was archived in Slack. What was indexed stays until you forget it."),
-                )
-            })
-            .await?;
-            return Ok(Some(Work::Stopped {
-                channel: channel.channel_id.clone(),
-                state: ChannelState::Archived,
-            }));
+            return self.halted(channel, Halt::Archived).await.map(Some);
         }
         if info.shared && !channel.shared {
             blocking(&self.store, move |s| {
@@ -998,28 +1299,36 @@ impl SyncWorker {
         Ok(None)
     }
 
-    async fn poll(&self, channel: &IndexedChannel) -> Result<Work, String> {
-        if let Some(stopped) = self.check_channel(channel).await? {
+    async fn poll(&self, channel: &IndexedChannel, turn: &GateTurn) -> Result<Work, String> {
+        if let Some(stopped) = self.check_due(channel).await? {
             return Ok(stopped);
         }
         let now = self.clock.now();
         let oldest = channel.newest_ts.clone().unwrap_or_else(|| {
             time_ts(now - chrono::Duration::days(i64::from(channel.window_days)))
         });
+        // A fixed bound, so a poll of more than one step reads the pages its cursor
+        // points to (what came later waits for the next poll).
+        let latest = channel.poll_latest.clone().unwrap_or_else(|| time_ts(now));
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
         let known = blocking(&self.store, move |s| s.threads(&team, &id)).await?;
-        let mut cursor: Option<String> = None;
+        let mut cursor = channel.poll_cursor.clone();
         let mut threads = 0;
         let mut newest: Option<String> = None;
         for _ in 0..POLL_PAGES {
             let page = match self
-                .history(&channel.channel_id, Some(&oldest), None, cursor.as_deref())
+                .history(
+                    &channel.channel_id,
+                    Some(&oldest),
+                    Some(&latest),
+                    cursor.as_deref(),
+                )
                 .await
             {
                 Ok(page) => page,
                 Err(e) => return self.halted(channel, self.halt(e.into())).await,
             };
-            let (kept, _, page_newest) = match self.index_page(channel, &page, &known).await {
+            let (kept, _, page_newest) = match self.index_page(channel, &page, &known, turn).await {
                 Ok(found) => found,
                 Err(e) => return self.halted(channel, self.halt(e)).await,
             };
@@ -1033,19 +1342,24 @@ impl SyncWorker {
                 }
             }
             cursor = page.next_cursor;
-            if cursor.is_none() {
+            if cursor.is_none() || self.gate.yield_requested() {
                 break;
             }
         }
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
         let now = self.clock.now();
-        blocking(&self.store, move |s| {
-            s.save_poll(&team, &id, newest.as_deref(), now)
+        let done = cursor.is_none();
+        blocking(&self.store, move |s| match cursor {
+            // More to read: the next step goes on from here; `newest_ts` stays until the
+            // pages between it and the bound were read.
+            Some(next) => s.save_poll_part(&team, &id, &latest, &next, newest.as_deref(), now),
+            None => s.save_poll(&team, &id, newest.as_deref(), now),
         })
         .await?;
         Ok(Work::Poll {
             channel: channel.channel_id.clone(),
             threads,
+            done,
         })
     }
 
@@ -1053,20 +1367,34 @@ impl SyncWorker {
         let now = self.clock.now();
         let start = now - chrono::Duration::days(i64::from(channel.window_days));
         let oldest = time_ts(start);
-        let mut listed: HashMap<String, Option<String>> = HashMap::new();
+        // A pass of more than one step lists what is older than its last part.
+        let latest = channel.slim_latest.clone();
+        let mut listed: HashMap<String, (Option<String>, usize)> = HashMap::new();
+        let mut lowest: Option<String> = None;
         let mut cursor: Option<String> = None;
         let mut complete = false;
         for _ in 0..SLIM_PAGES {
             let page = match self
-                .history(&channel.channel_id, Some(&oldest), None, cursor.as_deref())
+                .history(
+                    &channel.channel_id,
+                    Some(&oldest),
+                    latest.as_deref(),
+                    cursor.as_deref(),
+                )
                 .await
             {
                 Ok(page) => page,
                 Err(e) => return self.halted(channel, self.halt(e.into())).await,
             };
-            for m in page.messages.iter().filter(|m| m.top_level()) {
-                if m.indexed(&self.bot_user) || m.reply_count > 0 {
-                    listed.insert(m.ts.clone(), m.latest_reply.clone());
+            for m in &page.messages {
+                if lowest
+                    .as_deref()
+                    .is_none_or(|low| ts_value(&m.ts) < ts_value(low))
+                {
+                    lowest = Some(m.ts.clone());
+                }
+                if m.top_level() && (m.indexed(&self.bot_user) || m.reply_count > 0) {
+                    listed.insert(m.ts.clone(), (m.latest_reply.clone(), m.reply_count));
                 }
             }
             cursor = page.next_cursor;
@@ -1074,35 +1402,54 @@ impl SyncWorker {
                 complete = true;
                 break;
             }
+            if self.gate.yield_requested() {
+                break;
+            }
         }
+        // What this step listed whole: from the window's start (or the oldest message it
+        // reached) up to the bound (the oldest message of the part before), exclusive.
+        let low = if complete {
+            Some(ts_value(&oldest))
+        } else {
+            lowest.as_deref().map(ts_value)
+        };
+        let high = latest.as_deref().map(ts_value);
+        let covered = |ts: &str| {
+            let at = ts_value(ts);
+            low.is_some_and(|low| at >= low) && high.is_none_or(|high| at < high)
+        };
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
         let stored = blocking(&self.store, move |s| s.threads(&team, &id)).await?;
-        let start_value = ts_value(&oldest);
         let mut deleted = 0;
         let mut refetch = Vec::new();
-        for (ts, latest) in &stored {
+        for (ts, record) in &stored {
             match listed.get(ts) {
-                // Gone from Slack (only when the whole window was listed).
-                None if complete && ts_value(ts) >= start_value => {
-                    self.index
-                        .delete_thread(&super::ids::thread_source(
-                            &self.team,
-                            &channel.channel_id,
-                            ts,
-                        ))
-                        .await?;
+                // Gone from Slack (only within what was listed whole).
+                None if covered(ts) => {
+                    if record.indexed {
+                        self.index
+                            .delete_thread(&super::ids::thread_source(
+                                &self.team,
+                                &channel.channel_id,
+                                ts,
+                            ))
+                            .await?;
+                        deleted += 1;
+                    }
                     let (team, id, ts) =
                         (self.team.clone(), channel.channel_id.clone(), ts.clone());
                     blocking(&self.store, move |s| s.remove_thread(&team, &id, &ts)).await?;
-                    deleted += 1;
                 }
-                Some(listed_latest) if listed_latest.is_some() && listed_latest != latest => {
+                // A reply added, or deleted while Shodh was not running.
+                Some((latest_reply, reply_count))
+                    if record.changed(latest_reply.as_deref(), *reply_count) =>
+                {
                     refetch.push(ts.clone());
                 }
                 _ => {}
             }
         }
-        // Threads Slack has that Shodh never saw (posted while it was not running).
+        // Threads Slack has that Shodh never read (posted while it was not running).
         for ts in listed.keys() {
             if !stored.contains_key(ts) {
                 refetch.push(ts.clone());
@@ -1111,20 +1458,23 @@ impl SyncWorker {
         let count = refetch.len();
         let (team, id) = (self.team.clone(), channel.channel_id.clone());
         let now = self.clock.now();
+        let next = if complete { None } else { lowest };
+        let done = next.is_none();
         blocking(&self.store, move |s| {
             for ts in &refetch {
                 s.mark_dirty(&team, &id, ts, now)?;
             }
-            if complete {
-                s.save_slim(&team, &id, now)?;
+            match &next {
+                Some(below) => s.save_slim_part(&team, &id, below, now),
+                None => s.save_slim(&team, &id, now),
             }
-            Ok(())
         })
         .await?;
         Ok(Work::Slim {
             channel: channel.channel_id.clone(),
             deleted,
             refetch: count,
+            done,
         })
     }
 }
@@ -1335,7 +1685,7 @@ impl IndexEvents {
                     &self.team,
                     channel_id,
                     ChannelState::Archived,
-                    Some("The channel was archived in Slack. What was indexed stays until you forget it."),
+                    Some(ARCHIVED),
                 )?;
                 true
             }
@@ -1355,7 +1705,7 @@ impl IndexEvents {
                     &self.team,
                     channel_id,
                     ChannelState::Removed,
-                    Some("Shodh is no longer in this channel. Invite it again (/invite @shodh) and choose the channel again."),
+                    Some(REMOVED),
                 )?;
                 true
             }

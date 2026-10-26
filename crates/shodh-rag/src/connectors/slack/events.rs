@@ -190,6 +190,22 @@ pub struct Question {
     pub text: String,
 }
 
+impl Question {
+    /// Where this question's earlier questions and answers are kept, for follow-ups: its
+    /// thread. A DM question outside a thread starts its own (a reply in its thread
+    /// follows it up), so unrelated questions in a DM never share a context. Answers in
+    /// flight stay one at a time per DM ([`Question::thread`]).
+    pub fn turns_key(&self) -> ThreadKey {
+        match (self.kind, &self.reply_thread_ts) {
+            (QuestionKind::Direct, None) => ThreadKey {
+                channel: self.channel.clone(),
+                thread: self.ts.clone(),
+            },
+            _ => self.thread.clone(),
+        }
+    }
+}
+
 /// What to do with an envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -668,7 +684,27 @@ mod tests {
             ThreadKey {
                 channel: "D1".into(),
                 thread: String::new()
-            }
+            },
+            "one answer at a time in a DM"
+        );
+        assert_eq!(
+            q.turns_key(),
+            ThreadKey {
+                channel: "D1".into(),
+                thread: q.ts.clone()
+            },
+            "a DM question outside a thread keeps its own follow-ups"
+        );
+        let mut threaded = dm("and shorter?");
+        threaded["thread_ts"] = json!(q.ts);
+        threaded["ts"] = json!("201.1");
+        let Decision::Ask(follow_up) = decide(&envelope("E4", "Ev4", threaded), &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(
+            follow_up.turns_key(),
+            q.turns_key(),
+            "a reply in its thread follows it up"
         );
     }
 

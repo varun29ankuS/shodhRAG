@@ -19,6 +19,11 @@ pub const TURNS_KEPT_PER_THREAD: usize = 6;
 pub const TURNS_KEPT_DAYS: i64 = 30;
 /// Channel-scoped memories put in one answer's prompt (the most recent).
 pub const CHANNEL_MEMORIES_IN_PROMPT: usize = 10;
+/// Channel-scoped memories one channel keeps at most (each up to
+/// [`super::remember::MAX_MEMORY_CHARS`]); more are refused until some are deleted.
+pub const MAX_CHANNEL_MEMORIES: usize = 100;
+/// Channel-scoped memories one person may save in one channel in a day.
+pub const MAX_MEMORIES_PER_PERSON_PER_DAY: usize = 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SlackStoreError {
@@ -28,6 +33,9 @@ pub enum SlackStoreError {
     Open(String),
     #[error("{0}")]
     Invalid(String),
+    /// A limit was reached; the message is for the person who asked.
+    #[error("{0}")]
+    Limit(String),
 }
 
 pub type SlackStoreResult<T> = Result<T, SlackStoreError>;
@@ -118,6 +126,15 @@ pub struct IndexedChannel {
     pub last_sync_at: Option<DateTime<Utc>>,
     pub last_poll_at: Option<DateTime<Utc>>,
     pub last_slim_at: Option<DateTime<Utc>>,
+    /// An incremental poll that takes more than one step: its fixed `latest` bound, the
+    /// cursor of its next page, and the newest message it read so far. `newest_ts` moves
+    /// only when the poll read everything up to its bound.
+    pub poll_latest: Option<String>,
+    pub poll_cursor: Option<String>,
+    pub poll_newest: Option<String>,
+    /// A slim pass that takes more than one step continues below this message (`None`:
+    /// the next pass starts from now).
+    pub slim_latest: Option<String>,
     pub started_at: DateTime<Utc>,
     /// Threads indexed now.
     pub threads: usize,
@@ -194,6 +211,24 @@ pub struct Forgotten {
     pub memories: usize,
 }
 
+/// A thread Shodh has read ([`SlackStore::threads`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadRecord {
+    /// The thread's latest reply and reply count as Slack listed them when it was read.
+    pub latest_reply: Option<String>,
+    pub reply_count: usize,
+    /// It has a document in the index (`false`: read with nothing to index).
+    pub indexed: bool,
+}
+
+impl ThreadRecord {
+    /// Whether Slack lists the thread with other replies than when it was read (a reply
+    /// added, deleted or edited away).
+    pub fn changed(&self, latest_reply: Option<&str>, reply_count: usize) -> bool {
+        self.latest_reply.as_deref() != latest_reply || self.reply_count != reply_count
+    }
+}
+
 fn stamp(time: DateTime<Utc>) -> String {
     time.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
@@ -229,14 +264,14 @@ fn earlier(a: Option<String>, b: Option<&str>) -> Option<String> {
 const CHANNEL_COLUMNS: &str = "c.team_id, c.channel_id, c.name, c.workspace_id, c.shared, \
      c.private, c.window_days, c.state, c.backfill_latest, c.backfill_cursor, c.backfill_done, \
      c.oldest_seen, c.newest_ts, c.paused_until, c.error, c.permalink_base, c.last_sync_at, \
-     c.last_poll_at, c.last_slim_at, c.started_at, \
+     c.last_poll_at, c.last_slim_at, c.poll_latest, c.poll_cursor, c.poll_newest,      c.slim_latest, c.started_at, \
      (SELECT count(*) FROM slack_index_thread t \
        WHERE t.team_id = c.team_id AND t.channel_id = c.channel_id AND t.indexed_at IS NOT NULL)";
 
 fn read_channel(row: &Row<'_>) -> rusqlite::Result<IndexedChannel> {
     let state: String = row.get(7)?;
     let window: i64 = row.get(6)?;
-    let threads: i64 = row.get(20)?;
+    let threads: i64 = row.get(24)?;
     Ok(IndexedChannel {
         team_id: row.get(0)?,
         channel_id: row.get(1)?,
@@ -257,7 +292,11 @@ fn read_channel(row: &Row<'_>) -> rusqlite::Result<IndexedChannel> {
         last_sync_at: parse_time(row.get(16)?),
         last_poll_at: parse_time(row.get(17)?),
         last_slim_at: parse_time(row.get(18)?),
-        started_at: parse_time(row.get(19)?).unwrap_or_else(Utc::now),
+        poll_latest: row.get(19)?,
+        poll_cursor: row.get(20)?,
+        poll_newest: row.get(21)?,
+        slim_latest: row.get(22)?,
+        started_at: parse_time(row.get(23)?).unwrap_or_else(Utc::now),
         threads: usize::try_from(threads).unwrap_or(0),
     })
 }
@@ -354,7 +393,8 @@ impl SlackStore {
     // ── Channels ────────────────────────────────────────────────────
 
     /// Starts indexing a channel, or changes its workspace or sharing. A channel indexed
-    /// before keeps its checkpoint (it resumes); its pause and error are cleared.
+    /// before keeps its checkpoint (it resumes); its pause and error are cleared. A channel
+    /// being forgotten is refused: choosing it again would keep it as it is forgotten.
     pub fn add_channel(
         &self,
         channel: &NewIndexedChannel,
@@ -379,7 +419,8 @@ impl SlackStore {
                     private = excluded.private,
                     state = 'active',
                     paused_until = NULL,
-                    error = NULL",
+                    error = NULL
+                 WHERE slack_index_channel.state <> 'forgetting'",
                 params![
                     channel.team_id,
                     channel.channel_id,
@@ -391,8 +432,15 @@ impl SlackStore {
                     started
                 ],
             )?;
-            channel_in(tx, &channel.team_id, &channel.channel_id)?
-                .ok_or_else(|| SlackStoreError::Invalid("the channel was not saved".into()))
+            let saved = channel_in(tx, &channel.team_id, &channel.channel_id)?
+                .ok_or_else(|| SlackStoreError::Invalid("the channel was not saved".into()))?;
+            if saved.state == ChannelState::Forgetting {
+                return Err(SlackStoreError::Invalid(format!(
+                    "#{} is being forgotten. Choose it again once that is done.",
+                    saved.name
+                )));
+            }
+            Ok(saved)
         })
     }
 
@@ -414,7 +462,9 @@ impl SlackStore {
         Ok(channel_in(&conn, team, channel)?)
     }
 
-    /// Sets the state of a channel, with the reason shown for it (`None` clears it).
+    /// Sets the state of a channel, with the reason shown for it (`None` clears it). A
+    /// channel being forgotten stays so: an event or a step that ends after the forget
+    /// began never turns it back into one whose data is kept.
     pub fn set_state(
         &self,
         team: &str,
@@ -425,7 +475,8 @@ impl SlackStore {
         self.conn.write(|tx| {
             tx.execute(
                 "UPDATE slack_index_channel SET state = ?3, error = ?4, paused_until = NULL
-                 WHERE team_id = ?1 AND channel_id = ?2",
+                 WHERE team_id = ?1 AND channel_id = ?2
+                   AND (state <> 'forgetting' OR ?3 = 'forgetting')",
                 params![team, channel, state.as_str(), reason],
             )
         })?;
@@ -538,7 +589,9 @@ impl SlackStore {
         })
     }
 
-    /// Records an incremental poll that saw messages up to `newest`.
+    /// Records an incremental poll that read everything up to its bound, the newest
+    /// message being `newest` (with the newest its earlier steps read): later polls ask
+    /// for what came after it. Ends a poll in progress.
     pub fn save_poll(
         &self,
         team: &str,
@@ -551,10 +604,14 @@ impl SlackStore {
             let Some(current) = channel_in(tx, team, channel)? else {
                 return Ok(());
             };
-            let newest = later(current.newest_ts, newest);
+            let newest = later(
+                later(current.newest_ts, current.poll_newest.as_deref()),
+                newest,
+            );
             tx.execute(
                 "UPDATE slack_index_channel SET newest_ts = ?3, last_poll_at = ?4,
-                    last_sync_at = ?4, paused_until = NULL, error = NULL
+                    last_sync_at = ?4, poll_latest = NULL, poll_cursor = NULL,
+                    poll_newest = NULL, paused_until = NULL, error = NULL
                  WHERE team_id = ?1 AND channel_id = ?2",
                 params![team, channel, newest, now],
             )?;
@@ -562,15 +619,82 @@ impl SlackStore {
         })
     }
 
-    /// Records a finished slim pass.
+    /// Records one step of an incremental poll that has more to read: its fixed `latest`
+    /// bound, the cursor of its next page and the newest message read. `newest_ts` stays
+    /// (the pages left lie between it and the bound), and the poll stays due.
+    pub fn save_poll_part(
+        &self,
+        team: &str,
+        channel: &str,
+        latest: &str,
+        next_cursor: &str,
+        newest: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> SlackStoreResult<()> {
+        let now = stamp(now);
+        self.conn.write(|tx| {
+            let Some(current) = channel_in(tx, team, channel)? else {
+                return Ok(());
+            };
+            let newest = later(current.poll_newest, newest);
+            tx.execute(
+                "UPDATE slack_index_channel SET poll_latest = ?3, poll_cursor = ?4,
+                    poll_newest = ?5, last_sync_at = ?6, paused_until = NULL, error = NULL
+                 WHERE team_id = ?1 AND channel_id = ?2",
+                params![team, channel, latest, next_cursor, newest, now],
+            )?;
+            Ok::<_, SlackStoreError>(())
+        })
+    }
+
+    /// Records a finished slim pass (it listed the whole window).
     pub fn save_slim(&self, team: &str, channel: &str, now: DateTime<Utc>) -> SlackStoreResult<()> {
         let now = stamp(now);
         self.conn.write(|tx| {
             tx.execute(
                 "UPDATE slack_index_channel SET last_slim_at = ?3, last_sync_at = ?3,
-                    paused_until = NULL, error = NULL
+                    slim_latest = NULL, paused_until = NULL, error = NULL
                  WHERE team_id = ?1 AND channel_id = ?2",
                 params![team, channel, now],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Records one step of a slim pass that has more to list: the next step lists what
+    /// is older than message `latest` (what is newer was listed), and the pass stays due.
+    pub fn save_slim_part(
+        &self,
+        team: &str,
+        channel: &str,
+        latest: &str,
+        now: DateTime<Utc>,
+    ) -> SlackStoreResult<()> {
+        let now = stamp(now);
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE slack_index_channel SET slim_latest = ?3, last_sync_at = ?4,
+                    paused_until = NULL, error = NULL
+                 WHERE team_id = ?1 AND channel_id = ?2",
+                params![team, channel, latest, now],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Drops the saved cursors of a channel (Slack refused one as stale): the backfill and
+    /// a poll in progress read again from their bounds, which are kept, or with `bounds`
+    /// (Slack refused a bound) from now. What was indexed is kept; reading a page again
+    /// skips its threads that did not change.
+    pub fn reset_cursors(&self, team: &str, channel: &str, bounds: bool) -> SlackStoreResult<()> {
+        self.conn.write(|tx| {
+            tx.execute(
+                "UPDATE slack_index_channel SET backfill_cursor = NULL, poll_cursor = NULL,
+                    backfill_latest = CASE WHEN ?3 THEN NULL ELSE backfill_latest END,
+                    poll_latest = CASE WHEN ?3 THEN NULL ELSE poll_latest END,
+                    slim_latest = CASE WHEN ?3 THEN NULL ELSE slim_latest END
+                 WHERE team_id = ?1 AND channel_id = ?2",
+                params![team, channel, bounds],
             )
         })?;
         Ok(())
@@ -655,7 +779,43 @@ impl SlackStore {
         })
     }
 
+    /// Records thread `thread_ts` as read with nothing to index (only bots, or nothing left),
+    /// with the replies Slack listed for it: the slim pass fetches it again only when
+    /// they change.
+    pub fn record_skipped_thread(
+        &self,
+        team: &str,
+        channel: &str,
+        thread_ts: &str,
+        latest_reply: Option<&str>,
+        reply_count: usize,
+    ) -> SlackStoreResult<()> {
+        let replies = i64::try_from(reply_count).unwrap_or(i64::MAX);
+        self.conn.write(|tx| {
+            tx.execute(
+                "INSERT INTO slack_index_thread
+                    (team_id, channel_id, thread_ts, latest_reply, reply_count, dirty, indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL)
+                 ON CONFLICT(team_id, channel_id, thread_ts) DO UPDATE SET
+                    latest_reply = excluded.latest_reply,
+                    reply_count = excluded.reply_count,
+                    dirty = 0,
+                    dirty_at = NULL,
+                    indexed_at = NULL",
+                params![team, channel, thread_ts, latest_reply, replies],
+            )?;
+            tx.execute(
+                "DELETE FROM slack_index_message
+                 WHERE team_id = ?1 AND channel_id = ?2 AND thread_ts = ?3",
+                params![team, channel, thread_ts],
+            )?;
+            Ok::<_, SlackStoreError>(())
+        })
+    }
+
     /// Marks thread `thread_ts` to be fetched again (a new message, an edit, a deletion).
+    /// Only in a channel being indexed (active): checked in the same write, so a mark
+    /// never outlives a forget that ran between an event and its write.
     pub fn mark_dirty(
         &self,
         team: &str,
@@ -667,7 +827,9 @@ impl SlackStore {
         self.conn.write(|tx| {
             tx.execute(
                 "INSERT INTO slack_index_thread (team_id, channel_id, thread_ts, dirty, dirty_at)
-                 VALUES (?1, ?2, ?3, 1, ?4)
+                 SELECT ?1, ?2, ?3, 1, ?4
+                  WHERE EXISTS (SELECT 1 FROM slack_index_channel
+                                 WHERE team_id = ?1 AND channel_id = ?2 AND state = 'active')
                  ON CONFLICT(team_id, channel_id, thread_ts) DO UPDATE SET
                     dirty = 1,
                     dirty_at = COALESCE(slack_index_thread.dirty_at, excluded.dirty_at)",
@@ -765,24 +927,49 @@ impl SlackStore {
         })
     }
 
-    /// The indexed threads of `channel` and the latest reply each had when indexed.
+    /// The threads of `channel` Shodh has read: the indexed ones and those read with
+    /// nothing to index, each with the replies Slack listed for it when read. A thread only
+    /// marked to be fetched, never read yet, is not one.
     pub fn threads(
         &self,
         team: &str,
         channel: &str,
-    ) -> SlackStoreResult<HashMap<String, Option<String>>> {
+    ) -> SlackStoreResult<HashMap<String, ThreadRecord>> {
         let conn = self.conn.read()?;
         let mut stmt = conn.prepare(
-            "SELECT thread_ts, latest_reply FROM slack_index_thread
-             WHERE team_id = ?1 AND channel_id = ?2 AND indexed_at IS NOT NULL",
+            "SELECT thread_ts, latest_reply, reply_count, indexed_at IS NOT NULL
+               FROM slack_index_thread
+             WHERE team_id = ?1 AND channel_id = ?2 AND (indexed_at IS NOT NULL OR dirty = 0)",
         )?;
         let rows = stmt
-            .query_map(params![team, channel], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<HashMap<String, Option<String>>>>()?;
+            .query_map(params![team, channel], |r| {
+                let replies: i64 = r.get(2)?;
+                Ok((
+                    r.get::<_, String>(0)?,
+                    ThreadRecord {
+                        latest_reply: r.get(1)?,
+                        reply_count: usize::try_from(replies).unwrap_or(0),
+                        indexed: r.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<HashMap<String, ThreadRecord>>>()?;
         Ok(rows)
     }
 
     // ── Forgetting ──────────────────────────────────────────────────
+
+    /// The ids in the user's memories of the memories saved in `channel` (`None`: in any
+    /// channel of `team`). Read before forgetting: they are forgotten in the user's
+    /// memories first, and only then are the rows that hold them deleted.
+    pub fn linked_memories(
+        &self,
+        team: &str,
+        channel: Option<&str>,
+    ) -> SlackStoreResult<Vec<String>> {
+        let conn = self.conn.read()?;
+        Ok(linked_memory_ids(&conn, team, channel)?)
+    }
 
     /// Removes everything kept about `channel`: its sync state, threads, messages, its
     /// Slack memories and its threads' questions and answers. Returns the ids in the
@@ -852,9 +1039,46 @@ impl SlackStore {
 
     // ── Memories ────────────────────────────────────────────────────
 
+    /// Saves `memory`. Someone else's than the owner's is refused
+    /// ([`SlackStoreError::Limit`]) when its channel keeps [`MAX_CHANNEL_MEMORIES`]
+    /// already, or its author saved [`MAX_MEMORIES_PER_PERSON_PER_DAY`] there in the day
+    /// before it: they all go into that channel's answers, so nobody fills them without
+    /// bound.
     pub fn save_memory(&self, memory: &SlackMemory) -> SlackStoreResult<()> {
         let saved = stamp(memory.saved_at);
+        let day_before = stamp(memory.saved_at - chrono::Duration::days(1));
         self.conn.write(|tx| {
+            if !memory.owner {
+                let kept: i64 = tx.query_row(
+                    "SELECT count(*) FROM slack_memory
+                     WHERE team_id = ?1 AND channel_id = ?2 AND owner = 0",
+                    params![memory.team_id, memory.channel_id],
+                    |r| r.get(0),
+                )?;
+                if usize::try_from(kept).unwrap_or(usize::MAX) >= MAX_CHANNEL_MEMORIES {
+                    return Err(SlackStoreError::Limit(format!(
+                        "This channel keeps {MAX_CHANNEL_MEMORIES} saved memories already,                          so nothing more was saved. The Shodh app can delete some                          (Connectors → Slack → From Slack)."
+                    )));
+                }
+                let today: i64 = tx.query_row(
+                    "SELECT count(*) FROM slack_memory
+                     WHERE team_id = ?1 AND channel_id = ?2 AND owner = 0 AND author_id = ?3
+                       AND saved_at > ?4",
+                    params![
+                        memory.team_id,
+                        memory.channel_id,
+                        memory.author_id,
+                        day_before
+                    ],
+                    |r| r.get(0),
+                )?;
+                if usize::try_from(today).unwrap_or(usize::MAX) >= MAX_MEMORIES_PER_PERSON_PER_DAY
+                {
+                    return Err(SlackStoreError::Limit(format!(
+                        "You saved {MAX_MEMORIES_PER_PERSON_PER_DAY} memories in this channel                          in the last day, so this one was not saved. Try again tomorrow."
+                    )));
+                }
+            }
             tx.execute(
                 &format!(
                     "INSERT INTO slack_memory ({MEMORY_COLUMNS})
@@ -875,9 +1099,9 @@ impl SlackStore {
                     i64::from(memory.owner),
                     memory.memory_id
                 ],
-            )
-        })?;
-        Ok(())
+            )?;
+            Ok::<_, SlackStoreError>(())
+        })
     }
 
     /// Every memory saved from Slack workspace `team`, newest first.
@@ -1196,14 +1420,12 @@ mod tests {
         );
         assert_eq!(store.dirty_threads("T1", 10).unwrap().len(), 1);
         assert_eq!(
-            store
-                .threads("T1", "C1")
-                .unwrap()
-                .get("10.0")
-                .cloned()
-                .flatten()
-                .as_deref(),
-            Some("13.0")
+            store.threads("T1", "C1").unwrap().get("10.0"),
+            Some(&ThreadRecord {
+                latest_reply: Some("13.0".into()),
+                reply_count: 3,
+                indexed: true
+            })
         );
         store.remove_thread("T1", "C1", "10.0").unwrap();
         assert!(store.threads("T1", "C1").unwrap().is_empty());

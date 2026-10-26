@@ -422,6 +422,7 @@ fn clients_scope() -> AnswerScope {
             super::ids::space_id("T1", "CB"),
         ],
         files: vec![],
+        slack_team: "T1".into(),
         ..AnswerScope::default()
     }
 }

@@ -19,22 +19,25 @@ use shodh_rag::audit::LOCAL_OWNER;
 use shodh_rag::connectors::slack::content::{mentioned_users, readable_text, SlackMessage};
 use shodh_rag::connectors::slack::ids;
 use shodh_rag::connectors::slack::index::{
-    backfill_progress, check_window_days, forget_channel, BotReader, EngineIndex, IndexEvents,
-    SyncObserver, SyncTiming, SyncWorker, DEFAULT_WINDOW_DAYS, MAX_WINDOW_DAYS, MIN_WINDOW_DAYS,
+    backfill_progress, check_window_days, choose_channel, forget_channel, BotReader, EngineIndex,
+    IndexEvents, SyncObserver, SyncTiming, SyncWorker, DEFAULT_WINDOW_DAYS, MAX_WINDOW_DAYS,
+    MIN_WINDOW_DAYS,
 };
-use shodh_rag::connectors::slack::remember::{MemoryDraft, SlackMemories};
+use shodh_rag::connectors::slack::remember::{
+    save_owner_memory, MemoryDraft, MemoryWriter, SaveError, SlackMemories,
+};
 use shodh_rag::connectors::slack::setup::{missing_index_scopes, missing_index_scopes_message};
 use shodh_rag::connectors::slack::store::{
     ChannelState, Forgotten, IndexedChannel, NewIndexedChannel, SlackMemory, SlackMemoryKind,
     SlackStore,
 };
 use shodh_rag::connectors::slack::tokens::SlackBotToken;
-use shodh_rag::connectors::slack::web::{Person, SlackWeb};
+use shodh_rag::connectors::slack::web::{Person, SlackApiError, SlackWeb};
 use shodh_rag::connectors::slack::CancellationToken;
 use shodh_rag::research::tables::calls::SystemClock;
 use shodh_rag::statements::Scope;
-use shodh_rag::user_memory::{Actor, MemoryContent, Origin, WriteAuthority};
-use shodh_rag::workspaces::{NewSource, SourceKind as WorkspaceSourceKind, WorkspaceAuthor};
+use shodh_rag::user_memory::{Actor, MemoryContent, MemoryError, Origin, WriteAuthority};
+use shodh_rag::workspaces::SourceKind as WorkspaceSourceKind;
 use tauri::{AppHandle, Manager, State};
 
 use super::slack::{
@@ -197,65 +200,69 @@ pub async fn index_status(
 
 // ── The sync ────────────────────────────────────────────────────────
 
-/// Tells the card, and removes from the app what a channel deleted in Slack leaves.
+/// Tells the card, and removes from the app what a forgotten channel leaves outside the
+/// connector: its folder source in its workspace, and its memories in the user's memories.
 struct AppSyncObserver {
     app: AppHandle,
 }
 
+#[async_trait]
 impl SyncObserver for AppSyncObserver {
     fn changed(&self) {
         emit_status(&self.app);
     }
 
-    fn channel_forgotten(&self, channel: &IndexedChannel, forgotten: &Forgotten) {
-        let app = self.app.clone();
-        let channel = channel.clone();
-        let forgotten = forgotten.clone();
-        tauri::async_runtime::spawn(async move {
-            after_forget(&app, &channel, &forgotten).await;
-            emit_status(&app);
-        });
-    }
-}
-
-/// What forgetting `channel` leaves outside the connector's tables: its folder source in
-/// its workspace, and the memories from it in the user's memories.
-async fn after_forget(app: &AppHandle, channel: &IndexedChannel, forgotten: &Forgotten) {
-    let workspace = channel.workspace_id.clone();
-    let space = channel.space_id();
-    match app
-        .state::<WorkspaceState>()
-        .run(move |s| s.remove_source(&workspace, WorkspaceSourceKind::Folder, &space))
-        .await
-    {
-        Ok(_) => broadcast_change(app, Some(&channel.workspace_id)),
-        Err(e) if e.code == "not_found" => {}
-        Err(e) => {
-            tracing::warn!(target: "shodh::slack", error = %e.message, "a forgotten Slack channel could not be removed from its workspace")
+    async fn remove_from_workspace(&self, channel: &IndexedChannel) -> Result<(), String> {
+        let workspace = channel.workspace_id.clone();
+        let space = channel.space_id();
+        match self
+            .app
+            .state::<WorkspaceState>()
+            .run(move |s| s.remove_source(&workspace, WorkspaceSourceKind::Folder, &space))
+            .await
+        {
+            Ok(_) => {
+                broadcast_change(&self.app, Some(&channel.workspace_id));
+                Ok(())
+            }
+            // The workspace is gone: so is the source.
+            Err(e) if e.code == "not_found" => Ok(()),
+            Err(e) => Err(format!(
+                "#{} could not be removed from its workspace ({})",
+                channel.name, e.message
+            )),
         }
     }
-    forget_memories(app, &forgotten.memory_ids).await;
+
+    async fn forget_memories(&self, memory_ids: &[String]) -> Result<(), String> {
+        forget_memories(&self.app, memory_ids).await
+    }
 }
 
-/// Forgets `ids` in the user's memories.
-async fn forget_memories(app: &AppHandle, ids: &[String]) {
+/// Forgets `ids` in the user's memories. One already gone (forgotten in Settings, or by
+/// an earlier try) is done; any other failure stops with the error, so the caller keeps
+/// what links the rest and can try again.
+async fn forget_memories(app: &AppHandle, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
-        return;
+        return Ok(());
     }
     let memory = app.state::<MemoryState>();
-    match memory.service().await {
-        Ok(service) => {
-            for id in ids {
-                if let Err(e) = service.forget(id, None, &Actor::ui()).await {
-                    tracing::warn!(target: "shodh::slack", error = %e, "a memory from Slack could not be forgotten");
-                }
+    let service = memory
+        .service()
+        .await
+        .map_err(|e| format!("the memories from Slack could not be forgotten ({e})"))?;
+    let mut result = Ok(());
+    for id in ids {
+        match service.forget(id, None, &Actor::ui()).await {
+            Ok(_) | Err(MemoryError::NotFound(_)) => {}
+            Err(e) => {
+                result = Err(format!("a memory from Slack could not be forgotten ({e})"));
+                break;
             }
-            memory.changed();
-        }
-        Err(e) => {
-            tracing::warn!(target: "shodh::slack", error = %e, "memories from Slack could not be forgotten")
         }
     }
+    memory.changed();
+    result
 }
 
 /// Starts the sync of `prefs` until `cancel`; returns where its live events go. `None`
@@ -324,14 +331,9 @@ impl AppMemories {
         self.app.state::<SlackState>().store().await
     }
 
-    async fn record(
-        &self,
-        draft: &MemoryDraft,
-        owner: bool,
-        memory_id: Option<String>,
-    ) -> Result<(), String> {
-        let store = self.store().await?;
-        let memory = SlackMemory {
+    /// The row of `draft` (not saved yet).
+    fn memory(&self, draft: &MemoryDraft, owner: bool) -> SlackMemory {
+        SlackMemory {
             id: format!("slackmem-{}", uuid::Uuid::new_v4()),
             team_id: self.team_id.clone(),
             channel_id: draft.channel.clone(),
@@ -344,11 +346,35 @@ impl AppMemories {
             permalink: draft.permalink.clone(),
             saved_at: draft.at,
             owner,
-            memory_id,
-        };
-        tokio::task::spawn_blocking(move || store.save_memory(&memory).map_err(|e| e.to_string()))
-            .await
-            .map_err(|e| e.to_string())?
+            memory_id: None,
+        }
+    }
+}
+
+/// Writes the owner's memories from Slack into the user's memories.
+struct OwnerWriter {
+    app: AppHandle,
+}
+
+#[async_trait]
+impl MemoryWriter for OwnerWriter {
+    async fn write(&self, memory: &SlackMemory) -> Result<Option<String>, String> {
+        let source = ids::memory_source(&memory.team_id, &memory.channel_id, &memory.message_ts);
+        remember_in_memories(
+            &self.app,
+            &source,
+            memory.kind,
+            &memory.text,
+            WriteAuthority::SlackOwner {
+                team_id: memory.team_id.clone(),
+                user_id: memory.author_id.clone(),
+            },
+        )
+        .await
+    }
+
+    async fn erase(&self, id: &str) -> Result<(), String> {
+        forget_memories(&self.app, &[id.to_string()]).await
     }
 }
 
@@ -363,14 +389,17 @@ fn slack_actor() -> Actor {
     }
 }
 
-/// Writes `text` into the user's memories with a Slack origin; returns its id.
+/// Writes `text` into the user's memories with a Slack origin. Returns the id of the memory
+/// this write added; `None` when the same note was in the user's memories already: that
+/// one is the user's (from Settings, or another channel), and nothing from Slack links to
+/// it, so forgetting what came from Slack never removes it.
 async fn remember_in_memories(
     app: &AppHandle,
     source: &str,
     kind: SlackMemoryKind,
     text: &str,
     authority: WriteAuthority,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     let memory = app.state::<MemoryState>();
     let service = memory.service().await?;
     let extractor = match kind {
@@ -390,12 +419,7 @@ async fn remember_in_memories(
         .await
         .map_err(|e| e.to_string())?;
     memory.changed();
-    outcome
-        .memory
-        .map(|m| m.id)
-        .or_else(|| outcome.outcome.stored_id().map(str::to_string))
-        .or_else(|| outcome.outcome.current_id().map(str::to_string))
-        .ok_or_else(|| "the memory store did not keep it".to_string())
+    Ok(outcome.created_id().map(str::to_string))
 }
 
 #[async_trait]
@@ -427,6 +451,8 @@ impl SlackMemories for AppMemories {
         self.web.permalink(&self.token, channel, ts).await.ok()
     }
 
+    /// The thread as text. Slack's rate limit fails it (nothing is saved, the asker is
+    /// told), rather than a summary of names Slack would not give.
     async fn thread_text(&self, channel: &str, thread_ts: &str) -> Result<String, String> {
         let mut messages: Vec<SlackMessage> = Vec::new();
         let mut cursor: Option<String> = None;
@@ -453,8 +479,14 @@ impl SlackMemories for AppMemories {
         }
         let mut names = HashMap::new();
         for user in people {
-            if let Ok(member) = self.web.user_info(&self.token, &user).await {
-                names.insert(user, member.name);
+            match self.web.user_info(&self.token, &user).await {
+                Ok(member) => {
+                    names.insert(user, member.name);
+                }
+                Err(e @ SlackApiError::RateLimited { .. }) => return Err(e.to_string()),
+                Err(e) => {
+                    tracing::debug!(target: "shodh::slack", error = %e, "a Slack name could not be read");
+                }
             }
         }
         Ok(messages
@@ -473,25 +505,22 @@ impl SlackMemories for AppMemories {
     }
 
     async fn save_owner(&self, draft: &MemoryDraft) -> Result<(), String> {
-        let source = ids::memory_source(&self.team_id, &draft.channel, &draft.message_ts);
-        let id = remember_in_memories(
-            &self.app,
-            &source,
-            draft.kind,
-            &draft.text,
-            WriteAuthority::SlackOwner {
-                team_id: self.team_id.clone(),
-                user_id: draft.author_id.clone(),
-            },
-        )
-        .await?;
-        self.record(draft, true, Some(id)).await?;
+        let store = self.store().await?;
+        let writer = OwnerWriter {
+            app: self.app.clone(),
+        };
+        save_owner_memory(&store, &writer, self.memory(draft, true)).await?;
         emit_status(&self.app);
         Ok(())
     }
 
-    async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), String> {
-        self.record(draft, false, None).await?;
+    async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), SaveError> {
+        let store = self.store().await.map_err(SaveError::Failed)?;
+        let memory = self.memory(draft, false);
+        tokio::task::spawn_blocking(move || store.save_memory(&memory))
+            .await
+            .map_err(|e| SaveError::Failed(e.to_string()))?
+            .map_err(SaveError::from)?;
         emit_status(&self.app);
         Ok(())
     }
@@ -513,13 +542,14 @@ pub struct SlackMemoryView {
     pub saved_at: String,
     /// Saved by the owner (into the user's memories).
     pub owner: bool,
-    /// In the user's memories (the owner's, or promoted).
+    /// In the user's memories (the owner's, or promoted). An owner's note the user had
+    /// already is in them without a link: it stays when this one is deleted.
     pub in_memories: bool,
 }
 
 fn memory_view(memory: SlackMemory) -> SlackMemoryView {
     SlackMemoryView {
-        in_memories: memory.memory_id.is_some(),
+        in_memories: memory.owner || memory.memory_id.is_some(),
         id: memory.id,
         channel_name: memory.channel_name,
         author_name: memory.author_name,
@@ -603,10 +633,6 @@ pub async fn slack_index_channel(
     let store = state.store().await?;
     let team = prefs.installation.team_id.clone();
     let window = state.settings().await?.connectors.slack.index_window();
-    let before = {
-        let (team, id) = (team.clone(), channel.id.clone());
-        blocking(store.clone(), move |s| s.channel(&team, &id)).await?
-    };
     let new = NewIndexedChannel {
         team_id: team.clone(),
         channel_id: channel.id.clone(),
@@ -616,22 +642,18 @@ pub async fn slack_index_channel(
         private: channel.private,
         window_days: window,
     };
-    blocking(store, move |s| s.add_channel(&new, Utc::now())).await?;
     let space = ids::space_id(&team, &channel.id);
     let label = format!("#{} (Slack)", channel.name);
-    let target = workspace_id.clone();
-    let source = NewSource {
-        kind: WorkspaceSourceKind::Folder,
-        reference: space.clone(),
-        label,
-        path: None,
-    };
-    workspaces
-        .run(move |s| s.add_sources(&target, &[source], WorkspaceAuthor::User))
-        .await
-        .map_err(|e| e.message)?;
+    let workspace_store = workspaces.store().await.map_err(|e| e.message)?;
+    // The workspace's source first, then the channel (taken back if the channel cannot
+    // be saved): a channel never indexes into a space no workspace holds.
+    let chosen = tokio::task::spawn_blocking(move || {
+        choose_channel(&store, &workspace_store, &new, &label, Utc::now())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     broadcast_change(&app, Some(&workspace_id));
-    if let Some(old) = before.filter(|b| b.workspace_id != workspace_id) {
+    if let Some(old) = chosen.before.filter(|b| b.workspace_id != workspace_id) {
         let old_workspace = old.workspace_id.clone();
         let old_space = space.clone();
         if let Err(e) = workspaces
@@ -660,21 +682,33 @@ pub async fn slack_index_channel(
 
 /// Forgets everything of `channel`: its documents, sync state, checkpoints, thread
 /// follow-ups and Slack memories (those in the user's memories too), and its source in
-/// its workspace. Holds the sync gate so no sync step adds a thread back meanwhile.
+/// its workspace. The channel shows "Forgetting" at once; the sync gate is then taken
+/// (the step holding it stops at its next thread), so no sync step adds a thread back
+/// meanwhile. A failure leaves it being forgotten, which the sync tries again.
 pub(super) async fn forget_indexed_channel(
     app: &AppHandle,
     store: Arc<SlackStore>,
     channel: &IndexedChannel,
 ) -> Result<Forgotten, String> {
+    let (team, id) = (channel.team_id.clone(), channel.channel_id.clone());
+    blocking(store.clone(), move |s| {
+        s.set_state(&team, &id, ChannelState::Forgetting, None)
+    })
+    .await?;
+    emit_status(app);
     let state = app.state::<SlackState>();
     let gate = state.gate(&channel.team_id);
-    let _turn = gate.lock().await;
+    let _turn = gate.urgent_turn().await;
+    // The sync may have forgotten it while this waited.
+    let (team, id) = (channel.team_id.clone(), channel.channel_id.clone());
+    let Some(current) = blocking(store.clone(), move |s| s.channel(&team, &id)).await? else {
+        return Ok(Forgotten::default());
+    };
     let index = EngineIndex {
         rag: app.state::<RagState>().rag.clone(),
     };
-    let forgotten = forget_channel(&store, &index, channel).await?;
-    after_forget(app, channel, &forgotten).await;
-    Ok(forgotten)
+    let observer = AppSyncObserver { app: app.clone() };
+    forget_channel(&store, &index, &observer, &current).await
 }
 
 /// "Stop indexing and forget" for one channel. User-only.
@@ -720,12 +754,25 @@ pub(super) async fn forget_team(app: &AppHandle, team: &str) -> Result<Forgotten
         all.threads += forgotten.threads;
         all.memories += forgotten.memories;
     }
-    // Memories saved in channels that were never indexed, and the follow-ups.
+    // Memories saved in channels that were never indexed, and the follow-ups: the user's
+    // memories first, then the rows that link them.
+    let linked = {
+        let team = team.to_string();
+        blocking(store.clone(), move |s| s.linked_memories(&team, None)).await?
+    };
+    forget_memories(app, &linked).await?;
     let rest = {
         let team = team.to_string();
         blocking(store, move |s| s.forget_team(&team)).await?
     };
-    forget_memories(app, &rest.memory_ids).await;
+    // A memory saved while this ran (its row was read after `linked`).
+    let late: Vec<String> = rest
+        .memory_ids
+        .iter()
+        .filter(|m| !linked.contains(m))
+        .cloned()
+        .collect();
+    forget_memories(app, &late).await?;
     all.memories += rest.memories;
     Ok(all)
 }
@@ -840,16 +887,26 @@ pub async fn slack_promote_memory(
         return Err("That memory is in your memories already.".into());
     }
     let source = ids::memory_source(&memory.team_id, &memory.channel_id, &memory.message_ts);
-    let memory_id = remember_in_memories(
+    let Some(memory_id) = remember_in_memories(
         &app,
         &source,
         memory.kind,
         &memory.text,
         WriteAuthority::SlackPromoted,
     )
-    .await?;
+    .await?
+    else {
+        return Err("The same note is in your memories already.".into());
+    };
     let keep = id.clone();
-    blocking(store, move |s| s.set_memory_id(&keep, &memory_id)).await?;
+    let link = memory_id.clone();
+    if let Err(e) = blocking(store, move |s| s.set_memory_id(&keep, &link)).await {
+        // Unlinked, it could never be forgotten with the channel: take it back.
+        if let Err(undo) = forget_memories(&app, std::slice::from_ref(&memory_id)).await {
+            tracing::warn!(target: "shodh::slack", error = %undo, "a promoted memory whose link failed could not be taken back");
+        }
+        return Err(e);
+    }
     audit_change(
         &audit,
         "slack_promote_memory",
@@ -874,8 +931,9 @@ pub async fn slack_delete_memory(
         .await?
         .filter(|m| m.team_id == prefs.installation.team_id)
         .ok_or_else(|| "That memory is gone.".to_string())?;
+    // The user's memory first: the row is what links it, so it goes only after.
     if let Some(memory_id) = &memory.memory_id {
-        forget_memories(&app, std::slice::from_ref(memory_id)).await;
+        forget_memories(&app, std::slice::from_ref(memory_id)).await?;
     }
     blocking(store, move |s| s.delete_memory(&id)).await?;
     audit_change(
@@ -936,6 +994,10 @@ mod tests {
             last_sync_at: None,
             last_poll_at: None,
             last_slim_at: None,
+            poll_latest: None,
+            poll_cursor: None,
+            poll_newest: None,
+            slim_latest: None,
             started_at: Utc::now(),
             threads: 0,
         }

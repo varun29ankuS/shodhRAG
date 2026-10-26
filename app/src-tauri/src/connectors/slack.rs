@@ -37,6 +37,7 @@ use shodh_rag::connectors::slack::answer::{
     library_listing, retrieve_passages, AnswerPassage, AnswerScope, LibraryListing, ThreadTurn,
 };
 use shodh_rag::connectors::slack::events::{EventRouter, SeenEntry, SeenStore, ThreadKey};
+use shodh_rag::connectors::slack::index::SyncGate;
 use shodh_rag::connectors::slack::respond::{
     AnswerQuota, AnswerSource, Outcome, Responder, SlackPoster,
 };
@@ -429,7 +430,7 @@ pub struct SlackState {
     store: tokio::sync::OnceCell<Arc<SlackStore>>,
     /// Per Slack workspace: held by each sync step and by forgetting, so a step never
     /// adds a thread back to a channel being forgotten.
-    gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    gates: Mutex<HashMap<String, Arc<SyncGate>>>,
     /// Per Slack workspace: wakes its sync (an event, a channel chosen).
     wakes: Mutex<HashMap<String, Arc<Notify>>>,
 }
@@ -469,7 +470,7 @@ impl SlackState {
     }
 
     /// The sync gate of Slack workspace `team_id`.
-    pub(super) fn gate(&self, team_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn gate(&self, team_id: &str) -> Arc<SyncGate> {
         self.gates
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1042,6 +1043,7 @@ impl AnswerSource for AppAnswerSource {
         Ok(Some(AnswerScope {
             source_ids: sources.source_ids,
             files: sources.files,
+            slack_team: self.team_id.clone(),
             ..AnswerScope::default()
         }))
     }

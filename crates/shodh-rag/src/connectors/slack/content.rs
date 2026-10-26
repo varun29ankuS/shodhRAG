@@ -272,6 +272,25 @@ fn message_body(message: &SlackMessage, names: &HashMap<String, String>) -> Stri
     body
 }
 
+/// The latest reply and the reply count of thread `thread_ts`, as Slack lists them on its
+/// first message (what the slim pass compares), counted from `messages` when it does not
+/// say.
+pub fn thread_replies(messages: &[SlackMessage], thread_ts: &str) -> (Option<String>, usize) {
+    let parent = messages.iter().find(|m| m.ts == thread_ts);
+    let latest_reply = parent.and_then(|p| p.latest_reply.clone()).or_else(|| {
+        messages
+            .iter()
+            .rev()
+            .find(|m| m.ts != thread_ts)
+            .map(|m| m.ts.clone())
+    });
+    let reply_count = parent
+        .map(|p| p.reply_count)
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| messages.iter().filter(|m| m.ts != thread_ts).count());
+    (latest_reply, reply_count)
+}
+
 /// The document of the thread whose messages are `messages` (its first message first):
 /// `None` when none of them is indexed ([`SlackMessage::indexed`]).
 #[allow(clippy::too_many_arguments)]
@@ -321,7 +340,7 @@ pub fn thread_document(
     } else {
         format!("#{channel_name}: {opening}")
     };
-    let parent = messages.iter().find(|m| m.ts == thread_ts);
+    let (latest_reply, reply_count) = thread_replies(messages, thread_ts);
     Some(ThreadDocument {
         source: ids::thread_source(team, channel, thread_ts),
         space_id: ids::space_id(team, channel),
@@ -330,17 +349,8 @@ pub fn thread_document(
         permalink,
         channel_name: channel_name.to_string(),
         thread_ts: thread_ts.to_string(),
-        latest_reply: parent.and_then(|p| p.latest_reply.clone()).or_else(|| {
-            messages
-                .iter()
-                .rev()
-                .find(|m| m.ts != thread_ts)
-                .map(|m| m.ts.clone())
-        }),
-        reply_count: parent
-            .map(|p| p.reply_count)
-            .filter(|n| *n > 0)
-            .unwrap_or_else(|| messages.iter().filter(|m| m.ts != thread_ts).count()),
+        latest_reply,
+        reply_count,
         message_ts: messages.iter().map(|m| m.ts.clone()).collect(),
     })
 }

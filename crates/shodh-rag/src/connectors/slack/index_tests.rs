@@ -257,11 +257,14 @@ impl SlackReader for FakeSlack {
     }
 }
 
-/// An index in memory.
+/// An index in memory. A put replaces what its source held, as the real index does.
 #[derive(Default)]
 struct FakeIndex {
     docs: Mutex<HashMap<String, ThreadDocument>>,
+    /// Sources put again (their document replaced).
     replaced: Mutex<Vec<String>>,
+    /// Every put, in order.
+    puts: Mutex<Vec<String>>,
     deleted_spaces: Mutex<Vec<String>>,
 }
 
@@ -282,14 +285,17 @@ impl FakeIndex {
 
 #[async_trait]
 impl ThreadIndex for FakeIndex {
-    async fn put(&self, doc: &ThreadDocument, replace: bool) -> Result<(), String> {
-        if replace {
-            self.replaced.lock().unwrap().push(doc.source.clone());
-        }
-        self.docs
+    async fn put(&self, doc: &ThreadDocument, _turn: &GateTurn) -> Result<(), String> {
+        self.puts.lock().unwrap().push(doc.source.clone());
+        if self
+            .docs
             .lock()
             .unwrap()
-            .insert(doc.source.clone(), doc.clone());
+            .insert(doc.source.clone(), doc.clone())
+            .is_some()
+        {
+            self.replaced.lock().unwrap().push(doc.source.clone());
+        }
         Ok(())
     }
     async fn delete_thread(&self, source: &str) -> Result<(), String> {
@@ -308,18 +314,34 @@ impl ThreadIndex for FakeIndex {
     }
 }
 
+/// What the app would remove outside the connector; `failing` makes the memory removal
+/// fail (the memory store cannot be opened).
 #[derive(Default)]
 struct Observed {
-    forgotten: Mutex<Vec<(String, Vec<String>)>>,
+    removed: Mutex<Vec<String>>,
+    memories: Mutex<Vec<String>>,
+    failing: std::sync::atomic::AtomicBool,
 }
 
+#[async_trait]
 impl SyncObserver for Observed {
     fn changed(&self) {}
-    fn channel_forgotten(&self, channel: &IndexedChannel, forgotten: &Forgotten) {
-        self.forgotten
+    async fn remove_from_workspace(&self, channel: &IndexedChannel) -> Result<(), String> {
+        self.removed
             .lock()
             .unwrap()
-            .push((channel.channel_id.clone(), forgotten.memory_ids.clone()));
+            .push(channel.channel_id.clone());
+        Ok(())
+    }
+    async fn forget_memories(&self, memory_ids: &[String]) -> Result<(), String> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the memories could not be opened".into());
+        }
+        self.memories
+            .lock()
+            .unwrap()
+            .extend(memory_ids.iter().cloned());
+        Ok(())
     }
 }
 
@@ -332,6 +354,7 @@ struct Rig {
     clock: Arc<TestClock>,
     observed: Arc<Observed>,
     wake: Arc<Notify>,
+    gate: Arc<SyncGate>,
 }
 
 fn timing() -> SyncTiming {
@@ -354,6 +377,7 @@ impl Rig {
             clock: TestClock::at(NOW),
             observed: Arc::new(Observed::default()),
             wake: Arc::new(Notify::new()),
+            gate: Arc::new(SyncGate::default()),
         }
     }
 
@@ -368,7 +392,7 @@ impl Rig {
             Arc::new(SlackStore::open(&self.db, None).unwrap()),
             self.clock.clone(),
             self.observed.clone(),
-            Arc::new(tokio::sync::Mutex::new(())),
+            self.gate.clone(),
             self.wake.clone(),
             timing(),
         )
@@ -571,7 +595,8 @@ async fn an_incremental_poll_reads_only_what_came_after_the_newest_message() {
     assert!(
         work.contains(&Work::Poll {
             channel: "C1".into(),
-            threads: 1
+            threads: 1,
+            done: true
         }),
         "{work:?}"
     );
@@ -830,8 +855,13 @@ async fn archived_deleted_and_removed_channels_stop_or_are_forgotten() {
         vec![ids::space_id("T1", "C2")]
     );
     assert_eq!(
-        *rig.observed.forgotten.lock().unwrap(),
-        vec![("C2".to_string(), vec!["mem-1".to_string()])],
+        *rig.observed.removed.lock().unwrap(),
+        vec!["C2".to_string()],
+        "the app removes the channel from its workspace"
+    );
+    assert_eq!(
+        *rig.observed.memories.lock().unwrap(),
+        vec!["mem-1".to_string()],
         "the app forgets the owner's memory from that channel"
     );
 
@@ -1020,6 +1050,10 @@ fn backfill_progress_is_estimated_from_the_window_read() {
         last_sync_at: None,
         last_poll_at: None,
         last_slim_at: None,
+        poll_latest: None,
+        poll_cursor: None,
+        poll_newest: None,
+        slim_latest: None,
         started_at: Utc.timestamp_opt(NOW, 0).unwrap(),
         threads: 100,
     };
@@ -1098,10 +1132,12 @@ async fn threads_are_replaced_and_deleted_in_the_real_index_by_their_exact_sourc
     let dir = tempfile::tempdir().unwrap();
     let rag = Box::pin(engine(dir.path())).await;
     let index = EngineIndex { rag: rag.clone() };
+    let gate = SyncGate::default();
+    let turn = gate.turn().await;
     let first = doc("C1", NOW, "the walrus budget is ten");
-    index.put(&first, false).await.unwrap();
+    index.put(&first, &turn).await.unwrap();
     index
-        .put(&doc("C2", NOW, "the narwhal plan"), false)
+        .put(&doc("C2", NOW, "the narwhal plan"), &turn)
         .await
         .unwrap();
     assert!(chunks_of(&rag, &first.source).await > 0);
@@ -1112,7 +1148,7 @@ async fn threads_are_replaced_and_deleted_in_the_real_index_by_their_exact_sourc
         .any(|t| t.source == first.source && t.title == first.title));
 
     let edited = doc("C1", NOW, "the walrus budget is twelve");
-    index.put(&edited, true).await.unwrap();
+    index.put(&edited, &turn).await.unwrap();
     let rows: Vec<_> = rag
         .read()
         .await

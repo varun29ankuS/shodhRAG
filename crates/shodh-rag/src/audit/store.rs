@@ -558,9 +558,13 @@ const MIGRATIONS: &[(i64, &str)] = &[
         17,
         // The Slack connector, part B. `slack_index_channel`: a Slack channel indexed into a
         // Shodh workspace and its sync checkpoint (the backfill's fixed `latest` bound and
-        // the cursor of its next page, the newest message seen, a rate-limit pause).
-        // `slack_index_thread`: each indexed thread (one document) and whether it must be
-        // fetched again. `slack_index_message`: which thread a message belongs to, so a
+        // the cursor of its next page, the newest message seen, a rate-limit pause; an
+        // incremental poll's fixed `latest` bound, the cursor of its next page and the
+        // newest message it read, while it takes more than one step; where a slim pass
+        // that takes more than one step continues).
+        // `slack_index_thread`: each indexed thread (one document), or a thread read with
+        // nothing to index (`indexed_at` NULL, kept with its replies so the slim pass does
+        // not fetch it again), and whether it must be fetched again. `slack_index_message`: which thread a message belongs to, so a
         // deletion finds its thread. `slack_memory`: memories saved from Slack (a person's
         // channel-scoped note, or the owner's, recorded with the id it has in the user's
         // memories). `slack_thread_turn`: the questions and Shodh's answers of a Slack
@@ -586,6 +590,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
             last_sync_at TEXT NULL,
             last_poll_at TEXT NULL,
             last_slim_at TEXT NULL,
+            poll_latest TEXT NULL,
+            poll_cursor TEXT NULL,
+            poll_newest TEXT NULL,
+            slim_latest TEXT NULL,
             started_at TEXT NOT NULL,
             PRIMARY KEY (team_id, channel_id)
         );

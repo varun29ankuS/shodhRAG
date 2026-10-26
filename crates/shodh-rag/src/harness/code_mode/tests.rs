@@ -1123,6 +1123,13 @@ fn allowlisted_commands_match_exactly_without_shell_tricks() {
         "npm test %COMSPEC%",
         "",
         "  ",
+        // Blanks bash does not split on: it would run another program than
+        // the listed words.
+        "cargo\u{a0}test",
+        "npm\u{2003}test",
+        "pytest\u{3000}",
+        "cargo\u{2028}test",
+        "cargo\u{85}test",
     ] {
         assert!(!settings.allows(refused), "{refused:?}");
     }
@@ -1421,6 +1428,102 @@ fn only_a_plain_allowlisted_command_is_eligible() {
             &continuing,
         ));
     }
+}
+
+#[test]
+fn programs_the_system_starts_are_recognised() {
+    for started in [
+        "schtasks /create /tn x /tr build.cmd /sc minute",
+        "SCHTASKS.EXE /Create /TN x",
+        "wmic process call create notepad.exe",
+        "powershell -Command Register-ScheduledTask -TaskName x",
+        "pwsh -c \"Invoke-CimMethod -ClassName Win32_Process -MethodName Create\"",
+        "sc create svc binPath= C:\\x.exe",
+        "cmd /c schtasks /run /tn x",
+        "explorer.exe https://example.com",
+        "launchctl submit -l x -- /bin/sh -c 'sleep 999'",
+        "launchctl load ~/Library/LaunchAgents/x.plist",
+        "open -a Terminal",
+        "osascript -e 'do shell script \"sleep 999 &\"'",
+        "echo 'sleep 999' | at now",
+        "crontab /tmp/tab",
+        "sudo launchctl bootstrap system x.plist",
+        "env FOO=1 osascript -e x",
+        "bash -c 'launchctl submit -l x -- sleep 9'",
+        "cargo build && systemd-run --user sleep 999",
+    ] {
+        assert!(starts_system_program(started), "{started}");
+        assert!(starts_background(started), "{started}");
+    }
+    // Words that are not the program of a part are not a start.
+    for plain in [
+        "echo look at this",
+        "grep -r open src",
+        "cargo test -p at",
+        "git log --format=%s -- sc",
+        "npm test",
+        "nohup cargo watch",
+        "python server.py &",
+    ] {
+        assert!(!starts_system_program(plain), "{plain}");
+    }
+}
+
+#[test]
+fn commands_that_use_the_users_accounts_are_flagged() {
+    for (command, account) in [
+        ("cargo publish", "package registry"),
+        ("cargo +nightly publish --allow-dirty", "package registry"),
+        ("cargo yank --version 1.0.0 x", "package registry"),
+        ("cargo owner --add someone", "package registry"),
+        ("cargo login abc", "package registry"),
+        ("npm publish", "package registry"),
+        ("npm unpublish x --force", "package registry"),
+        ("pnpm publish", "package registry"),
+        ("yarn npm publish", "package registry"),
+        ("npm token create", "package registry"),
+        ("npm deprecate x 'no'", "package registry"),
+        ("twine upload dist/*", "package registry"),
+        ("python -m twine upload dist/*", "package registry"),
+        ("poetry publish", "package registry"),
+        ("uv publish", "package registry"),
+        ("gem push x.gem", "package registry"),
+        ("docker push me/image", "package registry"),
+        ("gh release create v1", "GitHub account"),
+        ("gh repo delete me/x --yes", "GitHub account"),
+        ("gh api -X DELETE repos/me/x", "GitHub account"),
+        ("gh auth token", "GitHub account"),
+        ("gh secret set X", "GitHub account"),
+    ] {
+        let reason = destructive_reason(command);
+        assert!(
+            reason.is_some_and(|r| r.contains(account)),
+            "{command}: {reason:?}"
+        );
+    }
+    for fine in [
+        "cargo test",
+        "cargo build --release",
+        "npm test",
+        "npm run publish-docs",
+        "uv run pytest",
+        "docker run --rm img",
+        "pnpm install",
+    ] {
+        assert_eq!(destructive_reason(fine), None, "{fine}");
+    }
+    // Flagged commands are never run without asking, even when listed.
+    let settings = CodeSettings {
+        approval: ApprovalLevel::Trusted,
+        allowlist: vec!["cargo publish".into()],
+        ..CodeSettings::default()
+    };
+    let publish = guarded(RUN_COMMAND, json!({"command": "cargo publish"}));
+    assert!(!command_eligible(
+        &settings,
+        &publish,
+        &ChangePlan::Continue(branch("/a", "shodh/1"))
+    ));
 }
 
 #[test]

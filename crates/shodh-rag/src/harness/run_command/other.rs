@@ -34,6 +34,11 @@ pub fn make_private(dir: &Path) -> Result<(), String> {
     }
 }
 
+/// Keep an existing scratch folder private.
+pub fn keep_private(dir: &Path) -> Result<(), String> {
+    make_private(dir)
+}
+
 /// No limit ends a process by a signal here.
 #[cfg(unix)]
 pub fn signal_exit(_signal: i32) -> Option<&'static str> {
@@ -64,6 +69,10 @@ impl Contained {
     }
 
     pub fn notes(&mut self) -> Vec<String> {
+        match *self {}
+    }
+
+    pub fn escaped(&self) -> bool {
         match *self {}
     }
 

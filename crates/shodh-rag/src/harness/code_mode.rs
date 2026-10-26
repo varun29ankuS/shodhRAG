@@ -124,7 +124,7 @@ pub const EDIT_VARIANT_ENV: (&str, &str) = ("PI_EDIT_VARIANT", "replace");
 /// Prefix of the branches Code mode creates.
 pub const BRANCH_PREFIX: &str = "shodh/";
 
-const MAX_PREVIEW_CHARS: usize = 2_000;
+pub const MAX_PREVIEW_CHARS: usize = 2_000;
 const MAX_LABEL_CHARS: usize = 80;
 
 /// Discovery sources whose project files (settings, hooks, MCP servers,
@@ -663,10 +663,20 @@ impl CodeSettings {
     /// `--config build.rustc-wrapper=<program>` or `--script-shell=<program>`
     /// make a test command run any program.
     pub fn allows(&self, command: &str) -> bool {
-        if has_shell_special(command) {
+        // bash splits words on spaces and tabs only: any other blank (a
+        // no-break space, an em space) would make bash read other words than
+        // these.
+        if has_shell_special(command)
+            || command
+                .chars()
+                .any(|c| c.is_whitespace() && c != ' ' && c != '\t')
+        {
             return false;
         }
-        let words: Vec<&str> = command.split_whitespace().collect();
+        let words: Vec<&str> = command
+            .split([' ', '\t'])
+            .filter(|word| !word.is_empty())
+            .collect();
         if words.is_empty() || words[0].contains('=') {
             return false;
         }
@@ -1311,8 +1321,9 @@ pub fn plain_command_input(input: &Value) -> bool {
 }
 
 /// Programs that start something that keeps running after the command
-/// returns.
-const DETACHING_PROGRAMS: [&str; 12] = [
+/// returns, as a process of the command (Shodh stops it when the command
+/// ends).
+const DETACHING_PROGRAMS: [&str; 10] = [
     "nohup",
     "setsid",
     "disown",
@@ -1322,15 +1333,79 @@ const DETACHING_PROGRAMS: [&str; 12] = [
     "sajb",
     "screen",
     "tmux",
-    "systemd-run",
     "daemonize",
-    "launchctl",
 ];
 
+/// Programs that have the system start something for the command: a
+/// scheduled task, a service, a launch agent or job, an app opened through
+/// the desktop. What they start is not a process of the command, so Shodh
+/// cannot stop it when the command ends.
+const SYSTEM_STARTERS: [&str; 24] = [
+    // macOS
+    "launchctl",
+    "open",
+    "osascript",
+    "at",
+    "batch",
+    "crontab",
+    // Windows
+    "schtasks",
+    "wmic",
+    "invoke-cimmethod",
+    "icim",
+    "invoke-wmimethod",
+    "iwmi",
+    "register-scheduledtask",
+    "new-scheduledtask",
+    "start-scheduledtask",
+    "set-scheduledtask",
+    "sc",
+    "new-service",
+    "start-service",
+    "set-service",
+    "explorer",
+    // Linux
+    "systemd-run",
+    "systemctl",
+    "loginctl",
+];
+
+/// Programs that run the words after them as another command.
+const COMMAND_PREFIXES: [&str; 9] = [
+    "sudo", "env", "nohup", "command", "exec", "time", "xargs", "nice", "builtin",
+];
+
+/// Shells whose arguments are a command line of their own (`powershell
+/// -Command Register-ScheduledTask ...`).
+const INNER_SHELLS: [&str; 6] = ["powershell", "pwsh", "cmd", "bash", "sh", "zsh"];
+
+/// Whether `command` has the system start a program for it
+/// ([`SYSTEM_STARTERS`]) as the program of one of its parts, after a prefix
+/// (`sudo`, `env`, ...), or inside a shell it runs.
+pub fn starts_system_program(command: &str) -> bool {
+    segments(command).iter().any(|words| {
+        let program = words.iter().map(|word| program_name(word)).find(|name| {
+            !COMMAND_PREFIXES.contains(name) && !name.contains('=') && !name.starts_with('-')
+        });
+        let Some(program) = program else {
+            return false;
+        };
+        SYSTEM_STARTERS.contains(&program)
+            || (INNER_SHELLS.contains(&program)
+                && words
+                    .iter()
+                    .any(|word| SYSTEM_STARTERS.contains(&program_name(word))))
+    })
+}
+
 /// Whether `command` starts a process that keeps running after it returns:
-/// a lone `&` outside quotes, `start`, or a program that detaches one. A
-/// heuristic for the prompt's note; it never lets a command run unasked.
+/// a lone `&` outside quotes, `start`, a program that detaches one, or one
+/// the system starts for it ([`starts_system_program`]). A heuristic for the
+/// prompt's note; it never lets a command run unasked.
 pub fn starts_background(command: &str) -> bool {
+    if starts_system_program(command) {
+        return true;
+    }
     let chars: Vec<char> = command.chars().collect();
     let mut quote: Option<char> = None;
     for (at, &c) in chars.iter().enumerate() {
@@ -1460,7 +1535,10 @@ pub fn note_review(
             )),
         );
     }
-    if starts_background(str_arg(&request.input, "command")) {
+    let command = str_arg(&request.input, "command");
+    if starts_system_program(command) {
+        map.insert("keeps_running".to_string(), json!(SYSTEM_START_NOTE));
+    } else if starts_background(command) {
         map.insert("keeps_running".to_string(), json!(BACKGROUND_NOTE));
     }
     let review = gate.review;
@@ -1520,6 +1598,13 @@ pub const PREVIEW_CUT_NOTE: &str = "The preview is cut, so approving does not co
 pub const BACKGROUND_NOTE: &str = "This tries to start a process that keeps running after the \
      command. Shodh stops every process the command started when the command ends, so it will \
      not keep running.";
+
+/// What a command prompt says about a command that has the system start a
+/// program for it ([`starts_system_program`]).
+pub const SYSTEM_START_NOTE: &str = "This has the system start a program for it (a scheduled \
+     task, a service, a launch agent or an app). Shodh cannot stop that program when the \
+     command ends: it may keep running and change files, so every edit in this conversation \
+     will ask from now on.";
 
 fn clipped(text: &str, max: usize) -> String {
     let count = text.chars().count();
@@ -1719,6 +1804,17 @@ pub fn destructive_reason(command: &str) -> Option<&'static str> {
                 "kill" | "taskkill" | "pkill" | "killall" | "stop-process" => {
                     Some("Stops running programs.")
                 }
+                "cargo" => account_reason(args, &CARGO_ACCOUNT_COMMANDS, REGISTRY_ACCOUNT),
+                "npm" | "pnpm" | "yarn" => {
+                    account_reason(args, &NPM_ACCOUNT_COMMANDS, REGISTRY_ACCOUNT)
+                }
+                "twine" | "poetry" | "uv" | "gem" | "flit" | "hatch" => {
+                    account_reason(args, &PUBLISH_COMMANDS, REGISTRY_ACCOUNT)
+                }
+                "docker" | "podman" => {
+                    account_reason(args, &CONTAINER_ACCOUNT_COMMANDS, REGISTRY_ACCOUNT)
+                }
+                "gh" => account_reason(args, &GH_ACCOUNT_COMMANDS, GITHUB_ACCOUNT),
                 _ => None,
             };
             if reason.is_some() {
@@ -1752,6 +1848,50 @@ pub fn destructive_reason(command: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// What a prompt says about a command that acts with the user's account on
+/// a package or container registry.
+const REGISTRY_ACCOUNT: &str = "Uses your account on a package registry: publishes, changes or \
+     removes a package, or signs in.";
+
+/// What a prompt says about a `gh` command that acts with the user's GitHub
+/// account.
+const GITHUB_ACCOUNT: &str = "Uses your GitHub account.";
+
+const CARGO_ACCOUNT_COMMANDS: [&str; 5] = ["publish", "yank", "owner", "login", "logout"];
+const NPM_ACCOUNT_COMMANDS: [&str; 12] = [
+    "publish",
+    "unpublish",
+    "deprecate",
+    "undeprecate",
+    "token",
+    "owner",
+    "login",
+    "logout",
+    "adduser",
+    "dist-tag",
+    "access",
+    "team",
+];
+const PUBLISH_COMMANDS: [&str; 5] = ["upload", "publish", "push", "register", "login"];
+const CONTAINER_ACCOUNT_COMMANDS: [&str; 3] = ["push", "login", "logout"];
+const GH_ACCOUNT_COMMANDS: [&str; 16] = [
+    "auth", "api", "release", "repo", "secret", "variable", "pr", "issue", "workflow", "run",
+    "gist", "ssh-key", "gpg-key", "label", "project", "cache",
+];
+
+/// `reason` when the subcommand of `args` (the first word that is not an
+/// option or a `+toolchain`) is one of `commands`.
+fn account_reason(
+    args: &[String],
+    commands: &[&str],
+    reason: &'static str,
+) -> Option<&'static str> {
+    args.iter()
+        .find(|arg| !arg.starts_with('-') && !arg.starts_with('+'))
+        .filter(|sub| commands.contains(&sub.as_str()))
+        .map(|_| reason)
 }
 
 fn git_reason(args: &[String]) -> Option<&'static str> {

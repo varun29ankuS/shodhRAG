@@ -60,9 +60,15 @@ pub const RUN_COMMAND: &str = "run_command";
 pub const LABEL_TEMPLATE: &str = "Running {command}";
 pub const TIER: RiskTier = RiskTier::Write;
 
-/// Longest command accepted, in characters (a Windows command line holds
-/// 32,767 UTF-16 units; the command is escaped into one).
-pub const MAX_COMMAND_CHARS: usize = 8_000;
+/// Longest command accepted, in characters: exactly what an approval prompt
+/// shows in full ([`super::code_mode::MAX_PREVIEW_CHARS`]), so no part of a
+/// command the user approves is ever cut from the prompt.
+pub const MAX_COMMAND_CHARS: usize = super::code_mode::MAX_PREVIEW_CHARS;
+
+/// Longest run of blank characters (spaces, tabs, line breaks) a command may
+/// have: a longer one could push the rest of the command out of sight in the
+/// approval prompt.
+pub const MAX_BLANK_RUN: usize = 100;
 
 /// Longest time limit a call may ask for, in seconds, before the workspace's
 /// own limit applies ([`CommandLimits::for_call`]).
@@ -98,12 +104,14 @@ pub fn description() -> String {
          (stdout and stderr together). Use bash syntax (pipes, &&, quotes) on every system; \
          on Windows this is Git for Windows' bash. Each call is a fresh process in the code \
          folder: nothing carries over between calls (no cd, no exported variables), HOME and \
-         the temporary folder are a scratch folder of this conversation, and no API keys or \
-         tokens are in the environment. Network access is not guaranteed. Do not start \
-         background processes or servers: everything the command starts is stopped when it \
-         ends. The command stops at its time limit (the workspace's, at most; ask for less \
-         with timeout_secs) and the user can stop it at any time. Output beyond about 1 MB \
-         is cut in the middle. Commands are at most {MAX_COMMAND_CHARS} characters."
+         the temporary folder are a scratch folder of this conversation, and Shodh's API keys \
+         and tokens are not passed to it. Network access is not guaranteed. Do not start \
+         background processes, servers, scheduled tasks or services: everything the command \
+         starts is stopped when it ends. The command stops at its time limit (the \
+         workspace's, at most; ask for less with timeout_secs) and the user can stop it at \
+         any time. Output beyond about 1 MB is cut in the middle. Commands are at most \
+         {MAX_COMMAND_CHARS} characters, without control or invisible formatting characters \
+         and without runs of more than {MAX_BLANK_RUN} blank characters."
     )
 }
 
@@ -180,8 +188,52 @@ pub fn asked_timeout(input: &Value) -> Option<u64> {
     input.get("timeout_secs").and_then(whole_seconds)
 }
 
+/// Whether `c` changes how a command looks in the approval prompt without
+/// changing what bash runs, or hides text there: control characters other
+/// than line breaks and tabs, bidirectional overrides and isolates, and
+/// zero-width and other invisible formatting characters.
+pub fn hidden_character(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t')
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{034F}'
+                | '\u{061C}'
+                | '\u{115F}'
+                | '\u{1160}'
+                | '\u{17B4}'
+                | '\u{17B5}'
+                | '\u{180B}'..='\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FE00}'..='\u{FE0F}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
+}
+
+/// The longest run of blank characters in `command`.
+fn longest_blank_run(command: &str) -> usize {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in command.chars() {
+        if c.is_whitespace() {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    longest
+}
+
 /// Check a call's arguments against [`schema`]: exactly `command` (non-empty
-/// text, at most [`MAX_COMMAND_CHARS`], no NUL) and an optional
+/// text, at most [`MAX_COMMAND_CHARS`], nothing that hides part of it in the
+/// approval prompt: [`hidden_character`], [`MAX_BLANK_RUN`]) and an optional
 /// `timeout_secs` (a whole number of seconds). omp's intent argument `i` is
 /// dropped; `null` means not given. Anything else is refused.
 pub fn parse_args(args: &Value) -> Result<CommandArgs, String> {
@@ -217,13 +269,23 @@ pub fn parse_args(args: &Value) -> Result<CommandArgs, String> {
     if command.trim().is_empty() {
         return Err("run_command needs a command.".to_string());
     }
-    if command.contains('\0') {
-        return Err("The command contains a NUL character.".to_string());
-    }
     if command.chars().count() > MAX_COMMAND_CHARS {
         return Err(format!(
             "The command is longer than {MAX_COMMAND_CHARS} characters; write a script file \
              and run that."
+        ));
+    }
+    if let Some(c) = command.chars().find(|&c| hidden_character(c)) {
+        return Err(format!(
+            "The command contains the character U+{:04X}, a control or invisible formatting \
+             character; write it without one.",
+            u32::from(c)
+        ));
+    }
+    if longest_blank_run(&command) > MAX_BLANK_RUN {
+        return Err(format!(
+            "The command has more than {MAX_BLANK_RUN} blank characters in a row; write it \
+             without long runs of spaces or empty lines."
         ));
     }
     Ok(CommandArgs {
@@ -271,7 +333,8 @@ impl CommandLimits {
         duration_words(self.time)
     }
 
-    /// What an approval prompt says about the limits.
+    /// What an approval prompt says about the limits: only what this
+    /// system enforces.
     pub fn prompt_rows(&self) -> [(&'static str, String); 2] {
         [
             (
@@ -282,19 +345,37 @@ impl CommandLimits {
                     format!("{} (the workspace's limit)", self.time_text())
                 },
             ),
-            (
-                "limits",
-                format!(
-                    "Memory {}, CPU {}%, at most {} processes at once. Every process the \
-                     command starts is stopped when it ends.",
-                    memory_words(self.memory_mb()),
-                    self.cpu_percent,
-                    self.max_processes
-                ),
-            ),
+            ("limits", self.enforced_text()),
         ]
     }
+
+    /// The limits this system enforces, in words.
+    pub fn enforced_text(&self) -> String {
+        #[cfg(windows)]
+        let enforced = format!(
+            "Memory {} for all its processes (an allocation beyond it fails), CPU {}%, at \
+             most {} processes at once.",
+            memory_words(self.memory_mb()),
+            self.cpu_percent,
+            self.max_processes
+        );
+        #[cfg(target_os = "macos")]
+        let enforced = format!(
+            "Memory {} for all its processes (the command is stopped beyond it), at most {} \
+             processes at once, lower CPU priority (macOS has no CPU cap).",
+            memory_words(self.memory_mb()),
+            self.max_processes
+        );
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let enforced = "None: commands do not run on this system.".to_string();
+        format!("{enforced} {STOPPED_AT_END}")
+    }
 }
+
+/// What every command prompt says about processes left at the end.
+pub const STOPPED_AT_END: &str = "Every process the command starts is stopped when it ends, \
+     except programs it has the system start for it (scheduled tasks, services, launch agents, \
+     apps).";
 
 fn duration_words(time: Duration) -> String {
     let secs = time.as_secs();
@@ -338,6 +419,11 @@ pub struct CommandOutcome {
     /// middle cut with a marker).
     pub output: String,
     pub duration: Duration,
+    /// Some of its processes had left its process tree and group (found by
+    /// their run marker and stopped). Whatever left that way may have taken
+    /// others with it that Shodh cannot find, so the session treats what the
+    /// command changed as unknown.
+    pub escaped: bool,
 }
 
 impl CommandOutcome {
@@ -349,6 +435,7 @@ impl CommandOutcome {
             note: Some(reason.into()),
             output: String::new(),
             duration: Duration::ZERO,
+            escaped: false,
         }
     }
 
@@ -575,6 +662,10 @@ pub trait CommandExecutor: Send + Sync + std::fmt::Debug {
 pub struct RunControl {
     /// The run's id: [`stop`] takes it.
     pub command_id: String,
+    /// The run registered under `command_id` by whoever starts it, before
+    /// its process exists: [`stop`] reaches it from then on. The executor
+    /// ends the run when a stop is asked for.
+    pub registration: RunRegistration,
     /// Called once the command's process started and [`stop`] can reach it;
     /// never for a command that was refused.
     pub on_started: Box<dyn Fn() + Send + Sync>,
@@ -636,24 +727,43 @@ fn lock_runs() -> std::sync::MutexGuard<'static, HashMap<String, Arc<StopSignal>
     runs().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A run registered for [`stop`]; removed when dropped.
-struct Registered {
+/// A run registered for [`stop`] while it runs; removed when dropped. Every
+/// [`CommandExecutor`] registers its runs, so the user's Stop and the
+/// session's cancel reach them.
+pub struct RunRegistration {
     id: String,
     signal: Arc<StopSignal>,
 }
 
-impl Registered {
-    fn new(id: &str) -> Self {
+impl RunRegistration {
+    pub fn new(id: &str) -> Self {
         let signal = Arc::new(StopSignal::default());
         lock_runs().insert(id.to_string(), Arc::clone(&signal));
-        Registered {
+        RunRegistration {
             id: id.to_string(),
             signal,
         }
     }
+
+    /// Whether a stop was asked for.
+    pub fn stop_requested(&self) -> bool {
+        self.signal.requested.load(Ordering::SeqCst)
+    }
+
+    /// Resolves once a stop is asked for (at once if it already was).
+    pub async fn stopped(&self) {
+        while !self.stop_requested() {
+            self.signal.notify.notified().await;
+        }
+    }
+
+    /// How [`stop_all`] ends the run's processes at once.
+    fn set_killer(&self, killer: Killer) {
+        *self.signal.killer.lock().unwrap_or_else(|e| e.into_inner()) = Some(killer);
+    }
 }
 
-impl Drop for Registered {
+impl Drop for RunRegistration {
     fn drop(&mut self) {
         lock_runs().remove(&self.id);
     }
@@ -689,30 +799,30 @@ pub fn stop_all() -> usize {
 pub const NO_GIT_BASH: &str = "Commands run in Git for Windows' bash, which was not found on \
      this computer. Install Git for Windows (https://git-scm.com/download/win), then ask again.";
 
-/// Where Git for Windows may be: the install folder its installer records,
-/// the Program Files folder, and `PATH`.
+/// Where Git for Windows may be: the folders its installer recorded for all
+/// users (`HKLM`, writable only by administrators), the Program Files
+/// folder, the folders recorded for this user (`HKCU`), and `PATH`.
 #[derive(Debug, Default, Clone)]
 pub struct ShellSources {
     pub install_path: Vec<PathBuf>,
     pub program_files: Option<PathBuf>,
+    pub user_install_path: Vec<PathBuf>,
     pub path: Option<std::ffi::OsString>,
 }
 
-/// Git for Windows' `bin\bash.exe` from `sources`: its recorded install
-/// folders first, then Program Files, then a `bash.exe` on `PATH` that sits
-/// in a Git for Windows tree. Never the WSL launcher in System32 or an app
-/// alias. `None` when there is none.
+/// Git for Windows' `bin\bash.exe` from `sources`: an install for all users
+/// (recorded, then in Program Files) first, then one for this user only,
+/// then a `bash.exe` on `PATH` that sits in a Git for Windows tree. What any
+/// program of the user can change (its own registry keys, `PATH`) is
+/// consulted only when no install for all users exists. Never the WSL
+/// launcher in System32 or an app alias. `None` when there is none.
 pub fn git_bash(sources: &ShellSources) -> Option<PathBuf> {
     let installed = sources
         .install_path
         .iter()
-        .chain(
-            sources
-                .program_files
-                .as_ref()
-                .map(|dir| dir.join("Git"))
-                .iter(),
-        )
+        .cloned()
+        .chain(sources.program_files.as_ref().map(|dir| dir.join("Git")))
+        .chain(sources.user_install_path.iter().cloned())
         .map(|git| git.join("bin").join("bash.exe"))
         .collect::<Vec<_>>();
     if let Some(found) = installed.into_iter().find(|bash| bash.is_file()) {
@@ -813,10 +923,21 @@ pub fn remove_scratch(data_dir: &Path, conversation_id: &str) -> Result<(), Stri
 }
 
 /// Create the scratch folder if needed, the user's alone. A folder that
-/// cannot be made private is removed again.
+/// cannot be made private is removed again. An existing one must be a real
+/// folder, not a link or junction to somewhere else, and is kept private
+/// ([`platform::keep_private`]).
 pub fn prepare_scratch(dir: &Path) -> Result<(), String> {
-    if dir.is_dir() {
-        return Ok(());
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+            return Err(format!(
+                "{} is not a plain folder (a link, junction or file is in its place), so \
+                 Shodh does not use it",
+                dir.display()
+            ))
+        }
+        Ok(_) => return platform::keep_private(dir),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{} could not be read: {e}", dir.display())),
     }
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("{} could not be created: {e}", dir.display()))?;
@@ -834,12 +955,34 @@ pub fn prepare_scratch(dir: &Path) -> Result<(), String> {
 pub const TOOLCHAIN_HOMES: [(&str, &str); 2] =
     [("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup")];
 
+/// Settings every command runs with, so the user's accounts are not used
+/// without a prompt that says so:
+/// - cargo: the crates.io token comes only from the environment, and this
+///   one is not a token (`credentials.toml` in the real `CARGO_HOME` would
+///   otherwise publish, yank or change owners silently);
+/// - git: no credential helper (Git for Windows' system settings name the
+///   Credential Manager, macOS's the keychain), and no prompt for one.
+pub const ACCOUNT_GUARDS: [(&str, &str); 7] = [
+    (
+        "CARGO_REGISTRY_TOKEN",
+        "shodh-commands-do-not-use-your-crates-io-token",
+    ),
+    ("CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS", "cargo:token"),
+    ("GIT_CONFIG_COUNT", "1"),
+    ("GIT_CONFIG_KEY_0", "credential.helper"),
+    ("GIT_CONFIG_VALUE_0", ""),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GCM_INTERACTIVE", "never"),
+];
+
 /// A command's whole environment: the system variables programs need
 /// ([`super::sidecar::PASSTHROUGH_VARS`] without the proxy settings), the
 /// toolchain folders ([`TOOLCHAIN_HOMES`], found from the user's real
-/// `home`), the home and temporary folders in `scratch`, and the run's
-/// marker ([`RUN_ID_ENV`]). Nothing else of Shodh's environment is passed:
-/// no provider key, token or Shodh setting.
+/// `home`), the account guards ([`ACCOUNT_GUARDS`]), the home and temporary
+/// folders in `scratch`, and the run's marker ([`RUN_ID_ENV`]). Nothing
+/// else of Shodh's environment is inherited: no provider key, token or Shodh
+/// setting. (Inherited is all this promises: until the sandbox of step 1b, a
+/// command can still read what any program of the user can.)
 pub fn command_env(
     scratch: &Path,
     command_id: &str,
@@ -863,6 +1006,9 @@ pub fn command_env(
             env.push((name.to_string(), value));
         }
     }
+    for (name, value) in ACCOUNT_GUARDS {
+        env.push((name.to_string(), value.to_string()));
+    }
     let scratch = scratch.display().to_string();
     for name in ["HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR"] {
         env.push((name.to_string(), scratch.clone()));
@@ -882,11 +1028,19 @@ enum Escape {
     Start,
     /// A control sequence (`ESC [`), until its final byte.
     Csi,
-    /// An operating-system command (`ESC ]`), until BEL or `ESC \`.
+    /// An operating-system command (`ESC ]`), until BEL, `ESC \`, a line
+    /// break or [`MAX_OSC_BYTES`].
     Osc,
     /// ESC inside an operating-system command.
     OscEnd,
+    /// The intermediate bytes of a two-part escape (`ESC ( B` chooses a
+    /// character set), until its final byte.
+    Intermediate,
 }
+
+/// Longest operating-system command (a window title, a link) removed from
+/// output; a longer one is not one, and the text after it is kept.
+const MAX_OSC_BYTES: usize = 4 * 1024;
 
 /// Terminal control removed from command output, which is shown as plain
 /// text: colour and cursor sequences are dropped, and a carriage return (a
@@ -896,6 +1050,8 @@ enum Escape {
 pub struct OutputFilter {
     escape: Escape,
     carriage_return: bool,
+    /// Bytes of the operating-system command being removed.
+    osc_bytes: usize,
 }
 
 impl OutputFilter {
@@ -907,32 +1063,55 @@ impl OutputFilter {
                 Escape::Start => {
                     self.escape = match byte {
                         b'[' => Escape::Csi,
-                        b']' => Escape::Osc,
+                        b']' => {
+                            self.osc_bytes = 0;
+                            Escape::Osc
+                        }
+                        0x20..=0x2f => Escape::Intermediate,
                         _ => Escape::None,
                     };
                     continue;
                 }
-                Escape::Csi => {
-                    if (0x40..=0x7e).contains(&byte) {
+                Escape::Intermediate => {
+                    if !(0x20..=0x2f).contains(&byte) {
                         self.escape = Escape::None;
                     }
                     continue;
                 }
-                Escape::Osc => {
-                    match byte {
-                        0x07 => self.escape = Escape::None,
-                        0x1b => self.escape = Escape::OscEnd,
-                        _ => {}
+                Escape::Csi => match byte {
+                    0x40..=0x7e => {
+                        self.escape = Escape::None;
+                        continue;
                     }
-                    continue;
-                }
-                Escape::OscEnd => {
-                    self.escape = if byte == b'\\' {
-                        Escape::None
-                    } else {
-                        Escape::Osc
-                    };
-                    continue;
+                    0x20..=0x3f => continue,
+                    // Not a control sequence after all: the byte is text.
+                    _ => self.escape = Escape::None,
+                },
+                Escape::Osc | Escape::OscEnd => {
+                    self.osc_bytes += 1;
+                    let after_escape = self.escape == Escape::OscEnd;
+                    match byte {
+                        0x07 => {
+                            self.escape = Escape::None;
+                            continue;
+                        }
+                        b'\\' if after_escape => {
+                            self.escape = Escape::None;
+                            continue;
+                        }
+                        0x1b => {
+                            self.escape = Escape::OscEnd;
+                            continue;
+                        }
+                        // Unterminated: the line, or too long a sequence,
+                        // ends it, and the text goes on.
+                        b'\n' => self.escape = Escape::None,
+                        _ if self.osc_bytes > MAX_OSC_BYTES => self.escape = Escape::None,
+                        _ => {
+                            self.escape = Escape::Osc;
+                            continue;
+                        }
+                    }
                 }
                 Escape::None => {}
             }
@@ -1010,7 +1189,7 @@ pub async fn run_contained(
             "Shodh could not prepare the command's scratch folder: {e}"
         ));
     }
-    let registered = Registered::new(&control.command_id);
+    let registration = &control.registration;
     let home = dirs::home_dir();
     let env = command_env(
         &spec.scratch,
@@ -1023,11 +1202,7 @@ pub async fn run_contained(
             Ok(spawned) => spawned,
             Err(reason) => return CommandOutcome::refused(reason),
         };
-    *registered
-        .signal
-        .killer
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(contained.killer());
+    registration.set_killer(contained.killer());
     (control.on_started)();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
     if let Some(stdout) = child.stdout.take() {
@@ -1045,15 +1220,14 @@ pub async fn run_contained(
     let mut tick = tokio::time::interval(LIVE_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut pipes_open = true;
-    let signal = Arc::clone(&registered.signal);
     let ended = loop {
-        if signal.requested.load(Ordering::SeqCst) {
+        if registration.stop_requested() {
             break Ended::Stopped;
         }
         tokio::select! {
             status = child.wait() => break Ended::Exited(status.ok()),
             _ = tokio::time::sleep_until(deadline) => break Ended::TimedOut,
-            _ = signal.notify.notified() => break Ended::Stopped,
+            _ = registration.stopped() => break Ended::Stopped,
             chunk = rx.recv(), if pipes_open => match chunk {
                 Some(bytes) => {
                     let bytes = filter.clean(&bytes);
@@ -1073,7 +1247,21 @@ pub async fn run_contained(
         }
     };
     // Every process still running goes, then the pipes are read to their end.
-    let left = contained.terminate();
+    // The sweep lists processes and waits between passes: off the async
+    // workers. Dropping this future meanwhile does not stop it.
+    let swept = tokio::task::spawn_blocking(move || {
+        let left = contained.terminate();
+        (left, contained.notes(), contained.escaped())
+    })
+    .await;
+    let (left, mut notes, escaped) = swept.unwrap_or_else(|e| {
+        tracing::warn!(target: "shodh::harness", error = %e, "the end-of-command sweep did not finish");
+        (
+            0,
+            vec!["Shodh could not confirm that every process it started was stopped.".to_string()],
+            true,
+        )
+    });
     let status = match ended {
         Ended::Exited(status) => status,
         _ => {
@@ -1103,7 +1291,6 @@ pub async fn run_contained(
     if let Some(text) = live.take(true) {
         (control.on_output)(text);
     }
-    let mut notes = contained.notes();
     let (state, exit_code) = match ended {
         Ended::Exited(_) => match exit_of(status.as_ref()) {
             Exit::Code(code) => (CommandState::Done, Some(code)),
@@ -1132,13 +1319,13 @@ pub async fn run_contained(
             if left == 1 { "was" } else { "were" },
         ));
     }
-    drop(registered);
     CommandOutcome {
         state,
         exit_code,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
         output: output.text(),
         duration: started.elapsed(),
+        escaped,
     }
 }
 

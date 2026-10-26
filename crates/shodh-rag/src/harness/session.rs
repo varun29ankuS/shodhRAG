@@ -29,10 +29,10 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use super::code_mode::{
     approval_for, auto_approval, change_target, changed_between, code_catalog, command_eligible,
     create_branch, git_state, inventory_matches, note_review, parse_guard_request, plan_change,
-    target_in_folder, tree_snapshot, ApprovalLevel, ChangePlan, ChangeTarget, CodeBranch,
-    CodeBranchStore, CodeFolder, CodeSettings, GateContext, GuardRequest, ReviewState, ReviewStore,
-    TreeSnapshot, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS,
-    UNTRACKED_UNDO,
+    starts_system_program, target_in_folder, tree_snapshot, ApprovalLevel, ChangePlan,
+    ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GateContext, GuardRequest,
+    ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND,
+    IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -196,6 +196,10 @@ struct CodeRuntime {
     calls: Mutex<HashMap<String, (String, serde_json::Value, std::time::Instant)>>,
     /// Commands allowed to run that have not ended, by tool call id.
     running: Mutex<HashMap<String, RunningCommand>>,
+    /// Commands whose process runs now: tool call id → command id. Their
+    /// own task lists what they changed once every process is gone, so a
+    /// cancel or the end of the run stops them instead of dropping the task.
+    live: Mutex<HashMap<String, String>>,
     /// Comparisons of the folder not yet recorded ([`PendingCompare`]).
     compares: tokio::sync::watch::Sender<usize>,
     executor: Arc<dyn CommandExecutor>,
@@ -224,6 +228,7 @@ impl CodeRuntime {
             dialogs: Mutex::new(HashMap::new()),
             calls: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
             compares: tokio::sync::watch::channel(0).0,
         }
     }
@@ -382,6 +387,18 @@ impl CodeRuntime {
     /// [`CodeRuntime::command_ended`]). `Err` when that cannot be recorded:
     /// the command must not run.
     async fn command_allowed(&self, request: &GuardRequest) -> Result<(), String> {
+        // A program the system starts for the command outlives it: from now
+        // on, edits ask (the record outlives the session).
+        let command_text = request
+            .input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if starts_system_program(command_text) {
+            let started = format!("`{}`", run_command::short_command(command_text));
+            self.update_review(move |state| state.background.push(started))
+                .await?;
+        }
         let before = self.snapshot().await;
         let command = request
             .input
@@ -427,11 +444,28 @@ impl CodeRuntime {
     }
 
     /// Every command still listed as running ended with the run or the
-    /// session: list what they changed.
+    /// session: list what they changed. A command whose process still runs
+    /// is stopped instead ([`CodeRuntime::stop_live`]); its own task lists
+    /// what it changed once its processes are gone.
     fn commands_ended(self: &Arc<Self>) {
         let ids: Vec<String> = lock(&self.running).keys().cloned().collect();
         for id in ids {
-            self.command_ended(&id);
+            if !self.stop_live(&id) {
+                self.command_ended(&id);
+            }
+        }
+    }
+
+    /// Stop the command of tool call `tool_call_id` if its process runs.
+    /// Returns whether it did.
+    fn stop_live(&self, tool_call_id: &str) -> bool {
+        let command_id = lock(&self.live).get(tool_call_id).cloned();
+        match command_id {
+            Some(command_id) => {
+                run_command::stop(&command_id);
+                true
+            }
+            None => false,
         }
     }
 
@@ -1024,9 +1058,9 @@ impl Inner {
                 tracing::warn!(target: "shodh::harness", session = %self.session_id, error = %e, "could not record the review of unreviewed files; commands keep asking");
             }
         }
-        // Nothing a command starts outlives it (its job or process group
-        // ends with it), so a background process is no longer recorded as
-        // running on: edits ask only while the command itself runs.
+        // What the command itself starts ends with it (its job or process
+        // group); what it has the system start does not, and
+        // `command_allowed` records that.
         code.command_allowed(request)
             .await
             .map_err(|e| format!("Shodh could not record this command, so it was not run: {e}"))?;
@@ -1347,8 +1381,13 @@ impl Inner {
             scratch: code.scratch.clone(),
             limits,
         };
+        // Registered before the process exists, so Stop, a cancel or the end
+        // of the run reaches the command from now on.
+        let registration = run_command::RunRegistration::new(&command_id);
+        lock(&code.live).insert(step_id.to_string(), command_id.clone());
         let control = RunControl {
             command_id: command_id.clone(),
+            registration,
             on_started: Box::new({
                 let events = self.events.clone();
                 let (run_id, step_id) = (run_id.to_string(), step_id.to_string());
@@ -1385,6 +1424,22 @@ impl Inner {
             }),
         };
         let ran = code.executor.run(spec, control).await;
+        lock(&code.live).remove(step_id);
+        // Some of its processes had left its process tree: others may have
+        // gone unseen, so what it changed is unknown until a review.
+        if ran.escaped {
+            let reason = format!(
+                "processes of `{}` left its process group, so Shodh cannot tell what they \
+                 changed",
+                run_command::short_command(&args.command)
+            );
+            if let Err(e) = code
+                .update_review(move |state| state.mark_unknown(reason))
+                .await
+            {
+                tracing::warn!(target: "shodh::harness", error = %e, "could not record an escaped command; the record is unreadable, so commands ask");
+            }
+        }
         // What it changed is listed before its result goes back, so the
         // next decision waits for the comparison.
         code.command_ended(step_id);
@@ -1414,12 +1469,20 @@ impl Inner {
     fn cancel_host_tool(&self, host_call_id: &str) {
         let entry = lock(&self.inflight).remove(host_call_id);
         if let Some((step_id, handle)) = entry {
-            handle.abort();
-            self.approvals.cancel(&step_id);
-            // A command stopped this way: list what it changed.
-            if let Some(code) = &self.code {
-                code.command_ended(&step_id);
+            // A running command is stopped, not dropped: its task lists what
+            // it changed once its processes are gone. Any other call ends
+            // now, and a command allowed but not yet started is compared now.
+            let stopped = self
+                .code
+                .as_ref()
+                .is_some_and(|code| code.stop_live(&step_id));
+            if !stopped {
+                handle.abort();
+                if let Some(code) = &self.code {
+                    code.command_ended(&step_id);
+                }
             }
+            self.approvals.cancel(&step_id);
             lock(&self.state).record_outcome(
                 &step_id,
                 StepOutcome {
@@ -1432,9 +1495,20 @@ impl Inner {
         }
     }
 
+    /// End every call in flight. A running command is stopped instead of
+    /// dropped ([`CodeRuntime::stop_live`]), so what it changed is compared
+    /// only after its processes are gone.
     fn abort_inflight(&self) {
-        for (_, (_, handle)) in lock(&self.inflight).drain() {
-            handle.abort();
+        let calls: Vec<(String, AbortHandle)> =
+            lock(&self.inflight).drain().map(|(_, call)| call).collect();
+        for (step_id, handle) in calls {
+            let stopped = self
+                .code
+                .as_ref()
+                .is_some_and(|code| code.stop_live(&step_id));
+            if !stopped {
+                handle.abort();
+            }
         }
     }
 
@@ -3882,13 +3956,17 @@ mod tests {
 
     /// Stands in for the process runner: records each command, says it
     /// started, sends one line of output, and ends it with exit 0, at once or,
-    /// while `hold` is set, once the test releases it ([`TestExecutor::release`]).
+    /// while `hold` is set, once the test releases it ([`TestExecutor::release`])
+    /// or a stop reaches its registration (it then ends as stopped, and
+    /// counts it). With `escape` set, it reports processes that left the run.
     #[derive(Debug)]
     struct TestExecutor {
         ran: Mutex<Vec<String>>,
         started: tokio::sync::watch::Sender<usize>,
         hold: AtomicBool,
         release: tokio::sync::Semaphore,
+        stopped: AtomicU32,
+        escape: AtomicBool,
     }
 
     impl TestExecutor {
@@ -3898,7 +3976,14 @@ mod tests {
                 started: tokio::sync::watch::channel(0).0,
                 hold: AtomicBool::new(false),
                 release: tokio::sync::Semaphore::new(0),
+                stopped: AtomicU32::new(0),
+                escape: AtomicBool::new(false),
             })
+        }
+
+        /// How many runs ended because a stop reached them.
+        fn stops(&self) -> u32 {
+            self.stopped.load(Ordering::SeqCst)
         }
 
         fn ran(&self) -> Vec<String> {
@@ -3943,17 +4028,27 @@ mod tests {
             (control.on_started)();
             self.started.send_modify(|count| *count += 1);
             (control.on_output)(format!("ran {}\n", spec.command));
+            let mut state = crate::harness::events::CommandState::Done;
             if hold {
-                if let Ok(permit) = self.release.acquire().await {
-                    permit.forget();
+                tokio::select! {
+                    permit = self.release.acquire() => {
+                        if let Ok(permit) = permit {
+                            permit.forget();
+                        }
+                    }
+                    _ = control.registration.stopped() => {
+                        self.stopped.fetch_add(1, Ordering::SeqCst);
+                        state = crate::harness::events::CommandState::Stopped;
+                    }
                 }
             }
             run_command::CommandOutcome {
-                state: crate::harness::events::CommandState::Done,
-                exit_code: Some(0),
+                state,
+                exit_code: (state == crate::harness::events::CommandState::Done).then_some(0),
                 note: None,
                 output: format!("ran {}\n", spec.command),
                 duration: Duration::from_millis(5),
+                escaped: self.escape.load(Ordering::SeqCst),
             }
         }
     }
@@ -4263,10 +4358,11 @@ mod tests {
                     .unwrap()
                     .contains("not a git repository"));
                 assert_eq!(preview["time_limit"], "10 minutes (the workspace's limit)");
+                // Exactly what this system enforces (run_command's tests pin
+                // the words per system).
                 assert_eq!(
                     preview["limits"],
-                    "Memory 4 GB, CPU 80%, at most 64 processes at once. Every process the \
-                     command starts is stopped when it ends."
+                    CommandLimits::for_call(&CodeSettings::default(), None).enforced_text()
                 );
             }
             other => panic!("expected an approval request, got {other:?}"),
@@ -5145,6 +5241,126 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("has not compared what `cargo test -p app` changed"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_or_ended_command_is_stopped_before_its_changes_are_compared() {
+        let (folder, data) = trusted_repo();
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
+
+        // omp cancels a running command: it is stopped, not dropped, and
+        // what it changed is compared only once it has ended.
+        x.hold(true);
+        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        feed(
+            &inner,
+            r#"{"type":"host_tool_cancel","id":"x-1","targetId":"h-1"}"#,
+        );
+        let (is_error, text) = command_result(o, "1").await;
+        assert!(is_error);
+        assert!(text.contains("stopped"), "{text}");
+        assert_eq!(x.stops(), 1, "the command saw the stop");
+        code.settled().await;
+        let state = code.reviews.get("conv-1").unwrap();
+        assert!(state.uncompared.is_empty(), "{state:?}");
+
+        // The run ends (stopped by the user) while a command runs: the same.
+        runs_unasked(&inner, x, o, command_call("2", test_command())).await;
+        inner.abort_inflight();
+        let (is_error, _) = command_result(o, "2").await;
+        assert!(is_error);
+        assert_eq!(x.stops(), 2);
+        x.hold(false);
+        code.settled().await;
+        // Nothing changed, so the next allowlisted command runs by itself.
+        runs_unasked(&inner, x, o, command_call("3", test_command())).await;
+        let _ = ev;
+    }
+
+    #[tokio::test]
+    async fn programs_the_system_starts_and_escaped_processes_keep_commands_asking() {
+        use crate::harness::code_mode::{REVIEW_NOTE_KEY, SYSTEM_START_NOTE};
+        let (folder, data) = trusted_repo();
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
+        let root = code.folder.root().to_path_buf();
+        let lib = root.join("lib.rs");
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
+
+        // A scheduled task outlives the command: the prompt says so, and from
+        // then on edits ask, in this session and the next.
+        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            command_call(
+                "2",
+                json!({"command": "schtasks /create /tn x /tr build.cmd /sc minute"}),
+            ),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert_eq!(preview["keeps_running"], SYSTEM_START_NOTE);
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            guard_request("3", "edit", edit_of("lib.rs"), Some(&lib)),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview["running_process"]
+            .as_str()
+            .unwrap()
+            .contains("schtasks"));
+
+        // A command whose processes left its process tree: what it changed
+        // is unknown, so the next allowlisted command asks and says why.
+        let (folder2, data2) = trusted_repo();
+        let exec2 = TestExecutor::new();
+        exec2.escape.store(true, Ordering::SeqCst);
+        let code2 = code_runtime_with(folder2.path(), data2.path(), Arc::clone(&exec2));
+        let (inner2, mut events2, mut out2) = offline_session(None, Some(Arc::clone(&code2)));
+        inner2
+            .start_run("Run the tests", Some("run-2".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out2);
+        runs_unasked(
+            &inner2,
+            &exec2,
+            &mut out2,
+            command_call("4", test_command()),
+        )
+        .await;
+        exec2.escape.store(false, Ordering::SeqCst);
+        let preview = asks(
+            &inner2,
+            &exec2,
+            &mut events2,
+            &mut out2,
+            command_call("5", test_command()),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview[REVIEW_NOTE_KEY]
+            .as_str()
+            .unwrap()
+            .contains("left its process group"));
     }
 
     /// Stands in for an MCP server's write tool: writes a test file into the

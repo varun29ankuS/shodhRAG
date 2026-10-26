@@ -334,9 +334,10 @@ pub async fn tools_overview(
                     "edit" => "Change part of a file (asks first).",
                     "write" => "Create or replace a file (asks first).",
                     RUN_COMMAND => {
-                        "Run one bash command in the code folder, in its own process with a \
-                         clean environment, a time limit and memory and CPU limits (asks \
-                         first, or runs an allowlisted command at Trusted)."
+                        "Run one bash command in the code folder, in its own process: it \
+                         does not inherit Shodh's keys, and has a time limit and memory and \
+                         process limits (asks first, or runs an allowlisted command at \
+                         Trusted)."
                     }
                     _ => "A Code mode tool.",
                 }

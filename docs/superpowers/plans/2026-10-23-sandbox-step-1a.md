@@ -166,3 +166,29 @@ same probe outside the runner.
 
 The #96 approval tests are kept and moved to `run_command`, with an executor that
 the test releases, in place of omp's end frame.
+
+## Security review decisions (PR #105)
+
+- **What the prompt shows is what runs.**
+  - A command is at most as long as the prompt shows in full (2,000 characters).
+  - A command is refused when it holds control characters (other than line breaks and tabs), bidirectional overrides, zero-width or other invisible characters, or a run of more than 100 blank characters.
+- **The prompt promises only what this system enforces.**
+  - Windows: job memory, a CPU hard cap and 64 processes.
+  - macOS: the memory watchdog and 64 processes, through `RLIMIT_NPROC` set to the user's process count at the start plus 64 (macOS counts processes per user). macOS has no CPU cap, so commands there run at nice 10 and the prompt and settings say so.
+- **Programs the system starts are not stopped.** That covers scheduled tasks, services, launch agents and jobs, and apps opened through the desktop (`schtasks`, `sc`, `wmic`, `Invoke-CimMethod`, `Register-ScheduledTask`, `explorer`, `launchctl`, `open`, `osascript`, `at`, `crontab`, `systemd-run` ...).
+  - Such commands ask, and their prompt says so.
+  - Once approved, they are recorded as running on, so edits ask from then on, as before this step.
+  - On macOS, a final sweep that finds processes which left the run's process group marks what the command changed as unknown.
+- **Accounts.**
+  - Commands that publish or use the user's registry or GitHub account are flagged and always ask: cargo `publish`/`yank`/`owner`/`login`, npm-family `publish`/`unpublish`/`deprecate`/`token`/`owner`/`login`, `twine`/`poetry`/`uv`/`gem` publish, `docker push`/`login`, and `gh` subcommands that act on the account.
+  - Every command also gets a `CARGO_REGISTRY_TOKEN` that is not a token, with `cargo:token` as the only credential provider. It gets no git credential helper (`credential.helper` reset through `GIT_CONFIG_*`), with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`.
+- **`CARGO_HOME` stays the user's own.** A scratch `CARGO_HOME` per conversation would download the registry index and every crate again for each conversation, and once step 1b cuts the network it would fail `cargo test` outright. The token is the only secret in it, and the environment above overrides it. Until 1b, a command can read `credentials.toml` like any other file the user can read.
+- **"Not inherited" is what step 1a promises.** Same-user secrets stay reachable until 1b. Step 1b must test that, inside the sandbox:
+  - the Credential Manager (`CredRead`, `PasswordVault`) and the keychain (`security find-generic-password -s com.shodh.rag-app`) fail;
+  - other processes' memory and environments (`ReadProcessMemory`, `ps eww`) cannot be read;
+  - Shodh's data folder (the scratch folder's parent) is denied.
+- **Monitoring.** The macOS watchdog runs on its own thread over the group and its descendants. The final sweep, which also looks for marked orphans, runs on a blocking thread.
+- **Cancel.** A cancelled command, or one still running when the answer ends, is stopped rather than dropped. What it changed is compared only after its processes are gone.
+- **Handles (Windows).** Rust's standard library serializes every process creation behind one lock (`CREATE_PROCESS_LOCK`), so concurrent spawns do not leak pipe ends to each other, and Shodh creates no process any other way. The command still inherits any handle that native code inside Shodh made inheritable. Restricting that needs `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, which stable Rust's `Command` cannot pass (`raw_attribute` is unstable). It lands with 1b's own `CreateProcessW`, whose AppContainer attribute uses the same attribute list.
+- **Git for Windows is looked for in this order:** installs for all users (`HKLM`, Program Files), then the user's own (`HKCU`), then `PATH`.
+- **Scratch folder.** It must be a real folder, not a link or junction. On macOS its mode is set again before every command. On Windows it gets a protected user-only DACL when it is created. It lives inside the user's own application data, which no other account can change, so setting the DACL again would only rewalk the folder before each command.

@@ -31,7 +31,7 @@ fn arguments_are_exactly_a_command_and_an_optional_time_limit() {
         (json!({}), "needs a command"),
         (json!({"command": "   "}), "needs a command"),
         (json!({"command": 3}), "must be text"),
-        (json!({"command": "ls\u{0}rm"}), "NUL"),
+        (json!({"command": "ls\u{0}rm"}), "U+0000"),
         (json!({"command": "ls", "cwd": ".."}), "not cwd"),
         (json!({"command": "ls", "async": true}), "not async"),
         (json!({"command": "ls", "timeout_secs": 0}), "whole number"),
@@ -61,6 +61,72 @@ fn arguments_are_exactly_a_command_and_an_optional_time_limit() {
 }
 
 #[test]
+fn a_command_is_never_longer_than_its_approval_prompt_shows() {
+    // The prompt shows MAX_PREVIEW_CHARS of a command in full; a command
+    // longer than that is refused before anything is asked.
+    assert_eq!(
+        MAX_COMMAND_CHARS,
+        super::super::code_mode::MAX_PREVIEW_CHARS
+    );
+    let padded = format!("echo ok{}rm -rf ~", " x".repeat(1_000));
+    assert!(padded.chars().count() > MAX_COMMAND_CHARS);
+    assert!(parse_args(&json!({ "command": padded })).is_err());
+    let longest = format!("echo {}", "y".repeat(MAX_COMMAND_CHARS - 5));
+    let parsed = parse_args(&json!({ "command": longest.clone() })).unwrap();
+    let request = super::super::code_mode::GuardRequest {
+        ui_id: None,
+        tool_call_id: "call".into(),
+        tool: RUN_COMMAND.into(),
+        input: parsed.input(),
+        target: None,
+    };
+    let approval = super::super::code_mode::approval_for(
+        &request,
+        None,
+        super::super::code_mode::ChangeTarget::Unknown,
+    );
+    assert_eq!(approval.preview["command"], longest, "shown in full");
+}
+
+#[test]
+fn commands_cannot_hide_text_from_their_approval_prompt() {
+    for hidden in [
+        "\u{202E}",
+        "\u{2066}",
+        "\u{200B}",
+        "\u{200D}",
+        "\u{2060}",
+        "\u{FEFF}",
+        "\u{00AD}",
+        "\u{1B}[8m",
+        "\r",
+        "\u{7}",
+        "\u{E0041}",
+    ] {
+        let command = format!("echo safe{hidden}; rm -rf ~");
+        let error = parse_args(&json!({ "command": command })).unwrap_err();
+        assert!(error.contains("U+"), "{hidden:?}: {error}");
+    }
+    // Long runs of blanks would push the rest of the command out of sight.
+    let spaced = format!("echo ok{}rm -rf ~", " ".repeat(MAX_BLANK_RUN + 1));
+    assert!(parse_args(&json!({ "command": spaced }))
+        .unwrap_err()
+        .contains("blank characters"));
+    let lines = format!("echo ok{}rm -rf ~", "\n".repeat(MAX_BLANK_RUN + 1));
+    assert!(parse_args(&json!({ "command": lines })).is_err());
+    // Ordinary text, tabs, line breaks and non-Latin letters are fine.
+    let blanks = format!("echo a{}b", " ".repeat(MAX_BLANK_RUN));
+    for fine in [
+        "printf 'a\tb\n' && echo done",
+        "cat <<'EOF'\nline one\n\nline two\nEOF",
+        "echo 'é✓ 日本語 مرحبا'",
+        blanks.as_str(),
+    ] {
+        assert!(parse_args(&json!({ "command": fine })).is_ok(), "{fine:?}");
+    }
+}
+
+#[test]
 fn the_tool_is_described_with_its_schema() {
     let definition = definition();
     assert_eq!(definition.name, RUN_COMMAND);
@@ -70,7 +136,8 @@ fn the_tool_is_described_with_its_schema() {
         "code folder",
         "background",
         "time limit",
-        "no API keys",
+        "API keys and tokens are not passed",
+        "scheduled tasks",
     ] {
         assert!(definition.description.contains(words), "{words}");
     }
@@ -109,30 +176,46 @@ fn a_call_may_ask_for_less_time_never_more() {
     assert_eq!(longer.time, Duration::from_secs(600));
     assert!(!longer.time_asked);
 
+    let rows = own.prompt_rows();
     assert_eq!(
-        own.prompt_rows(),
-        [
-            (
-                "time_limit",
-                "10 minutes (the workspace's limit)".to_string()
-            ),
-            (
-                "limits",
-                "Memory 4 GB, CPU 80%, at most 64 processes at once. Every process the command \
-                 starts is stopped when it ends."
-                    .to_string()
-            ),
-        ]
+        rows[0],
+        (
+            "time_limit",
+            "10 minutes (the workspace's limit)".to_string()
+        )
     );
+    assert_eq!(rows[1].0, "limits");
+    // Only what this system enforces is promised.
+    let limits = &rows[1].1;
+    assert!(limits.ends_with(STOPPED_AT_END), "{limits}");
+    assert!(STOPPED_AT_END.contains("except programs it has the system start"));
+    #[cfg(windows)]
+    assert_eq!(
+        limits.as_str(),
+        format!(
+            "Memory 4 GB for all its processes (an allocation beyond it fails), CPU 80%, at \
+             most 64 processes at once. {STOPPED_AT_END}"
+        )
+    );
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(
+            limits.as_str(),
+            format!(
+                "Memory 4 GB for all its processes (the command is stopped beyond it), at most \
+                 64 processes at once, lower CPU priority (macOS has no CPU cap). \
+                 {STOPPED_AT_END}"
+            )
+        );
+        assert!(!limits.contains("80%"), "macOS enforces no CPU cap");
+    }
     assert_eq!(
         shorter.prompt_rows()[0].1,
         "90 seconds (asked by the assistant)"
     );
     let odd = CommandLimits::for_call(&settings(61, 1500, 50), None);
     assert_eq!(odd.time_text(), "61 seconds");
-    assert!(odd.prompt_rows()[1]
-        .1
-        .starts_with("Memory 1500 MB, CPU 50%"));
+    assert!(odd.prompt_rows()[1].1.starts_with("Memory 1500 MB"));
     assert_eq!(
         CommandLimits::for_call(&settings(60, 1024, 10), None).time_text(),
         "1 minute"
@@ -207,6 +290,33 @@ fn terminal_control_is_removed_from_output() {
     assert_eq!(clean(b"line\r"), "line");
     assert_eq!(filter.finish(), b"\n");
     assert_eq!(filter.finish(), b"");
+
+    // A character-set choice (`ESC ( B`) leaves no stray character.
+    let mut filter = OutputFilter::default();
+    assert_eq!(
+        String::from_utf8(filter.clean(b"a\x1b(Bb\x1b)0c\n")).unwrap(),
+        "abc\n"
+    );
+    // An operating-system command that never ends cannot swallow the rest of
+    // the output: the line ends it...
+    let mut filter = OutputFilter::default();
+    assert_eq!(
+        String::from_utf8(filter.clean(b"\x1b]0;never ended\nstill here\n")).unwrap(),
+        "\nstill here\n"
+    );
+    // ...and so does its length.
+    let mut filter = OutputFilter::default();
+    let mut long = b"\x1b]".to_vec();
+    long.extend(std::iter::repeat_n(b'x', MAX_OSC_BYTES + 10));
+    let kept = filter.clean(&long);
+    assert!(!kept.is_empty() && kept.len() <= 10, "{}", kept.len());
+    assert_eq!(filter.clean(b"after"), b"after");
+    // A control sequence cut by text is not one: the text stays.
+    let mut filter = OutputFilter::default();
+    assert_eq!(
+        String::from_utf8(filter.clean(b"\x1b[12\nnext")).unwrap(),
+        "\nnext"
+    );
 }
 
 #[test]
@@ -220,6 +330,7 @@ fn outcomes_tell_the_model_and_the_user_how_the_command_ended() {
         ),
         output: "test a ... FAILED\n".into(),
         duration: Duration::from_millis(1_500),
+        escaped: false,
     };
     assert!(!done.succeeded());
     assert_eq!(done.summary(&limits), "Exit 1 · 1 line of output");
@@ -237,6 +348,7 @@ fn outcomes_tell_the_model_and_the_user_how_the_command_ended() {
         note: None,
         output: String::new(),
         duration: Duration::from_secs(4),
+        escaped: false,
     };
     assert_eq!(stopped.summary(&limits), "Stopped by you");
     let text = stopped.text_for_model(&limits);
@@ -299,14 +411,19 @@ fn git_bash_is_found_where_git_for_windows_puts_it_and_nowhere_else() {
     let none = ShellSources::default();
     assert_eq!(git_bash(&none), None);
 
-    // The installer's recorded folder first, then Program Files.
+    // The folder recorded for all users first, then Program Files, then a
+    // folder recorded for this user only (which any of the user's programs
+    // can change).
     let recorded = root.join("Tools").join("Git");
     touch(&recorded.join("bin").join("bash.exe"));
     let program_files = root.join("Program Files");
     touch(&program_files.join("Git").join("bin").join("bash.exe"));
+    let per_user = root.join("Users").join("me").join("Git");
+    touch(&per_user.join("bin").join("bash.exe"));
     let sources = ShellSources {
         install_path: vec![root.join("missing"), recorded.clone()],
         program_files: Some(program_files.clone()),
+        user_install_path: vec![per_user.clone()],
         path: None,
     };
     assert_eq!(
@@ -316,11 +433,22 @@ fn git_bash_is_found_where_git_for_windows_puts_it_and_nowhere_else() {
     let sources = ShellSources {
         install_path: Vec::new(),
         program_files: Some(program_files.clone()),
+        user_install_path: vec![per_user.clone()],
         path: None,
     };
     assert_eq!(
         git_bash(&sources),
         Some(program_files.join("Git").join("bin").join("bash.exe"))
+    );
+    let sources = ShellSources {
+        install_path: vec![root.join("missing")],
+        program_files: Some(root.join("nowhere")),
+        user_install_path: vec![per_user.clone()],
+        path: None,
+    };
+    assert_eq!(
+        git_bash(&sources),
+        Some(per_user.join("bin").join("bash.exe"))
     );
 
     // On PATH: only a Git for Windows tree's bin\bash.exe, never WSL's
@@ -337,6 +465,7 @@ fn git_bash_is_found_where_git_for_windows_puts_it_and_nowhere_else() {
     let path = |dirs: &[&Path]| ShellSources {
         install_path: Vec::new(),
         program_files: Some(root.join("nowhere")),
+        user_install_path: Vec::new(),
         path: Some(std::env::join_paths(dirs).unwrap()),
     };
     assert_eq!(git_bash(&path(&[&system32, &alias, &lone])), None);
@@ -368,16 +497,43 @@ fn the_environment_is_built_from_scratch_without_secrets() {
     let env = command_env(scratch, "run-1", parent, Some(home.path()));
     let names: Vec<&str> = env.iter().map(|(name, _)| name.as_str()).collect();
     for (name, value) in &env {
-        assert!(
-            !name.contains("KEY") && !name.contains("TOKEN") && !name.starts_with("SHODH_")
-                || name == RUN_ID_ENV,
-            "{name} passed"
-        );
+        // Only the system variables programs need come from Shodh's own
+        // environment; nothing else is inherited.
+        if value.starts_with("canary-") {
+            assert!(
+                super::super::sidecar::PASSTHROUGH_VARS.contains(&name.as_str()),
+                "{name} inherited"
+            );
+        }
         assert!(
             !name.to_ascii_lowercase().contains("proxy"),
             "{name}={value}"
         );
     }
+    // The user's registry and git accounts are not used without a prompt
+    // that says so: cargo's token is not one, git has no credential helper.
+    for (name, guard) in ACCOUNT_GUARDS {
+        let set: Vec<&str> = env
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(set, [guard], "{name}");
+    }
+    let guard = |name: &str| {
+        ACCOUNT_GUARDS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| *v)
+    };
+    assert_eq!(guard("GIT_CONFIG_KEY_0"), Some("credential.helper"));
+    assert_eq!(guard("GIT_CONFIG_VALUE_0"), Some(""));
+    assert_eq!(guard("GIT_TERMINAL_PROMPT"), Some("0"));
+    assert_eq!(
+        guard("CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS"),
+        Some("cargo:token")
+    );
+    assert!(guard("CARGO_REGISTRY_TOKEN").is_some_and(|token| !token.is_empty()));
     assert!(names.contains(&"PATH"));
     assert!(names.contains(&"SystemRoot"));
     for name in ["HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR"] {
@@ -422,6 +578,37 @@ fn scratch_folders_are_per_conversation_and_removed_with_it() {
     remove_scratch(data.path(), "conv-1").unwrap();
     assert!(!a.exists());
     remove_scratch(data.path(), "conv-1").unwrap();
+
+    // A file in the folder's place is refused.
+    let file = scratch_dir(data.path(), "conv-file");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "x").unwrap();
+    assert!(prepare_scratch(&file).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_scratch_folder_is_a_private_real_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = tempfile::tempdir().unwrap();
+    // Made readable to others since: private again before the next command.
+    let dir = scratch_dir(data.path(), "conv-1");
+    prepare_scratch(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    prepare_scratch(&dir).unwrap();
+    let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+    // A link in its place, to a folder elsewhere, is refused, and the folder
+    // it points to is left as it is.
+    let elsewhere = data.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let linked = scratch_dir(data.path(), "conv-2");
+    std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+    let error = prepare_scratch(&linked).unwrap_err();
+    assert!(error.contains("not a plain folder"), "{error}");
+    let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o755);
 }
 
 #[cfg(target_os = "macos")]
@@ -441,6 +628,16 @@ fn the_cpu_time_limit_leaves_room_for_every_core_for_the_whole_time_limit() {
     assert_eq!(cpu_limit_secs(u64::MAX, 64), u64::MAX);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn the_process_limit_is_the_users_count_plus_the_commands_share() {
+    use super::mac::process_limit;
+    assert_eq!(process_limit(300, 64, 2_666), 364);
+    // Never above the system's own limit for the user.
+    assert_eq!(process_limit(2_650, 64, 2_666), 2_666);
+    assert_eq!(process_limit(u64::MAX, 64, u64::MAX), u64::MAX);
+}
+
 /// A control that counts `on_started` calls and forwards live output.
 fn run_control(
     command_id: &str,
@@ -455,6 +652,7 @@ fn run_control(
     (
         RunControl {
             command_id: command_id.to_string(),
+            registration: RunRegistration::new(command_id),
             on_started: Box::new(move || {
                 counter.fetch_add(1, Ordering::SeqCst);
             }),
@@ -700,6 +898,10 @@ mod processes {
                 .map(str::to_string)
         };
         assert_eq!(var(RUN_ID_ENV).as_deref(), Some("env-run"));
+        // The account guards reach the command's own programs.
+        for (name, guard) in ACCOUNT_GUARDS {
+            assert_eq!(var(name).as_deref(), Some(guard), "{name}");
+        }
         // Git Bash hands HOME, TEMP and TMP to Windows programs converted
         // back from its own form: compared as Windows paths.
         #[cfg(windows)]
@@ -797,7 +999,6 @@ mod processes {
         assert!(!alive(pid), "process {pid} outlived its command");
     }
 
-    #[cfg(windows)]
     #[tokio::test]
     async fn a_fork_loop_stops_at_the_process_limit() {
         let _one = ONE_AT_A_TIME.lock().await;
@@ -831,6 +1032,8 @@ mod processes {
             .expect("the probe said how many it started");
         assert!(spawned < MAX_PROCESSES, "{spawned} processes started");
         let note = outcome.note.clone().unwrap_or_default();
+        // Windows's job reports the refusal; macOS's per-user limit does not.
+        #[cfg(windows)]
         assert!(note.contains("process limit"), "{note}");
         assert!(note.contains("still running when it ended"), "{note}");
         let left: Vec<u32> = outcome
@@ -1008,6 +1211,9 @@ mod processes {
             format!("ls | grep x && {python} -c 'import sys; print(sys.version_info[0])'"),
             "git init -q && git status".to_string(),
             "cargo --version".to_string(),
+            // No credential helper, whatever the system's git settings name
+            // (Git for Windows: the Credential Manager; macOS: the keychain).
+            "test -z \"$(git config --get credential.helper)\"".to_string(),
         ] {
             let (control, _started, _output) = run_control("usual-run");
             let outcome = run_contained(

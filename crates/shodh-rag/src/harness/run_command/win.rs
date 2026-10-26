@@ -154,14 +154,10 @@ fn registry_string(root: HKEY, view: REG_ROUTINE_FLAGS, key: &str, value: &str) 
 
 /// The folders Git for Windows' installer recorded: for all users (64- and
 /// 32-bit registry views), then for the current user.
-fn registry_install_paths() -> Vec<PathBuf> {
+fn registry_install_paths(roots: &[(HKEY, REG_ROUTINE_FLAGS)]) -> Vec<PathBuf> {
     const KEY: &str = "SOFTWARE\\GitForWindows";
     let mut paths: Vec<PathBuf> = Vec::new();
-    for (root, view) in [
-        (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6464KEY),
-        (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY),
-        (HKEY_CURRENT_USER, REG_ROUTINE_FLAGS(0)),
-    ] {
+    for &(root, view) in roots {
         if let Some(path) = registry_string(root, view, KEY, "InstallPath").map(PathBuf::from) {
             if !paths.contains(&path) {
                 paths.push(path);
@@ -172,12 +168,19 @@ fn registry_install_paths() -> Vec<PathBuf> {
 }
 
 /// Git for Windows' bash ([`super::git_bash`]), or why commands cannot run.
+/// An install for all users (recorded under `HKLM`, which only
+/// administrators can change, or in Program Files) wins over one recorded
+/// for this user under `HKCU`, which any of the user's programs can change.
 pub fn locate_shell() -> Result<PathBuf, String> {
     let sources = super::ShellSources {
-        install_path: registry_install_paths(),
+        install_path: registry_install_paths(&[
+            (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6464KEY),
+            (HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6432KEY),
+        ]),
         program_files: std::env::var_os("ProgramW6432")
             .or_else(|| std::env::var_os("ProgramFiles"))
             .map(PathBuf::from),
+        user_install_path: registry_install_paths(&[(HKEY_CURRENT_USER, REG_ROUTINE_FLAGS(0))]),
         path: std::env::var_os("PATH"),
     };
     super::git_bash(&sources).ok_or_else(|| NO_GIT_BASH.to_string())
@@ -266,6 +269,14 @@ pub fn make_private(dir: &Path) -> Result<(), String> {
             status.0
         ));
     }
+    Ok(())
+}
+
+/// Keep an existing scratch folder private. It was made private when it was
+/// created ([`make_private`]) and lives in the user's own application data,
+/// which no other account can change; setting the access list again would
+/// walk every file of the folder before each command.
+pub fn keep_private(_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -604,6 +615,12 @@ impl Contained {
     pub fn notes(&mut self) -> Vec<String> {
         self.drain_port();
         self.notes.clone()
+    }
+
+    /// Whether processes left the run: never on Windows, where the job
+    /// allows no breakaway.
+    pub fn escaped(&self) -> bool {
+        false
     }
 
     /// Ends every process of the command at once, from any thread.

@@ -19,7 +19,7 @@ export interface CommandLimitSpec {
 export const COMMAND_LIMITS: readonly CommandLimitSpec[] = [
   { key: 'commandTimeoutSecs', label: 'Time limit per command', unit: 'seconds', min: 10, max: 3600, defaultValue: 600 },
   { key: 'memoryLimitMb', label: 'Memory limit', unit: 'MB', min: 256, max: 65536, defaultValue: 4096 },
-  { key: 'cpuPercent', label: 'CPU cap', unit: 'percent', min: 10, max: 100, defaultValue: 80 },
+  { key: 'cpuPercent', label: 'CPU cap on Windows', unit: 'percent', min: 10, max: 100, defaultValue: 80 },
 ];
 
 /** A limit typed by the user, read as a whole number in its range. */

@@ -605,6 +605,16 @@ export function nextSteps(status: SlackStatus): NextStep[] {
       action: 'Choose a workspace',
     });
   }
+  for (const c of status.answerChannels.filter(c => c.nowShared)) {
+    steps.push({
+      id: `now_shared:${c.id}`,
+      tone: 'warning',
+      title: `#${c.name} is shared with other organizations now`,
+      detail: 'Shodh stopped answering there. Choose it again under Answering to answer there.',
+      tab: 'answering',
+      action: 'Choose channels',
+    });
+  }
   if (status.answerChannels.length === 0) {
     steps.push({
       id: 'channels',
@@ -639,6 +649,18 @@ export function nextSteps(status: SlackStatus): NextStep[] {
   return steps;
 }
 
+/**
+ * The warnings the overview shows besides its next steps: missing permissions and newly
+ * shared channels are next steps there (with where to fix them), so not said twice.
+ */
+export function overviewWarnings(status: SlackStatus, now: number, options: TimeOptions = {}): string[] {
+  return slackWarnings(
+    { ...status, missingScopes: [], answerChannels: status.answerChannels.filter(c => !c.nowShared) },
+    now,
+    options,
+  );
+}
+
 /** A small count on a tab, and whether it needs the user. */
 export interface TabBadge {
   count: number;
@@ -648,7 +670,7 @@ export interface TabBadge {
 /** The badges of the page's tabs: what needs the user on each, and what each holds. */
 export function slackTabBadges(status: SlackStatus, now: number): Partial<Record<SlackTabId, TabBadge>> {
   const badges: Partial<Record<SlackTabId, TabBadge>> = {};
-  const fixes = nextSteps(status).filter(s => s.tone === 'warning').length + slackWarnings(status, now).length;
+  const fixes = nextSteps(status).filter(s => s.tone === 'warning').length + overviewWarnings(status, now).length;
   if (fixes > 0) badges.overview = { count: fixes, tone: 'warning' };
   const stopped = status.index.channels.filter(channelNeedsAttention).length;
   if (stopped > 0) badges.indexing = { count: stopped, tone: 'warning' };

@@ -140,12 +140,13 @@ export function SlackSetup({
   const current = steps[step - 1];
   const canLeave = canLeaveStep(step, wizard.appToken, wizard.botToken);
 
+  // A new step takes focus to its heading, except where its token field takes it.
   useEffect(() => {
     if (firstRender.current) {
       firstRender.current = false;
       return;
     }
-    headingRef.current?.focus();
+    if (step === 1 || step === 4) headingRef.current?.focus();
   }, [step]);
 
   useEffect(() => {

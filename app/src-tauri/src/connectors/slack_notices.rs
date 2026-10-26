@@ -122,7 +122,9 @@ pub struct Snapshot {
     pub state: String,
     /// Permissions the Slack app lacks, for answering or for indexing.
     pub missing_scopes: Vec<String>,
-    pub channels: Vec<ChannelSnapshot>,
+    /// The indexed channels; `None` when they could not be read for this status (an empty
+    /// list then would look like every channel gone, and back again on the next status).
+    pub channels: Option<Vec<ChannelSnapshot>>,
 }
 
 impl Snapshot {
@@ -143,18 +145,20 @@ impl Snapshot {
             team_name: installation.team_name.clone(),
             state: status.state.to_string(),
             missing_scopes,
-            channels: status
-                .index
-                .channels
-                .iter()
-                .map(|c| ChannelSnapshot {
-                    id: c.id.clone(),
-                    name: c.name.clone(),
-                    state: c.state.to_string(),
-                    backfill_done: c.backfill_done,
-                    threads: c.threads,
-                })
-                .collect(),
+            channels: status.index.channels_read.then(|| {
+                status
+                    .index
+                    .channels
+                    .iter()
+                    .map(|c| ChannelSnapshot {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        state: c.state.to_string(),
+                        backfill_done: c.backfill_done,
+                        threads: c.threads,
+                    })
+                    .collect()
+            }),
         })
     }
 }
@@ -209,7 +213,8 @@ struct ChannelSeen {
 
 #[derive(Debug, Default)]
 struct TeamWatch {
-    seeded: bool,
+    /// The channels were read once: later changes are news.
+    channels_seeded: bool,
     down_since: Option<DateTime<Utc>>,
     lost_told: bool,
     stopped_told: bool,
@@ -280,14 +285,17 @@ impl SlackWatch {
             notices.push(SlackNotice::MissingScopes(snapshot.missing_scopes.clone()));
         }
 
-        let mut seen = HashMap::with_capacity(snapshot.channels.len());
-        for channel in &snapshot.channels {
+        let Some(channels) = &snapshot.channels else {
+            return observed;
+        };
+        let mut seen = HashMap::with_capacity(channels.len());
+        for channel in channels {
             let stop = ChannelStop::of(&channel.state);
             let now_seen = ChannelSeen {
                 stopped: stop.is_some(),
                 backfill_done: channel.backfill_done,
             };
-            if team.seeded {
+            if team.channels_seeded {
                 // A channel first seen now was chosen in this session: nothing told yet.
                 let before = team
                     .channels
@@ -315,7 +323,7 @@ impl SlackWatch {
             seen.insert(channel.id.clone(), now_seen);
         }
         team.channels = seen;
-        team.seeded = true;
+        team.channels_seeded = true;
         observed
     }
 
@@ -660,7 +668,7 @@ mod tests {
             team_name: "Acme".to_string(),
             state: state.to_string(),
             missing_scopes: Vec::new(),
-            channels,
+            channels: Some(channels),
         }
     }
 
@@ -689,6 +697,37 @@ mod tests {
             at(1),
         );
         assert_eq!(again, Observed::default());
+    }
+
+    #[test]
+    fn channels_that_could_not_be_read_are_neither_gone_nor_new() {
+        let mut watch = SlackWatch::default();
+        let all = || {
+            vec![
+                channel("C1", "up_to_date", true, 214),
+                channel("C2", "removed", true, 9),
+            ]
+        };
+        // The first read fails: nothing is seeded from an empty list.
+        let mut unread = snapshot("connected", vec![]);
+        unread.channels = None;
+        assert_eq!(watch.observe(&unread, at(0)), Observed::default());
+        assert_eq!(
+            watch.observe(&snapshot("connected", all()), at(1)),
+            Observed::default()
+        );
+        // A read fails mid-session: the channels are not forgotten, so not told again.
+        assert_eq!(watch.observe(&unread, at(2)), Observed::default());
+        assert_eq!(
+            watch.observe(&snapshot("connected", all()), at(3)),
+            Observed::default()
+        );
+        // The connection is still watched while the channels cannot be read.
+        unread.state = "error".into();
+        assert_eq!(
+            watch.observe(&unread, at(4)).notices,
+            vec![SlackNotice::ConnectionStopped]
+        );
     }
 
     #[test]

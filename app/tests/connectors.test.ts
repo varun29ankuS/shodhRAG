@@ -32,6 +32,7 @@ import {
   capShare,
   nextSteps,
   slackTabBadges,
+  overviewWarnings,
   indexSummary,
   channelNeedsAttention,
   isRateLimited,
@@ -385,6 +386,16 @@ test('the tabs carry what needs you and what they hold', () => {
     indexing: { count: 1, tone: 'warning' },
     memories: { count: 4, tone: 'neutral' },
   });
+  // One problem, one count: missing permissions are a next step, not also a warning.
+  const scopes = { ...busy, missingScopes: ['users:read'], index: { ...busy.index, channels: [] } };
+  assert.deepEqual(slackTabBadges(scopes, NOW).overview, { count: 1, tone: 'warning' });
+  assert.deepEqual(overviewWarnings(scopes, NOW), []);
+  const shared = { ...scopes, missingScopes: [], answerChannels: [{ id: 'C1', name: 'research', shared: true, nowShared: true }] };
+  assert.deepEqual(overviewWarnings(shared, NOW), []);
+  assert.deepEqual(slackTabBadges(shared, NOW).overview, { count: 1, tone: 'warning' });
+  const sharedStep = nextSteps(shared).find(s => s.id === 'now_shared:C1');
+  assert.deepEqual([sharedStep?.title, sharedStep?.tab], ['#research is shared with other organizations now', 'answering']);
+  assert.match(overviewWarnings({ ...shared, otherConnections: true }, NOW)[0], /Another Shodh is connected/);
   const calm = { ...busy, index: { ...busy.index, channels: [indexed({ state: 'up_to_date' })] } };
   assert.deepEqual(slackTabBadges(calm, NOW).indexing, { count: 1, tone: 'neutral' });
   assert.equal(slackTabBadges(calm, NOW).overview, undefined);

@@ -25,9 +25,9 @@ import {
   memoryPlace,
   memoryProvenance,
   nextSteps,
+  overviewWarnings,
   ownerLine,
   sharedIndexLine,
-  slackWarnings,
   stateLine,
   usageLine,
   validCap,
@@ -114,7 +114,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 export function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: SlackTabId) => void }) {
   const line = stateLine(status, now);
-  const warnings = slackWarnings(status, now);
+  const warnings = overviewWarnings(status, now);
   const steps = nextSteps(status);
   const on = status.state !== 'off' && status.state !== 'local_only';
   return (

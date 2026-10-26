@@ -110,6 +110,10 @@ pub struct IndexStatus {
     pub memories: usize,
     pub owner: Option<SlackOwner>,
     pub cost_note: &'static str,
+    /// The channels were read for this status (for the app only: an empty list from a
+    /// failed read must not look like every channel gone, see `slack_notices`).
+    #[serde(skip)]
+    pub channels_read: bool,
 }
 
 /// The card's state word for an indexed channel at `now`.
@@ -174,6 +178,7 @@ pub async fn index_status(
         }
     };
     status.memories = memories;
+    status.channels_read = true;
     let now = Utc::now();
     let pace = SyncTiming::default().pace;
     for channel in channels {

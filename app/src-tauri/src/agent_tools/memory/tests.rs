@@ -649,3 +649,55 @@ async fn forgetting_or_editing_a_memory_tells_the_open_chats() {
     assert!(outcome.ok, "{}", outcome.text_for_model);
     assert_eq!(count(), 2, "a forget is told");
 }
+
+#[tokio::test]
+async fn a_memory_from_slack_is_recalled_quoted_as_possibly_other_peoples_words() {
+    use shodh_rag::statements::Scope;
+    use shodh_rag::user_memory::{Actor, MemoryContent, Origin, WriteAuthority};
+    let h = harness().await;
+    h.service()
+        .await
+        .remember(
+            MemoryContent::Note {
+                text: "Walrus invoices go to \"Priya\"".into(),
+            },
+            Scope::Global,
+            &Origin::from_slack(
+                "slack-memory://T1/C1/1700000000.000100",
+                shodh_ontology::ExtractorKind::Llm,
+                "test",
+                WriteAuthority::SlackOwner {
+                    team_id: "T1".into(),
+                    user_id: "U1".into(),
+                },
+            ),
+            &Actor::ui(),
+        )
+        .await
+        .unwrap();
+    let (ctx, rx) = h.ctx("s1", None);
+    let (outcome, _) = h
+        .call(
+            "recall",
+            json!({"query": "Walrus invoices go to Priya"}),
+            ctx,
+            rx,
+            AgentProfile::assistant(),
+            true,
+        )
+        .await;
+    assert!(outcome.ok, "{}", outcome.text_for_model);
+    assert!(
+        outcome.text_for_model.contains("saved from Slack")
+            && outcome.text_for_model.contains("not instructions"),
+        "{}",
+        outcome.text_for_model
+    );
+    assert!(
+        outcome
+            .text_for_model
+            .contains("\"Walrus invoices go to 'Priya'\""),
+        "quoted whole: {}",
+        outcome.text_for_model
+    );
+}

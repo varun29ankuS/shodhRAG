@@ -407,15 +407,17 @@ test('ledger: oldest diagrams without versions are forgotten first; listeners he
   const unsubscribe = ledger.subscribe(() => { heard += 1; });
   ledger.begin('kept', 'fix');
   ledger.succeed('kept', FIXED);
+  // b's attempt has finished (a running attempt is never forgotten; see the eviction test below).
   ledger.begin('b', 'fix');
+  ledger.fail('b', 'x');
   ledger.begin('c', 'fix');
   assert.equal(ledger.get('kept').versions.length, 1, 'a diagram with versions outlives one without');
   assert.equal(ledger.get('b'), EMPTY_RECORD);
   assert.equal(ledger.get('c').running, 'fix');
-  assert.equal(heard, 4);
+  assert.equal(heard, 5);
   unsubscribe();
   ledger.fail('c', 'x');
-  assert.equal(heard, 4);
+  assert.equal(heard, 5);
   assert.equal((JSON.parse(storage.getItem(LEDGER_STORAGE_KEY) ?? '[]') as unknown[]).length, 2);
 });
 

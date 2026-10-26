@@ -473,7 +473,7 @@ function ChannelRow({
       : null;
   return (
     <li className={cn('px-4 py-3', channelNeedsAttention(channel) && 'bg-shodh-warning-soft/40')}>
-      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_auto] gap-x-4 gap-y-1.5 items-start">
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_7.5rem] gap-x-4 gap-y-1.5 items-start">
         <div className="min-w-0 flex flex-wrap items-center gap-1.5">
           <span className="text-[13px] font-semibold text-shodh-text truncate">#{channel.name}</span>
           <ChannelBadges channel={channel} />
@@ -676,12 +676,12 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
           </div>
         ) : (
           <div className="rounded-lg border border-shodh-border-subtle bg-shodh-surface overflow-hidden">
-            <div aria-hidden="true" className="hidden md:grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_auto] gap-x-4 px-4 py-2 border-b border-shodh-border-subtle text-[11.5px] font-medium text-shodh-text-muted">
+            <div aria-hidden="true" className="hidden md:grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_7.5rem] gap-x-4 px-4 py-2 border-b border-shodh-border-subtle text-[11.5px] font-medium text-shodh-text-muted">
               <span>Channel</span>
               <span>Workspace</span>
               <span>Status</span>
               <span className="text-right">Threads</span>
-              <span className="w-[7.5rem]" />
+              <span />
             </div>
             <ul aria-label="Indexed channels" className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
               {index.channels.map(c => (

@@ -1852,3 +1852,161 @@ async fn a_source_in_two_spaces_is_listed_in_each() {
     .unwrap();
     assert_eq!(listing.titles.len(), 1, "the exact count: {listing:?}");
 }
+
+/// Writes the owner's memories from Slack into a real memory service.
+struct ServiceWriter(Arc<crate::user_memory::MemoryService>);
+
+#[async_trait]
+impl crate::connectors::slack::remember::MemoryWriter for ServiceWriter {
+    async fn write(
+        &self,
+        memory: &crate::connectors::slack::store::SlackMemory,
+    ) -> Result<Option<String>, String> {
+        let origin = crate::user_memory::Origin::from_slack(
+            &ids::memory_source(&memory.team_id, &memory.channel_id, &memory.message_ts),
+            shodh_ontology::ExtractorKind::User,
+            "test",
+            crate::user_memory::WriteAuthority::SlackOwner {
+                team_id: memory.team_id.clone(),
+                user_id: memory.author_id.clone(),
+            },
+        );
+        let outcome = self
+            .0
+            .remember(
+                crate::user_memory::MemoryContent::Note {
+                    text: memory.text.clone(),
+                },
+                crate::statements::Scope::Global,
+                &origin,
+                &crate::user_memory::Actor::ui(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(outcome.created_id().map(str::to_string))
+    }
+
+    async fn erase(&self, id: &str) -> Result<(), String> {
+        self.0
+            .forget(id, None, &crate::user_memory::Actor::ui())
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Forgets in a real memory service, as the app does (a memory already gone is done).
+struct ServiceObserver(Arc<crate::user_memory::MemoryService>);
+
+#[async_trait]
+impl SyncObserver for ServiceObserver {
+    fn changed(&self) {}
+    async fn remove_from_workspace(&self, _channel: &IndexedChannel) -> Result<(), String> {
+        Ok(())
+    }
+    async fn forget_memories(&self, memory_ids: &[String]) -> Result<(), String> {
+        for id in memory_ids {
+            match self
+                .0
+                .forget(id, None, &crate::user_memory::Actor::ui())
+                .await
+            {
+                Ok(_) | Err(crate::user_memory::MemoryError::NotFound(_)) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn forgetting_a_channel_keeps_the_users_own_note_the_owner_repeated_in_slack() {
+    let rig = Rig::new();
+    let fixture = crate::statements::testing::fixture().await;
+    let service = Arc::new(crate::user_memory::MemoryService::new(
+        fixture.store.clone(),
+        None,
+        "test",
+    ));
+    // The user's own note, from Settings.
+    let users = service
+        .remember(
+            crate::user_memory::MemoryContent::Note {
+                text: "The budget review is on Friday".into(),
+            },
+            crate::statements::Scope::Global,
+            &crate::user_memory::Origin::user_interface("test"),
+            &crate::user_memory::Actor::ui(),
+        )
+        .await
+        .unwrap()
+        .memory
+        .unwrap()
+        .id;
+    rig.index_channel("C1", false);
+    let owner_memory =
+        |id: &str, text: &str, at: i64| crate::connectors::slack::store::SlackMemory {
+            id: id.into(),
+            team_id: "T1".into(),
+            channel_id: "C1".into(),
+            channel_name: "#c1".into(),
+            author_id: "U1".into(),
+            author_name: "Ann".into(),
+            text: text.into(),
+            kind: crate::connectors::slack::store::SlackMemoryKind::Text,
+            message_ts: ts(at),
+            permalink: None,
+            saved_at: rig.clock.now(),
+            owner: true,
+            memory_id: None,
+        };
+    let writer = ServiceWriter(service.clone());
+    // The owner says the same in Slack, then something new.
+    crate::connectors::slack::remember::save_owner_memory(
+        &rig.store,
+        &writer,
+        owner_memory("s1", "The budget review is on Friday", NOW),
+    )
+    .await
+    .unwrap();
+    crate::connectors::slack::remember::save_owner_memory(
+        &rig.store,
+        &writer,
+        owner_memory("s2", "The walrus contract renews in March", NOW + 1),
+    )
+    .await
+    .unwrap();
+    let from_slack = rig
+        .store
+        .memory("s2")
+        .unwrap()
+        .unwrap()
+        .memory_id
+        .expect("what Slack added is linked");
+    assert_eq!(
+        rig.store.memory("s1").unwrap().unwrap().memory_id,
+        None,
+        "the user's own note is not linked"
+    );
+    let channel = rig.channel("C1");
+    forget_channel(
+        &rig.store,
+        rig.index.as_ref(),
+        &ServiceObserver(service.clone()),
+        &channel,
+    )
+    .await
+    .unwrap();
+    assert!(
+        service.get(&users).await.is_ok(),
+        "the user's own note stays after the channel is forgotten"
+    );
+    assert!(
+        matches!(
+            service.get(&from_slack).await,
+            Err(crate::user_memory::MemoryError::NotFound(_))
+        ),
+        "what Slack added is forgotten"
+    );
+    assert!(rig.store.memories("T1").unwrap().is_empty());
+}

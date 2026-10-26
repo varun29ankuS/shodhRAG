@@ -40,7 +40,7 @@ use tokio_util::sync::CancellationToken;
 use super::access::{route, Route, Rules};
 use super::answer::{owner_prompt, owner_query, OWNER_ANSWER_TOKENS, OWNER_PASSAGES, TELEGRAM};
 use super::api::{BotApi, TelegramError};
-use super::format::{answer_parts, note_part, Part};
+use super::format::{answer_parts, note_part, owner_parts, Part};
 use super::link::{LinkError, LinkKind};
 use super::updates::{Chat, Message, Person, Update};
 use crate::connectors::slack::answer::{
@@ -131,6 +131,8 @@ pub struct Asked {
     pub at: DateTime<Utc>,
     /// The Telegram message id (unique in its chat).
     pub message_id: i64,
+    /// The sender's Telegram user id.
+    pub sender: i64,
 }
 
 /// What the connector needs from the app.
@@ -170,9 +172,17 @@ pub trait TelegramBrain: Send + Sync {
     ) -> Option<Remembered>;
     /// The earlier exchanges of the conversation, oldest first.
     async fn earlier(&self, chat: &ChatRef) -> Vec<ThreadTurn>;
-    /// Keeps an exchange as the app's conversation of `chat`; `learn`: the owner's words
-    /// may be learned from (the app learns only from the owner's).
-    async fn keep(&self, chat: &ChatRef, asked: &Asked, answer: &str, learn: bool);
+    /// Keeps an exchange as the app's conversation of `chat`, answered for `audience`;
+    /// `learn`: the owner's words may be learned from (the app learns only from the
+    /// owner's, and gives the learner a group's answer, built on others' words, never).
+    async fn keep(
+        &self,
+        chat: &ChatRef,
+        audience: Audience,
+        asked: &Asked,
+        answer: &str,
+        learn: bool,
+    );
     /// The model the user chose (no tools).
     fn model(&self) -> Result<Arc<dyn TextModel>, String>;
     /// What never leaves this computer (home folder, the user's names).
@@ -198,10 +208,10 @@ pub enum Outcome {
     Answered(Audience),
     ModelFailed(ProviderErrorKind),
     Cancelled,
+    /// The owner was unlinked while their answer was written: not sent.
+    Unlinked,
     /// Telegram refused a message after its retries.
     SendFailed(String),
-    /// Too many updates waiting: dropped.
-    Dropped,
 }
 
 /// Group messages and the thread (the question message) each belongs to.
@@ -578,6 +588,7 @@ impl Responder {
             text: text.trim().to_string(),
             at: message.date,
             message_id: message.message_id,
+            sender: from.id,
         };
         match audience {
             Audience::Owner => self.owner_answer(message, &chat, &asked).await,
@@ -608,8 +619,10 @@ impl Responder {
                 let outcome = self
                     .reply(message, text, Outcome::Remembered(*remembered))
                     .await;
-                if matches!(outcome, Outcome::Remembered(_)) {
-                    self.brain.keep(chat, asked, text, false).await;
+                if matches!(outcome, Outcome::Remembered(_)) && !self.cancelled() {
+                    self.brain
+                        .keep(chat, Audience::Owner, asked, text, false)
+                        .await;
                 }
                 return outcome;
             }
@@ -835,7 +848,23 @@ impl Responder {
                     .await;
             }
         };
-        let parts = answer_parts(&text, passages, &private);
+        // The owner's own chat is their data on their phone: nothing is redacted there.
+        // Everyone else's answers are sanitized.
+        let parts = match audience {
+            Audience::Owner => owner_parts(&text, passages),
+            Audience::Guest | Audience::Group => answer_parts(&text, passages, &private),
+        };
+        // An owner unlinked while the model wrote: their former account gets nothing.
+        if audience == Audience::Owner {
+            let owner = self.brain.rules().await.ok().and_then(|r| r.owner);
+            if owner != Some(asked.sender) {
+                tracing::info!(target: "shodh::telegram", "the owner was unlinked while an answer was written; not sent");
+                return Outcome::Unlinked;
+            }
+        }
+        if self.cancelled() {
+            return Outcome::Cancelled;
+        }
         let reply_to = message.chat.kind.is_group().then_some(message.message_id);
         match self.send_parts(message.chat.id, &parts, reply_to).await {
             Ok(sent) => {
@@ -852,7 +881,11 @@ impl Responder {
                     .map(|p| p.plain.as_str())
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                self.brain.keep(chat, asked, &kept, learn).await;
+                // Stopped meanwhile (Disconnect with forget): nothing is kept after it.
+                if self.cancelled() {
+                    return Outcome::Cancelled;
+                }
+                self.brain.keep(chat, audience, asked, &kept, learn).await;
                 Outcome::Answered(audience)
             }
             Err(SendError::Cancelled) => Outcome::Cancelled,
@@ -891,20 +924,66 @@ pub trait OutcomeSink: Send + Sync {
     fn handled(&self, outcome: &Outcome);
 }
 
-/// Most updates being handled or waiting at once; more are dropped (and logged).
-pub const MAX_TASKS: usize = 16;
-/// Answers worked on at once.
+/// Updates of people other than the owner taken from Telegram and not finished yet. When
+/// they are all taken, polling waits (and confirms nothing more), so Telegram keeps the
+/// rest: nothing is ever dropped.
+pub const MAX_WAITING: usize = 64;
+/// Answers to others worked on at once.
 pub const MAX_RUNNING: usize = 2;
 
-/// Hands updates to the [`Responder`] without ever making the polling wait: one chat's
-/// messages are answered in order, at most [`MAX_RUNNING`] chats at once.
+/// Counts an update from when it is taken until it is finished, a panic included (the
+/// count goes down when this is dropped).
+struct Pending {
+    tasks: Arc<AtomicUsize>,
+    idle: Arc<tokio::sync::Notify>,
+}
+
+impl Pending {
+    fn new(tasks: Arc<AtomicUsize>, idle: Arc<tokio::sync::Notify>) -> Self {
+        tasks.fetch_add(1, Ordering::SeqCst);
+        Self { tasks, idle }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if self.tasks.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.idle.notify_waiters();
+        }
+    }
+}
+
+/// Hands updates to the [`Responder`]: one chat's messages are answered in order. The
+/// owner's private chat has its own lane (never behind others' questions, never waiting
+/// for room); others get at most [`MAX_RUNNING`] answers at once and [`MAX_WAITING`]
+/// updates taken, after which polling waits.
 pub struct Dispatcher {
     responder: Arc<Responder>,
     runtime: tokio::runtime::Handle,
     sink: Arc<dyn OutcomeSink>,
     chats: Mutex<HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
+    room: Arc<tokio::sync::Semaphore>,
     running: Arc<tokio::sync::Semaphore>,
+    owner_running: Arc<tokio::sync::Semaphore>,
     tasks: Arc<AtomicUsize>,
+    idle: Arc<tokio::sync::Notify>,
+}
+
+/// Room taken for one update ([`Dispatcher::room`]); given back when it is finished.
+pub struct Room {
+    /// `None`: the owner's lane, which needs no room.
+    _held: Option<tokio::sync::OwnedSemaphorePermit>,
+    owner: bool,
+}
+
+impl Room {
+    /// Room that holds nothing (a handler with no limit).
+    pub fn unlimited() -> Self {
+        Self {
+            _held: None,
+            owner: false,
+        }
+    }
 }
 
 impl Dispatcher {
@@ -913,13 +992,26 @@ impl Dispatcher {
         runtime: tokio::runtime::Handle,
         sink: Arc<dyn OutcomeSink>,
     ) -> Self {
+        Self::with_room(responder, runtime, sink, MAX_WAITING)
+    }
+
+    /// A dispatcher with room for `waiting` updates of others (tests use a small one).
+    pub fn with_room(
+        responder: Arc<Responder>,
+        runtime: tokio::runtime::Handle,
+        sink: Arc<dyn OutcomeSink>,
+        waiting: usize,
+    ) -> Self {
         Self {
             responder,
             runtime,
             sink,
             chats: Mutex::new(HashMap::new()),
+            room: Arc::new(tokio::sync::Semaphore::new(waiting.max(1))),
             running: Arc::new(tokio::sync::Semaphore::new(MAX_RUNNING)),
+            owner_running: Arc::new(tokio::sync::Semaphore::new(1)),
             tasks: Arc::new(AtomicUsize::new(0)),
+            idle: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -931,17 +1023,44 @@ impl Dispatcher {
         }
     }
 
-    /// Starts handling `update` in the background.
-    pub fn dispatch(&self, update: Update) {
+    /// Whether `update` is a message in the owner's private chat.
+    async fn is_owner(&self, update: &Update) -> bool {
+        let Update::Message(message) = update else {
+            return false;
+        };
+        if message.chat.kind != super::updates::ChatKind::Private {
+            return false;
+        }
+        match self.responder.brain.rules().await {
+            Ok(rules) => rules.owner == Some(message.chat.id),
+            Err(_) => false,
+        }
+    }
+
+    /// Room for `update`: at once for the owner's chat, else when one of [`MAX_WAITING`]
+    /// places is free. `None` when `stop` came first: the update was not taken.
+    pub async fn room(&self, update: &Update, stop: &CancellationToken) -> Option<Room> {
+        if self.is_owner(update).await {
+            return Some(Room {
+                _held: None,
+                owner: true,
+            });
+        }
+        tokio::select! {
+            permit = self.room.clone().acquire_owned() => permit.ok().map(|p| Room {
+                _held: Some(p),
+                owner: false,
+            }),
+            _ = stop.cancelled() => None,
+        }
+    }
+
+    /// Starts handling `update` in the background, in the room taken for it.
+    pub fn start(&self, update: Update, room: Room) {
         if matches!(update, Update::Other { .. }) {
             return;
         }
-        if self.tasks.fetch_add(1, Ordering::SeqCst) >= MAX_TASKS {
-            self.tasks.fetch_sub(1, Ordering::SeqCst);
-            tracing::warn!(target: "shodh::telegram", "too many Telegram messages waiting; one was dropped");
-            self.sink.handled(&Outcome::Dropped);
-            return;
-        }
+        let pending = Pending::new(self.tasks.clone(), self.idle.clone());
         let chat = Self::chat_of(&update);
         let lock = self
             .chats
@@ -951,23 +1070,40 @@ impl Dispatcher {
             .or_default()
             .clone();
         let responder = self.responder.clone();
-        let running = self.running.clone();
-        let tasks = self.tasks.clone();
+        let running = if room.owner {
+            self.owner_running.clone()
+        } else {
+            self.running.clone()
+        };
         let sink = self.sink.clone();
         self.runtime.spawn(async move {
+            // Released when this ends, however it ends.
+            let _room = room;
+            let _pending = pending;
             let _in_order = lock.lock().await;
             let outcome = match running.acquire().await {
                 Ok(_permit) => responder.respond(&update).await,
                 Err(_) => Outcome::Cancelled,
             };
             sink.handled(&outcome);
-            tasks.fetch_sub(1, Ordering::SeqCst);
         });
     }
 
-    /// Updates handled or waiting now.
+    /// Updates taken and not finished now.
     pub fn pending(&self) -> usize {
         self.tasks.load(Ordering::SeqCst)
+    }
+
+    /// Waits until every update taken is finished (after the connector was stopped, so
+    /// nothing is kept after a Disconnect forgets the conversations).
+    pub async fn drained(&self) {
+        loop {
+            let notified = self.idle.notified();
+            if self.pending() == 0 {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -994,6 +1130,8 @@ pub(crate) mod tests {
         pub typing: StdMutex<usize>,
         /// Errors the next sends get, in order.
         pub failures: StdMutex<VecDeque<TelegramError>>,
+        /// Cancelled right after the next message is sent (a Disconnect at that moment).
+        pub cancel_after_send: StdMutex<Option<CancellationToken>>,
     }
 
     impl FakeBot {
@@ -1026,9 +1164,15 @@ pub(crate) mod tests {
             if let Some(error) = self.failures.lock().unwrap().pop_front() {
                 return Err(error);
             }
-            let mut sent = self.sent.lock().unwrap();
-            sent.push((chat, text.to_string(), html, reply_to));
-            Ok(1_000 + sent.len() as i64)
+            let id = {
+                let mut sent = self.sent.lock().unwrap();
+                sent.push((chat, text.to_string(), html, reply_to));
+                1_000 + sent.len() as i64
+            };
+            if let Some(token) = self.cancel_after_send.lock().unwrap().take() {
+                token.cancel();
+            }
+            Ok(id)
         }
         async fn typing(&self, _chat: i64) -> Result<(), TelegramError> {
             *self.typing.lock().unwrap() += 1;
@@ -1038,7 +1182,7 @@ pub(crate) mod tests {
 
     /// The app, in memory.
     pub struct FakeBrain {
-        pub rules: StdMutex<Rules>,
+        pub rules: Arc<StdMutex<Rules>>,
         pub codes: StdMutex<HashMap<String, Result<LinkKind, LinkError>>>,
         pub linked: StdMutex<Vec<(LinkKind, i64)>>,
         pub scope: Option<AnswerScope>,
@@ -1046,8 +1190,10 @@ pub(crate) mod tests {
         pub retrieved_with: StdMutex<Vec<Option<AnswerScope>>>,
         pub memories_asked: StdMutex<usize>,
         pub remembered: StdMutex<Option<Remembered>>,
-        pub kept: StdMutex<Vec<(ChatRef, Asked, String, bool)>>,
+        pub kept: StdMutex<Vec<(ChatRef, Asked, String, bool, Audience)>>,
         pub model: Arc<RecordingModel>,
+        /// Used instead of `model` when set.
+        pub other_model: StdMutex<Option<Arc<dyn TextModel>>>,
         pub memberships: StdMutex<Vec<(i64, bool)>>,
         pub new_conversations: StdMutex<Vec<i64>>,
     }
@@ -1055,12 +1201,12 @@ pub(crate) mod tests {
     impl FakeBrain {
         pub fn new(model: RecordingModel) -> Self {
             Self {
-                rules: StdMutex::new(Rules {
+                rules: Arc::new(StdMutex::new(Rules {
                     bot: Some(bot_self()),
                     owner: Some(OWNER),
                     people: vec![GUEST],
                     groups: vec![GROUP],
-                }),
+                })),
                 codes: StdMutex::new(HashMap::new()),
                 linked: StdMutex::new(Vec::new()),
                 scope: Some(AnswerScope {
@@ -1078,6 +1224,7 @@ pub(crate) mod tests {
                 remembered: StdMutex::new(Some(Remembered::Saved)),
                 kept: StdMutex::new(Vec::new()),
                 model: Arc::new(model),
+                other_model: StdMutex::new(None),
                 memberships: StdMutex::new(Vec::new()),
                 new_conversations: StdMutex::new(Vec::new()),
             }
@@ -1150,15 +1297,26 @@ pub(crate) mod tests {
         async fn earlier(&self, _chat: &ChatRef) -> Vec<ThreadTurn> {
             Vec::new()
         }
-        async fn keep(&self, chat: &ChatRef, asked: &Asked, answer: &str, learn: bool) {
+        async fn keep(
+            &self,
+            chat: &ChatRef,
+            audience: Audience,
+            asked: &Asked,
+            answer: &str,
+            learn: bool,
+        ) {
             self.kept.lock().unwrap().push((
                 chat.clone(),
                 asked.clone(),
                 answer.to_string(),
                 learn,
+                audience,
             ));
         }
         fn model(&self) -> Result<Arc<dyn TextModel>, String> {
+            if let Some(model) = self.other_model.lock().unwrap().clone() {
+                return Ok(model);
+            }
             Ok(self.model.clone())
         }
         fn private_terms(&self) -> PrivateTerms {
@@ -1610,8 +1768,8 @@ pub(crate) mod tests {
             async fn earlier(&self, c: &ChatRef) -> Vec<ThreadTurn> {
                 self.0.earlier(c).await
             }
-            async fn keep(&self, c: &ChatRef, a: &Asked, t: &str, l: bool) {
-                self.0.keep(c, a, t, l).await
+            async fn keep(&self, c: &ChatRef, au: Audience, a: &Asked, t: &str, l: bool) {
+                self.0.keep(c, au, a, t, l).await
             }
             fn model(&self) -> Result<Arc<dyn TextModel>, String> {
                 Ok(Arc::new(SlowModel))
@@ -1677,5 +1835,175 @@ pub(crate) mod tests {
         s.responder.respond(&added).await;
         assert_eq!(*s.brain.memberships.lock().unwrap(), vec![(-5, true)]);
         assert!(s.bot.texts().is_empty(), "nothing is said in the group");
+    }
+
+    /// A model that unlinks the owner while it writes (the user pressed Unlink).
+    struct UnlinkingModel(Arc<StdMutex<Rules>>);
+
+    #[async_trait]
+    impl TextModel for UnlinkingModel {
+        fn model_id(&self) -> String {
+            "unlinking".into()
+        }
+        async fn complete(&self, _prompt: &str, _max: usize) -> Result<String, String> {
+            self.0.lock().unwrap().owner = None;
+            Ok("Sixty days [1].".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_owner_unlinked_while_the_answer_is_written_gets_nothing() {
+        let s = setup(RecordingModel::answering("unused"), 5);
+        *s.brain.other_model.lock().unwrap() =
+            Some(Arc::new(UnlinkingModel(s.brain.rules.clone())));
+        let outcome = s
+            .responder
+            .respond(&update(message(
+                1,
+                OWNER,
+                OWNER,
+                "What is the notice period?",
+            )))
+            .await;
+        assert_eq!(outcome, Outcome::Unlinked);
+        assert!(s.bot.texts().is_empty(), "nothing sent to the former owner");
+        assert!(s.brain.kept.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_answer_stopped_while_it_is_sent_is_not_kept() {
+        let s = setup(RecordingModel::answering("Sixty days [1]."), 5);
+        *s.bot.cancel_after_send.lock().unwrap() = Some(s.responder.cancel.clone());
+        let outcome = s
+            .responder
+            .respond(&update(message(
+                1,
+                OWNER,
+                OWNER,
+                "What is the notice period?",
+            )))
+            .await;
+        assert_eq!(outcome, Outcome::Cancelled);
+        assert_eq!(s.bot.texts().len(), 1, "it was sent before the stop");
+        assert!(
+            s.brain.kept.lock().unwrap().is_empty(),
+            "a Disconnect that forgets conversations is not undone by this answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owners_answer_keeps_their_paths_and_others_answers_never() {
+        let reply = r"It is in C:\Users\Ann\Documents\lease.txt [1].";
+        let s = setup(RecordingModel::answering(reply), 5);
+        s.responder
+            .respond(&update(message(1, OWNER, OWNER, "Where is the lease?")))
+            .await;
+        s.responder
+            .respond(&update(message(2, GUEST, GUEST, "Where is the lease?")))
+            .await;
+        let texts = s.bot.texts();
+        assert!(
+            texts[0].contains(r"C:\Users\Ann\Documents\lease.txt"),
+            "{}",
+            texts[0]
+        );
+        assert!(!texts[1].contains(r"C:\Users"), "{}", texts[1]);
+    }
+
+    #[tokio::test]
+    async fn a_group_answer_is_kept_as_the_groups() {
+        let s = setup(RecordingModel::answering("Sixty days [1]."), 5);
+        s.responder
+            .respond(&update(message(
+                1,
+                GROUP,
+                OWNER,
+                "/ask@shodh_notes_bot rent?",
+            )))
+            .await;
+        let kept = s.brain.kept.lock().unwrap()[0].clone();
+        assert!(kept.1.owner, "the owner's own words");
+        assert_eq!(
+            kept.4,
+            Audience::Group,
+            "the app gives the learner no group answer"
+        );
+    }
+
+    #[derive(Default)]
+    struct Counted(StdMutex<Vec<Outcome>>);
+
+    impl OutcomeSink for Counted {
+        fn handled(&self, outcome: &Outcome) {
+            self.0.lock().unwrap().push(outcome.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_backlog_is_answered_whole_never_dropped() {
+        let s = setup(RecordingModel::answering("x"), 5);
+        let sink = Arc::new(Counted::default());
+        let dispatcher = Dispatcher::new(
+            Arc::new(s.responder),
+            tokio::runtime::Handle::current(),
+            sink.clone(),
+        );
+        let stop = CancellationToken::new();
+        // Thirty strangers wrote while the computer slept: more than 16 at once.
+        for i in 0..30 {
+            let u = update(message(i, 500 + i, 500 + i, "hello"));
+            let room = dispatcher.room(&u, &stop).await.expect("room");
+            dispatcher.start(u, room);
+        }
+        dispatcher.drained().await;
+        let outcomes = sink.0.lock().unwrap().clone();
+        assert_eq!(outcomes.len(), 30);
+        assert!(outcomes.iter().all(|o| *o == Outcome::Refused));
+        assert_eq!(s.bot.texts().len(), 30, "each one told, none lost");
+        assert_eq!(dispatcher.pending(), 0);
+    }
+
+    #[tokio::test]
+    async fn without_room_others_wait_and_the_owner_never_does() {
+        let s = setup(RecordingModel::answering("x"), 5);
+        let dispatcher = Dispatcher::with_room(
+            Arc::new(s.responder),
+            tokio::runtime::Handle::current(),
+            Arc::new(Counted::default()),
+            1,
+        );
+        let stop = CancellationToken::new();
+        let first = update(message(1, 900, 900, "hello"));
+        let held = dispatcher.room(&first, &stop).await.expect("room");
+        // The owner's chat has its own lane: room at once.
+        let owner = update(message(2, OWNER, OWNER, "hi"));
+        assert!(dispatcher.room(&owner, &stop).await.is_some());
+        // Anyone else waits until room is given back; a stop ends the wait with nothing
+        // taken (the update stays with Telegram).
+        let second = update(message(3, 901, 901, "hello"));
+        let waiting = dispatcher.room(&second, &stop);
+        stop.cancel();
+        assert!(waiting.await.is_none());
+        drop(held);
+        let open = CancellationToken::new();
+        assert!(
+            dispatcher.room(&second, &open).await.is_some(),
+            "room again once given back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_panicking_answer_gives_its_place_back() {
+        let tasks = Arc::new(AtomicUsize::new(0));
+        let idle = Arc::new(tokio::sync::Notify::new());
+        let pending = Pending::new(tasks.clone(), idle.clone());
+        assert_eq!(tasks.load(Ordering::SeqCst), 1);
+        let crashed = tokio::spawn(async move {
+            let _pending = pending;
+            panic!("an answer crashed");
+        })
+        .await;
+        assert!(crashed.is_err());
+        assert_eq!(tasks.load(Ordering::SeqCst), 0, "the place is given back");
     }
 }

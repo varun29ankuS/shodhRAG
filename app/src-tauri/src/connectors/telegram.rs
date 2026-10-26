@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -227,6 +227,52 @@ pub fn chat_label(audience: Audience, from: &str, group: Option<&str>) -> String
     }
 }
 
+/// Groups waiting to be allowed, at most: the oldest waiting one goes when another comes.
+pub const MAX_WAITING_GROUPS: usize = 20;
+/// Longest group title or name kept.
+const MAX_TITLE_CHARS: usize = 80;
+/// How often a group added by someone unknown is listed at most.
+const QUIET_LISTING_EVERY: chrono::Duration = chrono::Duration::minutes(1);
+
+/// A title or name as one short line (they come from whoever made the group).
+pub fn one_line_title(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let flat = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+    let short: String = flat.chars().take(MAX_TITLE_CHARS).collect();
+    if short.is_empty() {
+        "A group".to_string()
+    } else {
+        short
+    }
+}
+
+/// Lists `group` as waiting (once), dropping the oldest waiting group past
+/// [`MAX_WAITING_GROUPS`]; allowed groups are never dropped.
+pub fn list_waiting_group(bot: &mut TelegramBotPrefs, group: TelegramGroup) {
+    if bot.groups.iter().any(|g| g.id == group.id) {
+        return;
+    }
+    bot.groups.push(group);
+    loop {
+        let waiting: Vec<(DateTime<Utc>, i64)> = bot
+            .groups
+            .iter()
+            .filter(|g| !g.allowed)
+            .map(|g| (g.seen_at, g.id))
+            .collect();
+        if waiting.len() <= MAX_WAITING_GROUPS {
+            return;
+        }
+        let Some((_, oldest)) = waiting.into_iter().min() else {
+            return;
+        };
+        bot.groups.retain(|g| g.allowed || g.id != oldest);
+    }
+}
+
 // ── Token ───────────────────────────────────────────────────────────
 
 fn token_user(bot_id: i64) -> String {
@@ -251,12 +297,24 @@ struct DiskState {
     offset: Option<i64>,
     /// By chat id: the conversation `/new` started last.
     epochs: HashMap<String, u64>,
+    /// The number a chat with no entry is at. Zero until the file was lost or damaged, or
+    /// cleared; then a number never used before (the time), so a chat never continues a
+    /// conversation `/new` had ended.
+    base_epoch: u64,
+}
+
+/// A conversation number no chat had before: the time, in seconds.
+fn fresh_epoch() -> u64 {
+    u64::try_from(Utc::now().timestamp()).unwrap_or(1).max(1)
 }
 
 /// [`DiskState`] in its file (`connectors/telegram_state.json`, atomic writes).
 pub struct StateFile {
     path: PathBuf,
     lock: Mutex<()>,
+    /// Used while the file cannot be read at all: fresh conversations, the same for the
+    /// whole session.
+    unreadable_base: OnceLock<u64>,
 }
 
 impl StateFile {
@@ -264,9 +322,12 @@ impl StateFile {
         Self {
             path: data_dir.join(STATE_FILE),
             lock: Mutex::new(()),
+            unreadable_base: OnceLock::new(),
         }
     }
 
+    /// The state; a damaged one is replaced, once, by a fresh one whose conversations are
+    /// all new.
     fn read(&self) -> Result<DiskState, String> {
         match durable_file::read_with_backup(
             &self.path,
@@ -274,11 +335,18 @@ impl StateFile {
             DiskState::default,
         ) {
             Ok(Loaded { value, .. }) => Ok(value),
-            // A damaged state starts empty: at worst Telegram sends the updates it still
-            // keeps again, and private chats start a new conversation.
+            // At worst Telegram sends the updates it still keeps again; private chats start
+            // new conversations instead of continuing ones `/new` had ended.
             Err(ReadFailure::Damaged { problem, .. }) => {
-                tracing::warn!(target: "shodh::telegram", %problem, "the Telegram state was damaged; starting empty");
-                Ok(DiskState::default())
+                tracing::warn!(target: "shodh::telegram", %problem, "the Telegram state was damaged; starting fresh");
+                let fresh = DiskState {
+                    base_epoch: fresh_epoch(),
+                    ..DiskState::default()
+                };
+                if let Err(e) = self.write(&fresh) {
+                    tracing::warn!(target: "shodh::telegram", error = %e, "the damaged Telegram state could not be replaced");
+                }
+                Ok(fresh)
             }
             Err(ReadFailure::Io { message, .. }) => Err(message),
         }
@@ -300,25 +368,37 @@ impl StateFile {
     /// The conversation number of private chat `chat`.
     pub fn epoch(&self, chat: i64) -> u64 {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.read()
-            .ok()
-            .and_then(|s| s.epochs.get(&chat.to_string()).copied())
-            .unwrap_or(0)
+        match self.read() {
+            Ok(state) => state
+                .epochs
+                .get(&chat.to_string())
+                .copied()
+                .unwrap_or(state.base_epoch),
+            Err(e) => {
+                tracing::warn!(target: "shodh::telegram", error = %e, "the Telegram state could not be read; a new conversation starts");
+                *self.unreadable_base.get_or_init(fresh_epoch)
+            }
+        }
     }
 
     /// Starts a new conversation in private chat `chat`.
     pub fn next_epoch(&self, chat: i64) -> Result<u64, String> {
         self.change(|s| {
-            let n = s.epochs.entry(chat.to_string()).or_insert(0);
+            let base = s.base_epoch;
+            let n = s.epochs.entry(chat.to_string()).or_insert(base);
             *n += 1;
             *n
         })
     }
 
-    /// Forgets the checkpoint and the conversation numbers (another bot, Disconnect).
+    /// Forgets the checkpoint and the conversation numbers (another bot, Disconnect); a
+    /// chat later starts a conversation never used before.
     pub fn clear(&self) -> Result<(), String> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.write(&DiskState::default())
+        self.write(&DiskState {
+            base_epoch: fresh_epoch(),
+            ..DiskState::default()
+        })
     }
 }
 
@@ -346,6 +426,8 @@ struct Live {
 struct Running {
     stop: CancellationToken,
     task: tauri::async_runtime::JoinHandle<()>,
+    /// Where its answers run: waited for after a stop, so nothing is kept after it.
+    dispatcher: Option<Arc<Dispatcher>>,
 }
 
 /// Managed state of the Telegram connector.
@@ -401,11 +483,15 @@ impl TelegramState {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Whether polling runs. A loop that was cancelled is not running, even before it was
+    /// taken away: a change that cancelled it and then failed to save leaves it to the
+    /// next sync to start again, never dead.
     fn is_running(&self) -> bool {
         self.running
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_some()
+            .as_ref()
+            .is_some_and(|r| !r.stop.is_cancelled())
     }
 
     /// Cancels every answer at once (before the change that stops polling is saved).
@@ -776,9 +862,24 @@ struct AppBrain {
     data_dir: PathBuf,
     codes: Arc<LinkCodes>,
     files: Arc<StateFile>,
+    /// When a group added by someone unknown was last listed.
+    last_quiet_listing: Mutex<Option<DateTime<Utc>>>,
 }
 
 impl AppBrain {
+    /// Whether a group added by someone unknown may be listed at `now` (one a minute).
+    fn quiet_listing_allowed(&self, now: DateTime<Utc>) -> bool {
+        let mut last = self
+            .last_quiet_listing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| now - at < QUIET_LISTING_EVERY) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+
     async fn bot(&self) -> Result<TelegramBotPrefs, String> {
         let store = SettingsStore::in_dir(&self.data_dir);
         let settings = tokio::task::spawn_blocking(move || store.load())
@@ -862,49 +963,61 @@ impl TelegramBrain for AppBrain {
 
     async fn membership(&self, chat: &Chat, by: Option<&Person>, joined: bool) {
         let id = chat.id;
-        if joined {
-            let group = TelegramGroup {
-                id,
-                title: chat.title.clone().unwrap_or_else(|| "A group".into()),
-                allowed: false,
-                added_by: by.map(|p| p.name.clone()),
-                seen_at: Utc::now(),
-            };
-            let notice = TelegramNotice::GroupWaiting {
-                group: id,
-                title: group.title.clone(),
-                by: group.added_by.clone(),
-            };
-            let mut new = false;
-            let added = self
-                .change(move |bot| {
-                    if !bot.groups.iter().any(|g| g.id == id) {
-                        bot.groups.push(group);
-                    }
-                    Ok(())
-                })
-                .await;
-            if let Ok(bot) = self.bot().await {
-                new = bot.groups.iter().any(|g| g.id == id && !g.allowed);
-                if new {
-                    telegram_notices::tell(&self.app, &bot.username, &notice);
+        let Ok(bot) = self.bot().await else {
+            return;
+        };
+        if !joined {
+            if bot.groups.iter().any(|g| g.id == id) {
+                if let Err(e) = self
+                    .change(move |bot| {
+                        bot.groups.retain(|g| g.id != id);
+                        Ok(())
+                    })
+                    .await
+                {
+                    tracing::warn!(target: "shodh::telegram", error = %e, "a Telegram group could not be removed");
                 }
             }
-            if let Err(e) = added {
-                tracing::warn!(target: "shodh::telegram", error = %e, "a Telegram group could not be listed");
-            }
-            tracing::info!(target: "shodh::telegram", waiting = new, "the bot was added to a Telegram group");
-        } else {
-            if let Err(e) = self
-                .change(move |bot| {
-                    bot.groups.retain(|g| g.id != id);
-                    Ok(())
-                })
-                .await
-            {
-                tracing::warn!(target: "shodh::telegram", error = %e, "a Telegram group could not be removed");
-            }
             telegram_notices::group_decided(&self.app, id);
+            return;
+        }
+        if bot.groups.iter().any(|g| g.id == id) {
+            return;
+        }
+        // Who added the bot: the owner or someone they invited is told about at once;
+        // anyone else's group is listed quietly, and at most one a minute.
+        let known = by.is_some_and(|p| {
+            bot.owner.as_ref().is_some_and(|o| o.id == p.id)
+                || bot.people.iter().any(|q| q.id == p.id)
+        });
+        if !known && !self.quiet_listing_allowed(Utc::now()) {
+            tracing::info!(target: "shodh::telegram", "a group added by someone unknown was not listed (too many at once)");
+            return;
+        }
+        let group = TelegramGroup {
+            id,
+            title: one_line_title(chat.title.as_deref().unwrap_or("A group")),
+            allowed: false,
+            added_by: by.map(|p| one_line_title(&p.name)),
+            seen_at: Utc::now(),
+        };
+        let notice = TelegramNotice::GroupWaiting {
+            group: id,
+            title: group.title.clone(),
+            by: group.added_by.clone(),
+        };
+        match self
+            .change(move |bot| {
+                list_waiting_group(bot, group);
+                Ok(())
+            })
+            .await
+        {
+            Ok(()) if known => telegram_notices::tell(&self.app, &bot.username, &notice),
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(target: "shodh::telegram", error = %e, "a Telegram group could not be listed")
+            }
         }
     }
 
@@ -1035,7 +1148,14 @@ impl TelegramBrain for AppBrain {
             .collect()
     }
 
-    async fn keep(&self, chat: &ChatRef, asked: &Asked, answer: &str, learn: bool) {
+    async fn keep(
+        &self,
+        chat: &ChatRef,
+        audience: Audience,
+        asked: &Asked,
+        answer: &str,
+        learn: bool,
+    ) {
         let link = self.bot().await.ok().map(|b| chat_link(&b.username));
         conversations::keep(
             &self.app,
@@ -1059,6 +1179,8 @@ impl TelegramBrain for AppBrain {
                 answer: answer.to_string(),
                 answered_at: Utc::now(),
                 learn,
+                // A group's answer is built on others' words: never learning context.
+                answer_as_context: audience != Audience::Group,
             },
         )
         .await;
@@ -1089,8 +1211,25 @@ async fn stop(app: &AppHandle) {
         if tokio::time::timeout(EXIT_WAIT, running.task).await.is_err() {
             tracing::warn!(target: "shodh::telegram", "the Telegram polling did not stop in time");
         }
+        // Answers in flight end (they were cancelled) before anything else happens, so a
+        // Disconnect that forgets the conversations is not undone by one of them.
+        if let Some(dispatcher) = running.dispatcher {
+            if tokio::time::timeout(EXIT_WAIT, dispatcher.drained())
+                .await
+                .is_err()
+            {
+                tracing::warn!(target: "shodh::telegram", "Telegram answers did not end in time");
+            }
+        }
     }
     state.live.lock().unwrap_or_else(|e| e.into_inner()).poll = Some(PollState::Off);
+}
+
+/// A change cancelled polling and then failed: the cancelled loop is ended and polling
+/// brought back in line with the saved settings.
+async fn recover(app: &AppHandle) {
+    stop(app).await;
+    sync_locked(app).await;
 }
 
 /// Starts polling as `bot` (its token from the credential store).
@@ -1139,6 +1278,7 @@ async fn start(app: &AppHandle, bot: &TelegramBotPrefs) {
             data_dir: state.data_dir.clone(),
             codes: state.codes.clone(),
             files: state.files.clone(),
+            last_quiet_listing: Mutex::new(None),
         }),
         telegram.clone(),
         state.usage.clone(),
@@ -1157,7 +1297,7 @@ async fn start(app: &AppHandle, bot: &TelegramBotPrefs) {
     let task = tauri::async_runtime::spawn(poll::run(
         telegram,
         state.files.clone(),
-        dispatcher,
+        dispatcher.clone(),
         Arc::new(AppPollSink {
             app: app.clone(),
             live: state.live.clone(),
@@ -1168,6 +1308,7 @@ async fn start(app: &AppHandle, bot: &TelegramBotPrefs) {
     *state.running.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
         stop: stop_token,
         task,
+        dispatcher: Some(dispatcher),
     });
 }
 
@@ -1306,11 +1447,16 @@ pub async fn telegram_connect(
     state.cancel();
     let id = me.id;
     let stored = token.clone();
-    tokio::task::spawn_blocking(move || {
+    let kept = tokio::task::spawn_blocking(move || {
         crate::api_key_store::store_secret(&token_user(id), stored.expose())
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    if let Err(e) = kept {
+        recover(&app).await;
+        return Err(e);
+    }
     let fresh = TelegramBotPrefs {
         bot_id: me.id,
         username: me.username.clone(),
@@ -1337,7 +1483,14 @@ pub async fn telegram_connect(
         });
         Ok(())
     })
-    .await?;
+    .await;
+    let settings = match settings {
+        Ok(settings) => settings,
+        Err(e) => {
+            recover(&app).await;
+            return Err(e);
+        }
+    };
     audit_change(&audit, "telegram_connect", json!({ "bot": me.username }));
     stop(&app).await;
     sync_locked(&app).await;
@@ -1360,6 +1513,18 @@ pub struct LinkInvite {
     pub url: String,
     pub expires_at: String,
     pub qr: QrMatrix,
+}
+
+/// What the audit log says about a link made: its kind and when it stops working, never
+/// the code (which would let anyone reading the log link themselves).
+pub fn link_code_audit(kind: LinkKind, expires_at: DateTime<Utc>) -> serde_json::Value {
+    json!({
+        "kind": match kind {
+            LinkKind::Owner => "owner",
+            LinkKind::Invite => "invite",
+        },
+        "expiresAt": rfc3339(expires_at),
+    })
 }
 
 /// The QR code of `text`.
@@ -1385,6 +1550,7 @@ pub fn qr_matrix(text: &str) -> Result<QrMatrix, String> {
 #[tauri::command]
 pub async fn telegram_link_code(
     state: State<'_, TelegramState>,
+    audit: State<'_, AuditState>,
     kind: String,
 ) -> Result<LinkInvite, String> {
     let kind = match kind.as_str() {
@@ -1399,6 +1565,12 @@ pub async fn telegram_link_code(
         .bot
         .ok_or_else(|| "Connect a Telegram bot first.".to_string())?;
     let issued = state.codes.issue(kind, Utc::now());
+    // Who may get access, and when; never the code itself.
+    audit_change(
+        &audit,
+        "telegram_link_code",
+        link_code_audit(kind, issued.expires_at),
+    );
     let url = deep_link(&bot.username, &issued.code);
     Ok(LinkInvite {
         qr: qr_matrix(&url)?,
@@ -1442,11 +1614,18 @@ pub async fn telegram_set_enabled(
         // Off means off now: answers stop before the switch is saved.
         state.cancel();
     }
-    let settings = save_bot(&state, move |bot| {
+    let settings = match save_bot(&state, move |bot| {
         bot.enabled = enabled;
         Ok(())
     })
-    .await?;
+    .await
+    {
+        Ok(settings) => settings,
+        Err(e) => {
+            recover(&app).await;
+            return Err(e);
+        }
+    };
     audit_change(
         &audit,
         "telegram_set_enabled",
@@ -1764,6 +1943,86 @@ mod tests {
     }
 
     #[test]
+    fn waiting_groups_are_capped_and_allowed_ones_never_dropped() {
+        let mut prefs = bot();
+        let start = Utc::now();
+        for n in 0..40 {
+            list_waiting_group(
+                &mut prefs,
+                TelegramGroup {
+                    id: -1_000 - n,
+                    title: format!("Spam {n}"),
+                    allowed: false,
+                    added_by: Some("Stranger".into()),
+                    seen_at: start + chrono::Duration::seconds(n),
+                },
+            );
+        }
+        let waiting: Vec<i64> = prefs
+            .groups
+            .iter()
+            .filter(|g| !g.allowed)
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(waiting.len(), MAX_WAITING_GROUPS);
+        assert!(waiting.contains(&-1_039), "the newest stay");
+        assert!(!waiting.contains(&-1_000), "the oldest go");
+        assert!(
+            prefs.groups.iter().any(|g| g.id == -100 && g.allowed),
+            "an allowed group stays"
+        );
+        // Listed once.
+        let before = prefs.groups.len();
+        list_waiting_group(
+            &mut prefs,
+            TelegramGroup {
+                id: -1_039,
+                title: "Again".into(),
+                allowed: false,
+                added_by: None,
+                seen_at: Utc::now(),
+            },
+        );
+        assert_eq!(prefs.groups.len(), before);
+        assert_eq!(one_line_title("Deals\n\u{7}Allow me "), "Deals Allow me");
+        assert_eq!(one_line_title(&"x".repeat(500)).chars().count(), 80);
+        assert_eq!(one_line_title("\n"), "A group");
+    }
+
+    #[test]
+    fn a_cancelled_loop_counts_as_not_running_so_the_next_sync_starts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = TelegramState::new(dir.path());
+        assert!(!state.is_running());
+        let stop = CancellationToken::new();
+        let task = tauri::async_runtime::spawn(async {});
+        *state.running.lock().unwrap() = Some(Running {
+            stop: stop.clone(),
+            task,
+            dispatcher: None,
+        });
+        assert!(state.is_running());
+        // Switching off cancels first; if the save then fails, the loop is gone and the
+        // connector must not count as running (it would never be started again).
+        state.cancel();
+        assert!(stop.is_cancelled());
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn a_link_made_is_audited_without_its_code() {
+        let codes = LinkCodes::default();
+        let issued = codes.issue(LinkKind::Invite, Utc::now());
+        let detail = link_code_audit(issued.kind, issued.expires_at);
+        assert_eq!(detail["kind"], "invite");
+        assert!(!detail.to_string().contains(&issued.code));
+        // The command records it (the needle is split so this test does not count).
+        let source = include_str!("telegram.rs");
+        let call = format!("{}{}", "link_code_audit(kind, ", "issued.expires_at)");
+        assert_eq!(source.matches(call.as_str()).count(), 1);
+    }
+
+    #[test]
     fn chat_keys_and_labels() {
         assert_eq!(chat_key(Audience::Owner, 42, 0, 0), "u42-0");
         assert_eq!(chat_key(Audience::Owner, 42, 3, 0), "u42-3");
@@ -1815,7 +2074,41 @@ mod tests {
         assert_eq!(file.load().unwrap(), Some(41), "the checkpoint stays");
         file.clear().unwrap();
         assert_eq!(file.load().unwrap(), None);
-        assert_eq!(file.epoch(42), 0);
+        let after_clear = file.epoch(42);
+        assert!(
+            after_clear > 1,
+            "a conversation never used before, not u42-0 again"
+        );
+    }
+
+    #[test]
+    fn a_damaged_state_never_brings_back_a_conversation_new_had_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = StateFile::new(dir.path());
+        assert_eq!(file.next_epoch(42).unwrap(), 1);
+        // The file and its backup are damaged.
+        let path = dir.path().join(STATE_FILE);
+        std::fs::write(&path, "{damaged").unwrap();
+        let backup = durable_file::backup_path(&path);
+        if backup.exists() {
+            std::fs::write(&backup, "{damaged").unwrap();
+        }
+        let epoch = file.epoch(42);
+        assert!(
+            epoch > 1,
+            "not 0 or 1, which may be ended conversations: {epoch}"
+        );
+        assert_eq!(
+            file.epoch(42),
+            epoch,
+            "the same conversation after the repair"
+        );
+        assert_eq!(file.epoch(7), epoch, "every chat starts fresh");
+        assert!(
+            serde_json::from_str::<DiskState>(&std::fs::read_to_string(&path).unwrap()).is_ok(),
+            "the file was repaired once"
+        );
+        assert_eq!(file.next_epoch(42).unwrap(), epoch + 1);
     }
 
     #[test]

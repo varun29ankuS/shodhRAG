@@ -19,12 +19,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
 use super::api::{BotApi, TelegramError, LONG_POLL_SECONDS};
-use super::respond::Dispatcher;
+use super::respond::{Dispatcher, Room};
 use super::updates::{parse_update, Update};
 
 /// Where the next offset is kept between runs.
@@ -34,14 +35,24 @@ pub trait OffsetStore: Send + Sync {
     fn save(&self, next: i64) -> Result<(), String>;
 }
 
-/// Takes updates and starts them; must return at once.
+/// Takes updates and starts them. Taking waits while there is no room, so an update is
+/// confirmed to Telegram only once it was taken; what was not taken stays with Telegram.
+#[async_trait]
 pub trait UpdateHandler: Send + Sync {
-    fn handle(&self, update: Update);
+    /// Room for `update` (`None`: `stop` came first, and the update is not taken).
+    async fn room(&self, update: &Update, stop: &CancellationToken) -> Option<Room>;
+    /// Starts `update` in `room`; returns at once.
+    fn start(&self, update: Update, room: Room);
 }
 
+#[async_trait]
 impl UpdateHandler for Dispatcher {
-    fn handle(&self, update: Update) {
-        self.dispatch(update);
+    async fn room(&self, update: &Update, stop: &CancellationToken) -> Option<Room> {
+        Dispatcher::room(self, update, stop).await
+    }
+
+    fn start(&self, update: Update, room: Room) {
+        Dispatcher::start(self, update, room);
     }
 }
 
@@ -142,10 +153,18 @@ pub async fn run(
                     .filter_map(parse_update)
                     .filter(|u| offset.is_none_or(|o| u.id() >= o))
                     .collect();
-                if let Some(last) = parsed.iter().map(Update::id).max() {
-                    let next = last + 1;
+                if !parsed.is_empty() {
+                    sink.update_seen(Utc::now());
+                }
+                for update in parsed {
+                    // Room first: while there is none, nothing more is confirmed, and
+                    // Telegram keeps the rest for the next call.
+                    let Some(room) = handler.room(&update, &stop).await else {
+                        break;
+                    };
+                    let next = update.id() + 1;
                     offset = Some(next);
-                    // Saved before the answers start: at most once.
+                    // Saved before the answer starts: at most once.
                     let saver = offsets.clone();
                     let saved = tokio::task::spawn_blocking(move || saver.save(next))
                         .await
@@ -154,10 +173,10 @@ pub async fn run(
                     if let Err(e) = saved {
                         tracing::warn!(target: "shodh::telegram", error = %e, "the Telegram checkpoint could not be saved");
                     }
-                    sink.update_seen(Utc::now());
-                    for update in parsed {
-                        handler.handle(update);
-                    }
+                    handler.start(update, room);
+                }
+                if stop.is_cancelled() {
+                    break;
                 }
                 continue;
             }
@@ -268,8 +287,12 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
     }
 
+    #[async_trait]
     impl UpdateHandler for Recorder {
-        fn handle(&self, update: Update) {
+        async fn room(&self, _update: &Update, _stop: &CancellationToken) -> Option<Room> {
+            Some(Room::unlimited())
+        }
+        fn start(&self, update: Update, _room: Room) {
             self.log
                 .lock()
                 .unwrap()
@@ -470,5 +493,70 @@ mod tests {
             .expect("stopped at once")
             .unwrap();
         assert_eq!(r.states.0.lock().unwrap().last(), Some(&PollState::Off));
+    }
+
+    /// A handler with room for one update, never given back.
+    struct OneRoom {
+        taken: Mutex<Vec<i64>>,
+    }
+
+    #[async_trait]
+    impl UpdateHandler for OneRoom {
+        async fn room(&self, _update: &Update, stop: &CancellationToken) -> Option<Room> {
+            if self.taken.lock().unwrap().is_empty() {
+                return Some(Room::unlimited());
+            }
+            stop.cancelled().await;
+            None
+        }
+        fn start(&self, update: Update, _room: Room) {
+            self.taken.lock().unwrap().push(update.id());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn updates_without_room_stay_with_telegram() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let bot = Arc::new(ScriptedBot {
+            script: Mutex::new(
+                vec![Ok(vec![
+                    message_value(5, 42, 42, "a"),
+                    message_value(6, 43, 43, "b"),
+                    message_value(7, 44, 44, "c"),
+                ])]
+                .into(),
+            ),
+            offsets: Mutex::new(Vec::new()),
+            log: log.clone(),
+        });
+        let offsets = Arc::new(MemoryOffsets {
+            saved: Mutex::new(None),
+            log: log.clone(),
+        });
+        let handler = Arc::new(OneRoom {
+            taken: Mutex::new(Vec::new()),
+        });
+        let stop = CancellationToken::new();
+        let task = tokio::spawn(run(
+            bot.clone(),
+            offsets.clone(),
+            handler.clone(),
+            Arc::new(States::default()),
+            stop.clone(),
+            timing(),
+        ));
+        settle().await;
+        // One taken and confirmed; the loop waits for room instead of dropping the rest.
+        assert_eq!(*handler.taken.lock().unwrap(), vec![5]);
+        assert_eq!(*offsets.saved.lock().unwrap(), Some(6));
+        assert_eq!(
+            bot.offsets.lock().unwrap().len(),
+            1,
+            "no new poll while full"
+        );
+        stop.cancel();
+        task.await.unwrap();
+        // 6 and 7 were never confirmed: Telegram gives them again from offset 6.
+        assert_eq!(*offsets.saved.lock().unwrap(), Some(6));
     }
 }

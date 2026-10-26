@@ -1064,6 +1064,8 @@ pub fn slack_exchange(
         answer: unescape_slack(&turn.answer),
         answered_at: now,
         learn: true,
+        // A channel's answer is built on what others said there: never learning context.
+        answer_as_context: question.kind == QuestionKind::Direct,
     }
 }
 
@@ -2479,6 +2481,10 @@ mod tests {
             "someone else's question never reaches learning"
         );
         assert_eq!(ex.answer, "Sixty days & no more <b> [1]");
+        assert!(
+            !ex.answer_as_context,
+            "a channel's answer is never learning context"
+        );
         assert_eq!(ex.question.at.timestamp(), 1_761_555_600);
 
         // The user's own question (the member picked as "me") is learned from like Ask.

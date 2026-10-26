@@ -161,8 +161,22 @@ pub struct Part {
 /// An answer as the messages Telegram gets: diagrams replaced, sanitized, cut into
 /// parts, the cited sources after the text (in bold "Sources"), at most [`MAX_PARTS`].
 pub fn answer_parts(answer: &str, passages: &[AnswerPassage], private: &PrivateTerms) -> Vec<Part> {
-    let body = sanitize(&strip_diagrams_with(answer.trim(), DIAGRAM_NOTE), private);
-    let sources = sources_block(answer, passages).map(|s| sanitize(&s, private));
+    parts_of(answer, passages, Some(private))
+}
+
+/// [`answer_parts`] for the owner's own chat: their own data on their own phone, so
+/// nothing is redacted (names, paths); diagrams are still replaced.
+pub fn owner_parts(answer: &str, passages: &[AnswerPassage]) -> Vec<Part> {
+    parts_of(answer, passages, None)
+}
+
+fn parts_of(answer: &str, passages: &[AnswerPassage], private: Option<&PrivateTerms>) -> Vec<Part> {
+    let clean = |text: &str| match private {
+        Some(private) => sanitize(text, private),
+        None => text.to_string(),
+    };
+    let body = clean(&strip_diagrams_with(answer.trim(), DIAGRAM_NOTE));
+    let sources = sources_block(answer, passages).map(|s| clean(&s));
     let mut texts = split_text(&body, PART_UNITS);
     let mut parts: Vec<Part> = Vec::new();
     if texts.len() > MAX_PARTS {
@@ -296,6 +310,37 @@ mod tests {
         assert!(html.contains("Telegram can't show diagrams"));
         assert!(!html.contains("graph TD"));
         assert!(!parts[0].plain.contains('<'));
+    }
+
+    #[test]
+    fn the_owners_own_chat_keeps_their_names_and_paths_others_never_get_them() {
+        let private = PrivateTerms {
+            home_dirs: vec![r"C:\Users\Ada Lovelace".into()],
+            user_names: vec!["Ada Lovelace".into()],
+        };
+        let answer = r"Ada Lovelace keeps it in C:\Users\Ada Lovelace\notes\lease.txt [1].";
+        let passages = vec![passage(
+            1,
+            "Lease of Ada Lovelace",
+            Some("2"),
+            "Sixty days.",
+        )];
+        let mine = owner_parts(answer, &passages);
+        assert!(
+            mine[0]
+                .plain
+                .contains(r"C:\Users\Ada Lovelace\notes\lease.txt"),
+            "{}",
+            mine[0].plain
+        );
+        assert!(mine[0].plain.contains("Lease of Ada Lovelace"));
+        let theirs = answer_parts(answer, &passages, &private);
+        assert!(!theirs[0].plain.contains("Lovelace"), "{}", theirs[0].plain);
+        assert!(
+            !theirs[0].plain.contains(r"C:\Users"),
+            "{}",
+            theirs[0].plain
+        );
     }
 
     #[test]

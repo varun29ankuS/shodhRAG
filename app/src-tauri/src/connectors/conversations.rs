@@ -99,6 +99,10 @@ pub struct Exchange {
     /// False when the question was handled without learning (a request to remember
     /// something, saved as asked): it never costs a learning call.
     pub learn: bool,
+    /// Whether the answer may be given to learning as context. Not when it was written
+    /// for a group or a channel: it is built on other people's words, which never reach
+    /// the user's memories, not even through the answer.
+    pub answer_as_context: bool,
 }
 
 /// What a window is told.
@@ -317,6 +321,15 @@ fn emit(app: &AppHandle, change: &ConversationChange) {
     }
 }
 
+/// The answer learning may read as context for `exchange` (empty: none).
+pub fn learning_context(exchange: &Exchange) -> &str {
+    if exchange.answer_as_context {
+        &exchange.answer
+    } else {
+        ""
+    }
+}
+
 /// Keeps `exchange` in its conversation, tells the windows, and hands the owner's own words
 /// to learning ([`words_to_learn`]). Failures are logged: the answer was given already.
 pub async fn keep(app: &AppHandle, exchange: Exchange) {
@@ -356,7 +369,7 @@ pub async fn keep(app: &AppHandle, exchange: Exchange) {
                     key_part(&exchange.turn_id)
                 ),
                 words,
-                &exchange.answer,
+                learning_context(&exchange),
                 exchange.question.at,
             );
         }
@@ -452,6 +465,7 @@ mod tests {
             answer: "The notice period is sixty days [1].".to_string(),
             answered_at: at(2),
             learn: true,
+            answer_as_context: true,
         }
     }
 
@@ -527,6 +541,21 @@ mod tests {
             words_to_learn(&handled),
             None,
             "a handled request is not learned again"
+        );
+        assert_eq!(learning_context(&owner), owner.answer);
+        let in_a_group = Exchange {
+            answer_as_context: false,
+            ..owner.clone()
+        };
+        assert_eq!(
+            words_to_learn(&in_a_group),
+            Some("I moved to Pune last month"),
+            "the owner's own words in a group are still theirs"
+        );
+        assert_eq!(
+            learning_context(&in_a_group),
+            "",
+            "but a group's answer, built on others' words, never reaches learning"
         );
         let empty = exchange("u42-0", "3", true, "   ");
         assert_eq!(words_to_learn(&empty), None);

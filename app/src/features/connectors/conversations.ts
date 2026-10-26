@@ -135,10 +135,36 @@ function oneMessage(text: string): string {
   return chars.length <= MAX_SEED_MESSAGE_CHARS ? trimmed : `${chars.slice(0, MAX_SEED_MESSAGE_CHARS - 1).join('')}…`;
 }
 
+/** Longest author name carried. */
+const MAX_NAME_CHARS = 60;
+
 /**
- * `messages` as quoted text, one block per message naming who wrote it: "Me", "Shodh", or
- * the author's name followed by "(not me)". The newest messages are kept when it is too
- * long, with a line saying earlier ones were left out.
+ * A name as a block heading: one line, no control characters, no quote mark or colon, so a
+ * name cannot look like a heading or a quoted line of its own.
+ */
+export function safeName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = name.replace(/[\u0000-\u001f\u007f-\u009f  ]/g, ' ').replace(/[>:]/g, ' ');
+  const one = flat.split(/\s+/).filter(Boolean).join(' ');
+  const chars = Array.from(one);
+  const cut = chars.length <= MAX_NAME_CHARS ? one : `${chars.slice(0, MAX_NAME_CHARS - 1).join('')}…`;
+  return cut || 'Someone';
+}
+
+/** `content` with every line quoted (`> `), so no line of it can pass for a heading. */
+function quoted(content: string): string {
+  return content
+    .split(/\r\n|\r|\n| | /)
+    .map(line => `> ${line}`)
+    .join('\n');
+}
+
+/**
+ * `messages` as quoted text: one block per message, a heading naming who wrote it ("I
+ * wrote:", "Shodh answered:", or "Alex (not me) wrote:"), then every line of the message
+ * quoted with `> `. A message cannot forge another author's block: none of its lines can
+ * start a heading. The newest messages are kept when it is too long, with a line saying
+ * earlier ones were left out.
  */
 export function seedText(messages: readonly MessageLike[]): { text: string; messages: number } {
   const blocks: string[] = [];
@@ -147,8 +173,8 @@ export function seedText(messages: readonly MessageLike[]): { text: string; mess
     const content = oneMessage(m.content);
     if (!content) continue;
     const author = messageAuthor(m);
-    const who = author.shodh ? 'Shodh' : author.owner ? 'Me' : `${author.name} (not me)`;
-    blocks.push(`${who}: ${content}`);
+    const heading = author.shodh ? 'Shodh answered:' : author.owner ? 'I wrote:' : `${safeName(author.name)} (not me) wrote:`;
+    blocks.push(`${heading}\n${quoted(content)}`);
   }
   const kept: string[] = [];
   let size = 0;

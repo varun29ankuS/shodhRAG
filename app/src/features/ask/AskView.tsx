@@ -1237,7 +1237,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // A conversation that happened in Slack or Telegram: read-only, with Continue in Ask.
   const activeConversation = session.activeConversation;
   if (activeConversation?.source) {
-    const continueInAsk = (conversation: typeof activeConversation) => {
+    const continueInAsk = (conversation: NonNullable<typeof activeConversation>) => {
       const seed = continueSeed(conversation);
       if (seed) session.createSeededConversation(seed);
     };

@@ -529,14 +529,16 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const activeMode = activeConversation?.mode ?? 'research';
   const activeWorkspaceId = activeConversation?.workspaceId ?? null;
   const streaming = liveRun !== null;
+  // A connector's conversation is read-only: no agent session for it.
+  const activeReadOnly = isConnectorConversation(activeConversation);
   const prewarm = useCallback(() => {
-    if (!activeConversationId || runtimeInstalled !== true || streaming) return;
+    if (!activeConversationId || runtimeInstalled !== true || streaming || activeReadOnly) return;
     api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
       // Other failures (no model configured, no code folder, …) surface when the user asks.
     });
-  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming]);
+  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming, activeReadOnly]);
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
   // `composed` for prompts the app builds (a side-thread summary request).

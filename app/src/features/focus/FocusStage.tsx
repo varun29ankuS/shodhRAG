@@ -7,6 +7,7 @@ import type { Artifact } from '../../components/EnhancedArtifactPanel';
 import { parseChartBlock } from '../ask/visual/chartSpec';
 import { tryParseChartSpec } from '../../utils/artifactExtractor';
 import { renderDiagram } from '../ask/visual/VisualBlocks';
+import { useChosenDiagramSource } from '../ask/visual/diagramLedger';
 import { SketchSurface, useSvgSketch } from '../ask/visual/SvgSketch';
 import { InteractivePlot, paramValues } from '../ask/visual/PlotView';
 import { SimulationPlayer } from '../ask/visual/SimulationView';
@@ -399,7 +400,9 @@ function svgSize(svg: string): Size | null {
   return w && h ? { width: Number(w[1]), height: Number(h[1]) } : null;
 }
 
-function MermaidStage({ source, label, dark, commandRef }: { source: string; label: string; dark: boolean; commandRef: StageCommandRef }) {
+function MermaidStage({ source: given, label, dark, commandRef }: { source: string; label: string; dark: boolean; commandRef: StageCommandRef }) {
+  // Opened from the gallery: the version of the diagram the reader chose in the answer.
+  const source = useChosenDiagramSource(given);
   const reactId = useId();
   // A fresh id: the answer's own copy of this diagram is still in the document.
   const domId = `focus-mmd-${reactId.replace(/[^a-zA-Z0-9]/g, '')}`;

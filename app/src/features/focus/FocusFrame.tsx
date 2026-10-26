@@ -7,6 +7,12 @@ import { notifyDepthLimit, useFocus, useFocusAnchor, useFocusDrill } from './Foc
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
 
+/** The look of a button in a visual's corner ("Expand & ask" and the `actions` beside it): subdued until hovered. */
+export const FRAME_ACTION = cn(
+  'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface/95 text-[11.5px] font-medium text-shodh-text-secondary shadow-sm',
+  'opacity-75 group-hover/focus:opacity-100 focus-visible:opacity-100 hover:text-shodh-text hover:bg-shodh-raised transition-opacity duration-micro',
+);
+
 export interface FocusFrameProps {
   /** Short name used in the button label, e.g. "diagram". */
   noun: string;
@@ -16,6 +22,8 @@ export interface FocusFrameProps {
   doubleClick?: boolean;
   /** Inside running text (images in a paragraph): renders as an inline block. */
   inline?: boolean;
+  /** More actions on the visual, shown before "Expand & ask" in the same corner. */
+  actions?: React.ReactNode;
   className?: string;
   children: React.ReactNode;
 }
@@ -53,7 +61,7 @@ export function useOpenFocus(): ((target: FocusTarget, trigger: HTMLElement | nu
  * nested level of the pop-out. Renders the visual unchanged anywhere else
  * (no anchor), e.g. a side answer still being written.
  */
-export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, className, children }: FocusFrameProps) {
+export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false, actions, className, children }: FocusFrameProps) {
   const openFocus = useOpenFocus();
   const frameRef = useRef<HTMLElement>(null);
   const Wrapper = inline ? 'span' : 'div';
@@ -82,22 +90,21 @@ export function FocusFrame({ noun, getTarget, doubleClick = true, inline = false
       onDoubleClick={doubleClick ? onDoubleClick : undefined}
     >
       {children}
-      <button
-        ref={buttonRef}
-        type="button"
-        data-answer-ui=""
-        onClick={e => open(e.currentTarget)}
-        aria-label={`Expand ${noun}: zoom and ask about it`}
-        title={doubleClick ? 'Expand (or double-click): zoom and ask about it' : 'Expand: zoom and ask about it'}
-        className={cn(
-          'absolute top-2 right-2 z-10 h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface/95 text-[11.5px] font-medium text-shodh-text-secondary shadow-sm',
-          'opacity-75 group-hover/focus:opacity-100 focus-visible:opacity-100 hover:text-shodh-text hover:bg-shodh-raised transition-opacity duration-micro',
-          FOCUS_RING,
-        )}
-      >
-        <MessageSquareText className="w-3.5 h-3.5" aria-hidden="true" />
-        Expand &amp; ask
-      </button>
+      <span data-answer-ui="" className="absolute top-2 right-2 z-10 inline-flex items-center gap-1.5">
+        {actions}
+        <button
+          ref={buttonRef}
+          type="button"
+          data-answer-ui=""
+          onClick={e => open(e.currentTarget)}
+          aria-label={`Expand ${noun}: zoom and ask about it`}
+          title={doubleClick ? 'Expand (or double-click): zoom and ask about it' : 'Expand: zoom and ask about it'}
+          className={cn(FRAME_ACTION, FOCUS_RING)}
+        >
+          <MessageSquareText className="w-3.5 h-3.5" aria-hidden="true" />
+          Expand &amp; ask
+        </button>
+      </span>
     </Wrapper>
   );
 }

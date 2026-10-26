@@ -15,6 +15,7 @@
 import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { renderDiagram } from '../ask/visual/VisualBlocks';
+import { chosenDiagramSource } from '../ask/visual/diagramLedger';
 import type { VisualRecord } from './model';
 import { paramValuesOf } from './model';
 
@@ -208,7 +209,8 @@ async function render(request: ExportRequest): Promise<{ bytes?: Uint8Array; tex
   if (format === 'md') return { text: `${record.source}\n` };
   let markup: string;
   if (record.kind === 'mermaid') {
-    markup = await mermaidExportSvg(record.source, request.dark);
+    // The version of the diagram the reader chose in the answer.
+    markup = await mermaidExportSvg(chosenDiagramSource(record.source), request.dark);
   } else {
     const svg = request.container ? mainSvg(request.container) : null;
     if (!svg) throw new Error('Open the visual first, then export it.');

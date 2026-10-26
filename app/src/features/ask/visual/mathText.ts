@@ -58,6 +58,17 @@ export function isMermaidLanguage(lang: string): boolean {
   return MERMAID_LANGS.has(lang.toLowerCase());
 }
 
+/**
+ * The diagram source of a mermaid fence as both the answer and the gallery
+ * read it: trailing spaces cut from every line, the body trimmed, its
+ * header added when it has none. The two must agree, since a diagram's
+ * versions are kept under a hash of it.
+ */
+export function diagramFenceSource(lang: string, body: string): string {
+  const lines = body.replace(/\r\n?/g, '\n').split('\n').map(line => line.replace(/\s+$/, ''));
+  return mermaidSource(lang, lines.join('\n').trim());
+}
+
 /** Mermaid source for a fence; a bare ```flowchart body gets its header added. */
 export function mermaidSource(lang: string, body: string): string {
   if (MERMAID_HEADER.test(body)) return body;

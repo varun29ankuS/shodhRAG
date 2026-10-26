@@ -28,7 +28,7 @@ import { FocusFrame } from '../focus/FocusFrame';
 import { tableRows } from '../focus/focusDom';
 import rehypeFocusEquations, { FOCUS_EQUATION_TAG } from '../focus/rehypeFocusEquations';
 import { chartTarget, equationTarget, imageTarget, tableTarget } from '../focus/targets';
-import { escapeCurrency, isMermaidLanguage, mermaidSource, normalizeMathDelimiters, protectMath } from './visual/mathText';
+import { diagramFenceSource, escapeCurrency, isMermaidLanguage, normalizeMathDelimiters, protectMath } from './visual/mathText';
 import type { ClaimCheck } from '../agent/events';
 import { FLAG_CLOSE, FLAG_OPEN, insertFlagMarkers, isCorrected, parseCitationMarkers } from '../agent/grounding';
 import { ClaimFlag, CorrectionNote, InvalidCitation } from '../agent/GroundingFlags';
@@ -391,7 +391,7 @@ function MessageContent({
       const match = /language-([\w-]+)/.exec(className || '');
       if (match) {
         const codeString = String(children).replace(/\n$/, '');
-        if (isMermaidLanguage(match[1])) return <MermaidBlock source={mermaidSource(match[1], codeString)} dark={isDark} />;
+        if (isMermaidLanguage(match[1])) return <MermaidBlock source={diagramFenceSource(match[1], codeString)} dark={isDark} />;
         if (match[1] === 'chart') return <><ChartBlock source={codeString} theme={theme} /><DeeperChips lang="chart" source={codeString} /></>;
         if (match[1] === 'svg') return <SvgBlock source={codeString} />;
         if (match[1] === 'plot') return <><PlotBlock source={codeString} /><DeeperChips lang="plot" source={codeString} /></>;

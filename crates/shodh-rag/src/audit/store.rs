@@ -645,6 +645,31 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE INDEX slack_thread_turn_thread
             ON slack_thread_turn(team_id, channel_id, thread_key, at);",
     ),
+    (
+        18,
+        // Inbox items of connectors (`connector`: Slack's connection lost or back, a
+        // channel's first backfill done or stopped, a memory saved in a channel). SQLite
+        // cannot change a CHECK in place, so the table is rebuilt with its rows.
+        "CREATE TABLE inbox_items_rebuilt (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder', 'indexing',
+                'tables', 'citation_graph', 'export', 'install', 'connector')),
+            status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            link_json TEXT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO inbox_items_rebuilt(id, kind, status, title, detail, link_json, data_json,
+                                        created_at, updated_at)
+            SELECT id, kind, status, title, detail, link_json, data_json, created_at, updated_at
+            FROM inbox_items;
+        DROP TABLE inbox_items;
+        ALTER TABLE inbox_items_rebuilt RENAME TO inbox_items;
+        CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {
@@ -2185,6 +2210,75 @@ mod tests {
             .unwrap();
         assert_eq!(versions, latest_schema_version());
         assert!(log.verify().unwrap().ok);
+    }
+
+    #[test]
+    fn the_inbox_is_rebuilt_for_connector_items_with_its_rows() {
+        let (dir, log) = temp_log();
+        drop(log);
+        // The Inbox as version 17 left it, with one item.
+        raw(&dir)
+            .execute_batch(
+                "DROP TABLE inbox_items;
+                 CREATE TABLE inbox_items (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder',
+                        'indexing', 'tables', 'citation_graph', 'export', 'install')),
+                    status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+                    title TEXT NOT NULL,
+                    detail TEXT NULL,
+                    link_json TEXT NULL,
+                    data_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);
+                 INSERT INTO inbox_items VALUES ('indexing:C:/papers', 'indexing', 'done',
+                    'Papers', '12 files indexed', NULL, '{}', '2026-10-01T00:00:00.000Z',
+                    '2026-10-01T00:00:00.000Z');
+                 DELETE FROM schema_version WHERE version >= 18;",
+            )
+            .unwrap();
+        assert!(raw(&dir)
+            .execute(
+                "INSERT INTO inbox_items VALUES ('slack:x', 'connector', 'done', 't', NULL, NULL,
+                 '{}', 'c', 'u')",
+                [],
+            )
+            .is_err());
+        let shared = open_shared_connection(&dir.path().join("shodh.db"), None).unwrap();
+        let conn = shared.read().unwrap();
+        let kept: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT kind, title, detail FROM inbox_items WHERE id = 'indexing:C:/papers'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                "indexing".to_string(),
+                "Papers".to_string(),
+                Some("12 files indexed".to_string())
+            )
+        );
+        drop(conn);
+        raw(&dir)
+            .execute(
+                "INSERT INTO inbox_items VALUES ('slack:x', 'connector', 'done', 't', NULL, NULL,
+                 '{}', 'c', 'u')",
+                [],
+            )
+            .unwrap();
+        let index: i64 = raw(&dir)
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'inbox_items_status'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
     }
 
     #[test]

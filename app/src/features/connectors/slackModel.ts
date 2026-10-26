@@ -66,6 +66,8 @@ export interface IndexChannelView {
   lastSyncAt: string | null;
   pausedUntil: string | null;
   windowDays: number;
+  /** The first backfill finished (it may be paused or stopped since). */
+  backfillDone: boolean;
 }
 
 /** The Slack member picked as the user. */
@@ -374,33 +376,295 @@ export function canConnect(appToken: string, botToken: string): boolean {
   return checkAppToken(appToken).ok && checkBotToken(botToken).ok;
 }
 
-export interface SetupStep {
+// ── The setup wizard ─────────────────────────────────────────────────
+
+/** The wizard's steps, 1 to 4. */
+export type WizardStep = 1 | 2 | 3 | 4;
+
+export const WIZARD_STEPS: readonly WizardStep[] = [1, 2, 3, 4];
+
+export interface WizardStepText {
+  step: WizardStep;
   title: string;
+  /** One or two short lines: where to click, what to copy. */
   detail: string;
 }
 
 /** The steps of setting up the Slack app, in order. */
-export function setupSteps(status: Pick<SlackStatus, 'appTokenScope' | 'botScopes'>): SetupStep[] {
+export function wizardSteps(status: Pick<SlackStatus, 'appTokenScope'>): WizardStepText[] {
   return [
     {
-      title: 'Create the Slack app',
-      detail:
-        'Opens Slack with Shodh’s settings filled in: Socket Mode (no public URL), a bot people can mention or message, ' +
-        `and only these permissions: ${status.botScopes.join(', ')}. Pick your Slack workspace and create the app.`,
+      step: 1,
+      title: 'Create the Shodh app in Slack',
+      detail: 'Slack opens with Shodh’s settings filled in. Pick your workspace, then click Create.',
     },
     {
+      step: 2,
       title: 'Create the app-level token',
-      detail: `In the app’s Basic Information → App-Level Tokens, generate a token with the ${status.appTokenScope} scope. It starts with xapp-.`,
+      detail: `In the app’s Basic Information, under App-Level Tokens, generate a token with the ${status.appTokenScope} scope.`,
     },
     {
-      title: 'Install the app',
-      detail: 'Under Install App, install it to your workspace, then copy the Bot User OAuth Token. It starts with xoxb-.',
+      step: 3,
+      title: 'Install to your workspace',
+      detail: 'Under Install App, install it to your workspace, then copy the Bot User OAuth Token.',
     },
     {
-      title: 'Paste both tokens',
-      detail: 'Shodh checks them with Slack before saving. They are kept in this computer’s credential store and never shown again.',
+      step: 4,
+      title: 'Connect',
+      detail: 'Shodh checks both tokens with Slack, then keeps them in this computer’s credential store. They are never shown again.',
     },
   ];
+}
+
+/** Whether Next (or Connect, on the last step) may be pressed on `step`. */
+export function canLeaveStep(step: WizardStep, appToken: string, botToken: string): boolean {
+  switch (step) {
+    case 1:
+      return true;
+    case 2:
+      return checkAppToken(appToken).ok;
+    case 3:
+      return checkBotToken(botToken).ok;
+    case 4:
+      return canConnect(appToken, botToken);
+  }
+}
+
+/**
+ * The step the wizard shows when `step` is asked for: never past a step whose token is
+ * missing or wrong (the tokens live in memory only, so they can be gone).
+ */
+export function reachableStep(step: WizardStep, appToken: string, botToken: string): WizardStep {
+  for (const s of WIZARD_STEPS) {
+    if (s >= step) return step;
+    if (!canLeaveStep(s, appToken, botToken)) return s;
+  }
+  return step;
+}
+
+/** The step that fixes what Slack refused on Connect: the token the message names, else Connect. */
+export function stepToFix(message: string): WizardStep {
+  const text = message.toLowerCase();
+  if (text.includes('different slack apps')) return 2;
+  if (text.includes('app-level token') || text.includes('xapp-')) return 2;
+  if (text.includes('bot token') || text.includes('xoxb-')) return 3;
+  return 4;
+}
+
+/** What each permission of Shodh's Slack app lets it do, in plain words. */
+const SCOPE_WORDS: Record<string, string> = {
+  'app_mentions:read': 'See messages that mention @shodh',
+  'channels:read': 'See the public channels it is in',
+  'groups:read': 'See the private channels it is added to',
+  'chat:write': 'Post answers as @shodh',
+  'im:history': 'Read direct messages people send it',
+  'im:read': 'See its direct message conversations',
+  'im:write': 'Reply in direct messages',
+  'users:read': 'See people’s names, to check who is asking',
+  'channels:history': 'Read public channels you choose to index',
+  'groups:history': 'Read private channels you choose to index',
+};
+
+/** `scope` in plain words (its id when Shodh has none for it). */
+export function scopeWords(scope: string): string {
+  return SCOPE_WORDS[scope] ?? scope;
+}
+
+// ── The tile and the page header ────────────────────────────────────
+
+export type PillKind = 'not_connected' | 'connecting' | 'connected' | 'attention' | 'off';
+
+/** The connector's status pill: what it is doing, in one or two words. */
+export interface Pill {
+  kind: PillKind;
+  tone: Tone;
+  label: string;
+  /** Why it needs attention, or why it is off. */
+  reason: string | null;
+  /** The Slack workspace, when connected. */
+  team: string | null;
+}
+
+/** The pill of the Slack connector, from its status. */
+export function slackPill(status: SlackStatus): Pill {
+  const team = status.installation?.teamName ?? null;
+  switch (status.state) {
+    case 'not_set_up':
+      return { kind: 'not_connected', tone: 'neutral', label: 'Not connected', reason: null, team: null };
+    case 'off':
+      return { kind: 'off', tone: 'neutral', label: 'Off', reason: null, team };
+    case 'local_only':
+      return { kind: 'off', tone: 'neutral', label: 'Off', reason: 'Local-only mode', team };
+    case 'connecting':
+    case 'reconnecting':
+      return { kind: 'connecting', tone: 'active', label: 'Connecting…', reason: null, team };
+    case 'error':
+      return { kind: 'attention', tone: 'error', label: 'Needs attention', reason: 'Connection stopped', team };
+    case 'connected': {
+      const reason = attentionReason(status);
+      return reason
+        ? { kind: 'attention', tone: 'warning', label: 'Needs attention', reason, team }
+        : { kind: 'connected', tone: 'ok', label: 'Connected', reason: null, team };
+    }
+  }
+}
+
+/** Paused by Slack's rate limit (it resumes on its own). */
+export function isRateLimited(channel: Pick<IndexChannelView, 'state' | 'detail'>): boolean {
+  return channel.state === 'paused' && (channel.detail === 'Slack’s rate limit' || channel.detail === "Slack's rate limit");
+}
+
+/** A channel that stopped indexing until the user acts. */
+export function channelNeedsAttention(channel: Pick<IndexChannelView, 'state'>): boolean {
+  return channel.state === 'error' || channel.state === 'removed' || channel.state === 'now_shared';
+}
+
+/** Why a connected Slack needs the user, most pressing first; `null` when it does not. */
+function attentionReason(status: SlackStatus): string | null {
+  if (status.missingScopes.length > 0 || status.index.missingScopes.length > 0) return 'Missing permissions';
+  if (status.error) return 'Slack refused a reply';
+  if (status.otherConnections) return 'Another Shodh is connected';
+  if (status.lastPostFailedAt) return 'An answer was not posted';
+  if (status.index.channels.some(channelNeedsAttention)) return 'A channel stopped';
+  if (status.answerChannels.some(c => c.nowShared)) return 'A channel is shared now';
+  if (status.index.channels.some(isRateLimited)) return 'Rate-limited by Slack';
+  return null;
+}
+
+/** The tile's one action. */
+export function tileAction(status: Pick<SlackStatus, 'installation'>): 'Connect' | 'Manage' {
+  return status.installation ? 'Manage' : 'Connect';
+}
+
+// ── The connected page ──────────────────────────────────────────────
+
+/** The day's answers as a share of the cap, 0 to 1. */
+export function capShare(status: Pick<SlackStatus, 'answersToday' | 'dailyCap'>): number {
+  if (status.dailyCap <= 0) return 1;
+  return Math.min(1, Math.max(0, status.answersToday / status.dailyCap));
+}
+
+export type SlackTabId = 'overview' | 'answering' | 'indexing' | 'memories' | 'settings';
+
+/** Something left to set up or to fix, on the overview. */
+export interface NextStep {
+  id: string;
+  tone: Tone;
+  title: string;
+  detail: string;
+  /** The tab that fixes it; `null` when it is fixed outside the page. */
+  tab: SlackTabId | null;
+  action: string | null;
+}
+
+/** What is left to set up, or to fix, most pressing first. */
+export function nextSteps(status: SlackStatus): NextStep[] {
+  const steps: NextStep[] = [];
+  const scopes = [...new Set([...status.missingScopes, ...status.index.missingScopes])].sort();
+  if (scopes.length > 0) {
+    steps.push({
+      id: 'scopes',
+      tone: 'warning',
+      title: 'Update the Slack app',
+      detail:
+        `Under OAuth & Permissions, add the bot scopes ${scopes.join(', ')}. Under Event Subscriptions, check the bot ` +
+        `events ${status.botEvents.join(', ')}. Reinstall the app, then disconnect and connect again with the new bot token.`,
+      tab: null,
+      action: null,
+    });
+  }
+  if (status.state === 'local_only') {
+    steps.push({
+      id: 'local_only',
+      tone: 'neutral',
+      title: 'Local-only mode is on',
+      detail: 'Shodh does not connect to Slack while it is on. Turn it off in Settings → Privacy.',
+      tab: null,
+      action: null,
+    });
+  } else if (status.state === 'off') {
+    steps.push({
+      id: 'off',
+      tone: 'neutral',
+      title: 'Slack answers are off',
+      detail: 'Shodh is connected but does not answer. Switch it on under Answering.',
+      tab: 'answering',
+      action: 'Switch on',
+    });
+  }
+  const ws = status.answerWorkspace;
+  if (!ws || !ws.available) {
+    steps.push({
+      id: 'workspace',
+      tone: 'warning',
+      title: ws ? 'The answer workspace is gone' : 'Choose what Slack answers from',
+      detail: ws
+        ? 'It was deleted or archived, so the bot says it isn’t set up. Choose another workspace.'
+        : 'Until you pick a workspace, the bot replies that it isn’t set up yet.',
+      tab: 'answering',
+      action: 'Choose a workspace',
+    });
+  }
+  if (status.answerChannels.length === 0) {
+    steps.push({
+      id: 'channels',
+      tone: 'warning',
+      title: 'Choose where Shodh answers',
+      detail: 'It answers mentions in no channel yet. Direct messages from your members already work.',
+      tab: 'answering',
+      action: 'Choose channels',
+    });
+  }
+  const stopped = status.index.channels.filter(channelNeedsAttention);
+  if (stopped.length > 0) {
+    steps.push({
+      id: 'stopped',
+      tone: 'warning',
+      title: stopped.length === 1 ? `#${stopped[0].name} stopped indexing` : `${stopped.length} channels stopped indexing`,
+      detail: 'Open Indexing to see why and what to do.',
+      tab: 'indexing',
+      action: 'Open Indexing',
+    });
+  }
+  if (!status.index.owner) {
+    steps.push({
+      id: 'owner',
+      tone: 'neutral',
+      title: 'Tell Shodh which Slack member you are',
+      detail: 'Then your “@shodh remember:” goes into your own memories.',
+      tab: 'memories',
+      action: 'Pick yourself',
+    });
+  }
+  return steps;
+}
+
+/** A small count on a tab, and whether it needs the user. */
+export interface TabBadge {
+  count: number;
+  tone: 'neutral' | 'warning';
+}
+
+/** The badges of the page's tabs: what needs the user on each, and what each holds. */
+export function slackTabBadges(status: SlackStatus, now: number): Partial<Record<SlackTabId, TabBadge>> {
+  const badges: Partial<Record<SlackTabId, TabBadge>> = {};
+  const fixes = nextSteps(status).filter(s => s.tone === 'warning').length + slackWarnings(status, now).length;
+  if (fixes > 0) badges.overview = { count: fixes, tone: 'warning' };
+  const stopped = status.index.channels.filter(channelNeedsAttention).length;
+  if (stopped > 0) badges.indexing = { count: stopped, tone: 'warning' };
+  else if (status.index.channels.length > 0) badges.indexing = { count: status.index.channels.length, tone: 'neutral' };
+  if (status.index.memories > 0) badges.memories = { count: status.index.memories, tone: 'neutral' };
+  return badges;
+}
+
+/** What the indexing summary on the overview says. */
+export function indexSummary(index: Pick<IndexStatus, 'channels'>): string {
+  const channels = index.channels.length;
+  if (channels === 0) return 'No channel indexed yet.';
+  const threadCount = index.channels.reduce((n, c) => n + c.threads, 0);
+  const stopped = index.channels.filter(channelNeedsAttention).length;
+  const base = `${channels} ${channels === 1 ? 'channel' : 'channels'}, ${threads(threadCount)}`;
+  return stopped > 0 ? `${base}; ${stopped} ${stopped === 1 ? 'needs' : 'need'} attention.` : `${base}.`;
 }
 
 /** Whether the daily cap input holds a value the card accepts. */
@@ -454,8 +718,7 @@ export function indexChannelLine(channel: IndexChannelView, now: number, options
     case 'paused': {
       const until = parseTime(channel.pausedUntil);
       const when = until === null ? 'shortly' : localTime(until, now, options);
-      const rateLimited = channel.detail === 'Slack’s rate limit' || channel.detail === "Slack's rate limit";
-      return rateLimited
+      return isRateLimited(channel)
         ? { tone: 'warning', title: `Paused: rate limit until ${when}`, detail: 'Slack asked Shodh to wait; it resumes on its own.' }
         : { tone: 'warning', title: `Paused until ${when}`, detail: channel.detail };
     }

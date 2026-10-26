@@ -8,10 +8,12 @@
 //! - needs you: the assistant waits for an approval; memory suggestions are
 //!   a separate switch inside it, off by default;
 //! - work finished: an answer, a folder's indexing or sync, a result
-//!   extraction or an evidence table's fill finished;
+//!   extraction, an evidence table's fill or a Slack channel's first backfill
+//!   finished;
 //! - problems: indexing or a sync failed, a background model call for the
-//!   app's own work failed (learning memories), or a data file had to be
-//!   restored or reset.
+//!   app's own work failed (learning memories), a data file had to be
+//!   restored or reset, or the Slack connector needs the user (see
+//!   [`crate::connectors::slack_notices`]).
 //!
 //! **When**: only while the main window is not focused, minimised or hidden
 //! in the tray ([`should_alert`]). While the user looks at the window, the
@@ -172,6 +174,8 @@ pub enum WorkKind {
     Answer,
     /// An evidence table was filled.
     Tables,
+    /// A Slack channel's first backfill finished.
+    SlackChannel,
 }
 
 impl WorkKind {
@@ -185,6 +189,8 @@ impl WorkKind {
             (WorkKind::Answer, n) => format!("{n} answers finished"),
             (WorkKind::Tables, 1) => "1 table filled".to_string(),
             (WorkKind::Tables, n) => format!("{n} tables filled"),
+            (WorkKind::SlackChannel, 1) => "1 Slack channel indexed".to_string(),
+            (WorkKind::SlackChannel, n) => format!("{n} Slack channels indexed"),
         }
     }
 }

@@ -1,7 +1,8 @@
 /**
- * Connectors view and Slack card tests: the card's wording for every connection state, the
- * day's answers, the setup steps and token checks (the same rules as the Rust token types),
- * and the new view in the navigation lists of both the shell and the agent. Run with Node
+ * Connectors view and Slack page tests: the wording for every connection state, the day's
+ * answers, the setup wizard and token checks (the same rules as the Rust token types), the
+ * tile's pill, the page's next steps and tab badges, the page navigation an Inbox item
+ * uses, and the view in the navigation lists of both the shell and the agent. Run with Node
  * 22.6+:
  *   node --experimental-strip-types --test app/tests/connectors.test.ts
  */
@@ -21,7 +22,19 @@ import {
   checkAppToken,
   checkBotToken,
   lastEventLine,
-  setupSteps,
+  wizardSteps,
+  canLeaveStep,
+  reachableStep,
+  stepToFix,
+  scopeWords,
+  slackPill,
+  tileAction,
+  capShare,
+  nextSteps,
+  slackTabBadges,
+  indexSummary,
+  channelNeedsAttention,
+  isRateLimited,
   stateLine,
   tokenHint,
   usageLine,
@@ -43,6 +56,17 @@ import {
 } from '../src/features/connectors/slackModel.ts';
 import { passagesFromDetail, slackPermalink } from '../src/features/agent/reducer.ts';
 import { CONNECTORS } from '../src/features/connectors/registry.ts';
+import {
+  SLACK_TABS,
+  SLACK_TAB_LABELS,
+  escapeGoesBack,
+  lastConnectorPage,
+  moveTab,
+  parseConnectorTarget,
+  rememberConnectorPage,
+  requestConnectorPage,
+  takeRequestedConnectorPage,
+} from '../src/features/connectors/navigation.ts';
 import { VIEW_TABS, VIEW_TAB_LABELS, normalizeViewTab } from '../src/lib/viewTabs.ts';
 import { navigationFromEvent } from '../src/features/agent/navigation.ts';
 import type { NavigatedEvent } from '../src/features/agent/events.ts';
@@ -234,18 +258,189 @@ test('tokens are checked like the Rust token types', () => {
   assert.equal(canConnect('', 'xoxb-1-b'), false);
 });
 
-test('the setup steps name the scopes the manifest asks for', () => {
-  const steps = setupSteps(status('not_set_up'));
+test('the setup wizard has four steps, one per thing to do in Slack', () => {
+  const steps = wizardSteps(status('not_set_up'));
   assert.deepEqual(
-    steps.map(s => s.title),
-    ['Create the Slack app', 'Create the app-level token', 'Install the app', 'Paste both tokens'],
+    steps.map(s => [s.step, s.title]),
+    [
+      [1, 'Create the Shodh app in Slack'],
+      [2, 'Create the app-level token'],
+      [3, 'Install to your workspace'],
+      [4, 'Connect'],
+    ],
   );
-  assert.match(
-    steps[0].detail,
-    /app_mentions:read, channels:read, chat:write, groups:read, im:history, im:read, im:write, users:read/,
-  );
+  assert.match(steps[1].detail, /App-Level Tokens/);
   assert.match(steps[1].detail, /connections:write/);
-  assert.match(steps[2].detail, /xoxb-/);
+  assert.match(steps[2].detail, /Bot User OAuth Token/);
+  assert.match(steps[3].detail, /credential store/);
+});
+
+test('every permission the manifest asks for is said in plain words', () => {
+  const rust = readFileSync(new URL('../../crates/shodh-rag/src/connectors/slack/setup.rs', import.meta.url), 'utf8');
+  const scopes: string[] = [];
+  for (const name of ['REQUIRED_BOT_SCOPES', 'INDEX_BOT_SCOPES']) {
+    const block = rust.match(new RegExp(`pub const ${name}: \\[&str; \\d+\\] = \\[([^\\]]*)\\]`));
+    assert.ok(block, name);
+    scopes.push(...[...block[1].matchAll(/"([a-z_.:]+)"/g)].map(m => m[1]));
+  }
+  assert.ok(scopes.length >= 10, scopes.join(', '));
+  for (const scope of scopes) {
+    assert.notEqual(scopeWords(scope), scope, `${scope} has no plain words`);
+    assert.doesNotMatch(scopeWords(scope), /:/, `${scope} is said without its id`);
+  }
+  assert.equal(scopeWords('admin:everything'), 'admin:everything', 'an unknown scope is shown as it is');
+});
+
+test('the wizard moves on only with a token that looks right, and never past a missing one', () => {
+  assert.equal(canLeaveStep(1, '', ''), true);
+  assert.equal(canLeaveStep(2, '', ''), false);
+  assert.equal(canLeaveStep(2, 'xoxb-1-2', ''), false, 'the bot token in the app-level field');
+  assert.equal(canLeaveStep(2, 'xapp-1-a', ''), true);
+  assert.equal(canLeaveStep(3, 'xapp-1-a', 'xoxp-1-b'), false, 'a user token');
+  assert.equal(canLeaveStep(3, 'xapp-1-a', 'xoxb-1-b'), true);
+  assert.equal(canLeaveStep(4, 'xapp-1-a', 'xoxb-1-b'), true);
+  assert.equal(canLeaveStep(4, '', 'xoxb-1-b'), false);
+  // The tokens live in memory only: a step past a missing one falls back to it.
+  assert.equal(reachableStep(4, '', ''), 2);
+  assert.equal(reachableStep(4, 'xapp-1-a', ''), 3);
+  assert.equal(reachableStep(3, 'xapp-1-a', ''), 3);
+  assert.equal(reachableStep(4, 'xapp-1-a', 'xoxb-1-b'), 4);
+  assert.equal(reachableStep(1, '', ''), 1);
+  // What Slack refused points at the step that fixes it.
+  assert.equal(stepToFix('Slack refused the app-level token (invalid_auth). Check that the whole token was copied.'), 2);
+  assert.equal(stepToFix('Slack refused the bot token (token_revoked). Check that the whole token was copied.'), 3);
+  assert.equal(stepToFix('The app-level token and the bot token belong to different Slack apps, so Shodh would never see the questions.'), 2);
+  assert.equal(stepToFix('error sending request. Check the internet connection and try again.'), 4);
+});
+
+test('the tile’s pill says the state in a word or two, with the reason when Slack needs you', () => {
+  assert.deepEqual(slackPill(status('not_set_up')), { kind: 'not_connected', tone: 'neutral', label: 'Not connected', reason: null, team: null });
+  assert.equal(tileAction(status('not_set_up')), 'Connect');
+  assert.equal(tileAction(status('connected')), 'Manage');
+  assert.deepEqual(slackPill(status('connected')), { kind: 'connected', tone: 'ok', label: 'Connected', reason: null, team: 'Acme' });
+  assert.equal(slackPill(status('connecting')).label, 'Connecting…');
+  assert.equal(slackPill(status('reconnecting')).kind, 'connecting');
+  assert.deepEqual(slackPill(status('off')), { kind: 'off', tone: 'neutral', label: 'Off', reason: null, team: 'Acme' });
+  assert.equal(slackPill(status('local_only')).reason, 'Local-only mode');
+  assert.deepEqual(slackPill(status('error')), { kind: 'attention', tone: 'error', label: 'Needs attention', reason: 'Connection stopped', team: 'Acme' });
+  const attention = (patch: Partial<SlackStatus>) => slackPill(status('connected', patch));
+  assert.equal(attention({ missingScopes: ['users:read'] }).reason, 'Missing permissions');
+  assert.equal(attention({ index: indexStatus({ missingScopes: ['channels:history'] }) }).reason, 'Missing permissions');
+  assert.equal(attention({ error: 'Slack refused the bot token.' }).reason, 'Slack refused a reply');
+  assert.equal(attention({ otherConnections: true }).reason, 'Another Shodh is connected');
+  assert.equal(attention({ lastPostFailedAt: '2026-10-23T08:59:00Z' }).reason, 'An answer was not posted');
+  assert.equal(attention({ index: indexStatus({ channels: [indexed({ state: 'removed' })] }) }).reason, 'A channel stopped');
+  assert.equal(attention({ answerChannels: [{ id: 'C1', name: 'r', shared: true, nowShared: true }] }).reason, 'A channel is shared now');
+  const limited = attention({ index: indexStatus({ channels: [indexed({ state: 'paused', detail: 'Slack’s rate limit' })] }) });
+  assert.deepEqual([limited.kind, limited.tone, limited.reason], ['attention', 'warning', 'Rate-limited by Slack']);
+  // Missing permissions come first: they stop everything.
+  assert.equal(attention({ missingScopes: ['users:read'], otherConnections: true }).reason, 'Missing permissions');
+  // A pause that is not the rate limit, a backfill, an archive and a forget are not problems.
+  for (const state of ['paused', 'backfilling', 'forgetting', 'archived', 'up_to_date'] as const) {
+    const pill = attention({ index: indexStatus({ channels: [indexed({ state, detail: 'Slack could not be read (reset)' })] }) });
+    assert.equal(pill.kind, 'connected', state);
+  }
+  assert.equal(isRateLimited({ state: 'paused', detail: "Slack's rate limit" }), true);
+  assert.equal(isRateLimited({ state: 'error', detail: "Slack's rate limit" }), false);
+  assert.equal(channelNeedsAttention({ state: 'now_shared' }), true);
+  assert.equal(channelNeedsAttention({ state: 'archived' }), false);
+});
+
+test('the overview says what is left to set up, and where to do it', () => {
+  const fresh = nextSteps(status('connected'));
+  assert.deepEqual(fresh.map(s => [s.id, s.tab]), [['workspace', 'answering'], ['channels', 'answering'], ['owner', 'memories']]);
+  const ready = status('connected', {
+    answerWorkspace: { id: 'w1', name: 'Research', available: true },
+    answerChannels: [{ id: 'C1', name: 'research', shared: false, nowShared: false }],
+    index: indexStatus({ owner: { userId: 'U1', name: 'Ann' } }),
+  });
+  assert.deepEqual(nextSteps(ready), []);
+  const scopes = nextSteps({ ...ready, missingScopes: ['users:read'], index: { ...ready.index, missingScopes: ['channels:history'] } });
+  assert.equal(scopes[0].title, 'Update the Slack app');
+  assert.match(scopes[0].detail, /channels:history, users:read/);
+  assert.match(scopes[0].detail, /app_mention, message\.im/);
+  assert.match(scopes[0].detail, /Reinstall the app/);
+  assert.equal(scopes[0].tab, null);
+  assert.equal(nextSteps({ ...ready, state: 'off' })[0].tab, 'answering');
+  assert.equal(nextSteps({ ...ready, state: 'local_only' })[0].id, 'local_only');
+  const gone = nextSteps({ ...ready, answerWorkspace: { id: 'w1', name: '', available: false } });
+  assert.equal(gone[0].title, 'The answer workspace is gone');
+  const stopped = nextSteps({ ...ready, index: { ...ready.index, channels: [indexed({ state: 'removed', name: 'deals' })] } });
+  assert.deepEqual([stopped[0].title, stopped[0].tab], ['#deals stopped indexing', 'indexing']);
+});
+
+test('the tabs carry what needs you and what they hold', () => {
+  assert.deepEqual(slackTabBadges(status('connected'), NOW), { overview: { count: 2, tone: 'warning' } });
+  const busy = status('connected', {
+    answerWorkspace: { id: 'w1', name: 'Research', available: true },
+    answerChannels: [{ id: 'C1', name: 'research', shared: false, nowShared: false }],
+    index: indexStatus({
+      owner: { userId: 'U1', name: 'Ann' },
+      memories: 4,
+      channels: [indexed({ id: 'C1', state: 'up_to_date' }), indexed({ id: 'C2', state: 'error' })],
+    }),
+  });
+  assert.deepEqual(slackTabBadges(busy, NOW), {
+    overview: { count: 1, tone: 'warning' },
+    indexing: { count: 1, tone: 'warning' },
+    memories: { count: 4, tone: 'neutral' },
+  });
+  const calm = { ...busy, index: { ...busy.index, channels: [indexed({ state: 'up_to_date' })] } };
+  assert.deepEqual(slackTabBadges(calm, NOW).indexing, { count: 1, tone: 'neutral' });
+  assert.equal(slackTabBadges(calm, NOW).overview, undefined);
+  assert.equal(indexSummary(indexStatus()), 'No channel indexed yet.');
+  assert.equal(indexSummary(busy.index), '2 channels, 240 threads; 1 needs attention.');
+  assert.equal(indexSummary(calm.index), '1 channel, 120 threads.');
+  assert.equal(capShare({ answersToday: 5, dailyCap: 20 }), 0.25);
+  assert.equal(capShare({ answersToday: 30, dailyCap: 20 }), 1);
+});
+
+test('an Inbox link opens the Slack page at its tab, and the page is remembered for the session', () => {
+  assert.deepEqual(parseConnectorTarget({ connector: 'slack', tab: 'memories' }), { connector: 'slack', tab: 'memories' });
+  assert.deepEqual(parseConnectorTarget({ connector: 'slack', tab: 'billing' }), { connector: 'slack', tab: null });
+  assert.deepEqual(parseConnectorTarget({ connector: 'slack' }), { connector: 'slack', tab: null });
+  assert.equal(parseConnectorTarget({ connector: 'teams', tab: 'overview' }), null);
+  assert.equal(parseConnectorTarget(null), null);
+  assert.equal(parseConnectorTarget(['slack']), null);
+  requestConnectorPage({ connector: 'slack', tab: 'indexing' });
+  assert.deepEqual(takeRequestedConnectorPage(), { connector: 'slack', tab: 'indexing' });
+  assert.equal(takeRequestedConnectorPage(), null, 'taken once');
+  assert.equal(lastConnectorPage(), null);
+  rememberConnectorPage({ connector: 'slack', tab: 'answering' });
+  assert.deepEqual(lastConnectorPage(), { connector: 'slack', tab: 'answering' });
+  rememberConnectorPage(null);
+  assert.equal(lastConnectorPage(), null);
+  // The Rust side links the same tabs, the same way.
+  const rust = readFileSync(new URL('../src-tauri/src/connectors/slack_notices.rs', import.meta.url), 'utf8');
+  const named = [...rust.matchAll(/SlackTab::[A-Za-z]+ => "([a-z]+)"/g)].map(m => m[1]);
+  assert.ok(named.length >= 4, named.join(', '));
+  for (const tab of named) assert.ok((SLACK_TABS as readonly string[]).includes(tab), tab);
+  assert.match(rust, /"connectors",\s*Some\(json!\(\{ "connector": "slack", "tab": tab\.as_str\(\) \}\)\)/);
+});
+
+test('the Slack page’s tabs move with the arrow keys, and Escape goes back only when nothing else takes it', () => {
+  assert.deepEqual([...SLACK_TABS], ['overview', 'answering', 'indexing', 'memories', 'settings']);
+  assert.equal(SLACK_TAB_LABELS.memories, 'Memories');
+  assert.equal(moveTab('overview', 'ArrowRight'), 'answering');
+  assert.equal(moveTab('overview', 'ArrowLeft'), 'settings');
+  assert.equal(moveTab('settings', 'ArrowRight'), 'overview');
+  assert.equal(moveTab('indexing', 'Home'), 'overview');
+  assert.equal(moveTab('indexing', 'End'), 'settings');
+  assert.equal(moveTab('indexing', 'Enter'), null);
+  const element = (tagName: string, inside: string | null = null) => ({
+    tagName,
+    isContentEditable: false,
+    closest: (selector: string) => (inside && selector.includes(inside) ? {} : null),
+  });
+  assert.equal(escapeGoesBack(element('BUTTON')), true);
+  assert.equal(escapeGoesBack(element('DIV')), true);
+  assert.equal(escapeGoesBack(null), true);
+  assert.equal(escapeGoesBack(element('INPUT')), false);
+  assert.equal(escapeGoesBack(element('select')), false);
+  assert.equal(escapeGoesBack(element('TEXTAREA')), false);
+  assert.equal(escapeGoesBack({ tagName: 'DIV', isContentEditable: true }), false);
+  assert.equal(escapeGoesBack(element('BUTTON', 'role="menu"')), false);
+  assert.equal(escapeGoesBack(element('BUTTON', 'role="alertdialog"')), false);
 });
 
 test('the daily cap accepts whole numbers in range only', () => {
@@ -307,6 +502,7 @@ function indexed(patch: Partial<IndexChannelView> = {}): IndexChannelView {
     lastSyncAt: null,
     pausedUntil: null,
     windowDays: 90,
+    backfillDone: false,
     ...patch,
   };
 }

@@ -44,6 +44,7 @@ use super::slack::{
     audit_change, current_bot_token, emit_status, save, setup_error, status, workspace_ref,
     SlackInstallationPrefs, SlackState, SlackStatus, WorkspaceRef,
 };
+use super::slack_notices::{self, SlackNotice};
 use crate::audit_commands::AuditState;
 use crate::memory_commands::{MemoryState, APP_VERSION};
 use crate::rag_commands::RagState;
@@ -80,6 +81,8 @@ pub struct IndexChannelView {
     pub last_sync_at: Option<String>,
     pub paused_until: Option<String>,
     pub window_days: u32,
+    /// The first backfill finished (it may be paused or stopped since).
+    pub backfill_done: bool,
 }
 
 /// The Slack member picked as the user.
@@ -193,6 +196,7 @@ pub async fn index_status(
                 .filter(|until| *until > now)
                 .map(rfc3339),
             window_days: channel.window_days,
+            backfill_done: channel.backfill_done,
         });
     }
     status
@@ -517,11 +521,22 @@ impl SlackMemories for AppMemories {
     async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), SaveError> {
         let store = self.store().await.map_err(SaveError::Failed)?;
         let memory = self.memory(draft, false);
+        let saved = SlackNotice::MemorySaved {
+            memory_id: memory.id.clone(),
+            channel: memory.channel_name.clone(),
+            author: memory.author_name.clone(),
+        };
         tokio::task::spawn_blocking(move || store.save_memory(&memory))
             .await
             .map_err(|e| SaveError::Failed(e.to_string()))?
             .map_err(SaveError::from)?;
         emit_status(&self.app);
+        // The owner sees what others store for their channels, in the Inbox.
+        let team = match self.prefs().await {
+            Ok(Some(prefs)) => prefs.installation.team_name,
+            _ => "Slack".to_string(),
+        };
+        slack_notices::tell(&self.app, &self.team_id, &team, &saved);
         Ok(())
     }
 }

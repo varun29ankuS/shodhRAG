@@ -3,6 +3,7 @@
 
 pub mod slack;
 pub mod slack_index;
+pub mod slack_notices;
 mod slack_usage;
 
 use serde::{Deserialize, Serialize};

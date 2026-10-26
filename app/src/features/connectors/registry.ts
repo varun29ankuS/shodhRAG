@@ -1,6 +1,7 @@
 /**
- * The connectors the Connectors view lists, in order. A connector adds an entry here and a
- * card component in `ConnectorsView.tsx`. Pure, so `node --test` loads it directly.
+ * The connectors the Connectors view lists, in order: one tile each in the gallery, and
+ * one page. A connector adds an entry here and its tile and page in `ConnectorsView.tsx`.
+ * Pure, so `node --test` loads it directly.
  */
 
 export type ConnectorId = 'slack';
@@ -8,7 +9,7 @@ export type ConnectorId = 'slack';
 export interface ConnectorInfo {
   id: ConnectorId;
   name: string;
-  /** What it does for the user, in one sentence. */
+  /** What it does for the user, in one line (the tile). */
   summary: string;
 }
 
@@ -16,7 +17,6 @@ export const CONNECTORS: readonly ConnectorInfo[] = [
   {
     id: 'slack',
     name: 'Slack',
-    summary:
-      'People in your Slack workspace mention @shodh or message it, and Shodh answers from one workspace you choose, with citations.',
+    summary: 'Your team asks @shodh in Slack and gets cited answers from one workspace you choose.',
   },
 ];

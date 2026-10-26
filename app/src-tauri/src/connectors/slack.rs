@@ -64,6 +64,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{watch, Notify};
 
 use super::slack_index::{self, AppMemories, Database, IndexStatus, SlackOwner};
+use super::slack_notices::{self, SlackNoticeState};
 use super::slack_usage::SlackUsage;
 use crate::app_settings::{broadcast, AppSettings, SettingsStore};
 use crate::audit_commands::AuditState;
@@ -433,6 +434,8 @@ pub struct SlackState {
     gates: Mutex<HashMap<String, Arc<SyncGate>>>,
     /// Per Slack workspace: wakes its sync (an event, a channel chosen).
     wakes: Mutex<HashMap<String, Arc<Notify>>>,
+    /// What notifications and the Inbox were told ([`slack_notices`]).
+    pub(super) notices: SlackNoticeState,
 }
 
 impl SlackState {
@@ -457,6 +460,7 @@ impl SlackState {
             store: tokio::sync::OnceCell::new(),
             gates: Mutex::new(HashMap::new()),
             wakes: Mutex::new(HashMap::new()),
+            notices: SlackNoticeState::default(),
         }
     }
 
@@ -630,6 +634,9 @@ pub struct ChannelChoice {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlackStatus {
+    /// The Slack workspace's id, for the app only (never sent to the card).
+    #[serde(skip)]
+    pub team_id: Option<String>,
     /// `not_set_up`, `off`, `connecting`, `connected`, `reconnecting`, `error`,
     /// `local_only`.
     pub state: &'static str,
@@ -747,6 +754,7 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
     let running = word == "connected" || word == "reconnecting" || word == "connecting";
     let index = slack_index::index_status(app, current, prefs.index_window()).await;
     Ok(SlackStatus {
+        team_id: current.map(|i| i.installation.team_id.clone()),
         state: word,
         installation: current.map(|i| InstallationView {
             team_name: i.installation.team_name.clone(),
@@ -804,6 +812,7 @@ pub fn emit_status(app: &AppHandle) {
             if pacer.take() {
                 match status(&app).await {
                     Ok(status) => {
+                        slack_notices::observe_status(&app, &status);
                         if let Err(e) = app.emit(SLACK_STATUS_EVENT, status) {
                             tracing::warn!(target: "shodh::slack", error = %e, "Slack status not emitted");
                         }
@@ -926,15 +935,34 @@ impl SlackPoster for ObservedPoster {
     }
 }
 
-/// Shows on the card when the last answer could not be posted in Slack.
+/// Shows on the card when the last answer could not be posted in Slack, and tells the
+/// user when the model failed an answer or the day's answers ran out
+/// ([`slack_notices`]).
 struct AppOutcomes {
     app: AppHandle,
     team_id: String,
+    team_name: String,
+    cap: Arc<AtomicUsize>,
     live: Arc<Mutex<HashMap<String, Live>>>,
 }
 
 impl OutcomeSink for AppOutcomes {
     fn handled(&self, outcome: &Outcome) {
+        match outcome {
+            Outcome::AtCap => slack_notices::cap_reached(
+                &self.app,
+                &self.team_id,
+                &self.team_name,
+                self.cap.load(Ordering::SeqCst),
+            ),
+            Outcome::ModelFailed(_) => slack_notices::tell(
+                &self.app,
+                &self.team_id,
+                &self.team_name,
+                &slack_notices::SlackNotice::ModelFailed,
+            ),
+            _ => {}
+        }
         let changed = {
             let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
             let entry = live.entry(self.team_id.clone()).or_default();
@@ -1276,6 +1304,8 @@ async fn start(app: &AppHandle, prefs: &SlackInstallationPrefs) {
         Arc::new(AppOutcomes {
             app: app.clone(),
             team_id: team_id.clone(),
+            team_name: prefs.installation.team_name.clone(),
+            cap: state.cap.clone(),
             live: state.live.clone(),
         }),
     )
@@ -2240,6 +2270,7 @@ mod tests {
         // The status type has no field a token could be in; its JSON is checked here so a
         // field added later that holds one fails this test.
         let status = SlackStatus {
+            team_id: Some("T1".into()),
             state: "connected",
             installation: Some(InstallationView {
                 team_name: "Acme".into(),
@@ -2274,6 +2305,8 @@ mod tests {
         assert!(!text.contains("xoxb-") && !text.contains("xapp-"));
         assert!(text.contains("\"teamName\":\"Acme\""));
         assert!(text.contains("\"answerChannels\":[{\"id\":\"C1\""));
+        // The team id is the app's, never the card's.
+        assert!(!text.contains("teamId") && !text.contains("\"T1\""));
         // The settings hold no token either.
         let mut settings = AppSettings::default();
         settings

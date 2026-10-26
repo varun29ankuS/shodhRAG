@@ -157,9 +157,7 @@ fn person(value: &Value) -> Option<Person> {
 fn utf16_slice(text: &str, offset: usize, length: usize) -> Option<String> {
     let units: Vec<u16> = text.encode_utf16().collect();
     let end = offset.checked_add(length)?;
-    units
-        .get(offset..end)
-        .map(|part| String::from_utf16_lossy(part))
+    units.get(offset..end).map(String::from_utf16_lossy)
 }
 
 fn mentions(text: &str, entities: Option<&Value>) -> Vec<Mention> {

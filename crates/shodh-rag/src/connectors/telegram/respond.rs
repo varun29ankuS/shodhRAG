@@ -1045,7 +1045,7 @@ pub(crate) mod tests {
         pub passages: Vec<AnswerPassage>,
         pub retrieved_with: StdMutex<Vec<Option<AnswerScope>>>,
         pub memories_asked: StdMutex<usize>,
-        pub remembered: Option<Remembered>,
+        pub remembered: StdMutex<Option<Remembered>>,
         pub kept: StdMutex<Vec<(ChatRef, Asked, String, bool)>>,
         pub model: Arc<RecordingModel>,
         pub memberships: StdMutex<Vec<(i64, bool)>>,
@@ -1075,7 +1075,7 @@ pub(crate) mod tests {
                 }],
                 retrieved_with: StdMutex::new(Vec::new()),
                 memories_asked: StdMutex::new(0),
-                remembered: Some(Remembered::Saved),
+                remembered: StdMutex::new(Some(Remembered::Saved)),
                 kept: StdMutex::new(Vec::new()),
                 model: Arc::new(model),
                 memberships: StdMutex::new(Vec::new()),
@@ -1145,7 +1145,7 @@ pub(crate) mod tests {
             _chat: &ChatRef,
             _message_id: i64,
         ) -> Option<Remembered> {
-            self.remembered
+            *self.remembered.lock().unwrap()
         }
         async fn earlier(&self, _chat: &ChatRef) -> Vec<ThreadTurn> {
             Vec::new()
@@ -1452,8 +1452,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_sensitive_request_asks_to_open_shodh_to_approve() {
-        let mut s = setup(RecordingModel::answering("x"), 5);
-        Arc::get_mut(&mut s.brain).unwrap().remembered = Some(Remembered::Filed);
+        let s = setup(RecordingModel::answering("x"), 5);
+        *s.brain.remembered.lock().unwrap() = Some(Remembered::Filed);
         s.responder
             .respond(&update(message(
                 1,

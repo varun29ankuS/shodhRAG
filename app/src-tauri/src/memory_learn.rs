@@ -863,6 +863,39 @@ impl LearnState {
         }
     }
 
+    /// A finished exchange of the user's own in a connector conversation (their Telegram
+    /// chat with Shodh, a question they asked in Slack): learned from like a finished Ask
+    /// turn ([`Self::observe`]), with the answer as context only. Other people's words
+    /// never reach here ([`crate::connectors::conversations::words_to_learn`]).
+    pub fn record_connector_turn(
+        &self,
+        conversation_id: &str,
+        turn_id: &str,
+        user_text: &str,
+        answer: &str,
+        at: DateTime<Utc>,
+    ) {
+        self.touch();
+        if self.policy().mode == LearnMode::Off || user_text.trim().is_empty() {
+            return;
+        }
+        let mut context = String::new();
+        for c in answer.trim().chars() {
+            if context.len() + c.len_utf8() > MAX_ANSWER_CONTEXT {
+                break;
+            }
+            context.push(c);
+        }
+        self.enqueue(TurnInput {
+            conversation_id: conversation_id.to_string(),
+            turn_id: turn_id.to_string(),
+            user_text: user_text.trim().to_string(),
+            assistant_context: Some(context).filter(|a| !a.is_empty()),
+            at,
+            scope: learned_scope(None),
+        });
+    }
+
     /// Forgets a registered run whose prompt failed.
     pub fn forget_run(&self, run_id: &str) {
         self.inner.runs.remove(run_id);

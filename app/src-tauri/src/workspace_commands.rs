@@ -1239,6 +1239,8 @@ The {name} notes describe the river, the bridge and the mill at dawn.
             system_prompt: None,
             mode: None,
             focus_threads: None,
+            source: None,
+            seed: None,
         }
     }
 

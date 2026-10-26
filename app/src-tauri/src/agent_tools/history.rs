@@ -439,6 +439,8 @@ mod tests {
             system_prompt: None,
             mode: None,
             focus_threads: None,
+            source: None,
+            seed: None,
         }
     }
 

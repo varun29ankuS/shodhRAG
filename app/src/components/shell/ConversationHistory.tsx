@@ -8,6 +8,8 @@ import { groupChatsByWorkspace } from '../../features/workspaces/model';
 import type { ChatGroup, GroupableWorkspace } from '../../features/workspaces/model';
 import { WorkspaceIcon } from '../../features/workspaces/WorkspaceIcon';
 import { ConversationPreviewCard, usePreviewVisibility } from './ConversationPreviewCard';
+import { connectorGroups, connectorName } from '../../features/connectors/conversations';
+import { ConnectorIcon } from '../../features/connectors/ConnectorIcon';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -88,7 +90,10 @@ export function ConversationHistory({
   onMoveToWorkspace,
 }: ConversationHistoryProps) {
   const now = useNow(REGROUP_INTERVAL_MS);
-  const workspaceGroups = useMemo(() => groupChatsByWorkspace(conversations, workspaces), [conversations, workspaces]);
+  // Conversations that happened in Slack or Telegram are grouped per chat, apart from Ask's.
+  const askChats = useMemo(() => conversations.filter(c => !c.source), [conversations]);
+  const fromConnectors = useMemo(() => connectorGroups(conversations), [conversations]);
+  const workspaceGroups = useMemo(() => groupChatsByWorkspace(askChats, workspaces), [askChats, workspaces]);
   const looseChats = useMemo(
     () => workspaceGroups.find(g => g.workspace === null)?.items ?? [],
     [workspaceGroups],
@@ -139,7 +144,7 @@ export function ConversationHistory({
             <span key={w} className="shell-skeleton h-3.5 rounded" style={{ width: `${w}%` }} aria-hidden="true" />
           ))}
         </div>
-      ) : groups.length === 0 && named.length === 0 ? (
+      ) : groups.length === 0 && named.length === 0 && fromConnectors.length === 0 ? (
         // Loaded and nothing to list: every chat is in an archived workspace (or there is none).
         <div className="px-5 py-2 flex flex-col items-start gap-1.5 text-[12.5px] text-shodh-text-muted">
           <p className="m-0">{conversations.length > 0 ? 'No chats outside archived workspaces.' : 'No chats yet.'}</p>
@@ -223,7 +228,43 @@ export function ConversationHistory({
               </div>
             );
           })}
-          {named.length > 0 && groups.length > 0 && (
+          {fromConnectors.map(group => {
+            const id = `connector:${group.key}`;
+            const open = !collapsed.has(id);
+            const listId = `${headingId}-cn-${group.key.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+            const name = connectorName(group.connector);
+            return (
+              <div key={id} role="group" aria-label={`From ${name}: ${group.label}`} className="pt-2 first:pt-0">
+                <button
+                  type="button"
+                  onClick={() => toggle(id)}
+                  aria-expanded={open}
+                  aria-controls={listId}
+                  aria-label={`${group.label}, from ${name}, ${group.items.length} ${group.items.length === 1 ? 'conversation' : 'conversations'}`}
+                  className={cn(
+                    'w-full min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                    FOCUS_RING,
+                  )}
+                >
+                  <ChevronRight
+                    className={cn('w-3.5 h-3.5 shrink-0 text-shodh-text-faint transition-transform duration-micro motion-reduce:transition-none', open && 'rotate-90')}
+                    aria-hidden="true"
+                  />
+                  <ConnectorIcon connector={group.connector} className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">{group.label}</span>
+                  <span className="ml-auto text-[11px] font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
+                </button>
+                {open && (
+                  <ul id={listId} className="flex flex-col gap-px pl-2">
+                    {group.items.map(conv => (
+                      <ConversationRow key={conv.id} conversation={conv} {...rowProps} />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+          {(named.length > 0 || fromConnectors.length > 0) && groups.length > 0 && (
             <h3 className="px-3 pt-3 pb-0.5 text-[11px] font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
               No workspace
             </h3>
@@ -485,7 +526,7 @@ function ConversationRow({
           <MenuItem onSelect={startRename} icon={<Pencil className="w-3.5 h-3.5" aria-hidden="true" />} hint="F2">
             Rename
           </MenuItem>
-          {(workspaces.some(w => !w.archived) || currentWorkspace !== null) && (
+          {!conversation.source && (workspaces.some(w => !w.archived) || currentWorkspace !== null) && (
             <MenuItem onSelect={() => setMoving(true)} icon={<FolderInput className="w-3.5 h-3.5" aria-hidden="true" />}>
               Move to workspace…
             </MenuItem>

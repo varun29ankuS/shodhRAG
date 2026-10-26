@@ -1,6 +1,7 @@
 //! Connectors: Shodh working inside other tools (the Connectors view). One module per
 //! connector; their settings live under `connectors` in `app_settings.json`.
 
+pub mod conversations;
 pub mod slack;
 pub mod slack_index;
 pub mod slack_notices;

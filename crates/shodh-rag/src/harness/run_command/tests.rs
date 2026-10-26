@@ -360,6 +360,8 @@ fn the_environment_is_built_from_scratch_without_secrets() {
     let parent = |name: &str| -> Option<String> {
         match name {
             "CARGO_HOME" => Some("/opt/cargo".to_string()),
+            // Not set: the default folder in the real home is used.
+            "RUSTUP_HOME" => None,
             _ => Some(format!("canary-{name}")),
         }
     };

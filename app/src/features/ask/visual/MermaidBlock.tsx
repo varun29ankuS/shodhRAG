@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { AlertTriangle, ChevronLeft, ChevronRight, List, Loader2, PenLine, RotateCcw, Square, Wand2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { focusIsFree } from '../../../lib/focusReturn';
 import { FRAME_ACTION, FocusFrame } from '../../focus/FocusFrame';
 import { useFocus, useFocusAnchor, useFocusDrill } from '../../focus/FocusContext';
 import type { DiagramPlace } from '../../focus/FocusContext';
@@ -15,18 +16,13 @@ import {
   adjustOffer,
   attemptNumber,
   chosenSource,
-  chosenVersion,
-  composeMermaidAdjustRequest,
-  composeMermaidFixRequest,
-  composeMermaidListRequest,
-  extractListReply,
-  extractMermaidReply,
-  hintText,
   listOffer,
   parseDiagramList,
   parseErrorText,
   repairOffer,
+  runAttempt,
   sourceKey,
+  versionCaption,
   versionView,
 } from './mermaidRetry';
 import type { AttemptKind, DiagramList, DiagramRecord, ListOffer, RepairOffer } from './mermaidRetry';
@@ -116,6 +112,7 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
   const adjustButtonRef = useRef<HTMLButtonElement>(null);
   const failureStatusRef = useRef<HTMLDivElement>(null);
   const focusAdjustWhenDrawnRef = useRef(false);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // As FocusFrame: inside a side answer the side thread is where it was found.
   const place = useMemo<DiagramPlace | null>(() => {
@@ -150,62 +147,26 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
   }, []);
 
   /**
-   * One attempt: `base` is the diagram it is about (as written for a fix
-   * or the list, the version shown for an adjustment). Recorded before the
-   * model is asked, so the cap holds through remounts and restarts.
+   * One attempt (`runAttempt` in mermaidRetry): `base` is the diagram it is
+   * about (as written for a fix or the list, the version shown for an
+   * adjustment). Resolves once its outcome is in the ledger.
    */
-  const runAttempt = useCallback(async (kind: AttemptKind, base: string, note: string, error: string | null) => {
+  const attempt = useCallback(async (kind: AttemptKind, base: string, note: string, error: string | null) => {
     if (!focus || !place) return;
-    const store = diagramLedger();
-    const hint = hintText(note);
-    // The first fix sends the diagram and the parser's message only; every later attempt carries the answer too.
-    const firstFix = kind === 'fix' && store.get(key).attempts === 0 && !hint;
-    const context = firstFix ? null : focus.answerContext(place);
-    if (!store.begin(key, kind)) return;
     setNotice(null);
     setRanHere(true);
-    const message = kind === 'adjust'
-      ? composeMermaidAdjustRequest(base, hint, context)
-      : kind === 'list'
-        ? composeMermaidListRequest(base, context)
-        : composeMermaidFixRequest(base, error ?? '', { hint, context });
-    const outcome = await focus.repairDiagram({ place, key, source: base, message, label: RUN_LABEL[kind] });
-    if ('reason' in outcome) {
-      if (outcome.reason === 'busy') {
-        // Nothing was sent: the attempt is not used up.
-        store.release(key);
-        if (mountedRef.current) setNotice(outcome.message);
-        return;
-      }
-      store.fail(key, outcome.message);
-      return;
-    }
-    if (kind === 'list') {
-      const list = extractListReply(outcome.reply);
-      if (list) store.succeed(key, list);
-      else store.fail(key, 'The reply was not a list.');
-      return;
-    }
-    const drawn = extractMermaidReply(outcome.reply);
-    if (!drawn) {
-      store.fail(key, 'The reply had no diagram in it.');
-      return;
-    }
-    if (drawn.trim() === base.trim()) {
-      store.fail(key, 'The reply was the same diagram.');
-      return;
-    }
-    // Model output is untrusted: it is kept only when the strict parser accepts it.
-    const check = await checkDiagram(drawn);
-    if ('error' in check) {
-      store.fail(key, kind === 'fix' ? 'Its version does not draw either.' : 'Its version does not draw.', check.error);
-      return;
-    }
-    if (check.source.trim() === base.trim()) {
-      store.fail(key, 'The reply was the same diagram.');
-      return;
-    }
-    store.succeed(key, check.source, hint || null);
+    const result = await runAttempt({
+      ledger: diagramLedger(),
+      key,
+      kind,
+      base,
+      note,
+      error,
+      context: () => focus.answerContext(place),
+      ask: message => focus.repairDiagram({ place, key, source: base, message, label: RUN_LABEL[kind] }),
+      check: checkDiagram,
+    });
+    if (result.busy && mountedRef.current) setNotice(result.busy);
   }, [focus, place, key]);
 
   const errorMessage = state.status === 'error' && toDraw === written ? state.message : null;
@@ -217,8 +178,8 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
     if (!errorMessage || autoTriedRef.current || !focus || !place) return;
     if (repairOffer({ eligible, latest: focus.isLatestAnswer(place), record, sourceChars: written.length }) !== 'auto') return;
     autoTriedRef.current = true;
-    void runAttempt('fix', written, '', errorMessage);
-  }, [errorMessage, eligible, focus, place, record, written, runAttempt]);
+    void attempt('fix', written, '', errorMessage);
+  }, [errorMessage, eligible, focus, place, record, written, attempt]);
 
   const drawnSource = state.status === 'ready' ? state.source : toDraw;
   const getTarget = useCallback(() => mermaidTarget(drawnSource), [drawnSource]);
@@ -236,15 +197,25 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
     if (state.status !== 'ready') return;
     const base = state.source;
     closeAdjust();
-    void runAttempt('adjust', base, note, null);
-  }, [state, closeAdjust, runAttempt]);
+    void attempt('adjust', base, note, null);
+  }, [state, closeAdjust, attempt]);
 
-  // A fix asked for from the failure view: once it draws, focus goes to "Adjust" (the failure view is gone).
+  // A fix asked for from the failure view: once its version draws, focus goes to "Adjust" (the failure view is
+  // gone), unless the reader has moved focus elsewhere meanwhile.
   useEffect(() => {
     if (state.status !== 'ready' || state.stale || !focusAdjustWhenDrawnRef.current) return;
     focusAdjustWhenDrawnRef.current = false;
-    adjustButtonRef.current?.focus({ preventScroll: true });
+    if (focusIsFree(document.activeElement, document.body, rootRef.current)) adjustButtonRef.current?.focus({ preventScroll: true });
   }, [state]);
+
+  /** A fix from the failure view; focus follows its version only if one is drawn. */
+  const fixFromFailure = useCallback(async (note: string, error: string) => {
+    const before = diagramLedger().get(key).versions.length;
+    focusAdjustWhenDrawnRef.current = true;
+    await attempt('fix', written, note, error);
+    // No new version (failed, stopped, busy): nothing will draw, so nothing may take focus later.
+    if (diagramLedger().get(key).versions.length === before) focusAdjustWhenDrawnRef.current = false;
+  }, [attempt, key, written]);
 
   if (shownList && state.status === 'error' && toDraw === written) {
     return <DiagramListView written={written} error={state.message} list={shownList} renderInline={renderInline} />;
@@ -270,12 +241,11 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
         eligible={eligible}
         statusRef={failureStatusRef}
         onAttempt={note => {
-          focusAdjustWhenDrawnRef.current = true;
-          void runAttempt('fix', written, note, shownError);
+          void fixFromFailure(note, shownError);
           toStatus();
         }}
         onList={() => {
-          void runAttempt('list', written, '', null);
+          void attempt('list', written, '', null);
           toStatus();
         }}
         onStop={stop}
@@ -285,21 +255,8 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
   }
 
   const adjust = state.status === 'ready' ? adjustOffer({ eligible, record, sourceChars: drawnSource.length }) : 'none';
-  const version = chosenVersion(record);
   const { total } = versionView(record);
-  const note = state.status === 'ready'
-    ? version
-      ? version.kind === 'fix'
-        ? 'Fixed by the model: the diagram as written did not draw.'
-        : version.hint
-          ? `Adjusted: “${version.hint}”`
-          : 'Adjusted by the model.'
-      : state.repaired
-        ? 'Syntax repaired automatically.'
-        : total > 1
-          ? 'As written in the answer.'
-          : null
-    : null;
+  const note = state.status === 'ready' ? versionCaption(record, state.repaired) : null;
   const runningKind = record.running === 'fix' || record.running === 'adjust' ? record.running : null;
   const adjustFailure = ranHere && !record.running && record.failure && record.failure.kind !== 'list' ? record.failure : null;
   const failureText = adjustFailure ? `Attempt ${record.attempts} did not work: ${lowerFirst(adjustFailure.message)}` : null;
@@ -330,70 +287,85 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
   ) : null;
 
   return (
-    <FocusFrame noun="diagram" getTarget={getTarget} actions={actions} className="my-4">
-      <figure
-        className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden"
-        aria-busy={state.status === 'loading' || (state.status === 'ready' && state.stale) || runningKind !== null}
-      >
-        <div className="p-4 overflow-x-auto scrollbar-thin">
-          {state.status === 'loading' ? (
-            <div className="flex items-center gap-2 h-24 justify-center text-[12.5px] text-shodh-text-muted">
-              <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              Drawing diagram…
-            </div>
-          ) : (
-            // SVG produced by mermaid with securityLevel 'strict' (sanitised, no scripts).
-            <div
-              role="img"
-              aria-label="Diagram"
-              className={cn(
-                'flex justify-center [&_svg]:max-w-full [&_svg]:h-auto transition-opacity duration-200 motion-reduce:transition-none',
-                (state.stale || runningKind !== null) && 'opacity-50',
-              )}
-              dangerouslySetInnerHTML={{ __html: state.svg }}
-            />
-          )}
-        </div>
-        {eligible && (
-          // Always present, so a change of state is announced.
-          <span role="status" aria-live="polite" className="sr-only">{status}</span>
-        )}
-        {showBar && (
-          <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-muted">
-            {eligible && total > 1 && <VersionStepper record={record} onChoose={choose} />}
-            {note && (
-              <span className="inline-flex items-center gap-1.5 min-w-0">
-                <Wand2 className="w-3 h-3 shrink-0" aria-hidden="true" />
-                <span className="truncate">{note}</span>
-              </span>
-            )}
-            {eligible && runningKind && <RunningLine kind={runningKind} attempt={attemptNumber(record)} live={live} onStop={stop} />}
-            {eligible && failureText && <span data-answer-ui="" className="text-shodh-text-secondary">{failureText}</span>}
-            {eligible && notice && <span data-answer-ui="" className="text-shodh-text-secondary">{notice}</span>}
-          </figcaption>
-        )}
-        {adjusting && adjust !== 'none' && (
-          <div id={panelId} data-answer-ui="" className="border-t border-shodh-border-subtle bg-shodh-surface-2 px-3 py-2.5">
-            {adjust === 'cap' ? (
-              <CapNotice onClose={closeAdjust} />
+    // `contents`: no box of its own; it bounds where focus may be returned (focusIsFree).
+    <div ref={rootRef} className="contents">
+      <FocusFrame noun="diagram" getTarget={getTarget} actions={actions} className="my-4">
+        <figure
+          className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden"
+          aria-busy={state.status === 'loading' || (state.status === 'ready' && state.stale) || runningKind !== null}
+        >
+          <div className="p-4 overflow-x-auto scrollbar-thin">
+            {state.status === 'loading' ? (
+              <div className="flex items-center gap-2 h-24 justify-center text-[12.5px] text-shodh-text-muted">
+                <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                Drawing diagram…
+              </div>
             ) : (
-              <HintField
-                label="What should change?"
-                placeholder="What should change? e.g. add the decoder step"
-                submitLabel="Redraw"
-                required
-                busy={adjust === 'running'}
-                attempt={attemptNumber(record)}
-                suggestions={ADJUST_SUGGESTIONS}
-                onSubmit={submitAdjust}
-                onCancel={closeAdjust}
-                autoFocus
+              // SVG produced by mermaid with securityLevel 'strict' (sanitised, no scripts).
+              <div
+                role="img"
+                aria-label="Diagram"
+                className={cn(
+                  'flex justify-center [&_svg]:max-w-full [&_svg]:h-auto transition-opacity duration-200 motion-reduce:transition-none',
+                  (state.stale || runningKind !== null) && 'opacity-50',
+                )}
+                dangerouslySetInnerHTML={{ __html: state.svg }}
               />
             )}
           </div>
-        )}
-      </figure>
-    </FocusFrame>
+          {eligible && (
+            // Always present, so a change of state is announced.
+            <span role="status" aria-live="polite" className="sr-only">{status}</span>
+          )}
+          {showBar && (
+            <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-muted">
+              {eligible && total > 1 && <VersionStepper record={record} onChoose={choose} />}
+              {note && (
+                <span className="inline-flex items-center gap-1.5 min-w-0">
+                  <Wand2 className="w-3 h-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{note}</span>
+                </span>
+              )}
+              {eligible && runningKind && <RunningLine kind={runningKind} attempt={attemptNumber(record)} live={live} onStop={stop} />}
+              {eligible && failureText && <span data-answer-ui="" className="text-shodh-text-secondary">{failureText}</span>}
+              {eligible && notice && <span data-answer-ui="" className="text-shodh-text-secondary">{notice}</span>}
+            </figcaption>
+          )}
+          {adjusting && adjust !== 'none' && (
+            <div
+              id={panelId}
+              data-answer-ui=""
+              // Esc anywhere in the panel (the note, a suggestion, Redraw, Cancel) closes it and nothing around it.
+              data-esc-local=""
+              onKeyDown={e => {
+                if (e.key !== 'Escape' || e.nativeEvent.isComposing) return;
+                e.preventDefault();
+                e.stopPropagation();
+                closeAdjust();
+              }}
+              className="border-t border-shodh-border-subtle bg-shodh-surface-2 px-3 py-2.5"
+            >
+              {adjust === 'cap' ? (
+                <CapNotice onClose={closeAdjust} />
+              ) : (
+                <HintField
+                  label="What should change?"
+                  placeholder="What should change? e.g. add the decoder step"
+                  submitLabel="Redraw"
+                  required
+                  busy={adjust === 'running'}
+                  attempt={attemptNumber(record)}
+                  suggestions={ADJUST_SUGGESTIONS}
+                  onSubmit={submitAdjust}
+                  onCancel={closeAdjust}
+                  autoFocus
+                />
+              )}
+            </div>
+          )}
+        </figure>
+      </FocusFrame>
+    </div>
   );
 }
 
@@ -669,7 +641,7 @@ function MermaidFailure({ source, error, record, offer, list, live, notice, elig
         {eligible && total > 1 && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-[11.5px] text-shodh-text-muted border-b border-shodh-border-subtle">
             <VersionStepper record={record} onChoose={onChoose} />
-            <span>As written in the answer.</span>
+            <span>{versionCaption(record, false)}</span>
           </div>
         )}
         {showControls && (

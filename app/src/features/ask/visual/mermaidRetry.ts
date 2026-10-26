@@ -100,7 +100,10 @@ export function composeAnswerContext(context: DiagramAnswerContext | null, sourc
   const passages = keptCarriedPassages(carriedPassages([{ text: context.text, passages: context.passages }], source));
   if (passages.length > 0) {
     const listed = passages.map(p => {
-      const where = p.page ? `${p.file}, page ${p.page}` : p.file;
+      // One line, whatever the file name holds: the passage text is the only multi-line part, and it is fenced.
+      const file = p.file.replace(/\s+/g, ' ').trim();
+      const page = p.page ? p.page.replace(/\s+/g, ' ').trim() : '';
+      const where = page ? `${file}, page ${page}` : file;
       return `[${p.n}] ${where}\n${fenced(p.text, 'text')}`;
     });
     parts.push(`The passages that answer cites:\n\n${listed.join('\n\n')}`);
@@ -412,6 +415,21 @@ export function versionView(record: DiagramRecord): { index: number; total: numb
   return { index: record.chosen + 1, total: record.versions.length + 1 };
 }
 
+/**
+ * The caption of the version shown: what it is (a fix, an adjustment with
+ * its note, the diagram as written). `repaired`: the deterministic repair
+ * drew it. Null for a diagram as written with nothing else to say.
+ */
+export function versionCaption(record: DiagramRecord, repaired: boolean): string | null {
+  const version = chosenVersion(record);
+  if (version) {
+    if (version.kind === 'fix') return 'Fixed by the model: the diagram as written did not draw.';
+    return version.hint ? `Adjusted: “${version.hint}”` : 'Adjusted by the model.';
+  }
+  if (repaired) return 'Syntax repaired automatically.';
+  return record.versions.length > 0 ? 'As written in the answer.' : null;
+}
+
 /** What a diagram that did not draw offers. */
 export type RepairOffer =
   /** The first fix: ask the model now, without a click (the newest answer). */
@@ -486,6 +504,106 @@ export function attemptNumber(record: DiagramRecord): number {
   return Math.min(record.attempts + 1, MAX_ATTEMPTS);
 }
 
+/** The model's reply to an attempt, or why there is none. `busy`: another answer holds the agent, nothing was sent. */
+export type AttemptReply =
+  | { ok: true; reply: string }
+  | { ok: false; reason: 'busy' | 'stopped' | 'failed'; message: string };
+
+/** What the strict parser says of a diagram (`checkDiagram` in the app). */
+export type DiagramCheck = { ok: true; source: string } | { ok: false; error: string };
+
+export interface AttemptRequest {
+  ledger: RepairLedger;
+  key: string;
+  kind: AttemptKind;
+  /** The diagram the attempt is about: as written for a fix or the list, the version shown for an adjustment. */
+  base: string;
+  /** The reader's note. */
+  note: string;
+  /** The parser's message for `base` (a fix). */
+  error: string | null;
+  /** The answer the diagram is in; read only for attempts that carry it. */
+  context: () => DiagramAnswerContext | null;
+  /** Sends the message to the model (one call). */
+  ask: (message: string) => Promise<AttemptReply>;
+  /** Parses a diagram with the strict settings. */
+  check: (source: string) => Promise<DiagramCheck>;
+}
+
+/** Shown when an attempt broke off for a reason of its own (an error, not the model's reply). */
+export const ATTEMPT_BROKE_MESSAGE = 'The attempt could not be completed.';
+
+/**
+ * One attempt, from recording it to its outcome in the ledger. Recorded
+ * before the model is asked, so the cap holds through remounts and
+ * restarts; released when nothing was sent (`busy`, returned so it can be
+ * shown). Whatever happens after it is recorded, it never stays running:
+ * an error on the way counts as a failed attempt. Model output is
+ * untrusted: a diagram is kept only when the strict parser accepts it.
+ * False when the attempt could not be recorded (one is running, none left).
+ */
+export async function runAttempt(request: AttemptRequest): Promise<{ started: boolean; busy: string | null }> {
+  const { ledger, key, kind, base } = request;
+  const hint = hintText(request.note);
+  // The first fix sends the diagram and the parser's message only; every later attempt carries the answer too.
+  const firstFix = kind === 'fix' && ledger.get(key).attempts === 0 && !hint;
+  let context: DiagramAnswerContext | null = null;
+  if (!firstFix) {
+    try {
+      context = request.context();
+    } catch {
+      context = null;
+    }
+  }
+  if (!ledger.begin(key, kind)) return { started: false, busy: null };
+  try {
+    const message = kind === 'adjust'
+      ? composeMermaidAdjustRequest(base, hint, context)
+      : kind === 'list'
+        ? composeMermaidListRequest(base, context)
+        : composeMermaidFixRequest(base, request.error ?? '', { hint, context });
+    const outcome = await request.ask(message);
+    if ('reason' in outcome) {
+      if (outcome.reason === 'busy') {
+        // Nothing was sent: the attempt is not used up.
+        ledger.release(key);
+        return { started: true, busy: outcome.message };
+      }
+      ledger.fail(key, outcome.message);
+      return { started: true, busy: null };
+    }
+    if (kind === 'list') {
+      const list = extractListReply(outcome.reply);
+      if (list) ledger.succeed(key, list);
+      else ledger.fail(key, 'The reply was not a list.');
+      return { started: true, busy: null };
+    }
+    const drawn = extractMermaidReply(outcome.reply);
+    if (!drawn) {
+      ledger.fail(key, 'The reply had no diagram in it.');
+      return { started: true, busy: null };
+    }
+    if (drawn.trim() === base.trim()) {
+      ledger.fail(key, 'The reply was the same diagram.');
+      return { started: true, busy: null };
+    }
+    const check = await request.check(drawn);
+    if ('error' in check) {
+      ledger.fail(key, kind === 'fix' ? 'Its version does not draw either.' : 'Its version does not draw.', check.error);
+      return { started: true, busy: null };
+    }
+    if (check.source.trim() === base.trim()) {
+      ledger.fail(key, 'The reply was the same diagram.');
+      return { started: true, busy: null };
+    }
+    ledger.succeed(key, check.source, hint || null);
+  } catch {
+    // fail() applies only while the attempt is still running.
+    ledger.fail(key, ATTEMPT_BROKE_MESSAGE);
+  }
+  return { started: true, busy: null };
+}
+
 /** The storage the ledger keeps diagrams in (localStorage in the app). */
 export interface LedgerStorage {
   getItem(key: string): string | null;
@@ -510,6 +628,8 @@ export interface RepairLedger {
   fail(key: string, message: string, detail?: string | null): void;
   /** Show version `index` (0: the diagram as written). */
   choose(key: string, index: number): void;
+  /** Forget everything kept about these diagrams (their conversation was deleted); a running attempt's outcome is then dropped. */
+  forget(keys: Iterable<string>): void;
   subscribe(listener: () => void): () => void;
 }
 
@@ -599,52 +719,70 @@ export function createRepairLedger(storage: LedgerStorage | null, maxEntries = M
   const entries = new Map<string, DiagramRecord>();
   const listeners = new Set<() => void>();
 
-  /** Forget the oldest diagram other than `keep`: one with no versions and no list first. */
+  /**
+   * Forget the oldest diagram other than `keep`, least worth keeping
+   * first: one nothing was kept for and with attempts left, then one with
+   * no attempts left (forgetting it would give it a fresh cap and a new
+   * automatic fix), then one with versions or a list. A running attempt is
+   * never forgotten (its outcome would be lost and its cap reset).
+   */
   const evictOne = (keep: string | null): boolean => {
+    const rank = (record: DiagramRecord) => {
+      if (record.versions.length > 0 || record.list) return 2;
+      return record.attempts >= MAX_ATTEMPTS ? 1 : 0;
+    };
     let victim: string | null = null;
+    let victimRank = Infinity;
     for (const [key, record] of entries) {
-      if (key === keep) continue;
-      if (record.versions.length === 0 && !record.list) {
+      if (key === keep || record.running) continue;
+      const r = rank(record);
+      if (r < victimRank) {
         victim = key;
-        break;
+        victimRank = r;
+        if (r === 0) break;
       }
-      if (victim === null) victim = key;
     }
     if (victim === null) return false;
     entries.delete(victim);
     return true;
   };
 
-  const save = (keep: string | null) => {
-    if (!storage) return;
+  /** Write the ledger; false when storage refused it. */
+  const save = (keep: string | null): boolean => {
+    if (!storage) return false;
     let json = JSON.stringify([...entries]);
     while (json.length > maxChars && evictOne(keep)) json = JSON.stringify([...entries]);
     try {
       storage.setItem(LEDGER_STORAGE_KEY, json);
+      return true;
     } catch {
       // Not persisted; the in-memory ledger still caps attempts this session.
+      return false;
     }
   };
 
-  let migrated = false;
-  try {
-    const raw = storage?.getItem(LEDGER_STORAGE_KEY);
-    if (raw) {
-      for (const [key, record] of readEntries(raw, readRecord, maxEntries)) entries.set(key, record);
-    } else {
-      const legacy = storage?.getItem(LEGACY_LEDGER_STORAGE_KEY);
-      for (const [key, record] of readEntries(legacy, readLegacy, maxEntries)) entries.set(key, record);
-      migrated = Boolean(legacy);
-    }
-  } catch {
-    // Unreadable ledger: start empty.
-  }
-  if (migrated) {
-    save(null);
+  const read = (key: string, from: (value: unknown) => DiagramRecord | null): boolean => {
     try {
-      storage?.removeItem?.(LEGACY_LEDGER_STORAGE_KEY);
+      const raw = storage?.getItem(key);
+      if (!raw) return false;
+      const found = readEntries(raw, from, maxEntries);
+      for (const [k, record] of found) entries.set(k, record);
+      return true;
     } catch {
-      // The old key stays; the new one is read first from now on.
+      entries.clear();
+      return false;
+    }
+  };
+
+  // The current ledger; when it is missing or unreadable, the one-attempt ledger it replaces.
+  if (!read(LEDGER_STORAGE_KEY, readRecord) && read(LEGACY_LEDGER_STORAGE_KEY, readLegacy)) {
+    // The old key goes only once its entries are stored under the new one.
+    if (save(null)) {
+      try {
+        storage?.removeItem?.(LEGACY_LEDGER_STORAGE_KEY);
+      } catch {
+        // The old key stays; the new one is read first from now on.
+      }
     }
   }
 
@@ -710,6 +848,13 @@ export function createRepairLedger(storage: LedgerStorage | null, maxEntries = M
       if (!record) return;
       const chosen = Math.min(record.versions.length, Math.max(0, Math.floor(index)));
       if (chosen !== record.chosen) set(key, { ...record, chosen });
+    },
+    forget: keys => {
+      let changed = false;
+      for (const key of keys) changed = entries.delete(key) || changed;
+      if (!changed) return;
+      save(null);
+      for (const listener of [...listeners]) listener();
     },
     subscribe: listener => {
       listeners.add(listener);

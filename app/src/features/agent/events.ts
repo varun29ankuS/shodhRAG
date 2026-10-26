@@ -328,6 +328,44 @@ export interface MemoriesUsedEvent {
   ids: string[];
 }
 
+/** How a command run by `run_command` ended. */
+export type CommandState = "done" | "timed_out" | "stopped" | "killed" | "refused";
+
+/** A Code-mode command started in its own process (step `stepId` is its `run_command` call). */
+export interface CommandStartedEvent {
+  type: "command_started";
+  runId: string;
+  stepId: string;
+  /** Id of this command's process run; `run_command_stop` takes it. */
+  commandId: string;
+  command: string;
+  /** Wall-clock limit in seconds. */
+  timeLimitSecs: number;
+  atMs: number;
+}
+
+/** Output of a running command: stdout and stderr interleaved as they arrived. */
+export interface CommandOutputEvent {
+  type: "command_output";
+  runId: string;
+  stepId: string;
+  commandId: string;
+  text: string;
+}
+
+/** The command ended (`refused`: it never started; no command_started came before). */
+export interface CommandFinishedEvent {
+  type: "command_finished";
+  runId: string;
+  stepId: string;
+  commandId: string;
+  state: CommandState;
+  exitCode: number | null;
+  /** What acted on it, in words: e.g. "memory limit (4096 MB)", why it was refused, or "the memory limit refused an allocation". */
+  note: string | null;
+  durationMs: number;
+}
+
 export interface RunFinishedEvent {
   type: "run_finished";
   runId: string;
@@ -354,6 +392,9 @@ export type AgentEvent =
   | GroundingEvent
   | RevisionStartedEvent
   | MemoriesUsedEvent
+  | CommandStartedEvent
+  | CommandOutputEvent
+  | CommandFinishedEvent
   | RunFinishedEvent;
 
 /** Payload of the Tauri `agent_event` event. */

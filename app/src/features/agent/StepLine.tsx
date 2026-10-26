@@ -2,6 +2,7 @@ import React, { useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { ApprovalPrompt } from './ApprovalPrompt';
+import { CommandPanel } from './CommandPanel';
 import { formatMs, prettyJson } from './format';
 import { awaitingRetry, passagesFromDetail, webSourcesFromDetail } from './reducer';
 import type { TranscriptStep } from './reducer';
@@ -169,7 +170,9 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
           <span className="flex items-start gap-1.5 min-w-0">{labelBody}</span>
         )}
       </div>
-      {result && (
+      {step.command && <CommandPanel run={step.command} compact={compact} />}
+      {/* A command's panel says how it is going; the step's own line only when the step failed. */}
+      {result && (!step.command || failed) && (
         <p
           className={cn(
             'ml-[3px] flex gap-1.5 min-w-0 font-mono',

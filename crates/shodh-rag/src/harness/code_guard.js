@@ -4,14 +4,16 @@
 // tool call passes through this `tool_call` handler first:
 // - only the Code mode tools are allowed, plus the host tools Shodh registered
 //   for the session (named in SHODH_HOST_TOOLS; Shodh asks for and audits
-//   those itself); any other tool is blocked;
+//   those itself, `run_command` included); any other tool is blocked, and
+//   omp's own tools that run programs (`bash`, `eval`, ...) are blocked even
+//   when the variable names them;
 // - every path a tool would touch must resolve (through symlinks and
 //   junctions) inside the code folder; URLs and omp's internal resources
 //   (`local://`, `ssh://`, `proc://`, web pages, ...) are blocked;
 // - edits and writes never touch the repository's `.git` folder;
-// - edits, writes and shell commands wait for the user's decision, asked
-//   through omp's dialog channel and answered by Shodh's approval prompt,
-//   which is told the file an edit or write lands in (`target`).
+// - edits and writes wait for the user's decision, asked through omp's
+//   dialog channel and answered by Shodh's approval prompt, which is told the
+//   file an edit or write lands in (`target`).
 // A handler error blocks the call (omp fails closed on `tool_call` errors).
 //
 // The guard checks the path omp will open, so it follows omp 18.4.10's own
@@ -27,12 +29,13 @@
 // edits need an existing file: omp searches the folder for a missing one. A
 // path through a link that points nowhere is refused: omp would create its
 // target, wherever it is. Path lists (grep, glob, ast_grep) are read as
-// omp's `splitDelimitedPathEntry` reads them; read, write, edit and a
-// command's folder are single paths.
+// omp's `splitDelimitedPathEntry` reads them; read, write and edit are
+// single paths.
 // Update this file together with the pinned omp (sidecar.rs `OMP_VERSION`).
 //
-// Shell commands cannot be confined by path: the shell keeps the user's
-// access. They are only approved one command at a time.
+// Commands never run in omp: Shodh's `run_command` host tool runs each one in
+// its own process with a clean environment and limits, behind the same
+// approval as edits.
 
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import * as path from "node:path";
@@ -45,18 +48,34 @@ export const ALLOW = "allow";
 
 const SINGLE_PATH_TOOLS = new Set(["read", "write", "edit"]);
 const PATH_LIST_TOOLS = new Set(["grep", "glob", "ast_grep"]);
-const CHANGE_TOOLS = new Set(["edit", "write", "bash"]);
-const CODE_TOOLS = new Set([...SINGLE_PATH_TOOLS, ...PATH_LIST_TOOLS, "bash"]);
+const CHANGE_TOOLS = new Set(["edit", "write"]);
+const CODE_TOOLS = new Set([...SINGLE_PATH_TOOLS, ...PATH_LIST_TOOLS]);
+/**
+ * omp's tools that run programs or other agents (code_mode.rs
+ * `OMP_EXECUTION_TOOLS`): always blocked, never taken for host tools.
+ */
+export const EXECUTION_TOOLS = new Set([
+  "bash",
+  "eval",
+  "run_code",
+  "debug",
+  "ida",
+  "task",
+  "computer",
+  "browser",
+  "vibe_spawn",
+  "vibe_send",
+]);
 /** Tools whose file must exist: omp looks for a missing one elsewhere in the folder. */
 const EXISTING_FILE_TOOLS = new Set(["read", "edit"]);
 
-/** The session's host tools: names from `value` (comma-separated), never a Code mode tool. */
+/** The session's host tools: names from `value` (comma-separated), never a Code mode tool or an omp execution tool. */
 export function hostTools(value) {
   return new Set(
     (typeof value === "string" ? value : "")
       .split(",")
       .map((name) => name.trim())
-      .filter((name) => name !== "" && !CODE_TOOLS.has(name)),
+      .filter((name) => name !== "" && !CODE_TOOLS.has(name) && !EXECUTION_TOOLS.has(name)),
   );
 }
 
@@ -364,9 +383,8 @@ export function toolCallProblem(root, cwd, tool, input, onTarget) {
     return null;
   }
   if (PATH_LIST_TOOLS.has(tool)) return listProblem(root, cwd, args.path);
-  if (tool === "bash") {
-    if (typeof args.command !== "string" || args.command.trim() === "") return "bash needs a command.";
-    return args.cwd === undefined || args.cwd === null ? null : pathProblem(root, cwd, args.cwd);
+  if (EXECUTION_TOOLS.has(tool)) {
+    return `The ${tool} tool is not available in Code mode; run commands with run_command.`;
   }
   return `The ${tool} tool is not available in Code mode.`;
 }

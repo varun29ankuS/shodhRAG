@@ -713,6 +713,7 @@ pub fn run() {
             agent_session_commands::agent_steer,
             agent_session_commands::agent_abort,
             agent_session_commands::agent_approve,
+            agent_session_commands::run_command_stop,
             agent_session_commands::agent_code_status,
             agent_session_commands::agent_code_discard,
             agent_session_commands::agent_code_paths,
@@ -910,6 +911,12 @@ pub fn run() {
             table_commands::release_on_exit(app_handle);
             // Slack connections are closed (a close frame, bounded wait).
             connectors::slack::shutdown(app_handle);
+            // Code-mode commands end with every process they started (on
+            // macOS nothing else would end them once Shodh is gone).
+            let commands = shodh_rag::harness::run_command::stop_all();
+            if commands > 0 {
+                tracing::info!(commands, "stopped running commands on exit");
+            }
             // Stop every omp sidecar before the process exits.
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());

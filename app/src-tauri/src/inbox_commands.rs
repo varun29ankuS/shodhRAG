@@ -405,14 +405,14 @@ mod tests {
 
     #[test]
     fn an_inbox_approval_says_it_marks_nothing_reviewed() {
-        let plain = approval_item("s1", "c", "a", "Run: pytest", "bash", &json!({}));
+        let plain = approval_item("s1", "c", "a", "Run: pytest", "run_command", &json!({}));
         assert!(!plain.detail.unwrap().contains("reviewed"));
         let listed = approval_item(
             "s1",
             "c",
             "a",
             "Run: pytest",
-            "bash",
+            "run_command",
             &json!({ REVIEW_NOTE_KEY: "Approving runs this command", "changed_without_review": ["conftest.py"] }),
         );
         assert!(listed

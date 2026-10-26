@@ -217,7 +217,10 @@ impl RunAuditTap {
             | AgentEvent::Navigated { .. }
             | AgentEvent::GroundingStarted { .. }
             | AgentEvent::RevisionStarted { .. }
-            | AgentEvent::MemoriesUsed { .. } => None,
+            | AgentEvent::MemoriesUsed { .. }
+            | AgentEvent::CommandStarted { .. }
+            | AgentEvent::CommandOutput { .. }
+            | AgentEvent::CommandFinished { .. } => None,
         }
     }
 }

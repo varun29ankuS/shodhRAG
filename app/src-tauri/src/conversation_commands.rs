@@ -252,7 +252,26 @@ pub async fn delete_conversation(app: AppHandle, conversation_id: String) -> Res
     store(&app)?.update(|conversations| {
         conversations.retain(|c| c.id != conversation_id);
         Ok(())
-    })
+    })?;
+    // Code mode's scratch folder for the conversation (its commands' home
+    // and temporary files) goes with it. A file a running program still
+    // holds can keep it from going; the conversation is deleted anyway.
+    if let Ok(dir) = crate::profile::app_data_dir(&app) {
+        let removed = tokio::task::spawn_blocking(move || {
+            shodh_rag::harness::run_command::remove_scratch(&dir, &conversation_id)
+        })
+        .await;
+        match removed {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "a deleted conversation's scratch folder was not removed")
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "removing a deleted conversation's scratch folder did not finish")
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

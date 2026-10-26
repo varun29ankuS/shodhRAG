@@ -1,4 +1,5 @@
 use super::*;
+use crate::harness::run_command::RUN_COMMAND;
 
 /// A few of omp 18.4.10's settings as `config list --json` reports them.
 pub(crate) fn omp_settings_fixture() -> serde_json::Map<String, Value> {
@@ -148,6 +149,8 @@ fn the_overlay_lets_the_guard_ask_and_pins_the_risky_settings() {
     // Single-file edits only: the guard checks one `path`.
     assert_eq!(overlay["edit"]["mode"], "replace");
     assert_eq!(overlay["bash"]["patterns"], json!([]));
+    // omp's own shell is off: commands run through Shodh's run_command.
+    assert_eq!(overlay["bash"]["enabled"], false);
     // Commands never keep running in the background past their tool call.
     assert_eq!(overlay["async"]["enabled"], false);
     assert_eq!(overlay["launch"]["enabled"], false);
@@ -173,7 +176,18 @@ fn code_launch_args_enable_exactly_the_code_tools_with_the_guard() {
         "Be careful.",
         crate::harness::sidecar::Thinking::Low,
     );
-    assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write,bash".to_string()));
+    assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write".to_string()));
+    // No omp tool that runs programs is enabled.
+    let tools = args.iter().find(|a| a.starts_with("--tools=")).unwrap();
+    for tool in OMP_EXECUTION_TOOLS {
+        assert!(
+            !tools
+                .trim_start_matches("--tools=")
+                .split(',')
+                .any(|t| t == tool),
+            "{tool} enabled"
+        );
+    }
     assert!(args.contains(&"--hook=/data/omp/code/guard.js".to_string()));
     assert!(args.contains(&"--config=/data/omp/overlay.yml".to_string()));
     assert!(args.contains(&"--config=/data/omp/code/overlay.yml".to_string()));
@@ -199,25 +213,64 @@ fn code_launch_args_enable_exactly_the_code_tools_with_the_guard() {
 
 #[test]
 fn the_tool_inventory_must_be_exact() {
-    let exact: Vec<String> = CODE_TOOLS.iter().map(|t| t.to_string()).collect();
-    assert!(inventory_matches(&exact, &[]));
+    let run_command = crate::harness::run_command::RUN_COMMAND.to_string();
+    // The Code tools and Shodh's run_command, which every Code session registers.
+    let host = vec![run_command.clone()];
+    let exact: Vec<String> = CODE_TOOLS
+        .iter()
+        .map(|t| t.to_string())
+        .chain(std::iter::once(run_command.clone()))
+        .collect();
+    assert!(inventory_matches(&exact, &host));
     let mut reordered = exact.clone();
     reordered.reverse();
-    assert!(inventory_matches(&reordered, &[]));
+    assert!(inventory_matches(&reordered, &host));
     let mut extra = exact.clone();
     extra.push("task".into());
-    assert!(!inventory_matches(&extra, &[]));
-    assert!(!inventory_matches(&exact[1..], &[]));
+    assert!(!inventory_matches(&extra, &host));
+    assert!(!inventory_matches(&exact[1..], &host));
     let mut duplicate = exact[1..].to_vec();
     duplicate.push("grep".into());
-    assert!(!inventory_matches(&duplicate, &[]));
+    assert!(!inventory_matches(&duplicate, &host));
     // The session's host tools, exactly.
-    let host = vec!["enola__explore".to_string()];
+    let host_and_enola = vec!["enola__explore".to_string(), run_command.clone()];
     let mut with_host = exact.clone();
     with_host.push("enola__explore".into());
-    assert!(inventory_matches(&with_host, &host));
-    assert!(!inventory_matches(&exact, &host), "a host tool is missing");
-    assert!(!inventory_matches(&with_host, &[]), "an unexpected tool");
+    assert!(inventory_matches(&with_host, &host_and_enola));
+    assert!(
+        !inventory_matches(&exact, &host_and_enola),
+        "a host tool is missing"
+    );
+    assert!(!inventory_matches(&with_host, &host), "an unexpected tool");
+    // run_command must be there, both registered and offered.
+    let code_only: Vec<String> = CODE_TOOLS.iter().map(|t| t.to_string()).collect();
+    assert!(
+        !inventory_matches(&code_only, &[]),
+        "run_command is missing"
+    );
+    assert!(
+        !inventory_matches(&code_only, &host),
+        "run_command is not offered"
+    );
+    assert!(
+        !inventory_matches(&exact, &[]),
+        "run_command is not registered"
+    );
+    // No omp tool that runs programs, whether offered by the runtime or
+    // registered under its name: a runtime that adds one fails closed.
+    for tool in OMP_EXECUTION_TOOLS {
+        let mut offered = exact.clone();
+        offered.push(tool.to_string());
+        assert!(!inventory_matches(&offered, &host), "{tool} offered");
+        let registered = vec![tool.to_string(), run_command.clone()];
+        assert!(
+            !inventory_matches(&offered, &registered),
+            "{tool} registered as a host tool"
+        );
+    }
+    for tool in ["bash", "eval", "run_code"] {
+        assert!(OMP_EXECUTION_TOOLS.contains(&tool), "{tool}");
+    }
 }
 
 #[test]
@@ -232,7 +285,7 @@ fn host_tools_are_allowed_without_omp_asking() {
 fn guard_requests_are_recognised_only_for_change_tools() {
     let payload = r#"{"toolCallId":"call-1","tool":"edit","input":{"path":"a.rs"}}"#;
     let request = parse_guard_request("ui-1", Some(APPROVAL_TITLE), Some(payload)).unwrap();
-    assert_eq!(request.ui_id, "ui-1");
+    assert_eq!(request.ui_id.as_deref(), Some("ui-1"));
     assert_eq!(request.tool_call_id, "call-1");
     assert_eq!(request.tool, "edit");
     assert_eq!(request.input["path"], "a.rs");
@@ -263,11 +316,22 @@ fn guard_requests_are_recognised_only_for_change_tools() {
         parse_guard_request("ui-1", Some(APPROVAL_TITLE), Some(read)),
         None
     );
-    let blank = r#"{"toolCallId":" ","tool":"bash","input":{"command":"ls"}}"#;
+    let blank = r#"{"toolCallId":" ","tool":"edit","input":{"path":"a.rs"}}"#;
     assert_eq!(
         parse_guard_request("ui-1", Some(APPROVAL_TITLE), Some(blank)),
         None
     );
+    // Commands are never decided through the dialog channel: omp's shell is
+    // off, and run_command is Shodh's own call.
+    for tool in ["bash", crate::harness::run_command::RUN_COMMAND] {
+        let command =
+            format!(r#"{{"toolCallId":"call-1","tool":"{tool}","input":{{"command":"ls"}}}}"#);
+        assert_eq!(
+            parse_guard_request("ui-1", Some(APPROVAL_TITLE), Some(&command)),
+            None,
+            "{tool}"
+        );
+    }
 }
 
 #[test]
@@ -365,31 +429,31 @@ fn destructive_commands_are_classified() {
 #[test]
 fn approvals_show_what_will_change_and_how_to_undo_it() {
     let request = |tool: &str, input: Value| GuardRequest {
-        ui_id: "ui".into(),
+        ui_id: None,
         tool_call_id: "call".into(),
         tool: tool.into(),
         input,
         target: None,
     };
-    let bash = approval_for(
-        &request("bash", json!({"command": "cargo test"})),
+    let run = approval_for(
+        &request(RUN_COMMAND, json!({"command": "cargo test"})),
         Some("On branch shodh/1"),
         ChangeTarget::Unknown,
     );
-    assert_eq!(bash.label, "Run: cargo test");
-    assert_eq!(bash.tier, RiskTier::Write);
-    assert_eq!(bash.preview["warning"], Value::Null);
-    assert_eq!(bash.preview["runs_in"], "the code folder");
-    assert_eq!(bash.preview["undo"], "On branch shodh/1");
+    assert_eq!(run.label, "Run: cargo test");
+    assert_eq!(run.tier, RiskTier::Write);
+    assert_eq!(run.preview["warning"], Value::Null);
+    assert_eq!(run.preview["runs_in"], "the code folder");
+    assert_eq!(run.preview["undo"], "On branch shodh/1");
 
     let wipe = approval_for(
-        &request("bash", json!({"command": "git reset --hard", "cwd": "sub"})),
+        &request(RUN_COMMAND, json!({"command": "git reset --hard"})),
         None,
         ChangeTarget::Unknown,
     );
     assert_eq!(wipe.tier, RiskTier::Destructive);
     assert_eq!(wipe.preview["warning"], "Discards uncommitted changes.");
-    assert_eq!(wipe.preview["runs_in"], "sub");
+    assert_eq!(wipe.preview["runs_in"], "the code folder");
     assert!(wipe.preview.get("undo").is_none());
 
     let long = "x".repeat(5_000);
@@ -1009,7 +1073,7 @@ fn a_detached_head_is_returned_to_as_a_commit() {
 
 fn guarded(tool: &str, input: Value) -> GuardRequest {
     GuardRequest {
-        ui_id: "ui".into(),
+        ui_id: None,
         tool_call_id: "call".into(),
         tool: tool.into(),
         input,
@@ -1027,6 +1091,7 @@ fn allowlisted_commands_match_exactly_without_shell_tricks() {
             "pytest".into(),
             "cargo test -p shodh-rag --lib".into(),
         ],
+        ..CodeSettings::default()
     };
     for allowed in [
         "cargo test",
@@ -1070,6 +1135,7 @@ fn allowlisted_commands_match_exactly_without_shell_tricks() {
             "X=1 make".into(),
             "".into(),
         ],
+        ..CodeSettings::default()
     }
     .cleaned();
     assert_eq!(cleaned.allowlist, ["cargo test"]);
@@ -1082,12 +1148,16 @@ fn approval_levels_decide_what_runs_without_asking() {
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
     );
     let write = guarded("write", json!({"path": "b.rs", "content": "x"}));
-    let test = guarded("bash", json!({"command": "cargo test"}));
-    let wipe = guarded("bash", json!({"command": "cargo test && git reset --hard"}));
-    let delete = guarded("bash", json!({"command": "rm -rf target"}));
+    let test = guarded(RUN_COMMAND, json!({"command": "cargo test"}));
+    let wipe = guarded(
+        RUN_COMMAND,
+        json!({"command": "cargo test && git reset --hard"}),
+    );
+    let delete = guarded(RUN_COMMAND, json!({"command": "rm -rf target"}));
     let level = |approval| CodeSettings {
         approval,
         allowlist: vec!["cargo test".into(), "rm -rf target".into()],
+        ..CodeSettings::default()
     };
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
     let refuse = ChangePlan::Refuse("dirty".into());
@@ -1166,10 +1236,11 @@ fn allowlisted_commands_ask_again_after_unreviewed_changes() {
         "edit",
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
     );
-    let test = guarded("bash", json!({"command": "pytest"}));
+    let test = guarded(RUN_COMMAND, json!({"command": "pytest"}));
     let settings = |approval| CodeSettings {
         approval,
         allowlist: vec!["pytest".into()],
+        ..CodeSettings::default()
     };
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
     let reviewed = ReviewState::default();
@@ -1222,7 +1293,7 @@ fn allowlisted_commands_ask_again_after_unreviewed_changes() {
 
 #[test]
 fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
-    let test = guarded("bash", json!({"command": "pytest"}));
+    let test = guarded(RUN_COMMAND, json!({"command": "pytest"}));
     let edit = guarded(
         "edit",
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
@@ -1230,6 +1301,7 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
     let trusted = CodeSettings {
         approval: ApprovalLevel::Trusted,
         allowlist: vec!["pytest".into()],
+        ..CodeSettings::default()
     };
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
     let reviewed = ReviewState::default();
@@ -1258,8 +1330,19 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
         auto_approval(&trusted, &test, &continuing, ChangeTarget::Unknown, &writer),
         None
     );
-    // A process the user started may still run: edits ask, commands do not
-    // depend on it.
+    // While a command runs, edits ask: it may run what they change.
+    assert_eq!(
+        auto_approval(&trusted, &edit, &continuing, ChangeTarget::Plain, &running),
+        None
+    );
+    let mut approval = approval_for(&edit, None, ChangeTarget::Plain);
+    note_review(&mut approval, &edit, &running, false, "t");
+    assert!(approval.preview["running_now"]
+        .as_str()
+        .unwrap()
+        .contains("git apply x.patch"));
+    // A process recorded as running on (before commands ran in their own
+    // process) may still run: edits ask, commands do not depend on it.
     let started = ReviewState {
         background: vec!["`npm run dev &`".into()],
         ..ReviewState::default()
@@ -1292,42 +1375,32 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
 }
 
 #[test]
-fn only_a_plain_allowlisted_command_in_the_folder_is_eligible() {
-    let root = if cfg!(windows) {
-        Path::new(r"C:\work\repo")
-    } else {
-        Path::new("/work/repo")
-    };
+fn only_a_plain_allowlisted_command_is_eligible() {
     let settings = CodeSettings {
         approval: ApprovalLevel::Trusted,
         allowlist: vec!["npm test".into(), "nohup pytest".into()],
+        ..CodeSettings::default()
     };
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
     let eligible =
-        |input: Value| command_eligible(&settings, &guarded("bash", input), &continuing, root);
+        |input: Value| command_eligible(&settings, &guarded(RUN_COMMAND, input), &continuing);
     for input in [
         json!({"command": "npm test"}),
         // Optional arguments some model layers send empty.
-        json!({"command": "npm test", "cwd": null, "timeout": null, "pty": false, "async": false, "name": ""}),
-        json!({"command": "npm test", "cwd": ""}),
-        json!({"command": "npm test", "cwd": "."}),
-        json!({"command": "npm test", "cwd": root.display().to_string()}),
-        json!({"command": "npm test", "cwd": "sub/.."}),
+        json!({"command": "npm test", "timeout_secs": null}),
+        json!({"command": "npm test", "timeout_secs": ""}),
     ] {
         assert!(eligible(input.clone()), "{input}");
     }
     for input in [
-        // Another folder's package.json or conftest.py is not the project's.
+        // A time limit of its own always asks, shorter or not.
+        json!({"command": "npm test", "timeout_secs": 30}),
+        json!({"command": "npm test", "timeout_secs": 900}),
+        // Arguments run_command does not take (omp's shell had them) ask
+        // too, should one ever reach the decision.
         json!({"command": "npm test", "cwd": "node_modules/left-pad"}),
-        json!({"command": "npm test", "cwd": "examples/x"}),
-        json!({"command": "npm test", "cwd": ".."}),
-        // A time limit (0 is none), a terminal, a job or a service always asks.
-        json!({"command": "npm test", "timeout": 0}),
-        json!({"command": "npm test", "timeout": 900}),
-        json!({"command": "npm test", "pty": true}),
         json!({"command": "npm test", "async": true}),
         json!({"command": "npm test", "name": "web"}),
-        json!({"command": "npm test", "ready": {"port": 3000}}),
         json!({"command": "npm test", "anything": 1}),
         // Detaching is never eligible, even when listed.
         json!({"command": "nohup pytest"}),
@@ -1337,20 +1410,21 @@ fn only_a_plain_allowlisted_command_in_the_folder_is_eligible() {
     }
     assert!(!command_eligible(
         &settings,
-        &guarded("bash", json!({"command": "npm test"})),
+        &guarded(RUN_COMMAND, json!({"command": "npm test"})),
         &ChangePlan::Refuse("dirty".into()),
-        root
     ));
-    assert!(!command_eligible(
-        &settings,
-        &guarded("edit", json!({"command": "npm test"})),
-        &continuing,
-        root
-    ));
+    // omp's shell is never eligible, nor is any other tool.
+    for tool in ["bash", "edit"] {
+        assert!(!command_eligible(
+            &settings,
+            &guarded(tool, json!({"command": "npm test"})),
+            &continuing,
+        ));
+    }
 }
 
 #[test]
-fn background_starts_are_recognised_and_services_refused() {
+fn background_starts_are_recognised() {
     for detached in [
         "npm run dev &",
         "python server.py & echo started",
@@ -1373,27 +1447,12 @@ fn background_starts_are_recognised_and_services_refused() {
     ] {
         assert!(!starts_background(foreground), "{foreground}");
     }
-    for input in [
-        json!({"command": "npm run dev", "async": true}),
-        json!({"command": "npm run dev", "name": "web"}),
-        json!({"command": "npm run dev", "ready": {"port": 5173}}),
-    ] {
-        assert!(
-            background_arguments(&guarded("bash", input.clone())).is_some(),
-            "{input}"
-        );
-    }
-    assert!(background_arguments(&guarded(
-        "bash",
-        json!({"command": "npm test", "async": false, "name": "", "ready": null})
-    ))
-    .is_none());
 }
 
 #[test]
 fn command_prompts_list_every_unreviewed_file_and_what_approving_does() {
-    let test = guarded("bash", json!({"command": "pytest"}));
-    let status = guarded("bash", json!({"command": "git status"}));
+    let test = guarded(RUN_COMMAND, json!({"command": "pytest"}));
+    let status = guarded(RUN_COMMAND, json!({"command": "git status"}));
     let edit = guarded(
         "edit",
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
@@ -1434,7 +1493,7 @@ fn command_prompts_list_every_unreviewed_file_and_what_approving_does() {
     assert_eq!(shown, None);
 
     // The command's own warning stays.
-    let wipe = guarded("bash", json!({"command": "rm -rf build"}));
+    let wipe = guarded(RUN_COMMAND, json!({"command": "rm -rf build"}));
     let (wiped, _) = prompt(&wipe, &changed, false);
     assert_eq!(
         wiped.preview["warning"],
@@ -1456,24 +1515,16 @@ fn command_prompts_list_every_unreviewed_file_and_what_approving_does() {
     assert!(approval.preview.get(UNREVIEWED_KEY).is_none());
     assert_eq!(shown.unwrap().unknown, unknown.unknown);
 
-    // A time limit, a terminal and a detached start are shown.
-    let long = guarded(
-        "bash",
-        json!({"command": "npm run dev &", "timeout": 0, "pty": true}),
-    );
-    let (approval, _) = prompt(&long, &ReviewState::default(), false);
-    assert!(approval.preview["time_limit"]
-        .as_str()
-        .unwrap()
-        .starts_with("None"));
-    assert_eq!(approval.preview["terminal"], true);
-    assert!(approval.preview["keeps_running"]
-        .as_str()
-        .unwrap()
-        .contains("keeps running"));
-    let timed = guarded("bash", json!({"command": "cargo build", "timeout": 900}));
-    let (approval, _) = prompt(&timed, &ReviewState::default(), false);
-    assert_eq!(approval.preview["time_limit"], "900 seconds");
+    // A detached start is shown, with what Shodh does about it.
+    let detached = guarded(RUN_COMMAND, json!({"command": "npm run dev &"}));
+    let (approval, _) = prompt(&detached, &ReviewState::default(), false);
+    assert_eq!(approval.preview["keeps_running"], BACKGROUND_NOTE);
+    assert!(BACKGROUND_NOTE.contains("stops every process"));
+    // The time limit is the session's to show (it knows the workspace's
+    // limits); the prompt itself has no stale omp fields.
+    for key in ["time_limit", "terminal"] {
+        assert!(approval.preview.get(key).is_none(), "{key}");
+    }
 }
 
 #[test]
@@ -1608,7 +1659,6 @@ fn snapshots_of_a_subfolder_are_relative_to_it() {
 fn gate(review: &ReviewState) -> GateContext<'_> {
     GateContext {
         review,
-        root: Path::new("/a"),
         running: None,
         unasked_writer: None,
     }
@@ -1630,6 +1680,7 @@ fn code_settings_default_to_asking_and_survive_a_round_trip() {
     let saved = CodeSettings {
         approval: ApprovalLevel::AutoApplyEdits,
         allowlist: vec!["go test ./...".into(), "a | b".into()],
+        ..CodeSettings::default()
     }
     .save(dir.path())
     .unwrap();
@@ -1754,8 +1805,11 @@ fn the_system_prompt_names_the_folder_and_keeps_the_rules_first() {
 #[test]
 fn code_steps_have_labels_and_tiers() {
     let catalog = code_catalog();
-    assert_eq!(catalog.len(), CODE_TOOLS.len());
+    // omp's Code tools and Shodh's run_command.
+    assert_eq!(catalog.len(), CODE_TOOLS.len() + 1);
     assert_eq!(catalog["read"].tier, RiskTier::Read);
     assert_eq!(catalog["edit"].tier, RiskTier::Write);
-    assert_eq!(catalog["bash"].tier, RiskTier::Write);
+    assert_eq!(catalog[RUN_COMMAND].tier, RiskTier::Write);
+    assert_eq!(catalog[RUN_COMMAND].label_template, "Running {command}");
+    assert!(!catalog.contains_key("bash"));
 }

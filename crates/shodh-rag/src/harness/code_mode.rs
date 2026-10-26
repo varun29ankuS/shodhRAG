@@ -12,12 +12,16 @@
 //!   outside the folder, every URL and internal resource, and every tool
 //!   that is not a Code mode tool. The session refuses to start unless the
 //!   hook announced itself ([`GUARD_COMMAND`]).
-//! - The hook asks for approval of every edit, write and shell command
-//!   through omp's dialog channel (an `input` request titled
-//!   [`APPROVAL_TITLE`]); the session maps it to `ApprovalRequested` and
-//!   answers with [`ALLOW_ANSWER`] or the reason it was refused.
-//! - Shell commands cannot be confined by path; each one needs approval and
-//!   destructive ones carry a warning ([`destructive_reason`]).
+//! - The hook asks for approval of every edit and write through omp's
+//!   dialog channel (an `input` request titled [`APPROVAL_TITLE`]); the
+//!   session maps it to `ApprovalRequested` and answers with
+//!   [`ALLOW_ANSWER`] or the reason it was refused.
+//! - omp's own shell and every other omp tool that runs programs are off
+//!   ([`OMP_EXECUTION_TOOLS`]). Commands run through Shodh's `run_command`
+//!   host tool ([`super::run_command`]): its own process with a clean
+//!   environment and limits, decided by the same approval path as edits.
+//!   Commands cannot be confined by path; each one needs approval (or the
+//!   allowlist) and destructive ones carry a warning ([`destructive_reason`]).
 //! - Undo: before the first change of a session in a git repository the
 //!   session switches to a new branch `shodh/<id>` ([`plan_change`],
 //!   [`create_branch`]); "discard changes" commits the work on that branch
@@ -53,12 +57,48 @@ use super::profile::DIAGRAM_GUIDE;
 use super::sidecar::Thinking;
 use super::truncate_chars;
 
-/// The tools a Code session has, exactly (omp names). `find` in omp 18.4.10
-/// is `glob`; `lsp` needs language servers in the isolated home and is off.
-pub const CODE_TOOLS: [&str; 7] = ["read", "grep", "glob", "ast_grep", "edit", "write", "bash"];
+/// omp's own tools a Code session has, exactly (omp names). `find` in omp
+/// 18.4.10 is `glob`; `lsp` needs language servers in the isolated home and
+/// is off. Commands run through Shodh's `run_command` host tool, never omp's
+/// shell.
+pub const CODE_TOOLS: [&str; 6] = ["read", "grep", "glob", "ast_grep", "edit", "write"];
 
-/// Tools that change files or run commands; the guard asks for each call.
-pub const CHANGE_TOOLS: [&str; 3] = ["edit", "write", "bash"];
+/// omp tools that change files; the guard asks for each call.
+pub const CHANGE_TOOLS: [&str; 2] = ["edit", "write"];
+
+/// omp's tools that run programs or other agents (omp 18.4.10's
+/// `BUILTIN_TOOL_NAMES` and its extra tools). A Code session must offer none
+/// of them, whatever its host tools are called: its inventory check fails
+/// closed on any of these names ([`inventory_matches`]), and the guard
+/// blocks them.
+pub const OMP_EXECUTION_TOOLS: [&str; 10] = [
+    "bash",
+    "eval",
+    "run_code",
+    "debug",
+    "ida",
+    "task",
+    "computer",
+    "browser",
+    "vibe_spawn",
+    "vibe_send",
+];
+
+/// How many tools a Code session has besides the host tools of its chat:
+/// omp's [`CODE_TOOLS`] and Shodh's `run_command`.
+pub const CODE_BUILTIN_TOOLS: usize = CODE_TOOLS.len() + 1;
+
+/// Names a Code session's other host tools (MCP servers, skills) cannot
+/// take: omp's Code tools, Shodh's `run_command`, and omp's tools that run
+/// programs ([`OMP_EXECUTION_TOOLS`]), so none can stand in for them.
+pub fn reserved_tool_names() -> Vec<&'static str> {
+    CODE_TOOLS
+        .iter()
+        .copied()
+        .chain(std::iter::once(super::run_command::RUN_COMMAND))
+        .chain(OMP_EXECUTION_TOOLS)
+        .collect()
+}
 
 /// The guard hook (an omp extension module).
 pub const GUARD_HOOK: &str = include_str!("code_guard.js");
@@ -163,12 +203,11 @@ fn code_settings() -> Value {
         "grep": { "enabled": true },
         "glob": { "enabled": true },
         "astGrep": { "enabled": true },
-        // No background jobs or services: a command ends with its tool call,
-        // so an edit applied without asking cannot land while a command is
-        // still running ([`ReviewState`]).
+        // omp's shell is off: commands run through Shodh's `run_command`.
+        // No background jobs or services either.
         "async": { "enabled": false },
         "launch": { "enabled": false },
-        "bash": { "enabled": true, "patterns": [], "autoBackground": { "enabled": false } },
+        "bash": { "enabled": false, "patterns": [], "autoBackground": { "enabled": false } },
         "bashInterceptor": { "enabled": false },
         "lsp": { "enabled": false },
         "workspace": { "additionalDirectories": [] },
@@ -322,7 +361,9 @@ pub fn code_system_prompt(folder: &CodeFolder, instructions: Option<&str>) -> St
          \n\
          Tools: read (files), grep (text search), glob (find files), ast_grep (syntax-aware \
          search), edit (replace old_string with new_string in one file), write (create or \
-         replace a whole file) and bash (run one shell command in the code folder).\n\
+         replace a whole file) and run_command (run one bash command in the code folder, in \
+         its own process with a time limit; anything it starts in the background is stopped \
+         when it ends).\n\
          \n\
          Rules:\n\
          - Work only inside the code folder. Paths outside it, URLs and other resources are \
@@ -362,7 +403,11 @@ pub fn code_catalog() -> HashMap<String, StepMeta> {
         ("ast_grep", "Searching code for {pat}", RiskTier::Read),
         ("edit", "Editing {path}", RiskTier::Write),
         ("write", "Writing {path}", RiskTier::Write),
-        ("bash", "Running {command}", RiskTier::Write),
+        (
+            super::run_command::RUN_COMMAND,
+            "Running {command}",
+            RiskTier::Write,
+        ),
     ];
     entries
         .into_iter()
@@ -379,8 +424,20 @@ pub fn code_catalog() -> HashMap<String, StepMeta> {
 }
 
 /// Whether `tools` (a session's tool inventory) is exactly [`CODE_TOOLS`]
-/// plus the session's `host` tools.
+/// plus the session's `host` tools, `run_command` among them, and none of
+/// omp's tools that run programs ([`OMP_EXECUTION_TOOLS`]), whatever the
+/// host tools are called. A runtime that adds an execution tool fails this.
 pub fn inventory_matches(tools: &[String], host: &[String]) -> bool {
+    let run_command = super::run_command::RUN_COMMAND;
+    if !host.iter().any(|name| name == run_command)
+        || !tools.iter().any(|name| name == run_command)
+        || tools
+            .iter()
+            .chain(host)
+            .any(|name| OMP_EXECUTION_TOOLS.contains(&name.as_str()))
+    {
+        return false;
+    }
     let mut have: Vec<&str> = tools.iter().map(String::as_str).collect();
     have.sort_unstable();
     have.dedup();
@@ -409,11 +466,13 @@ pub fn host_tools_overlay_config(host: &[String]) -> Value {
     json!({ "tools": { "approval": approvals } })
 }
 
-/// A guarded call waiting for the user's decision.
+/// A guarded call waiting for the user's decision: an edit or write omp's
+/// guard asked about, or a `run_command` call.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GuardRequest {
-    /// The dialog id omp expects the answer for.
-    pub ui_id: String,
+    /// The dialog id omp expects the answer for; `None` for a `run_command`
+    /// call, which the session answers with the tool's result.
+    pub ui_id: Option<String>,
     pub tool_call_id: String,
     pub tool: String,
     pub input: Value,
@@ -448,7 +507,7 @@ pub fn parse_guard_request(
         return None;
     }
     Some(GuardRequest {
-        ui_id: ui_id.to_string(),
+        ui_id: Some(ui_id.to_string()),
         tool_call_id: parsed.tool_call_id,
         tool: parsed.tool,
         input: parsed.input,
@@ -485,6 +544,20 @@ pub const MAX_ALLOWLIST: usize = 32;
 /// Longest allowlist entry.
 pub const MAX_ALLOWLIST_CHARS: usize = 120;
 
+/// Time limit of a command, in seconds: default and range.
+pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 600;
+pub const COMMAND_TIMEOUT_RANGE: std::ops::RangeInclusive<u64> = 10..=3_600;
+
+/// Memory all of a command's processes may use together, in MB: default and
+/// range.
+pub const DEFAULT_MEMORY_LIMIT_MB: u64 = 4_096;
+pub const MEMORY_LIMIT_RANGE: std::ops::RangeInclusive<u64> = 256..=65_536;
+
+/// Share of the whole machine's CPU a command may use, in percent: default
+/// and range.
+pub const DEFAULT_CPU_PERCENT: u32 = 80;
+pub const CPU_PERCENT_RANGE: std::ops::RangeInclusive<u32> = 10..=100;
+
 /// A workspace's Code settings (`workspaces/<id>/code.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -493,6 +566,15 @@ pub struct CodeSettings {
     /// Commands that run without asking at [`ApprovalLevel::Trusted`], each
     /// exactly as listed (words separated by any whitespace).
     pub allowlist: Vec<String>,
+    /// Longest a command may run, in seconds ([`COMMAND_TIMEOUT_RANGE`]); the
+    /// model may ask for less, never more.
+    pub command_timeout_secs: u64,
+    /// Memory a command's processes may use together, in MB
+    /// ([`MEMORY_LIMIT_RANGE`]).
+    pub memory_limit_mb: u64,
+    /// Share of the machine's CPU a command may use, in percent
+    /// ([`CPU_PERCENT_RANGE`]).
+    pub cpu_percent: u32,
 }
 
 impl Default for CodeSettings {
@@ -500,6 +582,9 @@ impl Default for CodeSettings {
         Self {
             approval: ApprovalLevel::default(),
             allowlist: DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
+            command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
+            memory_limit_mb: DEFAULT_MEMORY_LIMIT_MB,
+            cpu_percent: DEFAULT_CPU_PERCENT,
         }
     }
 }
@@ -515,9 +600,46 @@ fn has_shell_special(text: &str) -> bool {
 }
 
 impl CodeSettings {
-    /// The settings with the allowlist cleaned: entries trimmed, with single
-    /// spaces, without shell special characters or duplicates, capped.
+    /// Why the command limits cannot be saved, or `None` when each is in its
+    /// range.
+    pub fn limits_problem(&self) -> Option<String> {
+        if !COMMAND_TIMEOUT_RANGE.contains(&self.command_timeout_secs) {
+            return Some(format!(
+                "The time limit must be between {} seconds and {} minutes.",
+                COMMAND_TIMEOUT_RANGE.start(),
+                COMMAND_TIMEOUT_RANGE.end() / 60
+            ));
+        }
+        if !MEMORY_LIMIT_RANGE.contains(&self.memory_limit_mb) {
+            return Some(format!(
+                "The memory limit must be between {} MB and {} GB.",
+                MEMORY_LIMIT_RANGE.start(),
+                MEMORY_LIMIT_RANGE.end() / 1_024
+            ));
+        }
+        if !CPU_PERCENT_RANGE.contains(&self.cpu_percent) {
+            return Some(format!(
+                "The CPU cap must be between {}% and {}%.",
+                CPU_PERCENT_RANGE.start(),
+                CPU_PERCENT_RANGE.end()
+            ));
+        }
+        None
+    }
+
+    /// The settings with the allowlist cleaned (entries trimmed, with single
+    /// spaces, without shell special characters or duplicates, capped) and
+    /// the command limits brought into their ranges.
     pub fn cleaned(mut self) -> Self {
+        self.command_timeout_secs = self
+            .command_timeout_secs
+            .clamp(*COMMAND_TIMEOUT_RANGE.start(), *COMMAND_TIMEOUT_RANGE.end());
+        self.memory_limit_mb = self
+            .memory_limit_mb
+            .clamp(*MEMORY_LIMIT_RANGE.start(), *MEMORY_LIMIT_RANGE.end());
+        self.cpu_percent = self
+            .cpu_percent
+            .clamp(*CPU_PERCENT_RANGE.start(), *CPU_PERCENT_RANGE.end());
         let mut seen = std::collections::HashSet::new();
         self.allowlist = self
             .allowlist
@@ -571,8 +693,12 @@ impl CodeSettings {
         }
     }
 
-    /// Save the (cleaned) settings; returns what was saved.
+    /// Save the (cleaned) settings; returns what was saved. Command limits
+    /// out of their ranges are refused, not changed.
     pub fn save(self, workspace_dir: &Path) -> Result<Self, String> {
+        if let Some(problem) = self.limits_problem() {
+            return Err(problem);
+        }
         let settings = self.cleaned();
         let path = Self::path(workspace_dir);
         std::fs::create_dir_all(workspace_dir).map_err(|e| e.to_string())?;
@@ -1154,8 +1280,6 @@ pub const REVIEW_TOKEN_KEY: &str = "review_token";
 pub struct GateContext<'a> {
     /// The conversation's [`ReviewState`].
     pub review: &'a ReviewState,
-    /// The code folder.
-    pub root: &'a Path,
     /// A command or MCP tool call allowed earlier that is still running (its
     /// label): it may run, or be changed by, what this call does.
     pub running: Option<&'a str>,
@@ -1164,7 +1288,7 @@ pub struct GateContext<'a> {
     pub unasked_writer: Option<&'a str>,
 }
 
-/// Bash arguments that do nothing when given as these (some model layers
+/// Command arguments that do nothing when given as these (some model layers
 /// send every optional argument, empty).
 fn unset(value: &Value) -> bool {
     match value {
@@ -1174,64 +1298,16 @@ fn unset(value: &Value) -> bool {
     }
 }
 
-/// `path` with `.` and `..` resolved without touching the disk.
-fn lexical(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// Whether a command's `cwd` is the code folder itself (or not given).
-fn runs_in_root(cwd: &Value, root: &Path) -> bool {
-    if unset(cwd) {
-        return true;
-    }
-    let Some(cwd) = cwd.as_str() else {
-        return false;
-    };
-    let path = Path::new(cwd.trim());
-    let joined = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
-    same_path(&lexical(&joined), &lexical(root))
-}
-
-/// Whether a bash call is only a command run in the code folder: no time
-/// limit, terminal, background job, service or any other argument.
-pub fn plain_command_input(input: &Value, root: &Path) -> bool {
+/// Whether a `run_command` call is only a command: no time limit of its own
+/// and no other argument.
+pub fn plain_command_input(input: &Value) -> bool {
     let Some(map) = input.as_object() else {
         return false;
     };
     map.get("command").and_then(Value::as_str).is_some()
-        && map.iter().all(|(key, value)| match key.as_str() {
-            "command" => true,
-            "cwd" => runs_in_root(value, root),
-            _ => unset(value),
-        })
-}
-
-/// Why a command's arguments are refused, or `None`: Code mode starts no
-/// background job (`async`) or service (`name`, `ready`). omp's settings
-/// switch both off; this refuses them even if a setting were missed.
-pub fn background_arguments(request: &GuardRequest) -> Option<&'static str> {
-    if request.tool != "bash" {
-        return None;
-    }
-    let input = &request.input;
-    let set = |key: &str| input.get(key).is_some_and(|value| !unset(value));
-    (set("async") || set("name") || set("ready")).then_some(
-        "Code mode does not start background jobs or services. Run the command in the foreground, or ask the user to start it outside Shodh.",
-    )
+        && map
+            .iter()
+            .all(|(key, value)| key == "command" || unset(value))
 }
 
 /// Programs that start something that keeps running after the command
@@ -1288,33 +1364,32 @@ pub fn starts_background(command: &str) -> bool {
 }
 
 /// Whether Trusted would run this command without asking if nothing were
-/// listed as unreviewed: exactly an allowlist entry, run in the code folder
-/// with no other argument, not destructive, starting nothing that keeps
-/// running. Only approving such a command marks files reviewed: it is the
-/// action the list protects.
+/// listed as unreviewed: exactly an allowlist entry with no other argument,
+/// not destructive, starting nothing meant to keep running. Only approving
+/// such a command marks files reviewed: it is the action the list protects.
 pub fn command_eligible(
     settings: &CodeSettings,
     request: &GuardRequest,
     plan: &ChangePlan,
-    root: &Path,
 ) -> bool {
     let command = str_arg(&request.input, "command");
-    request.tool == "bash"
+    request.tool == super::run_command::RUN_COMMAND
         && !matches!(plan, ChangePlan::Refuse(_))
         && destructive_reason(command).is_none()
         && !starts_background(command)
-        && plain_command_input(&request.input, root)
+        && plain_command_input(&request.input)
         && settings.allows(command)
 }
 
 /// Why a guarded call may run without asking under `settings`, or `None`
 /// when the user decides. Destructive commands always ask. Edits run by
 /// themselves only while a branch can undo them, only in files that cannot
-/// run programs (`target`, [`change_target`]) and only while no process the
-/// user started may still be running. An allowlisted command
-/// ([`command_eligible`]) runs by itself only while the user has seen every
-/// change ([`ReviewState::is_clear`]), nothing else is running and no MCP
-/// tool can change files without asking.
+/// run programs (`target`, [`change_target`]) and only while no command of
+/// the conversation is running (or, from before commands ran in their own
+/// process, may still be). An allowlisted command ([`command_eligible`])
+/// runs by itself only while the user has seen every change
+/// ([`ReviewState::is_clear`]), nothing else is running and no MCP tool can
+/// change files without asking.
 pub fn auto_approval(
     settings: &CodeSettings,
     request: &GuardRequest,
@@ -1327,10 +1402,12 @@ pub fn auto_approval(
         "edit" | "write" => (undoable
             && settings.approval != ApprovalLevel::AskEveryTime
             && target == ChangeTarget::Plain
-            && gate.review.background.is_empty())
+            && gate.review.background.is_empty()
+            && gate.running.is_none())
         .then_some("the workspace applies edits automatically"),
-        "bash" => (settings.approval == ApprovalLevel::Trusted
-            && command_eligible(settings, request, plan, gate.root)
+        tool if tool == super::run_command::RUN_COMMAND => (settings.approval
+            == ApprovalLevel::Trusted
+            && command_eligible(settings, request, plan)
             && gate.review.is_clear()
             && gate.running.is_none()
             && gate.unasked_writer.is_none())
@@ -1353,7 +1430,16 @@ pub fn note_review(
     token: &str,
 ) -> Option<ShownReview> {
     let map = approval.preview.as_object_mut()?;
-    if request.tool != "bash" {
+    if request.tool != super::run_command::RUN_COMMAND {
+        if let Some(running) = gate.running {
+            map.insert(
+                "running_now".to_string(),
+                json!(format!(
+                    "{running} is still running and may run this change, so edits ask until \
+                     it ends."
+                )),
+            );
+        }
         if let Some(process) = gate.review.background.last() {
             map.insert(
                 "running_process".to_string(),
@@ -1375,13 +1461,7 @@ pub fn note_review(
         );
     }
     if starts_background(str_arg(&request.input, "command")) {
-        map.insert(
-            "keeps_running".to_string(),
-            json!(
-                "This starts a process that keeps running after this step. Shodh cannot \
-                 tell when it stops, so every edit in this conversation will ask from now on."
-            ),
-        );
+        map.insert("keeps_running".to_string(), json!(BACKGROUND_NOTE));
     }
     let review = gate.review;
     if review.is_clear() {
@@ -1435,18 +1515,11 @@ pub struct CodeApproval {
 /// What an edit or write prompt whose content was cut says.
 pub const PREVIEW_CUT_NOTE: &str = "The preview is cut, so approving does not count as reviewing this file: it stays listed as changed without your review until you approve an allowlisted command that lists it.";
 
-/// What a command prompt says about a `timeout` argument (seconds; 0 is
-/// none), or `None` without one.
-fn time_limit(input: &Value) -> Option<String> {
-    let timeout = input.get("timeout").filter(|value| !unset(value))?;
-    Some(match timeout.as_f64() {
-        Some(seconds) if seconds.abs() < f64::EPSILON => {
-            "None: it runs until it finishes or the answer is stopped.".to_string()
-        }
-        Some(seconds) => format!("{seconds} seconds"),
-        None => format!("{timeout} (not a number of seconds)"),
-    })
-}
+/// What a command prompt says about a command that tries to start a process
+/// meant to keep running.
+pub const BACKGROUND_NOTE: &str = "This tries to start a process that keeps running after the \
+     command. Shodh stops every process the command started when the command ends, so it will \
+     not keep running.";
 
 fn clipped(text: &str, max: usize) -> String {
     let count = text.chars().count();
@@ -1523,11 +1596,6 @@ pub fn approval_for(
         _ => {
             let command = str_arg(input, "command");
             let warning = destructive_reason(command);
-            let folder = input
-                .get("cwd")
-                .and_then(Value::as_str)
-                .filter(|c| !c.trim().is_empty())
-                .unwrap_or("the code folder");
             (
                 format!("Run: {}", one_line(command, MAX_LABEL_CHARS)),
                 if warning.is_some() {
@@ -1538,9 +1606,7 @@ pub fn approval_for(
                 json!({
                     "warning": warning,
                     "command": clipped(command, MAX_PREVIEW_CHARS),
-                    "runs_in": folder,
-                    "time_limit": time_limit(input),
-                    "terminal": input.get("pty").and_then(Value::as_bool).unwrap_or(false),
+                    "runs_in": "the code folder",
                 }),
             )
         }

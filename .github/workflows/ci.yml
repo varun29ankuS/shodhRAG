@@ -93,6 +93,11 @@ jobs:
       - name: Tests (shodh-ontology)
         run: cargo test --package shodh-ontology
 
+      # The command runner's tests (harness/run_command) launch this probe
+      # through Code mode's process limits; they fail when it is not built.
+      - name: Build the sandbox probe
+        run: cargo build --package sandbox-probe
+
       - name: Library tests (shodh-rag)
         run: cargo test --package shodh-rag --lib
 
@@ -131,6 +136,15 @@ jobs:
 
       - name: OCR tests (shodh-rag)
         run: cargo test --package shodh-rag --lib ocr
+
+      # Code mode's command runner on macOS (process group, CPU limit, memory
+      # watchdog, the sweep of every process a command started), through the
+      # probe; the same test binary as the OCR tests.
+      - name: Build the sandbox probe
+        run: cargo build --package sandbox-probe
+
+      - name: Command runner tests (shodh-rag)
+        run: cargo test --package shodh-rag --lib run_command
 
   # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
   # index, every question searched, gated against the committed baseline.

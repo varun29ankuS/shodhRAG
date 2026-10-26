@@ -392,7 +392,7 @@ pub enum ToolError {
 
 impl ToolError {
     /// Short label for the transcript.
-    fn summary(&self) -> String {
+    pub(crate) fn summary(&self) -> String {
         match self {
             ToolError::Declined(_) => "Declined".to_string(),
             ToolError::InvalidArguments { .. } => INVALID_ARGUMENTS_SUMMARY.to_string(),

@@ -195,7 +195,12 @@ export function useConversations() {
       let next = listRef.current;
       if (change.removed.length > 0) {
         const gone = new Set(change.removed);
+        const removed = next.filter(c => gone.has(c.id));
         next = next.filter(c => !gone.has(c.id));
+        // As for a deleted chat: what the diagram ledger kept for them goes too.
+        for (const conversation of removed) {
+          diagramLedger().forget(diagramKeysToForget(conversation, next));
+        }
         if (activeIdRef.current && gone.has(activeIdRef.current)) {
           const fallback = firstAskConversation(next);
           if (fallback) {

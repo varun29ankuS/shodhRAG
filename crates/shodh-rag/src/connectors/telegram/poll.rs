@@ -92,7 +92,7 @@ impl Default for PollTiming {
 /// What the card says when the token was refused.
 pub const TOKEN_REFUSED: &str = "Telegram refused the bot token: it was revoked in @BotFather, or the bot was deleted. Connect again with the bot's current token.";
 /// What the card says on a conflict.
-pub const CONFLICT: &str = "Another program is reading this bot's messages: a webhook set on the bot, or Shodh on another computer. Stop the other one (in @BotFather or on that computer), then switch the connector on again here.";
+pub const CONFLICT: &str = "Another program is reading this bot's messages: a webhook another tool set on the bot, or Shodh on another computer. Stop the other one (or make a new token with /revoke in @BotFather and connect with it), then switch the connector on again here.";
 
 fn spread(wait: Duration, jitter: bool) -> Duration {
     if !jitter {
@@ -112,10 +112,16 @@ pub async fn run(
     stop: CancellationToken,
     timing: PollTiming,
 ) {
-    let mut offset = offsets.load().unwrap_or_else(|e| {
-        tracing::warn!(target: "shodh::telegram", error = %e, "the Telegram checkpoint could not be read; starting from what Telegram keeps");
-        None
-    });
+    // The checkpoint is a file: read and written off the async workers.
+    let loader = offsets.clone();
+    let mut offset = tokio::task::spawn_blocking(move || loader.load())
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r)
+        .unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::telegram", error = %e, "the Telegram checkpoint could not be read; starting from what Telegram keeps");
+            None
+        });
     let mut backoff = timing.backoff_start;
     let mut connected = false;
     sink.state(PollState::Connecting);
@@ -140,7 +146,12 @@ pub async fn run(
                     let next = last + 1;
                     offset = Some(next);
                     // Saved before the answers start: at most once.
-                    if let Err(e) = offsets.save(next) {
+                    let saver = offsets.clone();
+                    let saved = tokio::task::spawn_blocking(move || saver.save(next))
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r);
+                    if let Err(e) = saved {
                         tracing::warn!(target: "shodh::telegram", error = %e, "the Telegram checkpoint could not be saved");
                     }
                     sink.update_seen(Utc::now());

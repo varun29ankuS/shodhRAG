@@ -388,26 +388,26 @@ struct Routing {
 /// Sends the card's status at most once per [`STATUS_EVERY`]: the first request is sent
 /// at once, the ones during the wait are sent together after it.
 #[derive(Default)]
-struct StatusPacer {
+pub(super) struct StatusPacer {
     running: AtomicBool,
     again: AtomicBool,
 }
 
 impl StatusPacer {
     /// True when the caller should start sending (no round is running).
-    fn request(&self) -> bool {
+    pub(super) fn request(&self) -> bool {
         self.again.store(true, Ordering::SeqCst);
         !self.running.swap(true, Ordering::SeqCst)
     }
 
     /// Called before each send: takes the pending request.
-    fn take(&self) -> bool {
+    pub(super) fn take(&self) -> bool {
         self.again.swap(false, Ordering::SeqCst)
     }
 
     /// Called after a round's wait: true when another request came meanwhile and this
     /// sender goes on.
-    fn finish_round(&self) -> bool {
+    pub(super) fn finish_round(&self) -> bool {
         if self.again.load(Ordering::SeqCst) {
             return true;
         }

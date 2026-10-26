@@ -50,7 +50,7 @@ use shodh_rag::user_memory::Actor;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::conversations::{self, key_part, Connector, Exchange, Said};
-use super::slack::{app_private_terms, audit_change, workspace_ref, WorkspaceRef};
+use super::slack::{app_private_terms, audit_change, workspace_ref, StatusPacer, WorkspaceRef};
 use super::slack_usage::SlackUsage;
 use super::telegram_notices::{self, TelegramNotice, TelegramNoticeState};
 use crate::app_settings::{broadcast, AppSettings, SettingsStore};
@@ -78,6 +78,8 @@ const USAGE_FILE: &str = "connectors/telegram_usage.json";
 const STATE_FILE: &str = "connectors/telegram_state.json";
 /// The longest wait for the polling to stop when the app exits.
 const EXIT_WAIT: Duration = Duration::from_secs(3);
+/// The page's status is sent at most this often while messages stream in.
+const STATUS_EVERY: Duration = Duration::from_secs(1);
 
 const LOCAL_ONLY: &str = "Local-only mode is on, so Shodh does not connect to Telegram. Turn it off in Settings → Privacy to use the Telegram connector.";
 
@@ -355,6 +357,7 @@ pub struct TelegramState {
     codes: Arc<LinkCodes>,
     running: Mutex<Option<Running>>,
     live: Arc<Mutex<Live>>,
+    pacer: Arc<StatusPacer>,
     /// One change at a time (connect, switch, disconnect, follow the settings).
     op: tokio::sync::Mutex<()>,
     pub(super) notices: TelegramNoticeState,
@@ -380,6 +383,7 @@ impl TelegramState {
             codes: Arc::new(LinkCodes::default()),
             running: Mutex::new(None),
             live: Arc::new(Mutex::new(Live::default())),
+            pacer: Arc::new(StatusPacer::default()),
             op: tokio::sync::Mutex::new(()),
             notices: TelegramNoticeState::default(),
         }
@@ -623,21 +627,37 @@ pub async fn status(app: &AppHandle) -> Result<TelegramStatus, String> {
     })
 }
 
-/// Tells the page the status changed (and notifications what changed).
+/// Tells the page the status changed (and notifications what changed): computed in the
+/// background, at most once per [`STATUS_EVERY`] while messages stream in.
 pub fn emit_status(app: &AppHandle) {
+    let Some(state) = app.try_state::<TelegramState>() else {
+        return;
+    };
+    let pacer = state.pacer.clone();
+    if !pacer.request() {
+        return;
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        match status(&app).await {
-            Ok(status) => {
-                if let Some(bot) = &status.bot {
-                    telegram_notices::observe_state(&app, &bot.username, status.state);
-                }
-                if let Err(e) = app.emit(TELEGRAM_STATUS_EVENT, status) {
-                    tracing::warn!(target: "shodh::telegram", error = %e, "Telegram status not emitted");
+        loop {
+            if pacer.take() {
+                match status(&app).await {
+                    Ok(status) => {
+                        if let Some(bot) = &status.bot {
+                            telegram_notices::observe_state(&app, &bot.username, status.state);
+                        }
+                        if let Err(e) = app.emit(TELEGRAM_STATUS_EVENT, status) {
+                            tracing::warn!(target: "shodh::telegram", error = %e, "Telegram status not emitted");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "shodh::telegram", error = %e, "Telegram status unavailable")
+                    }
                 }
             }
-            Err(e) => {
-                tracing::warn!(target: "shodh::telegram", error = %e, "Telegram status unavailable")
+            tokio::time::sleep(STATUS_EVERY).await;
+            if !pacer.finish_round() {
+                return;
             }
         }
     });

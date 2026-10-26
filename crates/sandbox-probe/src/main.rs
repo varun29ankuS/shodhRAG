@@ -9,7 +9,7 @@
 //! - `detach FILE`: start `heartbeat FILE` so that it outlives this process
 //!   (Windows: breakaway from the job is tried first, and the result
 //!   printed; elsewhere: a new session, which leaves the process group),
-//!   print its pid and exit.
+//!   print its pid (also written to FILE.pid) and exit.
 //! - `hold`: sleep forever.
 //! - `busy`: spin on the CPU forever.
 //! - `alloc MB [SECS]`: allocate and touch MB megabytes, printing how far it
@@ -161,6 +161,12 @@ fn detach(file: &str) -> i32 {
     match spawn_detached(file) {
         Ok(child) => {
             println!("pid {}", child.id());
+            // Also in FILE.pid, for a caller that cannot read this output to
+            // its end (on Windows the child inherits the output pipe).
+            if let Err(e) = std::fs::write(format!("{file}.pid"), child.id().to_string()) {
+                println!("pid file not written: {e}");
+                return 1;
+            }
             0
         }
         Err(e) => {

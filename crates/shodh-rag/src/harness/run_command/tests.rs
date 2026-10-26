@@ -712,11 +712,21 @@ mod processes {
         // Control: outside the runner, the detached heartbeat keeps beating
         // after the probe that started it exited.
         let control_file = dirs.folder.join("control-beat.txt");
-        let direct = control_run(&["detach", &control_file.display().to_string()]);
-        assert!(direct.status.success());
-        let control_pid = *pids(&String::from_utf8_lossy(&direct.stdout))
-            .first()
-            .expect("the control printed its child's pid");
+        // Without pipes: on Windows the heartbeat inherits them, and reading
+        // the probe's output to its end would wait for the heartbeat.
+        let status = std::process::Command::new(probe())
+            .args(["detach", &control_file.display().to_string()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let control_pid: u32 = std::fs::read_to_string(format!("{}.pid", control_file.display()))
+            .expect("the control wrote its child's pid")
+            .trim()
+            .parse()
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(600)).await;
         let first = beats(&control_file);
         tokio::time::sleep(Duration::from_millis(600)).await;

@@ -9,23 +9,40 @@ import {
   takeRequestedConnectorPage,
   type ConnectorPage,
 } from './navigation';
-import { slackPill, tileAction, type SlackTabId } from './slackModel';
+import { slackPill, tileAction, type Pill, type SlackTabId } from './slackModel';
 import { SlackMark } from './SlackLogo';
 import { SlackPage } from './SlackPage';
 import { EMPTY_WIZARD, type WizardState } from './SlackSetup';
+import { telegramPill, telegramTileAction, type TelegramTabId } from './telegramModel';
+import { TelegramMark } from './TelegramLogo';
+import { TelegramPage } from './TelegramPage';
+import { EMPTY_TELEGRAM_WIZARD, type TelegramWizardState } from './TelegramSetup';
 import { FOCUS_RING, Skeleton, StatusPill } from './ui';
-import { useSlackStatus, type SlackStatusState } from './useSlackStatus';
+import { useSlackStatus } from './useSlackStatus';
+import { useTelegramStatus } from './useTelegramStatus';
 
-/** Slack in the gallery: its mark, name, one line, its state and one action. */
-function SlackTile({ info, slack, onOpen }: { info: ConnectorInfo; slack: SlackStatusState; onOpen: () => void }) {
-  const { status, loadError } = slack;
-  const pill = status ? slackPill(status) : null;
-  const action = status ? tileAction(status) : 'Open';
+/** A connector in the gallery: its mark, name, one line, its state and one action. */
+function ConnectorTile({
+  info,
+  mark,
+  pill,
+  action,
+  loadError,
+  onOpen,
+}: {
+  info: ConnectorInfo;
+  mark: React.ReactNode;
+  pill: Pill | null;
+  action: 'Connect' | 'Manage' | 'Open';
+  loadError: string | null;
+  onOpen: () => void;
+}) {
   const state = pill ? `${pill.label}${pill.reason ? `, ${pill.reason}` : ''}` : loadError ? 'could not be loaded' : 'loading';
   return (
     <li>
       <button
         type="button"
+        data-connector={info.id}
         onClick={onOpen}
         aria-label={`${info.name}: ${state}. ${action}`}
         className={cn(
@@ -34,7 +51,7 @@ function SlackTile({ info, slack, onOpen }: { info: ConnectorInfo; slack: SlackS
         )}
       >
         <span className="flex items-start gap-3.5">
-          <SlackMark size="md" />
+          {mark}
           <span className="min-w-0 flex-1 flex flex-col gap-1">
             <span className="text-[15px] font-semibold text-shodh-text">{info.name}</span>
             <span className="text-[12.5px] leading-[1.5] text-shodh-text-secondary">{info.summary}</span>
@@ -74,6 +91,8 @@ function SlackTile({ info, slack, onOpen }: { info: ConnectorInfo; slack: SlackS
  */
 export default function ConnectorsView() {
   const slack = useSlackStatus();
+  const telegram = useTelegramStatus();
+  const [telegramWizard, setTelegramWizard] = useState<TelegramWizardState>(EMPTY_TELEGRAM_WIZARD);
   const [page, setPage] = useState<ConnectorPage | null>(() => takeRequestedConnectorPage() ?? lastConnectorPage());
   const [wizard, setWizard] = useState<WizardState>(EMPTY_WIZARD);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -97,10 +116,15 @@ export default function ConnectorsView() {
   }, [show]);
 
   const back = useCallback(() => {
+    const from = page?.connector ?? null;
     show(null);
     // Focus goes back to the tile that was opened.
-    window.requestAnimationFrame(() => tilesRef.current?.querySelector<HTMLButtonElement>('button')?.focus());
-  }, [show]);
+    window.requestAnimationFrame(() => {
+      const tiles = tilesRef.current;
+      const tile = from ? tiles?.querySelector<HTMLButtonElement>(`button[data-connector="${from}"]`) : null;
+      (tile ?? tiles?.querySelector<HTMLButtonElement>('button'))?.focus();
+    });
+  }, [show, page]);
 
   // Escape on a page goes back to the gallery, unless a field, menu or confirm took it.
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -110,7 +134,8 @@ export default function ConnectorsView() {
     back();
   };
 
-  const tab: SlackTabId = page?.tab ?? 'overview';
+  const slackTab = (page?.connector === 'slack' ? page.tab : null) as SlackTabId | null;
+  const telegramTab = (page?.connector === 'telegram' ? page.tab : null) as TelegramTabId | null;
 
   return (
     <div ref={rootRef} onKeyDown={onKeyDown} className="h-full overflow-y-auto scrollbar-thin bg-shodh-ground text-shodh-text">
@@ -120,8 +145,17 @@ export default function ConnectorsView() {
             slack={slack}
             wizard={wizard}
             onWizard={setWizard}
-            tab={tab}
+            tab={slackTab ?? 'overview'}
             onTab={next => show({ connector: 'slack', tab: next })}
+            onBack={back}
+          />
+        ) : page?.connector === 'telegram' ? (
+          <TelegramPage
+            telegram={telegram}
+            wizard={telegramWizard}
+            onWizard={setTelegramWizard}
+            tab={telegramTab ?? 'overview'}
+            onTab={next => show({ connector: 'telegram', tab: next })}
             onBack={back}
           />
         ) : (
@@ -133,9 +167,35 @@ export default function ConnectorsView() {
               </p>
             </header>
             <ul ref={tilesRef} aria-label="Connectors" className="m-0 p-0 list-none grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {CONNECTORS.map(info => (
-                <SlackTile key={info.id} info={info} slack={slack} onOpen={() => show({ connector: info.id, tab: null })} />
-              ))}
+              {CONNECTORS.map(info => {
+                const open = () => show({ connector: info.id, tab: null });
+                if (info.id === 'telegram') {
+                  const status = telegram.status;
+                  return (
+                    <ConnectorTile
+                      key={info.id}
+                      info={info}
+                      mark={<TelegramMark size="md" />}
+                      pill={status ? telegramPill(status) : null}
+                      action={status ? telegramTileAction(status) : 'Open'}
+                      loadError={telegram.loadError}
+                      onOpen={open}
+                    />
+                  );
+                }
+                const status = slack.status;
+                return (
+                  <ConnectorTile
+                    key={info.id}
+                    info={info}
+                    mark={<SlackMark size="md" />}
+                    pill={status ? slackPill(status) : null}
+                    action={status ? tileAction(status) : 'Open'}
+                    loadError={slack.loadError}
+                    onOpen={open}
+                  />
+                );
+              })}
             </ul>
           </>
         )}

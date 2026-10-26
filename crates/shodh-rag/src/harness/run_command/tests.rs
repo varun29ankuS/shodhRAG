@@ -423,7 +423,7 @@ fn scratch_folders_are_per_conversation_and_removed_with_it() {
 }
 
 /// A control that counts `on_started` calls and forwards live output.
-fn control(
+fn run_control(
     command_id: &str,
 ) -> (
     RunControl,
@@ -461,7 +461,7 @@ fn spec_in(folder: &Path, scratch: &Path, command: &str, secs: u64, memory_mb: u
 async fn without_a_shell_the_command_is_refused_and_nothing_runs() {
     let folder = tempfile::tempdir().unwrap();
     let scratch = folder.path().join("scratch");
-    let (control, started, _output) = control("refused");
+    let (control, started, _output) = run_control("refused");
     let outcome = run_contained(
         spec_in(folder.path(), &scratch, "echo ran > ran.txt", 10, 1024),
         Err(NO_GIT_BASH.to_string()),
@@ -652,7 +652,7 @@ mod processes {
         for (name, value) in canaries {
             assert!(direct.contains(value.as_str()), "control misses {name}");
         }
-        let (control, started, _output) = control("env-run");
+        let (control, started, _output) = run_control("env-run");
         let outcome = run_contained(
             spec_in(&dirs.folder, &dirs.scratch, &probe_command("env"), 30, 1024),
             shell(),
@@ -727,7 +727,7 @@ mod processes {
         // Through the runner: the command ends at once, and its detached
         // heartbeat stops within a second of that.
         let file = dirs.folder.join("beat.txt");
-        let (control, _started, _output) = control("detach-run");
+        let (control, _started, _output) = run_control("detach-run");
         let outcome = run_contained(
             spec_in(
                 &dirs.folder,
@@ -773,7 +773,7 @@ mod processes {
     async fn a_fork_loop_stops_at_the_process_limit() {
         let _one = ONE_AT_A_TIME.lock().await;
         let dirs = folders();
-        let (control, _started, _output) = control("fork-run");
+        let (control, _started, _output) = run_control("fork-run");
         let began = Instant::now();
         let outcome = run_contained(
             spec_in(
@@ -823,7 +823,7 @@ mod processes {
     async fn every_process_of_a_fork_loop_is_stopped_when_it_ends() {
         let _one = ONE_AT_A_TIME.lock().await;
         let dirs = folders();
-        let (control, _started, _output) = control("fork-run");
+        let (control, _started, _output) = run_control("fork-run");
         let outcome = run_contained(
             spec_in(
                 &dirs.folder,
@@ -855,7 +855,7 @@ mod processes {
     async fn a_busy_loop_is_stopped_at_its_time_limit() {
         let _one = ONE_AT_A_TIME.lock().await;
         let dirs = folders();
-        let (control, _started, _output) = control("busy-run");
+        let (control, _started, _output) = run_control("busy-run");
         let began = Instant::now();
         let outcome = run_contained(
             spec_in(&dirs.folder, &dirs.scratch, &probe_command("busy"), 3, 1024),
@@ -885,7 +885,7 @@ mod processes {
         assert!(direct.status.success(), "{direct:?}");
         assert!(String::from_utf8_lossy(&direct.stdout).contains("allocated 1024 MB"));
 
-        let (control, _started, _output) = control("alloc-run");
+        let (control, _started, _output) = run_control("alloc-run");
         let outcome = run_contained(
             spec_in(
                 &dirs.folder,
@@ -928,7 +928,7 @@ mod processes {
     async fn stop_ends_the_command_and_everything_it_started() {
         let _one = ONE_AT_A_TIME.lock().await;
         let dirs = folders();
-        let (control, started, mut output) = control("stop-run");
+        let (control, started, mut output) = run_control("stop-run");
         let run = tokio::spawn(run_contained(
             spec_in(
                 &dirs.folder,
@@ -980,7 +980,7 @@ mod processes {
             "git init -q && git status".to_string(),
             "cargo --version".to_string(),
         ] {
-            let (control, _started, _output) = control("usual-run");
+            let (control, _started, _output) = run_control("usual-run");
             let outcome = run_contained(
                 spec_in(&dirs.folder, &dirs.scratch, &command, 120, 4096),
                 shell(),
@@ -994,7 +994,7 @@ mod processes {
         // break reach bash byte for byte.
         let hostile = "a \"b\" 'c' \\d $HOME !x %PATH% ls* é✓ C:\\x\\y\nsecond line";
         let command = format!("cat <<'SHODH_END'\n{hostile}\nSHODH_END");
-        let (control, _started, _output) = control("quote-run");
+        let (control, _started, _output) = run_control("quote-run");
         let outcome = run_contained(
             spec_in(&dirs.folder, &dirs.scratch, &command, 30, 1024),
             shell(),
@@ -1004,7 +1004,7 @@ mod processes {
         assert_eq!(outcome.exit_code, Some(0), "{outcome:?}");
         assert_eq!(outcome.output, format!("{hostile}\n"));
         // A command starting like a drive reaches bash too.
-        let (control, _started, _output) = control("drive-run");
+        let (control, _started, _output) = run_control("drive-run");
         let outcome = run_contained(
             spec_in(&dirs.folder, &dirs.scratch, "c:; echo after", 30, 1024),
             shell(),

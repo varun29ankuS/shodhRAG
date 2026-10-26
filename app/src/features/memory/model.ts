@@ -224,7 +224,6 @@ export function formatDate(iso: string | null): string {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-/** Where a memory is visible, in words. `workspaceName` resolves a workspace id. */
 /** Where a memory came from, for its provenance line. */
 export type MemoryOrigin = 'conversation' | 'slack' | 'settings';
 
@@ -234,6 +233,7 @@ export function memoryOrigin(memory: Pick<MemoryRecord, 'source' | 'conversation
   return 'settings';
 }
 
+/** Where a memory is visible, in words. `workspaceName` resolves a workspace id. */
 export function scopeLabel(scope: string, workspaceName: (id: string) => string | undefined): string {
   if (scope === 'global') return 'All conversations';
   const id = scope.startsWith('workspace:') ? scope.slice('workspace:'.length) : scope;

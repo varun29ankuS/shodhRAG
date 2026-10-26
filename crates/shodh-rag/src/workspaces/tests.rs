@@ -464,3 +464,34 @@ fn every_template_is_valid() {
         .instructions
         .contains("BibTeX"));
 }
+
+#[test]
+fn only_a_slack_channel_is_a_folder_source_without_a_path() {
+    let (_dir, store) = store();
+    let ws = store
+        .create(&named("Clients"), WorkspaceAuthor::User)
+        .unwrap();
+    let pathless = |reference: &str| NewSource {
+        kind: SourceKind::Folder,
+        reference: reference.into(),
+        label: "#deals (Slack)".into(),
+        path: None,
+    };
+    // A Slack channel's index space is no folder on disk.
+    let added = store
+        .add_sources(&ws.id, &[pathless("slack:T1:C1")], WorkspaceAuthor::User)
+        .unwrap();
+    assert_eq!(added.added, 1);
+    let source = store.detail(&ws.id).unwrap().sources.remove(0);
+    assert_eq!(source.reference, "slack:T1:C1");
+    assert_eq!(source.path, None, "no folder to read files from");
+    // Any other folder still needs its path.
+    for reference in ["space-1", "slack:", "slack:T1", "slack://T1/C1/1.1"] {
+        assert!(
+            store
+                .add_sources(&ws.id, &[pathless(reference)], WorkspaceAuthor::User)
+                .is_err(),
+            "{reference}"
+        );
+    }
+}

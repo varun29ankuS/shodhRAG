@@ -403,8 +403,10 @@ reinstalled; answering is unaffected.
   `message.channels` / `message.groups` events of the public and private channels the bot is in.
 - Events added: `message.channels`, `message.groups`, `channel_archive`, `channel_deleted`,
   `group_deleted`, `member_left_channel`, `channel_left`. `group_archive` is RTM-only, so a private
-  channel's archive is caught by `conversations.info` on every poll; a channel the bot was removed from
-  is also caught by `not_in_channel` / `channel_not_found` from history.
+  channel's archive is caught by `conversations.info`, asked at most every 15 minutes (during the
+  backfill too, which also catches a channel shared since it was chosen); a channel the bot was removed
+  from is also caught by `not_in_channel` / `channel_not_found` from history, an archived one by
+  `is_archived`.
 - `users:read` (already granted) resolves `<@U…>` to display names (never e-mails: no
   `users:read.email`) and lists people for the card's "This is me" pick (`users.list`).
 - An existing app: in Slack, open the app's manifest, add the two scopes and the events (the card shows
@@ -421,9 +423,13 @@ reinstalled; answering is unaffected.
   threads like its other documents. Forget is `delete_by_space_id` (exact predicate; keyword entries
   removed by chunk id).
 - **Thread = document**: parent and replies, `slack://<team>/<channel>/<thread_ts>`; a message without
-  replies is a thread of one. Replacing a thread deletes its old chunks by that exact source (a
-  pseudo-source is no longer run through the file-path normaliser, which mangled `scheme://` sources on
-  Windows) and adds the new ones; one thread per hold of the engine, so Ask is never blocked for long.
+  replies is a thread of one. A thread is chunked and embedded outside the engine's lock
+  (`FilePreparer::prepare_text`), which is taken only to store it (`commit_file`): the new chunks first,
+  then whatever that exact source held before is removed by chunk id. So a thread has one document
+  however often it is stored (also when a cancelled step stored it without recording it), and Ask is
+  not held up by embedding. The store finishes whole once begun and keeps the sync gate until it is
+  done, so a forget after a disconnect never runs before it. (A pseudo-source is no longer run through
+  the file-path normaliser, which mangled `scheme://` sources on Windows.)
   Metadata carries the permalink (`url`); citations in the app open the permalink. The permalink comes
   from `chat.getPermalink` once per channel; the others are derived from it when it has the
   `…/archives/<channel>/p<ts>` shape, else asked for each thread.
@@ -435,14 +441,23 @@ reinstalled; answering is unaffected.
      `conversations.replies` for threaded parents. The page cursor and the fixed `latest` are
      checkpointed after every page in `shodh.db`, so a sleeping laptop or a rate-limit pause resumes at
      the page it stopped on (re-indexing a page is idempotent).
-  2. *Incremental*: history since the newest `ts` seen, on start and every 15 minutes.
+  2. *Incremental*: history since the newest `ts` seen up to a fixed `latest` bound, on start and
+     every 15 minutes, at most 10 pages a step. A poll with more waiting (a laptop closed over a
+     weekend) checkpoints its bound and cursor and goes on at the next step; the newest `ts` moves only
+     once everything up to the bound was read, so no message is skipped.
   3. *Live*: `message` (new, thread reply), `message_changed`, `message_deleted` mark the thread dirty
      and it is fetched again; `channel_archive` stops syncing and keeps the content; `channel_deleted`,
      `group_deleted` forget the channel; the bot leaving or removed (`member_left_channel` for the bot,
      `channel_left`, `not_in_channel`) stops syncing and says so.
-  4. *Slim pass* every 6 hours: thread ids and their `latest_reply` across the window; a thread gone
-     from Slack is deleted, one with a newer reply is fetched again (edits made while offline are caught
-     only when the thread is touched again).
+  4. *Slim pass* every 6 hours: thread ids with their `latest_reply` and `reply_count` across the
+     window, at most 50 pages a step; a longer window goes on at the next step below the oldest message
+     listed. A thread gone from what a step listed whole is deleted; one whose replies changed (a reply
+     added, or deleted while Shodh was not running) is fetched again. A thread only bots wrote is kept
+     with its replies, so it is not fetched again every pass. Edits made while offline are caught only
+     when the thread is touched again.
+  - A cursor Slack refuses as stale (`invalid_cursor`) is dropped and the page read again from the
+    kept bound; threads already read with the same replies are skipped.
+  - Names (`users.info`) and permalinks are paced like history; a 429 on them pauses like any other.
   - 429: every channel of that Slack workspace pauses until `Retry-After` (Slack limits a method per
     workspace; stored, shown "Paused: rate limit until …"), then resumes from its checkpoint.
 - **Card per channel**: Backfilling (n of ~N, about T left at this pace) / Up to date (last sync) /
@@ -450,7 +465,11 @@ reinstalled; answering is unaffected.
   computer only: no model calls".
 - **Forget**: "Stop indexing and forget" removes the workspace source, every chunk of the space, the
   sync state, checkpoints, thread follow-up turns and that channel's Slack memories. Disconnect asks
-  whether to keep or forget what was indexed from Slack.
+  whether to keep or forget what was indexed from Slack. The channel shows "Forgetting" at once; a sync
+  step holding the gate stops at its next thread. What lives outside the connector (the workspace
+  source, memories in the user's memories) goes first, the rows that link it after; a failure is
+  reported and leaves the channel Forgetting, which the sync tries again. A channel being forgotten
+  stays so (no event or late step turns it back) and cannot be chosen again until it is gone.
 
 ## Answering in Slack with Slack content
 
@@ -463,9 +482,14 @@ reinstalled; answering is unaffected.
   have", "list the documents", "how many papers are there") is answered from the workspace's document
   list (exact count and titles, sanitized, cut to Slack's limit) with no model call. Anything less
   certain is answered normally. The prompt now says the passages are a search sample, not the library.
+  A listing reads the whole index and costs no model call, so it is said again as it was for a minute
+  in the same conversation instead of reading the index again. A document indexed into two spaces is
+  listed in each.
 - **Thread follow-ups**: the last 3 questions and Shodh's answers of the same thread (at most 600
   characters each, 2 400 in all), kept in `shodh.db` (`slack_thread_turn`, last 6 per thread, 30 days),
   are in the prompt as untrusted context; the search query is the previous question plus the new one.
+  A DM question outside a thread keeps its own (a reply in its thread follows it up), so unrelated DM
+  questions never share a context.
 - **Diagrams**: the prompt says Slack cannot show diagrams; a mermaid (or dot / plantuml) code block
   that still comes back is replaced by "(A diagram was left out: Slack can't show diagrams.)".
 
@@ -484,7 +508,14 @@ and other channels are refused like questions):
   can promote one into the user's memories (the user's click) or delete it.
 - Provenance kept: author display name, channel, permalink, time.
 - Explicit text: no model call. A thread: one model call (a summary), counted against the Slack cap.
-  The summary of a thread includes other people's words; for the owner it goes into main memory.
+  The summary of a thread includes other people's words; for the owner it goes into main memory. On
+  recall (the agent's memory block and the recall tool) a memory from Slack is quoted and marked as
+  possibly other people's words, never instructions; no memory's text can close the memory block.
+- Only a memory the write added is linked to its Slack row (what Forget and Delete remove): when the
+  same note is in the user's memories already, it is the user's, and nothing from Slack removes it. The
+  row is saved after the memory; a row that cannot be saved takes the memory back.
+- A channel keeps at most 100 channel-scoped memories, and one person saves at most 20 a day in one
+  channel; past that, the reply says why nothing was saved.
 
 ## Tests
 

@@ -156,7 +156,10 @@ fn clean_source(source: &NewSource) -> WorkspaceResult<CleanSource> {
             Some(path.unwrap_or_else(|| reference.to_string())),
         ),
         SourceKind::Folder => {
-            if path.is_none() {
+            // A Slack channel's index space (`slack:<team>:<channel>`) is no folder on
+            // disk: it has no path (and gives no folder to read files from).
+            let slack_channel = crate::connectors::slack::ids::parse_space(reference).is_some();
+            if path.is_none() && !slack_channel {
                 return Err(WorkspaceError::Invalid(
                     "a folder source needs the folder's path".into(),
                 ));

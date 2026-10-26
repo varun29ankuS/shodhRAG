@@ -144,7 +144,7 @@ const MAX_NAME_CHARS = 60;
  */
 export function safeName(name: string): string {
   // eslint-disable-next-line no-control-regex
-  const flat = name.replace(/[\u0000-\u001f\u007f-\u009f  ]/g, ' ').replace(/[>:]/g, ' ');
+  const flat = name.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/[>:]/g, ' ');
   const one = flat.split(/\s+/).filter(Boolean).join(' ');
   const chars = Array.from(one);
   const cut = chars.length <= MAX_NAME_CHARS ? one : `${chars.slice(0, MAX_NAME_CHARS - 1).join('')}…`;
@@ -154,7 +154,7 @@ export function safeName(name: string): string {
 /** `content` with every line quoted (`> `), so no line of it can pass for a heading. */
 function quoted(content: string): string {
   return content
-    .split(/\r\n|\r|\n| | /)
+    .split(/\r\n|\r|\n|\u2028|\u2029/)
     .map(line => `> ${line}`)
     .join('\n');
 }

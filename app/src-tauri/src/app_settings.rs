@@ -464,7 +464,7 @@ pub const AGENT_DENIED: [(&str, &str); 26] = [
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
     ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
     ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
-    ("connectors", "Connectors decide which documents people outside this computer (in Slack) can get answers from and how many model calls they may spend; only the user may change that."),
+    ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, and how many model calls they may spend; only the user may change that."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -673,6 +673,7 @@ pub fn broadcast(app: &AppHandle, settings: &AppSettings) {
     crate::notifications::settings_changed(app, &settings.notifications);
     // Local-only mode switched on stops the Slack connection; off again resumes it.
     crate::connectors::slack::settings_changed(app, settings);
+    crate::connectors::telegram::settings_changed(app, settings);
     if let Err(e) = app.emit(APP_SETTINGS_CHANGED_EVENT, settings) {
         tracing::warn!("Failed to emit {}: {}", APP_SETTINGS_CHANGED_EVENT, e);
     }

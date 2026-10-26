@@ -6,6 +6,8 @@ pub mod slack;
 pub mod slack_index;
 pub mod slack_notices;
 mod slack_usage;
+pub mod telegram;
+pub mod telegram_notices;
 
 use serde::{Deserialize, Serialize};
 
@@ -14,4 +16,5 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", default)]
 pub struct ConnectorsPrefs {
     pub slack: slack::SlackPrefs,
+    pub telegram: telegram::TelegramPrefs,
 }

@@ -1244,15 +1244,21 @@ impl AnswerSource for AppAnswerSource {
     }
 
     fn private_terms(&self) -> PrivateTerms {
-        let mut terms = PrivateTerms::of_this_computer();
-        if let Some(name) = os_display_name() {
-            terms.add_name(&name);
-        }
-        terms
-            .home_dirs
-            .push(self.data_dir.to_string_lossy().into_owned());
-        terms
+        app_private_terms(&self.data_dir)
     }
+}
+
+/// What never leaves this computer in a connector's answer: the home folder, the user's
+/// names (the OS account's and its display name) and the app data folder.
+pub(super) fn app_private_terms(data_dir: &Path) -> PrivateTerms {
+    let mut terms = PrivateTerms::of_this_computer();
+    if let Some(name) = os_display_name() {
+        terms.add_name(&name);
+    }
+    terms
+        .home_dirs
+        .push(data_dir.to_string_lossy().into_owned());
+    terms
 }
 
 // ── Running ─────────────────────────────────────────────────────────

@@ -172,6 +172,10 @@ pub struct Question {
     pub thread: ThreadKey,
     /// The asker's user id (logged as an id only, never sent to the model).
     pub user: String,
+    /// The message's own `ts` (its permalink, a memory's provenance).
+    pub ts: String,
+    /// The message was a reply in a thread (not the thread's first message).
+    pub in_thread: bool,
     /// The Slack workspace the asker belongs to, when the event says (`user_team`, else
     /// `team`). Slack does not document it on every event, so [`super::access`] uses it
     /// only to refuse early, never as proof of membership.
@@ -186,12 +190,29 @@ pub struct Question {
     pub text: String,
 }
 
+impl Question {
+    /// Where this question's earlier questions and answers are kept, for follow-ups: its
+    /// thread. A DM question outside a thread starts its own (a reply in its thread
+    /// follows it up), so unrelated questions in a DM never share a context. Answers in
+    /// flight stay one at a time per DM ([`Question::thread`]).
+    pub fn turns_key(&self) -> ThreadKey {
+        match (self.kind, &self.reply_thread_ts) {
+            (QuestionKind::Direct, None) => ThreadKey {
+                channel: self.channel.clone(),
+                thread: self.ts.clone(),
+            },
+            _ => self.thread.clone(),
+        }
+    }
+}
+
 /// What to do with an envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// Not a question to the bot; nothing is sent back.
     Ignore(&'static str),
-    Ask(Question),
+    /// Boxed: a question is far larger than the reason a message is ignored.
+    Ask(Box<Question>),
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -285,7 +306,7 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
     let event_id = str_field(payload, "event_id")
         .unwrap_or(&envelope.envelope_id)
         .to_string();
-    Decision::Ask(Question {
+    Decision::Ask(Box::new(Question {
         event_id,
         kind,
         channel: channel.to_string(),
@@ -295,6 +316,8 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
             thread,
         },
         user: user.to_string(),
+        ts: ts.to_string(),
+        in_thread: thread_ts.is_some_and(|root| root != ts),
         asker_team: str_field(event, "user_team")
             .or_else(|| str_field(event, "team"))
             .map(str::to_string),
@@ -308,7 +331,7 @@ pub fn decide(envelope: &Envelope, bot: &BotIdentity) -> Decision {
                 .and_then(Value::as_array)
                 .is_some_and(|f| !f.is_empty()),
         text: strip_bot_mention(str_field(event, "text").unwrap_or_default(), &bot.user_id),
-    })
+    }))
 }
 
 /// One remembered event id, as kept on disk (an id and a time, no message content).
@@ -515,7 +538,7 @@ impl EventRouter {
     pub fn route_at(&self, envelope: &Envelope, now: DateTime<Utc>) -> Routed {
         let question = match decide(envelope, &self.bot) {
             Decision::Ignore(why) => return Routed::Ignore(why),
-            Decision::Ask(question) => question,
+            Decision::Ask(question) => *question,
         };
         let first = {
             let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
@@ -639,6 +662,8 @@ mod tests {
             }
         );
         assert_eq!(q.event_id, "Ev1");
+        assert_eq!(q.ts, "100.1", "the message's own ts");
+        assert!(!q.in_thread, "the thread's first message");
 
         let mut in_thread = mention("<@UBOT|shodh> and the rent?");
         in_thread["thread_ts"] = json!("90.5");
@@ -647,6 +672,7 @@ mod tests {
         };
         assert_eq!(q.text, "and the rent?");
         assert_eq!(q.reply_thread_ts.as_deref(), Some("90.5"));
+        assert!(q.in_thread, "a reply in a thread");
 
         let Decision::Ask(q) = decide(&envelope("E3", "Ev3", dm("hello there")), &bot()) else {
             panic!("a question")
@@ -658,7 +684,27 @@ mod tests {
             ThreadKey {
                 channel: "D1".into(),
                 thread: String::new()
-            }
+            },
+            "one answer at a time in a DM"
+        );
+        assert_eq!(
+            q.turns_key(),
+            ThreadKey {
+                channel: "D1".into(),
+                thread: q.ts.clone()
+            },
+            "a DM question outside a thread keeps its own follow-ups"
+        );
+        let mut threaded = dm("and shorter?");
+        threaded["thread_ts"] = json!(q.ts);
+        threaded["ts"] = json!("201.1");
+        let Decision::Ask(follow_up) = decide(&envelope("E4", "Ev4", threaded), &bot()) else {
+            panic!("a question")
+        };
+        assert_eq!(
+            follow_up.turns_key(),
+            q.turns_key(),
+            "a reply in its thread follows it up"
         );
     }
 

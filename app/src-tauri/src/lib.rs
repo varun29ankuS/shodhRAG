@@ -56,7 +56,7 @@ use tauri::Manager;
 
 // The Slack card's commands are registered as `slack::…` (one module level, as the
 // agent coverage check reads them).
-use connectors::slack;
+use connectors::{slack, slack_index};
 
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
@@ -490,7 +490,10 @@ pub fn run() {
             inbox_commands::recover_on_launch(app.handle());
             // The Slack connector: connects only when the user left it on (and
             // Local-only mode is off); otherwise nothing runs.
-            app.manage(connectors::slack::SlackState::new(&app_data_dir));
+            app.manage(connectors::slack::SlackState::new(
+                &app_data_dir,
+                app.state::<audit_commands::AuditState>().database(),
+            ));
             connectors::slack::start_saved(app.handle());
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
@@ -794,6 +797,14 @@ pub fn run() {
             slack::slack_set_answer_channels,
             slack::slack_set_daily_cap,
             slack::slack_disconnect,
+            slack_index::slack_index_channel,
+            slack_index::slack_forget_channel,
+            slack_index::slack_set_index_window,
+            slack_index::slack_list_people,
+            slack_index::slack_set_owner,
+            slack_index::slack_memories,
+            slack_index::slack_promote_memory,
+            slack_index::slack_delete_memory,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,

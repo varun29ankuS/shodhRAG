@@ -15,6 +15,7 @@ use chrono::Utc;
 use tokio::sync::Semaphore;
 
 use super::events::{Envelope, EventRouter, Routed, SeenEntry, SeenStore};
+use super::index::{index_event, IndexEvents};
 use super::respond::{Outcome, Responder};
 use super::socket::EnvelopeSink;
 
@@ -97,6 +98,8 @@ pub struct AnswerService {
     runtime: tokio::runtime::Handle,
     outcomes: Arc<dyn OutcomeSink>,
     seen: Option<Arc<SeenPersister>>,
+    /// The live updates of the indexed channels.
+    index: Option<Arc<IndexEvents>>,
     tasks: Arc<AtomicUsize>,
     waiting: Arc<AtomicUsize>,
 }
@@ -117,6 +120,7 @@ impl AnswerService {
             runtime,
             outcomes,
             seen: None,
+            index: None,
             tasks: Arc::new(AtomicUsize::new(0)),
             waiting: Arc::new(AtomicUsize::new(0)),
         }
@@ -125,6 +129,13 @@ impl AnswerService {
     /// Keeps the seen event ids on disk after every new one.
     pub fn with_seen_store(mut self, seen: Arc<SeenPersister>) -> Self {
         self.seen = Some(seen);
+        self
+    }
+
+    /// Sends the indexed channels' events (new messages, edits, deletions, archives) to
+    /// `index`.
+    pub fn with_index_events(mut self, index: Arc<IndexEvents>) -> Self {
+        self.index = Some(index);
         self
     }
 
@@ -181,6 +192,17 @@ fn log_outcome(outcome: &Outcome) {
 
 impl EnvelopeSink for AnswerService {
     fn deliver(&self, envelope: Envelope) {
+        if let Some(index) = &self.index {
+            if let Some(event) = index_event(&envelope, self.router.bot()) {
+                let index = index.clone();
+                // Off the async workers: a database write.
+                self.runtime.spawn_blocking(move || {
+                    if let Err(e) = index.apply(&event) {
+                        tracing::warn!(target: "shodh::slack", error = %e, "a Slack change could not be recorded for the index");
+                    }
+                });
+            }
+        }
         let routed = self.router.route(&envelope);
         if !matches!(routed, Routed::Ignore(_)) {
             self.persist_seen();
@@ -229,11 +251,14 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::*;
-    use crate::connectors::slack::answer::{AnswerPassage, AnswerScope};
-    use crate::connectors::slack::events::BotIdentity;
+    use crate::connectors::slack::answer::{
+        AnswerPassage, AnswerScope, LibraryListing, ThreadTurn,
+    };
+    use crate::connectors::slack::events::{BotIdentity, ThreadKey};
     use crate::connectors::slack::respond::testkit::*;
     use crate::connectors::slack::respond::{AnswerSource, BUSY, OVERLOADED, PLACEHOLDER};
     use crate::connectors::slack::sanitize::PrivateTerms;
+    use crate::connectors::slack::store::SlackMemory;
     use crate::research::results::TextModel;
 
     /// A source whose search waits until released, so a second question meets the first
@@ -256,6 +281,18 @@ mod tests {
                 page: None,
                 text: "Sixty days.".into(),
             }])
+        }
+        async fn listing(&self, _s: &AnswerScope) -> Result<LibraryListing, String> {
+            Ok(LibraryListing::default())
+        }
+        async fn thread_turns(&self, _t: &ThreadKey) -> Result<Vec<ThreadTurn>, String> {
+            Ok(Vec::new())
+        }
+        async fn record_turn(&self, _t: &ThreadKey, _turn: ThreadTurn) -> Result<(), String> {
+            Ok(())
+        }
+        async fn channel_memories(&self, _c: &str) -> Result<Vec<SlackMemory>, String> {
+            Ok(Vec::new())
         }
         fn model(&self) -> Result<Arc<dyn TextModel>, String> {
             Ok(self.model.clone())
@@ -323,6 +360,7 @@ mod tests {
             })),
             Responder::new(
                 source.clone(),
+                memories(),
                 open_gate(),
                 Arc::new(MemoryQuota::new(10)),
                 slack.clone(),

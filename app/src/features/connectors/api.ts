@@ -4,7 +4,13 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { SLACK_STATUS_EVENT, type ChannelChoice, type SlackStatus } from './slackModel';
+import {
+  SLACK_STATUS_EVENT,
+  type ChannelChoice,
+  type Person,
+  type SlackMemoryView,
+  type SlackStatus,
+} from './slackModel';
 
 export const slackApi = {
   status: () => invoke<SlackStatus>('slack_status'),
@@ -15,7 +21,17 @@ export const slackApi = {
   listChannels: () => invoke<ChannelChoice[]>('slack_list_channels'),
   setAnswerChannels: (channelIds: string[]) => invoke<SlackStatus>('slack_set_answer_channels', { channelIds }),
   setDailyCap: (dailyCap: number) => invoke<SlackStatus>('slack_set_daily_cap', { dailyCap }),
-  disconnect: () => invoke<SlackStatus>('slack_disconnect'),
+  /** `forget`: also forget everything indexed and every memory saved from Slack. */
+  disconnect: (forget: boolean) => invoke<SlackStatus>('slack_disconnect', { forget }),
+  indexChannel: (channelId: string, workspaceId: string, confirmShared: boolean) =>
+    invoke<SlackStatus>('slack_index_channel', { channelId, workspaceId, confirmShared }),
+  forgetChannel: (channelId: string) => invoke<SlackStatus>('slack_forget_channel', { channelId }),
+  setIndexWindow: (days: number) => invoke<SlackStatus>('slack_set_index_window', { days }),
+  listPeople: () => invoke<Person[]>('slack_list_people'),
+  setOwner: (userId: string | null) => invoke<SlackStatus>('slack_set_owner', { userId }),
+  memories: () => invoke<SlackMemoryView[]>('slack_memories'),
+  promoteMemory: (id: string) => invoke<SlackMemoryView[]>('slack_promote_memory', { id }),
+  deleteMemory: (id: string) => invoke<SlackMemoryView[]>('slack_delete_memory', { id }),
 };
 
 /** The command's error as text (the commands reject with a plain message). */

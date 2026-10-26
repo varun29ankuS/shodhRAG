@@ -238,6 +238,62 @@ impl FilePreparer {
             embed_ms: embed_started.elapsed().as_millis(),
         })
     }
+
+    /// Chunks and embeds `text`, a document that is no file (a Slack thread), as
+    /// [`RAGEngine::add_document`] chunks it (blocking). `source` is kept exactly as
+    /// given: a `scheme://` id is no path to normalize. `citation` (with its link) is
+    /// stored on every chunk. [`RAGEngine::commit_file`] stores it, replacing whatever
+    /// chunks `source` had, so storing the same source twice leaves one copy.
+    pub fn prepare_text(
+        &self,
+        source: &str,
+        text: &str,
+        metadata: HashMap<String, String>,
+        citation: &Citation,
+    ) -> Result<PreparedFile> {
+        let mut metadata = metadata;
+        metadata.insert("file_path".to_string(), source.to_string());
+        let title = metadata
+            .get("title")
+            .cloned()
+            .unwrap_or_else(|| "Untitled".to_string());
+        let chunk_started = std::time::Instant::now();
+        let embedder = self.embeddings.as_ref();
+        let count = |t: &str| {
+            embedder
+                .count_tokens(t)
+                .unwrap_or_else(|| crate::embeddings::estimate_tokens(t))
+        };
+        let chunks = chunk_in_context(&title, true, &count, &|context| {
+            self.chunker
+                .chunk_with_context(text, context, source_label(source))
+        });
+        if chunks.is_empty() && !text.trim().is_empty() {
+            // Stored as it is, the document would replace its previous chunks with none.
+            anyhow::bail!("No chunks were made from the text of {source}");
+        }
+        let chunk_ms = chunk_started.elapsed().as_millis();
+        let embed_started = std::time::Instant::now();
+        let document = prepare_chunks(
+            embedder,
+            chunks,
+            title,
+            source.to_string(),
+            &metadata,
+            citation,
+        )?;
+        Ok(PreparedFile {
+            path: std::path::PathBuf::from(source),
+            source: source.to_string(),
+            document,
+            refine: false,
+            scan_reader_missing: false,
+            notice: None,
+            parse_ms: 0,
+            chunk_ms,
+            embed_ms: embed_started.elapsed().as_millis(),
+        })
+    }
 }
 
 /// The chunks of one document, each with its context ([`DocumentContext`]).
@@ -980,8 +1036,12 @@ pub fn seeks_references(query: &str) -> bool {
 /// Other spellings under which older versions of the indexer may have stored
 /// `path`: the verbatim string, its forward-slash form, and the previous
 /// normalization (forward slashes, lowercased on Windows, `\\?\` prefixes and
-/// `.` components left in place). Excludes `canonical` itself.
+/// `.` components left in place). Excludes `canonical` itself. A `scheme://` source (a
+/// Slack thread) is no path and was never stored under another spelling: none.
 fn legacy_source_spellings(path: &Path, canonical: &str) -> Vec<String> {
+    if canonical.contains("://") {
+        return Vec::new();
+    }
     let verbatim = path.display().to_string();
     let slashed = verbatim.replace('\\', "/");
     let previous = if cfg!(windows) {
@@ -2737,7 +2797,14 @@ impl RAGEngine {
     /// The source path is normalized the same way as during indexing so that
     /// Windows backslash / mixed-case paths always match.
     pub async fn delete_by_source(&mut self, source: &str) -> Result<usize> {
-        let normalized = normalize_source_path(Path::new(source));
+        // A pseudo-source (`calendar://…`, `note://…`, `slack://…`) is an id, not a path:
+        // stored as given, so it is matched as given (the path normaliser would turn its
+        // slashes and case into another string on Windows).
+        let normalized = if is_file_source(source) {
+            normalize_source_path(Path::new(source))
+        } else {
+            source.to_string()
+        };
         // A calendar item or a note is not a paper: nothing to forget, and no cost.
         let tracked = is_file_source(source) && is_file_source(&normalized);
         if tracked {
@@ -3496,6 +3563,11 @@ impl RAGEngine {
     /// One row per indexed document with its source path, space and chunk count.
     pub async fn document_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
         self.store.document_sources().await
+    }
+
+    /// One row per indexed source and space: its title.
+    pub async fn document_titles(&self) -> Result<Vec<crate::storage::DocumentTitleRow>> {
+        self.store.document_titles().await
     }
 
     /// Stored source paths that `path` refers to.

@@ -4,8 +4,13 @@
 //! [`apps.connections.open`](https://docs.slack.dev/reference/methods/apps.connections.open),
 //! [`users.info`](https://docs.slack.dev/reference/methods/users.info),
 //! [`users.conversations`](https://docs.slack.dev/reference/methods/users.conversations),
-//! [`chat.postMessage`](https://docs.slack.dev/reference/methods/chat.postMessage) and
-//! [`chat.update`](https://docs.slack.dev/reference/methods/chat.update).
+//! [`chat.postMessage`](https://docs.slack.dev/reference/methods/chat.postMessage),
+//! [`chat.update`](https://docs.slack.dev/reference/methods/chat.update), and for indexing
+//! [`conversations.history`](https://docs.slack.dev/reference/methods/conversations.history),
+//! [`conversations.replies`](https://docs.slack.dev/reference/methods/conversations.replies),
+//! [`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info),
+//! [`chat.getPermalink`](https://docs.slack.dev/reference/methods/chat.getPermalink) and
+//! [`users.list`](https://docs.slack.dev/reference/methods/users.list).
 //!
 //! Tokens go in the `Authorization` header only, never in a URL or a body, and no error
 //! message carries one. Methods that read are sent form-encoded, methods that write as
@@ -17,6 +22,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::access::{Member, MemberDirectory};
+use super::content::HistoryPage;
 use super::respond::SlackPoster;
 use super::setup::parse_scopes;
 use super::tokens::{SlackAppToken, SlackBotToken};
@@ -89,6 +95,46 @@ pub struct BotChannel {
     /// the other side's approval: `is_pending_ext_shared`,
     /// <https://docs.slack.dev/reference/objects/conversation-object>).
     pub shared: bool,
+}
+
+/// Messages asked for per `conversations.history` / `conversations.replies` page: what
+/// Slack recommends (at most 200), well within the 1 000 an internal app may ask for.
+pub const HISTORY_PAGE: usize = 200;
+/// `users.list` pages read at most (2 000 people).
+pub const MAX_PEOPLE_PAGES: usize = 10;
+
+/// A member of the workspace, for the "This is me" pick.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+}
+
+/// What `conversations.info` says about a channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelInfo {
+    pub name: String,
+    pub archived: bool,
+    pub shared: bool,
+    pub private: bool,
+}
+
+/// The name people see for user object `u`: the profile's display name, else the real
+/// name, else the user name; never the e-mail address.
+fn person_name(u: &Value) -> String {
+    let text = |pointer: &str| {
+        u.pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    text("/profile/display_name")
+        .or_else(|| text("/profile/real_name"))
+        .or_else(|| text("/real_name"))
+        .or_else(|| text("/name"))
+        .unwrap_or_else(|| "Someone".to_string())
 }
 
 /// Channels listed per `users.conversations` page (Slack recommends at most 200).
@@ -315,6 +361,7 @@ impl SlackWeb {
         }
         Ok(Member {
             team_id,
+            name: person_name(u),
             guest: flag("is_restricted") || flag("is_ultra_restricted"),
             stranger: flag("is_stranger"),
             bot: flag("is_bot") || flag("is_app_user"),
@@ -374,6 +421,176 @@ impl SlackWeb {
         channels.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
         channels.dedup_by(|a, b| a.id == b.id);
         Ok(channels)
+    }
+
+    /// One page of a channel's messages, newest first (`conversations.history`, scopes
+    /// `channels:history` / `groups:history`), between `oldest` and `latest` (exclusive),
+    /// from `cursor`.
+    pub async fn history(
+        &self,
+        token: &SlackBotToken,
+        channel: &str,
+        oldest: Option<&str>,
+        latest: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<HistoryPage, SlackApiError> {
+        let limit = HISTORY_PAGE.to_string();
+        let mut args = vec![("channel", channel), ("limit", limit.as_str())];
+        if let Some(oldest) = oldest {
+            args.push(("oldest", oldest));
+        }
+        if let Some(latest) = latest {
+            args.push(("latest", latest));
+        }
+        if let Some(cursor) = cursor {
+            args.push(("cursor", cursor));
+        }
+        let (value, _) = self
+            .call_form("conversations.history", token.expose(), &args)
+            .await?;
+        Ok(HistoryPage::from_value(&value))
+    }
+
+    /// One page of a thread's messages, its first message first
+    /// (`conversations.replies`).
+    pub async fn replies(
+        &self,
+        token: &SlackBotToken,
+        channel: &str,
+        thread_ts: &str,
+        cursor: Option<&str>,
+    ) -> Result<HistoryPage, SlackApiError> {
+        let limit = HISTORY_PAGE.to_string();
+        let mut args = vec![
+            ("channel", channel),
+            ("ts", thread_ts),
+            ("limit", limit.as_str()),
+        ];
+        if let Some(cursor) = cursor {
+            args.push(("cursor", cursor));
+        }
+        let (value, _) = self
+            .call_form("conversations.replies", token.expose(), &args)
+            .await?;
+        Ok(HistoryPage::from_value(&value))
+    }
+
+    /// What Slack says about a channel now (`conversations.info`).
+    pub async fn channel_info(
+        &self,
+        token: &SlackBotToken,
+        channel: &str,
+    ) -> Result<ChannelInfo, SlackApiError> {
+        let (value, _) = self
+            .call_form(
+                "conversations.info",
+                token.expose(),
+                &[("channel", channel)],
+            )
+            .await?;
+        let Some(c) = value.get("channel") else {
+            return Err(SlackApiError::BadResponse(
+                "conversations.info did not return the channel".into(),
+            ));
+        };
+        let flag = |key: &str| c.get(key).and_then(Value::as_bool).unwrap_or(false);
+        Ok(ChannelInfo {
+            name: c
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            archived: flag("is_archived"),
+            shared: flag("is_ext_shared") || flag("is_pending_ext_shared"),
+            private: flag("is_private"),
+        })
+    }
+
+    /// The permalink of message `ts` (`chat.getPermalink`).
+    pub async fn permalink(
+        &self,
+        token: &SlackBotToken,
+        channel: &str,
+        ts: &str,
+    ) -> Result<String, SlackApiError> {
+        let (value, _) = self
+            .call_form(
+                "chat.getPermalink",
+                token.expose(),
+                &[("channel", channel), ("message_ts", ts)],
+            )
+            .await?;
+        value
+            .get("permalink")
+            .and_then(Value::as_str)
+            .filter(|p| p.starts_with("https://"))
+            .map(str::to_string)
+            .ok_or_else(|| {
+                SlackApiError::BadResponse("chat.getPermalink did not return a link".into())
+            })
+    }
+
+    /// The full members of the bot's own workspace (`users.list`, scope `users:read`):
+    /// no bots, guests, deactivated accounts or people of other organizations. For the
+    /// card's "This is me" pick.
+    pub async fn people(
+        &self,
+        token: &SlackBotToken,
+        team_id: &str,
+    ) -> Result<Vec<Person>, SlackApiError> {
+        let limit = CHANNELS_PER_PAGE.to_string();
+        let mut people = Vec::new();
+        let mut cursor = String::new();
+        for _ in 0..MAX_PEOPLE_PAGES {
+            let (value, _) = {
+                let mut args = vec![("limit", limit.as_str())];
+                if !cursor.is_empty() {
+                    args.push(("cursor", cursor.as_str()));
+                }
+                self.call_form("users.list", token.expose(), &args).await?
+            };
+            for u in value
+                .get("members")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let flag = |key: &str| u.get(key).and_then(Value::as_bool).unwrap_or(false);
+                let id = u.get("id").and_then(Value::as_str).unwrap_or_default();
+                let team = u.get("team_id").and_then(Value::as_str).unwrap_or_default();
+                if id.is_empty()
+                    || team != team_id
+                    || flag("deleted")
+                    || flag("is_bot")
+                    || flag("is_app_user")
+                    || flag("is_restricted")
+                    || flag("is_ultra_restricted")
+                    || flag("is_stranger")
+                    || id == "USLACKBOT"
+                {
+                    continue;
+                }
+                people.push(Person {
+                    id: id.to_string(),
+                    name: person_name(u),
+                });
+            }
+            cursor = value
+                .pointer("/response_metadata/next_cursor")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if cursor.is_empty() {
+                break;
+            }
+        }
+        people.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(people)
     }
 
     /// A WebSocket URL for a new Socket Mode connection.
@@ -762,6 +979,125 @@ mod tests {
         for s in seen.iter() {
             assert!(!s.body.contains("secret") && !s.path.contains("secret"));
         }
+    }
+
+    #[tokio::test]
+    async fn history_threads_permalinks_and_people_are_read() {
+        let (base, seen) = serve(vec![
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "messages": [
+                    {"ts": "20.0", "user": "U1", "text": "hi", "reply_count": 1, "latest_reply": "21.0", "thread_ts": "20.0"},
+                    {"ts": "19.0", "user": "U2", "text": "yo"}
+                ], "has_more": true, "response_metadata": {"next_cursor": "bmV4dA=="}})
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "messages": [
+                    {"ts": "20.0", "user": "U1", "text": "hi", "thread_ts": "20.0", "reply_count": 1},
+                    {"ts": "21.0", "user": "U2", "text": "reply", "thread_ts": "20.0"}
+                ], "has_more": false, "response_metadata": {"next_cursor": ""}})
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "channel": {"id": "C1", "name": "deals", "is_archived": true,
+                       "is_private": true, "is_ext_shared": false}})
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "channel": "C1",
+                       "permalink": "https://acme.slack.com/archives/C1/p200"})
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "members": [
+                    {"id": "U2", "team_id": "T1", "profile": {"display_name": "", "real_name": "Bob Ray", "email": "bob@example.com"}},
+                    {"id": "U1", "team_id": "T1", "profile": {"display_name": "ann"}},
+                    {"id": "U3", "team_id": "T1", "is_restricted": true, "profile": {"display_name": "guest"}},
+                    {"id": "U4", "team_id": "TCLIENT", "profile": {"display_name": "client"}},
+                    {"id": "UB", "team_id": "T1", "is_bot": true, "profile": {"display_name": "bot"}},
+                    {"id": "USLACKBOT", "team_id": "T1", "profile": {"display_name": "Slackbot"}}
+                ], "response_metadata": {"next_cursor": ""}})
+                .to_string(),
+            ),
+            (
+                "429 Too Many Requests",
+                vec![("Retry-After", "42")],
+                json!({"ok": false, "error": "ratelimited"}).to_string(),
+            ),
+        ])
+        .await;
+        let web = SlackWeb::with_base(&base).unwrap();
+        let bot = SlackBotToken::parse(BOT).unwrap();
+        let page = web
+            .history(&bot, "C1", Some("10.0"), Some("30.0"), None)
+            .await
+            .unwrap();
+        assert_eq!(page.messages.len(), 2);
+        assert_eq!(page.messages[0].reply_count, 1);
+        assert_eq!(page.next_cursor.as_deref(), Some("bmV4dA=="));
+        let thread = web
+            .replies(&bot, "C1", "20.0", Some("bmV4dA=="))
+            .await
+            .unwrap();
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.next_cursor, None, "no more pages");
+        let info = web.channel_info(&bot, "C1").await.unwrap();
+        assert_eq!(
+            info,
+            ChannelInfo {
+                name: "deals".into(),
+                archived: true,
+                shared: false,
+                private: true
+            }
+        );
+        assert_eq!(
+            web.permalink(&bot, "C1", "20.0").await.unwrap(),
+            "https://acme.slack.com/archives/C1/p200"
+        );
+        let people = web.people(&bot, "T1").await.unwrap();
+        assert_eq!(
+            people,
+            vec![
+                Person {
+                    id: "U1".into(),
+                    name: "ann".into()
+                },
+                Person {
+                    id: "U2".into(),
+                    name: "Bob Ray".into()
+                },
+            ],
+            "full members of the workspace only, by name, never an e-mail"
+        );
+        assert_eq!(
+            web.history(&bot, "C1", None, None, None).await,
+            Err(SlackApiError::RateLimited {
+                retry_after: Some(Duration::from_secs(42))
+            })
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].path, "/api/conversations.history");
+        assert!(seen[0].body.contains("channel=C1"));
+        assert!(seen[0].body.contains("limit=200"));
+        assert!(seen[0].body.contains("oldest=10.0") && seen[0].body.contains("latest=30.0"));
+        assert!(!seen[0].body.contains("cursor"));
+        assert_eq!(seen[1].path, "/api/conversations.replies");
+        assert!(seen[1].body.contains("ts=20.0") && seen[1].body.contains("cursor=bmV4dA%3D%3D"));
+        assert_eq!(seen[2].path, "/api/conversations.info");
+        assert_eq!(seen[3].path, "/api/chat.getPermalink");
+        assert!(seen[3].body.contains("message_ts=20.0"));
+        assert_eq!(seen[4].path, "/api/users.list");
     }
 
     #[tokio::test]

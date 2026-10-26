@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { MessagesSquare } from 'lucide-react';
 import { onSlackStatus, slackApi } from './api';
 import type { SlackStatus } from './slackModel';
+import { SlackLogo } from './SlackLogo';
 
 /** The Shodh workspace Slack answers from, and the Slack workspace that asks. */
 export interface SlackAnswerSource {
@@ -43,7 +43,7 @@ export function SlackAnswersBadge({ source, workspaceId }: { source: SlackAnswer
       aria-label={title}
       className="inline-flex items-center gap-1 shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-warning"
     >
-      <MessagesSquare className="w-3 h-3" aria-hidden="true" />
+      <SlackLogo className="w-3 h-3" />
       Answers in Slack
     </span>
   );

@@ -374,6 +374,55 @@ impl LanceStore {
         Ok(doc_ids.len())
     }
 
+    /// One row per indexed source and space: its title (the title of its first chunk
+    /// read there). A source indexed into two spaces has a row in each, so a listing of
+    /// either space finds it. Reads only the `doc_id`, `source`, `space_id` and `title`
+    /// columns.
+    pub async fn document_titles(&self) -> Result<Vec<DocumentTitleRow>> {
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let results = table
+            .query()
+            .select(lancedb::query::Select::columns(&[
+                "doc_id", "source", "space_id", "title",
+            ]))
+            .execute()
+            .await
+            .context("Failed to query document titles")?;
+        let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
+        let mut seen = std::collections::HashSet::new();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let column = |name: &str| {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            };
+            if let (Some(doc_ids), Some(sources), Some(spaces), Some(titles)) = (
+                column("doc_id"),
+                column("source"),
+                column("space_id"),
+                column("title"),
+            ) {
+                for i in 0..batch.num_rows() {
+                    let doc_id = doc_ids.value(i);
+                    let source = sources.value(i);
+                    if doc_id.is_empty() || doc_id == "__seed__" || source.is_empty() {
+                        continue;
+                    }
+                    let space = spaces.value(i);
+                    if seen.insert((source.to_string(), space.to_string())) {
+                        rows.push(DocumentTitleRow {
+                            source: source.to_string(),
+                            space_id: space.to_string(),
+                            title: titles.value(i).to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(rows)
+    }
+
     /// One row per indexed document: its source path, space and chunk count.
     /// Reads only the `doc_id`, `source` and `space_id` columns.
     pub async fn document_sources(&self) -> Result<Vec<DocumentSourceRow>> {
@@ -652,6 +701,15 @@ pub(crate) fn like_escape(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+/// One indexed source in one space, as listed by [`LanceStore::document_titles`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentTitleRow {
+    /// Normalised file path (or a `scheme://` pseudo-source).
+    pub source: String,
+    pub space_id: String,
+    pub title: String,
 }
 
 /// One indexed document as listed by [`LanceStore::document_sources`].

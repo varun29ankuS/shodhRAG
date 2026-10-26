@@ -30,6 +30,8 @@ pub enum SourceKind {
     Folder,
     Calendar,
     Notes,
+    /// A Slack channel indexed by the Slack connector (`slack:<team>:<channel>`).
+    Slack,
 }
 
 /// One indexed source, derived from the index.
@@ -51,6 +53,8 @@ fn kind_of(source: &str) -> SourceKind {
         SourceKind::Calendar
     } else if source.starts_with("note://") {
         SourceKind::Notes
+    } else if source.starts_with(crate::connectors::slack::ids::SOURCE_PREFIX) {
+        SourceKind::Slack
     } else {
         SourceKind::Folder
     }
@@ -119,11 +123,12 @@ pub fn summarise_sources(rows: &[DocumentSourceRow]) -> Vec<SourceSummary> {
                     paths.sort_unstable();
                     common_folder(&paths)
                 }
-                SourceKind::Calendar | SourceKind::Notes => None,
+                SourceKind::Calendar | SourceKind::Notes | SourceKind::Slack => None,
             };
             let name = match (kind, &folder) {
                 (SourceKind::Calendar, _) => "Calendar".to_string(),
                 (SourceKind::Notes, _) => "Notes".to_string(),
+                (SourceKind::Slack, _) => "Slack channel".to_string(),
                 (SourceKind::Folder, Some(folder)) => last_component(folder).to_string(),
                 (SourceKind::Folder, None) => space_id.to_string(),
             };
@@ -651,9 +656,21 @@ mod tests {
             row("3", "calendar://task/9", "calendar", 1),
             row("4", "/home/u/notes/a.md", "s2", 3),
             row("5", "c:/orphan.txt", "", 1),
+            row("6", "slack://T1/C1/1.1", "slack:T1:C1", 2),
+            row("7", "slack://T1/C1/2.1", "slack:T1:C1", 1),
         ];
         let sources = summarise_sources(&rows);
-        assert_eq!(sources.len(), 3);
+        assert_eq!(sources.len(), 4);
+        let slack = sources
+            .iter()
+            .find(|s| s.source_id == "slack:T1:C1")
+            .unwrap();
+        assert_eq!(slack.kind, SourceKind::Slack);
+        assert_eq!(
+            (slack.folder.as_deref(), slack.name.as_str()),
+            (None, "Slack channel")
+        );
+        assert_eq!((slack.files, slack.chunks), (2, 3));
         let s1 = sources.iter().find(|s| s.source_id == "s1").unwrap();
         assert_eq!(s1.folder.as_deref(), Some("c:/docs/contracts"));
         assert_eq!((s1.files, s1.chunks), (2, 6));

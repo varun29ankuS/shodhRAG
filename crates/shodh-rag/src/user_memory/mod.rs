@@ -43,8 +43,8 @@ use crate::statements::{
 };
 
 pub use guard::{
-    check_write_origin, conversation_source, Origin, WriteAuthority, CONVERSATION_SOURCE_PREFIX,
-    SETTINGS_SOURCE,
+    check_write_origin, conversation_source, is_slack_memory_source, Origin, WriteAuthority,
+    CONVERSATION_SOURCE_PREFIX, SETTINGS_SOURCE, SLACK_MEMORY_SOURCE_PREFIX,
 };
 pub use recall::{
     render_injection, render_injection_counted, RecallMode, RecallRequest, RecalledMemory,
@@ -82,6 +82,7 @@ pub fn memory_source_prefixes() -> Vec<String> {
     vec![
         CONVERSATION_SOURCE_PREFIX.to_string(),
         SETTINGS_SOURCE.to_string(),
+        SLACK_MEMORY_SOURCE_PREFIX.to_string(),
     ]
 }
 
@@ -240,6 +241,19 @@ pub struct RememberOutcome {
     pub outcome: PutOutcome,
     /// The memory that is current for this fact afterwards, if any.
     pub memory: Option<MemoryRecord>,
+}
+
+impl RememberOutcome {
+    /// The id of the memory this write added, and so owns: `None` when it stored
+    /// nothing new (the same note was there already, which may be the user's own), or
+    /// only changed or closed another memory. Forgetting a memory forgets its whole
+    /// history, so a caller that may forget what it wrote keeps only this id.
+    pub fn created_id(&self) -> Option<&str> {
+        match &self.outcome {
+            PutOutcome::Added { id } => Some(id),
+            _ => None,
+        }
+    }
 }
 
 /// Filters for [`MemoryService::list`].
@@ -1101,7 +1115,9 @@ impl MemoryService {
                     "approval": match &origin.authority {
                         WriteAuthority::UserApproval { step_id } => Some(step_id.clone()),
                         WriteAuthority::LearnPolicy { proposal_id } => Some(proposal_id.clone()),
-                        WriteAuthority::UserInterface => None,
+                        WriteAuthority::UserInterface
+                        | WriteAuthority::SlackOwner { .. }
+                        | WriteAuthority::SlackPromoted => None,
                     },
                     "authority": origin.authority.label(),
                     "via": actor.via,

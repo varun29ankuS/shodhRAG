@@ -554,6 +554,122 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE UNIQUE INDEX table_fill_job_active ON table_fill_job(table_id)
             WHERE state IN ('queued', 'running', 'paused');",
     ),
+    (
+        17,
+        // The Slack connector, part B. `slack_index_channel`: a Slack channel indexed into a
+        // Shodh workspace and its sync checkpoint (the backfill's fixed `latest` bound and
+        // the cursor of its next page, the newest message seen, a rate-limit pause; an
+        // incremental poll's fixed `latest` bound, the cursor of its next page and the
+        // newest message it read, while it takes more than one step; where a slim pass
+        // that takes more than one step continues).
+        // `slack_index_thread`: each indexed thread (one document), or a thread read with
+        // nothing to index (`indexed_at` NULL, kept with its replies so the slim pass does
+        // not fetch it again), and whether it must be fetched again. `slack_index_message`: which thread a message belongs to, so a
+        // deletion finds its thread. `slack_memory`: memories saved from Slack (a person's
+        // channel-scoped note, or the owner's, recorded with the id it has in the user's
+        // memories). `slack_thread_turn`: the questions and Shodh's answers of a Slack
+        // thread, for follow-ups in that thread only.
+        "CREATE TABLE slack_index_channel (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            shared INTEGER NOT NULL DEFAULT 0 CHECK (shared IN (0, 1)),
+            private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)),
+            window_days INTEGER NOT NULL CHECK (window_days > 0),
+            state TEXT NOT NULL CHECK (state IN
+                ('active', 'archived', 'removed', 'now_shared', 'error', 'forgetting')),
+            backfill_latest TEXT NULL,
+            backfill_cursor TEXT NULL,
+            backfill_done INTEGER NOT NULL DEFAULT 0 CHECK (backfill_done IN (0, 1)),
+            oldest_seen TEXT NULL,
+            newest_ts TEXT NULL,
+            paused_until TEXT NULL,
+            error TEXT NULL,
+            permalink_base TEXT NULL,
+            last_sync_at TEXT NULL,
+            last_poll_at TEXT NULL,
+            last_slim_at TEXT NULL,
+            poll_latest TEXT NULL,
+            poll_cursor TEXT NULL,
+            poll_newest TEXT NULL,
+            slim_latest TEXT NULL,
+            started_at TEXT NOT NULL,
+            PRIMARY KEY (team_id, channel_id)
+        );
+        CREATE TABLE slack_index_thread (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            thread_ts TEXT NOT NULL,
+            latest_reply TEXT NULL,
+            reply_count INTEGER NOT NULL DEFAULT 0 CHECK (reply_count >= 0),
+            dirty INTEGER NOT NULL DEFAULT 0 CHECK (dirty IN (0, 1)),
+            dirty_at TEXT NULL,
+            indexed_at TEXT NULL,
+            PRIMARY KEY (team_id, channel_id, thread_ts)
+        );
+        CREATE INDEX slack_index_thread_dirty ON slack_index_thread(team_id, dirty, dirty_at);
+        CREATE TABLE slack_index_message (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            thread_ts TEXT NOT NULL,
+            PRIMARY KEY (team_id, channel_id, ts)
+        );
+        CREATE INDEX slack_index_message_thread
+            ON slack_index_message(team_id, channel_id, thread_ts);
+        CREATE TABLE slack_memory (
+            id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            channel_name TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            author_name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('text', 'thread')),
+            message_ts TEXT NOT NULL,
+            permalink TEXT NULL,
+            saved_at TEXT NOT NULL,
+            owner INTEGER NOT NULL CHECK (owner IN (0, 1)),
+            memory_id TEXT NULL
+        );
+        CREATE INDEX slack_memory_channel ON slack_memory(team_id, channel_id, saved_at);
+        CREATE TABLE slack_thread_turn (
+            team_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            thread_key TEXT NOT NULL,
+            at TEXT NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL
+        );
+        CREATE INDEX slack_thread_turn_thread
+            ON slack_thread_turn(team_id, channel_id, thread_key, at);",
+    ),
+    (
+        18,
+        // Inbox items of connectors (`connector`: Slack's connection lost or back, a
+        // channel's first backfill done or stopped, a memory saved in a channel). SQLite
+        // cannot change a CHECK in place, so the table is rebuilt with its rows.
+        "CREATE TABLE inbox_items_rebuilt (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder', 'indexing',
+                'tables', 'citation_graph', 'export', 'install', 'connector')),
+            status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+            title TEXT NOT NULL,
+            detail TEXT NULL,
+            link_json TEXT NULL,
+            data_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO inbox_items_rebuilt(id, kind, status, title, detail, link_json, data_json,
+                                        created_at, updated_at)
+            SELECT id, kind, status, title, detail, link_json, data_json, created_at, updated_at
+            FROM inbox_items;
+        DROP TABLE inbox_items;
+        ALTER TABLE inbox_items_rebuilt RENAME TO inbox_items;
+        CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);",
+    ),
 ];
 
 fn latest_schema_version() -> i64 {
@@ -2097,6 +2213,75 @@ mod tests {
     }
 
     #[test]
+    fn the_inbox_is_rebuilt_for_connector_items_with_its_rows() {
+        let (dir, log) = temp_log();
+        drop(log);
+        // The Inbox as version 17 left it, with one item.
+        raw(&dir)
+            .execute_batch(
+                "DROP TABLE inbox_items;
+                 CREATE TABLE inbox_items (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK (kind IN ('approval', 'memory', 'reminder',
+                        'indexing', 'tables', 'citation_graph', 'export', 'install')),
+                    status TEXT NOT NULL CHECK (status IN ('working', 'needs_you', 'done', 'failed')),
+                    title TEXT NOT NULL,
+                    detail TEXT NULL,
+                    link_json TEXT NULL,
+                    data_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                 );
+                 CREATE INDEX inbox_items_status ON inbox_items(status, updated_at);
+                 INSERT INTO inbox_items VALUES ('indexing:C:/papers', 'indexing', 'done',
+                    'Papers', '12 files indexed', NULL, '{}', '2026-10-01T00:00:00.000Z',
+                    '2026-10-01T00:00:00.000Z');
+                 DELETE FROM schema_version WHERE version >= 18;",
+            )
+            .unwrap();
+        assert!(raw(&dir)
+            .execute(
+                "INSERT INTO inbox_items VALUES ('slack:x', 'connector', 'done', 't', NULL, NULL,
+                 '{}', 'c', 'u')",
+                [],
+            )
+            .is_err());
+        let shared = open_shared_connection(&dir.path().join("shodh.db"), None).unwrap();
+        let conn = shared.read().unwrap();
+        let kept: (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT kind, title, detail FROM inbox_items WHERE id = 'indexing:C:/papers'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                "indexing".to_string(),
+                "Papers".to_string(),
+                Some("12 files indexed".to_string())
+            )
+        );
+        drop(conn);
+        raw(&dir)
+            .execute(
+                "INSERT INTO inbox_items VALUES ('slack:x', 'connector', 'done', 't', NULL, NULL,
+                 '{}', 'c', 'u')",
+                [],
+            )
+            .unwrap();
+        let index: i64 = raw(&dir)
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'inbox_items_status'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+    }
+
+    #[test]
     fn a_version_1_database_migrates_to_statement_tables_with_its_chain_intact() {
         let (dir, log) = temp_log();
         fill(&log, 3);
@@ -2135,6 +2320,11 @@ mod tests {
                  DROP TABLE fill_cache;
                  DROP TABLE table_calls;
                  DROP TABLE table_fill_capture;
+                 DROP TABLE slack_index_channel;
+                 DROP TABLE slack_index_thread;
+                 DROP TABLE slack_index_message;
+                 DROP TABLE slack_memory;
+                 DROP TABLE slack_thread_turn;
                  DELETE FROM schema_version WHERE version > 1;",
             )
             .unwrap();

@@ -5,7 +5,16 @@
  */
 
 export type InboxStatus = 'working' | 'needs_you' | 'done' | 'failed';
-export type InboxKind = 'approval' | 'memory' | 'reminder' | 'indexing' | 'tables' | 'citation_graph' | 'export' | 'install';
+export type InboxKind =
+  | 'approval'
+  | 'memory'
+  | 'reminder'
+  | 'indexing'
+  | 'tables'
+  | 'citation_graph'
+  | 'export'
+  | 'install'
+  | 'connector';
 
 export interface InboxLink {
   /** A view id (`ask`, `library`, `tasks`, `settings`, ...). */
@@ -27,7 +36,7 @@ export interface InboxItem {
 }
 
 const STATUSES: readonly InboxStatus[] = ['working', 'needs_you', 'done', 'failed'];
-const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install'];
+const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

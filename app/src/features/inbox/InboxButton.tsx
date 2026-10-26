@@ -13,6 +13,7 @@ import { announceApproval } from './approvalBus';
 import { normalizeViewTab } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import { requestSettingsSection } from '../memory/navigation';
+import { parseConnectorTarget, requestConnectorPage } from '../connectors/navigation';
 import {
   STATUS_LABEL,
   STATUS_TONE,
@@ -146,6 +147,9 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
       return;
     }
     if (target) publishTarget(target);
+    // A connector's item opens its page, at the tab it names.
+    const connectorPage = tab === 'connectors' ? parseConnectorTarget(link.target) : null;
+    if (connectorPage) requestConnectorPage(connectorPage);
     const section = settingsSectionOf(item);
     if (section) requestSettingsSection(section);
     if (tab) onNavigate(tab);

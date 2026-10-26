@@ -1,6 +1,6 @@
 //! The Inbox: one list of what waits on the user (approvals, memory suggestions,
 //! reminders) and of background work that finished or failed (indexing, table
-//! refinement, the citation graph, exports, skill and MCP installs).
+//! refinement, the citation graph, exports, skill and MCP installs, connectors).
 //!
 //! Event-type items (approvals and background work) are kept in `shodh.db`
 //! ([`InboxStore`]). Items that have their own store (pending memory
@@ -106,6 +106,9 @@ pub enum InboxKind {
     Export,
     /// A skill or MCP server install.
     Install,
+    /// A connector (Slack) changed in a way the user should see: its connection was lost or
+    /// came back, a channel finished its first backfill or stopped, someone saved a memory.
+    Connector,
 }
 
 impl InboxKind {
@@ -119,6 +122,7 @@ impl InboxKind {
             Self::CitationGraph => "citation_graph",
             Self::Export => "export",
             Self::Install => "install",
+            Self::Connector => "connector",
         }
     }
 
@@ -132,6 +136,7 @@ impl InboxKind {
             "citation_graph" => Self::CitationGraph,
             "export" => Self::Export,
             "install" => Self::Install,
+            "connector" => Self::Connector,
             _ => return None,
         })
     }
@@ -614,6 +619,36 @@ mod tests {
         );
         assert_eq!(merged[1].status, InboxStatus::NeedsYou);
         assert!(is_finished(&merged[4]) && !is_finished(&merged[0]));
+    }
+
+    #[test]
+    fn a_connector_item_is_kept_with_its_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = store(&dir);
+        let mut item = new(
+            "slack:connection:T1",
+            InboxKind::Connector,
+            InboxStatus::Failed,
+        );
+        item.link = Some(InboxLink::new(
+            "connectors",
+            Some(json!({ "connector": "slack", "tab": "overview" })),
+        ));
+        inbox.put(&item, at(1, 9)).unwrap();
+        item.status = InboxStatus::Done;
+        inbox.put(&item, at(1, 10)).unwrap();
+        let items = inbox.list().unwrap();
+        assert_eq!(ids(&items), ["slack:connection:T1"]);
+        assert_eq!(items[0].kind, InboxKind::Connector);
+        assert_eq!(items[0].status, InboxStatus::Done);
+        assert_eq!(
+            serde_json::to_value(&items[0]).unwrap()["kind"],
+            "connector"
+        );
+        assert_eq!(
+            items[0].link.as_ref().and_then(|l| l.target.clone()),
+            Some(json!({ "connector": "slack", "tab": "overview" }))
+        );
     }
 
     #[test]

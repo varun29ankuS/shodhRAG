@@ -3,17 +3,24 @@
 //!
 //! 0. Who asked, and where ([`super::access`]): a channel not on the card's list, or a DM
 //!    from someone outside the installing workspace (another organization, a guest) gets
-//!    [`NOT_ALLOWED`], with no search and no model call.
-//! 1. No workspace selected (or it no longer exists): "isn't set up", no model call.
+//!    [`NOT_ALLOWED`], with no search and no model call. `remember: …` and `remember this
+//!    thread` save a memory instead ([`super::remember`]); the asker must also be a full
+//!    member of the installing workspace.
+//! 1. No workspace selected (or it no longer exists): "isn't set up", no model call. The
+//!    workspace's indexed Slack channels are narrowed to the one asked in (none in a DM).
 //! 2. Empty question (only the mention, or only a file): a hint, no model call.
-//! 3. Today's cap reached: the limit message, no model call.
-//! 4. A placeholder ("Searching your library…") is posted in the thread.
-//! 5. Retrieval over the selected workspace. Nothing found: the placeholder says so, no
-//!    model call.
-//! 6. One call is reserved against the cap of the UTC day it is made on (counted before it
-//!    is made), then made.
-//! 7. The placeholder is edited into the answer, or into a short, honest reason when the
+//! 3. A question about what the library holds ("what files do you have") is answered from
+//!    the document list: exact, no model call.
+//! 4. Today's cap reached: the limit message, no model call.
+//! 5. A placeholder ("Searching your library…") is posted in the thread.
+//! 6. Retrieval over the selected workspace (the query carries the thread's previous
+//!    question), plus what people saved for this channel. Nothing found: the placeholder
+//!    says so, no model call.
+//! 7. One call is reserved against the cap of the UTC day it is made on (counted before it
+//!    is made), then made, with the thread's earlier questions and answers as context.
+//! 8. The placeholder is edited into the answer, or into a short, honest reason when the
 //!    model failed. If Slack will not take the edit, the answer is posted as a new reply.
+//!    An answer posted is kept for follow-ups in the same thread.
 //!
 //! **Stopping.** Switching the connector off, Disconnect, Local-only mode and new tokens
 //! cancel the installation's [`CancellationToken`]. A question checks it before the
@@ -25,6 +32,7 @@
 //! times; a network error or a 5xx gets one more try. That is Slack's protocol, not a retry
 //! to hide flakiness: anything else fails at once and is reported.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,9 +42,18 @@ use chrono::{DateTime, NaiveDate, Utc};
 use tokio_util::sync::CancellationToken;
 
 use super::access::{Access, AccessGate, Refusal, NOT_ALLOWED};
-use super::answer::{answer_prompt, slack_answer, AnswerPassage, AnswerScope, MAX_ANSWER_TOKENS};
-use super::events::Question;
+use super::answer::{
+    answer_prompt, is_library_question, library_listing_message, search_query, slack_answer,
+    AnswerPassage, AnswerScope, LibraryListing, ThreadTurn, MAX_ANSWER_TOKENS,
+};
+use super::events::{Question, QuestionKind, ThreadKey};
+use super::remember::{
+    memory_text, parse_remember, summary_prompt, MemoryDraft, RememberCommand, SaveError,
+    SlackMemories, NOTHING_TO_SAVE, NOT_A_THREAD, NOT_SAVED, SAVED, SAVED_FOR_CHANNEL,
+    SUMMARY_TOKENS, THREAD_UNREADABLE,
+};
 use super::sanitize::{sanitize, PrivateTerms};
+use super::store::{SlackMemory, SlackMemoryKind};
 use super::web::SlackApiError;
 use crate::harness::provider_error::{classify, ProviderErrorKind};
 use crate::research::results::TextModel;
@@ -121,6 +138,16 @@ pub trait AnswerSource: Send + Sync {
         scope: &AnswerScope,
         question: &str,
     ) -> Result<Vec<AnswerPassage>, String>;
+    /// The documents and Slack threads of `scope`
+    /// ([`super::answer::library_listing`]).
+    async fn listing(&self, scope: &AnswerScope) -> Result<LibraryListing, String>;
+    /// The earlier questions and answers of `thread` (of this Slack workspace), oldest
+    /// first.
+    async fn thread_turns(&self, thread: &ThreadKey) -> Result<Vec<ThreadTurn>, String>;
+    /// Keeps a question and its answer in `thread`, for follow-ups there.
+    async fn record_turn(&self, thread: &ThreadKey, turn: ThreadTurn) -> Result<(), String>;
+    /// The memories people other than the owner saved for `channel`.
+    async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String>;
     /// The model answers are written with (no tools).
     fn model(&self) -> Result<Arc<dyn TextModel>, String>;
     /// This computer's home folder and the user's names, never to appear in Slack.
@@ -177,6 +204,19 @@ pub enum Outcome {
     AtCap,
     NothingFound,
     Answered,
+    /// A question about the library, answered from its document list.
+    Listed,
+    /// A memory was saved (`owner`: into the user's memories).
+    Saved {
+        owner: bool,
+    },
+    /// `remember:` with nothing after it, or "remember this thread" outside a thread.
+    NothingToSave,
+    /// The memory could not be saved.
+    SaveFailed,
+    /// Not saved: the channel keeps as many memories as it may, or the asker saved as
+    /// many as they may today.
+    SaveLimited,
     ModelFailed(ProviderErrorKind),
     SearchFailed,
     LimitUnknown,
@@ -209,17 +249,27 @@ enum PostError {
 /// [`AnswerQuota`], until its [`CancellationToken`] is cancelled.
 pub struct Responder {
     pub source: Arc<dyn AnswerSource>,
+    pub memories: Arc<dyn SlackMemories>,
     pub gate: Arc<dyn AccessGate>,
     pub quota: Arc<dyn AnswerQuota>,
     pub poster: Arc<dyn SlackPoster>,
     pub clock: Arc<dyn Clock>,
     pub cancel: CancellationToken,
     pub retry: RetryPolicy,
+    /// The last library listing said in each channel, and when: said again for
+    /// [`LISTING_REUSE_SECONDS`] instead of reading the whole index again.
+    pub listings: Arc<std::sync::Mutex<HashMap<String, (DateTime<Utc>, String)>>>,
 }
+
+/// How long a channel's library listing is said again as it was. A listing reads the
+/// whole index and costs no model call, so nothing else bounds how often anyone in a
+/// channel can ask for one.
+pub const LISTING_REUSE_SECONDS: i64 = 60;
 
 impl Responder {
     pub fn new(
         source: Arc<dyn AnswerSource>,
+        memories: Arc<dyn SlackMemories>,
         gate: Arc<dyn AccessGate>,
         quota: Arc<dyn AnswerQuota>,
         poster: Arc<dyn SlackPoster>,
@@ -228,12 +278,14 @@ impl Responder {
     ) -> Self {
         Self {
             source,
+            memories,
             gate,
             quota,
             poster,
             clock,
             cancel,
             retry: RetryPolicy::default(),
+            listings: Arc::default(),
         }
     }
 
@@ -371,6 +423,9 @@ impl Responder {
                 .reply(question, NOT_ALLOWED, Outcome::NotAllowed(refusal))
                 .await;
         }
+        if let Some(command) = parse_remember(&question.text) {
+            return self.remember(question, command).await;
+        }
         let scope = match self.source.scope().await {
             Ok(Some(scope)) => scope,
             Ok(None) => return self.reply(question, NOT_SET_UP, Outcome::NotSetUp).await,
@@ -379,12 +434,48 @@ impl Responder {
                 return self.reply(question, NOT_SET_UP, Outcome::NotSetUp).await;
             }
         };
+        // Indexed Slack channels of the workspace: only the one asked in (a DM: none).
+        let scope = scope.for_channel(match question.kind {
+            QuestionKind::Mention => Some(question.channel.as_str()),
+            QuestionKind::Direct => None,
+        });
         if question.text.trim().is_empty() {
             return if question.has_files {
                 self.reply(question, FILES_ONLY, Outcome::FilesOnly).await
             } else {
                 self.reply(question, EMPTY_QUESTION, Outcome::EmptyQuestion)
                     .await
+            };
+        }
+        if is_library_question(&question.text) {
+            // What the library holds is a list, not a search: exact, and no model call.
+            let now = self.clock.now();
+            let recent = self
+                .listings
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&question.channel)
+                .filter(|(at, _)| {
+                    now - *at < chrono::Duration::seconds(LISTING_REUSE_SECONDS) && *at <= now
+                })
+                .map(|(_, text)| text.clone());
+            if let Some(text) = recent {
+                return self.reply(question, &text, Outcome::Listed).await;
+            }
+            return match self.source.listing(&scope).await {
+                Ok(listing) => {
+                    let text = library_listing_message(&listing, &self.source.private_terms());
+                    self.listings
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(question.channel.clone(), (now, text.clone()));
+                    self.reply(question, &text, Outcome::Listed).await
+                }
+                Err(e) => {
+                    tracing::warn!(target: "shodh::slack", error = %e, "the documents of the workspace could not be listed");
+                    self.reply(question, SEARCH_FAILED, Outcome::SearchFailed)
+                        .await
+                }
             };
         }
         let asked_at = self.clock.now();
@@ -414,7 +505,17 @@ impl Responder {
         if self.cancelled() {
             return Outcome::Cancelled;
         }
-        let passages = match self.source.retrieve(&scope, &question.text).await {
+        // Earlier questions and answers of this thread only.
+        let earlier = self
+            .source
+            .thread_turns(&question.turns_key())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(target: "shodh::slack", error = %e, "the earlier turns of a Slack thread could not be read");
+                Vec::new()
+            });
+        let query = search_query(&question.text, &earlier);
+        let mut passages = match self.source.retrieve(&scope, &query).await {
             Ok(passages) => passages,
             Err(e) => {
                 tracing::warn!(target: "shodh::slack", error = %e, "search for a Slack question failed");
@@ -423,6 +524,29 @@ impl Responder {
                     .await;
             }
         };
+        // What people saved for this channel (or this DM), as numbered passages after the
+        // documents'.
+        let notes = self
+            .source
+            .channel_memories(&question.channel)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(target: "shodh::slack", error = %e, "the channel's Slack memories could not be read");
+                Vec::new()
+            });
+        for note in notes {
+            let n = u32::try_from(passages.len() + 1).unwrap_or(u32::MAX);
+            passages.push(AnswerPassage {
+                n,
+                title: format!(
+                    "Saved in this channel by {} on {}",
+                    note.author_name,
+                    note.saved_at.format("%Y-%m-%d")
+                ),
+                page: None,
+                text: note.text,
+            });
+        }
         if passages.is_empty() {
             return self
                 .finish(question, &placeholder, NOTHING_FOUND, Outcome::NothingFound)
@@ -475,7 +599,7 @@ impl Responder {
             return Outcome::Cancelled;
         }
         let private = self.source.private_terms();
-        let prompt = answer_prompt(&passages, &question.text, &private);
+        let prompt = answer_prompt(&passages, &question.text, &earlier, &private);
         let completion = tokio::select! {
             completion = model.complete(&prompt, MAX_ANSWER_TOKENS) => completion,
             // The call was made: it stays counted.
@@ -484,8 +608,19 @@ impl Responder {
         match completion {
             Ok(text) if !text.trim().is_empty() => {
                 let message = slack_answer(&text, &passages, &private);
-                self.finish(question, &placeholder, &message, Outcome::Answered)
-                    .await
+                let outcome = self
+                    .finish(question, &placeholder, &message, Outcome::Answered)
+                    .await;
+                if outcome == Outcome::Answered {
+                    let turn = ThreadTurn {
+                        question: question.text.trim().to_string(),
+                        answer: message,
+                    };
+                    if let Err(e) = self.source.record_turn(&question.turns_key(), turn).await {
+                        tracing::warn!(target: "shodh::slack", error = %e, "a Slack thread's turn could not be kept");
+                    }
+                }
+                outcome
             }
             Ok(_) => {
                 let kind = ProviderErrorKind::EmptyResponse;
@@ -514,6 +649,197 @@ impl Responder {
                     Outcome::ModelFailed(kind),
                 )
                 .await
+            }
+        }
+    }
+
+    /// Saves what `question` asked Shodh to remember (see [`super::remember`]): the
+    /// owner's into the user's memories, anyone else's for the channel only. The asker
+    /// must be a full member of the installing workspace.
+    async fn remember(&self, question: &Question, command: RememberCommand) -> Outcome {
+        let member = match self.gate.member(question).await {
+            Ok(member) => member,
+            Err(refusal) => {
+                tracing::info!(target: "shodh::slack", ?refusal, "a Slack memory from someone who may not save one");
+                return self
+                    .reply(question, NOT_ALLOWED, Outcome::NotAllowed(refusal))
+                    .await;
+            }
+        };
+        let owner = self.memories.owner().await.unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::slack", error = %e, "the owner's Slack account could not be read");
+            None
+        });
+        let is_owner = owner.as_deref() == Some(question.user.as_str());
+        let (text, kind) = match command {
+            RememberCommand::Text(text) if text.trim().is_empty() => {
+                return self
+                    .reply(question, NOTHING_TO_SAVE, Outcome::NothingToSave)
+                    .await
+            }
+            RememberCommand::Text(text) => (memory_text(&text), SlackMemoryKind::Text),
+            RememberCommand::Thread => {
+                if !question.in_thread {
+                    return self
+                        .reply(question, NOT_A_THREAD, Outcome::NothingToSave)
+                        .await;
+                }
+                match self.summarize_thread(question).await {
+                    Ok(summary) => (memory_text(&summary), SlackMemoryKind::Thread),
+                    Err(outcome) => return outcome,
+                }
+            }
+        };
+        if self.cancelled() {
+            return Outcome::Cancelled;
+        }
+        let draft = MemoryDraft {
+            channel: question.channel.clone(),
+            channel_name: self
+                .memories
+                .channel_name(&question.channel, question.kind == QuestionKind::Direct)
+                .await,
+            author_id: question.user.clone(),
+            author_name: member.name,
+            text,
+            kind,
+            message_ts: question.ts.clone(),
+            permalink: self
+                .memories
+                .permalink(&question.channel, &question.ts)
+                .await,
+            at: self.clock.now(),
+        };
+        let saved = if is_owner {
+            self.memories
+                .save_owner(&draft)
+                .await
+                .map_err(SaveError::Failed)
+        } else {
+            self.memories.save_channel(&draft).await
+        };
+        match saved {
+            Ok(()) if is_owner => {
+                self.reply(question, SAVED, Outcome::Saved { owner: true })
+                    .await
+            }
+            Ok(()) => {
+                self.reply(question, SAVED_FOR_CHANNEL, Outcome::Saved { owner: false })
+                    .await
+            }
+            Err(SaveError::Limited(message)) => {
+                self.reply(question, &message, Outcome::SaveLimited).await
+            }
+            Err(SaveError::Failed(e)) => {
+                tracing::warn!(target: "shodh::slack", error = %e, "a memory from Slack could not be saved");
+                self.reply(question, NOT_SAVED, Outcome::SaveFailed).await
+            }
+        }
+    }
+
+    /// One model call (counted against the cap) that summarizes the question's thread;
+    /// the outcome to end with when it cannot.
+    async fn summarize_thread(&self, question: &Question) -> Result<String, Outcome> {
+        let root = question.thread.thread.clone();
+        let asked_at = self.clock.now();
+        match self.quota_used(utc_day(asked_at)).await {
+            Ok(used) if used >= self.quota.cap() => {
+                return Err(self
+                    .reply(
+                        question,
+                        &at_cap_message(next_utc_midnight(asked_at)),
+                        Outcome::AtCap,
+                    )
+                    .await)
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(target: "shodh::slack", error = %e, "the answer count could not be read");
+                return Err(self
+                    .reply(question, LIMIT_UNKNOWN, Outcome::LimitUnknown)
+                    .await);
+            }
+        }
+        let thread = match self.memories.thread_text(&question.channel, &root).await {
+            Ok(thread) if !thread.trim().is_empty() => thread,
+            Ok(_) => {
+                return Err(self
+                    .reply(question, THREAD_UNREADABLE, Outcome::SaveFailed)
+                    .await)
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::slack", error = %e, "a Slack thread to remember could not be read");
+                return Err(self
+                    .reply(question, THREAD_UNREADABLE, Outcome::SaveFailed)
+                    .await);
+            }
+        };
+        let model = match self.source.model() {
+            Ok(model) => model,
+            Err(e) => {
+                tracing::warn!(target: "shodh::slack", error = %e, "no model to summarize a Slack thread");
+                let kind = ProviderErrorKind::ModelUnavailable;
+                return Err(self
+                    .reply(
+                        question,
+                        model_failure_message(kind),
+                        Outcome::ModelFailed(kind),
+                    )
+                    .await);
+            }
+        };
+        let now = self.clock.now();
+        let day = utc_day(now);
+        match self.quota_reserve(day).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(self
+                    .reply(
+                        question,
+                        &at_cap_message(next_utc_midnight(now)),
+                        Outcome::AtCap,
+                    )
+                    .await)
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::slack", error = %e, "the summary could not be counted");
+                return Err(self
+                    .reply(question, LIMIT_UNKNOWN, Outcome::LimitUnknown)
+                    .await);
+            }
+        }
+        if self.cancelled() {
+            self.quota_release(day).await;
+            return Err(Outcome::Cancelled);
+        }
+        let prompt = summary_prompt(&thread);
+        let completion = tokio::select! {
+            completion = model.complete(&prompt, SUMMARY_TOKENS) => completion,
+            _ = self.cancel.cancelled() => return Err(Outcome::Cancelled),
+        };
+        match completion {
+            Ok(summary) if !summary.trim().is_empty() => Ok(summary.trim().to_string()),
+            Ok(_) => {
+                let kind = ProviderErrorKind::EmptyResponse;
+                Err(self
+                    .reply(
+                        question,
+                        model_failure_message(kind),
+                        Outcome::ModelFailed(kind),
+                    )
+                    .await)
+            }
+            Err(e) => {
+                let now_ms = u64::try_from(now.timestamp_millis()).unwrap_or(0);
+                let kind = classify(&e, None, now_ms).kind;
+                tracing::warn!(target: "shodh::slack", kind = ?kind, "the model call for a Slack thread summary failed");
+                Err(self
+                    .reply(
+                        question,
+                        model_failure_message(kind),
+                        Outcome::ModelFailed(kind),
+                    )
+                    .await)
             }
         }
     }
@@ -696,6 +1022,67 @@ pub(crate) mod testkit {
     pub fn open_gate() -> Arc<dyn AccessGate> {
         Arc::new(crate::connectors::slack::access::testkit::open_gate())
     }
+
+    /// Memories from Slack, recorded: the owner's and the channels'.
+    pub struct RecordingMemories {
+        pub owner: Option<String>,
+        pub thread: Result<String, String>,
+        pub owners: Mutex<Vec<MemoryDraft>>,
+        pub channels: Mutex<Vec<MemoryDraft>>,
+        /// Set: a channel memory is refused with this (a limit reached).
+        pub limited: Mutex<Option<String>>,
+    }
+
+    impl RecordingMemories {
+        pub fn owned_by(owner: Option<&str>) -> Self {
+            Self {
+                owner: owner.map(str::to_string),
+                thread: Ok("Ann: the budget is ten.\nBob: agreed, due Friday.".into()),
+                owners: Mutex::new(Vec::new()),
+                channels: Mutex::new(Vec::new()),
+                limited: Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SlackMemories for RecordingMemories {
+        async fn owner(&self) -> Result<Option<String>, String> {
+            Ok(self.owner.clone())
+        }
+        async fn channel_name(&self, channel: &str, direct: bool) -> String {
+            if direct {
+                "a direct message".into()
+            } else {
+                format!("#{}", channel.to_lowercase())
+            }
+        }
+        async fn permalink(&self, channel: &str, ts: &str) -> Option<String> {
+            Some(format!(
+                "https://acme.slack.com/archives/{channel}/p{}",
+                ts.replace('.', "")
+            ))
+        }
+        async fn thread_text(&self, _channel: &str, _thread_ts: &str) -> Result<String, String> {
+            self.thread.clone()
+        }
+        async fn save_owner(&self, draft: &MemoryDraft) -> Result<(), String> {
+            self.owners.lock().unwrap().push(draft.clone());
+            Ok(())
+        }
+        async fn save_channel(&self, draft: &MemoryDraft) -> Result<(), SaveError> {
+            if let Some(message) = self.limited.lock().unwrap().clone() {
+                return Err(SaveError::Limited(message));
+            }
+            self.channels.lock().unwrap().push(draft.clone());
+            Ok(())
+        }
+    }
+
+    /// Memories of a Slack with no owner picked.
+    pub fn memories() -> Arc<RecordingMemories> {
+        Arc::new(RecordingMemories::owned_by(None))
+    }
 }
 
 #[cfg(test)]
@@ -718,6 +1105,11 @@ mod tests {
         scope_reads: Mutex<usize>,
         /// Cancelled during the search (the connector was switched off meanwhile).
         cancel_on_search: Option<CancellationToken>,
+        listing: LibraryListing,
+        listed: Mutex<Vec<AnswerScope>>,
+        searched: Mutex<Vec<(AnswerScope, String)>>,
+        turns: Mutex<std::collections::HashMap<ThreadKey, Vec<ThreadTurn>>>,
+        notes: std::collections::HashMap<String, Vec<SlackMemory>>,
     }
 
     #[async_trait]
@@ -728,14 +1120,43 @@ mod tests {
         }
         async fn retrieve(
             &self,
-            _scope: &AnswerScope,
-            _q: &str,
+            scope: &AnswerScope,
+            q: &str,
         ) -> Result<Vec<AnswerPassage>, String> {
             *self.searches.lock().unwrap() += 1;
+            self.searched
+                .lock()
+                .unwrap()
+                .push((scope.clone(), q.to_string()));
             if let Some(cancel) = &self.cancel_on_search {
                 cancel.cancel();
             }
             Ok(self.passages.clone())
+        }
+        async fn listing(&self, scope: &AnswerScope) -> Result<LibraryListing, String> {
+            self.listed.lock().unwrap().push(scope.clone());
+            Ok(self.listing.clone())
+        }
+        async fn thread_turns(&self, thread: &ThreadKey) -> Result<Vec<ThreadTurn>, String> {
+            Ok(self
+                .turns
+                .lock()
+                .unwrap()
+                .get(thread)
+                .cloned()
+                .unwrap_or_default())
+        }
+        async fn record_turn(&self, thread: &ThreadKey, turn: ThreadTurn) -> Result<(), String> {
+            self.turns
+                .lock()
+                .unwrap()
+                .entry(thread.clone())
+                .or_default()
+                .push(turn);
+            Ok(())
+        }
+        async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String> {
+            Ok(self.notes.get(channel).cloned().unwrap_or_default())
         }
         fn model(&self) -> Result<Arc<dyn TextModel>, String> {
             Ok(self.model.clone())
@@ -756,6 +1177,8 @@ mod tests {
                 thread: "100.1".into(),
             },
             user: "U1".into(),
+            ts: "100.1".into(),
+            in_thread: false,
             asker_team: None,
             ext_shared: false,
             has_files: false,
@@ -802,10 +1225,16 @@ mod tests {
             searches: Mutex::new(0),
             scope_reads: Mutex::new(0),
             cancel_on_search: cancel_on_search.then(|| cancel.clone()),
+            listing: LibraryListing::default(),
+            listed: Mutex::new(Vec::new()),
+            searched: Mutex::new(Vec::new()),
+            turns: Mutex::new(std::collections::HashMap::new()),
+            notes: std::collections::HashMap::new(),
         });
         Setup {
             responder: Responder::new(
                 source.clone(),
+                memories(),
                 open_gate(),
                 quota.clone(),
                 slack.clone(),
@@ -832,6 +1261,7 @@ mod tests {
         Some(AnswerScope {
             source_ids: vec!["space-a".into()],
             files: vec![],
+            ..AnswerScope::default()
         })
     }
 
@@ -970,6 +1400,18 @@ mod tests {
                 assert!(self.0.try_reserve(self.1).unwrap());
                 Ok(vec![passage()])
             }
+            async fn listing(&self, _s: &AnswerScope) -> Result<LibraryListing, String> {
+                Ok(LibraryListing::default())
+            }
+            async fn thread_turns(&self, _t: &ThreadKey) -> Result<Vec<ThreadTurn>, String> {
+                Ok(Vec::new())
+            }
+            async fn record_turn(&self, _t: &ThreadKey, _turn: ThreadTurn) -> Result<(), String> {
+                Ok(())
+            }
+            async fn channel_memories(&self, _c: &str) -> Result<Vec<SlackMemory>, String> {
+                Ok(Vec::new())
+            }
             fn model(&self) -> Result<Arc<dyn TextModel>, String> {
                 Ok(Arc::new(RecordingModel::failing("never called")))
             }
@@ -1107,6 +1549,384 @@ mod tests {
         }
     }
 
+    // ── The library, follow-ups, Slack threads and notes ──────────
+
+    /// A setup whose source is changed by `change` before use.
+    fn setup_custom(change: impl FnOnce(&mut FixedSource)) -> Setup {
+        let s = setup(
+            scope(),
+            vec![passage()],
+            RecordingModel::answering("Sixty days [1]."),
+            5,
+        );
+        let mut source = FixedSource {
+            scope: s.source.scope.clone(),
+            passages: s.source.passages.clone(),
+            model: s.model.clone(),
+            searches: Mutex::new(0),
+            scope_reads: Mutex::new(0),
+            cancel_on_search: None,
+            listing: LibraryListing::default(),
+            listed: Mutex::new(Vec::new()),
+            searched: Mutex::new(Vec::new()),
+            turns: Mutex::new(std::collections::HashMap::new()),
+            notes: std::collections::HashMap::new(),
+        };
+        change(&mut source);
+        let source = Arc::new(source);
+        Setup {
+            responder: Responder {
+                source: source.clone(),
+                ..s.responder
+            },
+            source,
+            ..s
+        }
+    }
+
+    #[tokio::test]
+    async fn a_question_about_the_library_is_answered_from_its_list_with_no_model_call() {
+        let s = setup_custom(|source| {
+            source.listing = LibraryListing {
+                titles: vec!["Lease".into(), "Loan".into()],
+                slack_threads: 0,
+            };
+        });
+        assert_eq!(
+            s.responder
+                .respond(&question("What files do you have?"))
+                .await,
+            Outcome::Listed
+        );
+        assert_eq!(
+            s.slack.texts(),
+            vec!["Shodh answers from here with 2 documents:\n• Lease\n• Loan".to_string()]
+        );
+        assert_eq!(s.model.calls(), 0);
+        assert_eq!(*s.source.searches.lock().unwrap(), 0, "not a search");
+        assert!(s.quota.used.lock().unwrap().is_empty(), "no answer spent");
+        // A question about a topic is a normal question.
+        assert_eq!(
+            s.responder
+                .respond(&question("list the files about rent"))
+                .await,
+            Outcome::Answered
+        );
+        assert_eq!(s.model.calls(), 1);
+    }
+
+    fn in_thread(text: &str, root: &str) -> Question {
+        let mut q = question(text);
+        q.reply_thread_ts = Some(root.into());
+        q.thread.thread = root.into();
+        q.ts = "300.1".into();
+        q.in_thread = true;
+        q
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_sees_its_own_thread_and_never_another() {
+        let thread = |root: &str| ThreadKey {
+            channel: "C1".into(),
+            thread: root.into(),
+        };
+        let s = setup_custom(|source| {
+            let mut turns = std::collections::HashMap::new();
+            turns.insert(
+                thread("100.1"),
+                vec![ThreadTurn {
+                    question: "What is the notice period?".into(),
+                    answer: "Sixty days [1].".into(),
+                }],
+            );
+            turns.insert(
+                thread("200.1"),
+                vec![ThreadTurn {
+                    question: "What about the walrus clause?".into(),
+                    answer: "The walrus clause says ninety.".into(),
+                }],
+            );
+            source.turns = Mutex::new(turns);
+        });
+        assert_eq!(
+            s.responder.respond(&in_thread("shorter", "100.1")).await,
+            Outcome::Answered
+        );
+        let prompt = s.model.prompts.lock().unwrap()[0].clone();
+        assert!(prompt.contains("Earlier in this Slack thread"), "{prompt}");
+        assert!(prompt.contains("What is the notice period?"));
+        assert!(
+            !prompt.to_lowercase().contains("walrus"),
+            "another thread: {prompt}"
+        );
+        assert_eq!(
+            s.source.searched.lock().unwrap()[0].1,
+            "What is the notice period? shorter",
+            "the search keeps the thread's topic"
+        );
+        let kept = s
+            .source
+            .turns
+            .lock()
+            .unwrap()
+            .get(&thread("100.1"))
+            .cloned()
+            .unwrap();
+        assert_eq!(kept.len(), 2, "the answer is kept for the next follow-up");
+        assert_eq!(kept[1].question, "shorter");
+        assert!(kept[1].answer.starts_with("Sixty days [1]."));
+        assert_eq!(
+            s.source
+                .turns
+                .lock()
+                .unwrap()
+                .get(&thread("200.1"))
+                .unwrap()
+                .len(),
+            1,
+            "the other thread is untouched"
+        );
+        // A new thread starts with no earlier turns.
+        s.responder
+            .respond(&in_thread("and the rent?", "400.1"))
+            .await;
+        let prompt = s.model.prompts.lock().unwrap()[1].clone();
+        assert!(!prompt.contains("Earlier in this Slack thread"), "{prompt}");
+        assert_eq!(s.source.searched.lock().unwrap()[1].1, "and the rent?");
+    }
+
+    #[tokio::test]
+    async fn a_slack_answer_searches_only_the_slack_channel_it_was_asked_in() {
+        let s = setup_custom(|source| {
+            source.scope = Some(AnswerScope {
+                source_ids: vec![
+                    "space-a".into(),
+                    crate::connectors::slack::ids::space_id("T1", "C1"),
+                    crate::connectors::slack::ids::space_id("T1", "C2"),
+                ],
+                files: vec![],
+                slack_team: "T1".into(),
+                ..AnswerScope::default()
+            });
+        });
+        s.responder.respond(&question("notice period?")).await;
+        let mut dm = question("notice period?");
+        dm.kind = QuestionKind::Direct;
+        dm.channel = "D1".into();
+        dm.thread.channel = "D1".into();
+        s.responder.respond(&dm).await;
+        let searched = s.source.searched.lock().unwrap().clone();
+        assert_eq!(
+            searched[0].0.source_ids,
+            vec![
+                "space-a".to_string(),
+                crate::connectors::slack::ids::space_id("T1", "C1")
+            ],
+            "the channel asked in, never the other one"
+        );
+        assert_eq!(
+            searched[1].0.source_ids,
+            vec!["space-a".to_string()],
+            "a DM gets no Slack channel"
+        );
+    }
+
+    fn note(channel: &str, text: &str) -> SlackMemory {
+        SlackMemory {
+            id: format!("n-{channel}"),
+            team_id: "T1".into(),
+            channel_id: channel.into(),
+            channel_name: format!("#{channel}"),
+            author_id: "U2".into(),
+            author_name: "Bob".into(),
+            text: text.into(),
+            kind: SlackMemoryKind::Text,
+            message_ts: "1.1".into(),
+            permalink: None,
+            saved_at: noon(),
+            owner: false,
+            memory_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn what_people_saved_for_a_channel_is_used_there_only() {
+        let s = setup_custom(|source| {
+            source.passages = vec![];
+            source
+                .notes
+                .insert("C1".into(), vec![note("C1", "Standup moved to 10:30.")]);
+            source
+                .notes
+                .insert("D1".into(), vec![note("D1", "The quokka code is 7.")]);
+        });
+        // No document matched, but the channel's note answers.
+        assert_eq!(
+            s.responder.respond(&question("when is standup?")).await,
+            Outcome::Answered
+        );
+        let prompt = s.model.prompts.lock().unwrap()[0].clone();
+        assert!(
+            prompt.contains("[1] Saved in this channel by Bob on 2026-10-23"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Standup moved to 10:30."));
+        assert!(!prompt.contains("quokka"), "another conversation's note");
+    }
+
+    // ── Remember ───────────────────────────────────────────────────
+
+    fn remembering(owner: Option<&str>) -> (Setup, Arc<RecordingMemories>) {
+        let s = setup(
+            scope(),
+            vec![passage()],
+            RecordingModel::answering("Budget is ten, due Friday."),
+            5,
+        );
+        let memories = Arc::new(RecordingMemories::owned_by(owner));
+        let responder = Responder {
+            memories: memories.clone(),
+            ..s.responder
+        };
+        (Setup { responder, ..s }, memories)
+    }
+
+    #[tokio::test]
+    async fn the_owner_saves_into_their_memories_at_once_with_provenance() {
+        let (s, memories) = remembering(Some("U1"));
+        assert_eq!(
+            s.responder
+                .respond(&question("remember: the budget review is on Friday"))
+                .await,
+            Outcome::Saved { owner: true }
+        );
+        assert_eq!(s.slack.texts(), vec![SAVED.to_string()]);
+        let saved = memories.owners.lock().unwrap().clone();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].text, "the budget review is on Friday");
+        assert_eq!(saved[0].author_name, "Ann");
+        assert_eq!(saved[0].author_id, "U1");
+        assert_eq!(saved[0].channel_name, "#c1");
+        assert_eq!(saved[0].message_ts, "100.1");
+        assert_eq!(
+            saved[0].permalink.as_deref(),
+            Some("https://acme.slack.com/archives/C1/p1001")
+        );
+        assert_eq!(saved[0].kind, SlackMemoryKind::Text);
+        assert!(memories.channels.lock().unwrap().is_empty());
+        assert_eq!(s.model.calls(), 0, "explicit text needs no model");
+        assert!(s.quota.used.lock().unwrap().is_empty());
+        assert_eq!(*s.source.searches.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn anyone_else_saves_for_the_channel_only() {
+        let (s, memories) = remembering(Some("UOWNER"));
+        assert_eq!(
+            s.responder
+                .respond(&question("remember: standup is at 10"))
+                .await,
+            Outcome::Saved { owner: false }
+        );
+        assert_eq!(s.slack.texts(), vec![SAVED_FOR_CHANNEL.to_string()]);
+        assert!(
+            memories.owners.lock().unwrap().is_empty(),
+            "never the user's memories"
+        );
+        assert_eq!(memories.channels.lock().unwrap()[0].channel, "C1");
+        // With no owner picked, nobody is the owner.
+        let (s, memories) = remembering(None);
+        assert_eq!(
+            s.responder.respond(&question("remember: x")).await,
+            Outcome::Saved { owner: false }
+        );
+        assert_eq!(memories.channels.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn people_from_elsewhere_and_other_channels_cannot_save() {
+        let (s, memories) = remembering(Some("U1"));
+        // Not a member Slack can vouch for (another organization in an allowed channel).
+        let mut external = question("remember: the client owes us nothing");
+        external.user = "UEXT".into();
+        assert_eq!(
+            s.responder.respond(&external).await,
+            Outcome::NotAllowed(Refusal::AskerUnknown)
+        );
+        let mut other_team = question("remember: x");
+        other_team.asker_team = Some("TCLIENT".into());
+        assert_eq!(
+            s.responder.respond(&other_team).await,
+            Outcome::NotAllowed(Refusal::OtherTeam)
+        );
+        // A channel not on the list.
+        let mut elsewhere = question("remember: x");
+        elsewhere.channel = "C9".into();
+        assert_eq!(
+            s.responder.respond(&elsewhere).await,
+            Outcome::NotAllowed(Refusal::ChannelNotAllowed)
+        );
+        assert_eq!(s.slack.texts(), vec![NOT_ALLOWED.to_string(); 3]);
+        assert!(memories.owners.lock().unwrap().is_empty());
+        assert!(memories.channels.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remembering_a_thread_costs_one_counted_call_and_needs_a_thread() {
+        let (s, memories) = remembering(Some("U1"));
+        assert_eq!(
+            s.responder.respond(&question("remember this thread")).await,
+            Outcome::NothingToSave
+        );
+        assert_eq!(
+            s.responder.respond(&question("remember:")).await,
+            Outcome::NothingToSave
+        );
+        assert_eq!(s.model.calls(), 0);
+        assert_eq!(
+            s.responder
+                .respond(&in_thread("remember this thread", "100.1"))
+                .await,
+            Outcome::Saved { owner: true }
+        );
+        assert_eq!(s.model.calls(), 1);
+        assert_eq!(s.quota.used(day(23)).unwrap(), 1, "counted against the cap");
+        let prompt = s.model.prompts.lock().unwrap()[0].clone();
+        assert!(prompt.contains("Ann: the budget is ten."), "{prompt}");
+        assert!(prompt.contains("untrusted text"));
+        let saved = memories.owners.lock().unwrap()[0].clone();
+        assert_eq!(saved.text, "Budget is ten, due Friday.");
+        assert_eq!(saved.kind, SlackMemoryKind::Thread);
+        assert_eq!(saved.message_ts, "300.1");
+        assert_eq!(
+            s.slack.texts(),
+            vec![
+                NOT_A_THREAD.to_string(),
+                NOTHING_TO_SAVE.to_string(),
+                SAVED.to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn at_the_cap_a_thread_is_not_summarized() {
+        let s = setup(scope(), vec![passage()], RecordingModel::answering("x"), 1);
+        assert!(s.quota.try_reserve(day(23)).unwrap());
+        let memories = Arc::new(RecordingMemories::owned_by(Some("U1")));
+        let responder = Responder {
+            memories: memories.clone(),
+            ..s.responder
+        };
+        assert_eq!(
+            responder
+                .respond(&in_thread("remember this thread", "100.1"))
+                .await,
+            Outcome::AtCap
+        );
+        assert_eq!(s.model.calls(), 0);
+        assert!(memories.owners.lock().unwrap().is_empty());
+    }
+
     // ── Cancellation ───────────────────────────────────────────────
 
     #[tokio::test]
@@ -1225,6 +2045,18 @@ mod tests {
                 _q: &str,
             ) -> Result<Vec<AnswerPassage>, String> {
                 Ok(vec![passage()])
+            }
+            async fn listing(&self, _s: &AnswerScope) -> Result<LibraryListing, String> {
+                Ok(LibraryListing::default())
+            }
+            async fn thread_turns(&self, _t: &ThreadKey) -> Result<Vec<ThreadTurn>, String> {
+                Ok(Vec::new())
+            }
+            async fn record_turn(&self, _t: &ThreadKey, _turn: ThreadTurn) -> Result<(), String> {
+                Ok(())
+            }
+            async fn channel_memories(&self, _c: &str) -> Result<Vec<SlackMemory>, String> {
+                Ok(Vec::new())
             }
             fn model(&self) -> Result<Arc<dyn TextModel>, String> {
                 Ok(self.0.clone())
@@ -1423,5 +2255,121 @@ mod tests {
         assert_eq!(outcome, Outcome::Cancelled);
         assert_eq!(*slack.updates.lock().unwrap(), 1, "no try after the switch");
         assert_eq!(slack.inner.texts(), vec![PLACEHOLDER.to_string()]);
+    }
+
+    // ── The fix round of PR #101 ───────────────────────────────────
+
+    /// A clock the test moves.
+    struct MovingClock(Mutex<DateTime<Utc>>);
+
+    impl Clock for MovingClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    fn direct(text: &str, ts: &str) -> Question {
+        let mut q = question(text);
+        q.kind = QuestionKind::Direct;
+        q.channel = "D1".into();
+        q.reply_thread_ts = None;
+        q.thread = ThreadKey {
+            channel: "D1".into(),
+            thread: String::new(),
+        };
+        q.ts = ts.into();
+        q
+    }
+
+    #[tokio::test]
+    async fn unrelated_dm_questions_never_share_a_context() {
+        let s = setup_custom(|_| {});
+        assert_eq!(
+            s.responder
+                .respond(&direct("What is the walrus clause?", "100.1"))
+                .await,
+            Outcome::Answered
+        );
+        assert_eq!(
+            s.responder
+                .respond(&direct("What is the notice period?", "200.1"))
+                .await,
+            Outcome::Answered
+        );
+        let prompt = s.model.prompts.lock().unwrap()[1].clone();
+        assert!(
+            !prompt.to_lowercase().contains("walrus"),
+            "the earlier DM question: {prompt}"
+        );
+        assert_eq!(
+            s.source.searched.lock().unwrap()[1].1,
+            "What is the notice period?",
+            "searched alone"
+        );
+        // A reply in the first question's thread follows it up.
+        let mut follow_up = direct("shorter", "300.1");
+        follow_up.reply_thread_ts = Some("100.1".into());
+        follow_up.thread.thread = "100.1".into();
+        follow_up.in_thread = true;
+        s.responder.respond(&follow_up).await;
+        let prompt = s.model.prompts.lock().unwrap()[2].clone();
+        assert!(prompt.contains("What is the walrus clause?"), "{prompt}");
+        assert!(
+            !prompt.contains("What is the notice period?"),
+            "the other DM question: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_library_listing_is_said_again_for_a_minute_without_reading_the_index() {
+        let s = setup_custom(|source| {
+            source.listing = LibraryListing {
+                titles: vec!["Lease".into()],
+                slack_threads: 0,
+            };
+        });
+        let clock = Arc::new(MovingClock(Mutex::new(noon())));
+        let responder = Responder {
+            clock: clock.clone(),
+            ..s.responder
+        };
+        let ask = || question("What files do you have?");
+        for _ in 0..3 {
+            assert_eq!(responder.respond(&ask()).await, Outcome::Listed);
+        }
+        assert_eq!(s.source.listed.lock().unwrap().len(), 1, "read once");
+        let texts = s.slack.texts();
+        assert_eq!(texts.len(), 3);
+        assert!(texts.iter().all(|t| t == &texts[0]), "the same answer");
+        // Another conversation (a DM) reads its own.
+        assert_eq!(
+            responder
+                .respond(&direct("What files do you have?", "400.1"))
+                .await,
+            Outcome::Listed
+        );
+        assert_eq!(s.source.listed.lock().unwrap().len(), 2);
+        // A minute later the index is read again.
+        *clock.0.lock().unwrap() = noon() + chrono::Duration::seconds(LISTING_REUSE_SECONDS + 1);
+        responder.respond(&ask()).await;
+        assert_eq!(s.source.listed.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_channel_memory_over_its_limit_is_refused_with_the_reason() {
+        let (s, memories) = remembering(Some("UOWNER"));
+        *memories.limited.lock().unwrap() =
+            Some("This channel keeps 100 saved memories already.".into());
+        assert_eq!(
+            s.responder
+                .respond(&question("remember: standup is at 10"))
+                .await,
+            Outcome::SaveLimited
+        );
+        assert_eq!(
+            s.slack.texts(),
+            vec!["This channel keeps 100 saved memories already.".to_string()]
+        );
+        assert!(memories.channels.lock().unwrap().is_empty());
     }
 }

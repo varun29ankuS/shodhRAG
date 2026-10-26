@@ -379,6 +379,8 @@ async fn two_clients(dir: &std::path::Path) -> Arc<RwLock<RAGEngine>> {
     use super::index::{EngineIndex, ThreadIndex};
     let rag = Box::pin(engine(dir)).await;
     let index = EngineIndex { rag: rag.clone() };
+    let gate = super::index::SyncGate::default();
+    let turn = gate.turn().await;
     for (channel, text) in [
         (
             "CA",
@@ -406,7 +408,7 @@ async fn two_clients(dir: &std::path::Path) -> Arc<RwLock<RAGEngine>> {
                     reply_count: 0,
                     message_ts: vec![ts.into()],
                 },
-                false,
+                &turn,
             )
             .await
             .unwrap();

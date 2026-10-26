@@ -233,4 +233,91 @@ mod tests {
             MAX_MEMORY_CHARS
         );
     }
+
+    /// Writes into memories kept in a list; `stores` says whether a write stores.
+    struct ListWriter {
+        stores: bool,
+        written: std::sync::Mutex<Vec<String>>,
+        erased: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl MemoryWriter for ListWriter {
+        async fn write(&self, memory: &SlackMemory) -> Result<Option<String>, String> {
+            if !self.stores {
+                return Ok(None);
+            }
+            let mut written = self.written.lock().unwrap();
+            let id = format!("mem-{}-{}", memory.id, written.len() + 1);
+            written.push(id.clone());
+            Ok(Some(id))
+        }
+        async fn erase(&self, id: &str) -> Result<(), String> {
+            self.erased.lock().unwrap().push(id.to_string());
+            Ok(())
+        }
+    }
+
+    fn owner_memory(id: &str) -> SlackMemory {
+        SlackMemory {
+            id: id.into(),
+            team_id: "T1".into(),
+            channel_id: "C1".into(),
+            channel_name: "#c1".into(),
+            author_id: "U1".into(),
+            author_name: "Ann".into(),
+            text: "the review is on Friday".into(),
+            kind: SlackMemoryKind::Text,
+            message_ts: "1.1".into(),
+            permalink: None,
+            saved_at: chrono::Utc::now(),
+            owner: true,
+            memory_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_owner_memory_whose_record_fails_is_taken_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(SlackStore::open(&dir.path().join("shodh.db"), None).unwrap());
+        let writer = ListWriter {
+            stores: true,
+            written: std::sync::Mutex::new(Vec::new()),
+            erased: std::sync::Mutex::new(Vec::new()),
+        };
+        save_owner_memory(&store, &writer, owner_memory("s1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.memory("s1").unwrap().unwrap().memory_id.as_deref(),
+            Some("mem-s1-1"),
+            "linked"
+        );
+        // Its record cannot be saved (the same row id): the memory goes again.
+        assert!(save_owner_memory(&store, &writer, owner_memory("s1"))
+            .await
+            .is_err());
+        assert_eq!(
+            *writer.erased.lock().unwrap(),
+            vec!["mem-s1-2".to_string()],
+            "the memory this call stored, not the one the first row links"
+        );
+
+        // The same note was in the user's memories already: nothing links to it, and a
+        // failed record takes nothing back.
+        let unchanged = ListWriter {
+            stores: false,
+            written: std::sync::Mutex::new(Vec::new()),
+            erased: std::sync::Mutex::new(Vec::new()),
+        };
+        save_owner_memory(&store, &unchanged, owner_memory("s2"))
+            .await
+            .unwrap();
+        let kept = store.memory("s2").unwrap().unwrap();
+        assert!(kept.owner && kept.memory_id.is_none());
+        assert!(save_owner_memory(&store, &unchanged, owner_memory("s2"))
+            .await
+            .is_err());
+        assert!(unchanged.erased.lock().unwrap().is_empty());
+    }
 }

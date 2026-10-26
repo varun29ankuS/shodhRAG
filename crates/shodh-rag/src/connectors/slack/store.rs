@@ -1590,4 +1590,193 @@ mod tests {
             ChannelState::Active
         );
     }
+
+    #[test]
+    fn a_channel_being_forgotten_stays_so() {
+        let (_dir, store) = store();
+        store.add_channel(&channel("C1"), now()).unwrap();
+        store
+            .set_state("T1", "C1", ChannelState::Forgetting, None)
+            .unwrap();
+        // An event or a step that ends after the forget began changes nothing.
+        for late in [
+            ChannelState::Archived,
+            ChannelState::Removed,
+            ChannelState::NowShared,
+            ChannelState::Active,
+        ] {
+            store.set_state("T1", "C1", late, Some("late")).unwrap();
+            assert_eq!(
+                store.channel("T1", "C1").unwrap().unwrap().state,
+                ChannelState::Forgetting,
+                "{late:?}"
+            );
+        }
+        // Choosing it again while it is forgotten is refused.
+        assert!(matches!(
+            store.add_channel(&channel("C1"), now()),
+            Err(SlackStoreError::Invalid(_))
+        ));
+        assert_eq!(
+            store.channel("T1", "C1").unwrap().unwrap().state,
+            ChannelState::Forgetting
+        );
+        // A mark from an event that raced the forget is not kept.
+        store.mark_dirty("T1", "C1", "10.0", now()).unwrap();
+        assert_eq!(store.thread_of_message("T1", "C1", "10.0").unwrap(), None);
+        store.forget_channel("T1", "C1").unwrap();
+        store.mark_dirty("T1", "C1", "10.0", now()).unwrap();
+        assert_eq!(
+            store.thread_of_message("T1", "C1", "10.0").unwrap(),
+            None,
+            "no row outlives the forget"
+        );
+    }
+
+    #[test]
+    fn a_thread_read_with_nothing_to_index_is_kept_with_its_replies() {
+        let (_dir, store) = store();
+        store.add_channel(&channel("C1"), now()).unwrap();
+        store
+            .record_skipped_thread("T1", "C1", "10.0", Some("11.0"), 1)
+            .unwrap();
+        let threads = store.threads("T1", "C1").unwrap();
+        let record = threads.get("10.0").unwrap();
+        assert!(!record.indexed);
+        assert!(!record.changed(Some("11.0"), 1));
+        assert!(record.changed(Some("12.0"), 2), "a reply added");
+        assert!(record.changed(None, 0), "its reply deleted");
+        assert_eq!(
+            store.channel("T1", "C1").unwrap().unwrap().threads,
+            0,
+            "not an indexed thread"
+        );
+        // Marked again by an event, it is no read thread until it is read again.
+        store.mark_dirty("T1", "C1", "10.0", now()).unwrap();
+        assert!(store.threads("T1", "C1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_poll_and_a_slim_pass_of_several_steps_keep_their_place() {
+        let (_dir, store) = store();
+        store.add_channel(&channel("C1"), now()).unwrap();
+        store.save_poll("T1", "C1", Some("100.0"), now()).unwrap();
+        store
+            .save_poll_part("T1", "C1", "500.0", "cur2", Some("400.0"), now())
+            .unwrap();
+        let polling = store.channel("T1", "C1").unwrap().unwrap();
+        assert_eq!(polling.newest_ts.as_deref(), Some("100.0"), "not moved yet");
+        assert_eq!(polling.poll_cursor.as_deref(), Some("cur2"));
+        assert_eq!(polling.poll_latest.as_deref(), Some("500.0"));
+        store.save_poll("T1", "C1", Some("150.0"), now()).unwrap();
+        let polled = store.channel("T1", "C1").unwrap().unwrap();
+        assert_eq!(
+            polled.newest_ts.as_deref(),
+            Some("400.0"),
+            "the newest message of every step"
+        );
+        assert!(polled.poll_cursor.is_none() && polled.poll_latest.is_none());
+        assert!(polled.poll_newest.is_none());
+
+        store.save_slim_part("T1", "C1", "300.0", now()).unwrap();
+        let slimming = store.channel("T1", "C1").unwrap().unwrap();
+        assert_eq!(slimming.slim_latest.as_deref(), Some("300.0"));
+        assert!(slimming.last_slim_at.is_none(), "not finished");
+        store.save_slim("T1", "C1", now()).unwrap();
+        let slimmed = store.channel("T1", "C1").unwrap().unwrap();
+        assert!(slimmed.slim_latest.is_none());
+        assert_eq!(slimmed.last_slim_at, Some(now()));
+
+        store
+            .save_backfill_page("T1", "C1", "600.0", Some("cur9"), None, None, now())
+            .unwrap();
+        store
+            .save_poll_part("T1", "C1", "700.0", "cur3", None, now())
+            .unwrap();
+        store.reset_cursors("T1", "C1", false).unwrap();
+        let reset = store.channel("T1", "C1").unwrap().unwrap();
+        assert!(reset.backfill_cursor.is_none() && reset.poll_cursor.is_none());
+        assert_eq!(reset.backfill_latest.as_deref(), Some("600.0"), "kept");
+        assert_eq!(reset.poll_latest.as_deref(), Some("700.0"), "kept");
+        store.reset_cursors("T1", "C1", true).unwrap();
+        let reset = store.channel("T1", "C1").unwrap().unwrap();
+        assert!(reset.backfill_latest.is_none() && reset.poll_latest.is_none());
+    }
+
+    #[test]
+    fn channel_memories_are_bounded_per_channel_and_per_person_per_day() {
+        let (_dir, store) = store();
+        let by = |id: String, channel: &str, author: &str, at: DateTime<Utc>| SlackMemory {
+            author_id: author.into(),
+            ..memory(&id, channel, false, at)
+        };
+        // One person, one day.
+        for i in 0..MAX_MEMORIES_PER_PERSON_PER_DAY {
+            store
+                .save_memory(&by(
+                    format!("a{i}"),
+                    "C1",
+                    "U2",
+                    now() + chrono::Duration::minutes(i as i64),
+                ))
+                .unwrap();
+        }
+        let later = now() + chrono::Duration::hours(2);
+        assert!(matches!(
+            store.save_memory(&by("a-more".into(), "C1", "U2", later)),
+            Err(SlackStoreError::Limit(_))
+        ));
+        store
+            .save_memory(&by("b0".into(), "C1", "U3", later))
+            .expect("someone else may");
+        store
+            .save_memory(&by(
+                "a-next-day".into(),
+                "C1",
+                "U2",
+                now() + chrono::Duration::days(1) + chrono::Duration::hours(1),
+            ))
+            .expect("the next day");
+        // The owner's are not channel memories: never limited here.
+        store
+            .save_memory(&memory("owner-1", "C1", true, later))
+            .unwrap();
+        // One channel holds at most MAX_CHANNEL_MEMORIES, whoever saves them.
+        for i in 0..MAX_CHANNEL_MEMORIES {
+            let author = format!("U{}", 100 + i);
+            let saved = store.save_memory(&by(format!("c{i}"), "C2", &author, now()));
+            assert!(saved.is_ok(), "{i}: {saved:?}");
+        }
+        assert!(matches!(
+            store.save_memory(&by("c-more".into(), "C2", "U999", now())),
+            Err(SlackStoreError::Limit(_))
+        ));
+        assert_eq!(
+            store
+                .memories("T1")
+                .unwrap()
+                .iter()
+                .filter(|m| m.channel_id == "C2")
+                .count(),
+            MAX_CHANNEL_MEMORIES
+        );
+    }
+
+    #[test]
+    fn linked_memories_are_read_without_deleting_anything() {
+        let (_dir, store) = store();
+        store.save_memory(&memory("o1", "C1", true, now())).unwrap();
+        store.save_memory(&memory("o2", "C2", true, now())).unwrap();
+        store
+            .save_memory(&memory("n1", "C1", false, now()))
+            .unwrap();
+        assert_eq!(
+            store.linked_memories("T1", Some("C1")).unwrap(),
+            vec!["mem-o1".to_string()]
+        );
+        let mut all = store.linked_memories("T1", None).unwrap();
+        all.sort();
+        assert_eq!(all, vec!["mem-o1".to_string(), "mem-o2".to_string()]);
+        assert_eq!(store.memories("T1").unwrap().len(), 3, "nothing deleted");
+    }
 }

@@ -15,6 +15,7 @@ use super::*;
 use crate::connectors::slack::events::{BotIdentity, Envelope};
 use crate::connectors::slack::ids;
 use crate::connectors::slack::store::{NewIndexedChannel, SlackStore};
+use crate::embeddings::EmbeddingModel;
 
 /// 2026-10-24 09:00 UTC.
 const NOW: i64 = 1_792_832_400;
@@ -241,6 +242,9 @@ impl SlackReader for FakeSlack {
             .lock()
             .unwrap()
             .push(format!("permalink {channel} {ts}"));
+        if let Some(e) = self.error_for("permalink") {
+            return Err(e);
+        }
         Ok(format!(
             "https://acme.slack.com/archives/{channel}/p{}",
             ts.replace('.', "")
@@ -249,6 +253,9 @@ impl SlackReader for FakeSlack {
 
     async fn user_name(&self, user: &str) -> Result<String, SlackApiError> {
         self.calls.lock().unwrap().push(format!("user {user}"));
+        if let Some(e) = self.error_for("user") {
+            return Err(e);
+        }
         Ok(match user {
             "U1" => "Ann".into(),
             "U2" => "Bob".into(),
@@ -266,6 +273,10 @@ struct FakeIndex {
     /// Every put, in order.
     puts: Mutex<Vec<String>>,
     deleted_spaces: Mutex<Vec<String>>,
+    /// Set: the next put starts a forget waiting for this gate (a click on "Stop
+    /// indexing and forget" while a page is being indexed).
+    forget_on_put: Mutex<Option<Arc<SyncGate>>>,
+    waiting_forget: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl FakeIndex {
@@ -287,6 +298,15 @@ impl FakeIndex {
 impl ThreadIndex for FakeIndex {
     async fn put(&self, doc: &ThreadDocument, _turn: &GateTurn) -> Result<(), String> {
         self.puts.lock().unwrap().push(doc.source.clone());
+        let forget = self.forget_on_put.lock().unwrap().take();
+        if let Some(gate) = forget {
+            let waiting = tokio::spawn(async move {
+                let _turn = gate.urgent_turn().await;
+            });
+            *self.waiting_forget.lock().unwrap() = Some(waiting);
+            // The test runtime has one thread: the forget runs now, up to its wait.
+            tokio::task::yield_now().await;
+        }
         if self
             .docs
             .lock()
@@ -1083,6 +1103,17 @@ fn backfill_progress_is_estimated_from_the_window_read() {
 // ── The real index ──────────────────────────────────────────────────
 
 async fn engine(dir: &std::path::Path) -> Arc<RwLock<RAGEngine>> {
+    engine_with(
+        dir,
+        Arc::new(crate::statements::testing::WordEmbedder::default()),
+    )
+    .await
+}
+
+async fn engine_with(
+    dir: &std::path::Path,
+    embedder: Arc<dyn crate::embeddings::EmbeddingModel>,
+) -> Arc<RwLock<RAGEngine>> {
     let mut config = crate::config::RAGConfig::default();
     config.data_dir = dir.join("data");
     config.embedding.model_dir = dir.join("models");
@@ -1091,9 +1122,7 @@ async fn engine(dir: &std::path::Path) -> Arc<RwLock<RAGEngine>> {
     config.search.min_score_threshold = 0.0;
     let mut engine = RAGEngine::new(config).await.unwrap();
     engine
-        .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
-            crate::statements::testing::WordEmbedder::default(),
-        )))
+        .attach_search_models(crate::rag_engine::SearchModels::from_embedder(embedder))
         .unwrap();
     Arc::new(RwLock::new(engine))
 }
@@ -1177,4 +1206,649 @@ async fn threads_are_replaced_and_deleted_in_the_real_index_by_their_exact_sourc
         .await
         .unwrap();
     assert_eq!(chunks_of(&rag, &other).await, 0);
+}
+
+// ── The fix round of PR #101 ────────────────────────────────────────
+
+/// A thread whose first message and replies only bots wrote.
+fn bot_thread(slack: &FakeSlack, channel: &str, parent_at: i64) {
+    let mut parent = person(parent_at, "UB", "deploy started");
+    parent.bot = true;
+    parent.thread_ts = Some(ts(parent_at));
+    parent.reply_count = 1;
+    parent.latest_reply = Some(ts(parent_at + 5));
+    let mut reply = person(parent_at + 5, "UB", "deploy done");
+    reply.bot = true;
+    reply.thread_ts = Some(ts(parent_at));
+    slack.post(channel, parent.clone());
+    slack
+        .threads
+        .lock()
+        .unwrap()
+        .insert((channel.into(), ts(parent_at)), vec![parent, reply]);
+}
+
+#[tokio::test]
+async fn a_paused_channel_whose_poll_is_overdue_waits_for_its_pause() {
+    let rig = Rig::new();
+    rig.slack.post("C1", person(NOW - DAY, "U1", "hello"));
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    run_until_idle(&worker).await;
+    // The poll is due, and Slack fails it with an error that passes.
+    rig.clock.advance(chrono::Duration::minutes(16));
+    rig.slack.fail_next("info", SlackApiError::Status(503));
+    assert!(matches!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::Failed { .. })
+    ));
+    let until = rig.channel("C1").paused_until.unwrap();
+    assert!(until > rig.clock.now());
+    // The poll is overdue now; the next work is the end of the pause, not a time past
+    // (a zero wait: a hot loop for the whole pause).
+    assert_eq!(worker.step().await.unwrap(), Step::Idle(Some(until)));
+}
+
+#[tokio::test]
+async fn a_window_longer_than_one_slim_step_is_listed_whole_over_several_steps() {
+    let rig = Rig::new();
+    // More messages than one slim step lists (SLIM_PAGES pages of PAGE).
+    let count = (SLIM_PAGES * PAGE + 5) as i64;
+    for i in 1..=count {
+        rig.slack
+            .post("C1", person(NOW - i * 600, "U1", &format!("note {i}")));
+    }
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    run_until_idle(&worker).await;
+    assert_eq!(rig.index.sources().len(), count as usize);
+    // Deleted while Shodh was not running, older than what one step lists.
+    rig.slack.delete("C1", NOW - count * 600);
+    rig.clock.advance(chrono::Duration::hours(7));
+    let work = run_until_idle(&worker).await;
+    assert!(
+        work.contains(&Work::Slim {
+            channel: "C1".into(),
+            deleted: 0,
+            refetch: 0,
+            done: false
+        }),
+        "{work:?}"
+    );
+    assert!(
+        work.contains(&Work::Slim {
+            channel: "C1".into(),
+            deleted: 1,
+            refetch: 0,
+            done: true
+        }),
+        "{work:?}"
+    );
+    assert!(rig.index.doc("C1", NOW - count * 600).is_none());
+    assert_eq!(rig.index.sources().len(), count as usize - 1);
+    let channel = rig.channel("C1");
+    assert_eq!(channel.last_slim_at, Some(rig.clock.now()), "recorded");
+    assert!(channel.slim_latest.is_none());
+    // Done: nothing more until the next pass is due.
+    assert!(matches!(worker.step().await.unwrap(), Step::Idle(Some(_))));
+}
+
+#[tokio::test]
+async fn a_poll_with_more_waiting_than_one_step_reads_every_message() {
+    let rig = Rig::new();
+    rig.slack.post("C1", person(NOW - DAY, "U1", "old"));
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    run_until_idle(&worker).await;
+    // While the laptop was closed: one message more than a poll step reads.
+    let waiting = (POLL_PAGES * PAGE + 1) as i64;
+    for i in 0..waiting {
+        rig.slack
+            .post("C1", person(NOW + 60 + i, "U2", &format!("new {i}")));
+    }
+    rig.clock.advance(chrono::Duration::minutes(16));
+    let work = run_until_idle(&worker).await;
+    assert!(
+        work.contains(&Work::Poll {
+            channel: "C1".into(),
+            threads: POLL_PAGES * PAGE,
+            done: false
+        }),
+        "{work:?}"
+    );
+    assert!(
+        work.contains(&Work::Poll {
+            channel: "C1".into(),
+            threads: 1,
+            done: true
+        }),
+        "{work:?}"
+    );
+    assert_eq!(rig.index.sources().len(), 1 + waiting as usize, "no gap");
+    assert!(
+        rig.index.doc("C1", NOW + 60).is_some(),
+        "the oldest one waiting"
+    );
+    let channel = rig.channel("C1");
+    assert_eq!(
+        channel.newest_ts.as_deref(),
+        Some(ts(NOW + 60 + waiting - 1).as_str())
+    );
+    assert!(channel.poll_cursor.is_none() && channel.poll_latest.is_none());
+}
+
+#[tokio::test]
+async fn a_failing_memory_removal_fails_the_forget_and_leaves_what_links_it() {
+    let rig = Rig::new();
+    rig.slack.post("C1", person(NOW - DAY, "U1", "hello"));
+    rig.index_channel("C1", false);
+    run_until_idle(&rig.worker()).await;
+    rig.store
+        .save_memory(&crate::connectors::slack::store::SlackMemory {
+            id: "m1".into(),
+            team_id: "T1".into(),
+            channel_id: "C1".into(),
+            channel_name: "#c1".into(),
+            author_id: "U1".into(),
+            author_name: "Ann".into(),
+            text: "x".into(),
+            kind: crate::connectors::slack::store::SlackMemoryKind::Text,
+            message_ts: ts(NOW),
+            permalink: None,
+            saved_at: rig.clock.now(),
+            owner: true,
+            memory_id: Some("mem-1".into()),
+        })
+        .unwrap();
+    rig.observed
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let channel = rig.channel("C1");
+    let failed = forget_channel(
+        &rig.store,
+        rig.index.as_ref(),
+        rig.observed.as_ref(),
+        &channel,
+    )
+    .await;
+    assert!(failed.is_err(), "the forget says it failed");
+    assert_eq!(
+        rig.channel("C1").state,
+        ChannelState::Forgetting,
+        "it is tried again"
+    );
+    assert_eq!(
+        rig.store.linked_memories("T1", Some("C1")).unwrap(),
+        vec!["mem-1".to_string()],
+        "what links the memory is kept until the memory is gone"
+    );
+    // The next step tries again; now it goes.
+    rig.observed
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        rig.worker().step().await.unwrap(),
+        Step::Worked(Work::Forgotten {
+            channel: "C1".into()
+        })
+    );
+    assert_eq!(
+        *rig.observed.memories.lock().unwrap(),
+        vec!["mem-1".to_string()]
+    );
+    assert!(rig.store.channel("T1", "C1").unwrap().is_none());
+    assert!(rig.store.memories("T1").unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stale_cursor_is_dropped_and_the_backfill_reads_on() {
+    let rig = Rig::new();
+    for days_ago in 1..=4 {
+        rig.slack.post(
+            "C1",
+            person(NOW - days_ago * DAY, "U1", &format!("m{days_ago}")),
+        );
+    }
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    assert!(matches!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::BackfillPage { done: false, .. })
+    ));
+    rig.slack.fail_next(
+        "history",
+        SlackApiError::Api {
+            code: "invalid_cursor".into(),
+            needed: None,
+        },
+    );
+    assert_eq!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::Restarted {
+            channel: "C1".into()
+        })
+    );
+    let restarted = rig.channel("C1");
+    assert!(restarted.backfill_cursor.is_none());
+    assert_eq!(
+        restarted.backfill_latest.as_deref(),
+        Some("1792832400.000000"),
+        "the window is kept"
+    );
+    assert!(restarted.paused_until.is_none(), "no pause");
+    run_until_idle(&worker).await;
+    assert!(rig.channel("C1").backfill_done);
+    assert_eq!(rig.index.sources().len(), 4);
+    assert_eq!(
+        rig.index.puts.lock().unwrap().len(),
+        4,
+        "the page read again skips the threads that did not change"
+    );
+}
+
+#[tokio::test]
+async fn a_deleted_sole_reply_is_caught_by_the_slim_pass() {
+    let rig = Rig::new();
+    rig.slack.thread(
+        "C1",
+        NOW - DAY,
+        &[(NOW - DAY + 10, "U2", "a reply to forget")],
+    );
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    run_until_idle(&worker).await;
+    assert!(rig
+        .index
+        .doc("C1", NOW - DAY)
+        .unwrap()
+        .text
+        .contains("a reply to forget"));
+    // Deleted while Shodh was not running: the thread has no reply now.
+    rig.slack.thread("C1", NOW - DAY, &[]);
+    rig.clock.advance(chrono::Duration::hours(7));
+    run_until_idle(&worker).await;
+    let doc = rig.index.doc("C1", NOW - DAY).unwrap();
+    assert!(!doc.text.contains("a reply to forget"), "{}", doc.text);
+}
+
+#[tokio::test]
+async fn a_thread_only_bots_wrote_is_not_fetched_again_every_slim_pass() {
+    let rig = Rig::new();
+    bot_thread(&rig.slack, "C1", NOW - DAY);
+    rig.slack.post("C1", person(NOW - 2 * DAY, "U1", "hello"));
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    run_until_idle(&worker).await;
+    let replies = |rig: &Rig| {
+        rig.slack
+            .calls(&format!("replies C1 {}", ts(NOW - DAY)))
+            .len()
+    };
+    assert_eq!(replies(&rig), 1, "read once by the backfill");
+    assert!(rig.index.doc("C1", NOW - DAY).is_none(), "nothing to index");
+    for _ in 0..2 {
+        rig.clock.advance(chrono::Duration::hours(7));
+        run_until_idle(&worker).await;
+    }
+    assert_eq!(replies(&rig), 1, "unchanged: never fetched again");
+}
+
+#[tokio::test]
+async fn an_archived_channel_slack_reports_is_archived_not_removed() {
+    let rig = Rig::new();
+    rig.slack.post("C1", person(NOW - DAY, "U1", "hello"));
+    rig.index_channel("C1", false);
+    rig.slack.fail_next(
+        "history",
+        SlackApiError::Api {
+            code: "is_archived".into(),
+            needed: None,
+        },
+    );
+    assert_eq!(
+        rig.worker().step().await.unwrap(),
+        Step::Worked(Work::Stopped {
+            channel: "C1".into(),
+            state: ChannelState::Archived
+        })
+    );
+    let channel = rig.channel("C1");
+    assert_eq!(channel.state, ChannelState::Archived);
+    assert_eq!(channel.error.as_deref(), Some(ARCHIVED));
+}
+
+#[tokio::test]
+async fn a_rate_limit_on_a_name_pauses_and_the_thread_keeps_its_names() {
+    let rig = Rig::new();
+    rig.slack.post("C1", person(NOW - DAY, "U2", "hello"));
+    rig.index_channel("C1", false);
+    rig.slack.fail_next(
+        "user",
+        SlackApiError::RateLimited {
+            retry_after: Some(Duration::from_secs(30)),
+        },
+    );
+    let worker = rig.worker();
+    assert!(matches!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::Paused { .. })
+    ));
+    assert!(
+        rig.index.sources().is_empty(),
+        "not indexed without the name Slack would not give"
+    );
+    rig.clock.advance(chrono::Duration::seconds(31));
+    run_until_idle(&worker).await;
+    let doc = rig.index.doc("C1", NOW - DAY).unwrap();
+    assert!(doc.text.contains("Bob"), "{}", doc.text);
+    assert!(!doc.text.contains("Someone"), "{}", doc.text);
+}
+
+#[tokio::test]
+async fn a_channel_shared_during_its_backfill_stops_before_the_next_page() {
+    let rig = Rig::new();
+    for days_ago in 1..=4 {
+        rig.slack.post(
+            "C1",
+            person(NOW - days_ago * DAY, "U1", &format!("m{days_ago}")),
+        );
+    }
+    rig.index_channel("C1", false);
+    let worker = rig.worker();
+    assert!(matches!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::BackfillPage { done: false, .. })
+    ));
+    rig.slack.infos.lock().unwrap().insert(
+        "C1".into(),
+        ChannelInfo {
+            name: "c1".into(),
+            archived: false,
+            shared: true,
+            private: false,
+        },
+    );
+    rig.clock.advance(chrono::Duration::minutes(16));
+    assert_eq!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::Stopped {
+            channel: "C1".into(),
+            state: ChannelState::NowShared
+        })
+    );
+    assert_eq!(
+        rig.index.sources().len(),
+        PAGE,
+        "the next page was not read"
+    );
+}
+
+#[tokio::test]
+async fn a_waiting_forget_stops_a_page_at_its_next_thread() {
+    let rig = Rig::new();
+    for days_ago in 1..=2 {
+        rig.slack.post(
+            "C1",
+            person(NOW - days_ago * DAY, "U1", &format!("m{days_ago}")),
+        );
+    }
+    rig.index_channel("C1", false);
+    *rig.index.forget_on_put.lock().unwrap() = Some(rig.gate.clone());
+    let worker = rig.worker();
+    assert_eq!(
+        worker.step().await.unwrap(),
+        Step::Worked(Work::Yielded {
+            channel: "C1".into()
+        })
+    );
+    assert_eq!(
+        rig.index.puts.lock().unwrap().len(),
+        1,
+        "one thread, not the page"
+    );
+    let channel = rig.channel("C1");
+    assert!(
+        channel.backfill_latest.is_none() && !channel.backfill_done,
+        "nothing of the page was checkpointed"
+    );
+    // The forget had its turn; then the page is read again, the thread done skipped.
+    let waiting = rig.index.waiting_forget.lock().unwrap().take().unwrap();
+    waiting.await.unwrap();
+    run_until_idle(&worker).await;
+    assert_eq!(rig.index.sources().len(), 2);
+    assert_eq!(rig.index.puts.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_channel_goes_into_a_workspace_source_first_and_takes_it_back_when_it_cannot() {
+    let rig = Rig::new();
+    let workspaces = crate::workspaces::WorkspaceStore::open(&rig.db, None).unwrap();
+    let workspace = workspaces
+        .create(
+            &crate::workspaces::NewWorkspace {
+                name: "Clients".into(),
+                ..Default::default()
+            },
+            crate::workspaces::WorkspaceAuthor::User,
+        )
+        .unwrap();
+    let new = |workspace_id: &str| NewIndexedChannel {
+        team_id: "T1".into(),
+        channel_id: "C1".into(),
+        name: "c1".into(),
+        workspace_id: workspace_id.into(),
+        shared: false,
+        private: false,
+        window_days: 90,
+    };
+    let sources = |workspaces: &crate::workspaces::WorkspaceStore| {
+        workspaces
+            .detail(&workspace.id)
+            .unwrap()
+            .sources
+            .into_iter()
+            .map(|s| s.reference)
+            .collect::<Vec<_>>()
+    };
+    let label = "#c1 (Slack)";
+    // A workspace that does not exist: no channel indexes into a space nobody holds.
+    assert!(choose_channel(
+        &rig.store,
+        &workspaces,
+        &new("ws-gone"),
+        label,
+        rig.clock.now()
+    )
+    .is_err());
+    assert!(rig.store.channel("T1", "C1").unwrap().is_none());
+    // A channel being forgotten cannot be chosen: the source this call added goes again.
+    rig.index_channel("C1", false);
+    rig.store
+        .set_state("T1", "C1", ChannelState::Forgetting, None)
+        .unwrap();
+    assert!(choose_channel(
+        &rig.store,
+        &workspaces,
+        &new(&workspace.id),
+        label,
+        rig.clock.now()
+    )
+    .is_err());
+    assert!(sources(&workspaces).is_empty(), "taken back");
+    // Chosen: the workspace holds its space.
+    rig.store.forget_channel("T1", "C1").unwrap();
+    let chosen = choose_channel(
+        &rig.store,
+        &workspaces,
+        &new(&workspace.id),
+        label,
+        rig.clock.now(),
+    )
+    .unwrap();
+    assert!(chosen.before.is_none());
+    assert_eq!(chosen.channel.workspace_id, workspace.id);
+    assert_eq!(sources(&workspaces), vec![ids::space_id("T1", "C1")]);
+}
+
+/// Embeds as [`crate::statements::testing::WordEmbedder`]; while held, a batch of
+/// documents waits until released, saying so first.
+#[derive(Default)]
+struct HeldEmbedder {
+    inner: crate::statements::testing::WordEmbedder,
+    held: Mutex<bool>,
+    released: std::sync::Condvar,
+    entered: Notify,
+}
+
+impl HeldEmbedder {
+    fn hold(&self) {
+        *self.held.lock().unwrap() = true;
+    }
+    fn release(&self) {
+        *self.held.lock().unwrap() = false;
+        self.released.notify_all();
+    }
+}
+
+impl crate::embeddings::EmbeddingModel for HeldEmbedder {
+    fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.inner.embed_query(text)
+    }
+    fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.inner.embed_document(text)
+    }
+    fn embed_documents(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let mut held = self.held.lock().unwrap();
+        if *held {
+            self.entered.notify_one();
+            while *held {
+                held = self.released.wait(held).unwrap();
+            }
+        }
+        drop(held);
+        texts.iter().map(|t| self.inner.embed_document(t)).collect()
+    }
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_embeds_outside_the_index_lock_and_keeps_the_gate_when_its_step_is_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let embedder = Arc::new(HeldEmbedder::default());
+    let rag = Box::pin(engine_with(dir.path(), embedder.clone())).await;
+    let index = Arc::new(EngineIndex { rag: rag.clone() });
+    let gate = Arc::new(SyncGate::default());
+    let thread = doc("C1", NOW, "the walrus budget is ten");
+    embedder.hold();
+    let step = {
+        let (index, gate, thread) = (index.clone(), gate.clone(), thread.clone());
+        tokio::spawn(async move {
+            let turn = gate.turn().await;
+            index.put(&thread, &turn).await
+        })
+    };
+    embedder.entered.notified().await;
+    // Embedding holds no lock on the index: Ask and Slack answers search meanwhile.
+    assert!(rag.try_write().is_ok(), "the index is free while embedding");
+    // The step is cancelled (a disconnect): its put goes on and keeps the gate, so a
+    // forget that follows cannot run before the thread is stored.
+    step.abort();
+    assert!(step.await.unwrap_err().is_cancelled());
+    assert!(
+        gate.lock.try_lock().is_err(),
+        "the put keeps the gate after its step was cancelled"
+    );
+    embedder.release();
+    let _forget = gate.urgent_turn().await;
+    assert_eq!(
+        rag.read()
+            .await
+            .document_sources()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.source == thread.source)
+            .count(),
+        1,
+        "stored whole before the forget got the gate"
+    );
+    index
+        .delete_space(&ids::space_id("T1", "C1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        chunks_of(&rag, &thread.source).await,
+        0,
+        "and then forgotten"
+    );
+}
+
+#[tokio::test]
+async fn a_thread_put_again_without_its_record_keeps_one_document() {
+    // A step cancelled after its put and before its record leaves the document stored
+    // and unrecorded: the step that resumes puts the thread again, not knowing.
+    let dir = tempfile::tempdir().unwrap();
+    let rag = Box::pin(engine(dir.path())).await;
+    let index = EngineIndex { rag: rag.clone() };
+    let gate = SyncGate::default();
+    let turn = gate.turn().await;
+    let thread = doc("C1", NOW, "the walrus budget is ten");
+    index.put(&thread, &turn).await.unwrap();
+    let once = chunks_of(&rag, &thread.source).await;
+    assert!(once > 0);
+    index.put(&thread, &turn).await.unwrap();
+    let rows: Vec<_> = rag
+        .read()
+        .await
+        .document_sources()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.source == thread.source)
+        .collect();
+    assert_eq!(rows.len(), 1, "one document: {rows:?}");
+    assert_eq!(chunks_of(&rag, &thread.source).await, once);
+}
+
+#[tokio::test]
+async fn a_source_in_two_spaces_is_listed_in_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let rag = Box::pin(engine(dir.path())).await;
+    // The space read first is not the one listed.
+    for space in ["space-b", "space-a"] {
+        let mut metadata = HashMap::new();
+        metadata.insert("space_id".to_string(), space.to_string());
+        metadata.insert("file_path".to_string(), "C:/docs/lease.pdf".to_string());
+        metadata.insert("title".to_string(), "Lease".to_string());
+        rag.write()
+            .await
+            .add_document(
+                "the notice period is sixty days",
+                crate::types::DocumentFormat::TXT,
+                metadata,
+                Citation::default(),
+            )
+            .await
+            .unwrap();
+    }
+    let titles = rag.read().await.document_titles().await.unwrap();
+    let mut spaces: Vec<&str> = titles
+        .iter()
+        .filter(|t| t.source == "C:/docs/lease.pdf")
+        .map(|t| t.space_id.as_str())
+        .collect();
+    spaces.sort_unstable();
+    assert_eq!(spaces, vec!["space-a", "space-b"]);
+    let listing = crate::connectors::slack::answer::library_listing(
+        rag.clone(),
+        &crate::connectors::slack::answer::AnswerScope {
+            source_ids: vec!["space-a".into()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(listing.titles.len(), 1, "the exact count: {listing:?}");
 }

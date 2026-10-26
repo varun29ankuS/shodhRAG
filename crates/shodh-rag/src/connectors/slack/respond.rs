@@ -2256,4 +2256,120 @@ mod tests {
         assert_eq!(*slack.updates.lock().unwrap(), 1, "no try after the switch");
         assert_eq!(slack.inner.texts(), vec![PLACEHOLDER.to_string()]);
     }
+
+    // ── The fix round of PR #101 ───────────────────────────────────
+
+    /// A clock the test moves.
+    struct MovingClock(Mutex<DateTime<Utc>>);
+
+    impl Clock for MovingClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    fn direct(text: &str, ts: &str) -> Question {
+        let mut q = question(text);
+        q.kind = QuestionKind::Direct;
+        q.channel = "D1".into();
+        q.reply_thread_ts = None;
+        q.thread = ThreadKey {
+            channel: "D1".into(),
+            thread: String::new(),
+        };
+        q.ts = ts.into();
+        q
+    }
+
+    #[tokio::test]
+    async fn unrelated_dm_questions_never_share_a_context() {
+        let s = setup_custom(|_| {});
+        assert_eq!(
+            s.responder
+                .respond(&direct("What is the walrus clause?", "100.1"))
+                .await,
+            Outcome::Answered
+        );
+        assert_eq!(
+            s.responder
+                .respond(&direct("What is the notice period?", "200.1"))
+                .await,
+            Outcome::Answered
+        );
+        let prompt = s.model.prompts.lock().unwrap()[1].clone();
+        assert!(
+            !prompt.to_lowercase().contains("walrus"),
+            "the earlier DM question: {prompt}"
+        );
+        assert_eq!(
+            s.source.searched.lock().unwrap()[1].1,
+            "What is the notice period?",
+            "searched alone"
+        );
+        // A reply in the first question's thread follows it up.
+        let mut follow_up = direct("shorter", "300.1");
+        follow_up.reply_thread_ts = Some("100.1".into());
+        follow_up.thread.thread = "100.1".into();
+        follow_up.in_thread = true;
+        s.responder.respond(&follow_up).await;
+        let prompt = s.model.prompts.lock().unwrap()[2].clone();
+        assert!(prompt.contains("What is the walrus clause?"), "{prompt}");
+        assert!(
+            !prompt.contains("What is the notice period?"),
+            "the other DM question: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_library_listing_is_said_again_for_a_minute_without_reading_the_index() {
+        let s = setup_custom(|source| {
+            source.listing = LibraryListing {
+                titles: vec!["Lease".into()],
+                slack_threads: 0,
+            };
+        });
+        let clock = Arc::new(MovingClock(Mutex::new(noon())));
+        let responder = Responder {
+            clock: clock.clone(),
+            ..s.responder
+        };
+        let ask = || question("What files do you have?");
+        for _ in 0..3 {
+            assert_eq!(responder.respond(&ask()).await, Outcome::Listed);
+        }
+        assert_eq!(s.source.listed.lock().unwrap().len(), 1, "read once");
+        let texts = s.slack.texts();
+        assert_eq!(texts.len(), 3);
+        assert!(texts.iter().all(|t| t == &texts[0]), "the same answer");
+        // Another conversation (a DM) reads its own.
+        assert_eq!(
+            responder
+                .respond(&direct("What files do you have?", "400.1"))
+                .await,
+            Outcome::Listed
+        );
+        assert_eq!(s.source.listed.lock().unwrap().len(), 2);
+        // A minute later the index is read again.
+        *clock.0.lock().unwrap() = noon() + chrono::Duration::seconds(LISTING_REUSE_SECONDS + 1);
+        responder.respond(&ask()).await;
+        assert_eq!(s.source.listed.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_channel_memory_over_its_limit_is_refused_with_the_reason() {
+        let (s, memories) = remembering(Some("UOWNER"));
+        *memories.limited.lock().unwrap() =
+            Some("This channel keeps 100 saved memories already.".into());
+        assert_eq!(
+            s.responder
+                .respond(&question("remember: standup is at 10"))
+                .await,
+            Outcome::SaveLimited
+        );
+        assert_eq!(
+            s.slack.texts(),
+            vec!["This channel keeps 100 saved memories already.".to_string()]
+        );
+        assert!(memories.channels.lock().unwrap().is_empty());
+    }
 }

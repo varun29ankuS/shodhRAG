@@ -77,8 +77,9 @@ repository could read the key, leave a process running, or exhaust the machine.
      it kills nothing, and the result says exactly that. Any step failing
      terminates the suspended process and refuses the command (fail closed).
    - macOS: a new session and process group (`setsid` in `pre_exec`),
-     `RLIMIT_CPU` (the time limit plus a margin; a single thread reaches the wall
-     clock first), and a watchdog that sums `ri_phys_footprint` over the run's
+     `RLIMIT_CPU` (the time limit on every core plus a margin: CPU time adds up
+     over threads, so a parallel `cargo test` must not reach it before the wall
+     clock; it bounds a process that escaped the sweep), and a watchdog that sums `ri_phys_footprint` over the run's
      processes every 200 ms and kills them all over the memory limit. The run is
      marked with a `SHODH_RUN_COMMAND_ID` variable; the sweep finds the process
      group, every descendant (from the `PROC_PIDTBSDINFO` table, not

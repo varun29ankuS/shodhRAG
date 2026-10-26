@@ -4,8 +4,12 @@
 //! - `setsid` before `exec` makes the command the leader of its own session
 //!   and process group; everything it starts stays in that group unless it
 //!   leaves it.
-//! - `RLIMIT_CPU` (the time limit plus a margin, inherited by every process
-//!   it starts): a process over it gets `SIGXCPU`, then `SIGKILL`.
+//! - `RLIMIT_CPU`, inherited by every process it starts: a process over it
+//!   gets `SIGXCPU`, then `SIGKILL`. CPU time counts every thread, so the
+//!   limit is the time limit on every core ([`cpu_limit_secs`]): a process
+//!   that keeps all cores busy until the wall-clock limit stays under it. It
+//!   bounds a process that escaped the end-of-command sweep; the wall clock
+//!   ends everything else.
 //! - Every process of the run carries the run's marker in its environment
 //!   ([`super::RUN_ID_ENV`]), so one that left the group and the tree (a
 //!   `setsid` and double fork, reparented to launchd) is still found.
@@ -36,9 +40,18 @@ use super::{CommandSpec, Killer, RUN_ID_ENV};
 /// The shell commands run in.
 const BASH: &str = "/bin/bash";
 
-/// CPU time a process may use beyond the wall-clock limit before the system
-/// stops it (a process using more than one core reaches it first).
+/// CPU time a process may use beyond its share of the wall-clock limit.
 const CPU_MARGIN_SECS: u64 = 5;
+
+/// The `RLIMIT_CPU` of a command with a wall-clock limit of `time_secs` on a
+/// machine with `cores` cores: CPU time adds up over threads, so a process
+/// may use every core for the whole time limit (a parallel `cargo test` or
+/// BLAS) without reaching it.
+pub fn cpu_limit_secs(time_secs: u64, cores: u64) -> u64 {
+    time_secs
+        .saturating_mul(cores.max(1))
+        .saturating_add(CPU_MARGIN_SECS)
+}
 
 /// How often the watchdog adds up the run's memory.
 const WATCH_INTERVAL: Duration = Duration::from_millis(250);
@@ -81,7 +94,10 @@ pub fn spawn_contained(
     env: &[(String, String)],
     command_id: &str,
 ) -> Result<(Child, Contained), String> {
-    let cpu_secs = spec.limits.time.as_secs().saturating_add(CPU_MARGIN_SECS);
+    let cores = std::thread::available_parallelism()
+        .map(|n| u64::try_from(n.get()).unwrap_or(u64::MAX))
+        .unwrap_or(1);
+    let cpu_secs = cpu_limit_secs(spec.limits.time.as_secs(), cores);
     // rlim_t is u64 on macOS.
     let soft: libc::rlim_t = cpu_secs;
     let hard = soft.saturating_add(1);

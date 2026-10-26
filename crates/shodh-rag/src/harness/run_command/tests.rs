@@ -424,6 +424,23 @@ fn scratch_folders_are_per_conversation_and_removed_with_it() {
     remove_scratch(data.path(), "conv-1").unwrap();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn the_cpu_time_limit_leaves_room_for_every_core_for_the_whole_time_limit() {
+    use super::mac::cpu_limit_secs;
+    for (secs, cores) in [(600, 1), (600, 8), (600, 24), (10, 4)] {
+        let limit = cpu_limit_secs(secs, cores);
+        assert!(limit >= secs * cores, "{secs} s on {cores} cores: {limit}");
+        assert!(
+            limit <= secs * cores + 60,
+            "{secs} s on {cores} cores: {limit}"
+        );
+    }
+    // An unknown core count counts as one; nothing overflows.
+    assert!(cpu_limit_secs(600, 0) >= 600);
+    assert_eq!(cpu_limit_secs(u64::MAX, 64), u64::MAX);
+}
+
 /// A control that counts `on_started` calls and forwards live output.
 fn run_control(
     command_id: &str,

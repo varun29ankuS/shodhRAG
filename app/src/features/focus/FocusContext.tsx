@@ -138,15 +138,17 @@ export type DiagramPlace =
   | { kind: 'answer'; conversationId: string; messageId: string }
   | { kind: 'side'; parentThreadId: string; parentTurnId: string };
 
-/** A request for the model to correct a diagram the mermaid parser rejected. */
+/** A request for the model to rework a diagram: fix one that did not draw, adjust one, or write it as a list. */
 export interface DiagramRepairRequest {
   place: DiagramPlace;
-  /** Identifies the diagram (a hash of its source); one run per key at a time. */
+  /** Identifies the diagram (a hash of its source as written); one run per key at a time. */
   key: string;
-  /** The diagram as written. */
+  /** The diagram the request is about. */
   source: string;
-  /** The message sent (source, parser message and the reply format asked for). */
+  /** The message sent (source, the reader's note, the answer's context and the reply format asked for). */
   message: string;
+  /** What the run is doing, as the app names a running answer (e.g. "adjusting a diagram"). */
+  label: string;
 }
 
 /** The model's reply, or why there is none. `busy`: another answer holds the agent, nothing was sent. */
@@ -223,6 +225,12 @@ export interface FocusContextValue {
   repairDiagram: (request: DiagramRepairRequest) => Promise<DiagramRepairOutcome>;
   /** Whether the answer at `place` is the newest one where it is shown (read on call, no re-render). */
   isLatestAnswer: (place: DiagramPlace) => boolean;
+  /**
+   * The stored answer at `place` (its text and the passages of its run),
+   * which a diagram rework carries instead of searching again; null when it
+   * is not stored or no longer open.
+   */
+  answerContext: (place: DiagramPlace) => ContinuedAnswer | null;
   /**
    * "Cite N instead" on a miscited claim of a stored side answer: records the
    * correction in the audit log, then rewrites that answer's citation and
@@ -466,7 +474,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         : {
             ok: false,
             reason: transcript.status === 'aborted' ? 'stopped' : 'failed',
-            message: transcript.error ?? (transcript.status === 'aborted' ? 'The correction was stopped.' : 'The model gave no correction.'),
+            message: transcript.error ?? (transcript.status === 'aborted' ? 'It was stopped.' : 'The model gave no reply.'),
           });
     } else if (live.purpose === 'summary') {
       const text = cleanSummary(answerText(transcript));
@@ -826,6 +834,20 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     return answers.length > 0 && answers[answers.length - 1].id === place.parentTurnId;
   }, [findThread, placeOf]);
 
+  const answerContext = useCallback((place: DiagramPlace): ContinuedAnswer | null => {
+    const where = placeOf(place);
+    if (!where) return null;
+    let raw: Parameters<typeof fromPersisted>[0] | null = null;
+    if (place.kind === 'answer') {
+      raw = conversationsRef.current.find(c => c.id === place.conversationId)?.messages.find(m => m.id === place.messageId)?.transcript ?? null;
+    } else {
+      const turns = findThread(where.conversationId, where.parentMessageId, place.parentThreadId)?.turns ?? [];
+      raw = turns.find(t => t.id === place.parentTurnId && t.role === 'assistant')?.transcript ?? null;
+    }
+    const restored = raw ? fromPersisted(raw) : null;
+    return restored ? { text: answerText(restored), passages: restored.passages } : null;
+  }, [findThread, placeOf]);
+
   const repairDiagram = useCallback((request: DiagramRepairRequest): Promise<DiagramRepairOutcome> => {
     const busy: DiagramRepairOutcome = { ok: false, reason: 'busy', message: 'Another answer is running. Try again when it has finished.' };
     const where = placeOf(request.place);
@@ -837,7 +859,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     const threadId = `${request.key}-repair`;
     const key = sideSessionKey(conversationId, threadId);
     const level: OpenFocus = {
-      target: { kind: 'mermaid', label: 'Diagram correction', source: request.source },
+      target: { kind: 'mermaid', label: 'Diagram rework', source: request.source },
       conversationId,
       parentMessageId,
       threadId,
@@ -859,7 +881,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         resolve(outcome);
         closeRepairSession();
       };
-      const live = beginRun(level, 'repair', 'correcting a diagram', null, null, finish);
+      const live = beginRun(level, 'repair', request.label, null, null, finish);
       if (!live) {
         resolve(busy);
         return;
@@ -1092,12 +1114,13 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     showVisualVersion,
     repairDiagram,
     isLatestAnswer,
+    answerContext,
     bringBack,
     citeInstead,
     stop,
     approve,
     sideLive,
-  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, bringBack, citeInstead, stop, approve, sideLive]);
+  }), [openFocus, closeFocus, drillDown, navigate, jumpToThread, session, localThreads, locationThreads, findThread, ask, summarize, refine, showVisualVersion, repairDiagram, isLatestAnswer, answerContext, bringBack, citeInstead, stop, approve, sideLive]);
 
   return (
     <FocusContext.Provider value={value}>

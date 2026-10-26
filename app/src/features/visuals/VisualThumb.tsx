@@ -14,6 +14,7 @@ import { parseSimulationSpec } from '../ask/visual/simulationSpec';
 import { SimulationPlayer } from '../ask/visual/SimulationView';
 import { SketchSurface, useSvgSketch } from '../ask/visual/SvgSketch';
 import { renderDiagram } from '../ask/visual/VisualBlocks';
+import { useChosenDiagramSource } from '../ask/visual/diagramLedger';
 import { markdownTableRows } from './extract';
 import type { VisualRecord } from './model';
 import { paramValuesOf } from './model';
@@ -56,7 +57,9 @@ function ThumbProblem({ text }: { text: string }) {
   );
 }
 
-function MermaidThumb({ source, dark }: { source: string; dark: boolean }) {
+function MermaidThumb({ source: written, dark }: { source: string; dark: boolean }) {
+  // The version of the diagram the reader chose in the answer.
+  const source = useChosenDiagramSource(written);
   const reactId = useId();
   const domId = `thumb-mmd-${reactId.replace(/[^a-zA-Z0-9]/g, '')}`;
   const [svg, setSvg] = useState<string | null>(null);

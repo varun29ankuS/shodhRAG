@@ -4,7 +4,7 @@
  * display equations ($$…$$, \[…\]) and Markdown tables.
  *
  * Detection mirrors the answer renderer (MessageContentRenderer): the same
- * fence languages, `mermaidSource` for bare diagram fences, display math
+ * fence languages, `diagramFenceSource` for diagram fences, display math
  * found after `normalizeMathDelimiters`, and the spec parsers each visual
  * draws with. A block the renderer would show as an error carries a
  * `problem` and is never recorded.
@@ -16,7 +16,7 @@
  * Pure module, unit-tested with Node (`app/tests/visualGallery.test.ts`).
  */
 
-import { isMermaidLanguage, mermaidSource, normalizeMathDelimiters } from '../ask/visual/mathText.ts';
+import { diagramFenceSource, isMermaidLanguage, normalizeMathDelimiters } from '../ask/visual/mathText.ts';
 import { parseChartBlock } from '../ask/visual/chartSpec.ts';
 import { parsePlotSpec, PLOT_MAX_CHARS } from '../ask/visual/plotSpec.ts';
 import { parseSimulationSpec, SIMULATION_MAX_CHARS } from '../ask/visual/simulationSpec.ts';
@@ -258,7 +258,7 @@ const FENCE_OPEN = /^\s{0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/;
 function fencedVisual(lang: string, body: string): Omit<Located, 'start' | 'end'> | null {
   const language = lang.toLowerCase();
   if (isMermaidLanguage(language)) {
-    const source = mermaidSource(language, body.trim());
+    const source = diagramFenceSource(language, body);
     const labels = mermaidLabels(source);
     const generic = mermaidTarget(source).label;
     return { kind: 'mermaid', source, own: labels.own, firstLabel: labels.first || generic };

@@ -380,9 +380,10 @@ mod tests {
         settle().await;
         assert_eq!(*r.bot.offsets.lock().unwrap(), vec![None, Some(7)]);
         assert_eq!(*r.offsets.saved.lock().unwrap(), Some(7));
+        // Each update's offset is saved before that update is handed on.
         assert_eq!(
-            r.log.lock().unwrap()[..4],
-            ["poll None", "save 7", "handle 5", "handle 6"]
+            r.log.lock().unwrap()[..5],
+            ["poll None", "save 6", "handle 5", "save 7", "handle 6"]
         );
         r.stop.cancel();
         task.await.unwrap();

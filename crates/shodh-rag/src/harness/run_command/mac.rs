@@ -96,13 +96,35 @@ pub fn keep_private(dir: &Path) -> Result<(), String> {
     make_private(dir)
 }
 
-/// How many processes of `uid` are alive now.
+/// `proc_listpids` filter: processes whose real user is the given one
+/// (`PROC_RUID_ONLY`, sys/proc_info.h).
+const PROC_RUID_ONLY: u32 = 5;
+
+/// How many processes the kernel counts against `RLIMIT_NPROC` for `uid`:
+/// those whose real user it is, zombies included, as the kernel lists them.
+/// (Counting by effective user, or without zombies, comes out lower, and
+/// the command would get more than its share.)
 fn processes_of(uid: uid_t) -> u64 {
-    let count = processes()
-        .values()
-        .filter(|proc| proc.uid == uid && !proc.zombie)
+    // SAFETY: a null buffer asks for the size of the list.
+    let needed = unsafe { libc::proc_listpids(PROC_RUID_ONLY, uid, std::ptr::null_mut(), 0) };
+    let capacity = usize::try_from(needed).unwrap_or(0) / std::mem::size_of::<pid_t>() + 256;
+    let mut pids: Vec<pid_t> = vec![0; capacity];
+    let bytes = c_int::try_from(capacity * std::mem::size_of::<pid_t>()).unwrap_or(c_int::MAX);
+    // SAFETY: `pids` holds `bytes` bytes.
+    let listed = unsafe {
+        libc::proc_listpids(
+            PROC_RUID_ONLY,
+            uid,
+            pids.as_mut_ptr().cast::<c_void>(),
+            bytes,
+        )
+    };
+    let count = usize::try_from(listed).unwrap_or(0) / std::mem::size_of::<pid_t>();
+    let alive = pids[..count.min(capacity)]
+        .iter()
+        .filter(|&&pid| pid > 0)
         .count();
-    u64::try_from(count).unwrap_or(u64::MAX)
+    u64::try_from(alive).unwrap_or(u64::MAX)
 }
 
 /// The `RLIMIT_NPROC` soft limit that lets a command add at most `max`

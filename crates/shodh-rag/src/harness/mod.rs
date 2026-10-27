@@ -26,6 +26,7 @@ mod omp_live_tests;
 pub mod profile;
 pub mod protocol;
 pub mod provider_error;
+pub mod run_command;
 pub mod session;
 pub mod sidecar;
 pub mod skills;

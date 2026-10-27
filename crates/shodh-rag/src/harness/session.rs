@@ -27,12 +27,12 @@ use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
-    approval_for, auto_approval, background_arguments, change_target, changed_between,
-    code_catalog, command_eligible, create_branch, git_state, inventory_matches, note_review,
-    parse_guard_request, plan_change, starts_background, target_in_folder, tree_snapshot,
-    ApprovalLevel, ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings,
-    GateContext, GuardRequest, ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, CODE_TOOLS,
-    GUARD_COMMAND, IGNORE_RULES_UNDO, UNTRACKED_UNDO,
+    approval_for, auto_approval, change_target, changed_between, code_catalog, command_eligible,
+    create_branch, git_state, inventory_matches, note_review, parse_guard_request, plan_change,
+    starts_system_program, target_in_folder, tree_snapshot, ApprovalLevel, ChangePlan,
+    ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GateContext, GuardRequest,
+    ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND,
+    IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -49,12 +49,15 @@ use super::protocol::{
     parse_frame, ExtensionUiRequestFrame, HostToolCallFrame, InboundFrame, MessageUpdateMode,
     OutboundFrame, ResponseFrame, StreamingBehavior, SubagentLevel, ToolResultPayload,
 };
+use super::run_command::{
+    self, asked_timeout, CommandExecutor, CommandLimits, CommandSpec, RunControl, RUN_COMMAND,
+};
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
 use super::tools::search::{truncate_query, SEARCH_DOCUMENTS};
 use super::tools::{
-    ApprovalDecision, ApprovalGate, DispatchOutcome, RunPassages, RunPlan, RunScope, ToolAudit,
-    ToolCall, ToolContext, ToolRegistry,
+    unset_markers_as_null, ApprovalDecision, ApprovalGate, DispatchOutcome, RunPassages, RunPlan,
+    RunScope, ToolAudit, ToolCall, ToolContext, ToolError, ToolRegistry,
 };
 use super::{truncate_chars, AgentHarness};
 use crate::audit::{payload as audit_payload, AuditEventType, LOCAL_OWNER, SYSTEM_PRINCIPAL};
@@ -106,6 +109,12 @@ pub struct CodeSession {
     /// level ([`CodeSettings`]); read at every decision, so a change applies
     /// to the running session. `None`: every change asks.
     pub settings_dir: Option<std::path::PathBuf>,
+    /// Runs the session's `run_command` calls
+    /// ([`run_command::ContainedExecutor`] in the app).
+    pub executor: Arc<dyn CommandExecutor>,
+    /// The conversation's scratch folder: its commands' home and temporary
+    /// folder ([`run_command::scratch_dir`]).
+    pub scratch: std::path::PathBuf,
 }
 
 /// A command allowed to run whose end the session waits for: the folder as
@@ -187,28 +196,39 @@ struct CodeRuntime {
     calls: Mutex<HashMap<String, (String, serde_json::Value, std::time::Instant)>>,
     /// Commands allowed to run that have not ended, by tool call id.
     running: Mutex<HashMap<String, RunningCommand>>,
+    /// Commands whose process runs now: tool call id → command id. Their
+    /// own task lists what they changed once every process is gone, so a
+    /// cancel or the end of the run stops them instead of dropping the task.
+    live: Mutex<HashMap<String, String>>,
     /// Comparisons of the folder not yet recorded ([`PendingCompare`]).
     compares: tokio::sync::watch::Sender<usize>,
+    executor: Arc<dyn CommandExecutor>,
+    scratch: std::path::PathBuf,
 }
 
 impl CodeRuntime {
-    fn new(
-        folder: CodeFolder,
-        conversation_id: String,
-        branches: CodeBranchStore,
-        settings_dir: Option<std::path::PathBuf>,
-    ) -> Self {
+    fn new(folder: CodeFolder, session: CodeSession) -> Self {
+        let CodeSession {
+            conversation_id,
+            branches,
+            settings_dir,
+            executor,
+            scratch,
+        } = session;
         CodeRuntime {
             folder,
             conversation_id,
             reviews: ReviewStore::beside(&branches),
             branches,
             settings_dir,
+            executor,
+            scratch,
             turn: tokio::sync::Mutex::new(()),
             guard_loaded: tokio::sync::watch::channel(false).0,
             dialogs: Mutex::new(HashMap::new()),
             calls: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
+            live: Mutex::new(HashMap::new()),
             compares: tokio::sync::watch::channel(0).0,
         }
     }
@@ -367,6 +387,18 @@ impl CodeRuntime {
     /// [`CodeRuntime::command_ended`]). `Err` when that cannot be recorded:
     /// the command must not run.
     async fn command_allowed(&self, request: &GuardRequest) -> Result<(), String> {
+        // A program the system starts for the command outlives it: from now
+        // on, edits ask (the record outlives the session).
+        let command_text = request
+            .input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if starts_system_program(command_text) {
+            let started = format!("`{}`", run_command::short_command(command_text));
+            self.update_review(move |state| state.background.push(started))
+                .await?;
+        }
         let before = self.snapshot().await;
         let command = request
             .input
@@ -412,11 +444,28 @@ impl CodeRuntime {
     }
 
     /// Every command still listed as running ended with the run or the
-    /// session: list what they changed.
+    /// session: list what they changed. A command whose process still runs
+    /// is stopped instead ([`CodeRuntime::stop_live`]); its own task lists
+    /// what it changed once its processes are gone.
     fn commands_ended(self: &Arc<Self>) {
         let ids: Vec<String> = lock(&self.running).keys().cloned().collect();
         for id in ids {
-            self.command_ended(&id);
+            if !self.stop_live(&id) {
+                self.command_ended(&id);
+            }
+        }
+    }
+
+    /// Stop the command of tool call `tool_call_id` if its process runs.
+    /// Returns whether it did.
+    fn stop_live(&self, tool_call_id: &str) -> bool {
+        let command_id = lock(&self.live).get(tool_call_id).cloned();
+        match command_id {
+            Some(command_id) => {
+                run_command::stop(&command_id);
+                true
+            }
+            None => false,
         }
     }
 
@@ -760,14 +809,15 @@ impl Inner {
         match guarded {
             Some((code, guarded)) => {
                 let inner = Arc::clone(self);
+                let ui_id = request.id.clone();
                 tokio::spawn(async move {
                     let answer = match inner.decide_guarded(&code, &guarded).await {
-                        Ok(()) => ALLOW_ANSWER.to_string(),
+                        Ok(_) => ALLOW_ANSWER.to_string(),
                         Err(reason) => reason,
                     };
                     if inner
                         .send(OutboundFrame::ExtensionUiResponse {
-                            id: guarded.ui_id,
+                            id: ui_id,
                             value: Some(answer),
                             cancelled: false,
                         })
@@ -809,14 +859,16 @@ impl Inner {
         }
     }
 
-    /// Decide one guarded change: check the code folder, ask the user, and
-    /// switch to the conversation's branch first when this is the first
-    /// change. `Err` carries the reason the model is given.
+    /// Decide one guarded change (an edit or write the guard asked about, or
+    /// a `run_command` call): check the code folder, ask the user, and switch
+    /// to the conversation's branch first when this is the first change.
+    /// `Ok` carries the settings it was decided under (a command runs with
+    /// the limits its prompt showed); `Err` the reason the model is given.
     async fn decide_guarded(
         &self,
         code: &CodeRuntime,
         request: &GuardRequest,
-    ) -> Result<(), String> {
+    ) -> Result<CodeSettings, String> {
         let (run_id, opened) = {
             let mut state = lock(&self.state);
             let run_id = state.active_run_id().map(str::to_string);
@@ -855,10 +907,6 @@ impl Inner {
                 "Not possible: the code folder is not a git repository.".to_string()
             }
         };
-        if let Some(reason) = background_arguments(request) {
-            self.refuse(&run_id, request, ChangeTarget::Unknown, reason);
-            return Err(reason.to_string());
-        }
         let target = code.target(request, &plan).await;
         if target == ChangeTarget::GitFolder {
             let reason = "Code mode does not change files in the repository's .git folder.";
@@ -879,15 +927,23 @@ impl Inner {
         let unasked_writer = self.registry.unasked_file_writer(&self.profile);
         let gate = GateContext {
             review: &review,
-            root: code.folder.root(),
             running: running.as_deref(),
             unasked_writer: unasked_writer.as_deref(),
         };
         // Decided once, before the prompt: the settings may change while it
         // waits, and what is cleared must match what was shown.
-        let eligible = command_eligible(&settings, request, &plan, code.folder.root());
+        let eligible = command_eligible(&settings, request, &plan);
         let token = uuid::Uuid::new_v4().simple().to_string();
         let mut approval = approval_for(request, Some(&undo), target);
+        if request.tool == RUN_COMMAND {
+            // The limits the command runs with, from these same settings.
+            let limits = CommandLimits::for_call(&settings, asked_timeout(&request.input));
+            if let Some(map) = approval.preview.as_object_mut() {
+                for (key, text) in limits.prompt_rows() {
+                    map.insert(key.to_string(), json!(text));
+                }
+            }
+        }
         let shown = note_review(&mut approval, request, &gate, eligible, &token);
         if let Some(reason) = auto_approval(&settings, request, &plan, target, &gate) {
             self.audit(
@@ -921,9 +977,11 @@ impl Inner {
                     format!("Shodh could not record this command, so it was not run: {e}")
                 })?;
             }
-            return Ok(());
+            return Ok(settings);
         }
-        lock(&code.dialogs).insert(request.ui_id.clone(), request.tool_call_id.clone());
+        if let Some(ui_id) = &request.ui_id {
+            lock(&code.dialogs).insert(ui_id.clone(), request.tool_call_id.clone());
+        }
         self.emit(AgentEvent::ApprovalRequested {
             run_id: run_id.clone(),
             step_id: request.tool_call_id.clone(),
@@ -934,7 +992,9 @@ impl Inner {
         });
         let decision = self.approvals.wait(&request.tool_call_id).await;
         let token_back = self.approvals.take_review_token(&request.tool_call_id);
-        lock(&code.dialogs).remove(&request.ui_id);
+        if let Some(ui_id) = &request.ui_id {
+            lock(&code.dialogs).remove(ui_id);
+        }
         let who = match decision {
             ApprovalDecision::Approved | ApprovalDecision::Denied => self.principal(),
             ApprovalDecision::TimedOut | ApprovalDecision::Cancelled => SYSTEM_PRINCIPAL,
@@ -985,7 +1045,7 @@ impl Inner {
                     )
                 })?;
             }
-            return Ok(());
+            return Ok(settings);
         }
         // Only the prompt that showed every listed file sends the token back
         // (not the Inbox, not a shortcut): then exactly what it showed counts
@@ -998,32 +1058,13 @@ impl Inner {
                 tracing::warn!(target: "shodh::harness", session = %self.session_id, error = %e, "could not record the review of unreviewed files; commands keep asking");
             }
         }
-        let command = request
-            .input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        if starts_background(command) {
-            let started = format!(
-                "`{}`",
-                truncate_chars(
-                    &command.split_whitespace().collect::<Vec<_>>().join(" "),
-                    80
-                )
-            );
-            code.update_review(move |state| state.background.push(started))
-                .await
-                .map_err(|e| {
-                    format!(
-                        "Shodh could not record that this command keeps running, so it was not \
-                         run: {e}"
-                    )
-                })?;
-        }
+        // What the command itself starts ends with it (its job or process
+        // group); what it has the system start does not, and
+        // `command_allowed` records that.
         code.command_allowed(request)
             .await
             .map_err(|e| format!("Shodh could not record this command, so it was not run: {e}"))?;
-        Ok(())
+        Ok(settings)
     }
 
     /// Audit a guarded call Shodh refuses without asking.
@@ -1095,6 +1136,13 @@ impl Inner {
         } else {
             self.calls_in_run.fetch_add(1, Ordering::SeqCst) + 1
         };
+        // A Code session's commands are its own, not the registry's.
+        if call.tool_name == RUN_COMMAND {
+            if let Some(code) = &self.code {
+                self.dispatch_run_command(Arc::clone(code), call, run_id, call_index);
+                return;
+            }
+        }
         let ctx = ToolContext::new(run_id, call.tool_call_id.clone(), self.events.clone())
             .with_host_call(call.id.clone(), self.outbound.clone())
             .with_run_passages(Arc::clone(&self.passages_in_run))
@@ -1187,10 +1235,253 @@ impl Inner {
         inflight.insert(host_id, (step_id, handle.abort_handle()));
     }
 
+    /// Run a Code session's `run_command` call in its own task: the registry's
+    /// checks (arguments, the per-answer budget, the audit record) without
+    /// the registry, the decision of [`Inner::decide_guarded`] (no "allow
+    /// for this conversation"), then the command in its own process with
+    /// live status, and what it changed in the folder listed before the
+    /// result goes back. Cancelling the task stops the command's processes.
+    fn dispatch_run_command(
+        self: &Arc<Self>,
+        code: Arc<CodeRuntime>,
+        call: HostToolCallFrame,
+        run_id: String,
+        call_index: u32,
+    ) {
+        let host_id = call.id.clone();
+        let step_id = call.tool_call_id.clone();
+        let mut inflight = lock(&self.inflight);
+        let inner = Arc::clone(self);
+        let task_host_id = host_id.clone();
+        let task_step_id = step_id.clone();
+        let handle = tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let (outcome, input) = inner
+                .run_command_call(&code, &run_id, &task_step_id, call.arguments, call_index)
+                .await;
+            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            if outcome.ok {
+                lock(&inner.tools_ok_in_run).insert(RUN_COMMAND.to_string());
+            }
+            inner.audit(
+                &run_id,
+                AuditEventType::ToolCall,
+                audit_payload::tool_call(
+                    RUN_COMMAND,
+                    Some(run_command::TIER),
+                    &input,
+                    outcome.ok,
+                    &outcome.summary,
+                    duration_ms,
+                ),
+            );
+            tracing::info!(
+                target: "shodh::audit",
+                event = "tool_call",
+                session = %inner.session_id,
+                run_id = %run_id,
+                step_id = %task_step_id,
+                tool = RUN_COMMAND,
+                ok = outcome.ok,
+                summary = %outcome.summary,
+                duration_ms,
+                "code command"
+            );
+            // Record the UI summary before omp can answer with tool_execution_end.
+            lock(&inner.state).record_outcome(
+                &task_step_id,
+                StepOutcome {
+                    ok: outcome.ok,
+                    summary: outcome.summary.clone(),
+                    detail: outcome.detail.clone(),
+                    invalid_arguments: outcome.invalid_arguments,
+                },
+            );
+            lock(&inner.inflight).remove(&task_host_id);
+            if inner
+                .send(OutboundFrame::HostToolResult {
+                    id: task_host_id,
+                    result: ToolResultPayload::text(outcome.text_for_model),
+                    is_error: !outcome.ok,
+                })
+                .is_err()
+            {
+                tracing::debug!(target: "shodh::harness", "omp writer closed before a command result");
+            }
+        });
+        inflight.insert(host_id, (step_id, handle.abort_handle()));
+    }
+
+    /// One `run_command` call, from its arguments to its result. Returns the
+    /// outcome and the arguments as audited.
+    async fn run_command_call(
+        self: &Arc<Self>,
+        code: &Arc<CodeRuntime>,
+        run_id: &str,
+        step_id: &str,
+        arguments: serde_json::Value,
+        call_index: u32,
+    ) -> (DispatchOutcome, serde_json::Value) {
+        let failed = |error: ToolError| DispatchOutcome {
+            ok: false,
+            text_for_model: error.to_string(),
+            summary: error.summary(),
+            detail: None,
+            invalid_arguments: matches!(error, ToolError::InvalidArguments { .. }),
+        };
+        let arguments = unset_markers_as_null(arguments, &run_command::schema());
+        let args = match run_command::parse_args(&arguments) {
+            Ok(args) => args,
+            Err(reasons) => {
+                let error = ToolError::InvalidArguments {
+                    tool: RUN_COMMAND.to_string(),
+                    reasons,
+                };
+                return (failed(error), arguments);
+            }
+        };
+        let input = args.input();
+        if call_index > self.profile.max_tool_calls {
+            let error = ToolError::BudgetExhausted {
+                max: self.profile.max_tool_calls,
+            };
+            return (failed(error), input);
+        }
+        let request = GuardRequest {
+            ui_id: None,
+            tool_call_id: step_id.to_string(),
+            tool: RUN_COMMAND.to_string(),
+            input: input.clone(),
+            target: None,
+        };
+        let settings = match self.decide_guarded(code, &request).await {
+            Ok(settings) => settings,
+            Err(reason) => {
+                let summary = reason
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(|line| truncate_chars(line, 160))
+                    .unwrap_or_else(|| "Not run".to_string());
+                let outcome = DispatchOutcome {
+                    ok: false,
+                    text_for_model: reason,
+                    summary,
+                    detail: None,
+                    invalid_arguments: false,
+                };
+                return (outcome, input);
+            }
+        };
+        let limits = CommandLimits::for_call(&settings, args.timeout_secs);
+        let command_id = uuid::Uuid::new_v4().simple().to_string();
+        let spec = CommandSpec {
+            command: args.command.clone(),
+            folder: code.folder.root().to_path_buf(),
+            scratch: code.scratch.clone(),
+            limits,
+        };
+        // Registered before the process exists, so Stop, a cancel or the end
+        // of the run reaches the command from now on.
+        let registration = run_command::RunRegistration::new(&command_id);
+        lock(&code.live).insert(step_id.to_string(), command_id.clone());
+        let control = RunControl {
+            command_id: command_id.clone(),
+            registration,
+            on_started: Box::new({
+                let events = self.events.clone();
+                let (run_id, step_id) = (run_id.to_string(), step_id.to_string());
+                let (command_id, command) = (command_id.clone(), args.command.clone());
+                move || {
+                    let started = AgentEvent::CommandStarted {
+                        run_id: run_id.clone(),
+                        step_id: step_id.clone(),
+                        command_id: command_id.clone(),
+                        command: command.clone(),
+                        time_limit_secs: limits.time.as_secs(),
+                        at_ms: now_ms(),
+                    };
+                    if events.send(started).is_err() {
+                        tracing::debug!(target: "shodh::harness", "event receiver dropped");
+                    }
+                }
+            }),
+            on_output: Box::new({
+                let events = self.events.clone();
+                let (run_id, step_id) = (run_id.to_string(), step_id.to_string());
+                let command_id = command_id.clone();
+                move |text| {
+                    let output = AgentEvent::CommandOutput {
+                        run_id: run_id.clone(),
+                        step_id: step_id.clone(),
+                        command_id: command_id.clone(),
+                        text,
+                    };
+                    if events.send(output).is_err() {
+                        tracing::debug!(target: "shodh::harness", "event receiver dropped");
+                    }
+                }
+            }),
+        };
+        let ran = code.executor.run(spec, control).await;
+        lock(&code.live).remove(step_id);
+        // Some of its processes had left its process tree: others may have
+        // gone unseen, so what it changed is unknown until a review.
+        if ran.escaped {
+            let reason = format!(
+                "processes of `{}` left its process group, so Shodh cannot tell what they \
+                 changed",
+                run_command::short_command(&args.command)
+            );
+            if let Err(e) = code
+                .update_review(move |state| state.mark_unknown(reason))
+                .await
+            {
+                tracing::warn!(target: "shodh::harness", error = %e, "could not record an escaped command; the record is unreadable, so commands ask");
+            }
+        }
+        // What it changed is listed before its result goes back, so the
+        // next decision waits for the comparison.
+        code.command_ended(step_id);
+        self.emit(AgentEvent::CommandFinished {
+            run_id: run_id.to_string(),
+            step_id: step_id.to_string(),
+            command_id: command_id.clone(),
+            state: ran.state,
+            exit_code: ran.exit_code,
+            note: ran.note.clone(),
+            duration_ms: u64::try_from(ran.duration.as_millis()).unwrap_or(u64::MAX),
+        });
+        let outcome = DispatchOutcome {
+            ok: ran.succeeded(),
+            text_for_model: ran.text_for_model(&limits),
+            summary: truncate_chars(&ran.summary(&limits), 160),
+            detail: Some(json!({
+                "commandId": command_id,
+                "state": ran.state,
+                "exitCode": ran.exit_code,
+            })),
+            invalid_arguments: false,
+        };
+        (outcome, input)
+    }
+
     fn cancel_host_tool(&self, host_call_id: &str) {
         let entry = lock(&self.inflight).remove(host_call_id);
         if let Some((step_id, handle)) = entry {
-            handle.abort();
+            // A running command is stopped, not dropped: its task lists what
+            // it changed once its processes are gone. Any other call ends
+            // now, and a command allowed but not yet started is compared now.
+            let stopped = self
+                .code
+                .as_ref()
+                .is_some_and(|code| code.stop_live(&step_id));
+            if !stopped {
+                handle.abort();
+                if let Some(code) = &self.code {
+                    code.command_ended(&step_id);
+                }
+            }
             self.approvals.cancel(&step_id);
             lock(&self.state).record_outcome(
                 &step_id,
@@ -1204,9 +1495,20 @@ impl Inner {
         }
     }
 
+    /// End every call in flight. A running command is stopped instead of
+    /// dropped ([`CodeRuntime::stop_live`]), so what it changed is compared
+    /// only after its processes are gone.
     fn abort_inflight(&self) {
-        for (_, (_, handle)) in lock(&self.inflight).drain() {
-            handle.abort();
+        let calls: Vec<(String, AbortHandle)> =
+            lock(&self.inflight).drain().map(|(_, call)| call).collect();
+        for (step_id, handle) in calls {
+            let stopped = self
+                .code
+                .as_ref()
+                .is_some_and(|code| code.stop_live(&step_id));
+            if !stopped {
+                handle.abort();
+            }
         }
     }
 
@@ -1906,12 +2208,9 @@ impl OmpSession {
         } = config;
         let code = match (&launch.code, code) {
             (None, None) => None,
-            (Some(folder), Some(session)) => Some(Arc::new(CodeRuntime::new(
-                folder.clone(),
-                session.conversation_id,
-                session.branches,
-                session.settings_dir,
-            ))),
+            (Some(folder), Some(session)) => {
+                Some(Arc::new(CodeRuntime::new(folder.clone(), session)))
+            }
             _ => {
                 return Err(HarnessError::CodeGuard(
                     "the code folder and its conversation must be set together".to_string(),
@@ -1926,12 +2225,20 @@ impl OmpSession {
                 .into_iter()
                 .map(|d| d.name)
                 .collect();
-            if let Some(clash) = names.iter().find(|n| CODE_TOOLS.contains(&n.as_str())) {
+            if let Some(clash) = names.iter().find(|n| {
+                CODE_TOOLS.contains(&n.as_str())
+                    || OMP_EXECUTION_TOOLS.contains(&n.as_str())
+                    || n.as_str() == RUN_COMMAND
+            }) {
                 return Err(HarnessError::CodeGuard(format!(
                     "the host tool {clash} has the name of a Code mode tool"
                 )));
             }
-            launch.host_tools = names;
+            // Shodh's own command tool, which the session runs itself.
+            launch.host_tools = names
+                .into_iter()
+                .chain(std::iter::once(RUN_COMMAND.to_string()))
+                .collect();
         }
         let started = std::time::Instant::now();
         let process = sidecar::spawn(&launch).await?;
@@ -2078,7 +2385,10 @@ impl OmpSession {
         ready_ms: u128,
     ) -> Result<(), HarnessError> {
         let inner = &self.inner;
-        let host = inner.registry.definitions(&inner.profile);
+        // The registry's tools (MCP servers, skills) and Shodh's own command
+        // tool, which the session runs itself (`dispatch_run_command`).
+        let mut host = inner.registry.definitions(&inner.profile);
+        host.push(run_command::definition());
         let host_names: Vec<String> = host.iter().map(|d| d.name.clone()).collect();
         inner
             .command(OutboundFrame::SetEventFilter {
@@ -2088,14 +2398,12 @@ impl OmpSession {
             })
             .await?;
         // The inventory is read after the host tools are set.
-        if !host.is_empty() {
-            inner
-                .command(OutboundFrame::SetHostTools {
-                    id: inner.next_id("c"),
-                    tools: host,
-                })
-                .await?;
-        }
+        inner
+            .command(OutboundFrame::SetHostTools {
+                id: inner.next_id("c"),
+                tools: host,
+            })
+            .await?;
         let state = inner
             .command(OutboundFrame::GetState {
                 id: inner.next_id("c"),
@@ -3646,13 +3954,125 @@ mod tests {
         ));
     }
 
+    /// Stands in for the process runner: records each command, says it
+    /// started, sends one line of output, and ends it with exit 0, at once or,
+    /// while `hold` is set, once the test releases it ([`TestExecutor::release`])
+    /// or a stop reaches its registration (it then ends as stopped, and
+    /// counts it). With `escape` set, it reports processes that left the run.
+    #[derive(Debug)]
+    struct TestExecutor {
+        ran: Mutex<Vec<String>>,
+        started: tokio::sync::watch::Sender<usize>,
+        hold: AtomicBool,
+        release: tokio::sync::Semaphore,
+        stopped: AtomicU32,
+        escape: AtomicBool,
+    }
+
+    impl TestExecutor {
+        fn new() -> Arc<Self> {
+            Arc::new(TestExecutor {
+                ran: Mutex::new(Vec::new()),
+                started: tokio::sync::watch::channel(0).0,
+                hold: AtomicBool::new(false),
+                release: tokio::sync::Semaphore::new(0),
+                stopped: AtomicU32::new(0),
+                escape: AtomicBool::new(false),
+            })
+        }
+
+        /// How many runs ended because a stop reached them.
+        fn stops(&self) -> u32 {
+            self.stopped.load(Ordering::SeqCst)
+        }
+
+        fn ran(&self) -> Vec<String> {
+            lock(&self.ran).clone()
+        }
+
+        fn count(&self) -> usize {
+            lock(&self.ran).len()
+        }
+
+        fn holding(&self) -> bool {
+            self.hold.load(Ordering::SeqCst)
+        }
+
+        fn hold(&self, hold: bool) {
+            self.hold.store(hold, Ordering::SeqCst);
+        }
+
+        /// Wait until `n` commands have started.
+        async fn started(&self, n: usize) {
+            let mut started = self.started.subscribe();
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                started.wait_for(|count| *count >= n),
+            )
+            .await
+            .expect("the command started within 10 s")
+            .expect("the executor is alive");
+        }
+
+        /// Let one held command end.
+        fn release(&self) {
+            self.release.add_permits(1);
+        }
+    }
+
+    #[async_trait]
+    impl CommandExecutor for TestExecutor {
+        async fn run(&self, spec: CommandSpec, control: RunControl) -> run_command::CommandOutcome {
+            let hold = self.holding();
+            lock(&self.ran).push(spec.command.clone());
+            (control.on_started)();
+            self.started.send_modify(|count| *count += 1);
+            (control.on_output)(format!("ran {}\n", spec.command));
+            let mut state = crate::harness::events::CommandState::Done;
+            if hold {
+                tokio::select! {
+                    permit = self.release.acquire() => {
+                        if let Ok(permit) = permit {
+                            permit.forget();
+                        }
+                    }
+                    _ = control.registration.stopped() => {
+                        self.stopped.fetch_add(1, Ordering::SeqCst);
+                        state = crate::harness::events::CommandState::Stopped;
+                    }
+                }
+            }
+            run_command::CommandOutcome {
+                state,
+                exit_code: (state == crate::harness::events::CommandState::Done).then_some(0),
+                note: None,
+                output: format!("ran {}\n", spec.command),
+                duration: Duration::from_millis(5),
+                escaped: self.escape.load(Ordering::SeqCst),
+            }
+        }
+    }
+
     /// A Code session over `folder` (not a git repository: no branch work).
     fn code_runtime(folder: &std::path::Path, data: &std::path::Path) -> Arc<CodeRuntime> {
+        code_runtime_with(folder, data, TestExecutor::new())
+    }
+
+    /// A Code session over `folder` whose commands `executor` runs.
+    fn code_runtime_with(
+        folder: &std::path::Path,
+        data: &std::path::Path,
+        executor: Arc<TestExecutor>,
+    ) -> Arc<CodeRuntime> {
         Arc::new(CodeRuntime::new(
             CodeFolder::open(folder).unwrap(),
-            "conv-1".into(),
-            CodeBranchStore::in_dir(data),
-            Some(data.to_path_buf()),
+            CodeSession {
+                conversation_id: "conv-1".into(),
+                branches: CodeBranchStore::in_dir(data),
+                settings_dir: Some(data.to_path_buf()),
+                executor,
+                scratch: data.join("scratch"),
+            },
         ))
     }
 
@@ -3695,22 +4115,223 @@ mod tests {
             .expect("writer open")
     }
 
+    /// Guard request `n` for an edit or write (dialog `ui-{n}`, tool call
+    /// `call-{n}`).
+    fn guard_request(
+        n: &str,
+        tool: &str,
+        input: serde_json::Value,
+        target: Option<&std::path::Path>,
+    ) -> (String, String) {
+        (
+            n.to_string(),
+            guard_dialog_at(
+                &format!("ui-{n}"),
+                &format!("call-{n}"),
+                tool,
+                input,
+                target,
+            ),
+        )
+    }
+
+    /// omp's `run_command` call `n` (host call `h-{n}`, tool call `call-{n}`).
+    fn command_call(n: &str, arguments: serde_json::Value) -> (String, String) {
+        (
+            n.to_string(),
+            json!({
+                "type": "host_tool_call",
+                "id": format!("h-{n}"),
+                "toolCallId": format!("call-{n}"),
+                "toolName": RUN_COMMAND,
+                "arguments": arguments,
+            })
+            .to_string(),
+        )
+    }
+
+    fn is_command(frame: &str) -> bool {
+        frame.contains("\"host_tool_call\"")
+    }
+
+    /// The result of `run_command` call `n`: whether it is an error, and its
+    /// text.
+    async fn command_result(
+        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
+        n: &str,
+    ) -> (bool, String) {
+        match next_frame(out).await {
+            OutboundFrame::HostToolResult {
+                id,
+                result,
+                is_error,
+            } => {
+                assert_eq!(id, format!("h-{n}"));
+                (is_error, result.joined_text())
+            }
+            other => panic!("expected the result of call-{n}, got {other:?}"),
+        }
+    }
+
+    /// Feed call `n` ([`guard_request`], [`command_call`]) and expect it to
+    /// run without a prompt: an edit is allowed; a command runs (to its end,
+    /// unless the executor holds it).
+    async fn runs_unasked(
+        inner: &Arc<Inner>,
+        executor: &TestExecutor,
+        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
+        (n, frame): (String, String),
+    ) {
+        let before = executor.count();
+        feed(inner, &frame);
+        if !is_command(&frame) {
+            match next_frame(out).await {
+                OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                    assert_eq!(id, format!("ui-{n}"));
+                    assert_eq!(value.as_deref(), Some(ALLOW_ANSWER), "call-{n}");
+                }
+                other => panic!("expected call-{n} to run unasked, got {other:?}"),
+            }
+            return;
+        }
+        if executor.holding() {
+            executor.started(before + 1).await;
+            return;
+        }
+        let (is_error, text) = command_result(out, &n).await;
+        assert!(!is_error, "call-{n} failed: {text}");
+        assert!(text.starts_with("Exit code 0"), "{text}");
+        assert_eq!(executor.count(), before + 1, "call-{n} ran once");
+    }
+
+    /// Let held command `n` end and expect its result.
+    async fn finish(
+        executor: &TestExecutor,
+        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
+        n: &str,
+    ) {
+        executor.release();
+        let (is_error, text) = command_result(out, n).await;
+        assert!(!is_error, "call-{n} failed: {text}");
+    }
+
+    /// How a test answers a prompt.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Answer {
+        Deny,
+        /// A yes without the review token: the Inbox, a keyboard shortcut.
+        ApproveElsewhere,
+        /// The prompt's own Approve button: sends the token when the prompt
+        /// has one (`ApprovalPrompt`, `reviewTokenFor`).
+        ApproveInPrompt,
+        /// A yes with a token this prompt did not issue.
+        ApproveWithStaleToken,
+    }
+
+    /// Feed call `n` ([`guard_request`], [`command_call`]), expect a prompt
+    /// before anything runs, answer it and return the prompt's preview. A
+    /// declined command never runs; an approved one runs (to its end, unless
+    /// the executor holds it).
+    async fn asks(
+        inner: &Arc<Inner>,
+        executor: &TestExecutor,
+        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
+        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
+        (n, frame): (String, String),
+        answer: Answer,
+    ) -> serde_json::Value {
+        use crate::harness::code_mode::REVIEW_TOKEN_KEY;
+        let before = executor.count();
+        feed(inner, &frame);
+        let seen = events_until(events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        let preview = match seen.last() {
+            Some(AgentEvent::ApprovalRequested {
+                step_id, preview, ..
+            }) => {
+                assert_eq!(*step_id, format!("call-{n}"));
+                preview.clone()
+            }
+            other => panic!("expected a prompt for call-{n}, got {other:?}"),
+        };
+        assert!(
+            out.try_recv().is_err(),
+            "call-{n} was answered before the user decided"
+        );
+        assert_eq!(
+            executor.count(),
+            before,
+            "call-{n} ran before the user decided"
+        );
+        let step = format!("call-{n}");
+        match (
+            answer,
+            preview.get(REVIEW_TOKEN_KEY).and_then(|t| t.as_str()),
+        ) {
+            (Answer::Deny, _) => inner.approvals.resolve(&step, false).unwrap(),
+            (Answer::ApproveInPrompt, Some(token)) => {
+                inner.approvals.resolve_reviewed(&step, token).unwrap()
+            }
+            (Answer::ApproveWithStaleToken, _) => inner
+                .approvals
+                .resolve_reviewed(&step, "0123456789abcdef")
+                .unwrap(),
+            _ => inner.approvals.resolve(&step, true).unwrap(),
+        }
+        if !is_command(&frame) {
+            match next_frame(out).await {
+                OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                    assert_eq!(id, format!("ui-{n}"));
+                    assert_eq!(
+                        value.as_deref() == Some(ALLOW_ANSWER),
+                        answer != Answer::Deny
+                    );
+                }
+                other => panic!("expected the answer to call-{n}, got {other:?}"),
+            }
+            return preview;
+        }
+        if answer == Answer::Deny {
+            let (is_error, text) = command_result(out, &n).await;
+            assert!(is_error, "a declined command is an error");
+            assert!(text.contains("declined"), "{text}");
+            assert_eq!(executor.count(), before, "a declined command never runs");
+        } else if executor.holding() {
+            executor.started(before + 1).await;
+        } else {
+            let (is_error, text) = command_result(out, &n).await;
+            assert!(!is_error, "call-{n} failed: {text}");
+            assert_eq!(executor.count(), before + 1, "call-{n} ran once");
+        }
+        preview
+    }
+
     #[tokio::test]
-    async fn guard_requests_become_approvals_and_their_answers() {
+    async fn guard_requests_and_commands_become_approvals_and_their_answers() {
         let folder = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
-        let (inner, mut events, mut out) =
-            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        let exec = TestExecutor::new();
+        let (inner, mut events, mut out) = offline_session(
+            None,
+            Some(code_runtime_with(
+                folder.path(),
+                data.path(),
+                Arc::clone(&exec),
+            )),
+        );
         inner
             .start_run("Fix the build", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
 
         // A command: the step opens first, then the prompt (destructive, with
-        // the not-undoable warning because the folder has no git).
+        // the not-undoable warning because the folder has no git, and the
+        // limits it runs with).
         feed(
             &inner,
-            &guard_dialog("ui-1", "call-1", "bash", json!({"command": "rm -rf build"})),
+            &command_call("1", json!({"command": "rm -rf build"})).1,
         );
         let seen = events_until(&mut events, |e| {
             matches!(e, AgentEvent::ApprovalRequested { .. })
@@ -3718,7 +4339,7 @@ mod tests {
         .await;
         assert!(matches!(
             &seen[seen.len() - 2],
-            AgentEvent::StepStarted { step_id, tool, .. } if step_id == "call-1" && tool == "bash"
+            AgentEvent::StepStarted { step_id, tool, .. } if step_id == "call-1" && tool == RUN_COMMAND
         ));
         match seen.last() {
             Some(AgentEvent::ApprovalRequested {
@@ -3736,22 +4357,72 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .contains("not a git repository"));
+                assert_eq!(preview["time_limit"], "10 minutes (the workspace's limit)");
+                // Exactly what this system enforces (run_command's tests pin
+                // the words per system).
+                assert_eq!(
+                    preview["limits"],
+                    CommandLimits::for_call(&CodeSettings::default(), None).enforced_text()
+                );
             }
             other => panic!("expected an approval request, got {other:?}"),
         }
+        assert!(exec.ran().is_empty(), "nothing runs before the answer");
+
+        // Approved: it runs, with live status, and the model gets its result.
         inner.approvals.resolve("call-1", true).unwrap();
-        match next_frame(&mut out).await {
-            OutboundFrame::ExtensionUiResponse {
-                id,
-                value,
-                cancelled,
-            } => {
-                assert_eq!(id, "ui-1");
-                assert_eq!(value.as_deref(), Some(ALLOW_ANSWER));
-                assert!(!cancelled);
+        let seen = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::CommandFinished { .. })
+        })
+        .await;
+        let started = seen.iter().find_map(|e| match e {
+            AgentEvent::CommandStarted {
+                step_id,
+                command_id,
+                command,
+                time_limit_secs,
+                at_ms,
+                ..
+            } => Some((
+                step_id.clone(),
+                command_id.clone(),
+                command.clone(),
+                *time_limit_secs,
+                *at_ms,
+            )),
+            _ => None,
+        });
+        let (step, command_id, command, limit, at_ms) = started.expect("command_started");
+        assert_eq!(step, "call-1");
+        assert_eq!(command, "rm -rf build");
+        assert_eq!(limit, 600);
+        // Clock time, as the UI counts elapsed time from it.
+        assert!(at_ms > 1_600_000_000_000, "{at_ms}");
+        assert!(seen.iter().any(|e| matches!(
+            e,
+            AgentEvent::CommandOutput { command_id: id, text, .. }
+                if *id == command_id && text == "ran rm -rf build\n"
+        )));
+        match seen.last() {
+            Some(AgentEvent::CommandFinished {
+                step_id,
+                command_id: id,
+                state,
+                exit_code,
+                ..
+            }) => {
+                assert_eq!(step_id, "call-1");
+                assert_eq!(*id, command_id);
+                assert_eq!(*state, crate::harness::events::CommandState::Done);
+                assert_eq!(*exit_code, Some(0));
             }
-            other => panic!("expected the dialog answer, got {other:?}"),
+            other => panic!("expected command_finished, got {other:?}"),
         }
+        let (is_error, text) = command_result(&mut out, "1").await;
+        assert!(!is_error);
+        assert!(text.starts_with("Exit code 0"), "{text}");
+        assert!(text.contains("ran rm -rf build"), "{text}");
+        assert_eq!(exec.ran(), ["rm -rf build"]);
 
         // Declined: the reason goes back instead of "allow".
         feed(
@@ -3804,6 +4475,29 @@ mod tests {
             other => panic!("expected the dialog answer, got {other:?}"),
         }
         assert!(!inner.approvals.is_pending("call-3"));
+
+        // omp cancelling a command waiting for its answer: the prompt goes,
+        // and the command never runs.
+        feed(
+            &inner,
+            &command_call("4", json!({"command": "cargo build"})).1,
+        );
+        events_until(&mut events, |e| {
+            matches!(e, AgentEvent::ApprovalRequested { .. })
+        })
+        .await;
+        feed(
+            &inner,
+            r#"{"type":"host_tool_cancel","id":"x-4","targetId":"h-4"}"#,
+        );
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while inner.approvals.is_pending("call-4") {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the prompt closed");
+        assert_eq!(exec.ran(), ["rm -rf build"]);
     }
 
     #[tokio::test]
@@ -3832,10 +4526,12 @@ mod tests {
         CodeSettings {
             approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
+            ..CodeSettings::default()
         }
         .save(data.path())
         .unwrap();
-        let code = code_runtime(folder.path(), data.path());
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let root = code.folder.root().to_path_buf();
         let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
         inner
@@ -3843,36 +4539,28 @@ mod tests {
             .unwrap();
         let _ = sent_prompt(&mut out);
 
-        // An allowlisted command and an edit run without a prompt; the edit
-        // switches to the conversation's branch first.
+        // An allowlisted command and an edit run without a prompt; the first
+        // change switches to the conversation's branch.
         let lib = root.join("lib.rs");
-        for (n, tool, input, target) in [
-            ("1", "bash", json!({"command": "cargo test -p app"}), None),
-            (
+        runs_unasked(
+            &inner,
+            &exec,
+            &mut out,
+            command_call("1", json!({"command": "cargo test -p app"})),
+        )
+        .await;
+        runs_unasked(
+            &inner,
+            &exec,
+            &mut out,
+            guard_request(
                 "2",
                 "edit",
                 json!({"path": "lib.rs", "old_string": "a", "new_string": "b"}),
                 Some(lib.as_path()),
             ),
-        ] {
-            feed(
-                &inner,
-                &guard_dialog_at(
-                    &format!("ui-{n}"),
-                    &format!("call-{n}"),
-                    tool,
-                    input,
-                    target,
-                ),
-            );
-            match next_frame(&mut out).await {
-                OutboundFrame::ExtensionUiResponse { id, value, .. } => {
-                    assert_eq!(id, format!("ui-{n}"));
-                    assert_eq!(value.as_deref(), Some(ALLOW_ANSWER));
-                }
-                other => panic!("expected the dialog answer, got {other:?}"),
-            }
-        }
+        )
+        .await;
         let branch = code.branches.get("conv-1").unwrap().expect("a branch");
         assert!(branch.branch.starts_with("shodh/"));
 
@@ -3882,49 +4570,33 @@ mod tests {
         // git ignores (Discard cannot restore it) and an edit the guard named
         // no file for.
         let changes = [
-            (
-                "3",
-                "bash",
-                json!({"command": "cargo test; rm -rf src"}),
-                None,
-            ),
-            ("4", "bash", json!({"command": "cargo build"}), None),
-            (
+            command_call("3", json!({"command": "cargo test; rm -rf src"})),
+            command_call("4", json!({"command": "cargo build"})),
+            command_call(
                 "5",
-                "bash",
                 json!({"command": "cargo test -p app --config build.rustc-wrapper=x"}),
-                None,
             ),
-            (
+            guard_request(
                 "6",
                 "write",
                 json!({"path": "package.json", "content": "{}"}),
-                Some(root.join("package.json")),
+                Some(&root.join("package.json")),
             ),
-            (
+            guard_request(
                 "7",
                 "write",
                 json!({"path": ".env", "content": "A=1"}),
-                Some(root.join(".env")),
+                Some(&root.join(".env")),
             ),
-            (
+            guard_request(
                 "8",
                 "edit",
                 json!({"path": "lib.rs", "old_string": "b", "new_string": "c"}),
                 None,
             ),
         ];
-        for (n, tool, input, target) in changes {
-            feed(
-                &inner,
-                &guard_dialog_at(
-                    &format!("ui-{n}"),
-                    &format!("call-{n}"),
-                    tool,
-                    input,
-                    target.as_deref(),
-                ),
-            );
+        for (n, frame) in changes {
+            feed(&inner, &frame);
             let seen = events_until(&mut events, |e| {
                 matches!(e, AgentEvent::ApprovalRequested { .. })
             })
@@ -3951,141 +4623,40 @@ mod tests {
                 .approvals
                 .resolve(&format!("call-{n}"), false)
                 .unwrap();
-            let _ = next_frame(&mut out).await;
+            match next_frame(&mut out).await {
+                OutboundFrame::HostToolResult { id, is_error, .. } => {
+                    assert_eq!(id, format!("h-{n}"));
+                    assert!(is_error);
+                }
+                OutboundFrame::ExtensionUiResponse { id, value, .. } => {
+                    assert_eq!(id, format!("ui-{n}"));
+                    assert_ne!(value.as_deref(), Some(ALLOW_ANSWER));
+                }
+                other => panic!("expected the answer to call-{n}, got {other:?}"),
+            }
         }
+        assert_eq!(exec.ran(), ["cargo test -p app"]);
 
         // Back to "Ask every time": the running session asks again.
         CodeSettings::default().save(data.path()).unwrap();
-        feed(
+        asks(
             &inner,
-            &guard_dialog(
-                "ui-5",
-                "call-5",
-                "write",
-                json!({"path": "b.rs", "content": "x"}),
-            ),
-        );
-        events_until(&mut events, |e| {
-            matches!(e, AgentEvent::ApprovalRequested { .. })
-        })
-        .await;
-        inner.approvals.resolve("call-5", true).unwrap();
-        let _ = next_frame(&mut out).await;
-    }
-
-    /// Guard request `n` (dialog `ui-{n}`, tool call `call-{n}`).
-    fn guard_request(
-        n: &str,
-        tool: &str,
-        input: serde_json::Value,
-        target: Option<&std::path::Path>,
-    ) -> (String, String) {
-        (
-            n.to_string(),
-            guard_dialog_at(
-                &format!("ui-{n}"),
-                &format!("call-{n}"),
-                tool,
-                input,
-                target,
-            ),
+            &exec,
+            &mut events,
+            &mut out,
+            guard_request("9", "write", json!({"path": "b.rs", "content": "x"}), None),
+            Answer::ApproveElsewhere,
         )
-    }
-
-    /// omp ran the tool call `call-{n}` to its end.
-    fn ended(inner: &Arc<Inner>, n: &str) {
-        feed(
-            inner,
-            &format!(
-                r#"{{"type":"tool_execution_end","toolCallId":"call-{n}","toolName":"bash","isError":false}}"#
-            ),
-        );
-    }
-
-    /// Feed a guard request ([`guard_request`]) and expect it to run
-    /// without a prompt.
-    async fn runs_unasked(
-        inner: &Arc<Inner>,
-        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
-        (n, dialog): (String, String),
-    ) {
-        feed(inner, &dialog);
-        match next_frame(out).await {
-            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
-                assert_eq!(id, format!("ui-{n}"));
-                assert_eq!(value.as_deref(), Some(ALLOW_ANSWER), "call-{n}");
-            }
-            other => panic!("expected call-{n} to run unasked, got {other:?}"),
-        }
-    }
-
-    /// How a test answers a prompt.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    enum Answer {
-        Deny,
-        /// A yes without the review token: the Inbox, a keyboard shortcut.
-        ApproveElsewhere,
-        /// The prompt's own Approve button: sends the token when the prompt
-        /// has one (`ApprovalPrompt`, `reviewTokenFor`).
-        ApproveInPrompt,
-        /// A yes with a token this prompt did not issue.
-        ApproveWithStaleToken,
-    }
-
-    /// Feed a guard request ([`guard_request`]), expect a prompt, answer it
-    /// and return the prompt's preview.
-    async fn asks(
-        inner: &Arc<Inner>,
-        events: &mut mpsc::UnboundedReceiver<AgentEvent>,
-        out: &mut mpsc::UnboundedReceiver<OutboundFrame>,
-        (n, dialog): (String, String),
-        answer: Answer,
-    ) -> serde_json::Value {
-        use crate::harness::code_mode::REVIEW_TOKEN_KEY;
-        feed(inner, &dialog);
-        let seen = events_until(events, |e| {
-            matches!(e, AgentEvent::ApprovalRequested { .. })
-        })
         .await;
-        let preview = match seen.last() {
-            Some(AgentEvent::ApprovalRequested {
-                step_id, preview, ..
-            }) => {
-                assert_eq!(*step_id, format!("call-{n}"));
-                preview.clone()
-            }
-            other => panic!("expected a prompt for call-{n}, got {other:?}"),
-        };
-        assert!(
-            out.try_recv().is_err(),
-            "call-{n} was answered before the user decided"
-        );
-        let step = format!("call-{n}");
-        match (
-            answer,
-            preview.get(REVIEW_TOKEN_KEY).and_then(|t| t.as_str()),
-        ) {
-            (Answer::Deny, _) => inner.approvals.resolve(&step, false).unwrap(),
-            (Answer::ApproveInPrompt, Some(token)) => {
-                inner.approvals.resolve_reviewed(&step, token).unwrap()
-            }
-            (Answer::ApproveWithStaleToken, _) => inner
-                .approvals
-                .resolve_reviewed(&step, "0123456789abcdef")
-                .unwrap(),
-            _ => inner.approvals.resolve(&step, true).unwrap(),
-        }
-        match next_frame(out).await {
-            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
-                assert_eq!(id, format!("ui-{n}"));
-                assert_eq!(
-                    value.as_deref() == Some(ALLOW_ANSWER),
-                    answer != Answer::Deny
-                );
-            }
-            other => panic!("expected the answer to call-{n}, got {other:?}"),
-        }
-        preview
+        asks(
+            &inner,
+            &exec,
+            &mut events,
+            &mut out,
+            command_call("10", json!({"command": "cargo test -p app"})),
+            Answer::Deny,
+        )
+        .await;
     }
 
     /// The files a command prompt listed as changed without review.
@@ -4128,6 +4699,7 @@ mod tests {
         CodeSettings {
             approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
+            ..CodeSettings::default()
         }
         .save(data.path())
         .unwrap();
@@ -4146,7 +4718,8 @@ mod tests {
     async fn files_count_as_reviewed_only_from_the_prompt_that_listed_them() {
         use crate::harness::code_mode::{REVIEW_NOTE_KEY, REVIEW_TOKEN_KEY};
         let (folder, data) = trusted_repo();
-        let code = code_runtime(folder.path(), data.path());
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let root = code.folder.root().to_path_buf();
         let lib = root.join("lib.rs");
         let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
@@ -4154,24 +4727,25 @@ mod tests {
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
-        let (ev, o) = (&mut events, &mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
 
         // Nothing changed yet: the allowlisted command runs by itself.
-        runs_unasked(&inner, o, guard_request("1", "bash", test_command(), None)).await;
-        ended(&inner, "1");
+        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
 
         // An edit applied without asking: the command asks and lists it.
         runs_unasked(
             &inner,
+            x,
             o,
             guard_request("2", "edit", edit_of("lib.rs"), Some(&lib)),
         )
         .await;
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("3", "bash", test_command(), None),
+            command_call("3", test_command()),
             Answer::Deny,
         )
         .await;
@@ -4185,49 +4759,50 @@ mod tests {
         // A yes from the Inbox runs the command but reviews nothing.
         asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("4", "bash", test_command(), None),
+            command_call("4", test_command()),
             Answer::ApproveElsewhere,
         )
         .await;
-        ended(&inner, "4");
         // Neither does a yes with a token this prompt did not issue.
         asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("4b", "bash", test_command(), None),
+            command_call("4b", test_command()),
             Answer::ApproveWithStaleToken,
         )
         .await;
-        ended(&inner, "4b");
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("5", "bash", test_command(), None),
+            command_call("5", test_command()),
             Answer::ApproveInPrompt,
         )
         .await;
         assert_eq!(listed(&preview), ["lib.rs"]);
-        ended(&inner, "5");
         // The prompt's own yes did.
-        runs_unasked(&inner, o, guard_request("6", "bash", test_command(), None)).await;
-        ended(&inner, "6");
+        runs_unasked(&inner, x, o, command_call("6", test_command())).await;
 
         // Approving another command reviews nothing, and says so.
         runs_unasked(
             &inner,
+            x,
             o,
             guard_request("7", "edit", edit_of("lib.rs"), Some(&lib)),
         )
         .await;
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("8", "bash", json!({"command": "git status"}), None),
+            command_call("8", json!({"command": "git status"})),
             Answer::ApproveInPrompt,
         )
         .await;
@@ -4237,16 +4812,15 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("does not mark them reviewed"));
-        ended(&inner, "8");
         asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("9", "bash", test_command(), None),
+            command_call("9", test_command()),
             Answer::ApproveInPrompt,
         )
         .await;
-        ended(&inner, "9");
 
         // Twelve files: every one is listed, and every one is cleared.
         for i in 0..12 {
@@ -4254,6 +4828,7 @@ mod tests {
             let target = root.join(&path);
             runs_unasked(
                 &inner,
+                x,
                 o,
                 guard_request(&format!("e{i}"), "edit", edit_of(&path), Some(&target)),
             )
@@ -4261,18 +4836,17 @@ mod tests {
         }
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("10", "bash", test_command(), None),
+            command_call("10", test_command()),
             Answer::ApproveInPrompt,
         )
         .await;
         let files = listed(&preview);
         assert_eq!(files.len(), 12, "{files:?}");
         assert!(files.iter().any(|f| f == "f11.rs"));
-        ended(&inner, "10");
-        runs_unasked(&inner, o, guard_request("11", "bash", test_command(), None)).await;
-        ended(&inner, "11");
+        runs_unasked(&inner, x, o, command_call("11", test_command())).await;
 
         // An approved write whose preview was cut is no review of the file.
         let conftest = root.join("conftest.py");
@@ -4282,6 +4856,7 @@ mod tests {
         );
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
             guard_request(
@@ -4296,26 +4871,26 @@ mod tests {
         assert!(preview["preview_cut"].as_str().is_some());
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("13", "bash", test_command(), None),
+            command_call("13", test_command()),
             Answer::ApproveInPrompt,
         )
         .await;
         assert_eq!(listed(&preview), ["conftest.py"]);
-        ended(&inner, "13");
 
         // What an approved command changes is listed: a file it created,
-        // and a file it renamed into conftest.py.
+        // and a file it renamed into conftest.py (written while it runs).
+        x.hold(true);
         asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request(
+            command_call(
                 "14",
-                "bash",
                 json!({"command": "python gen.py && git mv lib.rs conftest.py"}),
-                None,
             ),
             Answer::ApproveInPrompt,
         )
@@ -4329,12 +4904,14 @@ mod tests {
             .status()
             .unwrap();
         assert!(moved.success());
-        ended(&inner, "14");
+        x.hold(false);
+        finish(x, o, "14").await;
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("15", "bash", test_command(), None),
+            command_call("15", test_command()),
             Answer::ApproveInPrompt,
         )
         .await;
@@ -4342,33 +4919,42 @@ mod tests {
         for file in ["generated/test_gen.py", "conftest.py", "lib.rs"] {
             assert!(files.iter().any(|f| f == file), "{file} in {files:?}");
         }
-        ended(&inner, "15");
-        runs_unasked(&inner, o, guard_request("16", "bash", test_command(), None)).await;
-        ended(&inner, "16");
+        runs_unasked(&inner, x, o, command_call("16", test_command())).await;
 
         // The list outlives the session: a new one for the conversation asks.
+        x.hold(true);
         asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("17", "bash", json!({"command": "python gen.py"}), None),
+            command_call("17", json!({"command": "python gen.py"})),
             Answer::ApproveInPrompt,
         )
         .await;
         std::fs::write(root.join("generated").join("test_more.py"), "x = 2\n").unwrap();
-        ended(&inner, "17");
+        x.hold(false);
+        finish(x, o, "17").await;
         code.settled().await;
-        let (again, mut again_events, mut again_out) =
-            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        let again_exec = TestExecutor::new();
+        let (again, mut again_events, mut again_out) = offline_session(
+            None,
+            Some(code_runtime_with(
+                folder.path(),
+                data.path(),
+                Arc::clone(&again_exec),
+            )),
+        );
         again
             .start_run("Run the tests", Some("run-2".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut again_out);
         let preview = asks(
             &again,
+            &again_exec,
             &mut again_events,
             &mut again_out,
-            guard_request("18", "bash", test_command(), None),
+            command_call("18", test_command()),
             Answer::Deny,
         )
         .await;
@@ -4376,74 +4962,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commands_alongside_others_or_outside_the_folder_root_ask() {
+    async fn commands_with_their_own_arguments_or_alongside_others_ask() {
+        use crate::harness::code_mode::BACKGROUND_NOTE;
         let (folder, data) = trusted_repo();
-        let code = code_runtime(folder.path(), data.path());
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
+        let root = code.folder.root().to_path_buf();
+        let lib = root.join("lib.rs");
         let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
-        let (ev, o) = (&mut events, &mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
 
-        // In another folder: its package.json or conftest.py is not the project's.
-        for (n, cwd) in [("1", "node_modules/left-pad"), ("2", "examples/demo")] {
-            let preview = asks(
-                &inner,
-                ev,
-                o,
-                guard_request(
-                    n,
-                    "bash",
-                    json!({"command": "cargo test -p app", "cwd": cwd}),
-                    None,
-                ),
-                Answer::Deny,
-            )
-            .await;
-            assert_eq!(preview["runs_in"], cwd);
+        // Arguments run_command does not take (omp's shell had a folder, a
+        // background service name) and an impossible time limit are refused
+        // before anything is asked or run.
+        for (n, extra) in [
+            ("1", json!({"cwd": "node_modules/left-pad"})),
+            ("2", json!({"name": "t"})),
+            ("2b", json!({"timeout_secs": 0})),
+        ] {
+            let mut arguments = test_command();
+            for (key, value) in extra.as_object().unwrap() {
+                arguments[key] = value.clone();
+            }
+            feed(&inner, &command_call(n, arguments).1);
+            let (is_error, text) = command_result(o, n).await;
+            assert!(is_error, "call-{n}");
+            assert!(
+                text.starts_with("Invalid arguments for run_command"),
+                "{text}"
+            );
         }
-        // With no time limit: asks, and says so.
+        assert!(x.ran().is_empty());
+
+        // A time limit of its own: asks, and the prompt says which limit
+        // applies (one longer than the workspace's is cut to it).
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request(
+            command_call(
                 "3",
-                "bash",
-                json!({"command": "cargo test -p app", "timeout": 0}),
-                None,
+                json!({"command": "cargo test -p app", "timeout_secs": 90}),
             ),
             Answer::Deny,
         )
         .await;
-        assert!(preview["time_limit"].as_str().unwrap().starts_with("None"));
-        // A background job or service is refused outright.
-        feed(
-            &inner,
-            &guard_request(
-                "4",
-                "bash",
-                json!({"command": "cargo test -p app", "name": "t"}),
-                None,
-            )
-            .1,
-        );
-        match next_frame(o).await {
-            OutboundFrame::ExtensionUiResponse { id, value, .. } => {
-                assert_eq!(id, "ui-4");
-                assert!(value.unwrap().contains("background jobs or services"));
-            }
-            other => panic!("expected a refusal, got {other:?}"),
-        }
-
-        // Two commands in one step run at the same time: the second asks.
-        runs_unasked(&inner, o, guard_request("5", "bash", test_command(), None)).await;
+        assert_eq!(preview["time_limit"], "90 seconds (asked by the assistant)");
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("6", "bash", test_command(), None),
+            command_call(
+                "3b",
+                json!({"command": "cargo test -p app", "timeout_secs": 7200}),
+            ),
+            Answer::Deny,
+        )
+        .await;
+        assert_eq!(preview["time_limit"], "10 minutes (the workspace's limit)");
+
+        // Two commands at the same time: the second asks, and so does an
+        // edit while the first runs (it may run what the edit changes).
+        x.hold(true);
+        runs_unasked(&inner, x, o, command_call("5", test_command())).await;
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            command_call("6", test_command()),
             Answer::Deny,
         )
         .await;
@@ -4451,29 +5044,57 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("cargo test -p app"));
-        ended(&inner, "5");
-        runs_unasked(&inner, o, guard_request("7", "bash", test_command(), None)).await;
-        ended(&inner, "7");
-
-        // A process that keeps running: the prompt says so, and from then on
-        // every edit asks, in this session and the next.
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("8", "bash", json!({"command": "npm run dev &"}), None),
+            guard_request("6b", "edit", edit_of("lib.rs"), Some(&lib)),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview["running_now"]
+            .as_str()
+            .unwrap()
+            .contains("cargo test -p app"));
+        x.hold(false);
+        finish(x, o, "5").await;
+        runs_unasked(&inner, x, o, command_call("7", test_command())).await;
+
+        // A command that starts a process meant to keep running: the prompt
+        // says Shodh stops it when the command ends...
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            command_call("8", json!({"command": "npm run dev &"})),
             Answer::ApproveInPrompt,
         )
         .await;
-        assert!(preview["keeps_running"].as_str().is_some());
-        ended(&inner, "8");
-        let root = code.folder.root().to_path_buf();
-        let lib = root.join("lib.rs");
-        let preview = asks(
+        assert_eq!(preview["keeps_running"], BACKGROUND_NOTE);
+        // ...so nothing is left running, and edits apply by themselves again.
+        runs_unasked(
             &inner,
-            ev,
+            x,
             o,
             guard_request("9", "edit", edit_of("lib.rs"), Some(&lib)),
+        )
+        .await;
+
+        // A process recorded as running on before commands ran in their own
+        // process is still honoured: edits ask, in this session and the next.
+        code.reviews
+            .update("conv-1", |state| {
+                state.background.push("`npm run dev &`".to_string())
+            })
+            .unwrap();
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            guard_request("10", "edit", edit_of("lib.rs"), Some(&lib)),
             Answer::Deny,
         )
         .await;
@@ -4481,20 +5102,48 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("npm run dev"));
-        let (again, mut again_events, mut again_out) =
-            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        let again_exec = TestExecutor::new();
+        let (again, mut again_events, mut again_out) = offline_session(
+            None,
+            Some(code_runtime_with(
+                folder.path(),
+                data.path(),
+                Arc::clone(&again_exec),
+            )),
+        );
         again
             .start_run("Go on", Some("run-2".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut again_out);
         asks(
             &again,
+            &again_exec,
             &mut again_events,
             &mut again_out,
-            guard_request("10", "edit", edit_of("lib.rs"), Some(&lib)),
+            guard_request("11", "edit", edit_of("lib.rs"), Some(&lib)),
             Answer::Deny,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_command_over_the_answers_tool_budget_is_refused() {
+        let (folder, data) = trusted_repo();
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
+        let (inner, _events, mut out) = offline_session(None, Some(code));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        inner
+            .calls_in_run
+            .store(inner.profile.max_tool_calls, Ordering::SeqCst);
+        feed(&inner, &command_call("1", test_command()).1);
+        let (is_error, text) = command_result(&mut out, "1").await;
+        assert!(is_error);
+        assert!(text.contains("budget"), "{text}");
+        assert!(exec.ran().is_empty());
     }
 
     #[tokio::test]
@@ -4505,24 +5154,27 @@ mod tests {
         CodeSettings {
             approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
+            ..CodeSettings::default()
         }
         .save(data.path())
         .unwrap();
-        let code = code_runtime(folder.path(), data.path());
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
-        let (ev, o) = (&mut events, &mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
 
-        runs_unasked(&inner, o, guard_request("1", "bash", test_command(), None)).await;
-        ended(&inner, "1");
+        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        x.hold(true);
         let preview = asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("2", "bash", test_command(), None),
+            command_call("2", test_command()),
             Answer::ApproveInPrompt,
         )
         .await;
@@ -4531,17 +5183,19 @@ mod tests {
             .unwrap()
             .contains("not a git repository"));
         // The prompt's yes cleared what it showed; the command it allowed is
-        // listed until it ends...
+        // listed while it runs...
         let state = code.reviews.get("conv-1").unwrap();
         assert!(state.unknown.is_none() && state.files.is_empty());
         assert_eq!(state.uncompared.keys().collect::<Vec<_>>(), ["call-2"]);
         // ...and once the command ends, what it changed is unknown again.
-        ended(&inner, "2");
+        x.hold(false);
+        finish(x, o, "2").await;
         asks(
             &inner,
+            x,
             ev,
             o,
-            guard_request("3", "bash", test_command(), None),
+            command_call("3", test_command()),
             Answer::Deny,
         )
         .await;
@@ -4551,30 +5205,35 @@ mod tests {
     async fn a_command_cut_off_before_its_end_still_makes_the_next_ask() {
         use crate::harness::code_mode::REVIEW_NOTE_KEY;
         let (folder, data) = trusted_repo();
-        let code = code_runtime(folder.path(), data.path());
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let (inner, _events, mut out) = offline_session(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut out);
-        runs_unasked(
-            &inner,
-            &mut out,
-            guard_request("1", "bash", test_command(), None),
-        )
-        .await;
-        // No end frame: the app quit, or the session closed, mid-command.
-        let (again, mut again_events, mut again_out) =
-            offline_session(None, Some(code_runtime(folder.path(), data.path())));
+        // It never ends: the app quit, or the session closed, mid-command.
+        exec.hold(true);
+        runs_unasked(&inner, &exec, &mut out, command_call("1", test_command())).await;
+        let again_exec = TestExecutor::new();
+        let (again, mut again_events, mut again_out) = offline_session(
+            None,
+            Some(code_runtime_with(
+                folder.path(),
+                data.path(),
+                Arc::clone(&again_exec),
+            )),
+        );
         again
             .start_run("Go on", Some("run-2".into()), RunScope::default())
             .unwrap();
         let _ = sent_prompt(&mut again_out);
         let preview = asks(
             &again,
+            &again_exec,
             &mut again_events,
             &mut again_out,
-            guard_request("2", "bash", test_command(), None),
+            command_call("2", test_command()),
             Answer::Deny,
         )
         .await;
@@ -4582,6 +5241,126 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("has not compared what `cargo test -p app` changed"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_or_ended_command_is_stopped_before_its_changes_are_compared() {
+        let (folder, data) = trusted_repo();
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
+
+        // omp cancels a running command: it is stopped, not dropped, and
+        // what it changed is compared only once it has ended.
+        x.hold(true);
+        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        feed(
+            &inner,
+            r#"{"type":"host_tool_cancel","id":"x-1","targetId":"h-1"}"#,
+        );
+        let (is_error, text) = command_result(o, "1").await;
+        assert!(is_error);
+        assert!(text.contains("stopped"), "{text}");
+        assert_eq!(x.stops(), 1, "the command saw the stop");
+        code.settled().await;
+        let state = code.reviews.get("conv-1").unwrap();
+        assert!(state.uncompared.is_empty(), "{state:?}");
+
+        // The run ends (stopped by the user) while a command runs: the same.
+        runs_unasked(&inner, x, o, command_call("2", test_command())).await;
+        inner.abort_inflight();
+        let (is_error, _) = command_result(o, "2").await;
+        assert!(is_error);
+        assert_eq!(x.stops(), 2);
+        x.hold(false);
+        code.settled().await;
+        // Nothing changed, so the next allowlisted command runs by itself.
+        runs_unasked(&inner, x, o, command_call("3", test_command())).await;
+        let _ = ev;
+    }
+
+    #[tokio::test]
+    async fn programs_the_system_starts_and_escaped_processes_keep_commands_asking() {
+        use crate::harness::code_mode::{REVIEW_NOTE_KEY, SYSTEM_START_NOTE};
+        let (folder, data) = trusted_repo();
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
+        let root = code.folder.root().to_path_buf();
+        let lib = root.join("lib.rs");
+        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        inner
+            .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        let (x, ev, o) = (&*exec, &mut events, &mut out);
+
+        // A scheduled task outlives the command: the prompt says so, and from
+        // then on edits ask, in this session and the next.
+        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            command_call(
+                "2",
+                json!({"command": "schtasks /create /tn x /tr build.cmd /sc minute"}),
+            ),
+            Answer::ApproveInPrompt,
+        )
+        .await;
+        assert_eq!(preview["keeps_running"], SYSTEM_START_NOTE);
+        let preview = asks(
+            &inner,
+            x,
+            ev,
+            o,
+            guard_request("3", "edit", edit_of("lib.rs"), Some(&lib)),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview["running_process"]
+            .as_str()
+            .unwrap()
+            .contains("schtasks"));
+
+        // A command whose processes left its process tree: what it changed
+        // is unknown, so the next allowlisted command asks and says why.
+        let (folder2, data2) = trusted_repo();
+        let exec2 = TestExecutor::new();
+        exec2.escape.store(true, Ordering::SeqCst);
+        let code2 = code_runtime_with(folder2.path(), data2.path(), Arc::clone(&exec2));
+        let (inner2, mut events2, mut out2) = offline_session(None, Some(Arc::clone(&code2)));
+        inner2
+            .start_run("Run the tests", Some("run-2".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out2);
+        runs_unasked(
+            &inner2,
+            &exec2,
+            &mut out2,
+            command_call("4", test_command()),
+        )
+        .await;
+        exec2.escape.store(false, Ordering::SeqCst);
+        let preview = asks(
+            &inner2,
+            &exec2,
+            &mut events2,
+            &mut out2,
+            command_call("5", test_command()),
+            Answer::Deny,
+        )
+        .await;
+        assert!(preview[REVIEW_NOTE_KEY]
+            .as_str()
+            .unwrap()
+            .contains("left its process group"));
     }
 
     /// Stands in for an MCP server's write tool: writes a test file into the
@@ -4631,7 +5410,8 @@ mod tests {
     #[tokio::test]
     async fn files_an_mcp_tool_writes_are_listed() {
         let (folder, data) = trusted_repo();
-        let code = code_runtime(folder.path(), data.path());
+        let exec = TestExecutor::new();
+        let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let mut registry = ToolRegistry::new();
         registry
             .register(Arc::new(WritesATest {
@@ -4645,13 +5425,7 @@ mod tests {
             .unwrap();
         let _ = sent_prompt(&mut out);
         // The conversation's branch first (a first change needs a clean tree).
-        runs_unasked(
-            &inner,
-            &mut out,
-            guard_request("0", "bash", test_command(), None),
-        )
-        .await;
-        ended(&inner, "0");
+        runs_unasked(&inner, &exec, &mut out, command_call("0", test_command())).await;
         feed(
             &inner,
             r#"{"type":"host_tool_call","id":"h1","toolCallId":"t1","toolName":"list_tasks","arguments":{}}"#,
@@ -4662,9 +5436,10 @@ mod tests {
         }
         let preview = asks(
             &inner,
+            &exec,
             &mut events,
             &mut out,
-            guard_request("1", "bash", test_command(), None),
+            command_call("1", test_command()),
             Answer::Deny,
         )
         .await;

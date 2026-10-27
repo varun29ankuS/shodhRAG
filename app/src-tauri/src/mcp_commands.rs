@@ -17,6 +17,7 @@ use shodh_rag::harness::mcp::config::{self, ServerProblem};
 use shodh_rag::harness::mcp::{
     effective_read_only, verified_for, Approval, Mode, Scope, ServerConfig, Transport,
 };
+use shodh_rag::harness::run_command::RUN_COMMAND;
 use shodh_rag::harness::skills::{resource_files, SkillProblem};
 use shodh_rag::inbox::{InboxKind, InboxLink, InboxStatus};
 use tauri::{AppHandle, Manager, State};
@@ -321,6 +322,7 @@ pub async fn tools_overview(
         group: "Code mode",
         tools: CODE_TOOLS
             .iter()
+            .chain(std::iter::once(&RUN_COMMAND))
             .map(|name| BuiltinTool {
                 name: name.to_string(),
                 label: name.to_string(),
@@ -331,10 +333,16 @@ pub async fn tools_overview(
                     "ast_grep" => "Search code by its syntax.",
                     "edit" => "Change part of a file (asks first).",
                     "write" => "Create or replace a file (asks first).",
-                    _ => "Run one shell command in the code folder (asks first).",
+                    RUN_COMMAND => {
+                        "Run one bash command in the code folder, in its own process: it \
+                         does not inherit Shodh's keys, and has a time limit and memory and \
+                         process limits (asks first, or runs an allowlisted command at \
+                         Trusted)."
+                    }
+                    _ => "A Code mode tool.",
                 }
                 .to_string(),
-                tier: if matches!(*name, "edit" | "write" | "bash") {
+                tier: if matches!(*name, "edit" | "write" | RUN_COMMAND) {
                     "write"
                 } else {
                     "read"

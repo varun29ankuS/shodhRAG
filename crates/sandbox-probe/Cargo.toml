@@ -1,0 +1,9 @@
+[package]
+name = "sandbox-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Test-only probe that Shodh's run_command tests launch through Code mode's command runner (crates/shodh-rag/src/harness/run_command/tests.rs)."
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -106,6 +106,12 @@ export interface CodeSettings {
   approval: ApprovalLevel;
   /** Command prefixes that run without asking at the Trusted level. */
   allowlist: string[];
+  /** Wall-clock limit of one command, in seconds (10..=3600). */
+  commandTimeoutSecs: number;
+  /** Memory a command and everything it starts may use, in MB (256..=65536). */
+  memoryLimitMb: number;
+  /** CPU a command may use, in percent of the whole machine (10..=100). */
+  cpuPercent: number;
 }
 
 /** The optional parts of `agentApi.send`. */
@@ -218,6 +224,12 @@ export const agentApi = {
     attachedContext: extras.attachedContext && extras.attachedContext.length > 0 ? extras.attachedContext : null,
     priorRunIds: extras.priorRunIds && extras.priorRunIds.length > 0 ? extras.priorRunIds : null,
   }),
+  /**
+   * Stop a running Code-mode command now (its process and everything it
+   * started). Resolves whether a running command was found; its end still
+   * arrives as a `command_finished` event.
+   */
+  stopCommand: (commandId: string) => call<boolean>('run_command_stop', { commandId }),
   steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   /**

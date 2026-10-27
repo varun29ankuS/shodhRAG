@@ -1139,7 +1139,17 @@ mod tests {
         let settings = crate::harness::code_mode::tests::omp_settings_fixture();
         spec.layout.prepare_code(&settings).unwrap();
         let (args, cwd) = spec.command_line().unwrap();
-        assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write,bash".to_string()));
+        // omp's shell is off: commands run through Shodh's run_command.
+        assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write".to_string()));
+        for tool in crate::harness::code_mode::OMP_EXECUTION_TOOLS {
+            assert!(
+                !args.iter().any(|a| a.starts_with("--tools=")
+                    && a.trim_start_matches("--tools=")
+                        .split(',')
+                        .any(|t| t == tool)),
+                "{tool} enabled"
+            );
+        }
         assert!(!args.iter().any(|a| a == "--no-tools" || a == "--no-ui"));
         assert!(args.contains(&format!("--hook={}", spec.layout.guard_hook.display())));
         assert!(args.contains(&format!("--config={}", spec.layout.code_overlay.display())));

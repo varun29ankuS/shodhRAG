@@ -23,8 +23,10 @@ import {
   reduceAll,
   reduceTranscript,
   supersededBlocks,
+  toCheckpoint,
   toPersisted,
 } from '../src/features/agent/reducer.ts';
+import { MAX_PERSISTED_COMMAND_OUTPUT_CHARS } from '../src/features/agent/commandRun.ts';
 
 const RUN = 'req-1';
 
@@ -365,4 +367,141 @@ test('the grounding chip shows for a finished answer, never for a failed run', (
   const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(failed))));
   assert.ok(restored);
   assert.equal(showsGroundingChip(restored), false, 'also once stored');
+});
+
+function commandStep(stepId = 'cmd-step'): AgentEvent {
+  return {
+    type: 'step_started', runId: RUN, stepId, parentStepId: null, tool: 'run_command',
+    label: 'Running cargo test', args: { command: 'cargo test', timeout_secs: 120 }, tier: 'write', atMs: 1010,
+  };
+}
+
+test('a run_command step shows its command starting, streaming and finishing', () => {
+  let state = reduceAll(initialTranscript(RUN, 1000), [
+    { type: 'run_started', runId: RUN, sessionId: 's1', model: 'm', atMs: 1000, warning: null },
+    commandStep(),
+    { type: 'command_started', runId: RUN, stepId: 'cmd-step', commandId: 'c1', command: 'cargo test', timeLimitSecs: 120, atMs: 1020 },
+    { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'c1', text: 'Compiling x\n' },
+    { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'c1', text: 'error[E0308]: mismatched types\n' },
+    // Output of another command is not this step's.
+    { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'other', text: 'stray' },
+  ]);
+  const running = state.steps['cmd-step'].command;
+  assert.ok(running);
+  assert.equal(running.state, 'running');
+  assert.equal(running.commandId, 'c1');
+  assert.equal(running.command, 'cargo test');
+  assert.equal(running.startedAtMs, 1020);
+  assert.equal(running.timeLimitSecs, 120);
+  assert.equal(running.output, 'Compiling x\nerror[E0308]: mismatched types\n');
+  state = reduceAll(state, [
+    { type: 'command_finished', runId: RUN, stepId: 'cmd-step', commandId: 'c1', state: 'done', exitCode: 101, note: null, durationMs: 2300 },
+    { type: 'step_finished', runId: RUN, stepId: 'cmd-step', ok: true, summary: 'exit 101', detail: null, durationMs: 2400 },
+  ]);
+  const done = state.steps['cmd-step'].command;
+  assert.equal(done?.state, 'done');
+  assert.equal(done?.exitCode, 101);
+  assert.equal(done?.durationMs, 2300);
+  assert.equal(done?.output, 'Compiling x\nerror[E0308]: mismatched types\n');
+  // Events for steps that do not exist change nothing.
+  const same = reduceTranscript(state, { type: 'command_output', runId: RUN, stepId: 'nope', commandId: 'c1', text: 'x' });
+  assert.equal(same, state);
+});
+
+test('a refused command arrives without a start and takes its text from the call', () => {
+  const state = reduceAll(initialTranscript(RUN, 1000), [
+    commandStep(),
+    {
+      type: 'command_finished', runId: RUN, stepId: 'cmd-step', commandId: 'c9', state: 'refused', exitCode: null,
+      note: 'Git for Windows is not installed', durationMs: 0,
+    },
+  ]);
+  const run = state.steps['cmd-step'].command;
+  assert.ok(run);
+  assert.equal(run.state, 'refused');
+  assert.equal(run.commandId, 'c9');
+  assert.equal(run.command, 'cargo test');
+  assert.equal(run.note, 'Git for Windows is not installed');
+  assert.equal(run.startedAtMs, 1010);
+  assert.equal(run.timeLimitSecs, null);
+  assert.equal(run.output, '');
+});
+
+test('steps without a command carry none, and their stored form is unchanged', () => {
+  const done = reduceAll(initialTranscript(RUN, 1000), spikeRun());
+  assert.equal('command' in done.steps['call-1'], false);
+  assert.equal(toPersisted(done).steps, done.steps);
+});
+
+test('a command still running when the run ends is shown as stopped', () => {
+  const live = reduceAll(initialTranscript(RUN, 1000), [
+    commandStep(),
+    { type: 'command_started', runId: RUN, stepId: 'cmd-step', commandId: 'c1', command: 'cargo test', timeLimitSecs: 600, atMs: 1020 },
+  ]);
+  const finished = reduceTranscript(live, { type: 'run_finished', runId: RUN, status: 'completed', durationMs: 5020, error: null, providerError: null });
+  const stopped = finished.steps['cmd-step'].command;
+  assert.equal(stopped?.state, 'stopped');
+  assert.equal(stopped?.note, 'Ended with the answer');
+  assert.equal(stopped?.durationMs, 5000);
+  const interrupted = reduceTranscript(live, { type: 'local_interrupted', atMs: 3020 });
+  assert.equal(interrupted.steps['cmd-step'].command?.state, 'stopped');
+  assert.equal(interrupted.steps['cmd-step'].command?.durationMs, 2000);
+  const failed = reduceTranscript(live, { type: 'local_failed', error: 'x', code: 'runtime_error', atMs: 2020 });
+  assert.equal(failed.steps['cmd-step'].command?.state, 'stopped');
+  // A command that ended keeps its own end.
+  const ended = reduceAll(live, [
+    { type: 'command_finished', runId: RUN, stepId: 'cmd-step', commandId: 'c1', state: 'timed_out', exitCode: null, note: null, durationMs: 600000 },
+    { type: 'run_finished', runId: RUN, status: 'completed', durationMs: 700000, error: null, providerError: null },
+  ]);
+  assert.equal(ended.steps['cmd-step'].command?.state, 'timed_out');
+  assert.equal(ended.steps['cmd-step'].command?.note, null);
+});
+
+test('a command stored while running is restored as stopped by the app closing', () => {
+  const live = reduceAll(initialTranscript(RUN, 1000), [
+    { type: 'run_started', runId: RUN, sessionId: 's1', model: 'm', atMs: 1000, warning: null },
+    commandStep(),
+    { type: 'command_started', runId: RUN, stepId: 'cmd-step', commandId: 'c1', command: 'cargo test', timeLimitSecs: 600, atMs: 1020 },
+    { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'c1', text: 'running 3 tests\n' },
+  ]);
+  for (const stored of [toPersisted(live), toCheckpoint(live)]) {
+    const restored = fromPersisted(JSON.parse(JSON.stringify(stored)));
+    assert.ok(restored);
+    const run = restored.steps['cmd-step'].command;
+    assert.equal(run?.state, 'stopped');
+    assert.equal(run?.note, 'The app closed before it finished');
+    assert.equal(run?.durationMs, null);
+    assert.equal(run?.output, 'running 3 tests\n');
+  }
+  // A finished command round-trips unchanged; a malformed one is dropped.
+  const done = reduceAll(live, [
+    { type: 'command_finished', runId: RUN, stepId: 'cmd-step', commandId: 'c1', state: 'done', exitCode: 0, note: null, durationMs: 900 },
+    { type: 'step_finished', runId: RUN, stepId: 'cmd-step', ok: true, summary: 'exit 0', detail: null, durationMs: 950 },
+    { type: 'run_finished', runId: RUN, status: 'completed', durationMs: 2000, error: null, providerError: null },
+  ]);
+  assert.deepEqual(fromPersisted(JSON.parse(JSON.stringify(toPersisted(done)))), done);
+  const broken = JSON.parse(JSON.stringify(toPersisted(done)));
+  broken.steps['cmd-step'].command = { commandId: 'c1' };
+  const restored = fromPersisted(broken);
+  assert.equal(restored?.steps['cmd-step'].command, undefined);
+  assert.equal(restored?.steps['cmd-step'].status, 'done');
+});
+
+test('stored command output is cut to its tail and marked', () => {
+  const big = `${'x'.repeat(MAX_PERSISTED_COMMAND_OUTPUT_CHARS * 2)}LAST LINE\n`;
+  const live = reduceAll(initialTranscript(RUN, 1000), [
+    commandStep(),
+    { type: 'command_started', runId: RUN, stepId: 'cmd-step', commandId: 'c1', command: 'cargo build', timeLimitSecs: 600, atMs: 1020 },
+    { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'c1', text: big },
+  ]);
+  assert.equal(live.steps['cmd-step'].command?.output, big, 'the live view keeps more than is stored');
+  assert.equal(live.steps['cmd-step'].command?.outputCut, false);
+  for (const stored of [toPersisted(live), toCheckpoint(live)]) {
+    const run = stored.steps['cmd-step'].command;
+    assert.equal(run?.output.length, MAX_PERSISTED_COMMAND_OUTPUT_CHARS);
+    assert.ok(run?.output.endsWith('LAST LINE\n'));
+    assert.equal(run?.outputCut, true);
+  }
+  // Storing never changes the live transcript.
+  assert.equal(live.steps['cmd-step'].command?.output, big);
 });

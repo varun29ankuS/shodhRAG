@@ -524,6 +524,8 @@ async fn code_sessions_run_their_host_tools() {
             conversation_id: "conv".into(),
             branches: CodeBranchStore::in_dir(data.path()),
             settings_dir: None,
+            executor: Arc::new(crate::harness::run_command::ContainedExecutor),
+            scratch: crate::harness::run_command::scratch_dir(data.path(), "conv"),
         }),
     })
     .await

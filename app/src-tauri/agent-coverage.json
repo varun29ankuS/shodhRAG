@@ -174,6 +174,7 @@
     "inbox_list": { "excluded": "The Inbox lists what waits on the user (approvals of the assistant's own steps, its memory suggestions) for the user to decide; the assistant learns its pending steps from the run itself." },
     "inbox_dismiss": { "excluded": "Clears the user's own Inbox; what the user has seen and set aside is not the assistant's to decide." },
     "agent_approve": { "excluded": "Approves the assistant's own actions; an assistant that could approve itself would make approvals meaningless." },
+    "run_command_stop": { "excluded": "The user's Stop button for a command the assistant is running; the assistant ends its own commands by their time limit and must not control the user's means to stop it." },
     "agent_code_status": { "excluded": "Reports whether the assistant's own Code mode can run and on which branch; it describes the assistant's sandbox, not anything the assistant acts on." },
     "agent_code_discard": { "excluded": "Undoes the assistant's own Code changes; only the user may decide to throw away what the assistant did." },
     "agent_code_paths": { "excluded": "Checks which files a diagram in an answer names exist in the code folder, so the reader can open them; the assistant reads the folder with its own Code tools." },

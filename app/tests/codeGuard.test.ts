@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import guard, {
   ALLOW,
   APPROVAL_TITLE,
+  EXECUTION_TOOLS,
   GUARD_COMMAND,
   HOST_TOOLS_ENV,
   ROOT_ENV,
@@ -104,17 +105,20 @@ test('only the Code tools run, each with its paths checked', () => {
     assert.equal(toolCallProblem(root, root, 'grep', { pattern: 'fn' }), null);
     assert.equal(toolCallProblem(root, root, 'glob', { path: 'src/**/*.rs' }), null);
     assert.equal(toolCallProblem(root, root, 'ast_grep', { pat: 'fn $A() {}' }), null);
-    assert.equal(toolCallProblem(root, root, 'bash', { command: 'cargo test' }), null);
-    assert.equal(toolCallProblem(root, root, 'bash', { command: 'ls', cwd: 'src' }), null);
 
     assert.match(toolCallProblem(root, root, 'grep', { pattern: 'x', path: 'src; ../' }) ?? '', /outside/);
     assert.match(toolCallProblem(root, root, 'edit', { path: 'src/lib.rs', paths: ['../secret.txt'] }) ?? '', /outside/);
     assert.match(toolCallProblem(root, root, 'edit', { input: '[../secret.txt#1A2B]\nREM' }) ?? '', /single-file replace/);
     assert.match(toolCallProblem(root, root, 'write', { content: 'x' }) ?? '', /needs a file path/);
-    assert.match(toolCallProblem(root, root, 'bash', { command: 'ls', cwd: '..' }) ?? '', /outside/);
-    assert.match(toolCallProblem(root, root, 'bash', { command: ' ' }) ?? '', /needs a command/);
-    for (const tool of ['task', 'eval', 'browser', 'python', 'web_search', 'ast_edit', 'lsp']) {
+    for (const tool of ['task', 'eval', 'browser', 'python', 'web_search', 'ast_edit', 'lsp', 'bash', 'run_code', 'debug']) {
       assert.match(toolCallProblem(root, root, tool, {}) ?? '', /not available in Code mode/, tool);
+    }
+    // omp's shell is off whatever its arguments: commands go through run_command.
+    for (const input of [{ command: 'cargo test' }, { command: 'ls', cwd: 'src' }, { command: 'ls', cwd: '..' }]) {
+      assert.match(toolCallProblem(root, root, 'bash', input) ?? '', /run commands with run_command/);
+    }
+    for (const tool of ['bash', 'eval', 'run_code']) {
+      assert.ok(EXECUTION_TOOLS.has(tool), tool);
     }
   } finally {
     cleanup();
@@ -226,7 +230,7 @@ test('a code folder whose path has spaces works with absolute paths', () => {
     assert.equal(toolCallProblem(root, root, 'edit', { path: lib, old_string: 'a', new_string: 'b' }), null);
     assert.equal(toolCallProblem(root, root, 'grep', { pattern: 'fn', path: path.join(root, 'src') }), null);
     assert.equal(toolCallProblem(root, root, 'glob', { path: path.join(root, 'src') + '/**/*.rs' }), null);
-    assert.equal(toolCallProblem(root, root, 'bash', { command: 'ls', cwd: path.join(root, 'src') }), null);
+    assert.match(toolCallProblem(root, root, 'bash', { command: 'ls', cwd: path.join(root, 'src') }) ?? '', /run_command/);
     assert.match(toolCallProblem(root, root, 'read', { path: path.join(base, 'secret.txt') }) ?? '', /outside/);
   } finally {
     cleanup();
@@ -339,10 +343,19 @@ test('changes wait for the approval answer; reads do not ask', async () => {
     const allowed = loadGuard(async () => ALLOW);
     assert.equal(await allowed.call(root, 'read', { path: 'src/lib.rs' }), undefined);
     assert.equal(allowed.asked.length, 0);
-    assert.equal(await allowed.call(root, 'bash', { command: 'cargo test' }), undefined);
+    // omp's shell is blocked before anything is asked.
+    assert.equal((await allowed.call(root, 'bash', { command: 'cargo test' }) as { block: boolean }).block, true);
+    assert.equal(allowed.asked.length, 0);
+    const edit = { path: 'src/lib.rs', old_string: 'a', new_string: 'b' };
+    assert.equal(await allowed.call(root, 'edit', edit), undefined);
     assert.equal(allowed.asked.length, 1);
     assert.equal(allowed.asked[0].title, APPROVAL_TITLE);
-    assert.deepEqual(JSON.parse(allowed.asked[0].text), { toolCallId: 'call-1', tool: 'bash', input: { command: 'cargo test' } });
+    assert.deepEqual(JSON.parse(allowed.asked[0].text), {
+      toolCallId: 'call-1',
+      tool: 'edit',
+      input: edit,
+      target: path.join(root, 'src', 'lib.rs'),
+    });
 
     // An edit or a write tells Shodh the file it lands in.
     assert.equal(await allowed.call(root, 'write', { path: 'src/new.rs', content: 'x' }), undefined);
@@ -356,7 +369,8 @@ test('changes wait for the approval answer; reads do not ask', async () => {
     // Blocked paths are never asked about; without a dialog channel nothing changes.
     assert.equal((await allowed.call(root, 'write', { path: '../x', content: 'x' }) as { block: boolean }).block, true);
     assert.equal(allowed.asked.length, 1);
-    assert.equal((await allowed.call(root, 'bash', { command: 'ls' }, false) as { block: boolean }).block, true);
+    assert.equal((await allowed.call(root, 'write', { path: 'b.txt', content: 'x' }, false) as { block: boolean }).block, true);
+    assert.equal(allowed.asked.length, 1);
 
     delete process.env[ROOT_ENV];
     assert.equal((await allowed.call(root, 'read', { path: 'src/lib.rs' }) as { block: boolean }).block, true);
@@ -369,14 +383,16 @@ test('changes wait for the approval answer; reads do not ask', async () => {
 
 test('host tools of the session pass to Shodh; nothing else does', async () => {
   assert.deepEqual([...hostTools('enola__explore, load_skill,,')], ['enola__explore', 'load_skill']);
-  // A host tool can never take the name of a Code tool and skip its checks.
+  // A host tool can never take the name of a Code tool or of omp's tools
+  // that run programs, and skip their checks.
   assert.deepEqual([...hostTools('bash,read,x__y')], ['x__y']);
+  assert.deepEqual([...hostTools('eval,run_code,task,run_command')], ['run_command']);
   assert.deepEqual([...hostTools(undefined)], []);
 
   const { root, cleanup } = fixture();
   const previous = { root: process.env[ROOT_ENV], host: process.env[HOST_TOOLS_ENV] };
   process.env[ROOT_ENV] = root;
-  process.env[HOST_TOOLS_ENV] = 'enola__explore,bash';
+  process.env[HOST_TOOLS_ENV] = 'enola__explore,bash,eval,run_command';
   try {
     const guarded = loadGuard(async () => ALLOW);
     // Shodh asks and audits host tools itself: no dialog here, no path check.
@@ -384,9 +400,14 @@ test('host tools of the session pass to Shodh; nothing else does', async () => {
     assert.equal(guarded.asked.length, 0);
     // A tool not named for this session is still blocked.
     assert.equal((await guarded.call(root, 'other__tool', {}) as { block: boolean }).block, true);
-    // bash stays guarded although the variable names it.
-    assert.equal(await guarded.call(root, 'bash', { command: 'ls' }), undefined);
-    assert.equal(guarded.asked.length, 1);
+    // Shodh's own command tool passes to Shodh, which asks for it.
+    assert.equal(await guarded.call(root, 'run_command', { command: 'ls' }), undefined);
+    assert.equal(guarded.asked.length, 0);
+    // omp's shell and eval are blocked although the variable names them.
+    for (const tool of ['bash', 'eval']) {
+      assert.equal((await guarded.call(root, tool, { command: 'ls' }) as { block: boolean }).block, true, tool);
+    }
+    assert.equal(guarded.asked.length, 0);
   } finally {
     for (const [name, value] of [[ROOT_ENV, previous.root], [HOST_TOOLS_ENV, previous.host]] as const) {
       if (value === undefined) delete process.env[name];

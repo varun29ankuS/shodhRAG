@@ -39,6 +39,22 @@ pub enum PlanStatus {
     Done,
 }
 
+/// How a command a Code session ran (`run_command`) ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandState {
+    /// The command exited by itself (with its exit code, when it has one).
+    Done,
+    /// The time limit ended it.
+    TimedOut,
+    /// The user stopped it.
+    Stopped,
+    /// A limit killed it (the note says which).
+    Killed,
+    /// It never started (the note says why).
+    Refused,
+}
+
 /// Whether retrieved passages cover an information need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -406,6 +422,38 @@ pub enum AgentEvent {
     /// by id (the UI reads their words live, so a forgotten memory's never stay in a
     /// conversation). Sent before the run starts; not sent when none were.
     MemoriesUsed { run_id: String, ids: Vec<String> },
+    /// A command of a Code session started in its own process; `step_id` is
+    /// its `run_command` call.
+    CommandStarted {
+        run_id: String,
+        step_id: String,
+        /// The command's process run; `run_command_stop` takes it.
+        command_id: String,
+        command: String,
+        /// Wall-clock limit in seconds.
+        time_limit_secs: u64,
+        at_ms: u64,
+    },
+    /// Output of a running command: stdout and stderr interleaved as they
+    /// arrived, sent at most about ten times a second.
+    CommandOutput {
+        run_id: String,
+        step_id: String,
+        command_id: String,
+        text: String,
+    },
+    /// The command ended; `refused` ones never started (no `CommandStarted`).
+    CommandFinished {
+        run_id: String,
+        step_id: String,
+        command_id: String,
+        state: CommandState,
+        exit_code: Option<i32>,
+        /// What acted on it, in words: the limit that killed it, why it was
+        /// refused, or what a limit refused while it ran.
+        note: Option<String>,
+        duration_ms: u64,
+    },
     RunFinished {
         run_id: String,
         status: RunStatus,
@@ -436,6 +484,9 @@ impl AgentEvent {
             | AgentEvent::Grounding { run_id, .. }
             | AgentEvent::RevisionStarted { run_id, .. }
             | AgentEvent::MemoriesUsed { run_id, .. }
+            | AgentEvent::CommandStarted { run_id, .. }
+            | AgentEvent::CommandOutput { run_id, .. }
+            | AgentEvent::CommandFinished { run_id, .. }
             | AgentEvent::RunFinished { run_id, .. } => run_id,
         }
     }
@@ -636,6 +687,56 @@ mod tests {
                 },
                 "memories_used",
                 vec!["runId", "ids"],
+            ),
+            (
+                AgentEvent::CommandStarted {
+                    run_id: "r".into(),
+                    step_id: "st".into(),
+                    command_id: "c".into(),
+                    command: "cargo test".into(),
+                    time_limit_secs: 600,
+                    at_ms: 3,
+                },
+                "command_started",
+                vec![
+                    "runId",
+                    "stepId",
+                    "commandId",
+                    "command",
+                    "timeLimitSecs",
+                    "atMs",
+                ],
+            ),
+            (
+                AgentEvent::CommandOutput {
+                    run_id: "r".into(),
+                    step_id: "st".into(),
+                    command_id: "c".into(),
+                    text: "running 3 tests".into(),
+                },
+                "command_output",
+                vec!["runId", "stepId", "commandId", "text"],
+            ),
+            (
+                AgentEvent::CommandFinished {
+                    run_id: "r".into(),
+                    step_id: "st".into(),
+                    command_id: "c".into(),
+                    state: CommandState::Killed,
+                    exit_code: None,
+                    note: Some("memory limit (4096 MB)".into()),
+                    duration_ms: 1200,
+                },
+                "command_finished",
+                vec![
+                    "runId",
+                    "stepId",
+                    "commandId",
+                    "state",
+                    "exitCode",
+                    "note",
+                    "durationMs",
+                ],
             ),
             (
                 AgentEvent::RunFinished {
@@ -935,6 +1036,10 @@ mod tests {
             serde_json::to_value(PlanStatus::InProgress).unwrap(),
             json!("in_progress")
         );
+        assert_eq!(
+            serde_json::to_value(CommandState::TimedOut).unwrap(),
+            json!("timed_out")
+        );
     }
 
     #[test]
@@ -992,6 +1097,10 @@ mod tests {
             "\"repair\"",
             "\"coverage\"",
             "\"repair_and_coverage\"",
+            "\"timed_out\"",
+            "\"stopped\"",
+            "\"killed\"",
+            "\"refused\"",
         ] {
             assert!(
                 TS_CONTRACT.contains(literal),

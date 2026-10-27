@@ -13,6 +13,18 @@ import type { PdfRegion } from '../ask/types';
 import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 import { readProviderError } from '../modelPicker/modelTypes.ts';
 import type { ProviderError, ProviderErrorKind } from '../modelPicker/modelTypes.ts';
+import {
+  APP_CLOSED_NOTE,
+  ENDED_WITH_ANSWER_NOTE,
+  MAX_PERSISTED_COMMAND_OUTPUT_CHARS,
+  appendCommandOutput,
+  finishCommandRun,
+  readCommandRun,
+  startCommandRun,
+  stopUnfinishedCommand,
+  trimCommandOutput,
+} from './commandRun.ts';
+import type { CommandRun } from './commandRun.ts';
 
 /**
  * `retried`: the call was refused for its arguments and a later call of the
@@ -49,6 +61,11 @@ export interface TranscriptStep {
   children: string[];
   /** Failed because its arguments did not fit the tool (see `StepStatus` `retried`). */
   invalidArguments?: boolean;
+  /**
+   * The command a Code-mode `run_command` step runs in its own process: its
+   * state and output tail. Absent for every other step.
+   */
+  command?: CommandRun | null;
 }
 
 /**
@@ -478,6 +495,29 @@ function closeOpenSteps(steps: Record<string, TranscriptStep>, summary: string, 
   return changed ? next : steps;
 }
 
+/**
+ * Mark every command still running as stopped at `atMs`: the run ended (or
+ * the app closed), so its end will never be reported.
+ */
+function stopRunningCommands(steps: Record<string, TranscriptStep>, note: string, atMs: number) {
+  let changed = false;
+  const next: Record<string, TranscriptStep> = {};
+  for (const [id, step] of Object.entries(steps)) {
+    if (step.command && step.command.state === 'running') {
+      changed = true;
+      next[id] = { ...step, command: stopUnfinishedCommand(step.command, note, atMs) };
+    } else {
+      next[id] = step;
+    }
+  }
+  return changed ? next : steps;
+}
+
+/** The command text a `run_command` step was called with, if any. */
+function commandArg(args: unknown): string {
+  return isRecord(args) && typeof args.command === 'string' ? args.command : '';
+}
+
 function forThisRun(state: TranscriptState, action: TranscriptAction): boolean {
   if (action.type.startsWith('local_')) return true;
   return (action as AgentEvent).runId === state.runId;
@@ -584,6 +624,41 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
       };
     }
 
+    case 'command_started':
+      return updateStep(state, action.stepId, s => (s.command && s.command.commandId === action.commandId
+        ? s
+        : {
+            ...s,
+            command: startCommandRun({
+              commandId: action.commandId,
+              command: action.command,
+              atMs: action.atMs,
+              timeLimitSecs: typeof action.timeLimitSecs === 'number' ? action.timeLimitSecs : null,
+            }),
+          }));
+
+    case 'command_output':
+      return updateStep(state, action.stepId, s => (s.command && s.command.commandId === action.commandId
+        ? { ...s, command: appendCommandOutput(s.command, action.text) }
+        : s));
+
+    case 'command_finished':
+      return updateStep(state, action.stepId, s => {
+        const end = { state: action.state, exitCode: action.exitCode, note: action.note, durationMs: action.durationMs };
+        if (s.command && s.command.commandId === action.commandId) {
+          return { ...s, command: finishCommandRun(s.command, end) };
+        }
+        // No start came (a refused command never starts): the run is made from the call.
+        if (s.command) return s;
+        const run = startCommandRun({
+          commandId: action.commandId,
+          command: commandArg(s.args),
+          atMs: s.startedAtMs,
+          timeLimitSecs: null,
+        });
+        return { ...s, command: finishCommandRun(run, end) };
+      });
+
     case 'plan_updated':
       return { ...state, plan: action.items.length > 0 ? action.items.map(planItem) : null };
 
@@ -640,7 +715,11 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         error: action.error,
         errorCode: status === 'error' ? 'runtime_error' : null,
         providerError: status === 'error' ? readProviderError(action.providerError) : null,
-        steps: closeOpenSteps(state.steps, status === 'aborted' ? 'Interrupted' : 'Did not complete', endMs),
+        steps: stopRunningCommands(
+          closeOpenSteps(state.steps, status === 'aborted' ? 'Interrupted' : 'Did not complete', endMs),
+          ENDED_WITH_ANSWER_NOTE,
+          endMs,
+        ),
         thinking: '',
         interrupting: false,
         checking: false,
@@ -671,7 +750,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         error: action.error,
         errorCode: action.code,
         durationMs: Math.max(0, action.atMs - state.startedAtMs),
-        steps: closeOpenSteps(state.steps, 'Did not complete', action.atMs),
+        steps: stopRunningCommands(closeOpenSteps(state.steps, 'Did not complete', action.atMs), ENDED_WITH_ANSWER_NOTE, action.atMs),
         thinking: '',
         interrupting: false,
       };
@@ -681,7 +760,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         ...state,
         status: 'aborted',
         durationMs: Math.max(0, action.atMs - state.startedAtMs),
-        steps: closeOpenSteps(state.steps, 'Interrupted', action.atMs),
+        steps: stopRunningCommands(closeOpenSteps(state.steps, 'Interrupted', action.atMs), ENDED_WITH_ANSWER_NOTE, action.atMs),
         thinking: '',
         interrupting: false,
       };
@@ -765,9 +844,49 @@ export function pendingApproval(state: TranscriptState): TranscriptStep | null {
   return null;
 }
 
-/** Form stored with the conversation: no transient status text (the reasoning log is kept). */
+/** Steps with their command output cut to the stored tail (the same object when none needs it). */
+function trimStoredCommands(steps: Record<string, TranscriptStep>): Record<string, TranscriptStep> {
+  let changed = false;
+  const next: Record<string, TranscriptStep> = {};
+  for (const [id, step] of Object.entries(steps)) {
+    const trimmed = step.command ? trimCommandOutput(step.command, MAX_PERSISTED_COMMAND_OUTPUT_CHARS) : null;
+    if (trimmed && trimmed !== step.command) {
+      changed = true;
+      next[id] = { ...step, command: trimmed };
+    } else {
+      next[id] = step;
+    }
+  }
+  return changed ? next : steps;
+}
+
+/**
+ * Stored steps with their commands validated: a command that is not one is
+ * dropped, and one still running is shown as stopped (the app closed while it
+ * ran, so its end, and how long it ran, were never reported).
+ */
+function restoreCommands(steps: Record<string, TranscriptStep>): Record<string, TranscriptStep> {
+  let changed = false;
+  const next: Record<string, TranscriptStep> = {};
+  for (const [id, step] of Object.entries(steps)) {
+    if (typeof step !== 'object' || step === null || !('command' in step)) {
+      next[id] = step;
+      continue;
+    }
+    const { command: stored, ...rest } = step;
+    const run = readCommandRun(stored);
+    changed = true;
+    next[id] = run ? { ...rest, command: stopUnfinishedCommand(run, APP_CLOSED_NOTE, null) } : rest;
+  }
+  return changed ? next : steps;
+}
+
+/**
+ * Form stored with the conversation: no transient status text (the reasoning
+ * log is kept), command output cut to its last `MAX_PERSISTED_COMMAND_OUTPUT_CHARS`.
+ */
 export function toPersisted(state: TranscriptState): TranscriptState {
-  return { ...state, thinking: '', interrupting: false, checking: false };
+  return { ...state, steps: trimStoredCommands(state.steps), thinking: '', interrupting: false, checking: false };
 }
 
 /**
@@ -809,6 +928,7 @@ export function fromPersisted(value: unknown): TranscriptState | null {
     thinking: '',
     interrupting: false,
   };
+  restored.steps = restoreCommands(restored.steps);
   if (!isLive(restored)) return restored;
   const atMs = restored.startedAtMs + (restored.durationMs ?? 0);
   return {

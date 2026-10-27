@@ -8807,6 +8807,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox-probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9254,6 +9261,7 @@ dependencies = [
  "image",
  "jsonschema",
  "lancedb",
+ "libc",
  "llama-cpp-2",
  "lopdf 0.32.0",
  "lru",

@@ -21,14 +21,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
 use shodh_rag::harness::code_mode::{
-    code_system_prompt, discard_changes, ApprovalLevel, CodeBranch, CodeBranchStore, CodeFolder,
-    CodeSettings, CODE_TOOLS,
+    code_system_prompt, discard_changes, reserved_tool_names, ApprovalLevel, CodeBranch,
+    CodeBranchStore, CodeFolder, CodeSettings, CODE_BUILTIN_TOOLS,
 };
 use shodh_rag::harness::mcp::Mode;
 use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::model_catalog::ProviderId;
 use shodh_rag::harness::model_choice::base_url_var;
 use shodh_rag::harness::profile::{app_tools, is_valid_slug};
+use shodh_rag::harness::run_command::{self, ContainedExecutor};
 use shodh_rag::harness::tools::{
     carried_passages_block, CitedPassage, HostTool, RunScope, ToolRegistry,
 };
@@ -1669,6 +1670,15 @@ async fn start_attempt(
         settings_dir: workspace_id
             .as_deref()
             .and_then(|id| workspace_data_dir(&app_data_dir, id)),
+        executor: Arc::new(ContainedExecutor),
+        // A side thread's commands share its conversation's scratch folder,
+        // which is removed with the conversation.
+        scratch: run_command::scratch_dir(
+            &app_data_dir,
+            parent_conversation_id
+                .as_deref()
+                .unwrap_or(&conversation_id),
+        ),
     });
     let launch = LaunchSpec {
         binary: resolve_binary_path(&app_data_dir),
@@ -2351,6 +2361,18 @@ pub async fn agent_approve(
     Ok(())
 }
 
+/// Stop a running Code-mode command now: its process and every process it
+/// started end at once, also while the assistant waits for it; the
+/// assistant is told the user stopped it. Returns whether such a command
+/// was running (its end still arrives as a `command_finished` event).
+#[tauri::command]
+pub async fn run_command_stop(command_id: String) -> CommandResult<bool> {
+    check_id("command id", &command_id)?;
+    let stopped = run_command::stop(&command_id);
+    tracing::info!(target: "shodh::audit", event = "command_stop", command_id = %command_id, stopped, "the user stopped a command");
+    Ok(stopped)
+}
+
 /// The code folder among a workspace's folder sources: Code mode needs
 /// exactly one.
 fn code_folder_of(folders: &[String]) -> Result<&str, String> {
@@ -2693,15 +2715,24 @@ async fn chat_tools_with(
     local_only: bool,
 ) -> crate::mcp::ChatTools {
     let manager = app.state::<crate::mcp_commands::McpState>().0.clone();
-    let (mode, folder, reserved): (Mode, Option<String>, Vec<&str>) = match code {
-        Some(folder) => (Mode::Code, Some(folder.display()), CODE_TOOLS.to_vec()),
-        None => (
-            Mode::Research,
-            workspace_folder(app, workspace).await,
-            registry.names(),
+    let (mode, folder, reserved, builtin): (Mode, Option<String>, Vec<&str>, usize) = match code {
+        Some(folder) => (
+            Mode::Code,
+            Some(folder.display()),
+            reserved_tool_names(),
+            CODE_BUILTIN_TOOLS,
         ),
+        None => {
+            let names = registry.names();
+            let builtin = names.len();
+            (
+                Mode::Research,
+                workspace_folder(app, workspace).await,
+                names,
+                builtin,
+            )
+        }
     };
-    let builtin = reserved.len();
     manager
         .chat_tools(
             workspace,
@@ -2744,8 +2775,8 @@ pub(crate) async fn chat_extra_tools(
                 workspace,
                 Mode::Code,
                 None,
-                &CODE_TOOLS,
-                CODE_TOOLS.len(),
+                &reserved_tool_names(),
+                CODE_BUILTIN_TOOLS,
                 local_only,
             )
             .await);

@@ -106,7 +106,9 @@ strict = []
 # Encrypt the audit database with SQLCipher (key from the OS keychain).
 sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 
-# Windows OCR (Windows.Media.Ocr + Windows.Data.Pdf)
+# Windows OCR (Windows.Media.Ocr + Windows.Data.Pdf), and Code mode's command
+# runner (harness/run_command/win.rs: Job Objects, the scratch folder's access
+# list, Git for Windows' install folder in the registry).
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Media_Ocr",
@@ -116,7 +118,20 @@ windows = { version = "0.58", features = [
     "Storage_Streams",
     "Foundation",
     "Globalization",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
 ] }
+
+# Code mode's command runner on macOS (harness/run_command/mac.rs: process
+# groups, CPU limits, the memory watchdog).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

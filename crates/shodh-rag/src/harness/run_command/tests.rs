@@ -1005,26 +1005,24 @@ mod processes {
         let dirs = folders();
         let (control, _started, _output) = run_control("fork-run");
         let began = Instant::now();
-        let outcome = run_contained(
-            spec_in(
-                &dirs.folder,
-                &dirs.scratch,
-                &probe_command("fork-loop 500"),
-                60,
-                4096,
-            ),
-            shell(),
-            control,
-        )
-        .await;
-        assert!(began.elapsed() < Duration::from_secs(60), "{outcome:?}");
-        #[cfg(windows)]
-        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
-        #[cfg(target_os = "macos")]
-        assert!(
-            matches!(outcome.state, CommandState::Done | CommandState::Killed),
-            "{outcome:?}"
+        #[allow(unused_mut)]
+        let mut spec = spec_in(
+            &dirs.folder,
+            &dirs.scratch,
+            &probe_command("fork-loop 500"),
+            60,
+            4096,
         );
+        // macOS: the command's own limit is the watchdog's (tested by
+        // `a_command_with_too_many_processes_is_stopped`); here it is set
+        // above the backstop, so only the per-user backstop acts.
+        #[cfg(target_os = "macos")]
+        {
+            spec.limits.max_processes = 10_000;
+        }
+        let outcome = run_contained(spec, shell(), control).await;
+        assert!(began.elapsed() < Duration::from_secs(60), "{outcome:?}");
+        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
         assert!(
             outcome.output.contains("refused after"),
             "{}",
@@ -1044,13 +1042,9 @@ mod processes {
             assert!(note.contains("process limit"), "{note}");
             assert!(note.contains("still running when it ended"), "{note}");
         }
-        // macOS: the per-user backstop bounds the loop (the command's own
-        // limit is the watchdog's: `a_command_with_too_many_processes_is_stopped`);
-        // a run the watchdog caught over the limit says so.
+        // macOS: the per-user backstop refused the loop long before its 500.
         #[cfg(target_os = "macos")]
-        if outcome.state == CommandState::Killed {
-            assert!(note.contains("process limit"), "{note}");
-        }
+        assert!(spawned < 500, "{spawned} processes started");
         let left: Vec<u32> = outcome
             .output
             .lines()

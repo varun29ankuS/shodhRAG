@@ -37,6 +37,8 @@ pub struct SlackUsage {
     path: PathBuf,
     cap: Arc<AtomicUsize>,
     lock: Mutex<()>,
+    /// The connector counted ("Slack", "Telegram"), for messages.
+    label: &'static str,
 }
 
 impl std::fmt::Debug for SlackUsage {
@@ -52,10 +54,22 @@ impl SlackUsage {
     /// The counter of the app data directory `data_dir`, with the cap `cap` (shared: a
     /// change in the card applies from the next question).
     pub fn new(data_dir: &Path, cap: Arc<AtomicUsize>) -> Self {
+        Self::in_file(data_dir, USAGE_FILE, "Slack", cap)
+    }
+
+    /// The counter of another connector's answers (`label`), kept in `file` under the app
+    /// data directory, with the same day, reset and rules.
+    pub fn in_file(
+        data_dir: &Path,
+        file: &str,
+        label: &'static str,
+        cap: Arc<AtomicUsize>,
+    ) -> Self {
         Self {
-            path: data_dir.join(USAGE_FILE),
+            path: data_dir.join(file),
             cap,
             lock: Mutex::new(()),
+            label,
         }
     }
 
@@ -69,7 +83,7 @@ impl SlackUsage {
             // A damaged count with no usable backup starts again from the cap, not from
             // zero: the day's calls may already be spent.
             ReadFailure::Damaged { problem, .. } => {
-                tracing::warn!(target: "shodh::slack", path = %self.path.display(), %problem, "the Slack answer count was damaged; today counts as used up");
+                tracing::warn!(target: "shodh::connectors", connector = self.label, path = %self.path.display(), %problem, "the answer count was damaged; today counts as used up");
                 let mut usage = Usage::default();
                 usage.days.insert(
                     day_key(chrono::Utc::now().date_naive()),
@@ -94,7 +108,7 @@ impl SlackUsage {
         }
         let text = serde_json::to_string_pretty(usage).map_err(|e| e.to_string())?;
         durable_file::write_with_backup(&self.path, text.as_bytes(), origin)
-            .map_err(|e| format!("The Slack answer count could not be saved: {e}"))
+            .map_err(|e| format!("The {} answer count could not be saved: {e}", self.label))
     }
 }
 

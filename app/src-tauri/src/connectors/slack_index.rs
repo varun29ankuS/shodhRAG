@@ -747,6 +747,19 @@ pub async fn slack_forget_channel(
         .ok_or_else(|| "That channel is not indexed.".to_string())?;
     emit_status(&app);
     let forgotten = forget_indexed_channel(&app, store, &channel).await?;
+    // Shodh's answers in the channel, as the app keeps them, go too.
+    let conversations = super::conversations::forget(
+        &app,
+        super::conversations::Connector::Slack,
+        Some(super::slack::slack_channel_prefix(
+            &channel.team_id,
+            &channel.channel_id,
+        )),
+    )
+    .await
+    .map_err(|e| {
+        format!("The channel's indexed content was forgotten, but Shodh's answers there could not be removed from the app ({e}). Try again.")
+    })?;
     audit_change(
         &audit,
         "slack_forget_channel",
@@ -754,6 +767,7 @@ pub async fn slack_forget_channel(
             "channel": channel.name,
             "threads": forgotten.threads,
             "memories": forgotten.memories,
+            "conversations": conversations,
         }),
     );
     status(&app).await
@@ -794,6 +808,14 @@ pub(super) async fn forget_team(app: &AppHandle, team: &str) -> Result<Forgotten
         .collect();
     forget_memories(app, &late).await?;
     all.memories += rest.memories;
+    // Shodh's answers in this Slack workspace, as the app keeps them.
+    super::conversations::forget(
+        app,
+        super::conversations::Connector::Slack,
+        Some(super::slack::slack_team_prefix(team)),
+    )
+    .await
+    .map_err(|e| format!("Shodh's answers in Slack could not be removed from the app ({e})"))?;
     Ok(all)
 }
 

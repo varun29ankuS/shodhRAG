@@ -2,3 +2,4 @@
 //! wires it to its settings, secrets and the Connectors view.
 
 pub mod slack;
+pub mod telegram;

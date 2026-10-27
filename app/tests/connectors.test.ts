@@ -464,12 +464,12 @@ test('the daily cap accepts whole numbers in range only', () => {
   assert.equal(validCap('', s), null);
 });
 
-test('the Connectors view sits after Library and lists Slack', () => {
+test('the Connectors view sits after Library and lists Slack and Telegram', () => {
   const library = VIEW_TABS.indexOf('library');
   assert.equal(VIEW_TABS[library + 1], 'connectors');
   assert.equal(VIEW_TAB_LABELS.connectors, 'Connectors');
   assert.equal(normalizeViewTab('connectors'), 'connectors');
-  assert.deepEqual(CONNECTORS.map(c => c.id), ['slack']);
+  assert.deepEqual(CONNECTORS.map(c => c.id), ['slack', 'telegram']);
 });
 
 test('the agent can open the Connectors view, and its list matches the shell', () => {

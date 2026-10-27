@@ -25,6 +25,7 @@ import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, metadataWithoutThreads, threadsFromMetadata } from '../focus/threadStore';
 import { metadataWithSummary, readSideSummary, summaryPrompt } from '../focus/summary';
 import { replayedContent } from './chatHistory';
+import { isConnectorConversation, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
 import { metadataWithAttachedContext, readAttachedContext } from './imageAttachments';
 import type { AttachedContext } from './imageAttachments';
 import type { SideSummaryRef } from '../focus/summary';
@@ -121,6 +122,8 @@ export interface ChatSessionValue {
   activeConversationId: ConversationsApi['activeConversationId'];
   activeConversation: ConversationsApi['activeConversation'];
   createConversation: ConversationsApi['createConversation'];
+  /** "Continue in Ask": a new chat carrying a connector conversation as context. */
+  createSeededConversation: ConversationsApi['createSeededConversation'];
   switchConversation: ConversationsApi['switchConversation'];
   renameConversation: ConversationsApi['renameConversation'];
   deleteConversation: ConversationsApi['deleteConversation'];
@@ -526,14 +529,16 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const activeMode = activeConversation?.mode ?? 'research';
   const activeWorkspaceId = activeConversation?.workspaceId ?? null;
   const streaming = liveRun !== null;
+  // A connector's conversation is read-only: no agent session for it.
+  const activeReadOnly = isConnectorConversation(activeConversation);
   const prewarm = useCallback(() => {
-    if (!activeConversationId || runtimeInstalled !== true || streaming) return;
+    if (!activeConversationId || runtimeInstalled !== true || streaming || activeReadOnly) return;
     api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
       // Other failures (no model configured, no code folder, …) surface when the user asks.
     });
-  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming]);
+  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming, activeReadOnly]);
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
   // `composed` for prompts the app builds (a side-thread summary request).
@@ -606,8 +611,18 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (!content || !conversationId || liveRef.current || sideRunRef.current) return false;
 
     const history = viewRef.current.messages;
+    const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
+    // A connector's conversation is read-only: questions go to Slack or Telegram, or to a
+    // chat continued from it.
+    if (isConnectorConversation(conversation ?? { id: conversationId })) return false;
     const sideSummary = extra?.sideSummary;
-    const attachedContext = (extra?.attachedContext ?? []).filter(a => a.text.trim().length > 0);
+    // A chat continued from a connector conversation carries it with its first question,
+    // quoted (the user's typed words stay what is learned from and checked).
+    const seed = readSeed(conversation?.seed);
+    const carried = seed && seedGoesWithNextQuestion(seed, history)
+      ? [{ origin: 'connector' as const, text: seed.text }]
+      : [];
+    const attachedContext = [...carried, ...(extra?.attachedContext ?? [])].filter(a => a.text.trim().length > 0);
     const userMessage: ChatMessage = {
       id: newId('msg'),
       role: 'user',
@@ -627,6 +642,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const retry = useCallback((assistantMessageId: string, options: SendOptions, fallback: FallbackRun | null = null) => {
     const { conversationId, messages } = viewRef.current;
     if (!conversationId || liveRef.current || sideRunRef.current) return;
+    if (isConnectorConversation(activeConversationRef.current?.id === conversationId ? activeConversationRef.current : { id: conversationId })) return;
     const index = messages.findIndex(m => m.id === assistantMessageId);
     if (index < 0) return;
     let userIndex = -1;
@@ -787,6 +803,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     activeConversationId: conv.activeConversationId,
     activeConversation: conv.activeConversation,
     createConversation: conv.createConversation,
+    createSeededConversation: conv.createSeededConversation,
     switchConversation: conv.switchConversation,
     renameConversation: conv.renameConversation,
     deleteConversation: conv.deleteConversation,

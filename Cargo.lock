@@ -9239,7 +9239,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-rag"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -9298,7 +9298,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-rag-app"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "anyhow",
  "async-trait",

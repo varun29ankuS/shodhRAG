@@ -6,6 +6,8 @@ import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { AgentComposer } from '../agent/AgentComposer';
+import { ConnectorConversationView, SeedNotice } from '../connectors/ConnectorConversationView';
+import { continueSeed, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
 import type { AgentComposerHandle, PastedImage } from '../agent/AgentComposer';
 import { passageHits } from '../agent/citations';
 import { PlanPanel } from '../agent/PlanPanel';
@@ -1232,6 +1234,26 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     );
   };
 
+  // A conversation that happened in Slack or Telegram: read-only, with Continue in Ask.
+  const activeConversation = session.activeConversation;
+  if (activeConversation?.source) {
+    const continueInAsk = (conversation: NonNullable<typeof activeConversation>) => {
+      const seed = continueSeed(conversation);
+      if (seed) session.createSeededConversation(seed);
+    };
+    return <ConnectorConversationView conversation={activeConversation} onContinue={continueInAsk} />;
+  }
+  // A chat continued from one: what its first question carries.
+  const seed = readSeed(activeConversation?.seed);
+  const seedNotice = seed && activeConversation && seedGoesWithNextQuestion(seed, messages) && (
+    <SeedNotice
+      label={seed.label}
+      connector={seed.connector}
+      messages={seed.messages}
+      onRemove={() => session.updateConversationMeta(activeConversation.id, { seed: undefined })}
+    />
+  );
+
   if (messages.length === 0) {
     return (
       <section aria-label="Ask" className="relative h-full overflow-y-auto bg-shodh-ground" {...dropHandlers}>
@@ -1243,6 +1265,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             </h1>
             <SearchSetupCard />
             {runtimeCard}
+            {seedNotice}
             {composer(true)}
             {!hasSources ? (
               <div className="flex flex-col items-center gap-3 text-center">

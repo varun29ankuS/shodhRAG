@@ -10,6 +10,7 @@
 
 import type { ConnectorId } from './registry.ts';
 import type { SlackTabId } from './slackModel.ts';
+import type { TelegramTabId } from './telegramModel.ts';
 
 /** The tabs of the Slack page, in order. */
 export const SLACK_TABS: readonly SlackTabId[] = ['overview', 'answering', 'indexing', 'memories', 'settings'];
@@ -22,13 +23,30 @@ export const SLACK_TAB_LABELS: Record<SlackTabId, string> = {
   settings: 'Settings',
 };
 
+/** The tabs of the Telegram page, in order. */
+export const TELEGRAM_TABS: readonly TelegramTabId[] = ['overview', 'people', 'settings'];
+
+export const TELEGRAM_TAB_LABELS: Record<TelegramTabId, string> = {
+  overview: 'Overview',
+  people: 'People & groups',
+  settings: 'Settings',
+};
+
+/** Any connector's tab. */
+export type ConnectorTabId = SlackTabId | TelegramTabId;
+
 /** A connector's page, at a tab (its first when `null`). */
 export interface ConnectorPage {
   connector: ConnectorId;
-  tab: SlackTabId | null;
+  tab: ConnectorTabId | null;
 }
 
-const CONNECTOR_IDS: readonly ConnectorId[] = ['slack'];
+const CONNECTOR_IDS: readonly ConnectorId[] = ['slack', 'telegram'];
+
+/** The tabs of `connector`'s page. */
+export function tabsOf(connector: ConnectorId): readonly ConnectorTabId[] {
+  return connector === 'telegram' ? TELEGRAM_TABS : SLACK_TABS;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -39,22 +57,24 @@ export function parseConnectorTarget(value: unknown): ConnectorPage | null {
   if (!isRecord(value)) return null;
   const connector = value.connector;
   if (typeof connector !== 'string' || !(CONNECTOR_IDS as readonly string[]).includes(connector)) return null;
-  const tab = typeof value.tab === 'string' && (SLACK_TABS as readonly string[]).includes(value.tab) ? (value.tab as SlackTabId) : null;
-  return { connector: connector as ConnectorId, tab };
+  const id = connector as ConnectorId;
+  const tabs = tabsOf(id) as readonly string[];
+  const tab = typeof value.tab === 'string' && tabs.includes(value.tab) ? (value.tab as ConnectorTabId) : null;
+  return { connector: id, tab };
 }
 
-/** The tab after (`+1`) or before (`-1`) `tab`, wrapping; Home and End go to the ends. */
-export function moveTab(tab: SlackTabId, key: string): SlackTabId | null {
-  const index = SLACK_TABS.indexOf(tab);
+/** The tab after (`+1`) or before (`-1`) `tab` among `tabs`, wrapping; Home and End go to the ends. */
+export function moveTab<T extends string>(tab: T, key: string, tabs: readonly T[] = SLACK_TABS as readonly string[] as readonly T[]): T | null {
+  const index = tabs.indexOf(tab);
   switch (key) {
     case 'ArrowRight':
-      return SLACK_TABS[(index + 1) % SLACK_TABS.length];
+      return tabs[(index + 1) % tabs.length];
     case 'ArrowLeft':
-      return SLACK_TABS[(index - 1 + SLACK_TABS.length) % SLACK_TABS.length];
+      return tabs[(index - 1 + tabs.length) % tabs.length];
     case 'Home':
-      return SLACK_TABS[0];
+      return tabs[0];
     case 'End':
-      return SLACK_TABS[SLACK_TABS.length - 1];
+      return tabs[tabs.length - 1];
     default:
       return null;
   }

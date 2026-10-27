@@ -56,7 +56,7 @@ use tauri::Manager;
 
 // The Slack card's commands are registered as `slack::…` (one module level, as the
 // agent coverage check reads them).
-use connectors::{slack, slack_index};
+use connectors::{slack, slack_index, telegram};
 
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
@@ -495,6 +495,10 @@ pub fn run() {
                 app.state::<audit_commands::AuditState>().database(),
             ));
             connectors::slack::start_saved(app.handle());
+            // The Telegram connector: polls only when the user left it on (and Local-only
+            // mode is off).
+            app.manage(connectors::telegram::TelegramState::new(&app_data_dir));
+            connectors::telegram::start_saved(app.handle());
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
 
@@ -806,6 +810,16 @@ pub fn run() {
             slack_index::slack_memories,
             slack_index::slack_promote_memory,
             slack_index::slack_delete_memory,
+            telegram::telegram_status,
+            telegram::telegram_connect,
+            telegram::telegram_link_code,
+            telegram::telegram_unlink_owner,
+            telegram::telegram_set_enabled,
+            telegram::telegram_set_answer_workspace,
+            telegram::telegram_set_group,
+            telegram::telegram_remove_person,
+            telegram::telegram_set_daily_cap,
+            telegram::telegram_disconnect,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,
@@ -911,6 +925,8 @@ pub fn run() {
             table_commands::release_on_exit(app_handle);
             // Slack connections are closed (a close frame, bounded wait).
             connectors::slack::shutdown(app_handle);
+            // Telegram polling ends (bounded wait).
+            connectors::telegram::shutdown(app_handle);
             // Code-mode commands end with every process they started (on
             // macOS nothing else would end them once Shodh is gone).
             let commands = shodh_rag::harness::run_command::stop_all();

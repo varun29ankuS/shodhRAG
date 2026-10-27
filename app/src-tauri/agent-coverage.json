@@ -256,6 +256,16 @@
     "slack_set_owner": { "excluded": "Picking which Slack member is the user decides whose Slack messages are saved straight into the user's memories; only the user may decide that." },
     "slack_memories": { "excluded": "Shows the memories saved from Slack on the Slack card for the user to review, promote or delete; channel-scoped memories never reach the agent." },
     "slack_promote_memory": { "excluded": "Moving someone else's Slack memory into the user's own memories is the user's decision, by their click; the agent must never promote content from Slack into memory." },
-    "slack_delete_memory": { "excluded": "Deletes a memory saved from Slack (from the user's memories too); a destructive choice only the user makes on the Slack card." }
+    "slack_delete_memory": { "excluded": "Deletes a memory saved from Slack (from the user's memories too); a destructive choice only the user makes on the Slack card." },
+    "telegram_status": { "excluded": "Shows the Telegram page in the Connectors view (connection state, who is linked, today's answers); a user-facing view of a connection the agent has no part in." },
+    "telegram_connect": { "excluded": "Token entry: the user pastes the bot token from @BotFather, which goes straight to the OS credential store; an agent must never handle or supply credentials." },
+    "telegram_link_code": { "excluded": "Makes a one-time link that binds a Telegram account as the user (full access to their library and memories from that phone) or invites someone; only the user may hand out such access." },
+    "telegram_unlink_owner": { "excluded": "Unlinking the user's own Telegram account is an account action only the user takes on the Telegram page." },
+    "telegram_set_enabled": { "excluded": "Switching the Telegram connector on lets the user's phone and the people they allowed get answers and spend model calls; only the user may decide that." },
+    "telegram_set_answer_workspace": { "excluded": "Choosing the workspace Telegram answers others from decides which documents people outside this computer can read; only the user may change that." },
+    "telegram_set_group": { "excluded": "Allowing a Telegram group decides who outside this computer can read the chosen workspace; only the user may change that." },
+    "telegram_remove_person": { "excluded": "Removing someone the user invited changes who may ask Shodh in Telegram; only the user may change that." },
+    "telegram_set_daily_cap": { "excluded": "The daily limit of Telegram answers bounds what others may spend of the model quota; the agent must never raise a spending limit." },
+    "telegram_disconnect": { "excluded": "Disconnecting deletes the bot token, stops answers for everyone in Telegram and can remove every Telegram conversation; an account action only the user takes." }
   }
 }

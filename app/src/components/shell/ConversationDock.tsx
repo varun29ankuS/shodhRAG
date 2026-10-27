@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { connectorName } from '../../features/connectors/conversations';
 import { Maximize2, Minus, Pin, PinOff, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { ViewTab } from '../../lib/viewTabs';
@@ -309,6 +310,8 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   };
 
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
+  // A connector's conversation is read-only here too.
+  const readOnlySource = session.activeConversation?.source ?? null;
 
   const submit = () => {
     const text = draft.trim();
@@ -444,7 +447,9 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
             running={isStreaming}
             canSteer={transcript?.status === 'running'}
             approvalPending={waiting !== null}
-            blockedReason={sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
+            blockedReason={readOnlySource
+              ? `This conversation happened in ${connectorName(readOnlySource.connector)}. Open it in Ask and choose Continue in Ask to reply.`
+              : sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
             placeholder="Reply…"
             attachments={<AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />}
             compact

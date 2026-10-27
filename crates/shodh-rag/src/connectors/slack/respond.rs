@@ -146,6 +146,10 @@ pub trait AnswerSource: Send + Sync {
     async fn thread_turns(&self, thread: &ThreadKey) -> Result<Vec<ThreadTurn>, String>;
     /// Keeps a question and its answer in `thread`, for follow-ups there.
     async fn record_turn(&self, thread: &ThreadKey, turn: ThreadTurn) -> Result<(), String>;
+    /// Keeps an answered question and its answer as an app conversation, one per
+    /// [`Question::turns_key`], which the app shows read-only. `asker` is the name Slack
+    /// shows for the asker, when it could be read. Nothing by default.
+    async fn keep_exchange(&self, _question: &Question, _asker: Option<&str>, _turn: &ThreadTurn) {}
     /// The memories people other than the owner saved for `channel`.
     async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String>;
     /// The model answers are written with (no tools).
@@ -616,9 +620,19 @@ impl Responder {
                         question: question.text.trim().to_string(),
                         answer: message,
                     };
-                    if let Err(e) = self.source.record_turn(&question.turns_key(), turn).await {
+                    if let Err(e) = self
+                        .source
+                        .record_turn(&question.turns_key(), turn.clone())
+                        .await
+                    {
                         tracing::warn!(target: "shodh::slack", error = %e, "a Slack thread's turn could not be kept");
                     }
+                    // The asker's name for the app's copy (looked up once, then cached; a
+                    // guest or someone from another organization has none).
+                    let asker = self.gate.member(question).await.ok().map(|m| m.name);
+                    self.source
+                        .keep_exchange(question, asker.as_deref(), &turn)
+                        .await;
                 }
                 outcome
             }

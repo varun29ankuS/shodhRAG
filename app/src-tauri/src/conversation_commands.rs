@@ -66,6 +66,33 @@ pub struct ConversationRecord {
     /// message's `metadata`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus_threads: Option<serde_json::Value>,
+    /// Set on a conversation that happened in a connector (a Slack thread, a Telegram
+    /// chat): Shodh's answers there and the questions they answered, kept by the connector
+    /// ([`crate::connectors::conversations`]). The app shows it read-only; only the
+    /// connector adds to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ConversationSource>,
+    /// A conversation started with "Continue in Ask" from a connector conversation: what
+    /// it carries as context (opaque here; written and read by the Ask view, which attaches
+    /// it to the first question as quoted, untrusted text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<serde_json::Value>,
+}
+
+/// Where a connector conversation happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSource {
+    /// `slack` or `telegram`.
+    pub connector: String,
+    /// The chat within the connector (a stable key: Slack workspace, channel and thread;
+    /// Telegram chat and conversation).
+    pub chat: String,
+    /// What the sidebar groups it under: "Slack · #deals", "Telegram · you".
+    pub label: String,
+    /// The chat in the connector itself (a Slack permalink, a t.me link), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// How a conversation's answers work.
@@ -232,19 +259,48 @@ pub async fn load_conversations(
     Ok(conversations)
 }
 
+/// Stores `conversation` as the UI sent it, in place of the saved one with its id. A
+/// connector conversation is the connector's: the UI keeps an older copy in memory and
+/// saves whole records, so only what the UI owns (its title, pin and side threads) is
+/// taken from it, and a connector conversation that is no longer saved (forgotten) is
+/// never brought back by a late save.
+pub fn save_record(conversations: &mut Vec<ConversationRecord>, conversation: ConversationRecord) {
+    match conversations.iter_mut().find(|c| c.id == conversation.id) {
+        Some(existing) if existing.source.is_some() => {
+            existing.title = conversation.title;
+            existing.pinned = conversation.pinned;
+            existing.focus_threads = conversation.focus_threads;
+        }
+        Some(existing) => {
+            // An Ask chat never becomes a connector conversation through the UI.
+            *existing = ConversationRecord {
+                source: None,
+                ..conversation
+            };
+        }
+        None if crate::connectors::conversations::is_connector_id(&conversation.id)
+            || conversation.source.is_some() =>
+        {
+            tracing::debug!(target: "shodh::connectors", "a save of a connector conversation that is no longer kept was ignored");
+        }
+        None => conversations.push(conversation),
+    }
+}
+
 #[tauri::command]
 pub async fn save_conversation(
     app: AppHandle,
     conversation: ConversationRecord,
 ) -> Result<(), String> {
-    store(&app)?.update(|conversations| {
-        if let Some(existing) = conversations.iter_mut().find(|c| c.id == conversation.id) {
-            *existing = conversation;
-        } else {
-            conversations.push(conversation);
-        }
-        Ok(())
+    let store = store(&app)?;
+    tokio::task::spawn_blocking(move || {
+        store.update(|conversations| {
+            save_record(conversations, conversation);
+            Ok(())
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

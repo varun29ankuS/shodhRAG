@@ -36,7 +36,9 @@ use shodh_rag::connectors::slack::access::{
 use shodh_rag::connectors::slack::answer::{
     library_listing, retrieve_passages, AnswerPassage, AnswerScope, LibraryListing, ThreadTurn,
 };
-use shodh_rag::connectors::slack::events::{EventRouter, SeenEntry, SeenStore, ThreadKey};
+use shodh_rag::connectors::slack::events::{
+    EventRouter, Question, QuestionKind, SeenEntry, SeenStore, ThreadKey,
+};
 use shodh_rag::connectors::slack::index::SyncGate;
 use shodh_rag::connectors::slack::respond::{
     AnswerQuota, AnswerSource, Outcome, Responder, SlackPoster,
@@ -63,6 +65,7 @@ use shodh_rag::research::tables::calls::{next_utc_midnight, utc_day, SystemClock
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{watch, Notify};
 
+use super::conversations::{self, key_part, Connector, Exchange, Said};
 use super::slack_index::{self, AppMemories, Database, IndexStatus, SlackOwner};
 use super::slack_notices::{self, SlackNoticeState};
 use super::slack_usage::SlackUsage;
@@ -385,26 +388,26 @@ struct Routing {
 /// Sends the card's status at most once per [`STATUS_EVERY`]: the first request is sent
 /// at once, the ones during the wait are sent together after it.
 #[derive(Default)]
-struct StatusPacer {
+pub(super) struct StatusPacer {
     running: AtomicBool,
     again: AtomicBool,
 }
 
 impl StatusPacer {
     /// True when the caller should start sending (no round is running).
-    fn request(&self) -> bool {
+    pub(super) fn request(&self) -> bool {
         self.again.store(true, Ordering::SeqCst);
         !self.running.swap(true, Ordering::SeqCst)
     }
 
     /// Called before each send: takes the pending request.
-    fn take(&self) -> bool {
+    pub(super) fn take(&self) -> bool {
         self.again.swap(false, Ordering::SeqCst)
     }
 
     /// Called after a round's wait: true when another request came meanwhile and this
     /// sender goes on.
-    fn finish_round(&self) -> bool {
+    pub(super) fn finish_round(&self) -> bool {
         if self.again.load(Ordering::SeqCst) {
             return true;
         }
@@ -981,6 +984,91 @@ impl OutcomeSink for AppOutcomes {
     }
 }
 
+// ── Conversations in the app ────────────────────────────────────────
+
+/// The chat key of a Slack thread in the app's conversations: one conversation per thread
+/// (a DM question outside a thread is its own, [`Question::turns_key`]).
+pub fn slack_chat(team_id: &str, thread: &ThreadKey) -> String {
+    format!(
+        "{}{}",
+        slack_channel_prefix(team_id, &thread.channel),
+        key_part(&thread.thread)
+    )
+}
+
+/// What the chat keys of every thread of `channel` start with.
+pub fn slack_channel_prefix(team_id: &str, channel: &str) -> String {
+    format!("{}{}-", slack_team_prefix(team_id), key_part(channel))
+}
+
+/// What the chat keys of every thread of Slack workspace `team_id` start with.
+pub fn slack_team_prefix(team_id: &str) -> String {
+    format!("{}-", key_part(team_id))
+}
+
+/// Slack's escaped text (`&amp;`, `&lt;`, `&gt;`) as the app shows it.
+pub fn unescape_slack(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// When a Slack message was sent, from its `ts` (seconds since the epoch, as text).
+fn ts_time(ts: &str) -> Option<DateTime<Utc>> {
+    let seconds = ts.split('.').next()?.parse::<i64>().ok()?;
+    DateTime::from_timestamp(seconds, 0)
+}
+
+/// The app's copy of an answered Slack question: in its thread's conversation, grouped
+/// under its channel (or the DM), with the asker's name and whether it was the user.
+pub fn slack_exchange(
+    team_id: &str,
+    installation: Option<&SlackInstallationPrefs>,
+    question: &Question,
+    asker: Option<&str>,
+    turn: &ThreadTurn,
+    now: DateTime<Utc>,
+) -> Exchange {
+    let owner = installation
+        .and_then(|i| i.owner.as_ref())
+        .is_some_and(|o| o.user_id == question.user);
+    let asker = asker.map(str::trim).filter(|a| !a.is_empty());
+    let label = match question.kind {
+        QuestionKind::Mention => {
+            let name = installation
+                .and_then(|i| i.answer_channels.iter().find(|c| c.id == question.channel))
+                .map(|c| format!("#{}", c.name))
+                .unwrap_or_else(|| "a channel".to_string());
+            format!("Slack · {name}")
+        }
+        QuestionKind::Direct if owner => "Slack · you".to_string(),
+        QuestionKind::Direct => format!("Slack · {}", asker.unwrap_or("a direct message")),
+    };
+    Exchange {
+        connector: Connector::Slack,
+        chat: slack_chat(team_id, &question.turns_key()),
+        label,
+        chat_link: None,
+        turn_id: question.ts.clone(),
+        question: Said {
+            author: if owner {
+                "You".to_string()
+            } else {
+                asker.unwrap_or("Someone in Slack").to_string()
+            },
+            owner,
+            text: turn.question.clone(),
+            at: ts_time(&question.ts).unwrap_or(now),
+            link: None,
+        },
+        answer: unescape_slack(&turn.answer),
+        answered_at: now,
+        learn: true,
+        // A channel's answer is built on what others said there: never learning context.
+        answer_as_context: question.kind == QuestionKind::Direct,
+    }
+}
+
 // ── Answers ─────────────────────────────────────────────────────────
 
 /// Reads the installation's settings off the async workers.
@@ -1122,6 +1210,24 @@ impl AnswerSource for AppAnswerSource {
         .map_err(|e| e.to_string())?
     }
 
+    async fn keep_exchange(&self, question: &Question, asker: Option<&str>, turn: &ThreadTurn) {
+        let installation = installation_prefs(&self.data_dir, &self.team_id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(target: "shodh::slack", error = %e, "the Slack settings could not be read for the app's copy of an answer");
+                None
+            });
+        let exchange = slack_exchange(
+            &self.team_id,
+            installation.as_ref(),
+            question,
+            asker,
+            turn,
+            Utc::now(),
+        );
+        conversations::keep(&self.app, exchange).await;
+    }
+
     async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String> {
         let store = self.store().await?;
         let (team, channel) = (self.team_id.clone(), channel.to_string());
@@ -1140,15 +1246,21 @@ impl AnswerSource for AppAnswerSource {
     }
 
     fn private_terms(&self) -> PrivateTerms {
-        let mut terms = PrivateTerms::of_this_computer();
-        if let Some(name) = os_display_name() {
-            terms.add_name(&name);
-        }
-        terms
-            .home_dirs
-            .push(self.data_dir.to_string_lossy().into_owned());
-        terms
+        app_private_terms(&self.data_dir)
     }
+}
+
+/// What never leaves this computer in a connector's answer: the home folder, the user's
+/// names (the OS account's and its display name) and the app data folder.
+pub(super) fn app_private_terms(data_dir: &Path) -> PrivateTerms {
+    let mut terms = PrivateTerms::of_this_computer();
+    if let Some(name) = os_display_name() {
+        terms.add_name(&name);
+    }
+    terms
+        .home_dirs
+        .push(data_dir.to_string_lossy().into_owned());
+    terms
 }
 
 // ── Running ─────────────────────────────────────────────────────────
@@ -2316,6 +2428,85 @@ mod tests {
             .push(installation(true));
         let text = serde_json::to_string(&settings).unwrap();
         assert!(!text.contains("xoxb-") && !text.contains("xapp-"));
+    }
+
+    fn question(kind: QuestionKind, user: &str, thread: Option<&str>) -> Question {
+        Question {
+            event_id: "Ev1".into(),
+            kind,
+            channel: "C1".into(),
+            reply_thread_ts: thread.map(str::to_string),
+            thread: ThreadKey {
+                channel: "C1".into(),
+                thread: thread.unwrap_or("").into(),
+            },
+            user: user.into(),
+            ts: "1761555600.000200".into(),
+            in_thread: thread.is_some(),
+            asker_team: Some("T1".into()),
+            ext_shared: false,
+            has_files: false,
+            text: "What is the notice period?".into(),
+        }
+    }
+
+    #[test]
+    fn an_answered_question_becomes_the_apps_conversation_of_its_thread() {
+        let mut prefs = installation(true);
+        prefs.answer_channels = vec![AnswerChannel {
+            id: "C1".into(),
+            name: "deals".into(),
+            shared: false,
+        }];
+        prefs.owner = Some(SlackOwner {
+            user_id: "UME".into(),
+            name: "Me".into(),
+        });
+        let turn = ThreadTurn {
+            question: "What is the notice period?".into(),
+            answer: "Sixty days &amp; no more &lt;b&gt; [1]".into(),
+        };
+        let now = Utc::now();
+        let mention = question(QuestionKind::Mention, "U2", Some("1761555500.000100"));
+        let ex = slack_exchange("T1", Some(&prefs), &mention, Some("Alex"), &turn, now);
+        assert_eq!(ex.chat, "T1-C1-1761555500_000100");
+        assert!(ex.chat.starts_with(&slack_channel_prefix("T1", "C1")));
+        assert!(ex.chat.starts_with(&slack_team_prefix("T1")));
+        assert_eq!(ex.label, "Slack · #deals");
+        assert_eq!(ex.question.author, "Alex");
+        assert!(!ex.question.owner);
+        assert_eq!(
+            conversations::words_to_learn(&ex),
+            None,
+            "someone else's question never reaches learning"
+        );
+        assert_eq!(ex.answer, "Sixty days & no more <b> [1]");
+        assert!(
+            !ex.answer_as_context,
+            "a channel's answer is never learning context"
+        );
+        assert_eq!(ex.question.at.timestamp(), 1_761_555_600);
+
+        // The user's own question (the member picked as "me") is learned from like Ask.
+        let mine = question(QuestionKind::Direct, "UME", None);
+        let ex = slack_exchange("T1", Some(&prefs), &mine, Some("Me"), &turn, now);
+        assert!(ex.question.owner);
+        assert_eq!(ex.label, "Slack · you");
+        assert_eq!(ex.question.author, "You");
+        assert_eq!(
+            ex.chat, "T1-C1-1761555600_000200",
+            "a DM question outside a thread is its own conversation"
+        );
+        assert_eq!(
+            conversations::words_to_learn(&ex),
+            Some("What is the notice period?")
+        );
+
+        // Nobody picked: nobody is the owner.
+        let ex = slack_exchange("T1", None, &mine, None, &turn, now);
+        assert!(!ex.question.owner);
+        assert_eq!(ex.label, "Slack · a direct message");
+        assert_eq!(ex.question.author, "Someone in Slack");
     }
 
     #[test]

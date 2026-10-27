@@ -8,6 +8,8 @@ import { diagramLedger } from '../features/ask/visual/diagramLedger';
 import { diagramKeysToForget } from '../features/ask/visual/diagramKeys';
 import { APP_QUITTING_EVENT, ConversationSaves, FailureLatch, loadFailureNotice, quitRequestId, updateRecord } from './conversationSaves';
 import type { LoadFailureNotice } from './conversationSaves';
+import { firstAskConversation } from '../features/connectors/conversations';
+import type { ConversationSeed, ConversationSource } from '../features/connectors/conversations';
 
 export interface ConversationMessage {
   id: string;
@@ -47,10 +49,37 @@ export interface Conversation {
    * conversation (`ConversationRecord.focus_threads`).
    */
   focusThreads?: unknown[];
+  /**
+   * Set on a conversation that happened in a connector (Slack, Telegram): written by the
+   * backend only, shown read-only (`features/connectors/conversations`).
+   */
+  source?: ConversationSource;
+  /** What a chat started with "Continue in Ask" carries into its first question. */
+  seed?: ConversationSeed;
 }
 
 /** Emitted by the backend when the agent renames or pins a conversation. */
 const CONVERSATION_UPDATED_EVENT = 'conversation-updated';
+
+/** Emitted by the backend when a connector conversation is added to, created or removed. */
+const CONNECTOR_CONVERSATION_EVENT = 'connector-conversation-changed';
+
+interface ConnectorConversationChange {
+  conversation: Conversation | null;
+  removed: string[];
+}
+
+function parseConnectorChange(value: unknown): ConnectorConversationChange | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const removed = Array.isArray(v.removed) ? v.removed.filter((id): id is string => typeof id === 'string') : [];
+  const c = v.conversation;
+  if (c === undefined || c === null) return removed.length > 0 ? { conversation: null, removed } : null;
+  if (typeof c !== 'object') return null;
+  const record = c as Record<string, unknown>;
+  if (typeof record.id !== 'string' || !Array.isArray(record.messages) || typeof record.source !== 'object' || record.source === null) return null;
+  return { conversation: c as Conversation, removed };
+}
 
 interface ConversationChange {
   conversationId: string;
@@ -88,6 +117,9 @@ function autoTitle(firstMessage: string): string {
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  // The open conversation for listeners registered once (a removed one is left).
+  const activeIdRef = useRef<string | null>(null);
+  activeIdRef.current = activeConversationId;
   // The saved conversations could not be loaded: saving is paused and the
   // window shows why until the user acknowledges it.
   const [loadFailure, setLoadFailure] = useState<LoadFailureNotice | null>(null);
@@ -151,6 +183,58 @@ export function useConversations() {
     };
   }, [setList]);
 
+  // A connector (Slack, Telegram) answered a question or forgot its conversations: the
+  // backend saved it already; the list shows it now. The backend keeps the connector's
+  // messages whatever the UI saves later.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listen<unknown>(CONNECTOR_CONVERSATION_EVENT, event => {
+      const change = parseConnectorChange(event.payload);
+      if (!change) return;
+      let next = listRef.current;
+      if (change.removed.length > 0) {
+        const gone = new Set(change.removed);
+        const removed = next.filter(c => gone.has(c.id));
+        next = next.filter(c => !gone.has(c.id));
+        // As for a deleted chat: what the diagram ledger kept for them goes too.
+        for (const conversation of removed) {
+          diagramLedger().forget(diagramKeysToForget(conversation, next));
+        }
+        if (activeIdRef.current && gone.has(activeIdRef.current)) {
+          const fallback = firstAskConversation(next);
+          if (fallback) {
+            setActiveConversationId(fallback.id);
+          } else {
+            const now = new Date().toISOString();
+            const fresh: Conversation = { id: generateId(), title: 'New Chat', messages: [], createdAt: now, updatedAt: now, pinned: false };
+            next = [fresh, ...next];
+            setActiveConversationId(fresh.id);
+            void saves.write(fresh);
+          }
+        }
+      }
+      const incoming = change.conversation;
+      if (incoming) {
+        const existing = next.find(c => c.id === incoming.id);
+        const merged: Conversation = existing
+          ? { ...incoming, title: existing.title, pinned: existing.pinned, focusThreads: existing.focusThreads }
+          : incoming;
+        next = [merged, ...next.filter(c => c.id !== incoming.id)];
+      }
+      setList(next);
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(err => console.error(`Failed to listen for ${CONNECTOR_CONVERSATION_EVENT}:`, err));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [saves, setList]);
+
   // Load conversations on mount
   useEffect(() => {
     if (loadedRef.current) return;
@@ -160,9 +244,11 @@ export function useConversations() {
       .then((saved) => {
         markStartup('conversations-loaded');
         setLoaded(true);
-        if (saved.length > 0) {
+        // A connector's conversation never opens by itself: the newest Ask chat does.
+        const first = firstAskConversation(saved);
+        if (first) {
           setList(saved);
-          setActiveConversationId(saved[0].id);
+          setActiveConversationId(first.id);
         } else {
           const id = generateId();
           const now = new Date().toISOString();
@@ -174,7 +260,7 @@ export function useConversations() {
             updatedAt: now,
             pinned: false,
           };
-          setList([fresh]);
+          setList([fresh, ...saved]);
           setActiveConversationId(id);
           void saves.write(fresh);
         }
@@ -388,7 +474,29 @@ export function useConversations() {
     [activeConversationId, saves, setList]
   );
 
-  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode'>>) => {
+  /**
+   * "Continue in Ask": a new Ask chat carrying `seed` (a connector conversation as quoted
+   * context for its first question), opened at once.
+   */
+  const createSeededConversation = useCallback((seed: ConversationSeed): string => {
+    const id = generateId();
+    const now = new Date().toISOString();
+    const fresh: Conversation = {
+      id,
+      title: `Continued: ${seed.label}`,
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+      pinned: false,
+      seed,
+    };
+    setList([fresh, ...listRef.current]);
+    setActiveConversationId(id);
+    void saves.write(fresh);
+    return id;
+  }, [saves, setList]);
+
+  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode' | 'seed'>>) => {
     const { list, updated } = updateRecord(listRef.current, id, c => ({ ...c, ...meta, updatedAt: new Date().toISOString() }));
     if (!updated) return;
     setList(list);
@@ -466,6 +574,7 @@ export function useConversations() {
     activeConversationId,
     activeConversation,
     createConversation,
+    createSeededConversation,
     switchConversation,
     updateConversationMessages,
     updateActiveMessages,

@@ -169,7 +169,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
         >
           <legend className={cn(SECTION_TITLE, 'p-0 mb-0.5')}>Command limits</legend>
           <p id={ids.limitsHelp} className="m-0 text-[12.5px] text-shodh-text-muted">
-            Each command runs in its own process under these limits, together with everything it starts (at most 64 processes at once). A command still running at the time limit is stopped. Beyond the memory limit, Windows refuses the memory and macOS stops the command. macOS has no CPU cap: commands there run at a lower priority instead.
+            Each command runs in its own process under these limits, together with everything it starts, and may have 64 processes at once. A command still running at the time limit is stopped. Beyond the memory or process limit, Windows refuses what is asked for and macOS stops the command. macOS has no CPU cap: commands there run at a lower priority instead.
           </p>
           {parsedLimits.map(({ spec, parsed }) => {
             const inputId = `${ids.limits}-${spec.key}`;

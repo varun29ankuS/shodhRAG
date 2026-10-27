@@ -17,6 +17,7 @@
 //! - `children N`: start N `hold` children, print their pids, then hold.
 //! - `fork-loop N`: start up to N `hold` children, stop at the first refusal,
 //!   print how many started and their pids, and exit.
+//! - `fork-hold N`: the same, then hold instead of exiting.
 
 use std::io::Write;
 use std::process::{Child, Command, Stdio};
@@ -39,10 +40,15 @@ fn main() {
         ),
         Some("children") => children(number(&args, 1)),
         Some("fork-loop") => fork_loop(number(&args, 1)),
+        Some("fork-hold") => {
+            fork_loop(number(&args, 1));
+            let _ = std::io::stdout().flush();
+            hold()
+        }
         _ => {
             eprintln!(
                 "usage: sandbox-probe env | heartbeat FILE | detach FILE | hold | busy | \
-                 alloc MB [SECS] | children N | fork-loop N"
+                 alloc MB [SECS] | children N | fork-loop N | fork-hold N"
             );
             2
         }

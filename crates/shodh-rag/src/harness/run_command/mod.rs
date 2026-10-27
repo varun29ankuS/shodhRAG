@@ -361,8 +361,8 @@ impl CommandLimits {
         );
         #[cfg(target_os = "macos")]
         let enforced = format!(
-            "Memory {} for all its processes (the command is stopped beyond it), at most {} \
-             processes at once, lower CPU priority (macOS has no CPU cap).",
+            "Memory {} for all its processes and {} processes at once (the command is \
+             stopped beyond either), lower CPU priority (macOS has no CPU cap).",
             memory_words(self.memory_mb()),
             self.max_processes
         );

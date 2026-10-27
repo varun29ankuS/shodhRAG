@@ -13,16 +13,18 @@
 //! - Every process of the run carries the run's marker in its environment
 //!   ([`super::RUN_ID_ENV`]), so one that left the group and the tree (a
 //!   `setsid` and double fork, reparented to launchd) is still found.
-//! - `RLIMIT_NPROC`: the user may have at most [`super::MAX_PROCESSES`] more
-//!   processes than when the command started, so the command can never
-//!   have more than that at once (fewer if the user's other programs start
-//!   some meanwhile). macOS counts it per user, which is why the limit is
-//!   set from the user's count at the start.
+//! - The watchdog, on its own thread, counts the run's processes (its group
+//!   and their descendants) and sums their physical footprint every
+//!   [`WATCH_INTERVAL`]: over the process limit or the memory limit, the run
+//!   is stopped. macOS has no per-command process limit, so this is how the
+//!   command's limit is kept.
+//! - `RLIMIT_NPROC` is only a backstop against a fork bomb outrunning the
+//!   watchdog: the user may have at most [`FORK_BACKSTOP`] more processes
+//!   than when the command started. macOS counts it per user, and in CI it
+//!   allowed about 5 more than that count (a machine-dependent amount), so
+//!   it is never cited as the command's limit.
 //! - The command runs at a lower CPU priority (nice 10): macOS has no hard
 //!   CPU cap, so the prompt promises none.
-//! - The watchdog, on its own thread, sums the physical footprint of the
-//!   run's group and its descendants every [`WATCH_INTERVAL`]; over the
-//!   memory limit, the run is killed.
 //! - When the command ends, the run's processes (its group, every process of
 //!   the user carrying its marker, and all their descendants) are stopped
 //!   (`SIGSTOP`, so none can fork meanwhile), then killed, pass after pass
@@ -127,6 +129,11 @@ fn processes_of(uid: uid_t) -> u64 {
     u64::try_from(alive).unwrap_or(u64::MAX)
 }
 
+/// Processes the user may add while a command runs before forks fail
+/// ([`process_limit`]): a bound on a fork bomb between two looks of the
+/// watchdog, well above any command's own process limit.
+pub const FORK_BACKSTOP: u64 = 4 * super::MAX_PROCESSES as u64;
+
 /// The `RLIMIT_NPROC` soft limit that lets a command add at most `max`
 /// processes to the `running` the user has, never above the `hard` limit.
 pub fn process_limit(running: u64, max: u64, hard: u64) -> u64 {
@@ -166,11 +173,7 @@ pub fn spawn_contained(
             std::io::Error::last_os_error()
         ));
     }
-    let processes_soft = process_limit(
-        processes_of(uid),
-        u64::from(spec.limits.max_processes),
-        nproc.rlim_max,
-    );
+    let processes_soft = process_limit(processes_of(uid), FORK_BACKSTOP, nproc.rlim_max);
     let processes_hard = nproc.rlim_max;
     let mut command = tokio::process::Command::new(shell);
     command
@@ -226,11 +229,10 @@ pub fn spawn_contained(
     });
     let watch = Arc::new(Watch::default());
     let watched = (Arc::clone(&target), Arc::clone(&watch));
-    let memory_bytes = spec.limits.memory_bytes;
-    let memory_mb = spec.limits.memory_mb();
+    let limits = spec.limits;
     let started = std::thread::Builder::new()
         .name("shodh-command-watchdog".to_string())
-        .spawn(move || watchdog(&watched.0, &watched.1, memory_bytes, memory_mb));
+        .spawn(move || watchdog(&watched.0, &watched.1, &limits));
     if let Err(e) = started {
         sweep(&target);
         return Err(format!(
@@ -257,21 +259,29 @@ struct Watch {
     over: Mutex<Option<String>>,
 }
 
-/// Every [`WATCH_INTERVAL`] until the run ends: the physical footprint of
-/// the run's group and its descendants; over `memory_bytes`, the limit is
-/// reported and the watch ends.
-fn watchdog(target: &Target, watch: &Watch, memory_bytes: u64, memory_mb: u64) {
+/// Every [`WATCH_INTERVAL`] until the run ends: the run's processes (its
+/// group and their descendants), counted and their physical footprint
+/// summed; over a limit, the limit is reported and the watch ends.
+fn watchdog(target: &Target, watch: &Watch, limits: &super::CommandLimits) {
     let mut buffer = Vec::new();
     while !watch.done.load(Ordering::SeqCst) {
-        let used: u64 = run_processes(target, false, &mut buffer)
-            .0
-            .into_iter()
-            .map(footprint)
-            .sum();
-        if used > memory_bytes {
-            *watch.over.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!(
-                "the memory limit ({memory_mb} MB for all its processes)"
-            ));
+        let (processes, _) = run_processes(target, false, &mut buffer);
+        let over = if processes.len() > limits.max_processes as usize {
+            Some(format!(
+                "the process limit ({} at once)",
+                limits.max_processes
+            ))
+        } else {
+            let used: u64 = processes.into_iter().map(footprint).sum();
+            (used > limits.memory_bytes).then(|| {
+                format!(
+                    "the memory limit ({} MB for all its processes)",
+                    limits.memory_mb()
+                )
+            })
+        };
+        if over.is_some() {
+            *watch.over.lock().unwrap_or_else(|e| e.into_inner()) = over;
             return;
         }
         std::thread::sleep(WATCH_INTERVAL);

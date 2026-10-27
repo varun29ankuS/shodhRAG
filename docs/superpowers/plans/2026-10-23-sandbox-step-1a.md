@@ -174,7 +174,7 @@ the test releases, in place of omp's end frame.
   - A command is refused when it holds control characters (other than line breaks and tabs), bidirectional overrides, zero-width or other invisible characters, or a run of more than 100 blank characters.
 - **The prompt promises only what this system enforces.**
   - Windows: job memory, a CPU hard cap and 64 processes.
-  - macOS: the memory watchdog and 64 processes, through `RLIMIT_NPROC` set to the user's process count at the start plus 64 (macOS counts processes per user). macOS has no CPU cap, so commands there run at nice 10 and the prompt and settings say so.
+  - macOS: the watchdog stops a command whose processes use more memory than its limit or number more than 64. `RLIMIT_NPROC` (the user's count at the start plus 256) is only a fork-bomb backstop: macOS counts it per user, and in CI it allowed about 5 more processes than that count, so it is never cited as the limit. macOS has no CPU cap, so commands there run at nice 10 and the prompt and settings say so.
 - **Programs the system starts are not stopped.** That covers scheduled tasks, services, launch agents and jobs, and apps opened through the desktop (`schtasks`, `sc`, `wmic`, `Invoke-CimMethod`, `Register-ScheduledTask`, `explorer`, `launchctl`, `open`, `osascript`, `at`, `crontab`, `systemd-run` ...).
   - Such commands ask, and their prompt says so.
   - Once approved, they are recorded as running on, so edits ask from then on, as before this step.

@@ -202,8 +202,8 @@ fn a_call_may_ask_for_less_time_never_more() {
         assert_eq!(
             limits.as_str(),
             format!(
-                "Memory 4 GB for all its processes (the command is stopped beyond it), at most \
-                 64 processes at once, lower CPU priority (macOS has no CPU cap). \
+                "Memory 4 GB for all its processes and 64 processes at once (the command is \
+                 stopped beyond either), lower CPU priority (macOS has no CPU cap). \
                  {STOPPED_AT_END}"
             )
         );
@@ -1018,7 +1018,13 @@ mod processes {
         )
         .await;
         assert!(began.elapsed() < Duration::from_secs(60), "{outcome:?}");
+        #[cfg(windows)]
         assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
+        #[cfg(target_os = "macos")]
+        assert!(
+            matches!(outcome.state, CommandState::Done | CommandState::Killed),
+            "{outcome:?}"
+        );
         assert!(
             outcome.output.contains("refused after"),
             "{}",
@@ -1030,12 +1036,21 @@ mod processes {
             .find_map(|line| line.strip_prefix("spawned "))
             .and_then(|n| n.trim().parse().ok())
             .expect("the probe said how many it started");
-        assert!(spawned < MAX_PROCESSES, "{spawned} processes started");
         let note = outcome.note.clone().unwrap_or_default();
-        // Windows's job reports the refusal; macOS's per-user limit does not.
+        // Windows: the job refuses past the limit, and says so.
         #[cfg(windows)]
-        assert!(note.contains("process limit"), "{note}");
-        assert!(note.contains("still running when it ended"), "{note}");
+        {
+            assert!(spawned < MAX_PROCESSES, "{spawned} processes started");
+            assert!(note.contains("process limit"), "{note}");
+            assert!(note.contains("still running when it ended"), "{note}");
+        }
+        // macOS: the per-user backstop bounds the loop (the command's own
+        // limit is the watchdog's: `a_command_with_too_many_processes_is_stopped`);
+        // a run the watchdog caught over the limit says so.
+        #[cfg(target_os = "macos")]
+        if outcome.state == CommandState::Killed {
+            assert!(note.contains("process limit"), "{note}");
+        }
         let left: Vec<u32> = outcome
             .output
             .lines()
@@ -1047,6 +1062,42 @@ mod processes {
             })
             .unwrap_or_default();
         assert_eq!(left.len() as u32, spawned);
+        assert!(left.iter().all(|&pid| !alive(pid)), "a child survived");
+    }
+
+    /// macOS keeps a command's process limit with its watchdog: a command
+    /// holding more processes than its limit is stopped, with every one of
+    /// them.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_command_with_too_many_processes_is_stopped() {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let dirs = folders();
+        let (control, _started, _output) = run_control("fork-hold-run");
+        let mut spec = spec_in(
+            &dirs.folder,
+            &dirs.scratch,
+            &probe_command("fork-hold 20"),
+            60,
+            4096,
+        );
+        spec.limits.max_processes = 8;
+        let outcome = run_contained(spec, shell(), control).await;
+        assert_eq!(outcome.state, CommandState::Killed, "{outcome:?}");
+        let note = outcome.note.clone().unwrap_or_default();
+        assert!(note.contains("the process limit (8 at once)"), "{note}");
+        assert!(outcome.duration < Duration::from_secs(10), "{outcome:?}");
+        let left: Vec<u32> = outcome
+            .output
+            .lines()
+            .find_map(|line| line.strip_prefix("pids "))
+            .map(|pids| {
+                pids.split_whitespace()
+                    .filter_map(|p| p.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(left.len(), 20, "{}", outcome.output);
         assert!(left.iter().all(|&pid| !alive(pid)), "a child survived");
     }
 

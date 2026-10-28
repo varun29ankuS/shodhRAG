@@ -436,7 +436,7 @@ jobs:
           find "$bundle" -maxdepth 2 \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' -o -name '*.sig' \) -exec du -sh {} \;
           app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' | head -n 1)
           dmg=$(find "$bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)
-          [ -n "$app" ] && [ -n "$dmg" ] || { echo "::error::No .app or .dmg was built"; exit 1; }
+          if [ -z "$app" ] || [ -z "$dmg" ]; then echo "::error::No .app or .dmg was built"; exit 1; fi
           exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
           case "$BUILD_TARGET" in aarch64-*) want=arm64 ;; *) want=x86_64 ;; esac
           archs=$(lipo -archs "$exe")
@@ -481,7 +481,7 @@ jobs:
             [ "$pinned" = "$expected" ] || { echo "::error::The pinned hash ($pinned) differs from the release checksums ($expected)"; exit 1; }
           fi
           actual=$( (sha256sum "$dir/$asset" 2>/dev/null || shasum -a 256 "$dir/$asset") | awk '{print $1}')
-          [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo "::error::$asset: SHA-256 $actual, release lists '$expected'"; exit 1; }
+          if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then echo "::error::$asset: SHA-256 $actual, release lists '$expected'"; exit 1; fi
           echo "$asset $version: SHA-256 $actual matches the release checksums"
           chmod +x "$dir/$asset"
           if [ "$RUNNER_OS" = "macOS" ]; then codesign -dv "$dir/$asset" 2>&1 || true; fi

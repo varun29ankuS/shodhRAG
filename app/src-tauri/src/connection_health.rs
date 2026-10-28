@@ -811,6 +811,7 @@ mod tests {
             status: Some(status),
             retry_after_secs: retry,
             upstream: None,
+            resets_at_ms: None,
         }
     }
 

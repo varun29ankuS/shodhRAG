@@ -27,15 +27,14 @@ use shodh_rag::harness::catalog_cache::{CachedCatalog, CatalogCache, CATALOG_TTL
 use shodh_rag::harness::catalog_fetch::fetch_openrouter;
 use shodh_rag::harness::model::OLLAMA_DEFAULT_HOST;
 use shodh_rag::harness::model_catalog::{
-    build_catalog, choose_fallback, CatalogInputs, CatalogModel, FallbackContext, ModelRef,
-    ProviderId,
+    build_catalog, CatalogInputs, CatalogModel, ModelRef, ProviderId,
 };
 use shodh_rag::harness::model_choice::{
     check_selection, model_change_payload, resolve_active, ActiveModel, ChangeReason, ModelPrefs,
     ModelSource, Selection, SelectionContext,
 };
 use shodh_rag::harness::model_picks::{
-    model_name, next_in_chain, provider_order, resolve_chain, table, Pick, PickContext,
+    model_name, provider_order, resolve_chain, table, Pick, PickContext,
 };
 use shodh_rag::harness::stealth_allowed_by_env;
 use shodh_rag::llm::{ApiProvider, LLMMode};
@@ -155,6 +154,13 @@ impl ModelPickerState {
         }
         slot.clone()
     }
+
+    /// The cached OpenRouter list, however old (never fetched here: an answer never
+    /// waits for the network).
+    pub(crate) fn cached_openrouter(&self, audit: &AuditState) -> Option<CachedCatalog> {
+        self.cache(audit)
+            .and_then(|c| c.get(OPENROUTER_SOURCE).ok().flatten())
+    }
 }
 
 fn now_ms() -> u64 {
@@ -164,14 +170,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn data_dir(app: &AppHandle) -> PickerResult<PathBuf> {
+pub(crate) fn data_dir(app: &AppHandle) -> PickerResult<PathBuf> {
     crate::profile::app_data_dir(app)
         .map_err(|e| PickerError::failed(format!("The app data folder is unavailable: {e}")))
 }
 
 /// The key for `provider`: the one saved in the app (loaded from the OS
 /// keychain), else the provider's environment variable. Never logged.
-fn provider_key(llm: &LLMState, provider: ProviderId) -> Option<String> {
+pub(crate) fn provider_key(llm: &LLMState, provider: ProviderId) -> Option<String> {
     let id = provider.as_str();
     let saved = lock(&llm.api_keys).get(id);
     crate::api_key_store::choose_key(saved, crate::api_key_store::process_env_key(id))
@@ -213,7 +219,7 @@ pub(crate) fn ollama_host() -> String {
 }
 
 /// The model the app's LLM is configured with right now, as a picker entry.
-fn configured_model(llm: &LLMState) -> Option<ModelRef> {
+pub(crate) fn configured_model(llm: &LLMState) -> Option<ModelRef> {
     match &lock(&llm.config).mode {
         LLMMode::External {
             provider, model, ..
@@ -321,7 +327,7 @@ pub struct PickOption {
 }
 
 /// The pick chains for `catalog` and the connection state.
-fn pick_context<'a>(
+pub(crate) fn pick_context<'a>(
     connected: &'a [ProviderId],
     order: &'a [ProviderId],
     catalog: &'a [CatalogModel],
@@ -735,6 +741,22 @@ pub async fn model_set_fallback(
     Ok(saved.models)
 }
 
+/// "Allow paid backups": whether a free model may fall back to a model billed per token
+/// (a paid OpenRouter model, an API key). Off by default.
+#[tauri::command]
+pub async fn model_set_allow_paid(app: AppHandle, allow: bool) -> PickerResult<ModelPrefs> {
+    let (saved, _) = SettingsStore::in_dir(&data_dir(&app)?)
+        .update(|s| {
+            let mut prefs = std::mem::take(&mut s.models).sanitized();
+            prefs.allow_paid_backups = allow;
+            s.models = prefs;
+            Ok(())
+        })
+        .map_err(|e| PickerError::failed(e.to_string()))?;
+    broadcast(&app, &saved);
+    Ok(saved.models)
+}
+
 /// The model offered instead of `failed`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -742,80 +764,68 @@ pub struct FallbackOffer {
     pub model: ModelRef,
     /// Display name (the catalog's, else the id).
     pub name: String,
-    /// The "always fall back" setting is on: retry without asking.
+    /// The failed model's display name.
+    pub failed_name: String,
+    /// Retry without asking: "always fall back" is on, or the model is the next of the
+    /// user's pick (a pick falls back down its own list).
     pub automatic: bool,
 }
 
-/// The fallback for an answer that failed with `failed` (the model it ran
-/// with), or `None` when no other model is usable. Uses the cached model list
-/// only (never waits for the network).
+/// The fallback for an answer that failed with `failed` (the model it ran with), from
+/// the one resolver every model call uses (`crate::model_fallback`): the user's chosen
+/// fallback, then their pick's list, then automatic candidates, skipping models that
+/// failed moments ago, models the answer already `tried`, and models that cannot help
+/// with this `failure` (a rate-limited account's other free models, a smaller context).
+/// `None` when no other model is usable, or the failure is one no model fixes (a bad
+/// key, a refusal). Uses the cached model list only (never waits for the network).
 #[tauri::command]
 pub async fn model_fallback_offer(
     app: AppHandle,
     failed: ModelRef,
-    picker: State<'_, ModelPickerState>,
+    failure: Option<shodh_rag::harness::ProviderErrorKind>,
+    detail: Option<String>,
+    tried: Option<Vec<ModelRef>>,
     llm: State<'_, LLMState>,
-    audit: State<'_, AuditState>,
 ) -> PickerResult<Option<FallbackOffer>> {
     let failed = run_model(failed, configured_model(&llm).as_ref());
-    let settings = SettingsStore::in_dir(&data_dir(&app)?)
-        .load()
-        .map_err(|e| PickerError::failed(e.to_string()))?;
-    let prefs = settings.models.clone().sanitized();
-    let local_only = settings.policy.local_only;
-    let connect = app.state::<ConnectState>();
-    let connected = connected_providers(&llm, &connect);
-    let cached = picker
-        .cache(&audit)
-        .and_then(|c| c.get(OPENROUTER_SOURCE).ok().flatten());
-    let lmstudio = connect.lmstudio();
-    let catalog = build_catalog(&CatalogInputs {
-        openrouter: cached.as_ref().map(|c| c.models.as_slice()),
-        connected: &connected,
-        lmstudio: &lmstudio.models,
-        local_only,
-    });
-    let allow_stealth = stealth_allowed_by_env();
-    // A pick falls back down its own list, automatically.
-    let order = provider_order(&prefs.provider_order, &table().order);
-    let from_pick = prefs.pick.and_then(|pick| {
-        let chain = resolve_chain(
-            pick,
-            &pick_context(&connected, &order, &catalog, local_only),
-        );
-        next_in_chain(&chain, &failed).filter(|m| *m != failed)
-    });
-    let automatic = from_pick.is_some() || prefs.always_fall_back;
-    let offer = from_pick
-        .or_else(|| {
-            choose_fallback(&FallbackContext {
-                current: &failed,
-                preferred: prefs.fallback.as_ref(),
-                connected: &connected,
-                catalog: &catalog,
-                local_only,
-                allow_stealth,
-            })
-        })
-        .filter(|m| prefs.stealth_ok(m, allow_stealth));
-    Ok(offer.map(|model| {
-        let name = catalog
-            .iter()
-            .find(|c| c.provider == model.provider && c.id == model.model)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| model.model.clone());
-        FallbackOffer {
-            model,
-            name,
-            automatic,
-        }
+    let source = crate::model_fallback::PlanSource::read(&app).map_err(PickerError::failed)?;
+    let mut tried: Vec<ModelRef> = tried
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| run_model(m, configured_model(&llm).as_ref()))
+        .collect();
+    tried.push(failed.clone());
+    let detail = detail.map(|d| truncate_detail(&d));
+    let offer = crate::model_fallback::plan_offer(
+        &app,
+        &source,
+        &failed,
+        failure,
+        detail.as_deref(),
+        &tried,
+    );
+    let always = source.prefs().always_fall_back;
+    let failed_name = source.name_of(&failed);
+    Ok(offer.map(|candidate| FallbackOffer {
+        // A pick falls back down its own list without asking; anything else waits for
+        // a click unless "always fall back" is on.
+        automatic: always
+            || candidate.origin == shodh_rag::harness::model_fallback::Origin::PickChain,
+        model: candidate.model,
+        name: candidate.name,
+        failed_name,
     }))
+}
+
+/// The provider's message as far as the fallback reads it (its first 2000 characters).
+fn truncate_detail(detail: &str) -> String {
+    detail.chars().take(2_000).collect()
 }
 
 /// The picker entry of a run's model. A run names its runtime provider
 /// (`anthropic/…`), which a Claude Pro/Max sign-in shares with the Anthropic
 /// API key: when the active model is the subscription's, it is that one.
-fn run_model(failed: ModelRef, active: Option<&ModelRef>) -> ModelRef {
+pub(crate) fn run_model(failed: ModelRef, active: Option<&ModelRef>) -> ModelRef {
     match active {
         Some(active)
             if active.model == failed.model

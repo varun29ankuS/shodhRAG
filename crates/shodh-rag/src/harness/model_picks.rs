@@ -340,6 +340,7 @@ mod tests {
             tier: ModelTier::Local,
             privacy: PrivacyNote::OnDevice,
             stealth: false,
+            image_input: None,
         }
     }
 

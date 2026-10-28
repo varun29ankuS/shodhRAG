@@ -160,6 +160,8 @@ test('Open on a memory suggestion lands on Settings → Memory, other links on t
   assert.equal(settingsSectionOf({ kind: 'memory', link: settings }), 'memory');
   assert.equal(settingsSectionOf({ kind: 'memory', link: null }), null);
   assert.equal(settingsSectionOf({ kind: 'install', link: settings }), null);
+  assert.equal(settingsSectionOf({ kind: 'model', link: settings }), 'models', 'a failing model opens Settings → Model');
+  assert.equal(settingsSectionOf({ kind: 'model', link: null }), null);
   assert.equal(settingsSectionOf({ kind: 'reminder', link: { view: 'tasks', target: null } }), null);
 });
 

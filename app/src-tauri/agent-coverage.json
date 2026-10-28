@@ -153,6 +153,8 @@
     "model_set_favourite": { "excluded": "Starring models only arranges the user's own model picker." },
     "model_set_fallback": { "excluded": "The fallback model receives the user's documents when the main one fails; user-only." },
     "model_fallback_offer": { "excluded": "Offers the user a fallback after a failed answer; the switch itself is the user's click." },
+    "model_fallback_chain": { "excluded": "Shows the user which models back up their chosen model and how healthy they are (Settings); read-only status for the user, nothing for the assistant to act on." },
+    "model_set_allow_paid": { "excluded": "Whether a free model may fall back to a paid one decides what the user is billed; user-only." },
     "model_use_pick": { "excluded": "Choosing the model (a pick) changes who receives the user's documents and what it costs; user-only." },
     "model_set_provider_order": { "excluded": "The fallback order decides which providers receive the user's documents when a model fails; user-only." },
     "model_set_base_url": { "excluded": "A base URL redirects the user's documents and API key to another server; user-only." },

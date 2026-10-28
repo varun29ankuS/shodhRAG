@@ -432,8 +432,8 @@ function AssistantMessageView({
     () => (latest && canRetry
       ? {
           questionKey: `${conversationId ?? ''}|${question ?? messageId}`,
-          onRetry: (override, from) =>
-            onRetry(messageRef.current, override && from ? { override, from } : null),
+          onRetry: (override, from, names) =>
+            onRetry(messageRef.current, override && from ? { override, from, ...(names ?? {}) } : null),
         }
       : null),
     [latest, canRetry, conversationId, question, messageId, onRetry],

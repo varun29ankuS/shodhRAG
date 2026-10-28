@@ -27,6 +27,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditKey, AuditRecord};
+use shodh_rag::harness::model_catalog::{ModelRef, ProviderId};
 use shodh_rag::harness::{AgentEvent, RunStatus};
 use shodh_rag::llm::{
     ApiProvider, BoundedCompletion, GenerationConfig, LLMConfig, LLMManager, LLMMode,
@@ -49,6 +50,7 @@ use crate::app_settings::{broadcast, AppSettings, SettingsStore};
 use crate::audit_commands::AuditState;
 use crate::llm_commands::{ApiKeys, LLMState};
 use crate::memory_commands::MemoryState;
+use crate::model_fallback::Purpose;
 
 /// Chat messages saved by the removed legacy memory system (relative to the data dir).
 const LEGACY_MEMORIES: &str = "memory_store/memories.json";
@@ -406,6 +408,43 @@ pub(crate) fn configured_model(
     }))
 }
 
+/// The picker entry of `choice` when the app's fallback can serve it: an API provider
+/// the picker knows (the local llama.cpp model and other providers keep their own path).
+fn fallback_target(choice: &ModelChoice) -> Option<ModelRef> {
+    match choice {
+        ModelChoice::External {
+            provider, model, ..
+        } => ProviderId::from_api(provider).map(|p| ModelRef::new(p, model.trim())),
+        ModelChoice::Local { .. } => None,
+    }
+}
+
+/// The model answers come from, with the app's fallback (`crate::model_fallback`):
+/// Slack, Telegram and one-shot extraction call it, nobody is there to ask, so it falls
+/// back by itself. Refused like [`configured_model`] (no model, or a cloud model in
+/// Local-only mode).
+pub(crate) fn answering_model(
+    app: &AppHandle,
+    data_dir: &Path,
+    llm: &LLMState,
+    purpose: Purpose,
+) -> Result<Arc<dyn shodh_rag::research::results::TextModel>, String> {
+    let settings = SettingsStore::in_dir(data_dir)
+        .load()
+        .map_err(|e| e.to_string())?;
+    let mode = llm
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .mode
+        .clone();
+    let choice = choose_model(&mode, None, settings.policy.local_only)?;
+    match fallback_target(&choice) {
+        Some(requested) => Ok(crate::model_fallback::text_model(app, requested, purpose)),
+        None => configured_model(data_dir, llm),
+    }
+}
+
 /// Why evidence tables cannot fill with the configured model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableModelError {
@@ -558,6 +597,7 @@ impl shodh_rag::research::results::TextModel for AppModel {
 }
 
 struct AppModels {
+    app: AppHandle,
     data_dir: PathBuf,
     manager: Arc<AsyncRwLock<Option<LLMManager>>>,
     config: Arc<std::sync::Mutex<LLMConfig>>,
@@ -580,6 +620,13 @@ impl ModelSource for AppModels {
             settings.memory.learn_model.as_deref(),
             settings.policy.local_only,
         )?;
+        if let Some(requested) = fallback_target(&choice) {
+            return Ok(Arc::new(crate::model_fallback::fallback_text_model(
+                &self.app,
+                requested,
+                Purpose::Learning,
+            )));
+        }
         Ok(Arc::new(AppModel {
             data_dir: self.data_dir.clone(),
             manager: self.manager.clone(),
@@ -646,6 +693,7 @@ impl LearnState {
                 memory,
                 database: audit.database(),
                 models: Arc::new(AppModels {
+                    app: app.clone(),
                     data_dir: data_dir.to_path_buf(),
                     manager: llm.manager.clone(),
                     config: llm.config.clone(),

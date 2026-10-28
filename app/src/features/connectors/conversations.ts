@@ -70,6 +70,8 @@ export interface ConnectorAuthor {
   /** Shodh's answer. */
   shodh: boolean;
   link?: string;
+  /** On Shodh's answer: which backup model wrote it, when the chosen one could not ("Answered by …"). */
+  answeredBy?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,7 +82,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function messageAuthor(message: MessageLike): ConnectorAuthor {
   const meta = isRecord(message.metadata) ? message.metadata.connector : undefined;
   const info = isRecord(meta) ? meta : {};
-  if (message.role === 'assistant') return { name: 'Shodh', owner: false, shodh: true };
+  if (message.role === 'assistant') {
+    const answeredBy = typeof info.answeredBy === 'string' && info.answeredBy.trim() ? info.answeredBy.trim() : undefined;
+    return { name: 'Shodh', owner: false, shodh: true, ...(answeredBy ? { answeredBy } : {}) };
+  }
   const owner = info.owner === true;
   const name = typeof info.author === 'string' && info.author.trim() ? info.author.trim() : owner ? 'You' : 'Someone';
   const link = typeof info.link === 'string' && /^https:\/\//.test(info.link) ? info.link : undefined;

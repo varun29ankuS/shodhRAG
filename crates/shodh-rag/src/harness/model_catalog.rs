@@ -361,6 +361,10 @@ pub struct CatalogModel {
     pub privacy: PrivacyNote,
     /// OpenRouter stealth model: needs the user's explicit opt-in.
     pub stealth: bool,
+    /// Accepts images as input (OpenRouter's `architecture.input_modalities`); `None`
+    /// when unknown. Defaulted so model lists cached before it existed still read.
+    #[serde(default)]
+    pub image_input: Option<bool>,
 }
 
 impl CatalogModel {
@@ -390,6 +394,14 @@ struct OpenRouterModel {
     pricing: Option<OpenRouterPricing>,
     #[serde(default)]
     supported_parameters: Option<Vec<String>>,
+    #[serde(default)]
+    architecture: Option<OpenRouterArchitecture>,
+}
+
+#[derive(Deserialize)]
+struct OpenRouterArchitecture {
+    #[serde(default)]
+    input_modalities: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -460,6 +472,10 @@ pub fn parse_openrouter(json: &str) -> Result<Vec<CatalogModel>, CatalogError> {
                     PrivacyNote::ProviderTerms
                 },
                 stealth,
+                image_input: m
+                    .architecture
+                    .and_then(|a| a.input_modalities)
+                    .map(|inputs| inputs.iter().any(|i| i == "image")),
                 id: m.id,
             }
         })
@@ -509,6 +525,7 @@ pub fn build_catalog(inputs: &CatalogInputs<'_>) -> Vec<CatalogModel> {
                 tier: ModelTier::Local,
                 privacy: PrivacyNote::OnDevice,
                 stealth: false,
+                image_input: None,
             });
         }
     }
@@ -549,6 +566,7 @@ pub fn build_catalog(inputs: &CatalogInputs<'_>) -> Vec<CatalogModel> {
                     },
                     privacy: PrivacyNote::ProviderTerms,
                     stealth: false,
+                    image_input: priced.and_then(|m| m.image_input),
                 });
             }
         }

@@ -60,6 +60,7 @@ use shodh_rag::connectors::slack::web::{
     AuthInfo, BotChannel, BotDirectory, BotPoster, SlackApiError, SlackWeb,
 };
 use shodh_rag::connectors::slack::{CancellationToken, SlackInstallation};
+use shodh_rag::harness::model_fallback::AnsweredBy;
 use shodh_rag::research::results::TextModel;
 use shodh_rag::research::tables::calls::{next_utc_midnight, utc_day, SystemClock};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -1070,6 +1071,7 @@ pub fn slack_exchange(
         learn: true,
         // A channel's answer is built on what others said there: never learning context.
         answer_as_context: question.kind == QuestionKind::Direct,
+        answered_by: None,
     }
 }
 
@@ -1215,13 +1217,23 @@ impl AnswerSource for AppAnswerSource {
     }
 
     async fn keep_exchange(&self, question: &Question, asker: Option<&str>, turn: &ThreadTurn) {
+        self.keep_answer(question, asker, turn, None).await
+    }
+
+    async fn keep_answer(
+        &self,
+        question: &Question,
+        asker: Option<&str>,
+        turn: &ThreadTurn,
+        answered_by: Option<AnsweredBy>,
+    ) {
         let installation = installation_prefs(&self.data_dir, &self.team_id)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(target: "shodh::slack", error = %e, "the Slack settings could not be read for the app's copy of an answer");
                 None
             });
-        let exchange = slack_exchange(
+        let mut exchange = slack_exchange(
             &self.team_id,
             installation.as_ref(),
             question,
@@ -1229,6 +1241,7 @@ impl AnswerSource for AppAnswerSource {
             turn,
             Utc::now(),
         );
+        exchange.answered_by = answered_by.and_then(|by| by.note());
         conversations::keep(&self.app, exchange).await;
     }
 
@@ -1246,7 +1259,12 @@ impl AnswerSource for AppAnswerSource {
 
     fn model(&self) -> Result<Arc<dyn TextModel>, String> {
         let llm = self.app.state::<LLMState>();
-        crate::memory_learn::configured_model(&self.data_dir, &llm)
+        crate::memory_learn::answering_model(
+            &self.app,
+            &self.data_dir,
+            &llm,
+            crate::model_fallback::Purpose::Slack,
+        )
     }
 
     fn private_terms(&self) -> PrivateTerms {

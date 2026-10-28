@@ -3,11 +3,13 @@ import { useModelPicker } from './modelApi';
 import { ConnectPanel } from './ConnectPanel';
 import { ModelPicks } from './ModelPicks';
 import { AdvancedModelSettings } from './AdvancedModelSettings';
+import { BackupModels } from './BackupModels';
 
 /**
- * Settings → Model, in three parts: Connect (a subscription, an API key or
- * a model on this computer), Model (four picks from what is connected) and
- * Advanced (collapsed).
+ * Settings → Model, in four parts: Connect (a subscription, an API key or
+ * a model on this computer), Model (four picks from what is connected),
+ * Backup models (what is tried when a model can't answer) and Advanced
+ * (collapsed).
  */
 export function ModelSettingsSection() {
   const picker = useModelPicker();
@@ -27,6 +29,7 @@ export function ModelSettingsSection() {
         </h3>
         <ModelPicks picker={picker} />
       </section>
+      <BackupModels picker={picker} />
       <AdvancedModelSettings picker={picker} />
     </div>
   );

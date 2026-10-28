@@ -109,6 +109,8 @@ pub enum InboxKind {
     /// A connector (Slack) changed in a way the user should see: its connection was lost or
     /// came back, a channel finished its first backfill or stopped, someone saved a memory.
     Connector,
+    /// The user's chosen model keeps failing (Open goes to Settings → Model).
+    Model,
 }
 
 impl InboxKind {
@@ -123,6 +125,7 @@ impl InboxKind {
             Self::Export => "export",
             Self::Install => "install",
             Self::Connector => "connector",
+            Self::Model => "model",
         }
     }
 
@@ -137,6 +140,7 @@ impl InboxKind {
             "export" => Self::Export,
             "install" => Self::Install,
             "connector" => Self::Connector,
+            "model" => Self::Model,
             _ => return None,
         })
     }

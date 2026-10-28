@@ -14,6 +14,11 @@
 //!    memories, the chat so far, the model they chose, no tools ([`super::answer`]).
 //! 5. **Others** (allowed people, allowed groups): the workspace chosen on the card, no
 //!    memories, Telegram's own daily cap, the Slack answer path's rules.
+//!    Before searching, for both: a message sent more than a day before it arrived gets a
+//!    short note instead of an answer, once per chat for a backlog, and small talk is not
+//!    searched (the owner gets a short model reply, others a fixed one)
+//!    ([`crate::connectors::delivery`]). An answer to a message that waited more than ten
+//!    minutes starts with when it was sent.
 //! 6. "typing…" shows while Shodh works; the answer goes out in Telegram's HTML, in as
 //!    many messages as it needs ([`super::format`]); in a group it replies to the
 //!    question, and replies to it continue that thread.
@@ -34,15 +39,22 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use tokio_util::sync::CancellationToken;
 
 use super::access::{route, Route, Rules};
-use super::answer::{owner_prompt, owner_query, OWNER_ANSWER_TOKENS, OWNER_PASSAGES, TELEGRAM};
+use super::answer::{
+    owner_prompt, owner_query, owner_small_talk_prompt, OWNER_ANSWER_TOKENS, OWNER_PASSAGES,
+    OWNER_SMALL_TALK_TOKENS, TELEGRAM,
+};
 use super::api::{BotApi, TelegramError};
 use super::format::{answer_parts, note_part, owner_parts, Part};
 use super::link::{LinkError, LinkKind};
 use super::updates::{Chat, Message, Person, Update};
+use crate::connectors::delivery::{
+    is_small_talk, lateness, local_offset, stale_reply, with_late_line, Lateness, StaleNotes,
+    SMALL_TALK_REPLY,
+};
 use crate::connectors::slack::answer::{
     answer_prompt_in, search_query, AnswerPassage, AnswerScope, ThreadTurn, MAX_ANSWER_TOKENS,
 };
@@ -212,6 +224,11 @@ pub enum Outcome {
     Unlinked,
     /// Telegram refused a message after its retries.
     SendFailed(String),
+    /// Sent more than a day before it arrived: noted (once per chat for a backlog), not
+    /// answered.
+    Stale,
+    /// Small talk from someone other than the owner: a fixed reply, nothing searched.
+    SmallTalk,
 }
 
 /// Group messages and the thread (the question message) each belongs to.
@@ -248,7 +265,10 @@ pub struct Responder {
     pub cancel: CancellationToken,
     pub retry: RetryPolicy,
     pub typing_every: Duration,
+    /// The time zone times are said in (the computer's; fixed in tests).
+    pub offset_of: fn(DateTime<Utc>) -> FixedOffset,
     noted: Mutex<HashMap<i64, DateTime<Utc>>>,
+    stale: StaleNotes,
     threads: Mutex<Threads>,
 }
 
@@ -282,9 +302,31 @@ impl Responder {
             cancel,
             retry: RetryPolicy::default(),
             typing_every: TYPING_EVERY,
+            offset_of: local_offset,
             noted: Mutex::new(HashMap::new()),
+            stale: StaleNotes::default(),
             threads: Mutex::new(Threads::default()),
         }
+    }
+
+    /// Says times in the zone of `offset_of` instead of the computer's.
+    pub fn with_offset_of(mut self, offset_of: fn(DateTime<Utc>) -> FixedOffset) -> Self {
+        self.offset_of = offset_of;
+        self
+    }
+
+    /// For a message sent more than a day ago: the note instead of an answer (sent once
+    /// per chat for a backlog), as the outcome; `None` for any other message.
+    async fn stale(&self, message: &Message, asked: &Asked) -> Option<Outcome> {
+        let now = self.clock.now();
+        if lateness(asked.at, now) != Lateness::Stale {
+            return None;
+        }
+        if !self.stale.take(&message.chat.id.to_string(), now) {
+            return Some(Outcome::Stale);
+        }
+        let note = stale_reply(asked.at, now, self.offset_of);
+        Some(self.reply(message, &note, Outcome::Stale).await)
     }
 
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
@@ -627,6 +669,13 @@ impl Responder {
                 return outcome;
             }
         }
+        // What they asked to remember was saved above; the rest is not answered a day late.
+        if let Some(outcome) = self.stale(message, asked).await {
+            return outcome;
+        }
+        if handled.is_none() && is_small_talk(&asked.text) {
+            return self.owner_small_talk(message, chat, asked).await;
+        }
         let note = handled.as_ref().map(|(request, remembered)| {
             let note = request.note.split_whitespace().collect::<Vec<_>>().join(" ");
             match remembered {
@@ -681,6 +730,29 @@ impl Responder {
         .await
     }
 
+    /// Small talk with the owner: one short model call, with the chat so far, and no
+    /// library search or memories.
+    async fn owner_small_talk(&self, message: &Message, chat: &ChatRef, asked: &Asked) -> Outcome {
+        let _typing = self.typing(message.chat.id);
+        let earlier = self.brain.earlier(chat).await;
+        if self.cancelled() {
+            return Outcome::Cancelled;
+        }
+        let prompt = owner_small_talk_prompt(&asked.text, &earlier);
+        self.complete_and_send(
+            message,
+            chat,
+            asked,
+            &prompt,
+            OWNER_SMALL_TALK_TOKENS,
+            &[],
+            false,
+            Audience::Owner,
+            None,
+        )
+        .await
+    }
+
     async fn guest_answer(
         &self,
         message: &Message,
@@ -696,6 +768,15 @@ impl Responder {
                 return self.reply(message, NOT_SET_UP, Outcome::NotSetUp).await;
             }
         };
+        if let Some(outcome) = self.stale(message, asked).await {
+            return outcome;
+        }
+        // No search and no model call (nor one of the day's answers) for a greeting.
+        if is_small_talk(&asked.text) {
+            return self
+                .reply(message, SMALL_TALK_REPLY, Outcome::SmallTalk)
+                .await;
+        }
         let now = self.clock.now();
         match self.quota_used(utc_day(now)).await {
             Ok(used) if used >= self.quota.cap() => {
@@ -824,7 +905,10 @@ impl Responder {
         };
         let private = self.brain.private_terms();
         let text = match completion {
-            Ok(text) if !text.trim().is_empty() => text,
+            // A message that waited while Shodh was off says when it was sent.
+            Ok(text) if !text.trim().is_empty() => {
+                with_late_line(&text, asked.at, self.clock.now(), self.offset_of)
+            }
             Ok(_) => {
                 let kind = ProviderErrorKind::EmptyResponse;
                 return self
@@ -1806,6 +1890,100 @@ pub(crate) mod tests {
             shown,
             "and not after the answer"
         );
+    }
+
+    /// India: +05:30.
+    fn ist(_: DateTime<Utc>) -> FixedOffset {
+        FixedOffset::east_opt(5 * 3600 + 1800).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_message_that_waited_while_shodh_was_off_says_when_it_was_sent() {
+        let s = setup(RecordingModel::answering("Sixty days."), 5);
+        let responder = s.responder.with_offset_of(ist);
+        // Two hours before the clock's 09:00 UTC: 07:00 UTC, 12:30 in India.
+        let mut late = message(1, OWNER, OWNER, "What is the notice period?");
+        late.date = now() - chrono::Duration::hours(2);
+        assert_eq!(
+            responder.respond(&update(late)).await,
+            Outcome::Answered(Audience::Owner)
+        );
+        let texts = s.bot.texts();
+        assert!(
+            texts[0].starts_with("(You sent this at 12:30, while Shodh was offline.)"),
+            "{texts:?}"
+        );
+        assert!(texts[0].contains("Sixty days."));
+        // A fresh message: answered as it is.
+        let mut fresh = message(2, OWNER, OWNER, "And the deposit?");
+        fresh.date = now() - chrono::Duration::minutes(3);
+        responder.respond(&update(fresh)).await;
+        let texts = s.bot.texts();
+        assert!(!texts[1].contains("while Shodh was offline"), "{texts:?}");
+        assert_eq!(s.brain.model.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_backlog_of_day_old_messages_gets_one_note_and_no_model_call() {
+        let s = setup(RecordingModel::answering("x"), 5);
+        let responder = s.responder.with_offset_of(ist);
+        // 30 hours before: Mon 26 Oct, 03:01 UTC = 08:31 in India.
+        let sent = now() - chrono::Duration::hours(30);
+        for i in 1..=3 {
+            let mut m = message(i, OWNER, OWNER, "What is the rent?");
+            m.date = sent + chrono::Duration::minutes(i);
+            assert_eq!(responder.respond(&update(m)).await, Outcome::Stale);
+        }
+        assert_eq!(
+            s.bot.texts(),
+            vec![
+                "I was offline when you sent this (Mon 08:31). Ask again if you still need it."
+                    .to_string()
+            ]
+        );
+        assert_eq!(s.brain.model.calls(), 0);
+        assert!(s.brain.retrieved_with.lock().unwrap().is_empty());
+        assert!(s.brain.kept.lock().unwrap().is_empty());
+        // Someone else's chat gets its own note, and spends none of the day's answers.
+        let mut guest = message(4, GUEST, GUEST, "What is the rent?");
+        guest.date = sent;
+        assert_eq!(responder.respond(&update(guest)).await, Outcome::Stale);
+        assert_eq!(s.bot.texts().len(), 2);
+        assert_eq!(s.brain.model.calls(), 0);
+        assert_eq!(s.quota.used(utc_day(now())).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn small_talk_is_answered_without_a_library_search() {
+        let s = setup(RecordingModel::answering("All good here!"), 5);
+        // The owner: one short model call, no search, no memories.
+        assert_eq!(
+            s.responder
+                .respond(&update(message(1, OWNER, OWNER, "How's it going shodh")))
+                .await,
+            Outcome::Answered(Audience::Owner)
+        );
+        assert_eq!(s.brain.model.calls(), 1);
+        assert!(s.brain.retrieved_with.lock().unwrap().is_empty());
+        assert_eq!(*s.brain.memories_asked.lock().unwrap(), 0);
+        assert!(s.brain.model.prompts.lock().unwrap()[0].contains("small talk"));
+        // Someone else: a fixed reply; no search, no model call, no answer spent.
+        assert_eq!(
+            s.responder
+                .respond(&update(message(2, GUEST, GUEST, "hi there!")))
+                .await,
+            Outcome::SmallTalk
+        );
+        assert!(s.bot.texts().last().unwrap().contains("Ask me a question"));
+        assert_eq!(s.brain.model.calls(), 1);
+        assert!(s.brain.retrieved_with.lock().unwrap().is_empty());
+        assert_eq!(s.quota.used(utc_day(now())).unwrap(), 0);
+        // A real question is searched as before, with a greeting in front or not.
+        s.responder
+            .respond(&update(message(3, OWNER, OWNER, "hi, what is the rent?")))
+            .await;
+        assert_eq!(s.brain.retrieved_with.lock().unwrap().len(), 1);
+        assert_eq!(*s.brain.memories_asked.lock().unwrap(), 1);
     }
 
     #[tokio::test]

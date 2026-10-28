@@ -5840,6 +5840,14 @@ Language models trained on long documents reach lower perplexity.
             .with(tracing_subscriber::filter::LevelFilter::INFO)
             .with(CapturedLog(lines.clone()));
         let _log = tracing::subscriber::set_default(subscriber);
+        // Tests run in parallel. While a single dispatcher exists, tracing-core gives a
+        // callsite first reached on another test's thread the interest of *that* thread's
+        // subscriber (none: "never"), cached for good, so this test missed "Indexed file"
+        // whenever another test indexed first. With a second dispatcher alive, interest
+        // comes from every registered dispatcher, this one included, on any thread; the
+        // rebuild fixes callsites cached before that.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
+        tracing::callsite::rebuild_interest_cache();
 
         let dir = tempfile::tempdir().unwrap();
         let engine = engine_with_paper(dir.path()).await;

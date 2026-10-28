@@ -117,7 +117,7 @@ test('the wrong tag, or a release without an updater key, fails', async () => {
   const r = makeRelease();
   await assert.rejects(run(r, { tag: 'v1.2.4' }), /for v1\.2\.3, not v1\.2\.4/);
   await assert.rejects(run(r, { tag: 'main' }), /not a release tag/);
-  await assert.rejects(run(r, { pubkey: null }), /no updater public key/);
+  await assert.rejects(run(r, { pubkey: null }), /No updater public key/);
 });
 
 test('a bundle that does not match its signature fails', async () => {

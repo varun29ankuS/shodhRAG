@@ -31,8 +31,8 @@ pub use availability::{
     AVAILABILITY_TTL_MS,
 };
 pub use health::{
-    cool_down_ms, trips_breaker, Admission, Health, HealthBook, FIRST_COOL_DOWN_MS,
-    LONG_FAILURE_MS, MAX_COOL_DOWN_MS,
+    cool_down_ms, trips_breaker, Admission, Health, HealthBook, FIRST_COOL_DOWN_MS, IDLE_ENTRY_MS,
+    LONG_FAILURE_MS, MAX_COOL_DOWN_MS, PROBE_LEASE_MS, STREAK_GAP_MS,
 };
 pub use policy::{decide, is_daily_free_quota, reset_at_ms, Decision, Eligible, MAX_RETRY_WAIT};
 pub use resolve::{

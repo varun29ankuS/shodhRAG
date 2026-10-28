@@ -70,23 +70,37 @@ use crate::research::tables::calls::{next_utc_midnight, utc_day, Clock};
 use crate::user_memory::learn::{memory_request, MemoryRequest};
 
 /// What a failed model call becomes in Telegram: the daily free model quota says when it
-/// resets, in the computer's time (`offset_of`), and what helps; anything else is the
-/// short reason Slack also gives.
+/// resets, in the computer's time (`offset_of`); anything else is the short reason Slack
+/// also gives. Only the owner is told which provider and what would help: a guest or a
+/// group learns nothing about the owner's setup.
 pub fn model_failure_text(
     kind: ProviderErrorKind,
     error: &str,
     now: DateTime<Utc>,
     offset_of: fn(DateTime<Utc>) -> FixedOffset,
+    audience: Audience,
 ) -> String {
     let now_ms = u64::try_from(now.timestamp_millis()).unwrap_or(0);
     if kind == ProviderErrorKind::QuotaExhausted && is_daily_free_quota_text(error) {
-        return match reset_time(error, now_ms) {
+        let owner = audience == Audience::Owner;
+        let quota = if owner {
+            "Today's free OpenRouter quota"
+        } else {
+            "Today's free model quota"
+        };
+        let until = match reset_time(error, now_ms) {
             Some(reset) => format!(
-                "Today's free OpenRouter quota is used up, so I can't answer until it resets at {}. Connecting another model provider in Shodh (Settings → Model) lets me answer before then.",
+                " until it resets at {}",
                 reset.with_timezone(&offset_of(reset)).format("%H:%M")
             ),
-            None => "Today's free OpenRouter quota is used up, so I can't answer until it resets. Connecting another model provider in Shodh (Settings → Model) lets me answer before then.".to_string(),
+            None => " until it resets".to_string(),
         };
+        let help = if owner {
+            " To answer before then, allow paid backups in Shodh (Settings → Model)."
+        } else {
+            ""
+        };
+        return format!("{quota} is used up, so I can't answer{until}.{help}");
     }
     model_failure_message(kind).to_string()
 }
@@ -961,7 +975,7 @@ impl Responder {
                 let now_ms = u64::try_from(self.clock.now().timestamp_millis()).unwrap_or(0);
                 let kind = classify(&e, None, now_ms).kind;
                 tracing::warn!(target: "shodh::telegram", kind = ?kind, error = %sanitize(&e, &private), "the model call for a Telegram answer failed");
-                let text = model_failure_text(kind, &e, self.clock.now(), self.offset_of);
+                let text = model_failure_text(kind, &e, self.clock.now(), self.offset_of, audience);
                 return self.reply(message, &text, Outcome::ModelFailed(kind)).await;
             }
         };
@@ -2329,7 +2343,28 @@ pub(crate) mod tests {
         );
         assert_eq!(
             s.bot.texts(),
-            vec!["Today's free OpenRouter quota is used up, so I can't answer until it resets at 05:30. Connecting another model provider in Shodh (Settings → Model) lets me answer before then.".to_string()]
+            vec!["Today's free OpenRouter quota is used up, so I can't answer until it resets at 05:30. To answer before then, allow paid backups in Shodh (Settings → Model).".to_string()]
         );
+    }
+
+    #[test]
+    fn a_guest_is_not_told_which_provider_the_owner_uses() {
+        use crate::harness::model_fallback::testkit::daily_quota;
+        let reset = Utc.with_ymd_and_hms(2026, 10, 28, 0, 0, 0).unwrap();
+        let error =
+            daily_quota(NEMOTRON, u64::try_from(reset.timestamp_millis()).unwrap()).to_string();
+        for audience in [Audience::Guest, Audience::Group] {
+            let text = model_failure_text(
+                ProviderErrorKind::QuotaExhausted,
+                &error,
+                now(),
+                ist,
+                audience,
+            );
+            assert_eq!(
+                text,
+                "Today's free model quota is used up, so I can't answer until it resets at 05:30."
+            );
+        }
     }
 }

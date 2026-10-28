@@ -30,6 +30,8 @@ export interface ChainCandidate {
   contextLength: number | null;
   privacy: PrivacyNote;
   free: boolean;
+  /** Billed per token (an API key, a paid OpenRouter model). */
+  paid: boolean;
   health: ChainHealth;
   availability: ChainAvailability | null;
   /** This kind of call can use it (a subscription answers only in Ask). */
@@ -47,6 +49,7 @@ export interface FallbackChain {
   /** The chain of connectors and background tasks (one call from the app). */
   direct: ChainPlan | null;
   alwaysFallBack: boolean;
+  allowPaidBackups: boolean;
   localOnly: boolean;
   nowMs: number;
 }
@@ -95,6 +98,7 @@ function readCandidate(value: unknown): ChainCandidate | null {
     contextLength: num(value.contextLength),
     privacy: PRIVACY.includes(value.privacy as PrivacyNote) ? (value.privacy as PrivacyNote) : 'provider_terms',
     free: value.free === true,
+    paid: value.paid === true,
     health: readHealth(value.health),
     availability: readAvailability(value.availability),
     reachable: value.reachable !== false,
@@ -118,9 +122,52 @@ export function readFallbackChain(value: unknown): FallbackChain | null {
     plan: readPlan(value.plan),
     direct: readPlan(value.direct),
     alwaysFallBack: value.alwaysFallBack === true,
+    allowPaidBackups: value.allowPaidBackups === true,
     localOnly: value.localOnly === true,
     nowMs: num(value.nowMs) ?? Date.now(),
   };
+}
+
+/** What happens to prompts sent to a model, in a few words (shown on each chain row). */
+export function privacyLabel(privacy: PrivacyNote): string {
+  switch (privacy) {
+    case 'on_device':
+      return 'stays on this computer';
+    case 'provider_terms':
+      return "provider's API terms";
+    case 'may_log_prompts':
+      return 'may log prompts';
+  }
+}
+
+/** A select option's value for `model`, and back (JSON: ids may hold any character). */
+export function modelOptionValue(model: ModelRef): string {
+  return JSON.stringify([model.provider, model.model]);
+}
+
+export function readModelOption(value: string): ModelRef | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null;
+    return readModelRef({ provider: parsed[0], model: parsed[1] });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keeps only the newest of overlapping requests: `begin` before a request, `isLatest`
+ * when its answer arrives (an older answer arriving late is dropped).
+ */
+export class LatestOnly {
+  private seq = 0;
+  begin(): number {
+    this.seq += 1;
+    return this.seq;
+  }
+  isLatest(ticket: number): boolean {
+    return ticket === this.seq;
+  }
 }
 
 /** Where a model in the chain comes from, in words. */

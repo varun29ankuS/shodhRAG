@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use super::health::HealthBook;
+use super::health::{HealthBook, MAX_COOL_DOWN_MS};
 use super::policy::{decide, Decision, Eligible, MAX_RETRY_WAIT};
-use super::resolve::{Candidate, Plan};
+use super::resolve::{Candidate, Origin, Plan};
 use crate::harness::model_catalog::ModelRef;
 use crate::harness::provider_error::ProviderErrorKind;
 use crate::llm::ProviderFailure;
@@ -51,14 +51,18 @@ impl Pause for SystemTime {
 pub struct Bounds {
     /// Models tried besides the requested one.
     pub max_fallbacks: usize,
-    /// No new attempt (or wait) starts after this much time.
+    /// The whole call: no attempt runs past it, no new one (or wait) starts after it.
     pub time_cap: Duration,
+    /// One attempt, while a backup could still follow it (a hung model then leaves time
+    /// for the backup).
+    pub attempt_timeout: Duration,
 }
 
-/// At most 2 fallbacks and 2 minutes.
+/// At most 2 fallbacks, 60 s per attempt while a backup could follow, 150 s in all.
 pub const DEFAULT_BOUNDS: Bounds = Bounds {
     max_fallbacks: 2,
-    time_cap: Duration::from_secs(120),
+    time_cap: Duration::from_secs(150),
+    attempt_timeout: Duration::from_secs(60),
 };
 
 impl Default for Bounds {
@@ -216,7 +220,9 @@ fn skipped_failure(candidate: &Candidate) -> ProviderFailure {
             upstream: None,
             model: candidate.model.model.clone(),
             status: None,
-            detail: "This model is temporarily unavailable here: it answers only in Ask, or                      is not connected, and no other model is set up to answer instead."
+            detail: "This model is temporarily unavailable here (it is not connected, or it \
+                     answers only through the assistant in Ask), and no other model is set \
+                     up to answer instead."
                 .to_string(),
         };
     }
@@ -228,6 +234,7 @@ fn skipped_failure(candidate: &Candidate) -> ProviderFailure {
     let what = match kind {
         ProviderErrorKind::Timeout => "it timed out moments ago",
         ProviderErrorKind::Network => "a connection error ended its last call moments ago",
+        ProviderErrorKind::Auth => "its provider refused the API key moments ago",
         _ => "it is temporarily unavailable (it failed moments ago)",
     };
     ProviderFailure {
@@ -240,8 +247,94 @@ fn skipped_failure(candidate: &Candidate) -> ProviderFailure {
     }
 }
 
+/// An attempt that did not answer within `limit`.
+fn timed_out(candidate: &Candidate, limit: Duration) -> ProviderFailure {
+    ProviderFailure {
+        kind: ProviderErrorKind::Timeout,
+        provider: candidate.model.provider.label().to_string(),
+        upstream: None,
+        model: candidate.model.model.clone(),
+        status: None,
+        detail: format!(
+            "The model did not answer in time (timed out after {} s).",
+            limit.as_secs()
+        ),
+    }
+}
+
+/// Failures of a backup that say nothing about the call itself (its key was refused, it
+/// refused this request shape, it sent nothing): that backup is passed over and the
+/// next one tried. A content filter's refusal is about the request: it stops the call.
+fn skips_backup(kind: ProviderErrorKind) -> bool {
+    matches!(
+        kind,
+        ProviderErrorKind::Auth
+            | ProviderErrorKind::InvalidRequest
+            | ProviderErrorKind::EmptyResponse
+            | ProviderErrorKind::Other
+    )
+}
+
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// What one run of a plan has seen so far.
+struct Trail {
+    switches: Vec<Switch>,
+    tried: Vec<ModelRef>,
+    /// The requested model's failure: the one the caller reports (it is the model the
+    /// user chose), whatever the backups did after it.
+    requested_failure: Option<ProviderFailure>,
+    last: Option<ProviderFailure>,
+    /// Broken connections, judged once the call ends: when no provider was reached at
+    /// all, the outage is this computer's and no model's health is touched.
+    network: Vec<ModelRef>,
+    reached_provider: bool,
+}
+
+impl Trail {
+    fn left(&mut self, candidate: &Candidate, reason: SwitchReason) {
+        self.switches.push(Switch {
+            from: candidate.model.clone(),
+            from_name: candidate.name.clone(),
+            reason,
+        });
+    }
+
+    fn end(
+        self,
+        plan: &Plan,
+        health: &HealthBook,
+        now_ms: u64,
+        reason: StopReason,
+    ) -> Box<Exhausted> {
+        if self.reached_provider {
+            for model in &self.network {
+                health.record_failure(model, ProviderErrorKind::Network, now_ms);
+            }
+        }
+        let reason = if self.tried.is_empty() && reason == StopReason::NoCandidate {
+            StopReason::AllSkipped
+        } else {
+            reason
+        };
+        Box::new(Exhausted {
+            failure: self
+                .requested_failure
+                .or(self.last)
+                .unwrap_or_else(|| skipped_failure(&plan.requested)),
+            reason,
+            switches: self.switches,
+            tried: self.tried,
+        })
+    }
+}
+
 /// Runs `call` down `plan` (see the module docs and [`super::policy`]), recording each
-/// outcome in `health`.
+/// outcome in `health`. Each attempt is bounded: [`Bounds::attempt_timeout`] while a
+/// backup could still follow, and never past [`Bounds::time_cap`]; an attempt that runs
+/// out of time is a timeout, so a hung model falls back like an unavailable one.
 pub async fn run_plan<T, F, Fut>(
     plan: &Plan,
     health: &HealthBook,
@@ -255,12 +348,19 @@ where
     Fut: Future<Output = Result<T, AttemptFailure>>,
 {
     let started = clock.now_ms();
-    let cap_ms = u64::try_from(bounds.time_cap.as_millis()).unwrap_or(u64::MAX);
+    let cap_ms = ms(bounds.time_cap);
     let candidates: Vec<&Candidate> = plan.candidates().collect();
-    let mut switches: Vec<Switch> = Vec::new();
-    let mut tried: Vec<ModelRef> = Vec::new();
-    let mut last: Option<ProviderFailure> = None;
-    let mut eligible = Eligible::Any;
+    let mut trail = Trail {
+        switches: Vec::new(),
+        tried: Vec::new(),
+        requested_failure: None,
+        last: None,
+        network: Vec::new(),
+        reached_provider: false,
+    };
+    // Every failure so far narrows what may follow (a used-up free quota, then an
+    // unavailable paid model, still rules out the other free models).
+    let mut eligible: Vec<Eligible> = Vec::new();
     let mut retry_after: Option<Duration> = None;
     let mut waited = false;
     let mut fallbacks = 0usize;
@@ -268,30 +368,13 @@ where
     // The model a rate limit may wait out and retry (once), when nothing else fits.
     let mut retry_same: Option<&Candidate> = None;
 
-    let exhausted = |failure: Option<ProviderFailure>,
-                     reason: StopReason,
-                     switches: Vec<Switch>,
-                     tried: Vec<ModelRef>| {
-        Box::new(Exhausted {
-            failure: failure.unwrap_or_else(|| skipped_failure(&plan.requested)),
-            reason: if tried.is_empty() && reason == StopReason::NoCandidate {
-                StopReason::AllSkipped
-            } else {
-                reason
-            },
-            switches,
-            tried,
-        })
-    };
-
     loop {
         let candidate = match retry_same.take() {
             Some(same) => same,
             None => {
-                // The next eligible candidate.
                 let next = candidates[index..]
                     .iter()
-                    .position(|c| index == 0 || eligible.allows(c))
+                    .position(|c| index == 0 || eligible.iter().all(|e| e.allows(c)))
                     .map(|offset| index + offset);
                 match next {
                     Some(i) => {
@@ -301,12 +384,11 @@ where
                     None => {
                         // Nothing else fits: a short rate-limit wait, once, on the same model.
                         let elapsed = clock.now_ms().saturating_sub(started);
-                        let wait_ms = retry_after
-                            .filter(|w| *w <= MAX_RETRY_WAIT)
-                            .map(|w| u64::try_from(w.as_millis()).unwrap_or(u64::MAX));
-                        let last_model = tried.last().cloned();
-                        let same = last_model
-                            .and_then(|m| candidates.iter().copied().find(|c| c.model == m));
+                        let wait_ms = retry_after.filter(|w| *w <= MAX_RETRY_WAIT).map(ms);
+                        let same = trail
+                            .tried
+                            .last()
+                            .and_then(|m| candidates.iter().copied().find(|c| &c.model == m));
                         match (wait_ms, same) {
                             (Some(wait_ms), Some(same))
                                 if !waited && elapsed.saturating_add(wait_ms) < cap_ms =>
@@ -318,11 +400,11 @@ where
                                 continue;
                             }
                             _ => {
-                                return Err(exhausted(
-                                    last,
+                                return Err(trail.end(
+                                    plan,
+                                    health,
+                                    clock.now_ms(),
                                     StopReason::NoCandidate,
-                                    switches,
-                                    tried,
                                 ))
                             }
                         }
@@ -331,44 +413,53 @@ where
             }
         };
         let is_fallback = candidate.model != plan.requested.model;
-        let new_model = !tried.contains(&candidate.model);
+        let new_model = !trail.tried.contains(&candidate.model);
+        let elapsed = clock.now_ms().saturating_sub(started);
         if is_fallback && new_model {
             if fallbacks >= bounds.max_fallbacks {
-                return Err(exhausted(last, StopReason::MaxFallbacks, switches, tried));
+                return Err(trail.end(plan, health, clock.now_ms(), StopReason::MaxFallbacks));
             }
-            if clock.now_ms().saturating_sub(started) >= cap_ms {
-                return Err(exhausted(last, StopReason::TimeCap, switches, tried));
+            if elapsed >= cap_ms {
+                return Err(trail.end(plan, health, clock.now_ms(), StopReason::TimeCap));
             }
         }
         if !candidate.reachable {
-            switches.push(Switch {
-                from: candidate.model.clone(),
-                from_name: candidate.name.clone(),
-                reason: SwitchReason::Unreachable,
-            });
+            trail.left(candidate, SwitchReason::Unreachable);
             continue;
         }
         let Some(admission) = health.admit(&candidate.model, clock.now_ms()) else {
-            switches.push(Switch {
-                from: candidate.model.clone(),
-                from_name: candidate.name.clone(),
-                reason: SwitchReason::Skipped {
-                    last: health
-                        .health(&candidate.model, clock.now_ms())
-                        .last_failure(),
-                },
-            });
+            let last = health
+                .health(&candidate.model, clock.now_ms())
+                .last_failure();
+            trail.left(candidate, SwitchReason::Skipped { last });
             continue;
         };
         if is_fallback && new_model {
             fallbacks += 1;
         }
         if new_model {
-            tried.push(candidate.model.clone());
+            trail.tried.push(candidate.model.clone());
         }
-        match call(candidate.clone()).await {
+        // While a backup could still follow, one attempt may not use up the whole call.
+        let remaining = Duration::from_millis(cap_ms.saturating_sub(elapsed).max(1_000));
+        let backups_left = fallbacks < bounds.max_fallbacks && index < candidates.len();
+        let limit = if backups_left {
+            remaining.min(bounds.attempt_timeout)
+        } else {
+            remaining
+        };
+        let attempt = call(candidate.clone());
+        let outcome = tokio::select! {
+            biased;
+            result = attempt => result,
+            () = pause.pause(limit) => Err(AttemptFailure::from(timed_out(candidate, limit))),
+        };
+        let attempt = match outcome {
             Ok(value) => {
                 admission.succeeded();
+                for model in &trail.network {
+                    health.record_failure(model, ProviderErrorKind::Network, clock.now_ms());
+                }
                 return Ok(Answered {
                     value,
                     by: AnsweredBy {
@@ -376,46 +467,55 @@ where
                         name: candidate.name.clone(),
                         requested: plan.requested.model.clone(),
                         requested_name: plan.requested.name.clone(),
-                        switches,
+                        switches: trail.switches,
                     },
-                    tried,
+                    tried: trail.tried,
                 });
             }
-            Err(attempt) => {
-                let now = clock.now_ms();
-                admission.failed(attempt.failure.kind, now);
-                let kind = attempt.failure.kind;
-                if attempt.streamed {
-                    return Err(exhausted(
-                        Some(attempt.failure),
-                        StopReason::Streamed,
-                        switches,
-                        tried,
-                    ));
+            Err(attempt) => attempt,
+        };
+        let now = clock.now_ms();
+        let kind = attempt.failure.kind;
+        if kind == ProviderErrorKind::Network {
+            // Judged when the call ends (see `Trail::network`); the probe is freed.
+            drop(admission);
+            if !trail.network.contains(&candidate.model) {
+                trail.network.push(candidate.model.clone());
+            }
+        } else {
+            trail.reached_provider = true;
+            admission.failed(kind, now);
+        }
+        if !is_fallback && trail.requested_failure.is_none() {
+            trail.requested_failure = Some(attempt.failure.clone());
+        }
+        if attempt.streamed {
+            trail.last = Some(attempt.failure);
+            return Err(trail.end(plan, health, now, StopReason::Streamed));
+        }
+        if is_fallback && skips_backup(kind) {
+            // This backup cannot answer; the call goes on as it was.
+            if kind == ProviderErrorKind::Auth && candidate.origin == Origin::Automatic {
+                health.bench(&candidate.model, kind, now, MAX_COOL_DOWN_MS);
+            }
+            trail.left(candidate, SwitchReason::Failed { kind });
+            continue;
+        }
+        match decide(&attempt.failure, candidate, now) {
+            Decision::Stop => {
+                trail.last = Some(attempt.failure);
+                return Err(trail.end(plan, health, now, StopReason::NotHelpful));
+            }
+            Decision::Switch {
+                eligible: next,
+                retry_after: wait,
+            } => {
+                trail.left(candidate, SwitchReason::Failed { kind });
+                if next != Eligible::Any && !eligible.contains(&next) {
+                    eligible.push(next);
                 }
-                match decide(&attempt.failure, candidate, now) {
-                    Decision::Stop => {
-                        return Err(exhausted(
-                            Some(attempt.failure),
-                            StopReason::NotHelpful,
-                            switches,
-                            tried,
-                        ))
-                    }
-                    Decision::Switch {
-                        eligible: next,
-                        retry_after: wait,
-                    } => {
-                        switches.push(Switch {
-                            from: candidate.model.clone(),
-                            from_name: candidate.name.clone(),
-                            reason: SwitchReason::Failed { kind },
-                        });
-                        eligible = next;
-                        retry_after = wait;
-                        last = Some(attempt.failure);
-                    }
-                }
+                retry_after = wait;
+                trail.last = Some(attempt.failure);
             }
         }
     }

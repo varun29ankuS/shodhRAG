@@ -19,6 +19,13 @@
 //! - **Bad key, content refused, bad request, empty or unknown failures**: never another
 //!   model; the real reason is shown.
 //! - **Context too long**: only a candidate with a larger context window.
+//!
+//! The rules of every failure in a call add up: once the free quota is used up, no free
+//! model follows, whatever failed after it. A free model only has paid models after it
+//! when the user allowed paid backups ([`super::resolve`]), so with them off a used-up
+//! free quota ends the call with its reset time. A backup that fails on its own (its key
+//! is refused, it sent nothing) is passed over without ending the call
+//! ([`super::run`]).
 
 use std::time::Duration;
 

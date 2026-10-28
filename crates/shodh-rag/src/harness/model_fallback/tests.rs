@@ -74,6 +74,7 @@ enum Fixture {
     BadKey401,
     Moderation403,
     ContextTooLong,
+    Network,
 }
 
 fn openrouter_headers(reset_ms: u64) -> String {
@@ -118,6 +119,7 @@ fn failure(fixture: Fixture, model: &ModelRef, now_ms: u64) -> ProviderFailure {
             403,
             r#"{"error":{"message":"Input requires moderation","code":403}}"#,
         ),
+        Fixture::Network => ctx.failure(ProviderErrorKind::Network, None, "connection refused"),
         Fixture::ContextTooLong => ctx.http(
             400,
             r#"{"error":{"message":"This endpoint's maximum context length is 32768 tokens.","code":400}}"#,
@@ -298,6 +300,7 @@ struct Setup {
     order: Vec<ProviderId>,
     local_only: bool,
     accepted: Vec<String>,
+    allow_paid: bool,
     needs: CallNeeds,
 }
 
@@ -318,6 +321,8 @@ impl Setup {
             ],
             local_only: false,
             accepted: Vec::new(),
+            // The default: a free model never falls back to a paid one.
+            allow_paid: false,
             needs: CallNeeds::direct("What does the report say about costs?"),
         }
     }
@@ -334,6 +339,7 @@ impl Setup {
             local_only: self.local_only,
             allow_stealth: false,
             stealth_accepted: &self.accepted,
+            allow_paid: self.allow_paid,
             needs: self.needs,
         }
     }
@@ -405,6 +411,8 @@ fn rig_with(
 fn free_plan(requested: &str, fallbacks: &[&str]) -> Plan {
     let mut setup = Setup::new(or(requested));
     setup.connected = vec![ProviderId::OpenRouter, ProviderId::Google];
+    // These plans mix free and paid backups to show the rate-limit rules.
+    setup.allow_paid = true;
     let base = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
     let find = |id: &str| -> Candidate {
         base.candidates()
@@ -423,6 +431,7 @@ fn free_plan(requested: &str, fallbacks: &[&str]) -> Plan {
 #[test]
 fn candidates_come_requested_then_chosen_then_pick_then_automatic() {
     let mut setup = Setup::new(or(NEMOTRON));
+    setup.allow_paid = true;
     setup.connected = vec![
         ProviderId::OpenRouter,
         ProviderId::Google,
@@ -595,10 +604,26 @@ fn automatic_candidates_never_lower_privacy_but_the_users_own_choices_may() {
     setup.connected = vec![ProviderId::OpenRouter, ProviderId::LmStudio];
     let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
     assert_eq!(ids(&plan)[1..], ["qwen3-8b"]);
-    // The user chose a free fallback themselves: it is used.
+    // The user chose a free fallback themselves: Ask uses it (the answer says so).
     setup.chosen = Some(or(GEMMA));
+    setup.needs = CallNeeds::agent();
     let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
     assert_eq!(ids(&plan)[1..], [GEMMA, "qwen3-8b"]);
+    // Connectors and background work switch unseen: not even the user's own backup
+    // may be less private than the requested model there.
+    setup.needs = CallNeeds::direct("q");
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert_eq!(ids(&plan)[1..], ["qwen3-8b"]);
+}
+
+#[test]
+fn a_local_model_never_sends_connector_passages_to_the_users_cloud_backup() {
+    let mut setup = Setup::new(ModelRef::new(ProviderId::LmStudio, "qwen3-8b"));
+    setup.connected = vec![ProviderId::OpenRouter, ProviderId::LmStudio];
+    setup.chosen = Some(or(GEMMA));
+    setup.pick = vec![or(LIGHTNING)];
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert!(plan.fallbacks.is_empty(), "{:?}", ids(&plan));
 }
 
 #[test]
@@ -656,6 +681,8 @@ fn stealth_models_need_the_users_confirmation() {
     let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
     assert!(!ids(&plan).contains(&"stealth/space-bunny".to_string()));
     setup.accepted = vec!["stealth/space-bunny".into()];
+    // An unlisted OpenRouter model may be billed: allowed here to show consent alone.
+    setup.allow_paid = true;
     let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
     assert_eq!(plan.fallbacks[0].model.model, "stealth/space-bunny");
 }
@@ -1051,8 +1078,8 @@ async fn at_most_two_fallbacks_are_tried() {
     assert_eq!(rig.provider.calls(), [NEMOTRON, GEMMA, LIGHTNING]);
     assert_eq!(
         exhausted.failure.kind,
-        ProviderErrorKind::Timeout,
-        "the last failure is reported"
+        ProviderErrorKind::ModelUnavailable,
+        "the requested model's failure is reported, not the last backup's"
     );
 }
 
@@ -1061,6 +1088,7 @@ async fn no_fallback_starts_after_the_time_cap() {
     let bounds = Bounds {
         max_fallbacks: 2,
         time_cap: Duration::from_secs(30),
+        attempt_timeout: Duration::from_secs(20),
     };
     let rig = rig_with(
         free_plan(NEMOTRON, &[GEMMA]),
@@ -1204,4 +1232,285 @@ async fn a_subscription_cannot_answer_a_direct_call_so_the_next_model_does() {
         by.note().unwrap(),
         "Answered by Gemini 3 Flash — claude-opus-5-5 cannot answer here"
     );
+}
+
+// ── Fix round ──────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_hung_model_times_out_and_the_backup_answers() {
+    let health = HealthBook::new();
+    let clock = FakeClock::at(T0);
+    let pause = FakePause {
+        clock: clock.clone(),
+        waits: Mutex::new(Vec::new()),
+    };
+    let plan = free_plan(NEMOTRON, &[GEMMA]);
+    let answered = run_plan(
+        &plan,
+        &health,
+        clock.as_ref(),
+        &pause,
+        DEFAULT_BOUNDS,
+        |candidate| async move {
+            if candidate.model.model == NEMOTRON {
+                std::future::pending::<Result<String, AttemptFailure>>().await
+            } else {
+                Ok("from gemma".to_string())
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(answered.value, "from gemma");
+    assert_eq!(
+        *pause.waits.lock().unwrap(),
+        [DEFAULT_BOUNDS.attempt_timeout],
+        "the hung model got one attempt's time, not the whole call's"
+    );
+    assert!(matches!(
+        answered.by.switches[0].reason,
+        SwitchReason::Failed {
+            kind: ProviderErrorKind::Timeout
+        }
+    ));
+    assert!(matches!(
+        health.health(&or(NEMOTRON), clock.now()),
+        Health::CoolingDown { .. }
+    ));
+}
+
+#[tokio::test]
+async fn the_last_attempt_never_runs_past_the_time_cap() {
+    let health = HealthBook::new();
+    let clock = FakeClock::at(T0);
+    let pause = FakePause {
+        clock: clock.clone(),
+        waits: Mutex::new(Vec::new()),
+    };
+    let plan = Plan::only(free_plan(NEMOTRON, &[]).requested);
+    let exhausted = run_plan(
+        &plan,
+        &health,
+        clock.as_ref(),
+        &pause,
+        DEFAULT_BOUNDS,
+        |_candidate| std::future::pending::<Result<String, AttemptFailure>>(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(exhausted.failure.kind, ProviderErrorKind::Timeout);
+    assert_eq!(*pause.waits.lock().unwrap(), [DEFAULT_BOUNDS.time_cap]);
+}
+
+#[tokio::test]
+async fn a_backup_with_a_refused_key_is_passed_over_and_benched() {
+    let rig = make_rig(
+        free_plan(NEMOTRON, &[GEMMA, LIGHTNING]),
+        &[
+            (NEMOTRON, &[Script::Fail(Fixture::Unavailable404)]),
+            (GEMMA, &[Script::Fail(Fixture::BadKey401)]),
+            (LIGHTNING, &[Script::Answer("from lightning")]),
+        ],
+    );
+    assert_eq!(rig.model.complete("q", 10).await.unwrap(), "from lightning");
+    assert_eq!(rig.provider.calls(), [NEMOTRON, GEMMA, LIGHTNING]);
+    assert!(
+        matches!(
+            rig.health.health(&or(GEMMA), rig.clock.now()),
+            Health::CoolingDown {
+                last: ProviderErrorKind::Auth,
+                ..
+            }
+        ),
+        "an automatic backup whose key was refused is not tried again soon"
+    );
+
+    // A bad key on the requested model is the user's to fix: the call stops with it.
+    let rig = make_rig(
+        free_plan(NEMOTRON, &[GEMMA]),
+        &[
+            (NEMOTRON, &[Script::Fail(Fixture::BadKey401)]),
+            (GEMMA, &[Script::Answer("must not be called")]),
+        ],
+    );
+    let exhausted = rig.model.complete_with_fallback("q", 10).await.unwrap_err();
+    assert_eq!(exhausted.failure.kind, ProviderErrorKind::Auth);
+    assert_eq!(rig.provider.calls(), [NEMOTRON]);
+}
+
+#[test]
+fn a_local_requested_model_is_called_even_when_it_was_not_detected() {
+    // Ollama is never detected as connected; LM Studio may start after the last check.
+    for local in [
+        ModelRef::new(ProviderId::Ollama, "qwen3:4b"),
+        ModelRef::new(ProviderId::LmStudio, "llama-3b"),
+    ] {
+        let mut setup = Setup::new(local.clone());
+        setup.connected = Vec::new();
+        setup.local_only = true;
+        let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+        assert!(plan.requested.reachable, "{local:?}");
+    }
+    let mut setup = Setup::new(ModelRef::new(ProviderId::Ollama, "qwen3:4b"));
+    setup.connected = Vec::new();
+    setup.needs = CallNeeds::agent();
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert!(
+        !plan.requested.reachable,
+        "the agent runtime cannot use Ollama"
+    );
+}
+
+#[tokio::test]
+async fn each_failure_narrows_what_may_follow() {
+    // The daily free quota rules out free models; a paid backup that is then unavailable
+    // does not open them up again.
+    let rig = make_rig(
+        free_plan(NEMOTRON, &["gemini-3-flash-preview", LIGHTNING]),
+        &[
+            (NEMOTRON, &[Script::Fail(Fixture::Daily429)]),
+            (
+                "gemini-3-flash-preview",
+                &[Script::Fail(Fixture::Unavailable404)],
+            ),
+            (LIGHTNING, &[Script::Answer("must not be called")]),
+        ],
+    );
+    let exhausted = rig.model.complete_with_fallback("q", 10).await.unwrap_err();
+    assert_eq!(rig.provider.calls(), [NEMOTRON, "gemini-3-flash-preview"]);
+    assert!(
+        is_daily_free_quota(&exhausted.failure),
+        "the requested model's daily quota is what the user is told"
+    );
+}
+
+#[tokio::test]
+async fn an_outage_of_this_computers_connection_leaves_every_model_healthy() {
+    let rig = make_rig(
+        free_plan(NEMOTRON, &[GEMMA]),
+        &[
+            (NEMOTRON, &[Script::Fail(Fixture::Network)]),
+            (GEMMA, &[Script::Fail(Fixture::Network)]),
+        ],
+    );
+    rig.model.complete("q", 10).await.unwrap_err();
+    assert!(
+        rig.health.is_empty(),
+        "no provider was reached: no model is blamed"
+    );
+
+    // One model got through: the other's broken connection is its own.
+    let rig = make_rig(
+        free_plan(NEMOTRON, &[GEMMA]),
+        &[
+            (NEMOTRON, &[Script::Fail(Fixture::Network)]),
+            (GEMMA, &[Script::Answer("from gemma")]),
+        ],
+    );
+    rig.model.complete("q", 10).await.unwrap();
+    assert!(matches!(
+        rig.health.health(&or(NEMOTRON), rig.clock.now()),
+        Health::CoolingDown { .. }
+    ));
+    // Any later answer means the connection works: connection-only failures are forgotten.
+    rig.health.record_success(&or(LIGHTNING));
+    assert_eq!(
+        rig.health.health(&or(NEMOTRON), rig.clock.now()),
+        Health::Healthy
+    );
+}
+
+#[test]
+fn a_quiet_gap_starts_a_new_streak_and_a_recovery_takes_the_notice_back() {
+    let book = HealthBook::new();
+    let m = or(NEMOTRON);
+    book.record_failure(&m, ProviderErrorKind::ModelUnavailable, T0);
+    let later = T0 + STREAK_GAP_MS + 1;
+    book.record_failure(&m, ProviderErrorKind::ModelUnavailable, later);
+    assert_eq!(
+        book.failing_since(&m),
+        Some(later),
+        "not failing since hours ago"
+    );
+    assert!(!book.take_long_failure(&m, later + 1));
+
+    book.record_failure(&m, ProviderErrorKind::ModelUnavailable, later + 50 * MIN);
+    assert!(book.take_long_failure(&m, later + LONG_FAILURE_MS));
+    assert!(!book.take_recovered(&m));
+    book.record_success(&m);
+    assert!(book.take_recovered(&m), "the notice can be taken back");
+    assert!(!book.take_recovered(&m), "once");
+}
+
+#[test]
+fn an_earlier_probe_never_frees_a_later_one() {
+    let book = HealthBook::new();
+    let m = or(GEMMA);
+    book.record_failure(&m, ProviderErrorKind::ModelUnavailable, T0);
+    let first = book.admit(&m, T0 + 2 * MIN).unwrap();
+    assert!(first.is_probe());
+    // The first probe outlived its lease: another call probes.
+    let second_at = T0 + 2 * MIN + PROBE_LEASE_MS;
+    let second = book.admit(&m, second_at).unwrap();
+    assert!(second.is_probe());
+    drop(first);
+    assert!(
+        book.admit(&m, second_at + 1).is_none(),
+        "the second probe still holds the model"
+    );
+    drop(second);
+    assert!(book.admit(&m, second_at + 2).is_some());
+}
+
+#[test]
+fn calls_in_flight_when_a_model_failed_do_not_double_its_wait_and_idle_entries_go() {
+    let book = HealthBook::new();
+    let m = or(NEMOTRON);
+    let a = book.admit(&m, T0).unwrap();
+    let b = book.admit(&m, T0).unwrap();
+    a.failed(ProviderErrorKind::ModelUnavailable, T0 + 1);
+    b.failed(ProviderErrorKind::ModelUnavailable, T0 + 2);
+    assert!(matches!(
+        book.health(&m, T0 + 3),
+        Health::CoolingDown { failures: 1, until_ms, .. } if until_ms == T0 + 1 + 2 * MIN
+    ));
+    book.record_failure(
+        &or(GEMMA),
+        ProviderErrorKind::Timeout,
+        T0 + IDLE_ENTRY_MS + 10,
+    );
+    assert_eq!(book.len(), 1, "an entry idle for a day is dropped");
+}
+
+#[test]
+fn a_free_model_never_falls_back_to_a_paid_one_unless_allowed() {
+    let mut setup = Setup::new(or(NEMOTRON));
+    setup.connected = vec![ProviderId::OpenRouter, ProviderId::Google];
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert!(plan.fallbacks.iter().all(|c| !c.paid), "{:?}", ids(&plan));
+    assert!(!ids(&plan).contains(&"gemini-3-flash-preview".to_string()));
+    assert!(!ids(&plan).contains(&HAIKU_OR.to_string()));
+    // Even a paid backup the user chose waits for "Allow paid backups".
+    setup.chosen = Some(gemini());
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert!(plan.fallbacks.iter().all(|c| !c.paid));
+    setup.allow_paid = true;
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert_eq!(plan.fallbacks[0].model, gemini());
+    assert!(plan.fallbacks[0].paid);
+}
+
+#[tokio::test]
+async fn after_the_daily_free_quota_with_no_paid_backups_allowed_the_call_says_so() {
+    let mut setup = Setup::new(or(NEMOTRON));
+    setup.connected = vec![ProviderId::OpenRouter, ProviderId::Google];
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    let rig = make_rig(plan, &[(NEMOTRON, &[Script::Fail(Fixture::Daily429)])]);
+    let exhausted = rig.model.complete_with_fallback("q", 10).await.unwrap_err();
+    assert_eq!(
+        rig.provider.calls(),
+        [NEMOTRON],
+        "no free hop, and no paid model"
+    );
+    assert!(is_daily_free_quota(&exhausted.failure));
 }

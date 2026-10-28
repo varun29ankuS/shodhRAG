@@ -41,6 +41,7 @@ export const modelApi = {
     call<ModelPrefs>('model_set_fallback', { fallback, alwaysFallBack }),
   fallbackOffer: (failed: ModelRef, query: FallbackQuery = { failure: null, detail: null, tried: [] }) =>
     call<FallbackOffer | null>('model_fallback_offer', { failed, failure: query.failure, detail: query.detail, tried: query.tried }),
+  setAllowPaid: (allow: boolean) => call<ModelPrefs>('model_set_allow_paid', { allow }),
   /** The fallback chains used now, with each model's health and uptime (Settings → Model). */
   fallbackChain: async (): Promise<FallbackChain | null> => readFallbackChain(await call<unknown>('model_fallback_chain')),
   choosePick: (pick: PickId, sessionOverride = false) => call<PickerView>('model_use_pick', { pick, sessionOverride }),

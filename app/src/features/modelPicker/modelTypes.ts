@@ -95,6 +95,8 @@ export interface ModelPrefs {
   chosen: ModelRef | null;
   fallback: ModelRef | null;
   alwaysFallBack: boolean;
+  /** A free model may fall back to one billed per token (off by default). */
+  allowPaidBackups: boolean;
   stealthAccepted: string[];
   recent: ModelRef[];
   favourites: ModelRef[];
@@ -108,6 +110,7 @@ export const EMPTY_MODEL_PREFS: ModelPrefs = {
   chosen: null,
   fallback: null,
   alwaysFallBack: false,
+  allowPaidBackups: false,
   stealthAccepted: [],
   recent: [],
   favourites: [],
@@ -270,6 +273,7 @@ export function readModelPrefs(value: unknown): ModelPrefs {
     chosen: readModelRef(value.chosen),
     fallback: readModelRef(value.fallback),
     alwaysFallBack: value.alwaysFallBack === true,
+    allowPaidBackups: value.allowPaidBackups === true,
     stealthAccepted: Array.isArray(value.stealthAccepted) ? value.stealthAccepted.filter((s): s is string => typeof s === 'string') : [],
     recent: refs(value.recent),
     favourites: refs(value.favourites),

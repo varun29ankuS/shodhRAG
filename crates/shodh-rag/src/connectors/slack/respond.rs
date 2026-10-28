@@ -113,16 +113,17 @@ pub fn model_failure_message(kind: ProviderErrorKind) -> &'static str {
 
 /// What a failed model call becomes in Slack, from the call's error text: the daily free
 /// model quota says when it resets (OpenRouter's `X-RateLimit-Reset`, kept in the error);
-/// everything else is [`model_failure_message`].
+/// everything else is [`model_failure_message`]. Slack readers are not only the owner, so
+/// the provider is never named.
 pub fn model_failure_text(kind: ProviderErrorKind, error: &str, now: DateTime<Utc>) -> String {
     let now_ms = u64::try_from(now.timestamp_millis()).unwrap_or(0);
     if kind == ProviderErrorKind::QuotaExhausted && is_daily_free_quota_text(error) {
         return match reset_time(error, now_ms) {
             Some(reset) => format!(
-                "Shodh has used today's free model quota (OpenRouter), so it can't answer until it resets at {} UTC.",
+                "Shodh has used today's free model quota, so it can't answer until it resets at {} UTC.",
                 reset.format("%H:%M")
             ),
-            None => "Shodh has used today's free model quota (OpenRouter), so it can't answer until it resets.".to_string(),
+            None => "Shodh has used today's free model quota, so it can't answer until it resets.".to_string(),
         };
     }
     model_failure_message(kind).to_string()
@@ -2616,7 +2617,7 @@ mod tests {
         );
         assert_eq!(
             slack.texts(),
-            vec!["Shodh has used today's free model quota (OpenRouter), so it can't answer until it resets at 00:00 UTC.".to_string()]
+            vec!["Shodh has used today's free model quota, so it can't answer until it resets at 00:00 UTC.".to_string()]
         );
     }
 }

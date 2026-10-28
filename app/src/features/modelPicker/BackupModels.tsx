@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { ModelPickerHandle } from './modelApi';
 import { modelApi } from './modelApi';
 import { FOCUS_RING, INPUT } from './ConnectPanel';
 import type { ChainCandidate, ChainPlan, FallbackChain, HealthTone } from './fallbackChain';
-import { healthWords, originLabel } from './fallbackChain';
+import { LatestOnly, healthWords, modelOptionValue, originLabel, privacyLabel, readModelOption } from './fallbackChain';
 import type { ModelRef } from './modelTypes';
-import { PROVIDER_LABELS, readModelRef, sameModel } from './modelTypes';
+import { PROVIDER_LABELS, sameModel, toPickerError } from './modelTypes';
 
 /** How often the chain's health is read again while the section is open. */
 const REFRESH_MS = 30_000;
@@ -19,31 +19,38 @@ const DOT: Record<HealthTone, string> = {
   unknown: 'bg-shodh-text-faint',
 };
 
-const refKey = (m: ModelRef) => `${m.provider}\u0000${m.model}`;
-
 /**
  * Settings → Model → Backup models: the models the app tries, in order, when the
- * chosen one cannot answer, each with its health and live uptime; the backup the user
- * picks; whether Ask switches without asking; and that connectors and background work
+ * chosen one cannot answer, each with its health, live uptime and what happens to
+ * prompts; the backup the user picks; whether Ask switches without asking; whether a
+ * free model may fall back to a paid one; and that connectors and background work
  * always switch by themselves.
  */
 export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
-  const { view, setFallback } = picker;
+  const { view, setFallback, reload } = picker;
   const headingId = useId();
   const selectId = useId();
   const askId = useId();
+  const paidId = useId();
   const [chain, setChain] = useState<FallbackChain | null>(null);
   const [saving, setSaving] = useState(false);
+  const latest = useRef(new LatestOnly());
 
   const load = useCallback(() => {
+    const ticket = latest.current.begin();
     modelApi
       .fallbackChain()
-      .then(setChain)
+      .then(next => {
+        // An older read that answers late never replaces a newer one.
+        if (latest.current.isLatest(ticket)) setChain(next);
+      })
       .catch(error => console.error('Backup models not read:', error));
   }, []);
 
   // Read again when the model or its backups change, and every half minute for health.
-  const prefsKey = view ? JSON.stringify([view.active?.model ?? null, view.prefs.fallback, view.prefs.pick, view.prefs.alwaysFallBack, view.connected]) : '';
+  const prefsKey = view
+    ? JSON.stringify([view.active?.model ?? null, view.prefs.fallback, view.prefs.pick, view.prefs.alwaysFallBack, view.prefs.allowPaidBackups, view.connected])
+    : '';
   useEffect(() => {
     if (!view) return;
     load();
@@ -67,13 +74,25 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
     else load();
   };
 
+  const saveAllowPaid = async (allow: boolean) => {
+    setSaving(true);
+    try {
+      await modelApi.setAllowPaid(allow);
+      await reload(false);
+      load();
+    } catch (error) {
+      notify.error('The setting was not saved', { description: toPickerError(error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const onPick = (value: string) => {
     if (!value) {
       void save(null, prefs.alwaysFallBack);
       return;
     }
-    const [provider, ...rest] = value.split('\u0000');
-    const model = readModelRef({ provider, model: rest.join('\u0000') });
+    const model = readModelOption(value);
     if (model) void save(model, prefs.alwaysFallBack);
   };
 
@@ -94,7 +113,7 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
         <div className="flex flex-col gap-2">
           <p className="m-0 text-[12.5px] font-medium text-shodh-text-secondary">For Slack, Telegram and background work</p>
           <p className="m-0 -mt-1 text-[12px] text-shodh-text-muted max-w-[65ch]">
-            These answer without the assistant, so a subscription (Claude Pro, ChatGPT Plus…) can&apos;t answer them.
+            These answer without the assistant, so a subscription (Claude Pro, ChatGPT Plus…) can&apos;t answer them. They also never switch to a model less private than yours, not even your own backup.
           </p>
           <ChainList chain={chain.direct} nowMs={chain.nowMs} localOnly={chain.localOnly} />
         </div>
@@ -108,15 +127,15 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
           id={selectId}
           className={cn(INPUT, 'w-full')}
           disabled={saving}
-          value={prefs.fallback ? refKey(prefs.fallback) : ''}
+          value={prefs.fallback ? modelOptionValue(prefs.fallback) : ''}
           onChange={e => onPick(e.target.value)}
         >
           <option value="">Let Shodh choose</option>
           {prefs.fallback && !choices.some(m => sameModel(m.ref, prefs.fallback)) && (
-            <option value={refKey(prefs.fallback)}>{prefs.fallback.model}</option>
+            <option value={modelOptionValue(prefs.fallback)}>{prefs.fallback.model}</option>
           )}
           {choices.map(m => (
-            <option key={refKey(m.ref)} value={refKey(m.ref)}>
+            <option key={modelOptionValue(m.ref)} value={modelOptionValue(m.ref)}>
               {`${m.name} (${PROVIDER_LABELS[m.ref.provider]})`}
             </option>
           ))}
@@ -141,6 +160,23 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
         </label>
       </div>
 
+      <div className="flex items-start gap-2.5">
+        <input
+          id={paidId}
+          type="checkbox"
+          className={cn('mt-0.5 w-4 h-4 rounded', FOCUS_RING)}
+          checked={prefs.allowPaidBackups}
+          disabled={saving}
+          onChange={e => void saveAllowPaid(e.target.checked)}
+        />
+        <label htmlFor={paidId} className="flex flex-col gap-0.5">
+          <span className="text-[13px] text-shodh-text">Allow paid backups</span>
+          <span className="text-[12px] text-shodh-text-muted">
+            Off: a free model only falls back to other free or local models, and when today&apos;s free quota is used up Shodh says so and when it resets. On: it may use a paid model or an API key, which bills that provider per request, typically a fraction of a cent to a few cents an answer.
+          </span>
+        </label>
+      </div>
+
       <p className="m-0 text-[12.5px] text-shodh-text-secondary max-w-[65ch]" role="note">
         Slack, Telegram, memory learning and other background tasks always switch to a backup on their own, since nobody is there to ask. Their conversations in Shodh say which model answered.
       </p>
@@ -149,7 +185,7 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
 }
 
 function samePlan(a: ChainPlan, b: ChainPlan): boolean {
-  const ids = (p: ChainPlan) => [p.requested, ...p.fallbacks].map(c => refKey(c.model)).join('|');
+  const ids = (p: ChainPlan) => [p.requested, ...p.fallbacks].map(c => modelOptionValue(c.model)).join('|');
   return ids(a) === ids(b);
 }
 
@@ -165,7 +201,7 @@ function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs
           const health = healthWords(c, nowMs);
           const last = i === rows.length - 1;
           return (
-            <li key={refKey(c.model)} className="relative flex gap-3 pb-3 last:pb-0">
+            <li key={modelOptionValue(c.model)} className="relative flex gap-3 pb-3 last:pb-0">
               {/* The route the answer takes: a dot per model, a line to the next one. */}
               <span className="relative flex flex-col items-center w-3 shrink-0" aria-hidden="true">
                 <span className={cn('mt-[5px] w-2.5 h-2.5 rounded-full ring-2 ring-shodh-surface', DOT[health.tone])} />
@@ -174,7 +210,9 @@ function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs
               <span className="min-w-0 flex flex-col gap-0.5">
                 <span className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
                   <span className={cn('font-medium text-shodh-text', i > 0 && !c.reachable && 'line-through text-shodh-text-muted')}>{c.name}</span>
-                  <span className="text-[11.5px] text-shodh-text-muted">{`${originLabel(c.origin)}, ${PROVIDER_LABELS[c.model.provider]}`}</span>
+                  <span className="text-[11.5px] text-shodh-text-muted">
+                    {`${originLabel(c.origin)}, ${PROVIDER_LABELS[c.model.provider]}, ${privacyLabel(c.privacy)}${c.paid ? ', paid' : ''}`}
+                  </span>
                 </span>
                 <span className="text-[12px] text-shodh-text-muted">
                   {c.reachable ? health.text : 'Answers only in Ask'}

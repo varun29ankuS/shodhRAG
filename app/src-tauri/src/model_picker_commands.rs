@@ -741,6 +741,22 @@ pub async fn model_set_fallback(
     Ok(saved.models)
 }
 
+/// "Allow paid backups": whether a free model may fall back to a model billed per token
+/// (a paid OpenRouter model, an API key). Off by default.
+#[tauri::command]
+pub async fn model_set_allow_paid(app: AppHandle, allow: bool) -> PickerResult<ModelPrefs> {
+    let (saved, _) = SettingsStore::in_dir(&data_dir(&app)?)
+        .update(|s| {
+            let mut prefs = std::mem::take(&mut s.models).sanitized();
+            prefs.allow_paid_backups = allow;
+            s.models = prefs;
+            Ok(())
+        })
+        .map_err(|e| PickerError::failed(e.to_string()))?;
+    broadcast(&app, &saved);
+    Ok(saved.models)
+}
+
 /// The model offered instead of `failed`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

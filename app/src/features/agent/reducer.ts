@@ -128,6 +128,8 @@ export type FailureCode =
   | 'runtime_missing'
   | 'runtime_invalid'
   | 'model_config'
+  /** The model failed moments ago: the run did not call it again (Ask offers a backup). */
+  | 'model_cooling'
   | 'busy'
   | 'invalid_request'
   | 'session_closed'
@@ -287,7 +289,15 @@ export interface TranscriptFallback {
 export type LocalAction =
   | { type: 'local_steer'; id: string; text: string }
   | { type: 'local_approval'; stepId: string; approved: boolean }
-  | { type: 'local_failed'; error: string; code: FailureCode; atMs: number }
+  | {
+      type: 'local_failed';
+      error: string;
+      code: FailureCode;
+      atMs: number;
+      /** The run's model and its provider failure, when the start was refused for it (`model_cooling`). */
+      model?: string | null;
+      providerError?: ProviderError | null;
+    }
   | { type: 'local_interrupt_requested' }
   | { type: 'local_interrupted'; atMs: number };
 
@@ -752,6 +762,8 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
         status: 'error',
         error: action.error,
         errorCode: action.code,
+        model: action.model ?? state.model,
+        providerError: action.providerError ?? state.providerError ?? null,
         durationMs: Math.max(0, action.atMs - state.startedAtMs),
         steps: stopRunningCommands(closeOpenSteps(state.steps, 'Did not complete', action.atMs), ENDED_WITH_ANSWER_NOTE, action.atMs),
         thinking: '',
@@ -816,6 +828,15 @@ export function answerText(state: TranscriptState): string {
  * The run failed after part of an answer was written: the text stays, marked
  * as incomplete (it is not a finished answer).
  */
+/**
+ * Whether any of the run reached the user: answer or working text, a tool step, or
+ * streamed reasoning. A run that failed after any of it is never moved to another
+ * model by itself (another model would start over what the user already saw).
+ */
+export function outputStarted(state: TranscriptState): boolean {
+  return state.blocks.length > 0 || Object.keys(state.steps).length > 0 || !!state.reasoning || state.thinking.length > 0;
+}
+
 export function answerIncomplete(state: TranscriptState): boolean {
   return state.status === 'error' && answerText(state).length > 0;
 }

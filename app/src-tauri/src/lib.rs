@@ -665,6 +665,7 @@ pub fn run() {
             model_picker_commands::model_set_fallback,
             model_picker_commands::model_fallback_offer,
             model_fallback::model_fallback_chain,
+            model_picker_commands::model_set_allow_paid,
             model_picker_commands::model_use_pick,
             model_picker_commands::model_set_provider_order,
             model_picker_commands::model_set_base_url,

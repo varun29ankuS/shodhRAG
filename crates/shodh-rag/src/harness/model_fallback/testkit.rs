@@ -23,6 +23,7 @@ pub fn candidate(id: &str, name: &str, origin: Origin) -> Candidate {
         context_length: Some(131_072),
         privacy: PrivacyNote::MayLogPrompts,
         free: id.ends_with(":free"),
+        paid: !id.ends_with(":free"),
         health: Health::Healthy,
         availability: None,
         reachable: true,

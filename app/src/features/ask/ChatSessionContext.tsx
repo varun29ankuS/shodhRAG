@@ -612,7 +612,15 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
-      enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
+      // A model that failed moments ago is not called again: its failure card shows at once.
+      enqueue(live, {
+        type: 'local_failed',
+        error: failure.message,
+        code: failure.code,
+        atMs: Date.now(),
+        model: failure.cooling?.model ?? null,
+        providerError: failure.cooling?.providerError ?? null,
+      }, true);
     }
   }, [api, enqueue, publish]);
 

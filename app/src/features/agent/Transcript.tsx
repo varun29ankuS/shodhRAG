@@ -6,7 +6,7 @@ import type { SearchHit } from '../ask/types';
 import { ReasoningPanel } from './ReasoningPanel';
 import { RuntimeCard } from './RuntimeCard';
 import { Spinner, StepLine } from './StepLine';
-import { answerIncomplete, currentStep, interimBlocks, isLive, notAnswerBlocks, showsGroundingChip, supersededBlocks } from './reducer';
+import { answerIncomplete, outputStarted, currentStep, interimBlocks, isLive, notAnswerBlocks, showsGroundingChip, supersededBlocks } from './reducer';
 import type { TranscriptBlock, TranscriptState } from './reducer';
 import { workFold } from './workSummary';
 import { revisionText } from './revisionText';
@@ -267,7 +267,7 @@ export function Transcript({
           message={transcript.error}
           fellBack={!!transcript.fallback}
           fellBackFrom={transcript.fallback?.from ?? null}
-          streamed={answerIncomplete(transcript)}
+          streamed={outputStarted(transcript)}
           actions={providerActions}
           onOpenSettings={onOpenSettings}
           compact={compact}

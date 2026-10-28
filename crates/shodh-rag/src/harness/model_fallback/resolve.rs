@@ -104,6 +104,9 @@ pub struct Candidate {
     pub privacy: PrivacyNote,
     /// A free OpenRouter model (shares the account's free-model limits).
     pub free: bool,
+    /// Billed per token: an API-key provider's model, or an OpenRouter model that is not
+    /// free. Models on this computer and those included in a subscription are not.
+    pub paid: bool,
     pub health: Health,
     /// OpenRouter's live availability, when fetched.
     pub availability: Option<Availability>,
@@ -132,6 +135,8 @@ pub struct ResolveInputs<'a> {
     pub allow_stealth: bool,
     /// Stealth models the user confirmed.
     pub stealth_accepted: &'a [String],
+    /// "Allow paid backups": a free requested model may fall back to a paid one.
+    pub allow_paid: bool,
     pub needs: CallNeeds,
 }
 
@@ -208,19 +213,42 @@ impl ResolveInputs<'_> {
         now_ms: u64,
     ) -> Candidate {
         let listed = self.listed(model);
+        let free = is_free_id(model) || listed.is_some_and(|m| m.tier == ModelTier::Free);
         Candidate {
             model: model.clone(),
             name: self.name_of(model),
             origin,
             context_length: listed.and_then(|m| m.context_length),
             privacy: self.privacy_of(model),
-            free: is_free_id(model) || listed.is_some_and(|m| m.tier == ModelTier::Free),
+            free,
+            paid: model.provider.needs_key() && !free,
             health: health.health(model, now_ms),
             availability: (model.provider == ProviderId::OpenRouter)
                 .then(|| availability.get(&model.model, now_ms))
                 .flatten(),
-            reachable: self.reachable(model),
+            reachable: if origin == Origin::Requested {
+                self.requested_reachable(model)
+            } else {
+                self.reachable(model)
+            },
         }
+    }
+
+    /// The requested model of a direct call is called whenever it can be: a model on
+    /// this computer needs no connection check (Ollama is never detected as connected,
+    /// and LM Studio may be started after the last check), so the call fails honestly
+    /// when the server is down instead of being passed over.
+    fn requested_reachable(&self, model: &ModelRef) -> bool {
+        if self.needs.caller == Caller::Direct && model.provider.is_local() {
+            return is_valid_model_id(&model.model) && self.stealth_ok(model);
+        }
+        self.reachable(model)
+    }
+
+    fn stealth_ok(&self, model: &ModelRef) -> bool {
+        !model.is_stealth()
+            || self.allow_stealth
+            || self.stealth_accepted.iter().any(|id| id == &model.model)
     }
 
     /// Whether the call can reach `model` at all: connected, allowed by Local-only mode
@@ -234,14 +262,20 @@ impl ResolveInputs<'_> {
             && is_valid_model_id(&model.model)
             && self.connected.contains(&model.provider)
             && (!self.local_only || model.provider.is_local())
-            && (!model.is_stealth()
-                || self.allow_stealth
-                || self.stealth_accepted.iter().any(|id| id == &model.model))
+            && self.stealth_ok(model)
     }
 
-    /// Whether `candidate` fits what the call needs. `floor` is the requested model's
-    /// privacy, which an automatic candidate may not go below.
-    fn fits(&self, candidate: &Candidate, floor: PrivacyNote) -> bool {
+    /// Whether `candidate` fits what the call needs, after `requested`:
+    /// - its privacy may not be below the requested model's: never for automatic
+    ///   candidates, and for connectors and background work (nobody sees the switch)
+    ///   not for the user's own backups either;
+    /// - a free requested model never falls back to a paid one unless the user allowed
+    ///   paid backups.
+    fn fits(&self, candidate: &Candidate, requested: &Candidate) -> bool {
+        let floor = requested.privacy;
+        if requested.free && candidate.paid && !self.allow_paid {
+            return false;
+        }
         let listed = self.listed(&candidate.model);
         if self.needs.caller == Caller::Agent && listed.is_some_and(|m| m.tools == ToolSupport::No)
         {
@@ -256,9 +290,9 @@ impl ResolveInputs<'_> {
                 return false;
             }
         }
-        if !candidate.origin.named_by_user()
-            && privacy_rank(candidate.privacy) < privacy_rank(floor)
-        {
+        let floor_applies =
+            !candidate.origin.named_by_user() || self.needs.caller == Caller::Direct;
+        if floor_applies && privacy_rank(candidate.privacy) < privacy_rank(floor) {
             return false;
         }
         !candidate.availability.is_some_and(|a| a.is_down())
@@ -359,7 +393,6 @@ pub fn resolve(
         availability,
         now_ms,
     );
-    let floor = requested.privacy;
     let mut seen: Vec<ModelRef> = vec![inputs.requested.clone()];
     let mut named: Vec<Candidate> = Vec::new();
     let user_named = inputs
@@ -378,7 +411,7 @@ pub fn resolve(
         }
         seen.push(model.clone());
         let candidate = inputs.candidate(&model, origin, health, availability, now_ms);
-        if inputs.fits(&candidate, floor) {
+        if inputs.fits(&candidate, &requested) {
             named.push(candidate);
         }
     }
@@ -389,7 +422,7 @@ pub fn resolve(
         }
         seen.push(model.clone());
         let candidate = inputs.candidate(&model, Origin::Automatic, health, availability, now_ms);
-        if inputs.fits(&candidate, floor) {
+        if inputs.fits(&candidate, &requested) {
             automatic.push((automatic.len(), candidate));
         }
     }

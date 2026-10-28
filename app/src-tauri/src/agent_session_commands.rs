@@ -122,10 +122,23 @@ pub struct AgentEventEnvelope {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCommandError {
-    /// `runtime_missing`, `runtime_invalid`, `model_config`, `busy`,
+    /// `runtime_missing`, `runtime_invalid`, `model_config`, `model_cooling`, `busy`,
     /// `invalid_request`, `session_closed` or `runtime_error`.
     pub code: &'static str,
     pub message: String,
+    /// For `model_cooling`: the model that failed moments ago (as runs name it) and how,
+    /// so Ask shows its failure card and offers a backup without calling it again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cooling: Option<Box<CoolingModel>>,
+}
+
+/// The configured model of a `model_cooling` refusal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoolingModel {
+    /// `provider/model`, as a run names it.
+    pub model: String,
+    pub provider_error: shodh_rag::harness::ProviderError,
 }
 
 impl AgentCommandError {
@@ -133,6 +146,7 @@ impl AgentCommandError {
         Self {
             code: "invalid_request",
             message: message.into(),
+            cooling: None,
         }
     }
 }
@@ -164,6 +178,7 @@ impl From<HarnessError> for AgentCommandError {
         Self {
             code,
             message: error.to_string(),
+            cooling: None,
         }
     }
 }
@@ -1345,6 +1360,7 @@ pub async fn agent_start(
     Err(AgentCommandError {
         code: "model_config",
         message: key_changed_message(changed),
+        cooling: None,
     })
 }
 
@@ -1487,6 +1503,31 @@ async fn start_attempt(
             automatic: true,
             failure: failure.map(crate::model_fallback::kind_str),
         }),
+        // A main Ask run never calls a model that failed moments ago: Ask shows the
+        // failure card at once, which offers a backup (or takes it, when the user's
+        // settings say so) without that model being called again.
+        (None, None) => {
+            if let Some((model, kind)) = crate::model_fallback::main_run_cooling(
+                &app,
+                crate::model_picker_commands::configured_model(&llm).as_ref(),
+            ) {
+                return Err(AgentCommandError {
+                    code: "model_cooling",
+                    message: crate::model_fallback::cooling_message(kind),
+                    cooling: Some(Box::new(CoolingModel {
+                        model: format!("{}/{}", model.provider.api_provider_omp_id(), model.model),
+                        provider_error: shodh_rag::harness::ProviderError {
+                            kind,
+                            status: None,
+                            retry_after_secs: None,
+                            upstream: None,
+                            resets_at_ms: None,
+                        },
+                    })),
+                });
+            }
+            None
+        }
         (model_override, _) => model_override,
     };
     // A fallback for one answer runs with its own model; the next start
@@ -1498,6 +1539,7 @@ async fn start_attempt(
                 override_mode(&app, &llm, request).map_err(|e| AgentCommandError {
                     code: "model_config",
                     message: e.message,
+                    cooling: None,
                 })?;
             (mode, Some(record))
         }
@@ -1519,6 +1561,7 @@ async fn start_attempt(
         .map_err(|e| AgentCommandError {
             code: "runtime_error",
             message: format!("Settings could not be read: {e}"),
+            cooling: None,
         })?;
     // Stealth models: allowed by the environment opt-in or by the person's
     // confirmation in the model picker (kept per model in settings).
@@ -2051,6 +2094,7 @@ pub async fn agent_send(
                     "This chat's workspace could not be read, so its sources cannot be \
                      limited: {e}"
                 ),
+                cooling: None,
             })?,
         None => None,
     };
@@ -2501,10 +2545,12 @@ pub async fn agent_code_status(
     .map_err(|e| AgentCommandError {
         code: "runtime_error",
         message: format!("Checking the code folder failed: {e}"),
+        cooling: None,
     })?
     .map_err(|message| AgentCommandError {
         code: "runtime_error",
         message,
+        cooling: None,
     })?;
     Ok(CodeStatus {
         folder: Some(shown),
@@ -2656,6 +2702,7 @@ pub async fn agent_code_discard(
     .map_err(|e| AgentCommandError {
         code: "runtime_error",
         message: format!("Discarding the changes failed: {e}"),
+        cooling: None,
     })?
     .map_err(AgentCommandError::invalid)?;
     tracing::info!(target: "shodh::audit", event = "code_change", branch = %record.branch, base = %record.base, "code changes discarded");
@@ -2678,6 +2725,7 @@ fn app_data_dir(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
     crate::profile::app_data_dir(app).map_err(|e| AgentCommandError {
         code: "runtime_error",
         message: format!("App data directory unavailable: {e}"),
+        cooling: None,
     })
 }
 
@@ -2712,6 +2760,7 @@ pub(crate) async fn base_registry(app: &AppHandle) -> CommandResult<Arc<ToolRegi
                 .map_err(|e| AgentCommandError {
                     code: "runtime_error",
                     message: format!("Agent tools failed to load: {e}"),
+                    cooling: None,
                 })
         })
         .await?;
@@ -2782,6 +2831,7 @@ pub(crate) async fn chat_extra_tools(
         .map_err(|e| AgentCommandError {
             code: "runtime_error",
             message: format!("Settings could not be read: {e}"),
+            cooling: None,
         })?;
     let code = match mode {
         Mode::Code => workspace_code_folder(&app.state::<WorkspaceState>(), workspace)

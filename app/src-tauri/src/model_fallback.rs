@@ -174,6 +174,7 @@ impl PlanSource {
             local_only: self.local_only,
             allow_stealth: self.allow_stealth,
             stealth_accepted: &self.prefs.stealth_accepted,
+            allow_paid: self.prefs.allow_paid_backups,
             needs,
         }
     }
@@ -234,6 +235,8 @@ impl Planner for AppPlanner {
                     context_length: None,
                     privacy: shodh_rag::harness::model_catalog::PrivacyNote::ProviderTerms,
                     free: self.requested.model.ends_with(":free"),
+                    paid: self.requested.provider.needs_key()
+                        && !self.requested.model.ends_with(":free"),
                     health: state.health.health(&self.requested, now_ms()),
                     availability: None,
                     reachable: true,
@@ -344,6 +347,8 @@ impl FallbackObserver for AppObserver {
                 if by.fell_back() {
                     let failure = by.switches.first().and_then(|s| s.reason.kind());
                     audit_fallback(&self.app, &by.requested, &by.model, failure, self.purpose);
+                } else {
+                    take_back_notice(&self.app, &by.requested);
                 }
                 by.requested.clone()
             }
@@ -449,7 +454,10 @@ pub(crate) fn observe_agent_event(app: &AppHandle, model: Option<&ModelRef>, eve
         return;
     };
     match (status, provider_error) {
-        (RunStatus::Completed, _) => state.health.record_success(model),
+        (RunStatus::Completed, _) => {
+            state.health.record_success(model);
+            take_back_notice(app, model);
+        }
         (RunStatus::Error, Some(error)) => {
             state.health.record_failure(model, error.kind, now_ms());
             notice_long_failure(app, model);
@@ -477,6 +485,52 @@ pub(crate) fn side_run_override(
         .iter()
         .find(|c| matches!(c.health, Health::Healthy | Health::Retrying { .. }))
         .map(|c| (c.model.clone(), health.last_failure()))
+}
+
+/// What a main Ask run starts on, from its model's health.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MainStart {
+    /// The configured model: healthy, or due for its one retry (this run is that retry).
+    Configured,
+    /// The configured model failed moments ago (or another call is retrying it now): the
+    /// run does not call it again.
+    Cooling(ProviderErrorKind),
+}
+
+pub(crate) fn main_start(health: Health) -> MainStart {
+    if health.usable() {
+        MainStart::Configured
+    } else {
+        MainStart::Cooling(
+            health
+                .last_failure()
+                .unwrap_or(ProviderErrorKind::ModelUnavailable),
+        )
+    }
+}
+
+/// The configured model and why, when a main Ask run must not start on it now.
+pub(crate) fn main_run_cooling(
+    app: &AppHandle,
+    configured: Option<&ModelRef>,
+) -> Option<(ModelRef, ProviderErrorKind)> {
+    let configured = configured?;
+    let state = app.try_state::<FallbackState>()?;
+    match main_start(state.health.health(configured, now_ms())) {
+        MainStart::Configured => None,
+        MainStart::Cooling(kind) => Some((configured.clone(), kind)),
+    }
+}
+
+/// What Ask says when its model failed moments ago (the card's details).
+pub(crate) fn cooling_message(kind: ProviderErrorKind) -> String {
+    let why = match kind {
+        ProviderErrorKind::Timeout => "did not answer in time",
+        ProviderErrorKind::Network => "could not be reached",
+        ProviderErrorKind::Auth => "refused the API key",
+        _ => "was unavailable",
+    };
+    format!("The model {why} moments ago, so Shodh did not call it again yet; it is tried again after a short wait.")
 }
 
 /// The model Ask offers after `failed` failed with `kind` (`detail` is the provider's
@@ -526,7 +580,7 @@ pub(crate) fn plan_offer(
 /// The Inbox item of a chosen model that keeps failing.
 fn long_failure_item(model: &ModelRef, name: &str) -> NewInboxItem {
     NewInboxItem {
-        id: format!("model:failing:{}:{}", model.provider.as_str(), model.model),
+        id: long_failure_id(model),
         kind: InboxKind::Model,
         status: InboxStatus::Failed,
         title: format!("{name} has been failing for over an hour"),
@@ -539,6 +593,25 @@ fn long_failure_item(model: &ModelRef, name: &str) -> NewInboxItem {
         )),
         data: json!({ "provider": model.provider.as_str(), "model": model.model }),
     }
+}
+
+fn long_failure_id(model: &ModelRef) -> String {
+    format!("model:failing:{}:{}", model.provider.as_str(), model.model)
+}
+
+/// The model answered again after its long-failure notice: the Inbox item goes.
+fn take_back_notice(app: &AppHandle, model: &ModelRef) {
+    let Some(state) = app.try_state::<FallbackState>() else {
+        return;
+    };
+    if !state.health.take_recovered(model) {
+        return;
+    }
+    let app = app.clone();
+    let id = long_failure_id(model);
+    tauri::async_runtime::spawn(async move {
+        crate::inbox_commands::resolve(&app, id).await;
+    });
 }
 
 /// One notice when the user's chosen model has been failing for over an hour.
@@ -590,6 +663,8 @@ pub struct ChainView {
     /// The chain of connectors and background tasks (direct calls: no subscriptions).
     pub direct: Option<Plan>,
     pub always_fall_back: bool,
+    /// A free model may fall back to a model billed per token.
+    pub allow_paid_backups: bool,
     pub local_only: bool,
     pub now_ms: u64,
 }
@@ -597,6 +672,14 @@ pub struct ChainView {
 /// The fallback chains used now, with each model's health and uptime.
 #[tauri::command]
 pub async fn model_fallback_chain(app: AppHandle) -> Result<ChainView, String> {
+    // Reads the settings file and the model-list cache: off the async workers.
+    tauri::async_runtime::spawn_blocking(move || chain_view(&app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn chain_view(app: &AppHandle) -> Result<ChainView, String> {
+    let app = app.clone();
     let source = PlanSource::read(&app)?;
     let configured = crate::model_picker_commands::configured_model(&app.state::<LLMState>());
     let plan = configured
@@ -616,6 +699,7 @@ pub async fn model_fallback_chain(app: AppHandle) -> Result<ChainView, String> {
         plan,
         direct,
         always_fall_back: source.prefs().always_fall_back,
+        allow_paid_backups: source.prefs().allow_paid_backups,
         local_only: source.local_only(),
         now_ms: now_ms(),
     })
@@ -644,6 +728,37 @@ mod tests {
             item.id, "model:failing:openrouter:nvidia/nemotron-3-super-120b-a12b:free",
             "one item per model: a later notice replaces it"
         );
+    }
+
+    #[test]
+    fn a_main_ask_run_never_starts_on_a_model_that_just_failed() {
+        let kind = ProviderErrorKind::ModelUnavailable;
+        assert_eq!(main_start(Health::Healthy), MainStart::Configured);
+        assert_eq!(
+            main_start(Health::Retrying {
+                failures: 1,
+                last: kind
+            }),
+            MainStart::Configured,
+            "the wait is over: this run is the one retry"
+        );
+        assert_eq!(
+            main_start(Health::CoolingDown {
+                until_ms: 1,
+                failures: 1,
+                last: kind
+            }),
+            MainStart::Cooling(kind)
+        );
+        assert_eq!(
+            main_start(Health::Probing {
+                failures: 2,
+                last: ProviderErrorKind::Timeout
+            }),
+            MainStart::Cooling(ProviderErrorKind::Timeout),
+            "another call is retrying it: no second probe"
+        );
+        assert!(cooling_message(kind).contains("unavailable"));
     }
 
     #[test]

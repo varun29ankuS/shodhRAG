@@ -6,13 +6,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentEvent } from '../src/features/agent/events.ts';
-import { initialTranscript, reduceAll } from '../src/features/agent/reducer.ts';
+import { answerText, initialTranscript, outputStarted, reduceAll } from '../src/features/agent/reducer.ts';
 import {
+  LatestOnly,
   MAX_SIDE_FALLBACKS,
   answeredByLine,
   healthWords,
+  modelOptionValue,
   originLabel,
+  privacyLabel,
   readFallbackChain,
+  readModelOption,
 } from '../src/features/modelPicker/fallbackChain.ts';
 import type { ChainCandidate } from '../src/features/modelPicker/fallbackChain.ts';
 import { sideFallback } from '../src/features/focus/sideFallback.ts';
@@ -122,4 +126,61 @@ test('a side run falls back by itself only when nothing was shown and another mo
     { type: 'run_finished', runId: RUN, status: 'completed', durationMs: 900, error: null, providerError: null },
   ]);
   assert.equal(sideFallback(done, 0), null);
+});
+
+test('a side run that already searched is not moved to another model', () => {
+  const searched = reduceAll(initialTranscript(RUN, 1000), [
+    { type: 'run_started', runId: RUN, sessionId: 's1', model: `openrouter/${NEMOTRON}`, atMs: 1000, warning: null },
+    {
+      type: 'step_started', runId: RUN, stepId: 'call-1', parentStepId: null, tool: 'search_documents',
+      label: 'Finding the notice period', args: { query: 'notice period' }, tier: 'read', atMs: 1010,
+    },
+    {
+      type: 'run_finished', runId: RUN, status: 'error', durationMs: 900, error: 'No endpoints found',
+      providerError: { kind: 'model_unavailable', status: null, retryAfterSecs: null },
+    },
+  ]);
+  assert.equal(answerText(searched), '', 'no answer text');
+  assert.ok(outputStarted(searched), 'but a tool step was shown');
+  assert.equal(sideFallback(searched, 0), null);
+  assert.equal(outputStarted(failedRun(null)), false);
+});
+
+test('a start refused for a model that just failed shows its failure card', () => {
+  const state = reduceAll(initialTranscript(RUN, 1000), [{
+    type: 'local_failed',
+    error: 'The model was unavailable moments ago, so Shodh did not call it again yet.',
+    code: 'model_cooling',
+    atMs: 1100,
+    model: `openrouter/${NEMOTRON}`,
+    providerError: { kind: 'model_unavailable', status: null, retryAfterSecs: null },
+  }]);
+  assert.equal(state.status, 'error');
+  assert.equal(state.model, `openrouter/${NEMOTRON}`, 'the card knows which model to replace');
+  assert.equal(state.providerError?.kind, 'model_unavailable', 'so the backup is offered at once');
+  assert.equal(state.errorCode, 'model_cooling');
+});
+
+test('model options survive any id, and a late answer never replaces a newer one', () => {
+  const odd = { provider: 'openrouter' as const, model: 'vendor/model:free\u0000x' };
+  assert.deepEqual(readModelOption(modelOptionValue(odd)), odd);
+  assert.equal(readModelOption('not json'), null);
+  assert.equal(readModelOption(JSON.stringify(['nope', 'x'])), null);
+  const latest = new LatestOnly();
+  const first = latest.begin();
+  const second = latest.begin();
+  assert.equal(latest.isLatest(first), false);
+  assert.equal(latest.isLatest(second), true);
+  assert.equal(privacyLabel('on_device'), 'stays on this computer');
+  assert.equal(privacyLabel('may_log_prompts'), 'may log prompts');
+});
+
+test('the chain says whether a backup is paid and whether paid backups are allowed', () => {
+  const chain = readFallbackChain({
+    plan: { requested: wire(NEMOTRON, 'Nemotron Super', { origin: 'requested' }), fallbacks: [wire('google/gemini-3-flash-preview', 'Gemini 3 Flash', { free: false, paid: true })] },
+    allowPaidBackups: true,
+  });
+  assert.equal(chain?.allowPaidBackups, true);
+  assert.equal(chain?.plan?.fallbacks[0].paid, true);
+  assert.equal(chain?.plan?.requested.paid, false);
 });

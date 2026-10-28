@@ -1,0 +1,117 @@
+name: Tag release
+
+# When a release PR ("Release X.Y.Z", opened by prepare-release.yml) merges,
+# master carries a version that has no tag yet: this creates the tag vX.Y.Z on
+# the merge commit and runs release.yml, which builds, verifies and publishes
+# the release. A tag created with GITHUB_TOKEN does not start other workflows,
+# so release.yml is called here (workflow_call) instead of through its tag
+# trigger, which stays for tags pushed by hand. A push whose version is
+# already tagged does nothing.
+#
+# On pull requests the same decision runs and is reported, without acting.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - app/package.json
+      - app/package-lock.json
+      - app/src-tauri/tauri.conf.json
+      - app/src-tauri/Cargo.toml
+      - crates/shodh-rag/Cargo.toml
+      - Cargo.lock
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .github/workflows/tag-release.yml
+      - scripts/release/versions.mjs
+      - app/package.json
+      - app/package-lock.json
+      - app/src-tauri/tauri.conf.json
+      - app/src-tauri/Cargo.toml
+      - crates/shodh-rag/Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+# Not release.yml's group (release-<tag>): a called workflow that waits on its
+# caller's group would never start.
+concurrency:
+  group: tag-release-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  decide:
+    name: New version?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Is the version in the files tagged?
+        id: decide
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/version"
+          GITHUB_OUTPUT="$out" node scripts/release/versions.mjs check --github-output
+          tag=$(sed -n 's/^tag=//p' "$out")
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          tags=$(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          if printf '%s\n' "$tags" | grep -qxF "$tag"; then
+            echo "${tag} is already tagged: nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest=$(printf '%s\n' "$tags" | sort -V | tail -n 1)
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$tag" | sort -V | tail -n 1)" != "$tag" ]; then
+            echo "::error::The version ${tag} is not above the latest tag ${latest}"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            echo "::notice::Merging this creates ${tag} on the merge commit and publishes it (latest tag: ${latest:-none})."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "${tag} is new (latest tag: ${latest:-none}): tagging ${GITHUB_SHA} and releasing it."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  tag:
+    name: Create the tag
+    needs: decide
+    if: github.event_name == 'push' && needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Tag the merge commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" --jq '"Created \(.ref) at \(.object.sha)"'
+
+  release:
+    name: Release
+    needs: [decide, tag]
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.decide.outputs.tag }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    permissions:
+      contents: write

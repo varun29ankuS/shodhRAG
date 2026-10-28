@@ -1,0 +1,99 @@
+name: Prepare release
+
+# One command for a release: Actions > Prepare release > Run workflow, with
+# the new version (X.Y.Z). This sets the version in all six files that carry
+# it (scripts/release/versions.mjs), pushes branch release/X.Y.Z and opens the
+# draft PR "Release X.Y.Z". Marking it ready for review runs CI and the
+# release build; merging it tags vX.Y.Z and publishes the release
+# (tag-release.yml).
+#
+# The PR is a draft because a PR opened with GITHUB_TOKEN starts no workflows:
+# marking it ready (ready_for_review) starts them as the person who did.
+# Opening it needs Settings > Actions > General > "Allow GitHub Actions to
+# create and approve pull requests"; without it the branch is still pushed
+# and the run fails with the link to open the PR by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The new version, X.Y.Z (greater than the current one)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Release ${{ inputs.version }}
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write       # push the release branch
+      pull-requests: write  # open the release PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Set the version and push the release branch
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::'${VERSION}' is not a version of the form X.Y.Z"
+            exit 1
+          fi
+          tag="v${VERSION}"
+          branch="release/${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null; then
+            echo "::error::The tag ${tag} already exists"
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null; then
+            echo "::error::The branch ${branch} already exists; delete it or choose another version"
+            exit 1
+          fi
+          node scripts/release/versions.mjs set "$VERSION"
+          node scripts/release/versions.mjs check --tag "$tag"
+          git switch -c "$branch"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --quiet -am "Release ${VERSION}"
+          git show --stat HEAD
+          # The token is passed for this push only; it is not stored in .git/config.
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::${auth}"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ${auth}" push --quiet origin "HEAD:refs/heads/${branch}"
+          echo "Pushed ${branch}"
+
+      - name: Open the release PR
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="release/${VERSION}"
+          body=$(cat <<EOF
+          Sets the app version to ${VERSION} in all six files that carry it (\`scripts/release/versions.mjs set ${VERSION}\`).
+
+          - **Mark this PR ready for review** to run CI and the release build: it was opened by GitHub Actions, whose pull requests start no workflows until a person acts on them.
+          - **Merging** tags \`v${VERSION}\` on the merge commit and runs the Release workflow, which builds the installers, verifies every asset, \`latest.json\` and the update signatures, and only then publishes the release as the latest.
+          EOF
+          )
+          if ! url=$(gh pr create --draft --base master --head "$branch" --title "Release ${VERSION}" --body "$body" 2>&1); then
+            echo "::error::Could not open the pull request (${url}). Enable Settings > Actions > General > 'Allow GitHub Actions to create and approve pull requests', or open it by hand: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/master...${branch}?expand=1"
+            exit 1
+          fi
+          echo "Opened ${url}"

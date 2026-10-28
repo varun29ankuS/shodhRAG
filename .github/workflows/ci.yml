@@ -3,8 +3,15 @@ name: CI
 on:
   pull_request:
     branches: [master]
+    # ready_for_review: release PRs are opened as drafts by the Prepare
+    # release workflow, whose token cannot start workflows; marking one ready
+    # starts CI as the person who did.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [master]
+
+permissions:
+  contents: read
 
 # A new push to a pull request cancels that PR's superseded run. Runs on master
 # are never cancelled (group per commit): pull requests download the footprint
@@ -24,13 +31,87 @@ env:
   # variables to CMake, and llama.cpp's find_package(OpenSSL) is optional.
   CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: "TRUE"
 
+# Every job has a timeout of about 1.5x its slowest successful run in the
+# last 60 runs (noted per job), so a hung step fails in minutes, not after
+# GitHub's 6-hour limit.
+#
+# Every job that builds ort-sys (check, clippy, test, build) first runs
+# .github/actions/onnxruntime: the ONNX Runtime archive ort-sys links comes
+# from the Actions cache (saved by master), checked against ort-sys's SHA-256,
+# so builds no longer download it from cdn.pyke.io (where it stalled for 30
+# minutes at a time).
+
 jobs:
+  # actionlint (workflow syntax, expressions, shellcheck on run scripts) and
+  # zizmor (workflow security: injection, credentials, permissions, pinning).
+  lint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 3 --max-time 120 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+          "$RUNNER_TEMP/actionlint" -color
+
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482  # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
+          annotations: true
+
+  # The release and CI scripts' own tests, and the version check every
+  # release relies on: all six files that carry the app version agree.
+  scripts:
+    name: Release and CI scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Release script tests
+        run: node --test scripts/release/test/*.test.mjs
+
+      - name: ONNX Runtime script tests
+        working-directory: scripts/ci
+        run: python -m unittest -v test_ort_archive
+
+      - name: The app version agrees in every file
+        run: node scripts/release/versions.mjs check
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # under 1 minute
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           components: rustfmt
@@ -39,15 +120,18 @@ jobs:
   check:
     name: Check + Clippy
     runs-on: windows-latest
+    timeout-minutes: 30  # slowest 16 minutes
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -57,29 +141,43 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/install-protoc.ps1
 
+      - uses: ./.github/actions/onnxruntime
+        with:
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+
+      # --locked: a Cargo.lock that does not match the manifests fails here.
       - name: Cargo check
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
       # Blocking at the strongest level the workspace passes today. The harness and
       # audit modules additionally deny every warning via #![cfg_attr(clippy, deny(warnings))].
       - name: Clippy
         run: cargo clippy --workspace -- -D clippy::correctness -D clippy::suspicious -D clippy::perf
 
+      # ort-sys found the archive the step above provided and downloaded
+      # nothing itself (else scripts/ci/ort_archive.py resolved another one).
+      - name: ONNX Runtime came from the cache
+        shell: bash
+        run: python -I scripts/ci/ort_archive.py verify
+
   test:
     name: Tests
     runs-on: windows-latest
+    timeout-minutes: 60  # slowest 31 minutes with library tests only
     env:
       # Line tables only (file:line in backtraces): smaller debug builds and
       # caches. Dev and test profiles only; the release profile is untouched.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -89,27 +187,24 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/install-protoc.ps1
 
-      # Model-backed tests stay ignored here: SHODH_TEST_MODELS is not set in CI.
-      - name: Tests (shodh-ontology)
-        run: cargo test --package shodh-ontology
+      - uses: ./.github/actions/onnxruntime
 
       # The command runner's tests (harness/run_command) launch this probe
       # through Code mode's process limits; they fail when it is not built.
       - name: Build the sandbox probe
         run: cargo build --package sandbox-probe
 
-      - name: Library tests (shodh-rag)
-        run: cargo test --package shodh-rag --lib
+      # Every test target of every workspace crate: library and binary unit
+      # tests, each tests/*.rs integration test (log_privacy.rs runs in its
+      # own binary, so its capturing subscriber is global before anything
+      # logs), and the examples are built. A crate or test file added later
+      # is included without editing this job.
+      # Model-backed tests stay ignored here: SHODH_TEST_MODELS is not set in CI.
+      - name: Tests (workspace, all targets)
+        run: cargo test --workspace --all-targets
 
-      # Its own binary: the capturing subscriber is global before anything logs.
-      - name: Log privacy test (shodh-rag)
-        run: cargo test --package shodh-rag --test log_privacy
-
-      - name: Library tests (shodh-rag-app)
-        run: cargo test --package shodh-rag-app --lib
-
-      - name: Tests (shodh-eval)
-        run: cargo test --package shodh-eval
+      - name: Doc tests (workspace)
+        run: cargo test --workspace --doc
 
   # macOS reads scans with PP-OCRv6 only (Windows OCR is not built there), so
   # the parser and the OCR engine have macOS-only paths. This builds shodh-rag
@@ -118,25 +213,32 @@ jobs:
   macos:
     name: macOS build + OCR tests (shodh-rag)
     runs-on: macos-latest
+    timeout-minutes: 35  # slowest 21 minutes
     env:
       # The workflow's -crt-static is for the Windows MSVC builds.
       RUSTFLAGS: ""
       # Line tables only: smaller debug builds and caches (release is untouched).
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # LanceDB's protobuf definitions are compiled at build time.
       - name: Install Protobuf compiler
         run: brew install protobuf
+
+      - uses: ./.github/actions/onnxruntime
+        with:
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
 
       - name: OCR tests (shodh-rag)
         run: cargo test --package shodh-rag --lib ocr
@@ -150,6 +252,9 @@ jobs:
       - name: Command runner tests (shodh-rag)
         run: cargo test --package shodh-rag --lib run_command
 
+      - name: ONNX Runtime came from the cache
+        run: python -I scripts/ci/ort_archive.py verify
+
   # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
   # index, every question searched, gated against the committed baseline.
   # Retrieval is deterministic, so any drop fails; latency is reported only.
@@ -159,17 +264,20 @@ jobs:
   eval-retrieval:
     name: Retrieval eval
     runs-on: windows-latest
+    timeout-minutes: 35  # slowest 21 minutes
     env:
       # Line tables only: smaller debug builds and caches (release is untouched).
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -179,13 +287,15 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/install-protoc.ps1
 
+      - uses: ./.github/actions/onnxruntime
+
       # Same cache as the footprint job: the pinned search and OCR models,
       # keyed by the file that pins them.
       # Only master saves the models (a pull request would add a copy that no
       # other ref can read).
       - name: Restore search models
         id: models-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
@@ -195,7 +305,7 @@ jobs:
 
       - name: Save search models
         if: github.ref == 'refs/heads/master' && steps.models-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
@@ -240,7 +350,7 @@ jobs:
 
       - name: Upload eval report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: eval-retrieval
           path: |
@@ -253,10 +363,13 @@ jobs:
   frontend:
     name: Frontend Typecheck + Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # under 1 minute
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -313,9 +426,18 @@ jobs:
   # 90-day artifact of a master run (footprint-anchor-<sha>), else the cache,
   # else built. Push runs on master upload their build, seed the anchor
   # artifact, and record their time against the anchor.
+  #
+  # The release build's Rust cache is shared with release.yml's Windows
+  # installer build (same shared-key, flags and profile): master saves it
+  # here, and installer builds on pull requests and tags restore it instead
+  # of compiling every dependency from scratch.
   footprint:
     name: Footprint budget
     runs-on: windows-latest
+    # Slowest 94 minutes (the base commit's build missing). With both the base
+    # commit's build and the anchor missing, three release builds of about
+    # 35-40 minutes each plus 10 minutes of measuring.
+    timeout-minutes: 160
     permissions:
       contents: read
       actions: read  # find and download the base commit's build
@@ -325,15 +447,16 @@ jobs:
       PAIRS: "45"
       MAX_WINDOW_RATIO: "1.06"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 2  # the merge commit's first parent is the base commit
+          persist-credentials: false
 
       - name: Resolve the builds to compare
         id: builds
         shell: pwsh
         run: |
-          if ('${{ github.event_name }}' -eq 'pull_request') {
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
             $reference = git rev-parse HEAD^1
             if ($LASTEXITCODE -ne 0) { throw 'The merge commit has no first parent' }
             Write-Host "Reference: base commit $reference"
@@ -341,13 +464,13 @@ jobs:
           }
           Write-Host "Anchor: $env:FOOTPRINT_ANCHOR_SHA ($env:FOOTPRINT_ANCHOR_SECONDS s when the budget was set)"
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
-          key: release
+          shared-key: release-x86_64-pc-windows-msvc
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # Pinned, checksum-verified protoc from the official release (the
@@ -356,7 +479,9 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/install-protoc.ps1
 
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/onnxruntime
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -376,12 +501,12 @@ jobs:
       - name: Stage this build
         shell: pwsh
         run: |
-          $dir = New-Item -ItemType Directory -Force -Path '${{ runner.temp }}/footprint-bin/pr'
+          $dir = New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP/footprint-bin/pr"
           Copy-Item -LiteralPath target/release/shodh-rag-app.exe -Destination $dir
 
       - name: Upload this build for PRs based on it
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: footprint-exe-${{ github.sha }}
           path: ${{ runner.temp }}/footprint-bin/pr/shodh-rag-app.exe
@@ -394,16 +519,17 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          REFERENCE: ${{ steps.builds.outputs.reference }}
         run: |
-          $name = 'footprint-exe-${{ steps.builds.outputs.reference }}'
-          $runId = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0].workflow_run.id // empty'
+          $name = "footprint-exe-$env:REFERENCE"
+          $runId = gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0].workflow_run.id // empty'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $runId) {
             Write-Host "No artifact $name (master's push run has not uploaded it yet, or it expired): trying this PR's cache, else building it here."
             "found=false" >> $env:GITHUB_OUTPUT
             exit 0
           }
-          gh run download $runId --repo '${{ github.repository }}' --name $name --dir '${{ runner.temp }}/footprint-bin/reference'
+          gh run download $runId --repo $env:GITHUB_REPOSITORY --name $name --dir "$env:RUNNER_TEMP/footprint-bin/reference"
           if ($LASTEXITCODE -ne 0) { throw "Downloading $name from run $runId failed" }
           Write-Host "Base commit's build: artifact $name from run $runId"
           "found=true" >> $env:GITHUB_OUTPUT
@@ -411,7 +537,7 @@ jobs:
       - name: Restore the base commit's build
         id: reference-cache
         if: github.event_name == 'pull_request' && steps.reference-artifact.outputs.found != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/footprint-bin/reference
           key: footprint-reference-${{ steps.builds.outputs.reference }}
@@ -428,7 +554,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $name = "footprint-anchor-$env:FOOTPRINT_ANCHOR_SHA"
-          $found = gh api "repos/${{ github.repository }}/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0] | if . then "\(.workflow_run.id) \(.created_at)" else empty end'
+          $found = gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0] | if . then "\(.workflow_run.id) \(.created_at)" else empty end'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $found) {
             Write-Host "No artifact $name (not uploaded yet, or it expired): trying the cache, else building it here."
@@ -436,8 +562,8 @@ jobs:
             exit 0
           }
           $runId, $createdAt = $found -split ' '
-          $dir = '${{ runner.temp }}/footprint-bin/anchor'
-          gh run download $runId --repo '${{ github.repository }}' --name $name --dir $dir
+          $dir = "$env:RUNNER_TEMP/footprint-bin/anchor"
+          gh run download $runId --repo $env:GITHUB_REPOSITORY --name $name --dir $dir
           if ($LASTEXITCODE -ne 0) { throw "Downloading $name from run $runId failed" }
           $exe = Join-Path $dir 'shodh-rag-app.exe'
           if (-not (Test-Path -LiteralPath $exe)) { throw "$name has no shodh-rag-app.exe" }
@@ -451,7 +577,7 @@ jobs:
       - name: Restore the anchor build
         id: anchor-cache
         if: steps.anchor-artifact.outputs.found != 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/footprint-bin/anchor
           key: footprint-anchor-${{ env.FOOTPRINT_ANCHOR_SHA }}
@@ -461,12 +587,18 @@ jobs:
       - name: Build what was not stored
         id: build-missing
         shell: pwsh
+        env:
+          REFERENCE: ${{ steps.builds.outputs.reference }}
+          REFERENCE_ARTIFACT: ${{ steps.reference-artifact.outputs.found }}
+          REFERENCE_CACHE: ${{ steps.reference-cache.outputs.cache-hit }}
+          ANCHOR_ARTIFACT: ${{ steps.anchor-artifact.outputs.found }}
+          ANCHOR_CACHE: ${{ steps.anchor-cache.outputs.cache-hit }}
         run: |
           $missing = New-Object System.Collections.ArrayList
-          if ('${{ github.event_name }}' -eq 'pull_request' -and '${{ steps.reference-artifact.outputs.found }}' -ne 'true' -and '${{ steps.reference-cache.outputs.cache-hit }}' -ne 'true') {
-            [void]$missing.Add(@{ Label = 'reference'; Sha = '${{ steps.builds.outputs.reference }}' })
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and $env:REFERENCE_ARTIFACT -ne 'true' -and $env:REFERENCE_CACHE -ne 'true') {
+            [void]$missing.Add(@{ Label = 'reference'; Sha = $env:REFERENCE })
           }
-          if ('${{ steps.anchor-artifact.outputs.found }}' -ne 'true' -and '${{ steps.anchor-cache.outputs.cache-hit }}' -ne 'true') {
+          if ($env:ANCHOR_ARTIFACT -ne 'true' -and $env:ANCHOR_CACHE -ne 'true') {
             [void]$missing.Add(@{ Label = 'anchor'; Sha = $env:FOOTPRINT_ANCHOR_SHA })
           }
           if ($missing.Count -eq 0) { Write-Host 'Every build to compare was downloaded or restored.'; exit 0 }
@@ -495,7 +627,7 @@ jobs:
 
       - name: Cache the base commit's build
         if: steps.build-missing.outputs.reference == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/footprint-bin/reference
           key: footprint-reference-${{ steps.builds.outputs.reference }}
@@ -504,7 +636,7 @@ jobs:
       # fill the pool).
       - name: Cache the anchor build
         if: steps.build-missing.outputs.anchor == 'true' && github.ref == 'refs/heads/master'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/footprint-bin/anchor
           key: footprint-anchor-${{ env.FOOTPRINT_ANCHOR_SHA }}
@@ -513,7 +645,7 @@ jobs:
       # missing, and renews it before it expires.
       - name: Upload the anchor build
         if: github.event_name == 'push' && (steps.anchor-artifact.outputs.found != 'true' || steps.anchor-artifact.outputs.stale == 'true')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: footprint-anchor-${{ env.FOOTPRINT_ANCHOR_SHA }}
           path: ${{ runner.temp }}/footprint-bin/anchor/shodh-rag-app.exe
@@ -525,7 +657,7 @@ jobs:
       # checked), cached by the file that pins them.
       - name: Restore search models
         id: models-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
@@ -533,10 +665,10 @@ jobs:
       - name: Measure footprint
         shell: pwsh
         run: |
-          $bin = '${{ runner.temp }}/footprint-bin'
+          $bin = "$env:RUNNER_TEMP/footprint-bin"
           $opts = @{
             Exe                 = "$bin/pr/shodh-rag-app.exe"
-            ModelPath           = '${{ runner.temp }}/shodh-models'
+            ModelPath           = "$env:RUNNER_TEMP/shodh-models"
             InstallModels       = $true
             Scenario            = 'idle'
             Runs                = 5
@@ -549,7 +681,7 @@ jobs:
             WarmupPairs         = 1
             Output              = 'footprint.json'
           }
-          if ('${{ github.event_name }}' -eq 'pull_request') {
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
             $opts.ReferenceExe = "$bin/reference/shodh-rag-app.exe"
             $opts.MaxWindowRatio = [double]$env:MAX_WINDOW_RATIO
           }
@@ -557,14 +689,14 @@ jobs:
 
       - name: Save search models
         if: github.ref == 'refs/heads/master' && steps.models-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
       - name: Upload footprint report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: footprint
           path: footprint.json

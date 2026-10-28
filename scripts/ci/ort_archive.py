@@ -170,7 +170,8 @@ def ort_sys_package(metadata: dict) -> tuple:
 
 
 def _run(cmd: List[str]) -> str:
-    return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+    # cargo prints UTF-8; on Windows the default text encoding is the ANSI code page.
+    return subprocess.run(cmd, check=True, capture_output=True, encoding="utf-8").stdout
 
 
 @dataclass(frozen=True)

@@ -750,8 +750,8 @@ pub struct FallbackOffer {
     pub name: String,
     /// The failed model's display name.
     pub failed_name: String,
-    /// Retry without asking: "always fall back" is on, or the user chose a pick (a pick
-    /// falls back down its own list).
+    /// Retry without asking: "always fall back" is on, or the model is the next of the
+    /// user's pick (a pick falls back down its own list).
     pub automatic: bool,
 }
 
@@ -788,14 +788,16 @@ pub async fn model_fallback_offer(
         detail.as_deref(),
         &tried,
     );
-    let prefs = source.prefs();
-    let automatic = prefs.always_fall_back || prefs.pick.is_some();
+    let always = source.prefs().always_fall_back;
     let failed_name = source.name_of(&failed);
     Ok(offer.map(|candidate| FallbackOffer {
+        // A pick falls back down its own list without asking; anything else waits for
+        // a click unless "always fall back" is on.
+        automatic: always
+            || candidate.origin == shodh_rag::harness::model_fallback::Origin::PickChain,
         model: candidate.model,
         name: candidate.name,
         failed_name,
-        automatic,
     }))
 }
 

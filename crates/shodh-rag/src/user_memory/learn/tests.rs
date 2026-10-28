@@ -2580,3 +2580,64 @@ async fn approvals_that_named_a_memory_get_wordless_titles_once() {
     );
     assert_eq!(e.service.maintain().await.unwrap().approvals_renamed, 0);
 }
+
+/// The app's learning model: the configured one, falling back to the next (here the
+/// fallback core with a scripted provider).
+struct FallbackModels(Arc<crate::harness::model_fallback::FallbackTextModel>);
+
+impl ModelSource for FallbackModels {
+    fn model(&self) -> Result<Arc<dyn LearnModel>, String> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn learning_falls_back_when_its_model_is_unavailable() {
+    use crate::harness::model_fallback::testkit::{
+        candidate, fallback_model, unavailable, ScriptedModels,
+    };
+    use crate::harness::model_fallback::{Origin as Tried, Plan};
+    const NEMOTRON: &str = "nvidia/nemotron-3-super-120b-a12b:free";
+    const GEMMA: &str = "google/gemma-4-31b-it:free";
+    let f = fixture().await;
+    let db = f.dir.path().join("shodh.db");
+    let audit = Arc::new(AuditLog::open(db.clone(), None).unwrap());
+    let inbox = Arc::new(Inbox::open(&db, None).unwrap());
+    let service = Arc::new(
+        MemoryService::new(f.store.clone(), Some(audit.clone()), "test").with_inbox(inbox.clone()),
+    );
+    let policy = Arc::new(Policy(Mutex::new(LearnPolicy {
+        mode: LearnMode::Ask,
+        ..LearnPolicy::default()
+    })));
+    let answer = json!({"memories": [lives_in("pune", "I moved to Pune", 0.9)]}).to_string();
+    let models = ScriptedModels::new(vec![
+        (NEMOTRON, Err(unavailable(NEMOTRON))),
+        (GEMMA, Ok(answer.as_str())),
+    ]);
+    let plan = Plan {
+        requested: candidate(NEMOTRON, "Nemotron Super", Tried::Requested),
+        fallbacks: vec![candidate(GEMMA, "Gemma 4 31B", Tried::Automatic)],
+    };
+    let learner = Learner::new(
+        service,
+        inbox,
+        policy,
+        Arc::new(FallbackModels(Arc::new(fallback_model(
+            plan,
+            models.clone(),
+            0,
+        )))),
+    );
+    let turn = TurnInput {
+        conversation_id: "c1".to_string(),
+        turn_id: "r1".to_string(),
+        user_text: "I moved to Pune last month.".to_string(),
+        assistant_context: None,
+        at: f.store.now(),
+        scope: Scope::Global,
+    };
+    let report = learner.learn_from_turns(&[turn]).await.unwrap();
+    assert_eq!(*models.calls.lock().unwrap(), [NEMOTRON, GEMMA]);
+    assert_eq!(report.proposed.len(), 1, "{report:?}");
+}

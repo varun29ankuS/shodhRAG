@@ -49,6 +49,11 @@ pub struct ProviderError {
     /// `metadata.provider_name`), when the message names one.
     #[serde(default)]
     pub upstream: Option<String>,
+    /// When the limit resets (Unix milliseconds), for a rate limit or a used-up quota whose
+    /// message carries OpenRouter's `X-RateLimit-Reset`: a daily quota's real reset, not
+    /// capped like `retry_after_secs`.
+    #[serde(default)]
+    pub resets_at_ms: Option<u64>,
 }
 
 impl ProviderError {
@@ -83,11 +88,18 @@ pub fn classify(message: &str, retryable: Option<bool>, now_ms: u64) -> Provider
         }
         _ => None,
     };
+    let resets_at_ms = match kind {
+        ProviderErrorKind::RateLimited | ProviderErrorKind::QuotaExhausted => {
+            limit_reset_at_ms(message, now_ms)
+        }
+        _ => None,
+    };
     ProviderError {
         kind,
         status,
         retry_after_secs,
         upstream: upstream_provider(message),
+        resets_at_ms,
     }
 }
 
@@ -518,6 +530,11 @@ mod tests {
         let e = classify(&body, None, NOW_MS);
         assert_eq!(e.kind, ProviderErrorKind::QuotaExhausted);
         assert_eq!(limit_reset_at_ms(&body, NOW_MS), Some(tomorrow));
+        assert_eq!(
+            e.resets_at_ms,
+            Some(tomorrow),
+            "Ask says when the quota resets"
+        );
         // Seconds since the epoch read as such; a reset already past is none.
         assert_eq!(reset_epoch_ms("1759750012"), Some(1_759_750_012_000));
         assert_eq!(

@@ -11,6 +11,7 @@ use super::resolve::{CallNeeds, Candidate, Plan};
 use super::run::{run_plan, AnsweredBy, AttemptFailure, Bounds, Clock, Exhausted, Pause};
 use crate::llm::ProviderFailure;
 use crate::research::results::{ModelReply, TextModel};
+use crate::user_memory::learn::{LearnError, LearnModel};
 
 /// Plans a call's candidates for what it needs.
 pub trait Planner: Send + Sync {
@@ -156,5 +157,25 @@ impl TextModel for FallbackTextModel {
 
     fn answered_by(&self) -> Option<AnsweredBy> {
         self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Memory learning through the fallback: its answers are strict JSON, so a reply cut off
+/// at the limit is refused.
+#[async_trait::async_trait]
+impl LearnModel for FallbackTextModel {
+    fn model_id(&self) -> String {
+        self.model_id.clone()
+    }
+
+    async fn complete(&self, prompt: &str, max_output_tokens: usize) -> Result<String, LearnError> {
+        let (reply, _) = self
+            .complete_with_fallback(prompt, max_output_tokens)
+            .await
+            .map_err(|exhausted| LearnError::Model(exhausted.failure.to_string()))?;
+        if reply.truncated {
+            return Err(LearnError::Truncated(reply.text));
+        }
+        Ok(reply.text)
     }
 }

@@ -30,6 +30,7 @@ use shodh_rag::harness::model_fallback::{
     availability_ids, decide, fetch_availability, resolve, AvailabilityBook, CallNeeds, CallReport,
     Candidate, CandidateModel, Clock, Decision, FallbackObserver, FallbackTextModel, Health,
     HealthBook, Origin, Plan, Planner, ResolveInputs, SystemTime, Timing, DEFAULT_BOUNDS,
+    LONG_FAILURE_MS,
 };
 use shodh_rag::harness::model_picks::{
     model_name, provider_order, resolve_chain, table, PickTable,
@@ -545,6 +546,14 @@ fn notice_long_failure(app: &AppHandle, model: &ModelRef) {
     let Some(state) = app.try_state::<FallbackState>() else {
         return;
     };
+    // Cheap first: a model that is not failing needs no settings read.
+    let failing_long = state
+        .health
+        .failing_since(model)
+        .is_some_and(|since| now_ms().saturating_sub(since) >= LONG_FAILURE_MS);
+    if !failing_long {
+        return;
+    }
     let source = PlanSource::read(app).ok();
     let chosen = source
         .as_ref()

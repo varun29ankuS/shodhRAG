@@ -445,31 +445,6 @@ pub(crate) fn answering_model(
     }
 }
 
-/// The learning model with the app's fallback: learning answers are strict JSON, so a
-/// reply cut off at the limit is refused.
-struct FallbackLearnModel(shodh_rag::harness::model_fallback::FallbackTextModel);
-
-#[async_trait::async_trait]
-impl LearnModel for FallbackLearnModel {
-    fn model_id(&self) -> String {
-        shodh_rag::research::results::TextModel::model_id(&self.0)
-    }
-
-    async fn complete(&self, prompt: &str, max_output_tokens: usize) -> Result<String, LearnError> {
-        let reply = shodh_rag::research::results::TextModel::complete_reply(
-            &self.0,
-            prompt,
-            max_output_tokens,
-        )
-        .await
-        .map_err(LearnError::Model)?;
-        if reply.truncated {
-            return Err(LearnError::Truncated(reply.text));
-        }
-        Ok(reply.text)
-    }
-}
-
 /// Why evidence tables cannot fill with the configured model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableModelError {
@@ -646,8 +621,10 @@ impl ModelSource for AppModels {
             settings.policy.local_only,
         )?;
         if let Some(requested) = fallback_target(&choice) {
-            return Ok(Arc::new(FallbackLearnModel(
-                crate::model_fallback::fallback_text_model(&self.app, requested, Purpose::Learning),
+            return Ok(Arc::new(crate::model_fallback::fallback_text_model(
+                &self.app,
+                requested,
+                Purpose::Learning,
             )));
         }
         Ok(Arc::new(AppModel {

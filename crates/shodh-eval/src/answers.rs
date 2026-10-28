@@ -750,6 +750,7 @@ mod tests {
             status: Some(429),
             retry_after_secs: Some(12),
             upstream: None,
+            resets_at_ms: None,
         };
         c.observe(
             &AgentEvent::RunFinished {
@@ -773,6 +774,7 @@ mod tests {
             status: None,
             retry_after_secs,
             upstream: None,
+            resets_at_ms: None,
         }
     }
 

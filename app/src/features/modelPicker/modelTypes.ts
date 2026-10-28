@@ -191,6 +191,8 @@ export interface ProviderError {
   retryAfterSecs: number | null;
   /** The provider behind a router that failed (OpenRouter's upstream), when named. */
   upstream?: string | null;
+  /** When a rate limit or a used-up quota resets (Unix ms), when the provider said. */
+  resetsAtMs?: number | null;
 }
 
 export interface FallbackOffer {
@@ -304,6 +306,7 @@ export function readProviderError(value: unknown): ProviderError | null {
     status: whole(value.status),
     retryAfterSecs: whole(value.retryAfterSecs),
     ...(upstream && upstream.length <= MAX_UPSTREAM_CHARS ? { upstream } : {}),
+    ...(whole(value.resetsAtMs) !== null ? { resetsAtMs: whole(value.resetsAtMs) } : {}),
   };
 }
 

@@ -161,7 +161,7 @@ export function TelegramSetup({
           <h3 id="telegram-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-[16px] font-semibold text-shodh-text focus:outline-none">
             {current.title}
           </h3>
-          <p className="m-0 text-[13px] text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>
+          {current.detail && <p className="m-0 text-[13px] text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>}
         </div>
 
         {step === 1 && (

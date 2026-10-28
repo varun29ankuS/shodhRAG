@@ -1178,6 +1178,9 @@ pub(crate) mod tests {
             *self.typing.lock().unwrap() += 1;
             Ok(())
         }
+        async fn webhook_set(&self) -> Result<bool, TelegramError> {
+            Ok(false)
+        }
     }
 
     /// The app, in memory.

@@ -112,7 +112,8 @@ export interface SlackMemoryView {
 /** `connectors::slack::SlackStatus`. Never holds a token. */
 export interface SlackStatus {
   state: SlackState;
-  installation: { teamName: string; botName: string } | null;
+  /** `appId`: the Slack app the bot belongs to (`A…`), `null` when it could not be read. */
+  installation: { teamName: string; botName: string; appId: string | null } | null;
   error: string | null;
   nextRetryAt: string | null;
   retryReason: string | null;
@@ -555,6 +556,71 @@ export interface NextStep {
   /** The tab that fixes it; `null` when it is fixed outside the page. */
   tab: SlackTabId | null;
   action: string | null;
+  /** The Slack permissions it is about (the "Update the Slack app" step). */
+  permissions?: string[];
+}
+
+// ── Updating the Slack app ──────────────────────────────────────────
+
+/** Why the app needs updating, in one line (the permission names are a click away). */
+export const UPDATE_APP_LINE =
+  'Your Slack app was made from an older version of Shodh’s settings and lacks permissions Shodh now uses. ' +
+  'Give it the updated settings, then reinstall it.';
+
+/** The same for the Indexing tab, where only the indexing permissions are missing. */
+export const UPDATE_APP_FOR_INDEXING_LINE =
+  'To index channels, your Slack app needs permissions it was not given when it was made. Give it Shodh’s updated ' +
+  'settings, then reinstall it. Answering keeps working meanwhile.';
+
+/** What to do in Slack, in order. */
+export const UPDATE_APP_STEPS: readonly string[] = [
+  'On the app’s App Manifest page, replace the manifest with the copied one and press Save Changes.',
+  'Slack then shows a banner asking you to reinstall the app: reinstall it to your workspace.',
+  'Come back here and press Check again.',
+];
+
+const SLACK_APP_ID = /^A[A-Z0-9]{2,30}$/;
+
+/**
+ * The App Manifest page of the user's Slack app; the list of their apps when the app is
+ * not known (an installation from before Shodh kept it) or its id is not one.
+ */
+export function appManifestUrl(appId: string | null | undefined): string {
+  return appId && SLACK_APP_ID.test(appId)
+    ? `https://api.slack.com/apps/${appId}/app-manifest`
+    : 'https://api.slack.com/apps';
+}
+
+/**
+ * The manifest the "create the app" link carries (`manifest_json`), pretty-printed for
+ * pasting into an existing app's App Manifest page: the very settings a new app gets.
+ * `null` when the link carries none that parses.
+ */
+export function manifestFromCreateUrl(createAppUrl: string): string | null {
+  let raw: string | null;
+  try {
+    raw = new URL(createAppUrl).searchParams.get('manifest_json');
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const manifest: unknown = JSON.parse(raw);
+    if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
+    return JSON.stringify(manifest, null, 2);
+  } catch {
+    return null;
+  }
+}
+
+/** The permissions still missing after Check again, for the message saying so. */
+export function stillMissingLine(status: Pick<SlackStatus, 'missingScopes' | 'index'>): string | null {
+  const missing = [...new Set([...status.missingScopes, ...status.index.missingScopes])];
+  if (missing.length === 0) return null;
+  return (
+    `Slack still lists the app without ${missing.length === 1 ? 'one permission' : `${missing.length} permissions`}. ` +
+    'Check that the manifest was saved and the app reinstalled, then check again.'
+  );
 }
 
 /** What is left to set up, or to fix, most pressing first. */
@@ -566,11 +632,10 @@ export function nextSteps(status: SlackStatus): NextStep[] {
       id: 'scopes',
       tone: 'warning',
       title: 'Update the Slack app',
-      detail:
-        `Under OAuth & Permissions, add the bot scopes ${scopes.join(', ')}. Under Event Subscriptions, check the bot ` +
-        `events ${status.botEvents.join(', ')}. Reinstall the app, then disconnect and connect again with the new bot token.`,
+      detail: UPDATE_APP_LINE,
       tab: null,
       action: null,
+      permissions: scopes,
     });
   }
   if (status.state === 'local_only') {

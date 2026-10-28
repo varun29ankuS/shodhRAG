@@ -1,6 +1,6 @@
 //! The few Telegram Bot API methods the connector calls
 //! (<https://core.telegram.org/bots/api>): `getMe`, `getUpdates` (long polling),
-//! `sendMessage` and `sendChatAction`.
+//! `getWebhookInfo`, `sendMessage` and `sendChatAction`.
 //!
 //! **The token is in every URL** (`https://api.telegram.org/bot<token>/<method>`). So:
 //! the URL is built inside one function and never stored, every reqwest error is turned
@@ -11,8 +11,10 @@
 //! - 429 carries `parameters.retry_after` (seconds) in the body, not in a header;
 //! - `parameters.migrate_to_chat_id`: a group became a supergroup with a new chat id;
 //! - 401: the token was revoked (or never valid);
-//! - 409: a webhook is set, or another program is polling with this token. Both are the
-//!   user's to fix, so the connector stops and says so instead of looping.
+//! - 409: a webhook is set, another program is polling with this token, or Telegram still
+//!   holds an earlier poll of Shodh's own (after a dropped connection). `getWebhookInfo`
+//!   tells the first apart; the poll loop retries the rest before it takes them for
+//!   another program ([`super::poll`]).
 
 use std::time::Duration;
 
@@ -280,6 +282,9 @@ pub trait BotApi: Send + Sync {
     ) -> Result<i64, TelegramError>;
     /// Shows "typing…" in `chat` (Telegram shows it for about five seconds).
     async fn typing(&self, chat: i64) -> Result<(), TelegramError>;
+    /// Whether a webhook is set on the bot (`getWebhookInfo`): Telegram then delivers its
+    /// updates there, and `getUpdates` conflicts. Never says where it points.
+    async fn webhook_set(&self) -> Result<bool, TelegramError>;
 }
 
 /// The Bot API with the bot's token.
@@ -350,6 +355,21 @@ impl BotApi for TokenBot {
             .await
             .map(|_| ())
     }
+
+    async fn webhook_set(&self) -> Result<bool, TelegramError> {
+        let info = self
+            .api
+            .call(&self.token, "getWebhookInfo", json!({}), false)
+            .await?;
+        Ok(webhook_url_set(&info))
+    }
+}
+
+/// Whether a `getWebhookInfo` result names a webhook URL (an empty one means none).
+fn webhook_url_set(info: &Value) -> bool {
+    info.get("url")
+        .and_then(Value::as_str)
+        .is_some_and(|url| !url.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -389,6 +409,33 @@ mod tests {
         assert_eq!(request.path, format!("/api/bot{TOKEN}/getMe"));
         // The client's Debug never shows a token.
         assert!(!format!("{:?}", bot(&base)).contains("AAH4"));
+    }
+
+    #[tokio::test]
+    async fn the_webhook_check_says_whether_one_is_set_and_nothing_more() {
+        let (base, seen) = serve(vec![
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "result": {"url": "https://hooks.example.com/bot",
+                    "pending_update_count": 3}})
+                .to_string(),
+            ),
+            (
+                "200 OK",
+                vec![],
+                json!({"ok": true, "result": {"url": "", "pending_update_count": 0}}).to_string(),
+            ),
+        ])
+        .await;
+        let bot = bot(&base);
+        assert!(bot.webhook_set().await.unwrap());
+        assert!(!bot.webhook_set().await.unwrap());
+        assert_eq!(
+            seen.lock().unwrap()[0].path,
+            format!("/api/bot{TOKEN}/getWebhookInfo")
+        );
+        assert!(!webhook_url_set(&json!({})));
     }
 
     #[tokio::test]

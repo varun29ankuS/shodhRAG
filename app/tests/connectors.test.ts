@@ -49,6 +49,11 @@ import {
   ownerLine,
   sharedIndexLine,
   validWindow,
+  UPDATE_APP_LINE,
+  UPDATE_APP_STEPS,
+  appManifestUrl,
+  manifestFromCreateUrl,
+  stillMissingLine,
   type IndexChannelView,
   type IndexStatus,
   type SlackMemoryView,
@@ -94,7 +99,7 @@ function indexStatus(patch: Partial<IndexStatus> = {}): IndexStatus {
 function status(state: SlackState, patch: Partial<SlackStatus> = {}): SlackStatus {
   return {
     state,
-    installation: state === 'not_set_up' ? null : { teamName: 'Acme', botName: 'shodh' },
+    installation: state === 'not_set_up' ? null : { teamName: 'Acme', botName: 'shodh', appId: 'A0123ABCD' },
     error: null,
     nextRetryAt: null,
     retryReason: null,
@@ -358,9 +363,10 @@ test('the overview says what is left to set up, and where to do it', () => {
   assert.deepEqual(nextSteps(ready), []);
   const scopes = nextSteps({ ...ready, missingScopes: ['users:read'], index: { ...ready.index, missingScopes: ['channels:history'] } });
   assert.equal(scopes[0].title, 'Update the Slack app');
-  assert.match(scopes[0].detail, /channels:history, users:read/);
-  assert.match(scopes[0].detail, /app_mention, message\.im/);
-  assert.match(scopes[0].detail, /Reinstall the app/);
+  // A short line; the permission ids are their own field, shown behind a disclosure.
+  assert.equal(scopes[0].detail, UPDATE_APP_LINE);
+  assert.doesNotMatch(scopes[0].detail, /[a-z_]+:[a-z]+/);
+  assert.deepEqual(scopes[0].permissions, ['channels:history', 'users:read']);
   assert.equal(scopes[0].tab, null);
   assert.equal(nextSteps({ ...ready, state: 'off' })[0].tab, 'answering');
   assert.equal(nextSteps({ ...ready, state: 'local_only' })[0].id, 'local_only');
@@ -368,6 +374,42 @@ test('the overview says what is left to set up, and where to do it', () => {
   assert.equal(gone[0].title, 'The answer workspace is gone');
   const stopped = nextSteps({ ...ready, index: { ...ready.index, channels: [indexed({ state: 'removed', name: 'deals' })] } });
   assert.deepEqual([stopped[0].title, stopped[0].tab], ['#deals stopped indexing', 'indexing']);
+});
+
+test('updating the Slack app opens its manifest page and copies the manifest the create link carries', () => {
+  assert.equal(appManifestUrl('A0123ABCD'), 'https://api.slack.com/apps/A0123ABCD/app-manifest');
+  // Unknown (an installation from before Shodh kept it) or not an app id: the list of apps.
+  assert.equal(appManifestUrl(null), 'https://api.slack.com/apps');
+  assert.equal(appManifestUrl(undefined), 'https://api.slack.com/apps');
+  assert.equal(appManifestUrl('A1/../../evil'), 'https://api.slack.com/apps');
+  assert.equal(appManifestUrl('T0123ABCD'), 'https://api.slack.com/apps');
+
+  const manifest = {
+    display_information: { name: 'Shodh' },
+    oauth_config: { scopes: { bot: ['channels:history', 'chat:write'] } },
+    settings: { event_subscriptions: { bot_events: ['app_mention', 'message.channels'] }, socket_mode_enabled: true },
+  };
+  const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
+  const copied = manifestFromCreateUrl(url);
+  assert.equal(copied, JSON.stringify(manifest, null, 2));
+  assert.deepEqual(JSON.parse(copied ?? ''), manifest);
+  assert.ok((copied ?? '').split('\n').includes('  "oauth_config": {'), 'pretty-printed');
+  assert.equal(manifestFromCreateUrl('https://api.slack.com/apps?new_app=1'), null);
+  assert.equal(manifestFromCreateUrl('https://api.slack.com/apps?manifest_json=%7Bnot%20json'), null);
+  assert.equal(manifestFromCreateUrl('https://api.slack.com/apps?manifest_json=%5B1%5D'), null);
+  assert.equal(manifestFromCreateUrl('not a url'), null);
+
+  assert.equal(UPDATE_APP_STEPS.length, 3);
+  assert.match(UPDATE_APP_STEPS[0], /App Manifest/);
+  assert.match(UPDATE_APP_STEPS[1], /reinstall/);
+  assert.match(UPDATE_APP_STEPS[2], /Check again/);
+
+  assert.equal(stillMissingLine(status('connected')), null);
+  assert.match(stillMissingLine(status('connected', { missingScopes: ['users:read'] })) ?? '', /one permission/);
+  assert.match(
+    stillMissingLine(status('connected', { missingScopes: ['users:read'], index: indexStatus({ missingScopes: ['channels:history', 'users:read'] }) })) ?? '',
+    /2 permissions/,
+  );
 });
 
 test('the tabs carry what needs you and what they hold', () => {

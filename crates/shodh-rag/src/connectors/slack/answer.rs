@@ -281,10 +281,31 @@ pub const TURN_ANSWER_CHARS: usize = 600;
 /// All earlier turns of a prompt together.
 pub const TURNS_TOTAL_CHARS: usize = 2_400;
 
-/// The earlier turns a prompt carries: the last [`TURNS_IN_PROMPT`], each cut, the oldest
-/// left out first until they fit in [`TURNS_TOTAL_CHARS`]. Oldest first.
+/// Whether two messages say the same, ignoring case and spacing.
+pub fn same_message(a: &str, b: &str) -> bool {
+    let words =
+        |text: &str| -> Vec<String> { text.split_whitespace().map(|w| w.to_lowercase()).collect() };
+    words(a) == words(b)
+}
+
+/// `turns` with each run of consecutive turns asking the same keeping its latest only (a
+/// message answered twice, from a backlog or sent again), oldest first.
+pub fn distinct_turns(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
+    let mut out: Vec<ThreadTurn> = Vec::with_capacity(turns.len());
+    for turn in turns {
+        match out.last_mut() {
+            Some(last) if same_message(&last.question, &turn.question) => *last = turn.clone(),
+            _ => out.push(turn.clone()),
+        }
+    }
+    out
+}
+
+/// The earlier turns a prompt carries: the last [`TURNS_IN_PROMPT`] distinct ones
+/// ([`distinct_turns`]), each cut, the oldest left out first until they fit in
+/// [`TURNS_TOTAL_CHARS`]. Oldest first.
 pub fn turns_for_prompt(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
-    let mut kept: Vec<ThreadTurn> = turns
+    let mut kept: Vec<ThreadTurn> = distinct_turns(turns)
         .iter()
         .rev()
         .take(TURNS_IN_PROMPT)
@@ -307,13 +328,22 @@ pub fn turns_for_prompt(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
 }
 
 /// The search query of a question: in a thread with earlier turns, the previous question
-/// too, so "shorter" or "and the deadline?" still finds the passages of the topic.
+/// too, so "shorter" or "and the deadline?" still finds the passages of the topic. Never
+/// the question twice: earlier turns asking the same as it (the same message answered
+/// again) are passed over for the one before them, among the last [`TURNS_IN_PROMPT`];
+/// the earlier question is cut to [`TURN_QUESTION_CHARS`].
 pub fn search_query(question: &str, turns: &[ThreadTurn]) -> String {
     let question = truncate_chars(question.trim(), MAX_QUESTION_CHARS);
-    match turns.last() {
+    let previous = turns
+        .iter()
+        .rev()
+        .take(TURNS_IN_PROMPT)
+        .map(|t| t.question.trim())
+        .find(|q| !q.is_empty() && !same_message(q, &question));
+    match previous {
         Some(previous) => format!(
             "{} {question}",
-            truncate_chars(previous.question.trim(), TURN_QUESTION_CHARS)
+            truncate_chars(previous, TURN_QUESTION_CHARS)
         ),
         None => question,
     }
@@ -1009,6 +1039,44 @@ mod tests {
         assert_eq!(
             search_query("shorter", &turns),
             "What is the notice period? shorter"
+        );
+    }
+
+    /// The live log: `query="How's it going shodh How's it going shodh"`, the message
+    /// answered twice (from a backlog) and its first answer taken as the earlier turn.
+    #[test]
+    fn a_message_sent_twice_is_searched_once() {
+        let asked = "How's it going shodh";
+        let twice = vec![turn(asked, "All good.")];
+        assert_eq!(search_query(asked, &twice), asked);
+        // Case and spacing do not make it another question.
+        assert_eq!(
+            search_query(asked, &[turn("how's it   going Shodh ", "All good.")]),
+            asked
+        );
+        // The topic before the repeats still carries over, once.
+        let thread = vec![
+            turn("What is the notice period?", "Sixty days."),
+            turn(asked, "All good."),
+            turn(asked, "All good."),
+        ];
+        assert_eq!(
+            search_query(asked, &thread),
+            "What is the notice period? How's it going shodh"
+        );
+        // Identical consecutive turns go in the prompt once, the latest kept.
+        let repeated = vec![
+            turn("What is the notice period?", "Sixty days."),
+            turn(asked, "First answer."),
+            turn(asked, "Second answer."),
+        ];
+        let kept = turns_for_prompt(&repeated);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].answer, "Second answer.");
+        assert_eq!(
+            distinct_turns(&[turn("a", "1"), turn("b", "2"), turn("a", "3")]).len(),
+            3,
+            "only consecutive repeats collapse"
         );
     }
 

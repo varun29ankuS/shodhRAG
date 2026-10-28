@@ -57,7 +57,7 @@ use shodh_rag::connectors::slack::tokens::{
     SlackAppToken, SlackBotToken, SlackCredentialStore, SlackCredentials,
 };
 use shodh_rag::connectors::slack::web::{
-    BotChannel, BotDirectory, BotPoster, SlackApiError, SlackWeb,
+    AuthInfo, BotChannel, BotDirectory, BotPoster, SlackApiError, SlackWeb,
 };
 use shodh_rag::connectors::slack::{CancellationToken, SlackInstallation};
 use shodh_rag::research::results::TextModel;
@@ -596,6 +596,9 @@ impl SeenStore for FileSeenStore {
 pub struct InstallationView {
     pub team_name: String,
     pub bot_name: String,
+    /// The Slack app the bot belongs to (`A…`), for the link to its App Manifest page;
+    /// `None` when it could not be read.
+    pub app_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -762,6 +765,7 @@ pub async fn status(app: &AppHandle) -> Result<SlackStatus, String> {
         installation: current.map(|i| InstallationView {
             team_name: i.installation.team_name.clone(),
             bot_name: i.installation.bot_name.clone(),
+            app_id: i.installation.app_id.clone(),
         }),
         error,
         next_retry_at,
@@ -1792,6 +1796,64 @@ pub async fn slack_connect(
     status(&app).await
 }
 
+/// The scopes a fresh `auth.test` of the saved bot token reports for the installation of
+/// `team_id`, or why they cannot replace the saved ones.
+pub fn rechecked_scopes(team_id: &str, info: &AuthInfo) -> Result<Vec<String>, String> {
+    if info.team_id != team_id {
+        return Err(
+            "The saved bot token now belongs to another Slack workspace. Disconnect, then connect again."
+                .into(),
+        );
+    }
+    info.scopes.clone().ok_or_else(|| {
+        "Slack did not say which permissions the app has. Try again in a moment.".to_string()
+    })
+}
+
+/// Asks Slack which permissions the bot has now, with the saved bot token, and keeps
+/// them: after the user gave the app Shodh's updated manifest and reinstalled it (the
+/// bot token stays the same), the missing permissions are cleared without connecting
+/// again. Indexed channels that stopped on a missing permission try again. User-only.
+#[tauri::command]
+pub async fn slack_check_permissions(
+    app: AppHandle,
+    state: State<'_, SlackState>,
+    audit: State<'_, AuditState>,
+) -> Result<SlackStatus, String> {
+    let _op = state.op.lock().await;
+    let (_, current, bot_token) = current_bot_token(&state).await?;
+    let web = SlackWeb::new().map_err(|e| e.to_string())?;
+    let info = web.auth_test(&bot_token).await.map_err(|e| {
+        if e.is_auth() {
+            "Slack refused the saved bot token: reinstalling the app gave it a new one. Disconnect, then connect again with the new bot token.".to_string()
+        } else {
+            setup_error("bot token", e)
+        }
+    })?;
+    let team_id = current.installation.team_id.clone();
+    let scopes = rechecked_scopes(&team_id, &info)?;
+    let saved_team = team_id.clone();
+    let saved_scopes = scopes.clone();
+    let settings = save(&state, move |prefs| {
+        let installation = prefs
+            .installations
+            .iter_mut()
+            .find(|i| i.installation.team_id == saved_team)
+            .ok_or_else(|| "The Slack workspace was disconnected meanwhile.".to_string())?;
+        installation.installation.scopes = saved_scopes;
+        Ok(())
+    })
+    .await?;
+    audit_change(
+        &audit,
+        "slack_check_permissions",
+        json!({ "slackWorkspace": info.team, "scopes": scopes }),
+    );
+    retry_stopped_channels(&state, &team_id).await;
+    broadcast(&app, &settings);
+    status(&app).await
+}
+
 /// Switches the connector on or off (the tokens stay saved). User-only.
 #[tauri::command]
 pub async fn slack_set_enabled(
@@ -2289,6 +2351,41 @@ mod tests {
     }
 
     #[test]
+    fn checking_again_takes_the_scopes_slack_reports_now_for_the_same_workspace_only() {
+        let info = |team: &str, scopes: Option<&[&str]>| AuthInfo {
+            team_id: team.into(),
+            team: "Acme".into(),
+            user_id: "UBOT".into(),
+            user: "shodh".into(),
+            bot_id: Some("B1".into()),
+            scopes: scopes.map(|s| s.iter().map(|x| x.to_string()).collect()),
+        };
+        let all: Vec<&str> = manifest_scopes();
+        assert_eq!(
+            rechecked_scopes("T1", &info("T1", Some(all.as_slice()))).unwrap(),
+            all.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        // The reinstalled app's scopes clear what was missing.
+        let mut prefs = installation(true);
+        prefs.installation.scopes = vec!["chat:write".into()];
+        assert!(!missing_scopes(&prefs.installation).is_empty());
+        prefs.installation.scopes =
+            rechecked_scopes("T1", &info("T1", Some(all.as_slice()))).unwrap();
+        assert!(missing_scopes(&prefs.installation).is_empty());
+        assert!(shodh_rag::connectors::slack::setup::missing_index_scopes(
+            &prefs.installation.scopes
+        )
+        .is_empty());
+        // A token of another workspace, or no answer about scopes, changes nothing.
+        assert!(rechecked_scopes("T1", &info("T2", Some(all.as_slice())))
+            .unwrap_err()
+            .contains("another Slack workspace"));
+        assert!(rechecked_scopes("T1", &info("T1", None))
+            .unwrap_err()
+            .contains("did not say"));
+    }
+
+    #[test]
     fn scopes_missing_since_the_manifest_grew_are_listed() {
         let mut prefs = installation(true);
         assert!(missing_scopes(&prefs.installation).is_empty());
@@ -2387,6 +2484,7 @@ mod tests {
             installation: Some(InstallationView {
                 team_name: "Acme".into(),
                 bot_name: "shodh".into(),
+                app_id: Some("A1".into()),
             }),
             error: None,
             next_retry_at: None,

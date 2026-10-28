@@ -2704,7 +2704,7 @@ impl RAGEngine {
             tracing::info!(
                 post_mmr_results = results.len(),
                 unique_sources = final_sources.len(),
-                scores = ?results.iter().map(|r| format!("{:.3}", r.score)).collect::<Vec<_>>(),
+                scores = ?results.iter().map(|r| score_label(r.score)).collect::<Vec<_>>(),
                 sources = ?results.iter().filter_map(|r| r.metadata.get("source_file").map(|s| s.as_str())).collect::<Vec<_>>(),
                 "Post-MMR+cap diversity"
             );
@@ -3847,6 +3847,66 @@ impl RAGEngine {
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    }
+}
+
+/// A final score as the retrieval log prints it. The scores reaching the log are the
+/// cross-encoder's relevance (0..1) times [`RAGEngine::apply_mmr_diversity`]'s
+/// `0.5^n` per further chunk of a file, so with a few files over many results most are
+/// far below 0.001 while still ordered: three decimals printed every one of them as
+/// `0.000`. Small scores keep three significant digits instead.
+fn score_label(score: f32) -> String {
+    if score == 0.0 || !score.is_finite() || score.abs() >= 0.001 {
+        format!("{score:.3}")
+    } else {
+        format!("{score:.2e}")
+    }
+}
+
+#[cfg(test)]
+mod score_label_tests {
+    use super::*;
+
+    #[test]
+    fn small_scores_are_printed_with_their_digits_not_as_zero() {
+        assert_eq!(score_label(0.184), "0.184");
+        assert_eq!(score_label(0.0472), "0.047");
+        assert_eq!(score_label(0.001), "0.001");
+        assert_eq!(score_label(0.0), "0.000");
+        // What the live log printed as "0.000": a relevance after MMR's decay.
+        assert_eq!(score_label(sigmoid(-1.5) * 0.5f32.powi(12)), "4.45e-5");
+        assert_eq!(score_label(0.000_412), "4.12e-4");
+        assert_ne!(
+            score_label(1e-9),
+            score_label(2e-9),
+            "distinct scores stay distinct"
+        );
+    }
+
+    /// The decay that makes these scores small keeps every one of them positive and
+    /// ordered: the order MMR leaves is the order that is printed and returned.
+    #[test]
+    fn mmr_decay_keeps_scores_positive_and_ordered() {
+        let mut results: Vec<ComprehensiveResult> = (0..30u32)
+            .map(|i| {
+                let mut metadata = HashMap::new();
+                let file = if i % 15 == 0 { "b.pdf" } else { "a.pdf" };
+                metadata.insert("source_file".to_string(), file.to_string());
+                ComprehensiveResult {
+                    id: Uuid::from_u128(u128::from(i) + 1),
+                    score: sigmoid(2.0 - i as f32 * 0.3),
+                    metadata,
+                    citation: Default::default(),
+                    snippet: String::new(),
+                    source_index: "hybrid".to_string(),
+                }
+            })
+            .collect();
+        RAGEngine::apply_mmr_diversity(&mut results, 0.5);
+        assert!(results.iter().all(|r| r.score > 0.0));
+        assert!(results.windows(2).all(|w| w[0].score >= w[1].score));
+        assert!(results.iter().filter(|r| r.score < 0.0005).count() > 10);
+        assert!(results.iter().all(|r| score_label(r.score) != "0.000"));
     }
 }
 

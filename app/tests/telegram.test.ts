@@ -17,6 +17,7 @@ import {
   telegramNextSteps,
   telegramPill,
   telegramStep,
+  telegramSteps,
   telegramTabBadges,
   telegramTileAction,
   type TelegramStatus,
@@ -139,4 +140,14 @@ test('an Inbox item opens the Telegram page at its tab; the tabs move with the k
   const named = [...rust.matchAll(/TelegramTab::[A-Za-z]+ => "([a-z]+)"/g)].map(m => m[1]);
   assert.deepEqual(named.sort(), [...TELEGRAM_TABS].sort());
   assert.match(rust, /"connector": "telegram", "tab": tab\.as_str\(\)/);
+});
+
+test('the first setup step says how once: in its list, not again in a paragraph above it', () => {
+  const [first, second, third] = telegramSteps();
+  assert.equal(first.title, 'Make a bot with @BotFather');
+  assert.equal(first.detail, null);
+  assert.ok(second.detail && third.detail, 'the other steps keep their line');
+  const setup = readFileSync(new URL('../src/features/connectors/TelegramSetup.tsx', import.meta.url), 'utf8');
+  assert.equal(setup.match(/<code[^>]*>\/newbot<\/code>/g)?.length, 1, 'the list says it');
+  assert.match(setup, /\{current\.detail && </);
 });

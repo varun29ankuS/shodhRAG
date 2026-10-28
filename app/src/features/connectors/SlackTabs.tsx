@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { ExternalLink, Hash, Loader2, Lock, Users } from 'lucide-react';
+import { Check, Copy, ExternalLink, Hash, Loader2, Lock, RefreshCw, Users } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { SwitchRow } from '../../components/PrivacySettings';
@@ -12,7 +12,10 @@ import {
   INDEX_PRIVACY_NOTE,
   MODEL_PRIVACY_NOTE,
   RUNNING_HINT,
+  UPDATE_APP_FOR_INDEXING_LINE,
+  UPDATE_APP_STEPS,
   answerPlacesLine,
+  appManifestUrl,
   answerSourceLine,
   capShare,
   channelLabel,
@@ -24,11 +27,14 @@ import {
   memoriesCountLine,
   memoryPlace,
   memoryProvenance,
+  manifestFromCreateUrl,
   nextSteps,
   overviewWarnings,
   ownerLine,
+  scopeWords,
   sharedIndexLine,
   stateLine,
+  stillMissingLine,
   usageLine,
   validCap,
   validWindow,
@@ -112,7 +118,95 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 // ── Overview ────────────────────────────────────────────────────────
 
-export function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: SlackTabId) => void }) {
+/**
+ * How to give the user's Slack app the permissions it lacks: open its App Manifest page,
+ * paste Shodh's current manifest, reinstall, then check again (Shodh asks Slack which
+ * permissions the bot has now). The permission names are behind a disclosure.
+ */
+function UpdateSlackApp({ status, permissions, onStatus, busy, setBusy }: TabProps & { permissions: string[] }) {
+  const [copied, setCopied] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const manifest = manifestFromCreateUrl(status.createAppUrl);
+  const stepsId = useId();
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  const copy = async () => {
+    if (!manifest) return;
+    try {
+      await navigator.clipboard.writeText(manifest);
+      setCopied(true);
+    } catch (err) {
+      notify.error('The manifest could not be copied', { description: slackError(err) });
+    }
+  };
+
+  // Shodh asks Slack which permissions the bot has now (the stored ones are from when it
+  // connected); the step goes away once none is missing.
+  const checkAgain = async () => {
+    setChecking(true);
+    setBusy(true);
+    try {
+      const next = await slackApi.checkPermissions();
+      onStatus(next);
+      const still = stillMissingLine(next);
+      if (still) notify.error('The Slack app still lacks permissions', { description: still });
+      else notify.success('The Slack app has every permission Shodh needs');
+    } catch (err) {
+      notify.error('Slack could not be asked', { description: slackError(err) });
+    } finally {
+      setChecking(false);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={PRIMARY_BUTTON} disabled={busy} onClick={() => openInSlack(appManifestUrl(status.installation?.appId))}>
+          <ExternalLink className="w-4 h-4" aria-hidden="true" /> Open your Slack app
+        </button>
+        <button type="button" className={OUTLINE_BUTTON} disabled={busy || !manifest} onClick={() => void copy()}>
+          {copied ? <Check className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
+          {copied ? 'Manifest copied' : 'Copy updated manifest'}
+        </button>
+        <span aria-live="polite" className="sr-only">{copied ? 'The updated manifest was copied.' : ''}</span>
+      </div>
+      <ol id={stepsId} className="m-0 pl-5 list-decimal flex flex-col gap-1 text-[12.5px] text-shodh-text-secondary max-w-[64ch]">
+        {UPDATE_APP_STEPS.map(step => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <div>
+        <button type="button" className={OUTLINE_BUTTON} disabled={busy} aria-describedby={stepsId} onClick={() => void checkAgain()}>
+          {checking ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+          ) : (
+            <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+          )}
+          {checking ? 'Asking Slack…' : 'Check again'}
+        </button>
+      </div>
+      <LearnMore label="Show permission names">
+        <ul className="m-0 p-0 list-none flex flex-col gap-1">
+          {permissions.map(scope => (
+            <li key={scope}>
+              <code className="font-mono text-[12px] text-shodh-text">{scope}</code>
+              {scopeWords(scope) !== scope && <span className="text-shodh-text-muted">{`: ${scopeWords(scope)}`}</span>}
+            </li>
+          ))}
+        </ul>
+      </LearnMore>
+    </div>
+  );
+}
+
+export function OverviewTab(props: TabProps & { onTab: (tab: SlackTabId) => void }) {
+  const { status, now, onTab } = props;
   const line = stateLine(status, now);
   const warnings = overviewWarnings(status, now);
   const steps = nextSteps(status);
@@ -138,13 +232,13 @@ export function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: Sl
         </Panel>
         <Panel title="Indexing">
           <p className="m-0 text-[13px] text-shodh-text">{indexSummary(status.index)}</p>
-          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2.5')} onClick={() => onTab('indexing')}>
+          <button type="button" className={cn(OUTLINE_BUTTON, 'self-start mt-1.5')} onClick={() => onTab('indexing')}>
             Open Indexing
           </button>
         </Panel>
         <Panel title="Memories from Slack">
           <p className="m-0 text-[13px] text-shodh-text">{memoriesCountLine(status.index)}</p>
-          <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2.5')} onClick={() => onTab('memories')}>
+          <button type="button" className={cn(OUTLINE_BUTTON, 'self-start mt-1.5')} onClick={() => onTab('memories')}>
             Open Memories
           </button>
         </Panel>
@@ -166,7 +260,12 @@ export function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: Sl
                 <span aria-hidden="true" className={cn('mt-1.5 w-2 h-2 rounded-full shrink-0', TONE_DOT[step.tone])} />
                 <div className="flex-1 min-w-0">
                   <p className="m-0 text-[13px] font-semibold text-shodh-text">{step.title}</p>
-                  <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted break-words">{step.detail}</p>
+                  <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted break-words max-w-[72ch]">{step.detail}</p>
+                  {step.permissions && step.permissions.length > 0 && (
+                    <div className="mt-3">
+                      <UpdateSlackApp {...props} permissions={step.permissions} />
+                    </div>
+                  )}
                 </div>
                 {step.tab && step.action && (
                   <button type="button" className={cn(OUTLINE_BUTTON, 'shrink-0')} onClick={() => onTab(step.tab as SlackTabId)}>
@@ -602,7 +701,12 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
         {!index.available && (
           <Callout tone="warning" role="alert">Indexing needs the app database, which could not be opened. The audit page says why.</Callout>
         )}
-        {index.missingScopesMessage && <Callout tone="warning" role="alert">{index.missingScopesMessage}</Callout>}
+        {index.missingScopes.length > 0 && (
+          <Callout tone="warning" role="alert">
+            <p className="m-0 mb-3 max-w-[72ch]">{UPDATE_APP_FOR_INDEXING_LINE}</p>
+            <UpdateSlackApp {...props} permissions={index.missingScopes} />
+          </Callout>
+        )}
 
         {choices !== null && (offered.length === 0 ? (
           <Callout tone="neutral">

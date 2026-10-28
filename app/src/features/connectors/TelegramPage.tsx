@@ -32,7 +32,6 @@ import { useWorkspaceListings } from './SlackTabs';
 import {
   Callout,
   DANGER_BUTTON,
-  FOCUS_RING,
   INPUT,
   LearnMore,
   OUTLINE_BUTTON,
@@ -41,8 +40,10 @@ import {
   Section,
   Skeleton,
   StatusPill,
+  TABLIST,
   TONE_DOT,
   TONE_TEXT,
+  tabClass,
 } from './ui';
 import type { TelegramStatusState } from './useTelegramStatus';
 
@@ -724,7 +725,7 @@ export function TelegramPage({
         </section>
       ) : (
         <>
-          <div role="tablist" aria-label="Telegram sections" className="flex gap-1 overflow-x-auto scrollbar-thin border-b border-shodh-border-subtle">
+          <div role="tablist" aria-label="Telegram sections" className={TABLIST}>
             {TELEGRAM_TABS.map(t => {
               const badge = badges[t];
               return (
@@ -745,11 +746,7 @@ export function TelegramPage({
                     onTab(next);
                     tabRefs.current[next]?.focus();
                   }}
-                  className={cn(
-                    '-mb-px shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-[13px] border-b-2 transition-colors duration-micro',
-                    tab === t ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
-                    FOCUS_RING,
-                  )}
+                  className={tabClass(tab === t)}
                 >
                   {TELEGRAM_TAB_LABELS[t]}
                   {badge && (

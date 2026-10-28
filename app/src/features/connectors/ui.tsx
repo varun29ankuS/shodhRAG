@@ -35,16 +35,45 @@ const PILL_SURFACE: Record<Tone, string> = {
   error: 'bg-shodh-warning-soft text-shodh-error',
 };
 
-/** The connector's status, as a pill: a dot, the word, and the reason when there is one. */
-export function StatusPill({ pill, className }: { pill: Pill; className?: string }) {
+/**
+ * The connector's status, as a pill: a dot, the word, and the reason when there is one.
+ * `wrap`: the reason wraps onto further lines instead of being cut (a narrow tile, where
+ * a cut reason would hide what needs the user).
+ */
+export function StatusPill({ pill, className, wrap = false }: { pill: Pill; className?: string; wrap?: boolean }) {
   return (
-    <span className={cn('inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full text-[11.5px] font-medium', PILL_SURFACE[pill.tone], className)}>
-      <span aria-hidden="true" className={cn('w-1.5 h-1.5 rounded-full shrink-0', TONE_DOT[pill.tone])} />
-      <span className="truncate">
+    <span
+      className={cn(
+        'inline-flex gap-1.5 max-w-full px-2 text-[11.5px] font-medium',
+        wrap ? 'items-start min-h-6 py-[5px] leading-[14px] rounded-xl' : 'items-center h-6 rounded-full',
+        PILL_SURFACE[pill.tone],
+        className,
+      )}
+    >
+      <span aria-hidden="true" className={cn('w-1.5 h-1.5 rounded-full shrink-0', wrap && 'mt-1', TONE_DOT[pill.tone])} />
+      <span className={wrap ? 'min-w-0 break-words' : 'truncate'}>
         {pill.label}
         {pill.reason && <span className="font-normal">{`: ${pill.reason}`}</span>}
       </span>
     </span>
+  );
+}
+
+/**
+ * A connector page's row of tabs. It scrolls sideways when the page is too narrow for
+ * it, and never up and down: the baseline is an inset shadow the tabs' underline paints
+ * over, so no tab reaches below the row (a `-mb-px` over a `border-b` did, and with
+ * `overflow-x: auto` the row then scrolled vertically by that pixel), and the tabs' focus
+ * ring is drawn inside them.
+ */
+export const TABLIST = 'flex gap-1 overflow-x-auto overflow-y-hidden scrollbar-thin shadow-[inset_0_-1px_0_0_var(--c-border-subtle)]';
+
+/** One tab of {@link TABLIST}. */
+export function tabClass(selected: boolean): string {
+  return cn(
+    'shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-[13px] border-b-2 transition-colors duration-micro',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+    selected ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
   );
 }
 

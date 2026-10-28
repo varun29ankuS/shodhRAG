@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use crate::connectors::slack::answer::{
-    citation_title, truncate_chars, AnswerPassage, ThreadTurn, Venue, MAX_QUESTION_CHARS,
+    citation_title, distinct_turns, search_query, truncate_chars, AnswerPassage, ThreadTurn, Venue,
+    MAX_QUESTION_CHARS,
 };
 use crate::connectors::slack::sanitize::{sanitize, PrivateTerms};
 use crate::harness::tools::search::SearchDocumentsTool;
@@ -38,6 +39,9 @@ pub const OWNER_TURNS: usize = 6;
 /// Longest earlier question and answer in an owner's prompt.
 const TURN_QUESTION_CHARS: usize = 500;
 const TURN_ANSWER_CHARS: usize = 1_200;
+/// All earlier exchanges of an owner's prompt together (after each is cut); the oldest
+/// are left out first.
+pub const OWNER_TURNS_TOTAL_CHARS: usize = 6_000;
 /// The model's reply limit for the owner.
 pub const OWNER_ANSWER_TOKENS: usize = 1_200;
 /// Longest message of the owner's sent to the model.
@@ -95,16 +99,36 @@ fn fenced(text: &str) -> String {
 }
 
 /// The search query of a follow-up: the previous question too, so "and the deposit?"
-/// still finds the topic.
+/// still finds the topic; never the message twice (the rules of Slack's
+/// [`search_query`]).
 pub fn owner_query(message: &str, earlier: &[ThreadTurn]) -> String {
-    let message = truncate_chars(message.trim(), MAX_QUESTION_CHARS);
-    match earlier.last() {
-        Some(previous) => format!(
-            "{} {message}",
-            truncate_chars(previous.question.trim(), 300)
-        ),
-        None => message,
+    search_query(message, earlier)
+}
+
+/// The earlier exchanges an owner's prompt carries: the last [`OWNER_TURNS`] distinct ones
+/// ([`distinct_turns`]), each cut, the oldest left out first until they fit in
+/// [`OWNER_TURNS_TOTAL_CHARS`]. Oldest first.
+pub fn owner_turns(earlier: &[ThreadTurn]) -> Vec<ThreadTurn> {
+    let distinct = distinct_turns(earlier);
+    let skip = distinct.len().saturating_sub(OWNER_TURNS);
+    let mut kept: Vec<ThreadTurn> = distinct
+        .into_iter()
+        .skip(skip)
+        .map(|t| ThreadTurn {
+            question: truncate_chars(t.question.trim(), TURN_QUESTION_CHARS),
+            answer: truncate_chars(t.answer.trim(), TURN_ANSWER_CHARS),
+        })
+        .collect();
+    let size = |turns: &[ThreadTurn]| -> usize {
+        turns
+            .iter()
+            .map(|t| t.question.chars().count() + t.answer.chars().count())
+            .sum()
+    };
+    while !kept.is_empty() && size(&kept) > OWNER_TURNS_TOTAL_CHARS {
+        kept.remove(0);
     }
+    kept
 }
 
 /// The owner's prompt: who they are to Shodh, what it may not do from Telegram, their
@@ -163,15 +187,14 @@ pub fn owner_prompt(
             ));
         }
     }
-    let skip = earlier.len().saturating_sub(OWNER_TURNS);
-    let turns: Vec<&ThreadTurn> = earlier.iter().skip(skip).collect();
+    let turns = owner_turns(earlier);
     if !turns.is_empty() {
         prompt.push_str("\nEarlier in this chat (context only):\n");
-        for turn in turns {
+        for turn in &turns {
             prompt.push_str(&format!(
                 "They wrote:\n<<<\n{}\n>>>\nYou answered:\n<<<\n{}\n>>>\n",
-                fenced(&truncate_chars(turn.question.trim(), TURN_QUESTION_CHARS)),
-                fenced(&truncate_chars(turn.answer.trim(), TURN_ANSWER_CHARS))
+                fenced(&turn.question),
+                fenced(&turn.answer)
             ));
         }
     }
@@ -219,6 +242,70 @@ mod tests {
         assert_eq!(
             owner_query("And the deposit?", &earlier),
             "What is the notice period? And the deposit?"
+        );
+    }
+
+    /// The live log: `query="How's it going shodh How's it going shodh"` after the owner
+    /// sent "How's it going shodh", answered from a backlog that held it twice.
+    #[test]
+    fn the_owners_message_sent_twice_is_searched_and_shown_once() {
+        let asked = "How's it going shodh";
+        let earlier = vec![ThreadTurn {
+            question: asked.into(),
+            answer: "All good.".into(),
+        }];
+        assert_eq!(owner_query(asked, &earlier), asked);
+        let twice = vec![
+            ThreadTurn {
+                question: "What is the notice period?".into(),
+                answer: "Sixty days [1].".into(),
+            },
+            ThreadTurn {
+                question: asked.into(),
+                answer: "All good.".into(),
+            },
+            ThreadTurn {
+                question: asked.into(),
+                answer: "Still good.".into(),
+            },
+        ];
+        assert_eq!(
+            owner_query(asked, &twice),
+            "What is the notice period? How's it going shodh"
+        );
+        let prompt = owner_prompt(asked, &[], None, &twice, None, &PrivateTerms::default());
+        assert_eq!(prompt.matches("They wrote:").count(), 2, "{prompt}");
+        assert!(prompt.contains("Still good.") && !prompt.contains("All good."));
+    }
+
+    #[test]
+    fn the_owners_earlier_turns_stay_bounded() {
+        let long = vec![
+            ThreadTurn {
+                question: "q".repeat(5_000),
+                answer: "a".repeat(5_000),
+            };
+            20
+        ];
+        // Distinct questions, so none collapses: the bound is what keeps them small.
+        let long: Vec<ThreadTurn> = long
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| ThreadTurn {
+                question: format!("{i} {}", t.question),
+                answer: t.answer,
+            })
+            .collect();
+        let kept = owner_turns(&long);
+        assert!(!kept.is_empty() && kept.len() <= OWNER_TURNS);
+        let total: usize = kept
+            .iter()
+            .map(|t| t.question.chars().count() + t.answer.chars().count())
+            .sum();
+        assert!(total <= OWNER_TURNS_TOTAL_CHARS, "{total}");
+        assert!(
+            kept[kept.len() - 1].question.starts_with("19 "),
+            "the latest kept"
         );
     }
 

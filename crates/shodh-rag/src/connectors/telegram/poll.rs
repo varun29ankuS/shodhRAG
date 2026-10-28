@@ -9,7 +9,8 @@
 //!   the background and returns at once.
 //! - **Telegram's limits.** A 429 waits the `retry_after` Telegram gives. A network error
 //!   or a 5xx waits with exponential backoff ([`PollTiming`]), which starts over after a
-//!   call succeeds.
+//!   call succeeds. Once a wait is over the card says "connecting" again, not a next try
+//!   whose time has passed, until the call answers (a long poll can take its full wait).
 //! - **What the user must fix stops the loop**, with the reason on the card, instead of
 //!   retrying forever: a refused token (401), a webhook set on the bot, and another
 //!   program polling with the same token.
@@ -276,6 +277,7 @@ pub async fn run(
             _ = tokio::time::sleep(delay) => {}
             _ = stop.cancelled() => break,
         }
+        sink.state(PollState::Connecting);
     }
     sink.state(PollState::Off);
 }
@@ -524,7 +526,8 @@ mod tests {
         assert!(
             matches!(states[1], PollState::Waiting { ref reason, .. } if reason.contains("rate limited"))
         );
-        assert_eq!(states[2], PollState::Connected);
+        assert_eq!(states[2], PollState::Connecting);
+        assert_eq!(states[3], PollState::Connected);
         r.stop.cancel();
         task.await.unwrap();
     }
@@ -550,6 +553,32 @@ mod tests {
         assert_eq!(r.bot.offsets.lock().unwrap().len(), 7);
         r.stop.cancel();
         task.await.unwrap();
+    }
+
+    /// The live log: after each dropped connection the next poll answered only after its
+    /// full 30 s wait, and all that time the card still showed the wait's reason and a
+    /// next try whose time had passed.
+    #[tokio::test(start_paused = true)]
+    async fn after_a_wait_the_card_says_connecting_until_telegram_answers() {
+        let (r, task) = start(
+            vec![Err(TelegramError::Network(
+                "connection forcibly closed (os error 10054)".into(),
+            ))],
+            None,
+        );
+        // Dropped, waited 1 s, polling again: that poll never answers here.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(r.bot.offsets.lock().unwrap().len(), 2);
+        let states = r.states.0.lock().unwrap().clone();
+        assert_eq!(states.len(), 3, "{states:?}");
+        assert_eq!(states[0], PollState::Connecting);
+        assert!(
+            matches!(states[1], PollState::Waiting { ref reason, .. } if reason.contains("10054"))
+        );
+        assert_eq!(states[2], PollState::Connecting);
+        r.stop.cancel();
+        task.await.unwrap();
+        assert_eq!(r.states.0.lock().unwrap().last(), Some(&PollState::Off));
     }
 
     #[tokio::test(start_paused = true)]

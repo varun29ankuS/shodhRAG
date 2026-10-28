@@ -12,8 +12,16 @@
 //! "Check for updates" on and Local-only mode is off. A found update is
 //! announced to the window ([`UPDATE_AVAILABLE_EVENT`]); it is downloaded and
 //! installed only when the user chooses to.
+//!
+//! Every check ends in a [`LastCheck`] that Settings shows in plain words and
+//! the log records once, at the level the outcome deserves. The plugin's own
+//! log lines are filtered out (`log_filter`): it logs any refused request as
+//! an ERROR, and while no release is published (GitHub answers 404 for
+//! `releases/latest` when every release is a draft) that is the normal state,
+//! not an error.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -78,14 +86,124 @@ pub struct UpdateStatus {
     pub check_automatically: bool,
     /// Why this app may not check now (no update key, Local-only mode).
     pub blocked_reason: Option<&'static str>,
+    /// The last check in this run (the background one or Check now).
+    pub last_check: Option<LastCheck>,
+}
+
+/// How a check ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckOutcome {
+    /// The server offers this version or an older one.
+    UpToDate,
+    /// A newer version is offered.
+    Available,
+    /// The update address gave no release: nothing is published there yet
+    /// (GitHub answers `releases/latest` with 404 while every release is a
+    /// draft). Any refused request reads the same to the plugin, so this is
+    /// "none found", not a diagnosis.
+    NoRelease,
+    /// The update server could not be reached (offline, DNS, a timeout).
+    Unreachable,
+    /// Anything else (a damaged release file, an unsupported platform).
+    Failed,
+}
+
+/// The result of one check, as Settings shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCheck {
+    /// When the check ended (RFC 3339).
+    pub at: String,
+    pub outcome: CheckOutcome,
+    /// What happened, in plain words.
+    pub message: String,
+    /// The newer version, when one is offered.
+    pub update: Option<UpdateInfo>,
+}
+
+const UP_TO_DATE: &str = "Shodh is up to date.";
+const NO_RELEASE: &str = "No published release of Shodh was found on GitHub yet, so there is nothing to update to. New versions show up here once one is published.";
+const UNREACHABLE: &str =
+    "GitHub could not be reached, so Shodh could not check for updates. It tries again later.";
+
+/// The outcome a failed check stands for.
+fn failure_outcome(error: &tauri_plugin_updater::Error) -> CheckOutcome {
+    match error {
+        tauri_plugin_updater::Error::ReleaseNotFound => CheckOutcome::NoRelease,
+        tauri_plugin_updater::Error::Reqwest(e) if !e.is_decode() => CheckOutcome::Unreachable,
+        _ => CheckOutcome::Failed,
+    }
+}
+
+impl LastCheck {
+    fn found(update: Option<&UpdateInfo>, at: chrono::DateTime<chrono::Utc>) -> Self {
+        match update {
+            Some(info) => Self {
+                at: at.to_rfc3339(),
+                outcome: CheckOutcome::Available,
+                message: format!("Version {} is available.", info.version),
+                update: Some(info.clone()),
+            },
+            None => Self {
+                at: at.to_rfc3339(),
+                outcome: CheckOutcome::UpToDate,
+                message: UP_TO_DATE.to_string(),
+                update: None,
+            },
+        }
+    }
+
+    fn failed(error: &tauri_plugin_updater::Error, at: chrono::DateTime<chrono::Utc>) -> Self {
+        let outcome = failure_outcome(error);
+        let message = match outcome {
+            CheckOutcome::NoRelease => NO_RELEASE.to_string(),
+            CheckOutcome::Unreachable => UNREACHABLE.to_string(),
+            _ => format!("The update check failed: {error}"),
+        };
+        Self {
+            at: at.to_rfc3339(),
+            outcome,
+            message,
+            update: None,
+        }
+    }
+
+    /// One log line per check, at the level the outcome deserves: a missing
+    /// release or a network outage is expected and never an error.
+    fn log(&self, detail: Option<&str>) {
+        match self.outcome {
+            CheckOutcome::Available => tracing::info!("{}", self.message),
+            CheckOutcome::UpToDate => tracing::debug!("No update available"),
+            CheckOutcome::NoRelease => {
+                tracing::info!("Update check: no published release at the update address")
+            }
+            CheckOutcome::Unreachable => tracing::info!(
+                error = detail.unwrap_or_default(),
+                "Update check: the update server could not be reached"
+            ),
+            CheckOutcome::Failed => tracing::warn!("{}", self.message),
+        }
+    }
 }
 
 /// The update found by the last check, kept so Install installs exactly
-/// what the user was shown.
+/// what the user was shown, and the last check's result.
 #[derive(Default)]
 pub struct UpdaterState {
     pending: tokio::sync::Mutex<Option<Update>>,
+    last: Mutex<Option<LastCheck>>,
     installing: AtomicBool,
+}
+
+impl UpdaterState {
+    fn last_check(&self) -> Option<LastCheck> {
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn record(&self, check: &LastCheck) {
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(check.clone());
+    }
 }
 
 /// Why no check may run now, if none may. `configured`: the build has an
@@ -126,41 +244,49 @@ fn load_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, String> 
     settings_store(app)?.load().map_err(|e| e.to_string())
 }
 
-fn status<R: Runtime>(app: &AppHandle<R>, settings: &AppSettings) -> UpdateStatus {
+fn status<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &AppSettings,
+    state: &UpdaterState,
+) -> UpdateStatus {
     UpdateStatus {
         current_version: app.package_info().version.to_string(),
         check_automatically: settings.updates.check_automatically,
         blocked_reason: block_reason(is_configured(app), settings),
+        last_check: state.last_check(),
     }
 }
 
 /// Ask the update server for a newer version, keep it for Install and
-/// announce it to the window.
-async fn check<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &UpdaterState,
-) -> Result<Option<UpdateInfo>, String> {
-    let update = app
-        .updater_builder()
-        .timeout(CHECK_TIMEOUT)
-        .build()
-        .map_err(|e| format!("The updater could not start: {e}"))?
-        .check()
-        .await
-        .map_err(|e| format!("Checking for updates failed: {e}"))?;
-    let info = update.as_ref().map(UpdateInfo::from);
-    *state.pending.lock().await = update;
-    if let Some(info) = &info {
-        tracing::info!(
-            "Update available: {} → {}",
-            info.current_version,
-            info.version
-        );
-        if let Err(e) = app.emit(UPDATE_AVAILABLE_EVENT, info) {
-            tracing::warn!("Failed to emit {UPDATE_AVAILABLE_EVENT}: {e}");
+/// announce it to the window. Every outcome is kept for Settings and logged
+/// once.
+async fn check<R: Runtime>(app: &AppHandle<R>, state: &UpdaterState) -> LastCheck {
+    let checked = match app.updater_builder().timeout(CHECK_TIMEOUT).build() {
+        Ok(updater) => updater.check().await,
+        Err(e) => Err(e),
+    };
+    let now = chrono::Utc::now();
+    let result = match checked {
+        Ok(update) => {
+            let info = update.as_ref().map(UpdateInfo::from);
+            *state.pending.lock().await = update;
+            let result = LastCheck::found(info.as_ref(), now);
+            result.log(None);
+            if let Some(info) = &info {
+                if let Err(e) = app.emit(UPDATE_AVAILABLE_EVENT, info) {
+                    tracing::warn!("Failed to emit {UPDATE_AVAILABLE_EVENT}: {e}");
+                }
+            }
+            result
         }
-    }
-    Ok(info)
+        Err(e) => {
+            let result = LastCheck::failed(&e, now);
+            result.log(Some(&e.to_string()));
+            result
+        }
+    };
+    state.record(&result);
+    result
 }
 
 /// Check a few minutes after start and then once a day, while allowed.
@@ -176,13 +302,10 @@ pub fn spawn_background_checks(app: AppHandle) {
                 }
             };
             if allowed {
+                // Whatever the outcome (nothing published, offline), the next
+                // try is a day later: one request a day is the backoff.
                 let state = app.state::<UpdaterState>();
-                match check(&app, &state).await {
-                    Ok(Some(_)) => {}
-                    Ok(None) => tracing::debug!("No update available"),
-                    // Offline or the server is unreachable: try again tomorrow.
-                    Err(e) => tracing::info!("{e}"),
-                }
+                check(&app, &state).await;
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
@@ -192,9 +315,12 @@ pub fn spawn_background_checks(app: AppHandle) {
 // ── Commands ─────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn get_update_status(app: AppHandle) -> Result<UpdateStatus, String> {
+pub async fn get_update_status(
+    app: AppHandle,
+    state: State<'_, UpdaterState>,
+) -> Result<UpdateStatus, String> {
     let settings = load_settings(&app)?;
-    Ok(status(&app, &settings))
+    Ok(status(&app, &settings, &state))
 }
 
 /// Turn the automatic check on or off. User-only: no agent tool calls this,
@@ -204,6 +330,7 @@ pub async fn set_update_checks(
     app: AppHandle,
     enabled: bool,
     audit: State<'_, AuditState>,
+    state: State<'_, UpdaterState>,
 ) -> Result<UpdateStatus, String> {
     let (settings, before) = settings_store(&app)?
         .update(|s| {
@@ -220,21 +347,22 @@ pub async fn set_update_checks(
         ));
     }
     broadcast(&app, &settings);
-    Ok(status(&app, &settings))
+    Ok(status(&app, &settings, &state))
 }
 
 /// Check now (Settings → Privacy, Check now). Allowed with the automatic
-/// check off, never in Local-only mode or without an update key.
+/// check off, never in Local-only mode or without an update key. A check
+/// that found nothing (none published, offline) is a result, not an error.
 #[tauri::command]
 pub async fn check_for_update(
     app: AppHandle,
     state: State<'_, UpdaterState>,
-) -> Result<Option<UpdateInfo>, String> {
+) -> Result<LastCheck, String> {
     let settings = load_settings(&app)?;
     if let Some(reason) = block_reason(is_configured(&app), &settings) {
         return Err(reason.to_string());
     }
-    check(&app, &state).await
+    Ok(check(&app, &state).await)
 }
 
 /// Download the update the last check found, verify its signature, stop the
@@ -255,6 +383,10 @@ pub async fn install_update(
     }
     let result = download_and_install(&app, &state, &audit).await;
     state.installing.store(false, Ordering::SeqCst);
+    // The plugin's own log lines are filtered out: a failure is logged here.
+    if let Err(e) = &result {
+        tracing::warn!(error = %e, "the update was not installed");
+    }
     result?;
     app.restart()
 }
@@ -337,6 +469,73 @@ mod tests {
         assert!(!automatic_check_allowed(true, &settings));
         // A manual check is still allowed.
         assert_eq!(block_reason(true, &settings), None);
+    }
+
+    fn at() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_793_000_000, 0).unwrap()
+    }
+
+    /// The live log: every release is a draft, so `releases/latest` answers
+    /// 404 and the plugin reports `ReleaseNotFound`. That is a quiet state
+    /// with its own words, not an error.
+    #[test]
+    fn no_published_release_is_a_quiet_state_not_an_error() {
+        let check = LastCheck::failed(&tauri_plugin_updater::Error::ReleaseNotFound, at());
+        assert_eq!(check.outcome, CheckOutcome::NoRelease);
+        assert_eq!(check.message, NO_RELEASE);
+        assert!(!check.message.contains("failed"));
+        assert_eq!(check.update, None);
+        let json = serde_json::to_value(&check).unwrap();
+        assert_eq!(json["outcome"], json!("noRelease"));
+        assert_eq!(json["at"], json!(at().to_rfc3339()));
+    }
+
+    #[test]
+    fn other_failures_keep_their_reason() {
+        let check = LastCheck::failed(
+            &tauri_plugin_updater::Error::TargetNotFound("windows-x86_64".into()),
+            at(),
+        );
+        assert_eq!(check.outcome, CheckOutcome::Failed);
+        assert!(check.message.starts_with("The update check failed: "));
+        assert!(check.message.contains("windows-x86_64"));
+        assert_eq!(
+            failure_outcome(&tauri_plugin_updater::Error::EmptyEndpoints),
+            CheckOutcome::Failed
+        );
+    }
+
+    #[test]
+    fn a_found_version_or_none_is_said_plainly() {
+        let info = UpdateInfo {
+            version: "0.0.11".into(),
+            current_version: "0.0.10".into(),
+            date: None,
+            notes: None,
+        };
+        let found = LastCheck::found(Some(&info), at());
+        assert_eq!(found.outcome, CheckOutcome::Available);
+        assert_eq!(found.message, "Version 0.0.11 is available.");
+        assert_eq!(found.update, Some(info));
+        let none = LastCheck::found(None, at());
+        assert_eq!(none.outcome, CheckOutcome::UpToDate);
+        assert_eq!(none.message, UP_TO_DATE);
+        assert_eq!(
+            serde_json::to_value(&none).unwrap()["outcome"],
+            json!("upToDate")
+        );
+    }
+
+    #[test]
+    fn the_last_check_is_kept_and_replaced() {
+        let state = UpdaterState::default();
+        assert_eq!(state.last_check(), None);
+        let first = LastCheck::failed(&tauri_plugin_updater::Error::ReleaseNotFound, at());
+        state.record(&first);
+        assert_eq!(state.last_check(), Some(first));
+        let second = LastCheck::found(None, at());
+        state.record(&second);
+        assert_eq!(state.last_check(), Some(second));
     }
 
     #[test]

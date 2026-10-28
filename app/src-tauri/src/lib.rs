@@ -18,6 +18,7 @@ mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
 mod log_file;
+mod log_filter;
 mod mcp;
 mod mcp_commands;
 mod memory_commands;
@@ -142,12 +143,10 @@ fn setup_error(context: &str, error: impl std::fmt::Display) -> Box<dyn std::err
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing subscriber so tracing::info!/debug!/warn!/error! produce output
+    // Shodh's own lines from INFO, the libraries' internals from WARN (`log_filter`);
+    // `RUST_LOG` replaces that for a developer's session.
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(log_filter::from_env())
         .with_target(false)
         .with_ansi(false)
         .with_writer(log_file::Writer::default)
@@ -937,6 +936,9 @@ pub fn run() {
             // Stop every omp sidecar before the process exits.
             let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
             tauri::async_runtime::block_on(sessions.shutdown_all());
+            // The last line of a run: without it a clean quit and a crash leave the
+            // same log.
+            tracing::info!("Shodh quit: connectors and agent sessions stopped");
         }
         // macOS: the Dock icon brings back a window closed to the tray.
         #[cfg(target_os = "macos")]

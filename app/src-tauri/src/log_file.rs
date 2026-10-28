@@ -1,10 +1,12 @@
 //! The app's log file. Installed builds have no console, so without it a failure
 //! (a Slack connection refused, a model error) would leave nothing to read.
 //!
-//! Lines go to `<app data>/logs/shodh.log` as well as to stderr. The previous run's
-//! log is kept as `shodh.log.1`, and a log that grows past [`MAX_BYTES`] rolls over
-//! to `shodh.log.1` too, so the two files together stay bounded. Lines logged before
-//! the file is opened (the first moments of start-up) go to stderr only.
+//! Lines go to `<app data>/logs/shodh.log` as well as to stderr. Each run appends to
+//! the log (its first line names the version), and a log that grows past
+//! [`MAX_BYTES`] rolls over to `shodh.log.1`, so the two files together stay bounded
+//! by size, not by the number of starts: a crash followed by two relaunches still
+//! leaves the crash in the log. Lines logged before the file is opened (the first
+//! moments of start-up) go to stderr only.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -27,14 +29,18 @@ pub struct RollingFile {
 }
 
 impl RollingFile {
-    /// Opens a fresh log in `dir`, keeping the previous one as `shodh.log.1`.
+    /// Opens the log in `dir` to append to it; a full one rolls over at the next line.
     pub fn open(dir: &Path, max_bytes: u64) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
-        let file = Self::start(dir)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(FILE_NAME))?;
+        let written = file.metadata()?.len();
         Ok(Self {
             dir: dir.to_path_buf(),
             file,
-            written: 0,
+            written,
             max_bytes,
         })
     }
@@ -113,20 +119,37 @@ mod tests {
         fs::read_to_string(dir.join(name)).unwrap_or_default()
     }
 
+    /// The live logs: the log rolled at every start, so a 47-second run had pushed out
+    /// everything before it while the 10 MB limit was nowhere near.
     #[test]
-    fn a_new_run_keeps_the_previous_log() {
+    fn a_new_run_appends_to_the_log() {
         let dir = tempfile::tempdir().unwrap();
-        let mut first = RollingFile::open(dir.path(), 1024).unwrap();
-        first.write_line(b"first run\n").unwrap();
+        for run in ["first run\n", "second run\n", "third run\n"] {
+            let mut log = RollingFile::open(dir.path(), 1024).unwrap();
+            log.write_line(run.as_bytes()).unwrap();
+            log.flush().unwrap();
+        }
+        assert_eq!(
+            read(dir.path(), FILE_NAME),
+            "first run\nsecond run\nthird run\n"
+        );
+        assert!(!dir.path().join(PREVIOUS_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn a_new_run_counts_what_the_log_already_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = RollingFile::open(dir.path(), 20).unwrap();
+        first.write_line(b"0123456789\n").unwrap(); // 11 bytes
         first.flush().unwrap();
         drop(first);
 
-        let mut second = RollingFile::open(dir.path(), 1024).unwrap();
-        second.write_line(b"second run\n").unwrap();
+        let mut second = RollingFile::open(dir.path(), 20).unwrap();
+        second.write_line(b"abcdefghij\n").unwrap(); // 22 > 20 with the first run's line
         second.flush().unwrap();
 
-        assert_eq!(read(dir.path(), FILE_NAME), "second run\n");
-        assert_eq!(read(dir.path(), PREVIOUS_FILE_NAME), "first run\n");
+        assert_eq!(read(dir.path(), FILE_NAME), "abcdefghij\n");
+        assert_eq!(read(dir.path(), PREVIOUS_FILE_NAME), "0123456789\n");
     }
 
     #[test]

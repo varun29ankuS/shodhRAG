@@ -284,6 +284,14 @@ pub trait TextModel: Send + Sync {
                 truncated: false,
             })
     }
+
+    /// The model that wrote this model's most recent reply, and why it was not the
+    /// requested one, when this model falls back to others
+    /// ([`crate::harness::model_fallback::FallbackTextModel`]). `None` by default: the
+    /// model asked for answered.
+    fn answered_by(&self) -> Option<crate::harness::model_fallback::AnsweredBy> {
+        None
+    }
 }
 
 /// A model's reply and whether the provider cut it off at the output limit.

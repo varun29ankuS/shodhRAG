@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod model;
 pub mod model_catalog;
 pub mod model_choice;
+pub mod model_fallback;
 pub mod model_picks;
 pub mod omp;
 pub mod omp_auth;

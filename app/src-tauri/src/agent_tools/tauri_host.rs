@@ -116,7 +116,7 @@ impl HostEffects for TauriEffects {
                 )),
             };
             if let Err(e) = &result {
-                tracing::warn!(target: "shodh::harness", path = %job.path, error = %e, "indexing a downloaded file failed");
+                tracing::warn!(target: "shodh::harness", path = %shodh_rag::log_safe::file(&job.path), error = %shodh_rag::log_safe::scrub(&e.to_string(), &job.path), "indexing a downloaded file failed");
             }
             // Tools run inside an answer, whose own notification covers this
             // file; only a failure is announced (as a problem).

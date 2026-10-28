@@ -8,7 +8,8 @@
 //! contacts the update server.
 //!
 //! Checks are quiet and ask before changing anything: a few minutes after
-//! start and then once a day while the app runs, only while the user leaves
+//! start and then once a day while the app runs (sooner after a check that
+//! could not finish: 15 minutes, doubling), only while the user leaves
 //! "Check for updates" on and Local-only mode is off. A found update is
 //! announced to the window ([`UPDATE_AVAILABLE_EVENT`]); it is downloaded and
 //! installed only when the user chooses to.
@@ -127,12 +128,48 @@ const NO_RELEASE: &str = "No published release of Shodh was found on GitHub yet,
 const UNREACHABLE: &str =
     "GitHub could not be reached, so Shodh could not check for updates. It tries again later.";
 
-/// The outcome a failed check stands for.
+/// The first retry after a check that could not finish; each failure in a row
+/// doubles it, up to [`CHECK_INTERVAL`].
+const RETRY_START: Duration = Duration::from_secs(15 * 60);
+
+/// The outcome a failed check stands for, before the update address is asked
+/// again. The plugin reports every refused request (404, 403, 429, 5xx) as
+/// `ReleaseNotFound`, so that one is only a candidate for [`refused_outcome`].
 fn failure_outcome(error: &tauri_plugin_updater::Error) -> CheckOutcome {
     match error {
         tauri_plugin_updater::Error::ReleaseNotFound => CheckOutcome::NoRelease,
         tauri_plugin_updater::Error::Reqwest(e) if !e.is_decode() => CheckOutcome::Unreachable,
         _ => CheckOutcome::Failed,
+    }
+}
+
+/// What a refused check means, from the status a plain request to the update
+/// address got (`None`: no answer). Only a 404 means nothing is published there;
+/// a rate limit (403, 429) or a server error is GitHub not answering now, and an
+/// answer that worked this time means the refusal a moment ago was passing.
+fn refused_outcome(status: Option<u16>) -> CheckOutcome {
+    match status {
+        Some(404) => CheckOutcome::NoRelease,
+        None | Some(403 | 429 | 500..=599 | 200..=299) => CheckOutcome::Unreachable,
+        Some(_) => CheckOutcome::Failed,
+    }
+}
+
+/// When to check next: a day after a check that finished (whatever it found),
+/// sooner after one that could not finish (15 minutes, doubling per failure in a
+/// row, at most a day). `failures`: checks in a row that could not finish, this
+/// one included.
+fn next_check_after(outcome: CheckOutcome, failures: u32) -> Duration {
+    match outcome {
+        CheckOutcome::UpToDate | CheckOutcome::Available | CheckOutcome::NoRelease => {
+            CHECK_INTERVAL
+        }
+        CheckOutcome::Unreachable | CheckOutcome::Failed => {
+            let doublings = failures.saturating_sub(1).min(16);
+            RETRY_START
+                .saturating_mul(1u32 << doublings)
+                .min(CHECK_INTERVAL)
+        }
     }
 }
 
@@ -154,45 +191,72 @@ impl LastCheck {
         }
     }
 
-    fn failed(error: &tauri_plugin_updater::Error, at: chrono::DateTime<chrono::Utc>) -> Self {
-        let outcome = failure_outcome(error);
-        let message = match outcome {
-            CheckOutcome::NoRelease => NO_RELEASE.to_string(),
-            CheckOutcome::Unreachable => UNREACHABLE.to_string(),
-            _ => format!("The update check failed: {error}"),
+    /// A check that did not find out. `status`: what the update address
+    /// answered a plain request, when it was asked; `pending`: the update an
+    /// earlier check found, which can still be installed (it stays signed and
+    /// verified), and is said so.
+    fn failed(
+        outcome: CheckOutcome,
+        status: Option<u16>,
+        error: &dyn std::fmt::Display,
+        pending: Option<UpdateInfo>,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        let mut message = match (outcome, status) {
+            (CheckOutcome::NoRelease, _) => NO_RELEASE.to_string(),
+            (CheckOutcome::Unreachable, Some(code)) => format!(
+                "GitHub did not answer the update check (HTTP {code}). Shodh tries again later."
+            ),
+            (CheckOutcome::Unreachable, None) => UNREACHABLE.to_string(),
+            (_, Some(code)) => {
+                format!("The update check failed: the update address answered HTTP {code}.")
+            }
+            (_, None) => format!("The update check failed: {error}"),
         };
+        if let Some(info) = &pending {
+            message.push_str(&format!(
+                " Version {} found earlier can still be installed.",
+                info.version
+            ));
+        }
         Self {
             at: at.to_rfc3339(),
             outcome,
             message,
-            update: None,
+            update: pending,
         }
     }
 
     /// One log line per check, at the level the outcome deserves: a missing
-    /// release or a network outage is expected and never an error.
-    fn log(&self, detail: Option<&str>) {
-        match self.outcome {
-            CheckOutcome::Available => tracing::info!("{}", self.message),
-            CheckOutcome::UpToDate => tracing::debug!("No update available"),
-            CheckOutcome::NoRelease => {
+    /// release or a network outage is expected and never an error; a refusal
+    /// with a status (a rate limit, a server error) is a warning.
+    fn log(&self, status: Option<u16>, detail: Option<&str>) {
+        match (self.outcome, status) {
+            (CheckOutcome::Available, _) => tracing::info!("{}", self.message),
+            (CheckOutcome::UpToDate, _) => tracing::debug!("No update available"),
+            (CheckOutcome::NoRelease, _) => {
                 tracing::info!("Update check: no published release at the update address")
             }
-            CheckOutcome::Unreachable => tracing::info!(
+            (CheckOutcome::Unreachable, None) => tracing::info!(
                 error = detail.unwrap_or_default(),
                 "Update check: the update server could not be reached"
             ),
-            CheckOutcome::Failed => tracing::warn!("{}", self.message),
+            (CheckOutcome::Unreachable, Some(code)) => {
+                tracing::warn!(status = code, "Update check: the update address refused it")
+            }
+            (CheckOutcome::Failed, _) => tracing::warn!("{}", self.message),
         }
     }
 }
 
 /// The update found by the last check, kept so Install installs exactly
-/// what the user was shown, and the last check's result.
+/// what the user was shown, and the last check's result. One check runs at a
+/// time (the daily one and Check now never interleave their results).
 #[derive(Default)]
 pub struct UpdaterState {
     pending: tokio::sync::Mutex<Option<Update>>,
     last: Mutex<Option<LastCheck>>,
+    checking: tokio::sync::Mutex<()>,
     installing: AtomicBool,
 }
 
@@ -257,21 +321,58 @@ fn status<R: Runtime>(
     }
 }
 
+/// The update address from the configuration (`plugins.updater.endpoints`).
+fn endpoint<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("endpoints"))
+        .and_then(|endpoints| endpoints.get(0))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// The status a plain request to the update address gets now (`None`: no
+/// answer), read after the plugin refused a check: it does not say why.
+async fn probe_status(url: &str) -> Option<u16> {
+    let client = reqwest::Client::builder()
+        .timeout(CHECK_TIMEOUT)
+        .user_agent(concat!("Shodh/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    match client.get(url).send().await {
+        Ok(response) => Some(response.status().as_u16()),
+        Err(_) => None,
+    }
+}
+
 /// Ask the update server for a newer version, keep it for Install and
 /// announce it to the window. Every outcome is kept for Settings and logged
-/// once.
-async fn check<R: Runtime>(app: &AppHandle<R>, state: &UpdaterState) -> LastCheck {
-    let checked = match app.updater_builder().timeout(CHECK_TIMEOUT).build() {
+/// once. A check that fails keeps the update an earlier one found.
+async fn check(app: &AppHandle, state: &UpdaterState) -> LastCheck {
+    let _one_at_a_time = state.checking.lock().await;
+    // On Windows the installer ends the process with `process::exit` (no
+    // `RunEvent::Exit`): connectors, commands and the log's last line are seen to
+    // just before.
+    let releasing = app.clone();
+    let checked = match app
+        .updater_builder()
+        .timeout(CHECK_TIMEOUT)
+        .on_before_exit(move || {
+            crate::shutdown::release_everything(&releasing, "installing an update")
+        })
+        .build()
+    {
         Ok(updater) => updater.check().await,
         Err(e) => Err(e),
     };
-    let now = chrono::Utc::now();
     let result = match checked {
         Ok(update) => {
             let info = update.as_ref().map(UpdateInfo::from);
             *state.pending.lock().await = update;
-            let result = LastCheck::found(info.as_ref(), now);
-            result.log(None);
+            let result = LastCheck::found(info.as_ref(), chrono::Utc::now());
+            result.log(None, None);
             if let Some(info) = &info {
                 if let Err(e) = app.emit(UPDATE_AVAILABLE_EVENT, info) {
                     tracing::warn!("Failed to emit {UPDATE_AVAILABLE_EVENT}: {e}");
@@ -280,8 +381,18 @@ async fn check<R: Runtime>(app: &AppHandle<R>, state: &UpdaterState) -> LastChec
             result
         }
         Err(e) => {
-            let result = LastCheck::failed(&e, now);
-            result.log(Some(&e.to_string()));
+            let mut outcome = failure_outcome(&e);
+            let mut status = None;
+            if outcome == CheckOutcome::NoRelease {
+                status = match endpoint(app) {
+                    Some(url) => probe_status(&url).await,
+                    None => None,
+                };
+                outcome = refused_outcome(status);
+            }
+            let pending = state.pending.lock().await.as_ref().map(UpdateInfo::from);
+            let result = LastCheck::failed(outcome, status, &e, pending, chrono::Utc::now());
+            result.log(status, Some(&e.to_string()));
             result
         }
     };
@@ -289,10 +400,12 @@ async fn check<R: Runtime>(app: &AppHandle<R>, state: &UpdaterState) -> LastChec
     result
 }
 
-/// Check a few minutes after start and then once a day, while allowed.
+/// Check a few minutes after start, then a day after each check that finished
+/// and sooner after one that could not ([`next_check_after`]), while allowed.
 pub fn spawn_background_checks(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_DELAY).await;
+        let mut failures: u32 = 0;
         loop {
             let allowed = match load_settings(&app) {
                 Ok(settings) => automatic_check_allowed(is_configured(&app), &settings),
@@ -301,13 +414,18 @@ pub fn spawn_background_checks(app: AppHandle) {
                     false
                 }
             };
-            if allowed {
-                // Whatever the outcome (nothing published, offline), the next
-                // try is a day later: one request a day is the backoff.
+            let wait = if allowed {
                 let state = app.state::<UpdaterState>();
-                check(&app, &state).await;
-            }
-            tokio::time::sleep(CHECK_INTERVAL).await;
+                let outcome = check(&app, &state).await.outcome;
+                failures = match outcome {
+                    CheckOutcome::Unreachable | CheckOutcome::Failed => failures.saturating_add(1),
+                    _ => 0,
+                };
+                next_check_after(outcome, failures)
+            } else {
+                CHECK_INTERVAL
+            };
+            tokio::time::sleep(wait).await;
         }
     });
 }
@@ -478,9 +596,20 @@ mod tests {
     /// The live log: every release is a draft, so `releases/latest` answers
     /// 404 and the plugin reports `ReleaseNotFound`. That is a quiet state
     /// with its own words, not an error.
+    fn not_found() -> tauri_plugin_updater::Error {
+        tauri_plugin_updater::Error::ReleaseNotFound
+    }
+
+    /// A refused check (the plugin's `ReleaseNotFound`) asked the update address
+    /// again: only a 404 is "nothing published".
+    fn refused(status: Option<u16>) -> LastCheck {
+        LastCheck::failed(refused_outcome(status), status, &not_found(), None, at())
+    }
+
     #[test]
     fn no_published_release_is_a_quiet_state_not_an_error() {
-        let check = LastCheck::failed(&tauri_plugin_updater::Error::ReleaseNotFound, at());
+        assert_eq!(failure_outcome(&not_found()), CheckOutcome::NoRelease);
+        let check = refused(Some(404));
         assert_eq!(check.outcome, CheckOutcome::NoRelease);
         assert_eq!(check.message, NO_RELEASE);
         assert!(!check.message.contains("failed"));
@@ -490,12 +619,81 @@ mod tests {
         assert_eq!(json["at"], json!(at().to_rfc3339()));
     }
 
+    /// v0.0.10 is published now: a server error or a rate limit while checking
+    /// must not read as "nothing to update to".
     #[test]
-    fn other_failures_keep_their_reason() {
+    fn a_refusal_that_is_not_a_404_is_not_called_no_release() {
+        for code in [403, 429, 500, 502, 503] {
+            let check = refused(Some(code));
+            assert_eq!(check.outcome, CheckOutcome::Unreachable, "HTTP {code}");
+            assert!(
+                check.message.contains(&format!("HTTP {code}")),
+                "{}",
+                check.message
+            );
+            assert_ne!(check.message, NO_RELEASE);
+        }
+        let silent = refused(None);
+        assert_eq!(silent.outcome, CheckOutcome::Unreachable);
+        assert_eq!(silent.message, UNREACHABLE);
+        // Answered this time: the refusal a moment ago was passing.
+        assert_eq!(refused(Some(200)).outcome, CheckOutcome::Unreachable);
+        let odd = refused(Some(410));
+        assert_eq!(odd.outcome, CheckOutcome::Failed);
+        assert!(odd.message.contains("HTTP 410"), "{}", odd.message);
+    }
+
+    #[test]
+    fn a_check_that_could_not_finish_is_tried_again_sooner() {
+        let day = CHECK_INTERVAL;
+        for done in [
+            CheckOutcome::UpToDate,
+            CheckOutcome::Available,
+            CheckOutcome::NoRelease,
+        ] {
+            assert_eq!(next_check_after(done, 0), day);
+        }
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        for outcome in [CheckOutcome::Unreachable, CheckOutcome::Failed] {
+            assert_eq!(next_check_after(outcome, 1), minutes(15));
+            assert_eq!(next_check_after(outcome, 2), minutes(30));
+            assert_eq!(next_check_after(outcome, 3), minutes(60));
+            assert_eq!(next_check_after(outcome, 7), minutes(960));
+            assert_eq!(next_check_after(outcome, 8), day, "at most a day");
+            assert_eq!(next_check_after(outcome, u32::MAX), day);
+        }
+    }
+
+    #[test]
+    fn a_failed_check_says_an_update_found_earlier_is_still_there() {
+        let info = UpdateInfo {
+            version: "0.0.11".into(),
+            current_version: "0.0.10".into(),
+            date: None,
+            notes: None,
+        };
         let check = LastCheck::failed(
-            &tauri_plugin_updater::Error::TargetNotFound("windows-x86_64".into()),
+            CheckOutcome::Unreachable,
+            None,
+            &not_found(),
+            Some(info.clone()),
             at(),
         );
+        assert!(check.message.starts_with(UNREACHABLE), "{}", check.message);
+        assert!(
+            check
+                .message
+                .ends_with("Version 0.0.11 found earlier can still be installed."),
+            "{}",
+            check.message
+        );
+        assert_eq!(check.update, Some(info));
+    }
+
+    #[test]
+    fn other_failures_keep_their_reason() {
+        let error = tauri_plugin_updater::Error::TargetNotFound("windows-x86_64".into());
+        let check = LastCheck::failed(failure_outcome(&error), None, &error, None, at());
         assert_eq!(check.outcome, CheckOutcome::Failed);
         assert!(check.message.starts_with("The update check failed: "));
         assert!(check.message.contains("windows-x86_64"));
@@ -530,7 +728,7 @@ mod tests {
     fn the_last_check_is_kept_and_replaced() {
         let state = UpdaterState::default();
         assert_eq!(state.last_check(), None);
-        let first = LastCheck::failed(&tauri_plugin_updater::Error::ReleaseNotFound, at());
+        let first = refused(Some(404));
         state.record(&first);
         assert_eq!(state.last_check(), Some(first));
         let second = LastCheck::found(None, at());

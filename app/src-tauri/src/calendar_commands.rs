@@ -207,7 +207,7 @@ pub async fn create_task(
         })
         .map_err(|e| e.to_string())?;
     report(&app, CalendarChange::TaskSaved(task.clone()));
-    tracing::info!(task_id = %task.id, title = %task.title, "Created task");
+    tracing::info!(task_id = %task.id, "Created task");
     Ok(task)
 }
 
@@ -357,7 +357,7 @@ pub async fn create_event(
         })
         .map_err(|e| e.to_string())?;
     report(&app, CalendarChange::EventSaved(event.clone()));
-    tracing::info!(event_id = %event.id, title = %event.title, "Created event");
+    tracing::info!(event_id = %event.id, "Created event");
     Ok(event)
 }
 

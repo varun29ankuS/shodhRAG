@@ -10,7 +10,10 @@
 //! - **Telegram's limits.** A 429 waits the `retry_after` Telegram gives. A network error
 //!   or a 5xx waits with exponential backoff ([`PollTiming`]), which starts over after a
 //!   call succeeds. Once a wait is over the card says "connecting" again, not a next try
-//!   whose time has passed, until the call answers (a long poll can take its full wait).
+//!   whose time has passed, until the call answers.
+//! - **Connected at once.** The first call after a start or a reconnect does not wait
+//!   (`timeout` 0): Telegram answers it at once, so the card says "connected" when the
+//!   connection works, not up to a long poll later on a quiet bot.
 //! - **What the user must fix stops the loop**, with the reason on the card, instead of
 //!   retrying forever: a refused token (401), a webhook set on the bot, and another
 //!   program polling with the same token.
@@ -181,7 +184,8 @@ pub async fn run(
     sink.state(PollState::Connecting);
     loop {
         let result = tokio::select! {
-            result = bot.updates(offset, timing.long_poll) => result,
+            // Until a call has answered, no long poll: the first answer says connected.
+            result = bot.updates(offset, if connected { timing.long_poll } else { 0 }) => result,
             _ = stop.cancelled() => break,
         };
         let wait = match result {
@@ -298,6 +302,8 @@ mod tests {
     struct ScriptedBot {
         script: Mutex<VecDeque<Result<Vec<Value>, TelegramError>>>,
         offsets: Mutex<Vec<Option<i64>>>,
+        /// The wait each call asked for.
+        waits: Mutex<Vec<u32>>,
         log: Arc<Mutex<Vec<String>>>,
         /// A webhook is set on the bot.
         webhook: bool,
@@ -309,9 +315,10 @@ mod tests {
         async fn updates(
             &self,
             offset: Option<i64>,
-            _wait: u32,
+            wait: u32,
         ) -> Result<Vec<Value>, TelegramError> {
             self.offsets.lock().unwrap().push(offset);
+            self.waits.lock().unwrap().push(wait);
             self.log.lock().unwrap().push(format!("poll {offset:?}"));
             let next = self.script.lock().unwrap().pop_front();
             match next {
@@ -419,6 +426,7 @@ mod tests {
         let bot = Arc::new(ScriptedBot {
             script: Mutex::new(script.into()),
             offsets: Mutex::new(Vec::new()),
+            waits: Mutex::new(Vec::new()),
             log: log.clone(),
             webhook,
             webhook_checks: Mutex::new(0),
@@ -579,6 +587,33 @@ mod tests {
         r.stop.cancel();
         task.await.unwrap();
         assert_eq!(r.states.0.lock().unwrap().last(), Some(&PollState::Off));
+    }
+
+    /// A quiet bot's card said "connecting" for a whole long poll (30 s) after every
+    /// start and reconnect, though Telegram was reachable all along.
+    #[tokio::test(start_paused = true)]
+    async fn the_first_call_after_a_start_or_reconnect_does_not_wait() {
+        let (r, task) = start(
+            vec![
+                Ok(vec![]),
+                Err(TelegramError::Network("connection reset".into())),
+                Ok(vec![]),
+            ],
+            None,
+        );
+        settle().await;
+        // Start: at once; then long polls; after the drop: at once again.
+        assert_eq!(*r.bot.waits.lock().unwrap(), vec![0, 30, 0, 30]);
+        let states = r.states.0.lock().unwrap().clone();
+        assert_eq!(states[0], PollState::Connecting);
+        assert_eq!(
+            states[1],
+            PollState::Connected,
+            "connected on the first answer"
+        );
+        assert_eq!(states.last(), Some(&PollState::Connected));
+        r.stop.cancel();
+        task.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -742,6 +777,7 @@ mod tests {
                 .into(),
             ),
             offsets: Mutex::new(Vec::new()),
+            waits: Mutex::new(Vec::new()),
             log: log.clone(),
             webhook: false,
             webhook_checks: Mutex::new(0),

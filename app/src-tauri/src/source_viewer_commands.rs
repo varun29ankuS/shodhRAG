@@ -271,7 +271,7 @@ async fn authorize(
         found
     };
     if !indexed {
-        tracing::warn!(path = %trimmed, "Source viewer refused a file that is not in the index");
+        tracing::warn!(path = %shodh_rag::log_safe::file(trimmed), "Source viewer refused a file that is not in the index");
         return Err(SourceAccessError::NotIndexed {
             message: "Only files added to Shodh can be shown.".to_string(),
         });

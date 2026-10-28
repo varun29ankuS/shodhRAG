@@ -349,7 +349,7 @@ impl DocumentParser {
                     tracing::warn!(
                         "Scan uses JBIG2 or JPEG 2000 images, which cannot be rendered here; \
                          those pages read as empty: {}",
-                        path.display()
+                        crate::log_safe::file(&path)
                     );
                 }
                 let pages =
@@ -361,7 +361,7 @@ impl DocumentParser {
                 if unrendered {
                     tracing::info!(
                         "Scan uses JBIG2 or JPEG 2000 images; reading it with the system OCR: {}",
-                        path.display()
+                        crate::log_safe::file(&path)
                     );
                 }
                 let pages =
@@ -424,7 +424,7 @@ impl DocumentParser {
         if let Some((cache, source, stamp)) = cached {
             if let Some(entry) = CachedScan::of(&source, stamp, &parsed) {
                 if let Err(e) = cache.put(&entry) {
-                    tracing::warn!(error = %format!("{e:#}"), "OCR result not cached: {}", path.display());
+                    tracing::warn!(error = %format!("{e:#}"), "OCR result not cached: {}", crate::log_safe::file(&path));
                 }
             }
         }
@@ -559,7 +559,7 @@ impl DocumentParser {
                 form_field_groups = field_count,
                 tables = table_count,
                 "Structured extraction complete: {}",
-                path.display()
+                crate::log_safe::file(&path)
             );
         }
 
@@ -611,7 +611,7 @@ impl DocumentParser {
                 fields = forms.fields.len(),
                 stats = ?forms.stats,
                 "PDF form fields read: {}",
-                path.display()
+                crate::log_safe::file(&path)
             );
         }
         let mode = match &self.table_model {
@@ -626,7 +626,7 @@ impl DocumentParser {
                 let mut doc = parsed.document;
                 too_many_pages(doc.pages.len())?;
                 for error in &parsed.tables.model_errors {
-                    tracing::warn!(error = %error, "table model page skipped: {}", path.display());
+                    tracing::warn!(error = %error, "table model page skipped: {}", crate::log_safe::file(&path));
                 }
                 let chars = doc.text_chars();
                 layout_pages = doc.pages.len();
@@ -644,7 +644,7 @@ impl DocumentParser {
                     pages = doc.pages.len(),
                     text_chars = chars,
                     "PDF has no text layer; trying OCR: {}",
-                    path.display()
+                    crate::log_safe::file(&path)
                 );
             }
             Err(pdf_layout::PdfLayoutError::TooManyPages(pages)) => {
@@ -654,7 +654,7 @@ impl DocumentParser {
             }
             Err(e) => {
                 layout_failed = true;
-                tracing::warn!(error = %e, "PDF layout parsing failed: {}", path.display());
+                tracing::warn!(error = %e, "PDF layout parsing failed: {}", crate::log_safe::file(&path));
             }
         }
 
@@ -695,13 +695,13 @@ impl DocumentParser {
                         pages = scan.pages,
                         engine = scan.engine,
                         "Using OCR text: {}",
-                        path.display()
+                        crate::log_safe::file(&path)
                     );
                     if !scan.failed.is_empty() {
                         tracing::warn!(
                             "OCR could not read {}: {}",
                             page_list(&scan.failed),
-                            path.display()
+                            crate::log_safe::file(&path)
                         );
                     }
                     return Ok(PdfParse {
@@ -719,10 +719,13 @@ impl DocumentParser {
                 unread_error = scan.first_error;
             }
             Ok(None) => {
-                tracing::warn!("No OCR engine is available for {}", path.display());
+                tracing::warn!(
+                    "No OCR engine is available for {}",
+                    crate::log_safe::file(&path)
+                );
             }
             Err(e) => {
-                tracing::warn!("OCR failed for {}: {:#}", path.display(), e);
+                tracing::warn!("OCR failed for {}: {:#}", crate::log_safe::file(&path), e);
                 ocr_error = Some(e);
             }
         }

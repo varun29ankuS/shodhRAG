@@ -850,7 +850,7 @@ impl HostTool for ExportDocumentTool {
                 if let Err(e) = file.write_all(bytes).and_then(|()| file.sync_all()) {
                     drop(file);
                     if let Err(cleanup) = std::fs::remove_file(&path) {
-                        tracing::warn!(path = %path.display(), error = %cleanup, "removing a partial export failed");
+                        tracing::warn!(path = %shodh_rag::log_safe::file(&path), error = %cleanup, "removing a partial export failed");
                     }
                     return Err(ToolError::Failed(format!(
                         "Writing {} failed: {e}",

@@ -923,27 +923,7 @@ pub fn run() {
                 api.prevent_exit();
             }
         }
-        tauri::RunEvent::Exit => {
-            // Evidence table fills held by this process go back to the queue, so the
-            // next start takes them up at once.
-            table_commands::release_on_exit(app_handle);
-            // Slack connections are closed (a close frame, bounded wait).
-            connectors::slack::shutdown(app_handle);
-            // Telegram polling ends (bounded wait).
-            connectors::telegram::shutdown(app_handle);
-            // Code-mode commands end with every process they started (on
-            // macOS nothing else would end them once Shodh is gone).
-            let commands = shodh_rag::harness::run_command::stop_all();
-            if commands > 0 {
-                tracing::info!(commands, "stopped running commands on exit");
-            }
-            // Stop every omp sidecar before the process exits.
-            let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
-            tauri::async_runtime::block_on(sessions.shutdown_all());
-            // The last line of a run: without it a clean quit and a crash leave the
-            // same log.
-            tracing::info!("Shodh quit: connectors and agent sessions stopped");
-        }
+        tauri::RunEvent::Exit => shutdown::release_everything(app_handle, "quit"),
         // macOS: the Dock icon brings back a window closed to the tray.
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen {

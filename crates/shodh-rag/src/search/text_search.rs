@@ -263,7 +263,7 @@ impl TextSearch {
                 .context("Tantivy commit after delete failed")?;
             self.reader.reload()?;
             tracing::info!(
-                source = %source,
+                source = %crate::log_safe::file(source),
                 deleted = deleted_count,
                 "Tantivy: deleted and committed documents"
             );

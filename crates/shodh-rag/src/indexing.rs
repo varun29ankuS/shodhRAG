@@ -617,7 +617,11 @@ pub async fn index_folder_adopting(
                 total_chunks += chunks;
             }
             Err(reason) => {
-                tracing::warn!(file = %file, reason = %reason, "Failed to index file");
+                tracing::warn!(
+                    file = %crate::log_safe::file(&file),
+                    reason = %crate::log_safe::scrub(&reason, &file),
+                    "Failed to index file"
+                );
                 failures.push(FileFailure { file, reason });
             }
         }
@@ -827,7 +831,7 @@ pub async fn index_file_with_notice(
     }
     let notice = prepared.notice().map(str::to_string);
     if let Some(notice) = &notice {
-        tracing::warn!(file = %path.display(), "Indexed with pages missing: {notice}");
+        tracing::warn!(file = %crate::log_safe::file(&path), "Indexed with pages missing: {notice}");
     }
     let ids = rag
         .write()

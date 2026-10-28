@@ -1774,7 +1774,7 @@ impl RAGEngine {
             self.end_replacement(&file.source);
         }
         tracing::info!(
-            source = %file.source,
+            source = %crate::log_safe::file(&file.source),
             chunks = ids.len(),
             parse_ms = file.parse_ms,
             chunk_ms = file.chunk_ms,
@@ -2016,7 +2016,7 @@ impl RAGEngine {
         let files = self.source_ranker.as_ref()?.rank_sources(query)?;
         let ranks = crate::search::graph_fusion::rank_map(&files);
         tracing::info!(
-            query,
+            query_chars = crate::log_safe::text(query),
             graph_files = ranks.len(),
             "Citation graph ranks fused into search"
         );
@@ -2254,8 +2254,8 @@ impl RAGEngine {
     async fn remove_source_chunks(&mut self, source: &str) -> Result<()> {
         if let Err(e) = self.store.delete_by_source(source).await {
             tracing::warn!(
-                source = source,
-                error = %e,
+                source = %crate::log_safe::file(source),
+                error = %crate::log_safe::scrub(&e.to_string(), source),
                 "Failed to delete previous chunks from LanceDB before re-indexing"
             );
         }
@@ -2290,10 +2290,9 @@ impl RAGEngine {
         self.text_search.commit()?;
 
         tracing::info!(
-            "Ingested document '{}' ({} chunks) into space '{}'",
-            prepared.title,
-            prepared.chunk_ids.len(),
-            prepared.space_id,
+            chunks = prepared.chunk_ids.len(),
+            space = %prepared.space_id,
+            "Ingested a document"
         );
 
         Ok(prepared.chunk_ids)
@@ -2381,7 +2380,7 @@ impl RAGEngine {
                 {
                     Ok(results) => result_sets.push(results),
                     Err(e) => {
-                        tracing::warn!(sub_query = sub_query, error = %e, "Sub-query search failed");
+                        tracing::warn!(sub_query_chars = crate::log_safe::text(sub_query), error = %e, "Sub-query search failed");
                     }
                 }
             }
@@ -2484,12 +2483,12 @@ impl RAGEngine {
         let vector_sources: std::collections::HashSet<&str> =
             vector_hits.iter().map(|h| h.source.as_str()).collect();
         tracing::info!(
-            query = query,
+            query_chars = crate::log_safe::text(query),
             candidate_count = candidate_count,
             vector_hits = vector_hits.len(),
             vector_unique_sources = vector_sources.len(),
             fts_hits = fts_results.len(),
-            vector_sources = ?vector_sources,
+            vector_sources = ?crate::log_safe::files(vector_sources.iter()),
             "Hybrid search candidates"
         );
 
@@ -2627,7 +2626,7 @@ impl RAGEngine {
             tracing::info!(
                 built_results = results.len(),
                 unique_sources = built_sources.len(),
-                sources = ?built_sources,
+                sources = ?crate::log_safe::files(built_sources.iter()),
                 "Results built from fused candidates"
             );
         }
@@ -2705,7 +2704,7 @@ impl RAGEngine {
                 post_mmr_results = results.len(),
                 unique_sources = final_sources.len(),
                 scores = ?results.iter().map(|r| score_label(r.score)).collect::<Vec<_>>(),
-                sources = ?results.iter().filter_map(|r| r.metadata.get("source_file").map(|s| s.as_str())).collect::<Vec<_>>(),
+                sources = ?crate::log_safe::files(results.iter().filter_map(|r| r.metadata.get("source_file"))),
                 "Post-MMR+cap diversity"
             );
         }
@@ -3035,7 +3034,7 @@ impl RAGEngine {
     ) -> Result<u64> {
         let moved = self.store.move_source_to_space(source, from, to).await?;
         tracing::info!(
-            source,
+            source = %crate::log_safe::file(source),
             from,
             to,
             chunks = moved,
@@ -3420,7 +3419,7 @@ impl RAGEngine {
                 .await?;
         }
         tracing::info!(
-            source,
+            source = %crate::log_safe::file(source),
             chunks = marked,
             "chunks of an older chunker kept: re-chunking would read the file with OCR again"
         );
@@ -3554,7 +3553,7 @@ impl RAGEngine {
         })
         .await?;
         tracing::info!(
-            source,
+            source = %crate::log_safe::file(source),
             "chunks brought to the current index format in place"
         );
         Ok(true)
@@ -5799,6 +5798,76 @@ Language models trained on long documents reach lower perplexity.
             "{:?}",
             kinds(&citations)
         );
+    }
+
+    /// Records every event at INFO or above with its fields.
+    struct CapturedLog(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedLog {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!(" {}={:?}", field.name(), value));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            let meta = event.metadata();
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{} {}{}", meta.level(), meta.target(), fields.0));
+        }
+    }
+
+    /// The log is a plain file kept for weeks: indexing a file and searching it write
+    /// neither the question nor the file's name at INFO (they did: "Indexed file" named
+    /// the source, "Hybrid search candidates" carried the query and every hit's path).
+    #[tokio::test(flavor = "current_thread")]
+    async fn indexing_and_search_log_no_question_and_no_file_name() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::LevelFilter::INFO)
+            .with(CapturedLog(lines.clone()));
+        let _log = tracing::subscriber::set_default(subscriber);
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_with_paper(dir.path()).await;
+        let results = Box::pin(engine.search_comprehensive(
+            "delta rule parallelized over sequence length",
+            5,
+            None,
+        ))
+        .await
+        .unwrap();
+        assert!(!results.is_empty());
+
+        let lines = lines.lock().unwrap().clone();
+        assert!(
+            lines.iter().any(|l| l.contains("Indexed file")),
+            "{lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("Hybrid search candidates")),
+            "{lines:#?}"
+        );
+        for line in &lines {
+            assert!(!line.contains("deltanet"), "names the file: {line}");
+            assert!(
+                !line.contains("parallelized"),
+                "carries the question: {line}"
+            );
+        }
     }
 
     #[test]

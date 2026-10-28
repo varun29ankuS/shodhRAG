@@ -228,7 +228,7 @@ pub async fn print_reserved(
     if outcome.is_err() {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(path = %path.display(), error = %e, "removing a failed PDF export failed");
+                tracing::warn!(path = %shodh_rag::log_safe::file(&path), error = %e, "removing a failed PDF export failed");
             }
         }
     }

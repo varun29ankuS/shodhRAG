@@ -162,7 +162,13 @@ function UpdateSettings() {
     setResult(null);
     try {
       const check = await checkForUpdate();
-      setResult(check.message);
+      // The status holds the newest check (this one, or a daily one that ran
+      // right after it), so the line below never disagrees with the backend.
+      try {
+        setStatus(await getUpdateStatus());
+      } catch {
+        setResult(check.message);
+      }
     } catch (err) {
       setResult(String(err));
     } finally {
@@ -191,7 +197,9 @@ function UpdateSettings() {
       ) : result ? (
         <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">{result}</p>
       ) : status.lastCheck ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">{status.lastCheck.message}</p>
+        <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">
+          {status.lastCheck.message}
+        </p>
       ) : null}
     </div>
   );

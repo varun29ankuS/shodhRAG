@@ -681,10 +681,10 @@ pub(crate) async fn adopt_indexed<'a>(
             }
             Err(e) => {
                 tracing::warn!(
-                    source = %key,
-                    from = %donor,
+                    source = %crate::log_safe::file(key),
+                    from = %crate::log_safe::file(donor),
                     to = source_id,
-                    error = %format!("{e:#}"),
+                    error = %crate::log_safe::scrub(&format!("{e:#}"), key),
                     "indexed file not adopted; indexing it again"
                 );
             }
@@ -927,8 +927,8 @@ fn record_heal_outcome(
 async fn keep_unread(rag: &RwLock<RAGEngine>, key: &str) {
     if let Err(e) = rag.write().await.keep_chunks_of_older_chunker(key).await {
         tracing::warn!(
-            source = key,
-            error = %format!("{e:#}"),
+            source = %crate::log_safe::file(key),
+            error = %crate::log_safe::scrub(&format!("{e:#}"), key),
             "chunks of a file not read again not recorded as kept"
         );
     }
@@ -990,7 +990,7 @@ pub async fn upgrade_file_source(
     if indexed {
         tracing::info!(
             source_id,
-            path,
+            file = %crate::log_safe::file(&path),
             "file source indexed again in the current format"
         );
     }
@@ -1067,7 +1067,7 @@ async fn upgrade_one_unowned(
     }
     if !path.is_file() {
         tracing::warn!(
-            source,
+            source = %crate::log_safe::file(source),
             "indexed in an older format and its file is gone: left as it is"
         );
         return Ok(Upgraded::Left);
@@ -1251,8 +1251,8 @@ where
             Ok(Upgraded::Left) => report.left.push(source),
             Err(reason) => {
                 tracing::warn!(
-                    source = %source,
-                    %reason,
+                    source = %crate::log_safe::file(&source),
+                    reason = %crate::log_safe::scrub(&reason, &source),
                     "document outside the Library not brought up to date; it keeps its chunks"
                 );
                 report.failed.push(FileFailure {

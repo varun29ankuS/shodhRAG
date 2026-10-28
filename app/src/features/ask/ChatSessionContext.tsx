@@ -84,6 +84,9 @@ export interface FallbackRun {
   override: ModelOverride;
   /** The failed model as runs name it (`provider/model`). */
   from: string;
+  /** Display names of the failed model and of the fallback, for the line under the answer. */
+  fromName?: string;
+  toName?: string;
 }
 
 export interface SendExtra {
@@ -558,7 +561,15 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       ...initialTranscript(
         runId,
         startedAtMs,
-        fallback ? { from: fallback.from, kind: fallback.override.failure ?? 'other', automatic: fallback.override.automatic } : null,
+        fallback
+          ? {
+              from: fallback.from,
+              kind: fallback.override.failure ?? 'other',
+              automatic: fallback.override.automatic,
+              fromName: fallback.fromName ?? null,
+              toName: fallback.toName ?? null,
+            }
+          : null,
       ),
       ...(priorRunIds.length > 0 ? { priorRunIds } : {}),
     };

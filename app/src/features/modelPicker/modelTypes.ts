@@ -71,6 +71,8 @@ export interface CatalogModel {
   tier: ModelTier;
   privacy: PrivacyNote;
   stealth: boolean;
+  /** Accepts images as input; null or absent when unknown. */
+  imageInput?: boolean | null;
 }
 
 export type ModelSource = 'session' | 'environment' | 'settings';
@@ -194,8 +196,19 @@ export interface ProviderError {
 export interface FallbackOffer {
   model: ModelRef;
   name: string;
-  /** "Always fall back" is on: retry without asking. */
+  /** The failed model's display name. */
+  failedName: string;
+  /** Retry without asking: "always fall back" is on, or the model came from a pick. */
   automatic: boolean;
+}
+
+/** What the fallback should know about a failure (`model_fallback_offer`). */
+export interface FallbackQuery {
+  failure: ProviderErrorKind | null;
+  /** The provider's message (an account's rate limit reads differently from one model's). */
+  detail: string | null;
+  /** Models this answer already ran with (never offered again). */
+  tried: ModelRef[];
 }
 
 /** One answer run with another model (sent with `agent_start`). */

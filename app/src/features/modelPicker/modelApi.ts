@@ -6,7 +6,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { APP_SETTINGS_CHANGED } from '../../lib/appSettings';
-import type { FallbackOffer, ModelPrefs, ModelRef, PickId, PickerError, PickerView, ProviderId } from './modelTypes';
+import type { FallbackOffer, FallbackQuery, ModelPrefs, ModelRef, PickId, PickerError, PickerView, ProviderId } from './modelTypes';
+import type { FallbackChain } from './fallbackChain';
+import { readFallbackChain } from './fallbackChain';
 import { isProviderId, readModelPrefs, toPickerError } from './modelTypes';
 
 /** Window event sent after the active model changed (the app refreshes its status line). */
@@ -37,7 +39,10 @@ export const modelApi = {
   setFavourite: (model: ModelRef, favourite: boolean) => call<ModelPrefs>('model_set_favourite', { model, favourite }),
   setFallback: (fallback: ModelRef | null, alwaysFallBack: boolean) =>
     call<ModelPrefs>('model_set_fallback', { fallback, alwaysFallBack }),
-  fallbackOffer: (failed: ModelRef) => call<FallbackOffer | null>('model_fallback_offer', { failed }),
+  fallbackOffer: (failed: ModelRef, query: FallbackQuery = { failure: null, detail: null, tried: [] }) =>
+    call<FallbackOffer | null>('model_fallback_offer', { failed, failure: query.failure, detail: query.detail, tried: query.tried }),
+  /** The fallback chains used now, with each model's health and uptime (Settings → Model). */
+  fallbackChain: async (): Promise<FallbackChain | null> => readFallbackChain(await call<unknown>('model_fallback_chain')),
   choosePick: (pick: PickId, sessionOverride = false) => call<PickerView>('model_use_pick', { pick, sessionOverride }),
   setProviderOrder: (order: ProviderId[]) => call<ModelPrefs>('model_set_provider_order', { order }),
   setBaseUrl: (provider: ProviderId, url: string | null) => call<ModelPrefs>('model_set_base_url', { provider, url }),

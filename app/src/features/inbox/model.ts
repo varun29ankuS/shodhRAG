@@ -14,7 +14,9 @@ export type InboxKind =
   | 'citation_graph'
   | 'export'
   | 'install'
-  | 'connector';
+  | 'connector'
+  /** The user's chosen model keeps failing; Open goes to Settings → Model. */
+  | 'model';
 
 export interface InboxLink {
   /** A view id (`ask`, `library`, `tasks`, `settings`, ...). */
@@ -36,7 +38,7 @@ export interface InboxItem {
 }
 
 const STATUSES: readonly InboxStatus[] = ['working', 'needs_you', 'done', 'failed'];
-const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector'];
+const KINDS: readonly InboxKind[] = ['approval', 'memory', 'reminder', 'indexing', 'tables', 'citation_graph', 'export', 'install', 'connector', 'model'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -70,10 +72,14 @@ export function parseItems(value: unknown): InboxItem[] {
 
 /**
  * The Settings section an item's "Open" shows, when its link goes to Settings: a
- * memory suggestion is decided in Settings → Memory (the link names the view only).
+ * memory suggestion is decided in Settings → Memory (the link names the view only); a
+ * model that keeps failing is changed in Settings → Model.
  */
-export function settingsSectionOf(item: Pick<InboxItem, 'kind' | 'link'>): 'memory' | null {
-  return item.kind === 'memory' && item.link?.view === 'settings' ? 'memory' : null;
+export function settingsSectionOf(item: Pick<InboxItem, 'kind' | 'link'>): 'memory' | 'models' | null {
+  if (item.link?.view !== 'settings') return null;
+  if (item.kind === 'memory') return 'memory';
+  if (item.kind === 'model') return 'models';
+  return null;
 }
 
 export type PrimaryAction = 'approve' | 'accept' | 'install';

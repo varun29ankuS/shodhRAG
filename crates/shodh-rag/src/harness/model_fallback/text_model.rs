@@ -41,7 +41,10 @@ pub trait CandidateModel: Send + Sync {
 #[derive(Debug, Clone)]
 pub enum CallReport {
     Answered(AnsweredBy),
-    Failed { plan: Plan, exhausted: Exhausted },
+    Failed {
+        plan: Box<Plan>,
+        exhausted: Box<Exhausted>,
+    },
 }
 
 /// Told about every call.
@@ -94,7 +97,7 @@ impl FallbackTextModel {
         &self,
         prompt: &str,
         max_tokens: usize,
-    ) -> Result<(ModelReply, AnsweredBy), Exhausted> {
+    ) -> Result<(ModelReply, AnsweredBy), Box<Exhausted>> {
         let plan = self.planner.plan(CallNeeds::direct(prompt));
         let models = &self.models;
         let outcome = run_plan(
@@ -122,7 +125,7 @@ impl FallbackTextModel {
             Err(exhausted) => {
                 if let Some(observer) = &self.observer {
                     observer.observe(&CallReport::Failed {
-                        plan,
+                        plan: Box::new(plan),
                         exhausted: exhausted.clone(),
                     });
                 }

@@ -16,22 +16,9 @@ import { GroundingChip } from './GroundingFlags';
 import type { CiteInstead } from './GroundingFlags';
 import { ProviderErrorCard } from '../modelPicker/ProviderErrorCard';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
-import type { ProviderErrorKind } from '../modelPicker/modelTypes';
+import { answeredByLine } from '../modelPicker/fallbackChain';
 
 /** Why a fallback model answered, as the note under the answer says it. */
-const FALLBACK_REASON: Record<ProviderErrorKind, string> = {
-  rate_limited: 'rate-limited',
-  quota_exhausted: 'out of credits or its daily limit',
-  model_unavailable: 'unavailable',
-  auth: 'refused (key rejected)',
-  timeout: 'too slow to answer',
-  network: 'unreachable',
-  invalid_request: 'refusing the request',
-  context_too_long: 'given too much text',
-  content_filtered: 'blocked by a content filter',
-  empty_response: 'answering with nothing',
-  other: 'unable to answer',
-};
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -261,9 +248,9 @@ export function Transcript({
         />
       )}
 
-      {transcript.fallback && (
+      {transcript.fallback && transcript.status !== 'error' && (
         <p className="m-0 text-[12px] text-shodh-text-muted">
-          {`Answered with a fallback model: ${transcript.fallback.from} was ${FALLBACK_REASON[transcript.fallback.kind]}${transcript.fallback.automatic ? ' (always fall back is on)' : ''}.`}
+          {`${answeredByLine(transcript.fallback, transcript.model)}${transcript.fallback.automatic ? ' (switched automatically)' : ''}.`}
         </p>
       )}
 
@@ -279,6 +266,8 @@ export function Transcript({
           runModel={transcript.model}
           message={transcript.error}
           fellBack={!!transcript.fallback}
+          fellBackFrom={transcript.fallback?.from ?? null}
+          streamed={answerIncomplete(transcript)}
           actions={providerActions}
           onOpenSettings={onOpenSettings}
           compact={compact}

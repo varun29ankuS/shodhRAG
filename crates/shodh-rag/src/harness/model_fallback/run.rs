@@ -249,7 +249,7 @@ pub async fn run_plan<T, F, Fut>(
     pause: &dyn Pause,
     bounds: Bounds,
     mut call: F,
-) -> Result<Answered<T>, Exhausted>
+) -> Result<Answered<T>, Box<Exhausted>>
 where
     F: FnMut(Candidate) -> Fut,
     Fut: Future<Output = Result<T, AttemptFailure>>,
@@ -271,15 +271,17 @@ where
     let exhausted = |failure: Option<ProviderFailure>,
                      reason: StopReason,
                      switches: Vec<Switch>,
-                     tried: Vec<ModelRef>| Exhausted {
-        failure: failure.unwrap_or_else(|| skipped_failure(&plan.requested)),
-        reason: if tried.is_empty() && reason == StopReason::NoCandidate {
-            StopReason::AllSkipped
-        } else {
-            reason
-        },
-        switches,
-        tried,
+                     tried: Vec<ModelRef>| {
+        Box::new(Exhausted {
+            failure: failure.unwrap_or_else(|| skipped_failure(&plan.requested)),
+            reason: if tried.is_empty() && reason == StopReason::NoCandidate {
+                StopReason::AllSkipped
+            } else {
+                reason
+            },
+            switches,
+            tried,
+        })
     };
 
     loop {

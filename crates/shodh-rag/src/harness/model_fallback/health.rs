@@ -129,7 +129,7 @@ impl HealthBook {
 
     /// Lets a call use `model`, or `None` while it cools down or another call probes
     /// it. Never waits.
-    pub fn admit<'a>(&'a self, model: &ModelRef, now_ms: u64) -> Option<Admission<'a>> {
+    pub fn admit(&self, model: &ModelRef, now_ms: u64) -> Option<Admission<'_>> {
         let mut entries = self.lock();
         let probe = match entries.get_mut(model) {
             None => false,

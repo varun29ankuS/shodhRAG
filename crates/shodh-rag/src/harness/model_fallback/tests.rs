@@ -1111,7 +1111,7 @@ async fn nothing_switches_once_part_of_the_answer_reached_the_user() {
     };
     let plan = free_plan(NEMOTRON, &[GEMMA]);
     let calls = Mutex::new(Vec::new());
-    let outcome: Result<Answered<String>, Exhausted> = run_plan(
+    let outcome: Result<Answered<String>, Box<Exhausted>> = run_plan(
         &plan,
         &health,
         clock.as_ref(),

@@ -279,6 +279,9 @@ export interface TranscriptFallback {
   kind: ProviderErrorKind;
   /** Retried by the "always fall back" setting rather than a click. */
   automatic: boolean;
+  /** Display names of the failed model and of the one that answered instead, when known. */
+  fromName?: string | null;
+  toName?: string | null;
 }
 
 export type LocalAction =

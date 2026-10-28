@@ -146,11 +146,13 @@ export type FallbackDecision =
 
 /**
  * What to do with a fallback offer. `fellBack`: this answer already came
- * from a fallback (never chain fallbacks automatically).
+ * from a fallback (never chain fallbacks automatically). `streamed`: part of
+ * the answer had already reached the user, so nothing switches by itself;
+ * the other model is offered as a click.
  */
-export function fallbackDecision(error: ProviderError, offer: FallbackOffer | null, fellBack: boolean): FallbackDecision {
+export function fallbackDecision(error: ProviderError, offer: FallbackOffer | null, fellBack: boolean, streamed = false): FallbackDecision {
   if (!offer || !fallbackHelps(error)) return 'none';
-  return offer.automatic && !fellBack ? 'automatic' : 'offer';
+  return offer.automatic && !fellBack && !streamed ? 'automatic' : 'offer';
 }
 
 /** Counts automatic retries per question for this app session. */

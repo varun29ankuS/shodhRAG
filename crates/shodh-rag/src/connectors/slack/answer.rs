@@ -281,10 +281,43 @@ pub const TURN_ANSWER_CHARS: usize = 600;
 /// All earlier turns of a prompt together.
 pub const TURNS_TOTAL_CHARS: usize = 2_400;
 
-/// The earlier turns a prompt carries: the last [`TURNS_IN_PROMPT`], each cut, the oldest
-/// left out first until they fit in [`TURNS_TOTAL_CHARS`]. Oldest first.
+/// Whether two messages say the same, ignoring case and spacing.
+pub fn same_message(a: &str, b: &str) -> bool {
+    let words =
+        |text: &str| -> Vec<String> { text.split_whitespace().map(|w| w.to_lowercase()).collect() };
+    words(a) == words(b)
+}
+
+/// `turns`, oldest first, with a turn that repeats the one before it (the same question
+/// with the same answer, or one of the two answers empty: a message answered twice from a
+/// backlog, or one whose answer failed) kept once, with the answer that has words. The
+/// same question answered differently stays twice: "shorter" asked again after a first
+/// shorter answer is a new step, and that first answer is the context it builds on.
+pub fn distinct_turns(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
+    let mut out: Vec<ThreadTurn> = Vec::with_capacity(turns.len());
+    for turn in turns {
+        match out.last_mut() {
+            Some(last)
+                if same_message(&last.question, &turn.question)
+                    && (same_message(&last.answer, &turn.answer)
+                        || last.answer.trim().is_empty()
+                        || turn.answer.trim().is_empty()) =>
+            {
+                if !turn.answer.trim().is_empty() {
+                    *last = turn.clone();
+                }
+            }
+            _ => out.push(turn.clone()),
+        }
+    }
+    out
+}
+
+/// The earlier turns a prompt carries: the last [`TURNS_IN_PROMPT`] distinct ones
+/// ([`distinct_turns`]), each cut, the oldest left out first until they fit in
+/// [`TURNS_TOTAL_CHARS`]. Oldest first.
 pub fn turns_for_prompt(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
-    let mut kept: Vec<ThreadTurn> = turns
+    let mut kept: Vec<ThreadTurn> = distinct_turns(turns)
         .iter()
         .rev()
         .take(TURNS_IN_PROMPT)
@@ -307,13 +340,22 @@ pub fn turns_for_prompt(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
 }
 
 /// The search query of a question: in a thread with earlier turns, the previous question
-/// too, so "shorter" or "and the deadline?" still finds the passages of the topic.
+/// too, so "shorter" or "and the deadline?" still finds the passages of the topic. Never
+/// the question twice: earlier turns asking the same as it (the same message answered
+/// again) are passed over for the one before them, among the last [`TURNS_IN_PROMPT`];
+/// the earlier question is cut to [`TURN_QUESTION_CHARS`].
 pub fn search_query(question: &str, turns: &[ThreadTurn]) -> String {
     let question = truncate_chars(question.trim(), MAX_QUESTION_CHARS);
-    match turns.last() {
+    let previous = turns
+        .iter()
+        .rev()
+        .take(TURNS_IN_PROMPT)
+        .map(|t| t.question.trim())
+        .find(|q| !q.is_empty() && !same_message(q, &question));
+    match previous {
         Some(previous) => format!(
             "{} {question}",
-            truncate_chars(previous.question.trim(), TURN_QUESTION_CHARS)
+            truncate_chars(previous, TURN_QUESTION_CHARS)
         ),
         None => question,
     }
@@ -1009,6 +1051,75 @@ mod tests {
         assert_eq!(
             search_query("shorter", &turns),
             "What is the notice period? shorter"
+        );
+    }
+
+    /// The live log: `query="How's it going shodh How's it going shodh"`, the message
+    /// answered twice (from a backlog) and its first answer taken as the earlier turn.
+    #[test]
+    fn a_message_sent_twice_is_searched_once() {
+        let asked = "How's it going shodh";
+        let twice = vec![turn(asked, "All good.")];
+        assert_eq!(search_query(asked, &twice), asked);
+        // Case and spacing do not make it another question.
+        assert_eq!(
+            search_query(asked, &[turn("how's it   going Shodh ", "All good.")]),
+            asked
+        );
+        // The topic before the repeats still carries over, once.
+        let thread = vec![
+            turn("What is the notice period?", "Sixty days."),
+            turn(asked, "All good."),
+            turn(asked, "All good."),
+        ];
+        assert_eq!(
+            search_query(asked, &thread),
+            "What is the notice period? How's it going shodh"
+        );
+        // A turn repeated with the same answer goes in the prompt once.
+        let repeated = vec![
+            turn("What is the notice period?", "Sixty days."),
+            turn(asked, "All good."),
+            turn(asked, "all  good."),
+        ];
+        let kept = turns_for_prompt(&repeated);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].question, asked);
+        // One whose answer is missing is the same turn: the answer with words is kept.
+        for pair in [
+            [turn(asked, ""), turn(asked, "All good.")],
+            [turn(asked, "All good."), turn(asked, "  ")],
+        ] {
+            let kept = distinct_turns(&pair);
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].answer, "All good.");
+        }
+        assert_eq!(
+            distinct_turns(&[turn("a", "1"), turn("b", "2"), turn("a", "1")]).len(),
+            3,
+            "only consecutive repeats collapse"
+        );
+    }
+
+    /// "shorter" asked twice is two steps: the second builds on the first answer, which
+    /// stays in the prompt.
+    #[test]
+    fn the_same_follow_up_answered_differently_keeps_both_answers() {
+        let thread = vec![
+            turn("Summarise the lease", "A long summary."),
+            turn("shorter", "A shorter summary."),
+            turn("shorter", "Shortest."),
+        ];
+        let kept = turns_for_prompt(&thread);
+        let answers: Vec<&str> = kept.iter().map(|t| t.answer.as_str()).collect();
+        assert_eq!(
+            answers,
+            ["A long summary.", "A shorter summary.", "Shortest."]
+        );
+        // The query still says it once, with the topic before it.
+        assert_eq!(
+            search_query("shorter", &thread),
+            "Summarise the lease shorter"
         );
     }
 

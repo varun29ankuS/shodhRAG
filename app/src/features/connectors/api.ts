@@ -16,6 +16,8 @@ export const slackApi = {
   status: () => invoke<SlackStatus>('slack_status'),
   connect: (appToken: string, botToken: string) => invoke<SlackStatus>('slack_connect', { appToken, botToken }),
   setEnabled: (enabled: boolean) => invoke<SlackStatus>('slack_set_enabled', { enabled }),
+  /** Asks Slack which permissions the bot has now (after the app was updated and reinstalled). */
+  checkPermissions: () => invoke<SlackStatus>('slack_check_permissions'),
   setAnswerWorkspace: (workspaceId: string | null) =>
     invoke<SlackStatus>('slack_set_answer_workspace', { workspaceId }),
   listChannels: () => invoke<ChannelChoice[]>('slack_list_channels'),

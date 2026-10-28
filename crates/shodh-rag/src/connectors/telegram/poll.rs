@@ -11,8 +11,16 @@
 //!   or a 5xx waits with exponential backoff ([`PollTiming`]), which starts over after a
 //!   call succeeds.
 //! - **What the user must fix stops the loop**, with the reason on the card, instead of
-//!   retrying forever: a refused token (401), and a conflict (409: a webhook is set on the
-//!   bot, or another program polls with the same token).
+//!   retrying forever: a refused token (401), a webhook set on the bot, and another
+//!   program polling with the same token.
+//! - **A conflict (409) is not taken for another program at once.** After a dropped
+//!   connection or a timed-out poll, Telegram can still hold Shodh's own earlier
+//!   `getUpdates`, and the next one conflicts with it. So a 409 first asks
+//!   `getWebhookInfo`: a webhook set on the bot is a definite other reader, reported at
+//!   once (never its URL). Otherwise the loop waits longer than a long poll, so the stale
+//!   request is over, and tries again, saying "reconnecting" meanwhile; only 409s that
+//!   persist over [`PollTiming::conflict_tries`] tries spanning
+//!   [`PollTiming::conflict_window`] stop it as another program reading the bot.
 //! - **Stopping** (switched off, disconnected, Local-only mode, quit) ends the loop at
 //!   once, even in the middle of a long poll or a wait.
 
@@ -85,6 +93,14 @@ pub struct PollTiming {
     pub long_poll: u32,
     pub backoff_start: Duration,
     pub backoff_max: Duration,
+    /// The wait after a conflict: longer than a long poll, so a request of Shodh's that
+    /// Telegram still holds (after a dropped connection) is over by the next try.
+    pub conflict_wait: Duration,
+    /// Conflicts in a row (no successful poll between) ...
+    pub conflict_tries: u32,
+    /// ... spanning at least this long, before the loop stops as another program reading
+    /// the bot's messages.
+    pub conflict_window: Duration,
     /// ±20 % random spread on backoff waits (off in tests).
     pub jitter: bool,
 }
@@ -95,15 +111,40 @@ impl Default for PollTiming {
             long_poll: LONG_POLL_SECONDS,
             backoff_start: Duration::from_secs(1),
             backoff_max: Duration::from_secs(300),
+            conflict_wait: Duration::from_secs(u64::from(LONG_POLL_SECONDS) + 15),
+            conflict_tries: 4,
+            conflict_window: Duration::from_secs(180),
             jitter: true,
         }
     }
 }
 
+/// Conflicts since the last successful poll.
+#[derive(Debug, Default)]
+struct ConflictStreak {
+    tries: u32,
+    since: Option<tokio::time::Instant>,
+}
+
+impl ConflictStreak {
+    /// Counts one more conflict; whether they now persist past `timing`'s bounds.
+    fn persists(&mut self, timing: &PollTiming) -> bool {
+        let now = tokio::time::Instant::now();
+        let since = *self.since.get_or_insert(now);
+        self.tries += 1;
+        self.tries >= timing.conflict_tries && now.duration_since(since) >= timing.conflict_window
+    }
+}
+
 /// What the card says when the token was refused.
 pub const TOKEN_REFUSED: &str = "Telegram refused the bot token: it was revoked in @BotFather, or the bot was deleted. Connect again with the bot's current token.";
-/// What the card says on a conflict.
-pub const CONFLICT: &str = "Another program is reading this bot's messages: a webhook another tool set on the bot, or Shodh on another computer. Stop the other one (or make a new token with /revoke in @BotFather and connect with it), then switch the connector on again here.";
+/// What the card says when conflicts persist: another program polls with the token.
+pub const CONFLICT: &str = "Another program is reading this bot's messages, such as Shodh on another computer or another tool using the same token. Stop the other one (or make a new token with /revoke in @BotFather and connect with it), then switch the connector on again here.";
+/// What the card says when a webhook is set on the bot (where it points is not said).
+pub const WEBHOOK_SET: &str = "A webhook is set on this bot, so Telegram sends its messages to another service instead of Shodh. Remove it in the tool that set it (or make a new token with /revoke in @BotFather and connect with it), then switch the connector on again here.";
+/// The reason on the card while a conflict is retried.
+pub const CONFLICT_RETRY: &str =
+    "Telegram still held an earlier request; trying again once it is over";
 
 fn spread(wait: Duration, jitter: bool) -> Duration {
     if !jitter {
@@ -134,6 +175,7 @@ pub async fn run(
             None
         });
     let mut backoff = timing.backoff_start;
+    let mut conflicts = ConflictStreak::default();
     let mut connected = false;
     sink.state(PollState::Connecting);
     loop {
@@ -144,6 +186,7 @@ pub async fn run(
         let wait = match result {
             Ok(updates) => {
                 backoff = timing.backoff_start;
+                conflicts = ConflictStreak::default();
                 if !connected {
                     connected = true;
                     sink.state(PollState::Connected);
@@ -185,8 +228,29 @@ pub async fn run(
                 return;
             }
             Err(TelegramError::Conflict) => {
-                sink.state(PollState::Stopped(CONFLICT.to_string()));
-                return;
+                connected = false;
+                let webhook = tokio::select! {
+                    set = bot.webhook_set() => set,
+                    _ = stop.cancelled() => break,
+                };
+                match webhook {
+                    Ok(true) => {
+                        sink.state(PollState::Stopped(WEBHOOK_SET.to_string()));
+                        return;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::info!(target: "shodh::telegram", error = %error, "the bot's webhook could not be checked");
+                    }
+                }
+                if conflicts.persists(&timing) {
+                    tracing::warn!(target: "shodh::telegram", tries = conflicts.tries, "getUpdates kept conflicting; another program reads the bot");
+                    sink.state(PollState::Stopped(CONFLICT.to_string()));
+                    return;
+                }
+                let wait = spread(timing.conflict_wait, timing.jitter).max(timing.conflict_wait);
+                tracing::info!(target: "shodh::telegram", tries = conflicts.tries, wait_ms = wait.as_millis() as u64, "getUpdates conflicted; trying again after the earlier request is over");
+                (wait, CONFLICT_RETRY.to_string())
             }
             Err(TelegramError::RateLimited { retry_after }) => {
                 connected = false;
@@ -233,6 +297,9 @@ mod tests {
         script: Mutex<VecDeque<Result<Vec<Value>, TelegramError>>>,
         offsets: Mutex<Vec<Option<i64>>>,
         log: Arc<Mutex<Vec<String>>>,
+        /// A webhook is set on the bot.
+        webhook: bool,
+        webhook_checks: Mutex<usize>,
     }
 
     #[async_trait]
@@ -264,6 +331,10 @@ mod tests {
         }
         async fn typing(&self, _c: i64) -> Result<(), TelegramError> {
             Ok(())
+        }
+        async fn webhook_set(&self) -> Result<bool, TelegramError> {
+            *self.webhook_checks.lock().unwrap() += 1;
+            Ok(self.webhook)
         }
     }
 
@@ -323,6 +394,9 @@ mod tests {
             long_poll: 30,
             backoff_start: Duration::from_secs(1),
             backoff_max: Duration::from_secs(4),
+            conflict_wait: Duration::from_secs(45),
+            conflict_tries: 4,
+            conflict_window: Duration::from_secs(180),
             jitter: false,
         }
     }
@@ -331,11 +405,21 @@ mod tests {
         script: Vec<Result<Vec<Value>, TelegramError>>,
         saved: Option<i64>,
     ) -> (Run, tokio::task::JoinHandle<()>) {
+        start_with(script, saved, false)
+    }
+
+    fn start_with(
+        script: Vec<Result<Vec<Value>, TelegramError>>,
+        saved: Option<i64>,
+        webhook: bool,
+    ) -> (Run, tokio::task::JoinHandle<()>) {
         let log = Arc::new(Mutex::new(Vec::new()));
         let bot = Arc::new(ScriptedBot {
             script: Mutex::new(script.into()),
             offsets: Mutex::new(Vec::new()),
             log: log.clone(),
+            webhook,
+            webhook_checks: Mutex::new(0),
         });
         let offsets = Arc::new(MemoryOffsets {
             saved: Mutex::new(saved),
@@ -469,19 +553,120 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_conflict_or_a_refused_token_stops_with_the_reason() {
-        for (error, reason) in [
-            (TelegramError::Conflict, CONFLICT),
-            (TelegramError::Unauthorized, TOKEN_REFUSED),
-        ] {
-            let (r, task) = start(vec![Err(error)], None);
-            task.await.unwrap();
-            assert_eq!(
-                r.states.0.lock().unwrap().last(),
-                Some(&PollState::Stopped(reason.to_string()))
-            );
-            assert_eq!(r.bot.offsets.lock().unwrap().len(), 1, "no retry loop");
-        }
+    async fn a_refused_token_stops_with_the_reason() {
+        let (r, task) = start(vec![Err(TelegramError::Unauthorized)], None);
+        task.await.unwrap();
+        assert_eq!(
+            r.states.0.lock().unwrap().last(),
+            Some(&PollState::Stopped(TOKEN_REFUSED.to_string()))
+        );
+        assert_eq!(r.bot.offsets.lock().unwrap().len(), 1, "no retry loop");
+    }
+
+    fn stopped(r: &Run) -> Vec<String> {
+        r.states
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|s| match s {
+                PollState::Stopped(reason) => Some(reason.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The live log: dropped connections, each followed by a reconnect, then one 409 that
+    /// stopped the connector for good, though nothing else was reading the bot.
+    #[tokio::test(start_paused = true)]
+    async fn a_single_conflict_after_a_dropped_connection_recovers() {
+        let (r, task) = start(
+            vec![
+                Err(TelegramError::Network(
+                    "connection forcibly closed (os error 10054)".into(),
+                )),
+                Err(TelegramError::Conflict),
+                Ok(vec![message_value(5, 42, 42, "still there?")]),
+            ],
+            None,
+        );
+        // Dropped at once, polled again after 1 s, conflicted: the next try waits longer
+        // than a long poll (45 s), so Shodh's own earlier request is over by then.
+        tokio::time::sleep(Duration::from_secs(45)).await;
+        assert_eq!(r.bot.offsets.lock().unwrap().len(), 2);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(
+            r.bot.offsets.lock().unwrap().len(),
+            4,
+            "tried again, and polls on"
+        );
+        assert!(stopped(&r).is_empty(), "{:?}", r.states.0.lock().unwrap());
+        assert!(r.log.lock().unwrap().iter().any(|l| l == "handle 5"));
+        let states = r.states.0.lock().unwrap().clone();
+        // "Reconnecting" on the card meanwhile, never "error"; connected again after.
+        assert!(states
+            .iter()
+            .any(|s| matches!(s, PollState::Waiting { reason, .. } if reason == CONFLICT_RETRY)));
+        assert_eq!(states.last(), Some(&PollState::Connected));
+        assert_eq!(*r.bot.webhook_checks.lock().unwrap(), 1);
+        r.stop.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn conflicts_that_persist_stop_as_another_program_reading_the_bot() {
+        let started = tokio::time::Instant::now();
+        let (r, task) = start(vec![Err(TelegramError::Conflict); 20], None);
+        task.await.unwrap();
+        // Tries at 0, 45, 90, 135 and 180 s: four or more, over three minutes.
+        assert_eq!(r.bot.offsets.lock().unwrap().len(), 5);
+        assert!(started.elapsed() >= Duration::from_secs(180));
+        assert_eq!(stopped(&r), vec![CONFLICT.to_string()]);
+        assert_eq!(
+            r.states.0.lock().unwrap().last(),
+            Some(&PollState::Stopped(CONFLICT.to_string()))
+        );
+        let waits = r
+            .states
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| matches!(s, PollState::Waiting { .. }))
+            .count();
+        assert_eq!(waits, 4, "reconnecting until then");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_conflict_streak_starts_over_after_a_successful_poll() {
+        let conflict = || Err(TelegramError::Conflict);
+        let (r, task) = start(
+            vec![
+                conflict(),
+                conflict(),
+                conflict(),
+                Ok(vec![]),
+                conflict(),
+                conflict(),
+                conflict(),
+            ],
+            None,
+        );
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert!(stopped(&r).is_empty(), "{:?}", r.states.0.lock().unwrap());
+        assert_eq!(r.bot.offsets.lock().unwrap().len(), 8);
+        r.stop.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_webhook_set_on_the_bot_stops_at_once_without_its_url() {
+        let (r, task) = start_with(vec![Err(TelegramError::Conflict)], None, true);
+        task.await.unwrap();
+        assert_eq!(r.bot.offsets.lock().unwrap().len(), 1, "no retry");
+        assert_eq!(stopped(&r), vec![WEBHOOK_SET.to_string()]);
+        assert!(!WEBHOOK_SET.contains("http"));
+        assert_ne!(WEBHOOK_SET, CONFLICT);
     }
 
     #[tokio::test(start_paused = true)]
@@ -529,6 +714,8 @@ mod tests {
             ),
             offsets: Mutex::new(Vec::new()),
             log: log.clone(),
+            webhook: false,
+            webhook_checks: Mutex::new(0),
         });
         let offsets = Arc::new(MemoryOffsets {
             saved: Mutex::new(None),

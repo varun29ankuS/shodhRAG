@@ -1060,30 +1060,18 @@ async fn consolidation_turns_episode_clusters_and_recurring_tool_use_into_sugges
         // The second episode is the newer one (E1 in the prompt).
         e.f.clock.advance_days(1);
     }
-    for (conversation, run) in [("c1", "q1"), ("c1", "q2"), ("c2", "q3")] {
-        for tool in ["search_documents", "open_document"] {
-            e.audit
-                .append(
-                    AuditRecord::new(AuditEventType::ToolCall, json!({"tool": tool, "ok": true}))
-                        .conversation(conversation)
-                        .run(run),
-                )
-                .unwrap();
-        }
-        e.audit
-            .append(
-                AuditRecord::new(AuditEventType::Answer, json!({"status": "completed"}))
-                    .conversation(conversation)
-                    .run(run),
-            )
-            .unwrap();
-    }
+    // A workflow of the user's: find the passages, then export the answer as a document.
+    record_runs(
+        &e,
+        &["search_documents", "export_document"],
+        &[("c1", "q1"), ("c1", "q2"), ("c2", "q3")],
+    );
     e.model
         .answer(json!({"memories": [coffee_like_spreadsheets()]}));
     e.model.answer(json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
         "properties": {"name": "Answer from documents",
-                       "procedureSteps": "1. search_documents for the question 2. open_document to read the best match"},
-        "confidence": 0.8, "evidence": "search_documents -> open_document"}]}));
+                       "procedureSteps": "1. search_documents for the question 2. export_document to save the answer"},
+        "confidence": 0.8, "evidence": "search_documents -> export_document"}]}));
     let report = e.learner.consolidate(true).await.unwrap();
     assert_eq!(report.clusters, 1);
     assert_eq!(e.model.calls(), 2);
@@ -1126,6 +1114,267 @@ async fn consolidation_turns_episode_clusters_and_recurring_tool_use_into_sugges
         auto_eligible(&from_a_turn, &auto),
         "control: {from_a_turn:?}"
     );
+}
+
+/// Completed runs `(conversation, run)` that each used `tools`, in order.
+fn record_runs(e: &Env, tools: &[&str], runs: &[(&str, &str)]) {
+    for &(conversation, run) in runs {
+        for &tool in tools {
+            e.audit
+                .append(
+                    AuditRecord::new(AuditEventType::ToolCall, json!({"tool": tool, "ok": true}))
+                        .conversation(conversation)
+                        .run(run),
+                )
+                .unwrap();
+        }
+        e.audit
+            .append(
+                AuditRecord::new(AuditEventType::Answer, json!({"status": "completed"}))
+                    .conversation(conversation)
+                    .run(run),
+            )
+            .unwrap();
+    }
+}
+
+/// A waiting procedure suggestion, as consolidation filed one: its steps, and the tool
+/// sequence its evidence quotes.
+fn file_procedure(e: &Env, name: &str, steps: &str, evidence: &str) -> inbox::Proposal {
+    let text = format!("Remember: Procedure: name {name}; steps {steps}");
+    e.learner
+        .inbox()
+        .insert(
+            inbox::NewProposal {
+                origin: ProposalOrigin::Consolidate,
+                fingerprint: format!("procedure-test-{name}"),
+                scope: Scope::Global,
+                conversation_id: Some("c1".to_string()),
+                turn_id: Some("q1".to_string()),
+                action: ProposalAction::Remember {
+                    content: MemoryContent::Fact {
+                        class: "Procedure".into(),
+                        subject: None,
+                        properties: [
+                            ("name".to_string(), RawValue::text(name)),
+                            ("procedureSteps".to_string(), RawValue::text(steps)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                        valid_from: None,
+                    },
+                    text,
+                    decision: Decision::Add,
+                    decided_by: DecidedBy::Rule,
+                    target_text: None,
+                    evidence: evidence.to_string(),
+                    model: "scripted-model".to_string(),
+                    at: e.f.store.now(),
+                    source: "conversation://c1/turn/q1".to_string(),
+                    by_user: false,
+                },
+                confidence: 0.8,
+                sensitive: Vec::new(),
+            },
+            &LearnCaps::default(),
+            e.f.store.now(),
+        )
+        .unwrap()
+        .unwrap()
+}
+
+fn procedure_texts(e: &Env, status: ProposalStatus) -> Vec<String> {
+    e.learner
+        .list(&[status], 100)
+        .unwrap()
+        .into_iter()
+        .filter_map(|p| match p.action {
+            ProposalAction::Remember { text, .. } if text.contains("Procedure") => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The Inbox of the live app held three of these: Shodh's own tool calls written up as
+/// the user's procedures, twice under two names.
+#[tokio::test]
+async fn consolidation_never_proposes_shodhs_own_lookups_and_withdraws_waiting_ones() {
+    let e = env().await;
+    let junk = [
+        file_procedure(
+            &e,
+            "Search and Open Document",
+            "1. search_documents 2. open_document",
+            "search_documents -> open_document",
+        ),
+        file_procedure(
+            &e,
+            "Search and Open Document Procedure",
+            "1. search_documents 2. open_document",
+            "search_documents -> open_document",
+        ),
+        file_procedure(
+            &e,
+            "Tool Sequence Procedure",
+            "1. list_sources 2. search_documents 3. open_document",
+            "list_sources -> search_documents -> open_document",
+        ),
+    ];
+    // Procedures of the user's own wait on, tools without an underscore included.
+    let kept = [
+        file_procedure(
+            &e,
+            "Export the answer",
+            "1. search_documents 2. export_document",
+            "search_documents -> export_document",
+        ),
+        file_procedure(
+            &e,
+            "Remember a preference",
+            "1. search_documents for it 2. remember the preference",
+            "search_documents -> remember",
+        ),
+        file_procedure(
+            &e,
+            "Fix the file",
+            "1. read the file 2. edit it",
+            "read -> edit",
+        ),
+        // Its evidence quotes part of the sequence only: left to the user.
+        file_procedure(
+            &e,
+            "Look up and save",
+            "1. search_documents 2. open_document 3. remember it",
+            "search_documents -> open_document",
+        ),
+    ];
+    record_runs(
+        &e,
+        &["search_documents", "open_document"],
+        &[("c1", "q1"), ("c1", "q2"), ("c2", "q3")],
+    );
+    record_runs(
+        &e,
+        &["list_sources", "search_documents", "open_document"],
+        &[("c3", "q4"), ("c3", "q5"), ("c4", "q6")],
+    );
+    // Code mode's reading tools are lookups too.
+    record_runs(
+        &e,
+        &["read", "grep"],
+        &[("c5", "q7"), ("c5", "q8"), ("c6", "q9")],
+    );
+    // Lookups that recur are found, and are lookups only.
+    e.model.answer(
+        json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
+        "properties": {"name": "Search and Open Document",
+                       "procedureSteps": "1. search_documents 2. open_document"},
+        "confidence": 0.8, "evidence": "search_documents -> open_document"}]}),
+    );
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 0, "no procedure was asked for: {report:?}");
+    assert!(report.proposed.is_empty(), "{report:?}");
+    for proposal in &junk {
+        let now = e.learner.inbox().get(&proposal.id).unwrap();
+        assert_eq!(now.status, ProposalStatus::Stale, "{now:?}");
+        assert!(now.error.as_deref().unwrap_or_default().contains("lookups"));
+    }
+    for proposal in &kept {
+        let now = e.learner.inbox().get(&proposal.id).unwrap();
+        assert_eq!(now.status, ProposalStatus::Pending, "{now:?}");
+    }
+    assert_eq!(
+        procedure_texts(&e, ProposalStatus::Pending).len(),
+        kept.len()
+    );
+}
+
+/// Two sequences that share their lookups are two procedures: a waiting
+/// `search_documents -> remember` does not stand for `search_documents -> edit`, which
+/// is proposed, with its whole sequence as its evidence.
+#[tokio::test]
+async fn a_procedure_is_known_by_its_whole_tool_sequence() {
+    let e = env().await;
+    file_procedure(
+        &e,
+        "Remember a preference",
+        "1. search_documents for it 2. remember the preference",
+        "search_documents -> remember",
+    );
+    record_runs(
+        &e,
+        &["search_documents", "edit"],
+        &[("c1", "q1"), ("c1", "q2"), ("c2", "q3")],
+    );
+    e.model.answer(
+        json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
+        "properties": {"name": "Change the file the passage names",
+                       "procedureSteps": "1. search_documents for the passage 2. edit the file it names"},
+        "confidence": 0.8, "evidence": "search_documents -> edit"}]}),
+    );
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 1, "{report:?}");
+    let waiting = e.learner.list(&[ProposalStatus::Pending], 10).unwrap();
+    let evidence: Vec<String> = waiting
+        .iter()
+        .filter_map(|p| match &p.action {
+            ProposalAction::Remember { evidence, .. } => Some(evidence.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(evidence.len(), 2, "{waiting:?}");
+    assert!(
+        evidence.contains(&"search_documents -> edit".to_string()),
+        "{evidence:?}"
+    );
+
+    // Filed with its sequence, it is known by it from now on.
+    e.model.answer(
+        json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
+        "properties": {"name": "Edit what was found",
+                       "procedureSteps": "1. search_documents 2. edit"},
+        "confidence": 0.8, "evidence": "search_documents -> edit"}]}),
+    );
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 1, "not asked again: {report:?}");
+    assert_eq!(procedure_texts(&e, ProposalStatus::Pending).len(), 2);
+}
+
+/// The same steps under another name are the same procedure: one waiting (or rejected)
+/// is not proposed again.
+#[tokio::test]
+async fn a_procedure_with_the_steps_of_one_already_filed_is_not_proposed_again() {
+    let e = env().await;
+    file_procedure(
+        &e,
+        "Export the answer",
+        "1. search_documents 2. export_document",
+        "search_documents -> export_document",
+    );
+    record_runs(
+        &e,
+        &["search_documents", "export_document"],
+        &[("c1", "q1"), ("c1", "q2"), ("c2", "q3")],
+    );
+    e.model.answer(
+        json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
+        "properties": {"name": "Export the answer Procedure",
+                       "procedureSteps": "1. search_documents 2. export_document"},
+        "confidence": 0.8, "evidence": "search_documents -> export_document"}]}),
+    );
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 0, "{report:?}");
+    assert_eq!(procedure_texts(&e, ProposalStatus::Pending).len(), 1);
+
+    // Rejected, it is not proposed again either.
+    let waiting = e.learner.list(&[ProposalStatus::Pending], 10).unwrap();
+    e.learner
+        .inbox()
+        .transition(&waiting[0].id, inbox::StatusEvent::Reject, e.f.store.now())
+        .unwrap();
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 0, "{report:?}");
+    assert!(procedure_texts(&e, ProposalStatus::Pending).is_empty());
 }
 
 fn coffee_like_spreadsheets() -> serde_json::Value {

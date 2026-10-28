@@ -8,7 +8,7 @@ import { slackPill, slackTabBadges, type SlackStatus, type SlackTabId } from './
 import { SlackMark } from './SlackLogo';
 import { SlackSetup, type WizardState } from './SlackSetup';
 import { AnsweringTab, IndexingTab, MemoriesTab, OverviewTab, SettingsTab, useWorkspaceListings } from './SlackTabs';
-import { Callout, DANGER_BUTTON, FOCUS_RING, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, Skeleton, StatusPill } from './ui';
+import { Callout, DANGER_BUTTON, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, Skeleton, StatusPill, TABLIST, tabClass } from './ui';
 import type { SlackStatusState } from './useSlackStatus';
 
 /** "Disconnect Acme?": keep what was indexed, or forget all of it. */
@@ -289,7 +289,7 @@ export function SlackPage({
         </section>
       ) : (
         <>
-          <div role="tablist" aria-label="Slack sections" className="flex gap-1 overflow-x-auto scrollbar-thin border-b border-shodh-border-subtle">
+          <div role="tablist" aria-label="Slack sections" className={TABLIST}>
             {SLACK_TABS.map(t => {
               const badge = badges[t];
               return (
@@ -310,11 +310,7 @@ export function SlackPage({
                     onTab(next);
                     tabRefs.current[next]?.focus();
                   }}
-                  className={cn(
-                    '-mb-px shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-[13px] border-b-2 transition-colors duration-micro',
-                    tab === t ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
-                    FOCUS_RING,
-                  )}
+                  className={tabClass(tab === t)}
                 >
                   {SLACK_TAB_LABELS[t]}
                   {badge && (

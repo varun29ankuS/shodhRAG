@@ -796,6 +796,7 @@ pub fn run() {
             // Connectors (the Slack card)
             slack::slack_status,
             slack::slack_connect,
+            slack::slack_check_permissions,
             slack::slack_set_enabled,
             slack::slack_set_answer_workspace,
             slack::slack_list_channels,

@@ -57,27 +57,31 @@ function ConnectorTile({
             <span className="text-[12.5px] leading-[1.5] text-shodh-text-secondary">{info.summary}</span>
           </span>
         </span>
-        <span className="mt-auto flex items-center gap-3 min-w-0">
-          <span className="min-w-0 flex-1 flex flex-col items-start gap-0.5">
+        {/* The status has a line of its own, so its reason is never cut; the action keeps
+            the same place on every tile. */}
+        <span className="mt-auto flex flex-col gap-2.5 min-w-0">
+          <span className="flex min-w-0">
             {pill ? (
-              <StatusPill pill={pill} />
+              <StatusPill pill={pill} wrap />
             ) : loadError ? (
               <span className="text-[12px] text-shodh-error">Could not be loaded</span>
             ) : (
               <Skeleton className="h-6 w-28 rounded-full" />
             )}
-            {pill?.team && <span className="max-w-full text-[12px] text-shodh-text-muted truncate">{pill.team}</span>}
           </span>
-          <span
-            aria-hidden="true"
-            className={cn(
-              'shrink-0 h-8 px-3 inline-flex items-center rounded-lg text-[12.5px] font-semibold transition-colors duration-micro',
-              action === 'Connect'
-                ? 'bg-shodh-accent text-shodh-on-accent group-hover:bg-shodh-accent-hover'
-                : 'border border-shodh-border text-shodh-text-secondary group-hover:text-shodh-text',
-            )}
-          >
-            {action}
+          <span className="flex items-center gap-3 min-w-0">
+            <span className="min-w-0 flex-1 text-[12px] text-shodh-text-muted truncate">{pill?.team ?? ''}</span>
+            <span
+              aria-hidden="true"
+              className={cn(
+                'shrink-0 h-8 px-3 inline-flex items-center rounded-lg text-[12.5px] font-semibold transition-colors duration-micro',
+                action === 'Connect'
+                  ? 'bg-shodh-accent text-shodh-on-accent group-hover:bg-shodh-accent-hover'
+                  : 'border border-shodh-border text-shodh-text-secondary group-hover:text-shodh-text',
+              )}
+            >
+              {action}
+            </span>
           </span>
         </span>
       </button>

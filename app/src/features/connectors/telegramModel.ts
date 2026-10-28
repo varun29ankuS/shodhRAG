@@ -112,7 +112,8 @@ export const TELEGRAM_STEPS: readonly TelegramStep[] = [1, 2, 3];
 export interface StepText {
   step: TelegramStep;
   title: string;
-  detail: string;
+  /** The line under the title; `null` when the step's own list says it all. */
+  detail: string | null;
 }
 
 export function telegramSteps(): StepText[] {
@@ -120,7 +121,8 @@ export function telegramSteps(): StepText[] {
     {
       step: 1,
       title: 'Make a bot with @BotFather',
-      detail: 'In Telegram, open @BotFather and send /newbot. Give the bot a name, then a username that ends in “bot”.',
+      // The step's numbered list says how (send /newbot, name it, keep the reply).
+      detail: null,
     },
     {
       step: 2,

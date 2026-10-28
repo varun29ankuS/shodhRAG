@@ -233,6 +233,8 @@ pub enum Outcome {
     Cancelled,
     /// Slack refused a post or an edit, after its retries; nothing more can be said there.
     SlackFailed(String),
+    /// Small talk: a fixed reply, with no search and no model call.
+    SmallTalk,
 }
 
 impl Outcome {
@@ -450,6 +452,16 @@ impl Responder {
                 self.reply(question, EMPTY_QUESTION, Outcome::EmptyQuestion)
                     .await
             };
+        }
+        // A greeting needs no search, no model call and none of the day's answers.
+        if crate::connectors::delivery::is_small_talk(&question.text) {
+            return self
+                .reply(
+                    question,
+                    crate::connectors::delivery::SMALL_TALK_REPLY,
+                    Outcome::SmallTalk,
+                )
+                .await;
         }
         if is_library_question(&question.text) {
             // What the library holds is a list, not a search: exact, and no model call.
@@ -1488,6 +1500,39 @@ mod tests {
         assert_eq!(responder.respond(&question("q?")).await, Outcome::Answered);
         assert_eq!(s.quota.used(day(23)).unwrap(), 0, "not the old day");
         assert_eq!(s.quota.used(day(24)).unwrap(), 1, "the day of the call");
+    }
+
+    #[tokio::test]
+    async fn small_talk_is_answered_without_a_search_or_a_model_call() {
+        let s = setup(
+            scope(),
+            vec![passage()],
+            RecordingModel::answering("x [1]"),
+            5,
+        );
+        for text in ["hi", "thanks @shodh!", "How's it going shodh"] {
+            assert_eq!(
+                s.responder.respond(&question(text)).await,
+                Outcome::SmallTalk,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            s.slack.texts(),
+            vec![crate::connectors::delivery::SMALL_TALK_REPLY.to_string(); 3]
+        );
+        assert_eq!(s.model.calls(), 0);
+        assert_eq!(*s.source.searches.lock().unwrap(), 0);
+        assert!(s.quota.used.lock().unwrap().is_empty());
+        // A question with a greeting in front is searched and answered as before.
+        assert_eq!(
+            s.responder
+                .respond(&question("hi, what is the notice period?"))
+                .await,
+            Outcome::Answered
+        );
+        assert_eq!(*s.source.searches.lock().unwrap(), 1);
+        assert_eq!(s.model.calls(), 1);
     }
 
     #[tokio::test]

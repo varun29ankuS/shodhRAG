@@ -368,7 +368,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// A message update in `chat` (positive: private with that user; negative: a group).
+    /// A message update in `chat` (positive: private with that user; negative: a group),
+    /// sent at 2026-10-27 09:00 UTC (the responder tests' clock: answered on time).
     pub fn message_value(update_id: i64, chat: i64, from: i64, text: &str) -> Value {
         let chat_value = if chat > 0 {
             json!({"id": chat, "type": "private", "first_name": "Ann"})
@@ -379,7 +380,7 @@ pub(crate) mod tests {
             "update_id": update_id,
             "message": {
                 "message_id": update_id * 10,
-                "date": 1_761_555_600,
+                "date": 1_793_091_600,
                 "chat": chat_value,
                 "from": {"id": from, "is_bot": false, "first_name": "Ann", "last_name": "Lee", "username": "annlee"},
                 "text": text
@@ -403,7 +404,7 @@ pub(crate) mod tests {
         let from = m.from.unwrap();
         assert_eq!(from.name, "Ann Lee");
         assert_eq!(from.username.as_deref(), Some("annlee"));
-        assert_eq!(m.date.timestamp(), 1_761_555_600);
+        assert_eq!(m.date.timestamp(), 1_793_091_600);
         assert_eq!(parse_update(&json!({"message": {}})), None);
         assert_eq!(
             parse_update(&json!({"update_id": 9, "edited_message": {}})),

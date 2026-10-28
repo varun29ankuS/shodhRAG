@@ -243,6 +243,7 @@
     "tables_settings_set": { "excluded": "The daily cap of table calls bounds what tables may spend; the agent must never raise its own spending limit, so only the user changes it." },
     "slack_status": { "excluded": "Shows the Slack card in the Connectors view (connection state, today's Slack answers); a user-facing view of a connection the agent has no part in." },
     "slack_connect": { "excluded": "Token entry: the user pastes the Slack app-level and bot tokens, which go straight to the OS credential store; an agent must never handle or supply credentials." },
+    "slack_check_permissions": { "excluded": "Asks Slack, with the bot token, which permissions the user's Slack app has after the user updated and reinstalled it; part of the connector setup only the user does." },
     "slack_set_enabled": { "excluded": "Switching the Slack connector on lets people outside this computer get answers and spend model calls; only the user may decide that." },
     "slack_set_answer_workspace": { "excluded": "Choosing the workspace Slack answers come from decides which documents people in Slack can read; only the user may change that." },
     "slack_list_channels": { "excluded": "Lists the Slack channels the bot is in for the user to choose where Shodh answers; a call to Slack with the bot token on the user's behalf, part of a setting only the user may change." },

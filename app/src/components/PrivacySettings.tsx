@@ -161,8 +161,14 @@ function UpdateSettings() {
     setBusy(true);
     setResult(null);
     try {
-      const update = await checkForUpdate();
-      setResult(update ? `Version ${update.version} is available.` : 'Shodh is up to date.');
+      const check = await checkForUpdate();
+      // The status holds the newest check (this one, or a daily one that ran
+      // right after it), so the line below never disagrees with the backend.
+      try {
+        setStatus(await getUpdateStatus());
+      } catch {
+        setResult(check.message);
+      }
     } catch (err) {
       setResult(String(err));
     } finally {
@@ -190,6 +196,10 @@ function UpdateSettings() {
         <p className="m-0 text-[12.5px] text-shodh-text-muted">{status.blockedReason}</p>
       ) : result ? (
         <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">{result}</p>
+      ) : status.lastCheck ? (
+        <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">
+          {status.lastCheck.message}
+        </p>
       ) : null}
     </div>
   );

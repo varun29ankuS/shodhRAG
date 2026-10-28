@@ -432,7 +432,7 @@ pub fn read_each_page(
                     page = index + 1,
                     error = %format!("{e:#}"),
                     "OCR skipped a page: {}",
-                    path.display()
+                    crate::log_safe::file(&path)
                 );
                 read.texts.push(String::new());
                 read.failed.push(index + 1);

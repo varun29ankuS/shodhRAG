@@ -237,7 +237,7 @@ pub fn start_worker(app: AppHandle, mut rx: UnboundedReceiver<ScanReaderRequest>
     tauri::async_runtime::spawn(async move {
         while let Some(request) = rx.recv().await {
             tracing::info!(
-                file = %request.path.display(),
+                file = %shodh_rag::log_safe::file(&request.path),
                 "scanned file read without the scan reader"
             );
             if app.state::<ScanReaderState>().record(request).await {
@@ -376,7 +376,9 @@ async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announc
         };
         match shodh_rag::indexing::index_file(&rag, &file, metadata).await {
             Ok(_) => read_again += 1,
-            Err(e) => tracing::warn!(file = %path, error = %e, "scan not read again"),
+            Err(e) => {
+                tracing::warn!(file = %shodh_rag::log_safe::file(&path), error = %shodh_rag::log_safe::scrub(&e.to_string(), &path), "scan not read again")
+            }
         }
     }
     for source_id in to_sync {

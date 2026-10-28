@@ -318,11 +318,11 @@ async fn refinement_worker(
             Ok(Ok(Some(refined))) => refined,
             Ok(Ok(None)) => continue,
             Ok(Err(e)) => {
-                tracing::warn!(error = %format!("{e:#}"), "table refinement failed: {}", path.display());
+                tracing::warn!(error = %format!("{e:#}"), "table refinement failed: {}", shodh_rag::log_safe::file(&path));
                 continue;
             }
             Err(e) => {
-                tracing::warn!(error = %e, "table refinement task failed: {}", path.display());
+                tracing::warn!(error = %e, "table refinement task failed: {}", shodh_rag::log_safe::file(&path));
                 continue;
             }
         };
@@ -335,11 +335,15 @@ async fn refinement_worker(
                 model_tables,
             }) => (chunks, model_tables),
             Ok(other) => {
-                tracing::info!(?other, "table refinement not applied: {}", path.display());
+                tracing::info!(
+                    ?other,
+                    "table refinement not applied: {}",
+                    shodh_rag::log_safe::file(&path)
+                );
                 continue;
             }
             Err(e) => {
-                tracing::warn!(error = %format!("{e:#}"), "refined tables could not be indexed: {}", path.display());
+                tracing::warn!(error = %format!("{e:#}"), "refined tables could not be indexed: {}", shodh_rag::log_safe::file(&path));
                 let file_path = path.display().to_string();
                 inbox_commands::post(
                     &app,

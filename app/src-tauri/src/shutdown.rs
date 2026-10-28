@@ -45,6 +45,8 @@ pub struct ShutdownState {
     holding_exit: AtomicBool,
     /// The saves were written (or the wait ran out): exits go ahead.
     exit_ready: AtomicBool,
+    /// What the process holds was released ([`release_everything`]).
+    released: AtomicBool,
 }
 
 impl ShutdownState {
@@ -71,6 +73,11 @@ impl ShutdownState {
             Some(tx) => tx.send(()).is_ok(),
             None => false,
         }
+    }
+
+    /// True the first time only: what the process holds is released once.
+    fn first_release(&self) -> bool {
+        !self.released.swap(true, Ordering::SeqCst)
     }
 
     fn forget(&self, id: u64) {
@@ -125,6 +132,35 @@ pub fn cancel_exit(app: &AppHandle) {
     app.state::<ShutdownState>()
         .exit_ready
         .store(false, Ordering::SeqCst);
+}
+
+/// Releases what the process holds before it ends, once: evidence table fills go back
+/// to the queue, the connectors stop, Code-mode commands and the agent runtimes end,
+/// and the log's last line says the app quit. Called for `RunEvent::Exit`, and before
+/// an update's installer ends the process: on Windows the updater ends it with
+/// `process::exit`, so `RunEvent::Exit` never comes and nothing else would run this.
+pub fn release_everything(app: &AppHandle, reason: &'static str) {
+    if !app.state::<ShutdownState>().first_release() {
+        return;
+    }
+    // Evidence table fills held by this process go back to the queue, so the next
+    // start takes them up at once.
+    crate::table_commands::release_on_exit(app);
+    // Slack connections are closed (a close frame, bounded wait).
+    crate::connectors::slack::shutdown(app);
+    // Telegram polling ends (bounded wait).
+    crate::connectors::telegram::shutdown(app);
+    // Code-mode commands end with every process they started (on macOS nothing else
+    // would end them once Shodh is gone).
+    let commands = shodh_rag::harness::run_command::stop_all();
+    if commands > 0 {
+        tracing::info!(commands, "stopped running commands on exit");
+    }
+    // Stop every omp sidecar before the process exits.
+    let sessions = app.state::<crate::agent_session_commands::AgentSessions>();
+    tauri::async_runtime::block_on(sessions.shutdown_all());
+    // The last line of a run: without it a clean quit and a crash leave the same log.
+    tracing::info!(reason, "Shodh quit: connectors and agent sessions stopped");
 }
 
 /// Quit the app once the frontend's saves are written (the tray's Quit).
@@ -229,6 +265,16 @@ pub fn quit_ready(state: State<'_, ShutdownState>, request_id: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The update installer and `RunEvent::Exit` can both ask: what the process holds
+    /// is released once.
+    #[test]
+    fn what_the_process_holds_is_released_once() {
+        let state = ShutdownState::default();
+        assert!(state.first_release());
+        assert!(!state.first_release());
+        assert!(!state.first_release());
+    }
 
     #[tokio::test]
     async fn an_answer_in_time_ends_the_wait() {

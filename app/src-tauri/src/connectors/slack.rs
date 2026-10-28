@@ -1299,8 +1299,8 @@ async fn stop(app: &AppHandle, team_id: &str) {
     if let Some(running) = running {
         running.answers.cancel();
         let _ = running.stop.send(true);
-        if tokio::time::timeout(EXIT_WAIT, running.task).await.is_err() {
-            tracing::warn!(target: "shodh::slack", "the Slack connection did not close in time");
+        if !super::end_task(running.task, EXIT_WAIT).await {
+            tracing::warn!(target: "shodh::slack", "the Slack connection did not close in time; it was ended");
         }
     }
     app.state::<SlackState>().set_link(team_id, LinkState::Off);
@@ -1604,7 +1604,7 @@ pub fn shutdown(app: &AppHandle) {
     }
     tauri::async_runtime::block_on(async move {
         for r in running {
-            let _ = tokio::time::timeout(EXIT_WAIT, r.task).await;
+            super::end_task(r.task, EXIT_WAIT).await;
         }
     });
 }

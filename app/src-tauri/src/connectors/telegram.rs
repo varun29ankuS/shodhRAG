@@ -495,6 +495,20 @@ impl TelegramState {
             .is_some_and(|r| !r.stop.is_cancelled())
     }
 
+    /// What the slot holds now.
+    fn slot(&self) -> Slot {
+        match self
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            None => Slot::Empty,
+            Some(r) if r.stop.is_cancelled() => Slot::Cancelled,
+            Some(_) => Slot::Live,
+        }
+    }
+
     /// Cancels every answer at once (before the change that stops polling is saved).
     fn cancel(&self) {
         if let Some(running) = self
@@ -504,6 +518,36 @@ impl TelegramState {
             .as_ref()
         {
             running.stop.cancel();
+        }
+    }
+}
+
+/// What the polling slot holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Empty,
+    /// A loop that was not cancelled: polling, or stopped by itself for a reason the user
+    /// must fix (it is restarted only by switching the connector on again).
+    Live,
+    /// A loop that was cancelled (a switch off, Local-only mode) and not yet taken away.
+    Cancelled,
+}
+
+/// What a sync does: `stop` takes the loop away and waits for it and its answers to end;
+/// `start` starts a new one after that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyncPlan {
+    stop: bool,
+    start: bool,
+}
+
+impl SyncPlan {
+    /// A cancelled loop is always taken away and waited for before anything else, so a new
+    /// loop never starts next to it and its answers end before the change goes on.
+    fn of(wanted: bool, slot: Slot) -> Self {
+        Self {
+            stop: slot == Slot::Cancelled || (!wanted && slot == Slot::Live),
+            start: wanted && slot != Slot::Live,
         }
     }
 }
@@ -1229,8 +1273,8 @@ async fn stop(app: &AppHandle) {
         .take();
     if let Some(running) = running {
         running.stop.cancel();
-        if tokio::time::timeout(EXIT_WAIT, running.task).await.is_err() {
-            tracing::warn!(target: "shodh::telegram", "the Telegram polling did not stop in time");
+        if !super::end_task(running.task, EXIT_WAIT).await {
+            tracing::warn!(target: "shodh::telegram", "the Telegram polling did not stop in time; it was ended");
         }
         // Answers in flight end (they were cancelled) before anything else happens, so a
         // Disconnect that forgets the conversations is not undone by one of them.
@@ -1346,11 +1390,11 @@ async fn sync_locked(app: &AppHandle) {
     state
         .cap
         .store(settings.connectors.telegram.daily_cap(), Ordering::SeqCst);
-    let wanted = should_run(&settings);
-    if !wanted && state.is_running() {
+    let plan = SyncPlan::of(should_run(&settings), state.slot());
+    if plan.stop {
         stop(app).await;
     }
-    if wanted && !state.is_running() {
+    if plan.start {
         if let Some(bot) = settings.connectors.telegram.bot.as_ref() {
             start(app, bot).await;
         }
@@ -1408,9 +1452,7 @@ pub fn shutdown(app: &AppHandle) {
         .take();
     if let Some(running) = running {
         running.stop.cancel();
-        tauri::async_runtime::block_on(async move {
-            let _ = tokio::time::timeout(EXIT_WAIT, running.task).await;
-        });
+        tauri::async_runtime::block_on(super::end_task(running.task, EXIT_WAIT));
     }
 }
 
@@ -2028,6 +2070,23 @@ mod tests {
         state.cancel();
         assert!(stop.is_cancelled());
         assert!(!state.is_running());
+        assert_eq!(state.slot(), Slot::Cancelled);
+    }
+
+    /// A loop cancelled by Local-only mode (or a switch off whose save failed) was left in
+    /// its slot: never waited for, its answers never drained, and a new loop could start
+    /// next to it. Every sync now takes a cancelled loop away first.
+    #[test]
+    fn a_sync_takes_a_cancelled_loop_away_before_anything_else() {
+        let plan = |stop, start| SyncPlan { stop, start };
+        assert_eq!(SyncPlan::of(false, Slot::Empty), plan(false, false));
+        assert_eq!(SyncPlan::of(false, Slot::Live), plan(true, false));
+        assert_eq!(SyncPlan::of(false, Slot::Cancelled), plan(true, false));
+        assert_eq!(SyncPlan::of(true, Slot::Empty), plan(false, true));
+        // Running, or stopped for a reason the user must fix: left as it is.
+        assert_eq!(SyncPlan::of(true, Slot::Live), plan(false, false));
+        // Stopped and waited for, then started again: never two loops at once.
+        assert_eq!(SyncPlan::of(true, Slot::Cancelled), plan(true, true));
     }
 
     #[test]

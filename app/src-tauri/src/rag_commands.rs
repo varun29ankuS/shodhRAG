@@ -103,10 +103,10 @@ pub async fn search_documents(
     request: SearchRequest,
     state: State<'_, RagState>,
 ) -> Result<SearchResponse, String> {
-    tracing::info!(
-        "Search documents called with query: '{}', max_results: {}",
-        request.query,
-        request.max_results
+    tracing::debug!(
+        query_chars = shodh_rag::log_safe::text(&request.query),
+        max_results = request.max_results,
+        "Search documents called"
     );
 
     let rag_guard = state.rag.read().await;
@@ -197,13 +197,10 @@ pub async fn search_documents(
     let frontend_results: Vec<SearchResult> = filtered_results
         .into_iter()
         .map(|r| {
-            // Debug logging
-            tracing::info!("Converting result:");
-            tracing::info!("  Citation title: '{}'", r.citation.title);
-            tracing::info!("  Snippet length: {}", r.snippet.len());
-            tracing::info!(
-                "  Metadata keys: {:?}",
-                r.metadata.keys().collect::<Vec<_>>()
+            tracing::debug!(
+                snippet_len = r.snippet.len(),
+                metadata_keys = ?r.metadata.keys().collect::<Vec<_>>(),
+                "Converting result"
             );
 
             // Extract source file from metadata
@@ -260,13 +257,6 @@ pub async fn search_documents(
         .collect();
 
     tracing::info!("Returning {} results to frontend", frontend_results.len());
-    if let Some(first) = frontend_results.first() {
-        tracing::info!("First result citation title: '{}'", first.citation.title);
-        tracing::info!(
-            "First result snippet: '{}'",
-            &first.snippet[..first.snippet.len().min(50)]
-        );
-    }
 
     // Create decision metadata
     let decision = DecisionMetadata {
@@ -522,7 +512,7 @@ pub async fn jump_to_source(
     search_text: Option<String>,
 ) -> Result<String, String> {
     tracing::info!(
-        file = %file_path,
+        file = %shodh_rag::log_safe::file(&file_path),
         line = ?line_number,
         page = ?page_number,
         search_len = search_text.as_ref().map(|s| s.len()),
@@ -535,7 +525,7 @@ pub async fn jump_to_source(
     // Check if file exists
     let path = std::path::Path::new(&file_path);
     if !path.exists() {
-        tracing::warn!(path = %file_path, "jump_to_source: file not found on disk");
+        tracing::warn!(path = %shodh_rag::log_safe::file(&file_path), "jump_to_source: file not found on disk");
         return Err(format!("File not found: {}", file_path));
     }
 

@@ -107,3 +107,5 @@ zip = "2"
 bytes = "1"
 # Time zones with daylight saving for the reminder scheduler tests
 chrono-tz = "0.10"
+# Paused time for the connector stop tests (connectors/mod.rs)
+tokio = { version = "1", features = ["test-util"] }

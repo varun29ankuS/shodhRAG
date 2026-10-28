@@ -18,6 +18,7 @@ mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
 mod log_file;
+mod log_filter;
 mod mcp;
 mod mcp_commands;
 mod memory_commands;
@@ -143,12 +144,10 @@ fn setup_error(context: &str, error: impl std::fmt::Display) -> Box<dyn std::err
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Initialize tracing subscriber so tracing::info!/debug!/warn!/error! produce output
+    // Shodh's own lines from INFO, the libraries' internals from WARN (`log_filter`);
+    // `RUST_LOG` replaces that for a developer's session.
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(log_filter::from_env())
         .with_target(false)
         .with_ansi(false)
         .with_writer(log_file::Writer::default)
@@ -924,24 +923,7 @@ pub fn run() {
                 api.prevent_exit();
             }
         }
-        tauri::RunEvent::Exit => {
-            // Evidence table fills held by this process go back to the queue, so the
-            // next start takes them up at once.
-            table_commands::release_on_exit(app_handle);
-            // Slack connections are closed (a close frame, bounded wait).
-            connectors::slack::shutdown(app_handle);
-            // Telegram polling ends (bounded wait).
-            connectors::telegram::shutdown(app_handle);
-            // Code-mode commands end with every process they started (on
-            // macOS nothing else would end them once Shodh is gone).
-            let commands = shodh_rag::harness::run_command::stop_all();
-            if commands > 0 {
-                tracing::info!(commands, "stopped running commands on exit");
-            }
-            // Stop every omp sidecar before the process exits.
-            let sessions = app_handle.state::<agent_session_commands::AgentSessions>();
-            tauri::async_runtime::block_on(sessions.shutdown_all());
-        }
+        tauri::RunEvent::Exit => shutdown::release_everything(app_handle, "quit"),
         // macOS: the Dock icon brings back a window closed to the tray.
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen {

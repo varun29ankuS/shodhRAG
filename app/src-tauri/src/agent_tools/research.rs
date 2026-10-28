@@ -491,7 +491,7 @@ impl Drop for PartGuard {
         if let Some(path) = self.0.take() {
             if let Err(e) = std::fs::remove_file(&path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(path = %path.display(), error = %e, "removing a partial download failed");
+                    tracing::warn!(path = %shodh_rag::log_safe::file(&path), error = %e, "removing a partial download failed");
                 }
             }
         }

@@ -101,6 +101,10 @@ jobs:
       - name: Library tests (shodh-rag)
         run: cargo test --package shodh-rag --lib
 
+      # Its own binary: the capturing subscriber is global before anything logs.
+      - name: Log privacy test (shodh-rag)
+        run: cargo test --package shodh-rag --test log_privacy
+
       - name: Library tests (shodh-rag-app)
         run: cargo test --package shodh-rag-app --lib
 

@@ -24,11 +24,29 @@ export interface UpdateProgress {
   total: number | null;
 }
 
+/**
+ * How a check ended. `noRelease`: GitHub has no published release at the
+ * update address yet (every release is still a draft): a quiet state, not
+ * an error.
+ */
+export type CheckOutcome = 'upToDate' | 'available' | 'noRelease' | 'unreachable' | 'failed';
+
+/** The result of one check, in plain words (`message`). */
+export interface LastCheck {
+  /** When the check ended (RFC 3339). */
+  at: string;
+  outcome: CheckOutcome;
+  message: string;
+  update: UpdateInfo | null;
+}
+
 export interface UpdateStatus {
   currentVersion: string;
   checkAutomatically: boolean;
   /** Why this app may not check now (no update key in this build, Local-only mode). */
   blockedReason: string | null;
+  /** The last check in this run (the background one or Check now). */
+  lastCheck: LastCheck | null;
 }
 
 export function getUpdateStatus(): Promise<UpdateStatus> {
@@ -39,9 +57,9 @@ export function setUpdateChecks(enabled: boolean): Promise<UpdateStatus> {
   return invoke<UpdateStatus>('set_update_checks', { enabled });
 }
 
-/** Ask the update server now; `null` when this is the latest version. */
-export function checkForUpdate(): Promise<UpdateInfo | null> {
-  return invoke<UpdateInfo | null>('check_for_update');
+/** Ask the update server now. Finding nothing (none published, offline) is a result, not an error. */
+export function checkForUpdate(): Promise<LastCheck> {
+  return invoke<LastCheck>('check_for_update');
 }
 
 /** Download, verify and install the update the last check found, then restart. */

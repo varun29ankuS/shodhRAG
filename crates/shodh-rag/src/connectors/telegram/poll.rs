@@ -714,6 +714,8 @@ mod tests {
             ),
             offsets: Mutex::new(Vec::new()),
             log: log.clone(),
+            webhook: false,
+            webhook_checks: Mutex::new(0),
         });
         let offsets = Arc::new(MemoryOffsets {
             saved: Mutex::new(None),

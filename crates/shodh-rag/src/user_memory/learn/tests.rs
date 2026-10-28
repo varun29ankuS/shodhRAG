@@ -1118,8 +1118,8 @@ async fn consolidation_turns_episode_clusters_and_recurring_tool_use_into_sugges
 
 /// Completed runs `(conversation, run)` that each used `tools`, in order.
 fn record_runs(e: &Env, tools: &[&str], runs: &[(&str, &str)]) {
-    for (conversation, run) in runs {
-        for tool in tools {
+    for &(conversation, run) in runs {
+        for &tool in tools {
             e.audit
                 .append(
                     AuditRecord::new(AuditEventType::ToolCall, json!({"tool": tool, "ok": true}))

@@ -8,8 +8,11 @@ import { test } from 'node:test';
 import {
   ReleaseError,
   checksumsMarkdown,
+  isNewer,
+  latestJson,
   releaseAssetNames,
   smoke,
+  stageRelease,
   verifyArtifacts,
   verifyLatestJsonShape,
   verifyRelease,
@@ -212,7 +215,7 @@ function makeArtifacts({ signed = true } = {}) {
 }
 
 const artifacts = (a, overrides = {}) =>
-  verifyArtifacts({ dir: a.dir, version: VERSION, product: PRODUCT, pubkey: a.key.tauri, requireSignatures: true, ...overrides });
+  verifyArtifacts({ dir: a.dir, version: VERSION, product: PRODUCT, pubkey: a.key.tauri, ...overrides });
 
 test('complete, signed pull request artifacts verify', async () => {
   await artifacts(makeArtifacts());
@@ -229,13 +232,58 @@ test('artifacts: a missing or empty installer fails', async () => {
   await assert.rejects(artifacts(a, { version: '1.2.4' }), /Shodh_1\.2\.4_x64-setup\.exe: expected one file, found 0/);
 });
 
-test('artifacts: signatures are required when the build had the key', async () => {
+test('artifacts: every update bundle must be signed by the given key', async () => {
   const a = makeArtifacts({ signed: false });
   await assert.rejects(artifacts(a), /has no \.sig next to it/);
-  await artifacts(a, { requireSignatures: false });
   const b = makeArtifacts();
   writeFileSync(b.tgz, 'archivE');
   await assert.rejects(artifacts(b), /does not match the file/);
+  await assert.rejects(artifacts(makeArtifacts(), { pubkey: makeKey().tauri }), /Signed with key/);
+  await assert.rejects(artifacts(makeArtifacts(), { pubkey: null }), /No updater public key/);
+});
+
+test('stage: the six release files and a latest.json that verifies as a release', async () => {
+  const a = makeArtifacts();
+  const out = mkdtempSync(join(tmpdir(), 'stage-test-'));
+  const { record, latest, files } = await stageRelease({
+    dir: a.dir, out, tag: TAG, repo: REPO, product: PRODUCT, pubkey: a.key.tauri, pubDate: '2026-10-28T12:00:00.000Z',
+  });
+  const names = releaseAssetNames(PRODUCT, VERSION);
+  assert.deepEqual(new Set(files), new Set(Object.values(names)));
+  assert.equal(readFileSync(join(out, names['macos-updater']), 'utf8'), 'archive');
+  assert.equal(latest.platforms['darwin-aarch64'].url, `https://github.com/${REPO}/releases/download/${TAG}/${names['macos-updater']}`);
+  assert.equal(latest.platforms['windows-x86_64'].signature, readFileSync(`${a.exe}.sig`, 'utf8').trim());
+  assert.deepEqual(JSON.parse(readFileSync(join(out, 'release.json'), 'utf8')), record);
+  // What publishing checks, on the staged files.
+  const rows = await verifyRelease({ release: record, dir: out, tag: TAG, repo: REPO, product: PRODUCT, pubkey: a.key.tauri });
+  assert.equal(rows.length, 6);
+});
+
+test('stage refuses incomplete or unsigned artifacts', async () => {
+  const a = makeArtifacts({ signed: false });
+  const out = mkdtempSync(join(tmpdir(), 'stage-test-'));
+  await assert.rejects(stageRelease({ dir: a.dir, out, tag: TAG, repo: REPO, product: PRODUCT, pubkey: a.key.tauri }), /has no \.sig/);
+  await assert.rejects(stageRelease({ dir: makeArtifacts().dir, out, tag: 'latest', repo: REPO, product: PRODUCT, pubkey: a.key.tauri }), /not a release tag/);
+});
+
+test("latest.json has the shape of v0.0.10's (written by tauri-action)", () => {
+  const published = JSON.parse(readFileSync(new URL('./fixtures/v0.0.10-latest.json', import.meta.url), 'utf8'));
+  const ours = latestJson({ repo: REPO, tag: 'v0.0.10', product: 'Shodh', windowsSignature: 'w\n', macosSignature: 'm', pubDate: published.pub_date });
+  assert.deepEqual(Object.keys(ours).sort(), Object.keys(published).sort());
+  assert.deepEqual(Object.keys(ours.platforms).sort(), Object.keys(published.platforms).sort());
+  for (const p of Object.keys(ours.platforms)) assert.deepEqual(Object.keys(ours.platforms[p]).sort(), ['signature', 'url']);
+  assert.equal(ours.platforms['windows-x86_64'].signature, 'w');
+  verifyLatestJsonShape(ours, '0.0.10');
+});
+
+test('only a newer release becomes the latest', () => {
+  assert.equal(isNewer('v0.0.11', 'v0.0.10'), true);
+  assert.equal(isNewer('v0.1.0', 'v0.0.99'), true);
+  assert.equal(isNewer('v0.0.10', 'v0.0.11'), false);
+  assert.equal(isNewer('v0.0.10', 'v0.0.10'), false);
+  assert.equal(isNewer('v0.0.9', 'v0.0.10'), false);
+  assert.equal(isNewer('v0.0.1', ''), true);
+  assert.throws(() => isNewer('v0.0.1', 'nightly'), /not a release tag/);
 });
 
 // --- Smoke ---
@@ -285,4 +333,28 @@ test('smoke: a bundle URL that does not download fails', async () => {
   await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl, sleep: async () => {} }), /answered 404/);
   const short = fakeGitHub({ headLength: 3 });
   await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl: short.fetchImpl, sleep: async () => {} }), /serves 3 bytes/);
+});
+
+test('smoke: a release that is not the latest checks its own latest.json, and that a newer one is latest', async () => {
+  const r = makeRelease();
+  const published = { ...r.release, draft: false };
+  const newer = { ...published, tag_name: 'v1.3.0' };
+  const make = (latestRelease) => async (url, init = {}) => {
+    const json = (body) => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body), headers: new Map() });
+    if (url === `https://api.github.com/repos/${REPO}/releases/latest`) return json(latestRelease);
+    if (url === `https://api.github.com/repos/${REPO}/releases/tags/${TAG}`) return json(published);
+    if (url === `https://github.com/${REPO}/releases/download/${TAG}/latest.json`) return json(r.latest);
+    const asset = /\/releases\/assets\/(\d+)$/.exec(url);
+    if (asset && init.method === 'HEAD') {
+      const size = published.assets.find((a) => String(a.id) === asset[1]).size;
+      return { ok: true, status: 200, headers: new Map([['content-length', String(size)]]) };
+    }
+    throw new Error(`unexpected request ${url}`);
+  };
+  await smoke({ repo: REPO, tag: TAG, expectLatest: false, fetchImpl: make(newer), sleep: async () => {} });
+  // If this older release were the latest, the newer one lost "latest".
+  await assert.rejects(
+    smoke({ repo: REPO, tag: TAG, expectLatest: false, fetchImpl: make(published), sleep: async () => {}, attempts: 2 }),
+    /which is not newer than v1\.2\.3/,
+  );
 });

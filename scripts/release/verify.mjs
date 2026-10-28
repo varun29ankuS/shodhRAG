@@ -1,33 +1,46 @@
 #!/usr/bin/env node
-// Checks what a release ships before it is published, and what users get
-// after.
+// Prepares and checks what a release ships before it is published, and what
+// users get after.
 //
-//   artifacts  The installers a pull request built (workflow artifacts): every
-//              file present and non-empty, named for the version, and (when the
-//              build had the signing key) every update bundle signature valid.
+//   artifacts  The installers the build jobs uploaded (workflow artifacts):
+//              every file present and non-empty, named for the version, and
+//              each update bundle's signature valid for the key it was signed
+//              with.
+//   stage      artifacts, then the release's six files in one folder under
+//              their release names, with the latest.json installed apps read
+//              (the same shape tauri-action writes), and a local record of
+//              them in the form of GitHub's release API (release.json).
 //   release    A release's assets (downloaded to --dir) against its API record:
 //              exactly the expected files, non-empty and complete; latest.json
 //              parses, names this version, points each platform at this
 //              release's update bundle, and carries that bundle's .sig; every
-//              signature verifies against the updater public key in
-//              tauri.conf.json. Writes the SHA-256 table for the release notes.
-//   smoke      After publishing: releases/latest/download/latest.json (the URL
-//              installed apps poll) is this version, and every platform URL in
-//              it answers 200 with the asset's size, fetched as the updater
-//              does (no credentials, Accept: application/octet-stream).
+//              signature verifies against the updater public key. Writes the
+//              SHA-256 table for the release notes.
+//   is-newer   Prints true when --tag is newer than --than (or --than is
+//              empty): only then may a release be marked the latest.
+//   smoke      After publishing: the latest.json installed apps poll serves
+//              this version (or, for a release that is not the latest, its own
+//              latest.json), and every platform URL in it answers 200 with the
+//              asset's size, fetched as the updater does (no credentials,
+//              Accept: application/octet-stream).
 //
-//   node scripts/release/verify.mjs artifacts --dir D --version X.Y.Z [--require-signatures]
-//   node scripts/release/verify.mjs release --release-json F --dir D --tag vX.Y.Z --repo O/R [--checksums-out F]
-//   node scripts/release/verify.mjs smoke --tag vX.Y.Z --repo O/R
-// Common: --config app/src-tauri/tauri.conf.json (product name, updater key).
+//   node scripts/release/verify.mjs artifacts --dir D --version X.Y.Z [--pubkey-file F]
+//   node scripts/release/verify.mjs stage --dir D --out O --tag vX.Y.Z --repo O/R [--pubkey-file F]
+//   node scripts/release/verify.mjs release --release-json F --dir D --tag vX.Y.Z --repo O/R [--pubkey-file F] [--checksums-out F]
+//   node scripts/release/verify.mjs is-newer --tag vX.Y.Z --than vA.B.C
+//   node scripts/release/verify.mjs smoke --tag vX.Y.Z --repo O/R [--not-latest]
+// Common: --config app/src-tauri/tauri.conf.json (product name, updater key);
+// --pubkey-file replaces the key with one in Tauri's base64 form (pull
+// requests sign with a throwaway key, never the release key).
 
 import { createHash } from 'node:crypto';
-import { createReadStream, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, createReadStream, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 import { SignatureError, verifyTauriSignature } from './minisign.mjs';
+import { compareVersions } from './versions.mjs';
 
 export class ReleaseError extends Error {}
 
@@ -56,12 +69,13 @@ export function releaseAssetNames(product, version) {
   };
 }
 
-export function readConfig(path) {
+export function readConfig(path, pubkeyFile) {
   const config = JSON.parse(readFileSync(path, 'utf8'));
   const product = config.productName;
-  const pubkey = config.plugins?.updater?.pubkey;
+  let pubkey = config.plugins?.updater?.pubkey || null;
+  if (pubkeyFile) pubkey = readFileSync(pubkeyFile, 'utf8').trim();
   if (!product) throw new ReleaseError(`${path} has no productName`);
-  return { product, pubkey: pubkey || null, version: config.version };
+  return { product, pubkey, version: config.version };
 }
 
 export async function sha256File(path) {
@@ -90,9 +104,19 @@ async function checkSignature(file, signatureText, pubkey, label) {
   }
 }
 
-// --- Pull request artifacts --------------------------------------------------
+/** The release tag's version, or a ReleaseError. */
+export function tagVersion(tag) {
+  if (!/^v\d+\.\d+\.\d+$/.test(tag ?? '')) throw new ReleaseError(`${tag} is not a release tag (vX.Y.Z)`);
+  return tag.slice(1);
+}
 
-export async function verifyArtifacts({ dir, version, product, pubkey, requireSignatures }) {
+// --- Build artifacts -------------------------------------------------------------
+
+/**
+ * Finds and checks the installers and signed update bundles under dir (the
+ * build jobs' artifacts, in any folder layout). Returns their paths.
+ */
+export async function verifyArtifacts({ dir, version, product, pubkey }) {
   const files = listFiles(dir);
   const errors = [];
   const one = (label, test) => {
@@ -106,8 +130,8 @@ export async function verifyArtifacts({ dir, version, product, pubkey, requireSi
   const names = releaseAssetNames(product, version);
   const windows = one(names['windows-installer'], (f) => f.endsWith(`/${names['windows-installer']}`));
   const dmg = one(names['macos-dmg'], (f) => f.endsWith(`/${names['macos-dmg']}`));
-  // tauri bundles the update archive as <product>.app.tar.gz; tauri-action
-  // renames it with the version and architecture when it uploads it.
+  // tauri bundles the update archive as <product>.app.tar.gz; the release
+  // names it with the version and architecture (stage).
   const macos = one(`${product}.app.tar.gz`, (f) => f.endsWith(`/${product}.app.tar.gz`));
   for (const file of [windows, dmg, macos].filter(Boolean)) {
     const size = statSync(file).size;
@@ -116,11 +140,7 @@ export async function verifyArtifacts({ dir, version, product, pubkey, requireSi
   }
   if (errors.length) throw new ReleaseError(`The build artifacts are incomplete:\n  ${errors.join('\n  ')}`);
 
-  if (!requireSignatures) {
-    console.log('Signatures not checked: this build had no signing key (a fork or Dependabot pull request).');
-    return;
-  }
-  if (!pubkey) throw new ReleaseError('tauri.conf.json has no updater public key, so the update bundles cannot be checked');
+  if (!pubkey) throw new ReleaseError('No updater public key, so the update bundles cannot be checked');
   for (const file of [windows, macos]) {
     let signature;
     try {
@@ -130,6 +150,64 @@ export async function verifyArtifacts({ dir, version, product, pubkey, requireSi
     }
     await checkSignature(file, signature, pubkey, relative(dir, file));
   }
+  return { windows, dmg, macos };
+}
+
+/** latest.json as tauri-action writes it, with download URLs of this release. */
+export function latestJson({ repo, tag, product, windowsSignature, macosSignature, pubDate }) {
+  const version = tagVersion(tag);
+  const names = releaseAssetNames(product, version);
+  const url = (name) => `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(name)}`;
+  const windows = { signature: windowsSignature.trim(), url: url(names['windows-updater']) };
+  const macos = { signature: macosSignature.trim(), url: url(names['macos-updater']) };
+  return {
+    version,
+    notes: '',
+    pub_date: pubDate,
+    platforms: {
+      'darwin-aarch64': macos,
+      'darwin-aarch64-app': { ...macos },
+      'windows-x86_64': windows,
+      'windows-x86_64-nsis': { ...windows },
+    },
+  };
+}
+
+/**
+ * Writes the six release files to `out` under their release names, plus
+ * release.json (a local record of them shaped like GitHub's release API).
+ */
+export async function stageRelease({ dir, out, tag, repo, product, pubkey, pubDate = new Date().toISOString() }) {
+  const version = tagVersion(tag);
+  const found = await verifyArtifacts({ dir, version, product, pubkey });
+  const names = releaseAssetNames(product, version);
+  mkdirSync(out, { recursive: true });
+  const copies = [
+    [found.windows, names['windows-installer']],
+    [`${found.windows}.sig`, names['windows-signature']],
+    [found.dmg, names['macos-dmg']],
+    [found.macos, names['macos-updater']],
+    [`${found.macos}.sig`, names['macos-signature']],
+  ];
+  for (const [from, name] of copies) copyFileSync(from, join(out, name));
+  const latest = latestJson({
+    repo,
+    tag,
+    product,
+    windowsSignature: readFileSync(`${found.windows}.sig`, 'utf8'),
+    macosSignature: readFileSync(`${found.macos}.sig`, 'utf8'),
+    pubDate,
+  });
+  writeFileSync(join(out, 'latest.json'), `${JSON.stringify(latest, null, 2)}\n`);
+  const assets = [...copies.map(([, name]) => name), 'latest.json'].map((name, i) => ({
+    id: i + 1,
+    name,
+    size: statSync(join(out, name)).size,
+    state: 'uploaded',
+  }));
+  const record = { tag_name: tag, draft: true, assets };
+  writeFileSync(join(out, 'release.json'), `${JSON.stringify(record, null, 2)}\n`);
+  return { record, latest, files: assets.map((a) => a.name) };
 }
 
 // --- A release's assets -------------------------------------------------------
@@ -159,10 +237,9 @@ function assetForUrl(url, release, repo, tag) {
  * their asset names). Returns [{ name, size, sha256 }] for the release notes.
  */
 export async function verifyRelease({ release, dir, tag, repo, product, pubkey }) {
-  if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new ReleaseError(`${tag} is not a release tag (vX.Y.Z)`);
-  const version = tag.slice(1);
+  const version = tagVersion(tag);
   if (release.tag_name !== tag) throw new ReleaseError(`The release is for ${release.tag_name}, not ${tag}`);
-  if (!pubkey) throw new ReleaseError('tauri.conf.json has no updater public key: installed apps could not verify this release');
+  if (!pubkey) throw new ReleaseError('No updater public key: installed apps could not verify this release');
   const names = releaseAssetNames(product, version);
   const expected = new Set(Object.values(names));
   const present = new Map(release.assets.map((a) => [a.name, a]));
@@ -239,6 +316,18 @@ export function checksumsMarkdown(rows) {
   return `${lines.join('\n')}\n`;
 }
 
+/**
+ * Whether a release of `tag` may become the latest: only when it is newer
+ * than the current latest release (`latest`, empty when there is none). An
+ * older release finishing last must not take "latest" from a newer one: the
+ * updater would offer the older version.
+ */
+export function isNewer(tag, latest) {
+  const version = tagVersion(tag);
+  if (!latest) return true;
+  return compareVersions(version, tagVersion(latest)) > 0;
+}
+
 // --- After publishing -----------------------------------------------------------
 
 /**
@@ -246,22 +335,46 @@ export function checksumsMarkdown(rows) {
  * for tests. GitHub serves the new latest.json a few seconds after the
  * release is published, so a stale answer is re-read for up to
  * `attempts` x `delayMs`; a wrong answer after that fails.
+ * With `expectLatest` false (a release published without becoming the
+ * latest, see isNewer), the release's own latest.json is checked instead and
+ * the latest release must be another, newer one.
  */
-export async function smoke({ repo, tag, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), attempts = 12, delayMs = 10_000, token }) {
-  const version = tag.slice(1);
+export async function smoke({
+  repo,
+  tag,
+  expectLatest = true,
+  fetchImpl = fetch,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  attempts = 12,
+  delayMs = 10_000,
+  token,
+}) {
+  const version = tagVersion(tag);
   const api = (path) =>
     fetchImpl(`https://api.github.com/repos/${repo}${path}`, {
       headers: { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
-  const endpoint = `https://github.com/${repo}/releases/latest/download/latest.json`;
+  const endpoint = expectLatest
+    ? `https://github.com/${repo}/releases/latest/download/latest.json`
+    : `https://github.com/${repo}/releases/download/${tag}/latest.json`;
   let latest;
-  let latestRelease;
+  let release;
   for (let attempt = 1; ; attempt++) {
     const problems = [];
-    const releaseResponse = await api('/releases/latest');
-    latestRelease = releaseResponse.ok ? await releaseResponse.json() : null;
-    if (!latestRelease) problems.push(`releases/latest answered ${releaseResponse.status}`);
-    else if (latestRelease.tag_name !== tag) problems.push(`the latest release is ${latestRelease.tag_name}, not ${tag}`);
+    const latestResponse = await api('/releases/latest');
+    const latestRelease = latestResponse.ok ? await latestResponse.json() : null;
+    if (expectLatest) {
+      release = latestRelease;
+      if (!release) problems.push(`releases/latest answered ${latestResponse.status}`);
+      else if (release.tag_name !== tag) problems.push(`the latest release is ${release.tag_name}, not ${tag}`);
+    } else {
+      const own = await api(`/releases/tags/${tag}`);
+      release = own.ok ? await own.json() : null;
+      if (!release) problems.push(`releases/tags/${tag} answered ${own.status}`);
+      if (latestRelease && !isNewer(latestRelease.tag_name, tag)) {
+        problems.push(`the latest release is ${latestRelease.tag_name}, which is not newer than ${tag}`);
+      }
+    }
     const response = await fetchImpl(endpoint, { redirect: 'follow' });
     if (!response.ok) problems.push(`${endpoint} answered ${response.status}`);
     else {
@@ -279,10 +392,8 @@ export async function smoke({ repo, tag, fetchImpl = fetch, sleep = (ms) => new 
     await sleep(delayMs);
   }
   verifyLatestJsonShape(latest, version);
-  const sizes = new Map(latestRelease.assets.map((a) => [a.id, a.size]));
-  const byName = new Map(latestRelease.assets.map((a) => [a.name, a]));
   for (const [platform, entry] of Object.entries(latest.platforms)) {
-    const asset = assetForUrl(entry.url, latestRelease, repo, tag);
+    const asset = assetForUrl(entry.url, release, repo, tag);
     if (!asset) throw new ReleaseError(`${platform}: ${entry.url} is not an asset of ${tag}`);
     // As tauri-plugin-updater downloads it: no credentials, octet-stream.
     const response = await fetchImpl(entry.url, {
@@ -292,9 +403,7 @@ export async function smoke({ repo, tag, fetchImpl = fetch, sleep = (ms) => new 
     });
     const length = Number(response.headers.get('content-length'));
     if (response.status !== 200) throw new ReleaseError(`${platform}: HEAD ${entry.url} answered ${response.status}`);
-    if (length !== sizes.get(asset.id) && length !== byName.get(asset.name)?.size) {
-      throw new ReleaseError(`${platform}: ${entry.url} serves ${length} bytes, ${asset.name} has ${asset.size}`);
-    }
+    if (length !== asset.size) throw new ReleaseError(`${platform}: ${entry.url} serves ${length} bytes, ${asset.name} has ${asset.size}`);
     console.log(`  ${platform}: ${asset.name}, 200, ${length} bytes`);
   }
   console.log(`${endpoint} serves ${tag} and every update bundle in it downloads`);
@@ -308,13 +417,16 @@ async function main(argv) {
     allowPositionals: true,
     options: {
       config: { type: 'string', default: 'app/src-tauri/tauri.conf.json' },
+      'pubkey-file': { type: 'string' },
       dir: { type: 'string' },
+      out: { type: 'string' },
       version: { type: 'string' },
       tag: { type: 'string' },
+      than: { type: 'string', default: '' },
       repo: { type: 'string' },
       'release-json': { type: 'string' },
       'checksums-out': { type: 'string' },
-      'require-signatures': { type: 'boolean', default: false },
+      'not-latest': { type: 'boolean', default: false },
     },
   });
   const need = (name) => {
@@ -322,14 +434,28 @@ async function main(argv) {
     return values[name];
   };
   const [command] = positionals;
-  if (command === 'smoke') {
-    await smoke({ repo: need('repo'), tag: need('tag'), token: process.env.GH_TOKEN || process.env.GITHUB_TOKEN });
+  if (command === 'is-newer') {
+    console.log(isNewer(need('tag'), values.than) ? 'true' : 'false');
     return;
   }
-  const { product, pubkey } = readConfig(values.config);
+  if (command === 'smoke') {
+    await smoke({
+      repo: need('repo'),
+      tag: need('tag'),
+      expectLatest: !values['not-latest'],
+      token: process.env.GH_TOKEN || process.env.GITHUB_TOKEN,
+    });
+    return;
+  }
+  const { product, pubkey } = readConfig(values.config, values['pubkey-file']);
   if (command === 'artifacts') {
-    await verifyArtifacts({ dir: need('dir'), version: need('version'), product, pubkey, requireSignatures: values['require-signatures'] });
-    console.log('The build artifacts are complete');
+    await verifyArtifacts({ dir: need('dir'), version: need('version'), product, pubkey });
+    console.log('The build artifacts are complete and signed');
+    return;
+  }
+  if (command === 'stage') {
+    const { files } = await stageRelease({ dir: need('dir'), out: need('out'), tag: need('tag'), repo: need('repo'), product, pubkey });
+    console.log(`Staged ${files.join(', ')} in ${values.out}`);
     return;
   }
   if (command === 'release') {
@@ -340,7 +466,7 @@ async function main(argv) {
     if (values['checksums-out']) writeFileSync(values['checksums-out'], markdown);
     return;
   }
-  throw new ReleaseError('Usage: verify.mjs artifacts|release|smoke ...');
+  throw new ReleaseError('Usage: verify.mjs artifacts|stage|release|is-newer|smoke ...');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

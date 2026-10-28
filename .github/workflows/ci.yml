@@ -206,6 +206,9 @@ jobs:
       - name: Doc tests (workspace)
         run: cargo test --workspace --doc
 
+      - name: ONNX Runtime came from the cache
+        run: python -I scripts/ci/ort_archive.py verify
+
   # macOS reads scans with PP-OCRv6 only (Windows OCR is not built there), so
   # the parser and the OCR engine have macOS-only paths. This builds shodh-rag
   # on macOS and runs its OCR unit tests: one crate, debug, cached; the app and
@@ -347,6 +350,9 @@ jobs:
           cargo run --package shodh-eval -- compare
           --baseline crates/shodh-eval/data/scanned/baseline.json
           --report eval-out-scanned/retrieval-report.json
+
+      - name: ONNX Runtime came from the cache
+        run: python -I scripts/ci/ort_archive.py verify
 
       - name: Upload eval report
         if: always()
@@ -495,6 +501,11 @@ jobs:
 
       - name: Build release app
         run: cargo build --release -p shodh-rag-app --features tauri/custom-protocol
+
+      # Before the base commit's or the anchor's build below, which may use
+      # another ort-sys and so another archive.
+      - name: ONNX Runtime came from the cache
+        run: python -I scripts/ci/ort_archive.py verify
 
       # Copied out of target/: building the base commit or the anchor below
       # writes the same path.

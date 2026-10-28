@@ -304,8 +304,13 @@ class RawLzma2Reader(io.RawIOBase):
 
 
 def _entry_path(name: str) -> PurePosixPath:
+    # Tar names use "/". A backslash or a colon is a separator or a drive (or
+    # an NTFS stream) on Windows, where this also runs: refuse both rather
+    # than let a name like "a\..\..\x" or "C:x" leave the folder.
+    if "\\" in name or ":" in name:
+        raise OrtError(f"Archive entry with a backslash or colon in its path: {name!r}")
     path = PurePosixPath(name)
-    if path.is_absolute() or (path.parts and ":" in path.parts[0]):
+    if path.is_absolute():
         raise OrtError(f"Archive entry with an absolute path: {name!r}")
     parts = [p for p in path.parts if p not in ("", ".")]
     if ".." in parts:
@@ -313,6 +318,13 @@ def _entry_path(name: str) -> PurePosixPath:
     if not parts:
         raise OrtError(f"Archive entry without a name: {name!r}")
     return PurePosixPath(*parts)
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Whether path, resolved, is inside root, resolved (a second check after the name rules)."""
+    root = root.resolve()
+    resolved = path.resolve()
+    return resolved == root or root in resolved.parents
 
 
 def extract(archive: Path, dest: Path) -> int:
@@ -324,6 +336,8 @@ def extract(archive: Path, dest: Path) -> int:
             if member.type != tarfile.REGTYPE:
                 continue
             target = dest.joinpath(*_entry_path(member.name).parts)
+            if not _inside(target, dest):
+                raise OrtError(f"Archive entry outside the extraction folder: {member.name!r}")
             target.parent.mkdir(parents=True, exist_ok=True)
             source = tar.extractfile(member)
             if source is None:

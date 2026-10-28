@@ -212,6 +212,22 @@ class ExtractTest(unittest.TestCase):
         with self.assertRaisesRegex(ort.OrtError, "absolute"):
             ort.extract(archive, self.root / "out")
 
+    def test_backslash_and_colon_paths_are_refused(self):
+        # On Windows "\" separates and "C:" names a drive: either could leave
+        # the folder even though tar (POSIX) sees one plain component.
+        for i, name in enumerate(("lib\\..\\..\\evil", "C:evil", "lib/a:stream")):
+            archive = self.write(make_archive([(name, b"x")]))
+            with self.assertRaisesRegex(ort.OrtError, "backslash or colon"):
+                ort.extract(archive, self.root / f"out-{i}")
+
+    def test_inside_is_checked_on_resolved_paths(self):
+        root = self.root / "dest"
+        root.mkdir()
+        self.assertTrue(ort._inside(root / "lib" / "a.lib", root))
+        self.assertTrue(ort._inside(root, root))
+        self.assertFalse(ort._inside(root / ".." / "evil", root))
+        self.assertFalse(ort._inside(self.root / "dest-sibling" / "x", root))
+
     def test_duplicate_entries_fail(self):
         archive = self.write(make_archive([("a", b"1"), ("a", b"2")]))
         with self.assertRaises(FileExistsError):

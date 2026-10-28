@@ -10,8 +10,10 @@ name: Prepare release
 # The PR is a draft because a PR opened with GITHUB_TOKEN starts no workflows:
 # marking it ready (ready_for_review) starts them as the person who did.
 # Opening it needs Settings > Actions > General > "Allow GitHub Actions to
-# create and approve pull requests"; without it the branch is still pushed
-# and the run fails with the link to open the PR by hand.
+# create and approve pull requests". When the token can read that setting and
+# it is off, the run fails before pushing; otherwise the PR step fails with
+# the link to open the PR by hand, and running this again (after enabling
+# the setting) reuses the pushed branch and opens the PR.
 
 on:
   workflow_dispatch:
@@ -46,7 +48,27 @@ jobs:
         with:
           node-version: 22
 
+      # GitHub Actions may open pull requests only when the repository allows
+      # it. Checked before anything is pushed when the token may read the
+      # setting; otherwise the PR step reports it, and a re-run reuses the
+      # branch pushed here.
+      - name: Can this workflow open the PR?
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if allowed=$(gh api "repos/${GITHUB_REPOSITORY}/actions/permissions/workflow" --jq .can_approve_pull_request_reviews 2>/dev/null); then
+            if [ "$allowed" != true ]; then
+              echo "::error::GitHub Actions may not open pull requests in this repository: enable Settings > Actions > General > 'Allow GitHub Actions to create and approve pull requests', then run this again. Nothing was pushed."
+              exit 1
+            fi
+            echo "GitHub Actions may open pull requests here."
+          else
+            echo "::notice::This token cannot read the setting that allows GitHub Actions to open pull requests; the PR step reports it if it is off."
+          fi
+
       - name: Set the version and push the release branch
+        id: branch
         env:
           VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
@@ -63,14 +85,23 @@ jobs:
             exit 1
           fi
           if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null; then
-            echo "::error::The branch ${branch} already exists; delete it or choose another version"
-            exit 1
+            # Pushed by an earlier run that could not open the PR: reuse it if
+            # it carries exactly this version, else refuse.
+            git fetch --no-tags --depth=1 origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            files=(app/package.json app/package-lock.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml crates/shodh-rag/Cargo.toml Cargo.lock)
+            mkdir "$RUNNER_TEMP/branch"
+            git archive "refs/remotes/origin/${branch}" "${files[@]}" | tar -x -C "$RUNNER_TEMP/branch"
+            if ! node scripts/release/versions.mjs check --tag "$tag" --root "$RUNNER_TEMP/branch"; then
+              echo "::error::The branch ${branch} exists but does not carry version ${VERSION} everywhere; delete it or choose another version"
+              exit 1
+            fi
+            echo "Reusing ${branch}, pushed by an earlier run"
+            exit 0
           fi
           node scripts/release/versions.mjs set "$VERSION"
           node scripts/release/versions.mjs check --tag "$tag"
           git switch -c "$branch"
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit --quiet -am "Release ${VERSION}"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit --quiet -am "Release ${VERSION}"
           git show --stat HEAD
           # The token is passed for this push only; it is not stored in .git/config.
           auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
@@ -89,9 +120,14 @@ jobs:
           Sets the app version to ${VERSION} in all six files that carry it (\`scripts/release/versions.mjs set ${VERSION}\`).
 
           - **Mark this PR ready for review** to run CI and the release build: it was opened by GitHub Actions, whose pull requests start no workflows until a person acts on them.
-          - **Merging** tags \`v${VERSION}\` on the merge commit and runs the Release workflow, which builds the installers, verifies every asset, \`latest.json\` and the update signatures, and only then publishes the release as the latest.
+          - **Merging**, once CI passes on the merge commit, tags \`v${VERSION}\` there and runs the Release workflow, which builds the installers, verifies every asset, \`latest.json\` and the update signatures, and only then publishes the release (as the latest, when it is the newest).
           EOF
           )
+          existing=$(gh pr list --head "$branch" --base master --state open --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "The release PR is already open: ${existing}"
+            exit 0
+          fi
           if ! url=$(gh pr create --draft --base master --head "$branch" --title "Release ${VERSION}" --body "$body" 2>&1); then
             echo "::error::Could not open the pull request (${url}). Enable Settings > Actions > General > 'Allow GitHub Actions to create and approve pull requests', or open it by hand: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/master...${branch}?expand=1"
             exit 1

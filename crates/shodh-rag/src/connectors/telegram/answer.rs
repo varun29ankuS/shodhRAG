@@ -266,7 +266,7 @@ mod tests {
             },
             ThreadTurn {
                 question: asked.into(),
-                answer: "Still good.".into(),
+                answer: "All good.".into(),
             },
         ];
         assert_eq!(
@@ -275,7 +275,26 @@ mod tests {
         );
         let prompt = owner_prompt(asked, &[], None, &twice, None, &PrivateTerms::default());
         assert_eq!(prompt.matches("They wrote:").count(), 2, "{prompt}");
-        assert!(prompt.contains("Still good.") && !prompt.contains("All good."));
+        assert_eq!(prompt.matches("All good.").count(), 1, "{prompt}");
+
+        // Answered differently, both answers are context and stay; the query still
+        // says the message once.
+        let mut differently = twice.clone();
+        differently[2].answer = "Still good.".into();
+        let prompt = owner_prompt(
+            asked,
+            &[],
+            None,
+            &differently,
+            None,
+            &PrivateTerms::default(),
+        );
+        assert_eq!(prompt.matches("They wrote:").count(), 3, "{prompt}");
+        assert!(prompt.contains("All good.") && prompt.contains("Still good."));
+        assert_eq!(
+            owner_query(asked, &differently),
+            "What is the notice period? How's it going shodh"
+        );
     }
 
     #[test]

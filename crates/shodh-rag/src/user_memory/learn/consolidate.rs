@@ -12,8 +12,9 @@
 //!   memories whose steps follow that sequence, linked to the latest conversation. A
 //!   sequence of lookups only (search, open, list, show: how Shodh answers any question,
 //!   [`is_lookup_tool`]) is Shodh's own mechanics, not something the user does, and is
-//!   never proposed; nor is a sequence a waiting, stored or rejected procedure already
-//!   has, whatever its name ([`steps_tools`]).
+//!   never proposed; nor is a sequence a procedure already waiting, accepted or rejected
+//!   was made from, whatever its name. Both are decided on the tool sequence itself (the
+//!   suggestion's evidence, [`evidence_tools`]), never on words read from its steps.
 //!
 //! The model steps run only when memories may be shared with the model.
 
@@ -473,7 +474,7 @@ impl Learner {
                 _ => {}
             }
         }
-        let mut known = self.known_procedures().await?;
+        let mut known = self.known_procedures()?;
         let recurring: Vec<Recurring> = recurring_sequences(&runs)
             .into_iter()
             .filter(|s| !only_lookups(&s.tools) && !known.contains(&s.tools))
@@ -547,7 +548,12 @@ impl Learner {
             self.inbox
                 .count(UsageCounter::Refused, validated.ungrounded(), now)?;
             self.count_and_log_drops(&model.model_id(), &parsed.rejections, &validated)?;
-            for candidate in validated.candidates {
+            for mut candidate in validated.candidates {
+                // One procedure per sequence, under whatever name.
+                if known.contains(&sequence.tools) {
+                    *suppressed += 1;
+                    continue;
+                }
                 // The steps must follow the sequence that worked, in order.
                 let steps = candidate
                     .valid
@@ -555,12 +561,6 @@ impl Learner {
                     .first()
                     .map(ToString::to_string)
                     .unwrap_or_default();
-                // The same steps under another name is the same procedure.
-                let named = steps_tools(&steps);
-                if known.contains(&named) || known.contains(&sequence.tools) {
-                    *suppressed += 1;
-                    continue;
-                }
                 if !follows(&steps, &sequence.tools) {
                     *report
                         .dropped
@@ -574,6 +574,9 @@ impl Learner {
                     );
                     continue;
                 }
+                // The evidence is the whole sequence (an exact quote of the source text),
+                // so later consolidations know which sequence this procedure is.
+                candidate.evidence = sequence_evidence(&sequence.tools);
                 self.propose_candidate(
                     &candidate,
                     ProposalOrigin::Consolidate,
@@ -584,17 +587,15 @@ impl Learner {
                     CallBudget::Daily,
                 )
                 .await?;
-                known.insert(named);
                 known.insert(sequence.tools.clone());
             }
         }
         Ok(())
     }
 
-    /// The tool sequences of the procedures already waiting, stored, accepted or rejected:
-    /// a sequence among them is not proposed again under another name.
-    async fn known_procedures(&self) -> LearnResult<BTreeSet<Vec<String>>> {
-        let mut known = BTreeSet::new();
+    /// The tool sequences the procedures already waiting, accepted (stored) or rejected
+    /// were made from: a sequence among them is not proposed again under another name.
+    fn known_procedures(&self) -> LearnResult<BTreeSet<Vec<String>>> {
         let filed = self.inbox.list(
             &[
                 ProposalStatus::Pending,
@@ -604,44 +605,30 @@ impl Learner {
             ],
             1_000,
         )?;
-        for proposal in &filed {
-            if let Some(steps) = procedure_steps_of(&proposal.action) {
-                known.insert(steps_tools(steps));
-            }
-        }
-        let stored = self
-            .service
-            .store()
-            .query(&StatementQuery {
-                classes: vec!["Procedure".to_string()],
-                limit: Some(1_000),
-                ..Default::default()
-            })
-            .await?;
-        for statement in &stored {
-            if let Some(shodh_ontology::RawValue::Text(steps)) =
-                statement.statement.properties.get("procedureSteps")
-            {
-                known.insert(steps_tools(steps));
-            }
-        }
-        known.remove(&Vec::new());
-        Ok(known)
+        Ok(filed
+            .iter()
+            .filter_map(|p| procedure_of(&p.action))
+            .filter_map(|(steps, evidence)| procedure_sequence(steps, evidence))
+            .collect())
     }
 
-    /// Withdraws the waiting procedure suggestions that are only Shodh's own lookups
-    /// (filed before such sequences were left out): they are marked stale, with why.
+    /// Withdraws the waiting procedure suggestions made from a sequence of Shodh's own
+    /// lookups only (filed before such sequences were left out): they are marked stale,
+    /// with why. Only when the sequence is certain ([`certain_sequence`]); a suggestion
+    /// whose sequence cannot be read is left to the user.
     fn retire_lookup_procedures(&self) -> LearnResult<()> {
         let now = self.now();
         for proposal in self.inbox.list(&[ProposalStatus::Pending], 1_000)? {
             if proposal.origin != ProposalOrigin::Consolidate {
                 continue;
             }
-            let Some(steps) = procedure_steps_of(&proposal.action) else {
+            let Some((steps, evidence)) = procedure_of(&proposal.action) else {
                 continue;
             };
-            let tools = steps_tools(steps);
-            if tools.is_empty() || !only_lookups(&tools) {
+            let Some(tools) = certain_sequence(steps, evidence) else {
+                continue;
+            };
+            if !only_lookups(&tools) {
                 continue;
             }
             match self.inbox.transition(&proposal.id, StatusEvent::Stale, now) {
@@ -659,12 +646,13 @@ impl Learner {
 const LOOKUPS_ONLY_REASON: &str =
     "Only Shodh's own lookups (search, open, list): how it answers any question, not a procedure of yours.";
 
-/// The `procedureSteps` of a suggestion to remember a Procedure.
-fn procedure_steps_of(action: &ProposalAction) -> Option<&str> {
+/// The `procedureSteps` and the evidence of a suggestion to remember a Procedure.
+fn procedure_of(action: &ProposalAction) -> Option<(&str, &str)> {
     let ProposalAction::Remember {
         content: MemoryContent::Fact {
             class, properties, ..
         },
+        evidence,
         ..
     } = action
     else {
@@ -674,20 +662,22 @@ fn procedure_steps_of(action: &ProposalAction) -> Option<&str> {
         return None;
     }
     match properties.get("procedureSteps") {
-        Some(shodh_ontology::RawValue::Text(steps)) => Some(steps.as_str()),
+        Some(shodh_ontology::RawValue::Text(steps)) => Some((steps.as_str(), evidence.as_str())),
         _ => None,
     }
 }
 
 /// Tools of Shodh that only look something up or move around the app: searching,
 /// opening, listing and showing documents, papers, sources and views, the web, the plan
-/// and skills. Every answer uses them; a sequence of them is Shodh's own mechanics, never
-/// a procedure of the user's.
+/// and skills, and Code mode's reading tools (`read`, `grep`, `glob`, `ast_grep`). Every
+/// answer uses them; a sequence of them is Shodh's own mechanics, never a procedure of
+/// the user's. Tools that change something (`remember`, `edit`, `write`, `run_command`,
+/// `export_document`, ...) are not lookups.
 pub fn is_lookup_tool(tool: &str) -> bool {
     const PREFIXES: [&str; 7] = [
         "search_", "list_", "show_", "open_", "find_", "get_", "read_",
     ];
-    const LOOKUPS: [&str; 7] = [
+    const LOOKUPS: [&str; 12] = [
         "web_search",
         "fetch_url",
         "update_plan",
@@ -695,6 +685,11 @@ pub fn is_lookup_tool(tool: &str) -> bool {
         "paper_graph",
         "query_results",
         "audit_query",
+        "read",
+        "grep",
+        "glob",
+        "ast_grep",
+        "find",
     ];
     let tool = tool.trim().to_ascii_lowercase();
     LOOKUPS.contains(&tool.as_str()) || PREFIXES.iter().any(|p| tool.starts_with(p))
@@ -705,24 +700,52 @@ pub fn only_lookups(tools: &[String]) -> bool {
     tools.iter().all(|t| is_lookup_tool(t))
 }
 
-/// The tools a procedure's steps name, in order, consecutive repeats collapsed: the
-/// procedure's identity, whatever it is called ("1. search_documents 2. open_document").
-/// Tool names are the step words with an underscore.
-pub fn steps_tools(steps: &str) -> Vec<String> {
-    let mut tools: Vec<String> = Vec::new();
-    for word in steps
-        .to_ascii_lowercase()
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-    {
-        let word = word.trim_matches('_');
-        if !word.contains('_') || !word.starts_with(|c: char| c.is_ascii_alphabetic()) {
-            continue;
-        }
-        if tools.last().map(String::as_str) != Some(word) {
-            tools.push(word.to_string());
-        }
-    }
-    tools
+/// The evidence a procedure is filed with: its tool sequence as [`Recurring::describe`]
+/// writes it (`a -> b -> c`).
+pub fn sequence_evidence(tools: &[String]) -> String {
+    tools.join(" -> ")
+}
+
+/// A tool name as the audit log records it.
+fn is_tool_name(word: &str) -> bool {
+    word.starts_with(|c: char| c.is_ascii_alphabetic())
+        && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The tool sequence a procedure suggestion's evidence quotes (`a -> b -> c`, as
+/// [`Recurring::describe`] writes it, the text before a colon and after a full stop of
+/// the description left out); `None` when the evidence is not a sequence of at least two
+/// tool names.
+pub fn evidence_tools(evidence: &str) -> Option<Vec<String>> {
+    let quoted = evidence.rsplit(':').next().unwrap_or_default();
+    let quoted = quoted.split('.').next().unwrap_or_default();
+    let tools: Vec<String> = quoted
+        .split("->")
+        .map(|t| t.trim().to_ascii_lowercase())
+        .collect();
+    (tools.len() >= 2 && tools.iter().all(|t| is_tool_name(t))).then_some(tools)
+}
+
+/// The sequence a filed procedure was made from: its evidence's, when its steps follow it.
+fn procedure_sequence(steps: &str, evidence: &str) -> Option<Vec<String>> {
+    evidence_tools(evidence).filter(|tools| follows(steps, tools))
+}
+
+/// [`procedure_sequence`], and only when the steps number exactly one step per tool: the
+/// evidence then quotes the whole sequence, not part of it.
+pub fn certain_sequence(steps: &str, evidence: &str) -> Option<Vec<String>> {
+    procedure_sequence(steps, evidence).filter(|tools| numbered_steps(steps) == tools.len())
+}
+
+/// How many numbered steps (`1.`, `2)`) `steps` has.
+pub fn numbered_steps(steps: &str) -> usize {
+    steps
+        .split_whitespace()
+        .filter(|word| {
+            let digits = word.chars().take_while(char::is_ascii_digit).count();
+            digits > 0 && matches!(word[digits..].chars().next(), Some('.' | ')'))
+        })
+        .count()
 }
 
 /// Reason code of a procedure whose steps do not follow the tool sequence it came from.
@@ -1059,19 +1082,32 @@ mod tests {
             .contains("search_documents -> open_document"));
     }
 
-    /// The three suggestions the live Inbox held, word for word.
-    const LIVE_JUNK: [&str; 3] = [
-        "Remember: Procedure: name Search and Open Document; steps 1. search_documents 2. open_document",
-        "Remember: Procedure: name Search and Open Document Procedure; steps 1. search_documents 2. open_document",
-        "Remember: Procedure: name Tool Sequence Procedure; steps 1. list_sources 2. search_documents 3. open_document",
+    fn tools(names: &[&str]) -> Vec<String> {
+        names.iter().map(|t| t.to_string()).collect()
+    }
+
+    /// The three suggestions the live Inbox held, word for word (their steps), with the
+    /// sequence their evidence quotes.
+    const LIVE_JUNK: [(&str, &str); 3] = [
+        (
+            "1. search_documents 2. open_document",
+            "search_documents -> open_document",
+        ),
+        (
+            "1. search_documents 2. open_document",
+            "search_documents -> open_document",
+        ),
+        (
+            "1. list_sources 2. search_documents 3. open_document",
+            "list_sources -> search_documents -> open_document",
+        ),
     ];
 
     #[test]
     fn shodhs_own_lookups_are_never_a_procedure_of_the_users() {
-        for text in LIVE_JUNK {
-            let tools = steps_tools(text);
-            assert!(!tools.is_empty(), "{text}");
-            assert!(only_lookups(&tools), "{text}: {tools:?}");
+        for (steps, evidence) in LIVE_JUNK {
+            let sequence = certain_sequence(steps, evidence).expect(steps);
+            assert!(only_lookups(&sequence), "{steps}: {sequence:?}");
         }
         for tool in [
             "search_documents",
@@ -1083,50 +1119,108 @@ mod tests {
             "web_search",
             "fetch_url",
             "update_plan",
+            // Code mode's reading tools.
+            "read",
+            "grep",
+            "glob",
+            "ast_grep",
         ] {
             assert!(is_lookup_tool(tool), "{tool}");
         }
-        // Tools that do something for the user make a sequence worth remembering.
+        // Tools that do something for the user make a sequence worth remembering,
+        // with or without an underscore in their names.
         for tool in [
             "export_document",
             "create_task",
             "create_event",
             "add_to_workspace",
             "run_command",
+            "remember",
+            "edit",
+            "write",
         ] {
             assert!(!is_lookup_tool(tool), "{tool}");
         }
-        let mixed = vec![
-            "search_documents".to_string(),
-            "export_document".to_string(),
-        ];
-        assert!(!only_lookups(&mixed));
+        assert!(!only_lookups(&tools(&[
+            "search_documents",
+            "export_document"
+        ])));
+        assert!(!only_lookups(&tools(&["search_documents", "remember"])));
+        assert!(only_lookups(&tools(&["read", "grep"])));
     }
 
+    /// A procedure is its tool sequence, read from the evidence: tools without an
+    /// underscore count as much as the others.
     #[test]
-    fn the_same_steps_under_another_name_are_the_same_procedure() {
-        assert_eq!(steps_tools(LIVE_JUNK[0]), steps_tools(LIVE_JUNK[1]));
+    fn a_procedure_is_the_sequence_its_evidence_quotes() {
         assert_eq!(
-            steps_tools(LIVE_JUNK[0]),
-            vec!["search_documents".to_string(), "open_document".to_string()]
+            evidence_tools("search_documents -> remember"),
+            Some(tools(&["search_documents", "remember"]))
         );
         assert_eq!(
-            steps_tools(LIVE_JUNK[2]),
-            vec![
-                "list_sources".to_string(),
-                "search_documents".to_string(),
-                "open_document".to_string()
-            ]
+            evidence_tools("read -> edit"),
+            Some(tools(&["read", "edit"]))
         );
-        // The model's wording around the tool names does not matter.
+        // As quoted from the description, with its lead-in and its next sentence.
         assert_eq!(
-            steps_tools("1. Search_Documents for the question, 2. export_document to save it"),
-            vec![
-                "search_documents".to_string(),
-                "export_document".to_string()
-            ]
+            evidence_tools(
+                "Tool sequence that completed answers: search_documents -> export_document. It worked in 3 answers"
+            ),
+            Some(tools(&["search_documents", "export_document"]))
         );
-        assert!(steps_tools("Search and Open Document").is_empty());
+        assert_eq!(evidence_tools("search_documents"), None);
+        assert_eq!(evidence_tools("1. search the documents"), None);
+        assert_eq!(sequence_evidence(&tools(&["read", "edit"])), "read -> edit");
+        assert_eq!(
+            evidence_tools(&sequence_evidence(&tools(&[
+                "search_documents",
+                "remember"
+            ]))),
+            Some(tools(&["search_documents", "remember"]))
+        );
+
+        // Two names, one sequence; two sequences sharing a tool are not the same.
+        let (steps, evidence) = LIVE_JUNK[0];
+        assert_eq!(
+            procedure_sequence(steps, evidence),
+            procedure_sequence(LIVE_JUNK[1].0, LIVE_JUNK[1].1)
+        );
+        assert_ne!(
+            procedure_sequence(
+                "1. search_documents 2. remember it",
+                "search_documents -> remember"
+            ),
+            procedure_sequence(
+                "1. search_documents 2. edit the file",
+                "search_documents -> edit"
+            )
+        );
+        // Steps that do not follow the evidence: no sequence.
+        assert_eq!(
+            procedure_sequence(
+                "1. open_document 2. search_documents",
+                "search_documents -> open_document"
+            ),
+            None
+        );
+
+        // Certain only with one numbered step per tool: a quote of part of a longer
+        // sequence is never taken for the whole of it.
+        assert_eq!(numbered_steps("1. search_documents 2) open_document"), 2);
+        assert_eq!(
+            certain_sequence(
+                "1. search_documents 2. open_document 3. remember the answer",
+                "search_documents -> open_document"
+            ),
+            None
+        );
+        assert_eq!(
+            certain_sequence(
+                "1. search_documents 2. remember the answer",
+                "search_documents -> remember"
+            ),
+            Some(tools(&["search_documents", "remember"]))
+        );
     }
 
     #[test]

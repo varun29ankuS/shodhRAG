@@ -288,13 +288,25 @@ pub fn same_message(a: &str, b: &str) -> bool {
     words(a) == words(b)
 }
 
-/// `turns` with each run of consecutive turns asking the same keeping its latest only (a
-/// message answered twice, from a backlog or sent again), oldest first.
+/// `turns`, oldest first, with a turn that repeats the one before it (the same question
+/// with the same answer, or one of the two answers empty: a message answered twice from a
+/// backlog, or one whose answer failed) kept once, with the answer that has words. The
+/// same question answered differently stays twice: "shorter" asked again after a first
+/// shorter answer is a new step, and that first answer is the context it builds on.
 pub fn distinct_turns(turns: &[ThreadTurn]) -> Vec<ThreadTurn> {
     let mut out: Vec<ThreadTurn> = Vec::with_capacity(turns.len());
     for turn in turns {
         match out.last_mut() {
-            Some(last) if same_message(&last.question, &turn.question) => *last = turn.clone(),
+            Some(last)
+                if same_message(&last.question, &turn.question)
+                    && (same_message(&last.answer, &turn.answer)
+                        || last.answer.trim().is_empty()
+                        || turn.answer.trim().is_empty()) =>
+            {
+                if !turn.answer.trim().is_empty() {
+                    *last = turn.clone();
+                }
+            }
             _ => out.push(turn.clone()),
         }
     }
@@ -1064,19 +1076,50 @@ mod tests {
             search_query(asked, &thread),
             "What is the notice period? How's it going shodh"
         );
-        // Identical consecutive turns go in the prompt once, the latest kept.
+        // A turn repeated with the same answer goes in the prompt once.
         let repeated = vec![
             turn("What is the notice period?", "Sixty days."),
-            turn(asked, "First answer."),
-            turn(asked, "Second answer."),
+            turn(asked, "All good."),
+            turn(asked, "all  good."),
         ];
         let kept = turns_for_prompt(&repeated);
         assert_eq!(kept.len(), 2);
-        assert_eq!(kept[1].answer, "Second answer.");
+        assert_eq!(kept[1].question, asked);
+        // One whose answer is missing is the same turn: the answer with words is kept.
+        for pair in [
+            [turn(asked, ""), turn(asked, "All good.")],
+            [turn(asked, "All good."), turn(asked, "  ")],
+        ] {
+            let kept = distinct_turns(&pair);
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].answer, "All good.");
+        }
         assert_eq!(
-            distinct_turns(&[turn("a", "1"), turn("b", "2"), turn("a", "3")]).len(),
+            distinct_turns(&[turn("a", "1"), turn("b", "2"), turn("a", "1")]).len(),
             3,
             "only consecutive repeats collapse"
+        );
+    }
+
+    /// "shorter" asked twice is two steps: the second builds on the first answer, which
+    /// stays in the prompt.
+    #[test]
+    fn the_same_follow_up_answered_differently_keeps_both_answers() {
+        let thread = vec![
+            turn("Summarise the lease", "A long summary."),
+            turn("shorter", "A shorter summary."),
+            turn("shorter", "Shortest."),
+        ];
+        let kept = turns_for_prompt(&thread);
+        let answers: Vec<&str> = kept.iter().map(|t| t.answer.as_str()).collect();
+        assert_eq!(
+            answers,
+            ["A long summary.", "A shorter summary.", "Shortest."]
+        );
+        // The query still says it once, with the topic before it.
+        assert_eq!(
+            search_query("shorter", &thread),
+            "Summarise the lease shorter"
         );
     }
 

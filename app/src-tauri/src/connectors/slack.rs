@@ -1823,13 +1823,10 @@ pub async fn slack_check_permissions(
     let _op = state.op.lock().await;
     let (_, current, bot_token) = current_bot_token(&state).await?;
     let web = SlackWeb::new().map_err(|e| e.to_string())?;
-    let info = web.auth_test(&bot_token).await.map_err(|e| {
-        if e.is_auth() {
-            "Slack refused the saved bot token: reinstalling the app gave it a new one. Disconnect, then connect again with the new bot token.".to_string()
-        } else {
-            setup_error("bot token", e)
-        }
-    })?;
+    let info = web
+        .auth_test(&bot_token)
+        .await
+        .map_err(check_permissions_error)?;
     let team_id = current.installation.team_id.clone();
     let scopes = rechecked_scopes(&team_id, &info)?;
     let saved_team = team_id.clone();
@@ -1849,9 +1846,37 @@ pub async fn slack_check_permissions(
         "slack_check_permissions",
         json!({ "slackWorkspace": info.team, "scopes": scopes }),
     );
-    retry_stopped_channels(&state, &team_id).await;
+    // Channels stopped on a missing permission would stop again at once without it.
+    if permissions_complete(&scopes) {
+        retry_stopped_channels(&state, &team_id).await;
+    }
     broadcast(&app, &settings);
     status(&app).await
+}
+
+/// The saved bot token itself is gone: revoked, expired, or of a deactivated account
+/// (a reinstall that issued a new token). Only then must the user connect again; any other
+/// refusal leaves the working connection as it is.
+pub fn bot_token_gone(error: &SlackApiError) -> bool {
+    matches!(error, SlackApiError::Api { code, .. } if matches!(
+        code.as_str(),
+        "invalid_auth" | "not_authed" | "token_revoked" | "token_expired" | "account_inactive"
+    ))
+}
+
+/// What Check again says when Slack refuses `auth.test`.
+fn check_permissions_error(error: SlackApiError) -> String {
+    if bot_token_gone(&error) {
+        "Slack no longer accepts the saved bot token: reinstalling the app gave it a new one. Disconnect, then connect again with the new bot token.".to_string()
+    } else {
+        setup_error("bot token", error)
+    }
+}
+
+/// Whether `scopes` hold every permission answering and indexing need.
+pub fn permissions_complete(scopes: &[String]) -> bool {
+    check_scopes(Some(scopes)) == ScopeCheck::Complete
+        && shodh_rag::connectors::slack::setup::missing_index_scopes(scopes).is_empty()
 }
 
 /// Switches the connector on or off (the tokens stay saved). User-only.
@@ -2383,6 +2408,58 @@ mod tests {
         assert!(rechecked_scopes("T1", &info("T1", None))
             .unwrap_err()
             .contains("did not say"));
+    }
+
+    #[test]
+    fn check_again_asks_to_reconnect_only_when_the_token_itself_is_gone() {
+        let refused = |code: &str| SlackApiError::Api {
+            code: code.into(),
+            needed: None,
+        };
+        for code in [
+            "invalid_auth",
+            "not_authed",
+            "token_revoked",
+            "token_expired",
+            "account_inactive",
+        ] {
+            assert!(bot_token_gone(&refused(code)), "{code}");
+            assert!(
+                check_permissions_error(refused(code)).contains("connect again"),
+                "{code}"
+            );
+        }
+        // Refusals that are not about the token being gone keep the connection.
+        for code in [
+            "missing_scope",
+            "no_permission",
+            "not_allowed_token_type",
+            "team_access_not_granted",
+            "ekm_access_denied",
+        ] {
+            assert!(!bot_token_gone(&refused(code)), "{code}");
+            assert!(
+                !check_permissions_error(refused(code)).contains("Disconnect"),
+                "{code}"
+            );
+        }
+        assert!(!bot_token_gone(&SlackApiError::Network("reset".into())));
+    }
+
+    #[test]
+    fn stopped_channels_are_retried_only_with_every_permission() {
+        let all: Vec<String> = manifest_scopes().iter().map(|s| s.to_string()).collect();
+        assert!(permissions_complete(&all));
+        let answer_only: Vec<String> = shodh_rag::connectors::slack::setup::REQUIRED_BOT_SCOPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(!permissions_complete(&answer_only), "index scopes missing");
+        let index_only: Vec<String> = all.iter().filter(|s| *s != "users:read").cloned().collect();
+        assert!(
+            !permissions_complete(&index_only),
+            "an answer scope missing"
+        );
     }
 
     #[test]

@@ -376,6 +376,23 @@ test('the overview says what is left to set up, and where to do it', () => {
   assert.deepEqual([stopped[0].title, stopped[0].tab], ['#deals stopped indexing', 'indexing']);
 });
 
+test('after Check again clears the step, focus goes where it was, and only the line is an alert', () => {
+  const tabs = readFileSync(new URL('../src/features/connectors/SlackTabs.tsx', import.meta.url), 'utf8');
+  // Resolved: the caller is told, and both callers move focus to what replaces the step.
+  assert.match(tabs, /notify\.success\('The Slack app has every permission Shodh needs'\);\s*onResolved\(\);/);
+  const uses = [...tabs.matchAll(/<UpdateSlackApp \{\.\.\.props\} permissions=\{[^}]+\} onResolved=\{\(\) => focusAfterRender\((\w+)\)\} \/>/g)].map(m => m[1]);
+  assert.deepEqual(uses.sort(), ['indexingRef', 'nextStepsRef']);
+  for (const ref of uses) {
+    assert.match(tabs, new RegExp(`ref=\\{${ref}\\} tabIndex=\\{-1\\}`), ref);
+  }
+  // On the Indexing tab the callout holding the buttons and the steps is not an alert;
+  // its one line is.
+  const callout = tabs.match(/\{index\.missingScopes\.length > 0 && \(\s*<Callout([^>]*)>([\s\S]*?)<\/Callout>/);
+  assert.ok(callout, 'the Indexing callout');
+  assert.doesNotMatch(callout[1], /role=/);
+  assert.match(callout[2], /<p role="alert"[^>]*>\{UPDATE_APP_FOR_INDEXING_LINE\}<\/p>/);
+});
+
 test('updating the Slack app opens its manifest page and copies the manifest the create link carries', () => {
   assert.equal(appManifestUrl('A0123ABCD'), 'https://api.slack.com/apps/A0123ABCD/app-manifest');
   // Unknown (an installation from before Shodh kept it) or not an app id: the list of apps.

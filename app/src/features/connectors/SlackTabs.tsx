@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Check, Copy, ExternalLink, Hash, Loader2, Lock, RefreshCw, Users } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -118,12 +118,26 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 // ── Overview ────────────────────────────────────────────────────────
 
+/** Moves focus to `target` once the change that removed the focused control is drawn. */
+function focusAfterRender(target: React.RefObject<HTMLElement>) {
+  window.requestAnimationFrame(() => target.current?.focus());
+}
+
 /**
  * How to give the user's Slack app the permissions it lacks: open its App Manifest page,
  * paste Shodh's current manifest, reinstall, then check again (Shodh asks Slack which
  * permissions the bot has now). The permission names are behind a disclosure.
+ * `onResolved`: nothing is missing any more, so this part (and the button that had focus)
+ * goes away; the caller moves focus to what takes its place.
  */
-function UpdateSlackApp({ status, permissions, onStatus, busy, setBusy }: TabProps & { permissions: string[] }) {
+function UpdateSlackApp({
+  status,
+  permissions,
+  onStatus,
+  busy,
+  setBusy,
+  onResolved,
+}: TabProps & { permissions: string[]; onResolved: () => void }) {
   const [copied, setCopied] = useState(false);
   const [checking, setChecking] = useState(false);
   const manifest = manifestFromCreateUrl(status.createAppUrl);
@@ -154,8 +168,12 @@ function UpdateSlackApp({ status, permissions, onStatus, busy, setBusy }: TabPro
       const next = await slackApi.checkPermissions();
       onStatus(next);
       const still = stillMissingLine(next);
-      if (still) notify.error('The Slack app still lacks permissions', { description: still });
-      else notify.success('The Slack app has every permission Shodh needs');
+      if (still) {
+        notify.error('The Slack app still lacks permissions', { description: still });
+      } else {
+        notify.success('The Slack app has every permission Shodh needs');
+        onResolved();
+      }
     } catch (err) {
       notify.error('Slack could not be asked', { description: slackError(err) });
     } finally {
@@ -207,6 +225,7 @@ function UpdateSlackApp({ status, permissions, onStatus, busy, setBusy }: TabPro
 
 export function OverviewTab(props: TabProps & { onTab: (tab: SlackTabId) => void }) {
   const { status, now, onTab } = props;
+  const nextStepsRef = useRef<HTMLDivElement>(null);
   const line = stateLine(status, now);
   const warnings = overviewWarnings(status, now);
   const steps = nextSteps(status);
@@ -252,33 +271,36 @@ export function OverviewTab(props: TabProps & { onTab: (tab: SlackTabId) => void
         </div>
       )}
 
-      {steps.length > 0 ? (
-        <Section title="Next steps">
-          <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
-            {steps.map(step => (
-              <li key={step.id} className="flex flex-wrap sm:flex-nowrap items-start gap-3 px-4 py-3">
-                <span aria-hidden="true" className={cn('mt-1.5 w-2 h-2 rounded-full shrink-0', TONE_DOT[step.tone])} />
-                <div className="flex-1 min-w-0">
-                  <p className="m-0 text-[13px] font-semibold text-shodh-text">{step.title}</p>
-                  <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted break-words max-w-[72ch]">{step.detail}</p>
-                  {step.permissions && step.permissions.length > 0 && (
-                    <div className="mt-3">
-                      <UpdateSlackApp {...props} permissions={step.permissions} />
-                    </div>
+      {/* Focus lands here when a fixed step goes away with the control that had it. */}
+      <div ref={nextStepsRef} tabIndex={-1} className="focus:outline-none">
+        {steps.length > 0 ? (
+          <Section title="Next steps">
+            <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
+              {steps.map(step => (
+                <li key={step.id} className="flex flex-wrap sm:flex-nowrap items-start gap-3 px-4 py-3">
+                  <span aria-hidden="true" className={cn('mt-1.5 w-2 h-2 rounded-full shrink-0', TONE_DOT[step.tone])} />
+                  <div className="flex-1 min-w-0">
+                    <p className="m-0 text-[13px] font-semibold text-shodh-text">{step.title}</p>
+                    <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted break-words max-w-[72ch]">{step.detail}</p>
+                    {step.permissions && step.permissions.length > 0 && (
+                      <div className="mt-3">
+                        <UpdateSlackApp {...props} permissions={step.permissions} onResolved={() => focusAfterRender(nextStepsRef)} />
+                      </div>
+                    )}
+                  </div>
+                  {step.tab && step.action && (
+                    <button type="button" className={cn(OUTLINE_BUTTON, 'shrink-0')} onClick={() => onTab(step.tab as SlackTabId)}>
+                      {step.action}
+                    </button>
                   )}
-                </div>
-                {step.tab && step.action && (
-                  <button type="button" className={cn(OUTLINE_BUTTON, 'shrink-0')} onClick={() => onTab(step.tab as SlackTabId)}>
-                    {step.action}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Section>
-      ) : (
-        <Callout tone="ok" role="status">Everything is set up. Shodh answers in the channels you chose and in direct messages.</Callout>
-      )}
+                </li>
+              ))}
+            </ul>
+          </Section>
+        ) : (
+          <Callout tone="ok" role="status">Everything is set up. Shodh answers in the channels you chose and in direct messages.</Callout>
+        )}
+      </div>
     </div>
   );
 }
@@ -647,6 +669,7 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
   const [sharedConfirmed, setSharedConfirmed] = useState(false);
   const [forgetting, setForgetting] = useState<string | null>(null);
   const [windowInput, setWindowInput] = useState(String(index.windowDays));
+  const indexingRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setWindowInput(String(index.windowDays)), [index.windowDays]);
 
@@ -680,7 +703,7 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
   };
 
   return (
-    <div className="flex flex-col gap-8">
+    <div ref={indexingRef} tabIndex={-1} className="flex flex-col gap-8 focus:outline-none">
       <Section
         title="Indexed channels"
         description={
@@ -702,9 +725,10 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
           <Callout tone="warning" role="alert">Indexing needs the app database, which could not be opened. The audit page says why.</Callout>
         )}
         {index.missingScopes.length > 0 && (
-          <Callout tone="warning" role="alert">
-            <p className="m-0 mb-3 max-w-[72ch]">{UPDATE_APP_FOR_INDEXING_LINE}</p>
-            <UpdateSlackApp {...props} permissions={index.missingScopes} />
+          <Callout tone="warning">
+            {/* Only the one line is announced, not the buttons and the steps. */}
+            <p role="alert" className="m-0 mb-3 max-w-[72ch]">{UPDATE_APP_FOR_INDEXING_LINE}</p>
+            <UpdateSlackApp {...props} permissions={index.missingScopes} onResolved={() => focusAfterRender(indexingRef)} />
           </Callout>
         )}
 

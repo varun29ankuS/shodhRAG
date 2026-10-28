@@ -1138,8 +1138,9 @@ fn record_runs(e: &Env, tools: &[&str], runs: &[(&str, &str)]) {
     }
 }
 
-/// A waiting procedure suggestion, as consolidation filed one.
-fn file_procedure(e: &Env, name: &str, steps: &str) -> inbox::Proposal {
+/// A waiting procedure suggestion, as consolidation filed one: its steps, and the tool
+/// sequence its evidence quotes.
+fn file_procedure(e: &Env, name: &str, steps: &str, evidence: &str) -> inbox::Proposal {
     let text = format!("Remember: Procedure: name {name}; steps {steps}");
     e.learner
         .inbox()
@@ -1166,7 +1167,7 @@ fn file_procedure(e: &Env, name: &str, steps: &str) -> inbox::Proposal {
                     decision: Decision::Add,
                     decided_by: DecidedBy::Rule,
                     target_text: None,
-                    evidence: steps.to_string(),
+                    evidence: evidence.to_string(),
                     model: "scripted-model".to_string(),
                     at: e.f.store.now(),
                     source: "conversation://c1/turn/q1".to_string(),
@@ -1204,24 +1205,49 @@ async fn consolidation_never_proposes_shodhs_own_lookups_and_withdraws_waiting_o
             &e,
             "Search and Open Document",
             "1. search_documents 2. open_document",
+            "search_documents -> open_document",
         ),
         file_procedure(
             &e,
             "Search and Open Document Procedure",
             "1. search_documents 2. open_document",
+            "search_documents -> open_document",
         ),
         file_procedure(
             &e,
             "Tool Sequence Procedure",
             "1. list_sources 2. search_documents 3. open_document",
+            "list_sources -> search_documents -> open_document",
         ),
     ];
-    // A procedure of the user's own waits on.
-    let kept = file_procedure(
-        &e,
-        "Export the answer",
-        "1. search_documents 2. export_document",
-    );
+    // Procedures of the user's own wait on, tools without an underscore included.
+    let kept = [
+        file_procedure(
+            &e,
+            "Export the answer",
+            "1. search_documents 2. export_document",
+            "search_documents -> export_document",
+        ),
+        file_procedure(
+            &e,
+            "Remember a preference",
+            "1. search_documents for it 2. remember the preference",
+            "search_documents -> remember",
+        ),
+        file_procedure(
+            &e,
+            "Fix the file",
+            "1. read the file 2. edit it",
+            "read -> edit",
+        ),
+        // Its evidence quotes part of the sequence only: left to the user.
+        file_procedure(
+            &e,
+            "Look up and save",
+            "1. search_documents 2. open_document 3. remember it",
+            "search_documents -> open_document",
+        ),
+    ];
     record_runs(
         &e,
         &["search_documents", "open_document"],
@@ -1231,6 +1257,12 @@ async fn consolidation_never_proposes_shodhs_own_lookups_and_withdraws_waiting_o
         &e,
         &["list_sources", "search_documents", "open_document"],
         &[("c3", "q4"), ("c3", "q5"), ("c4", "q6")],
+    );
+    // Code mode's reading tools are lookups too.
+    record_runs(
+        &e,
+        &["read", "grep"],
+        &[("c5", "q7"), ("c5", "q8"), ("c6", "q9")],
     );
     // Lookups that recur are found, and are lookups only.
     e.model.answer(
@@ -1247,14 +1279,65 @@ async fn consolidation_never_proposes_shodhs_own_lookups_and_withdraws_waiting_o
         assert_eq!(now.status, ProposalStatus::Stale, "{now:?}");
         assert!(now.error.as_deref().unwrap_or_default().contains("lookups"));
     }
+    for proposal in &kept {
+        let now = e.learner.inbox().get(&proposal.id).unwrap();
+        assert_eq!(now.status, ProposalStatus::Pending, "{now:?}");
+    }
     assert_eq!(
-        e.learner.inbox().get(&kept.id).unwrap().status,
-        ProposalStatus::Pending
+        procedure_texts(&e, ProposalStatus::Pending).len(),
+        kept.len()
     );
-    assert_eq!(
-        procedure_texts(&e, ProposalStatus::Pending),
-        vec!["Remember: Procedure: name Export the answer; steps 1. search_documents 2. export_document".to_string()]
+}
+
+/// Two sequences that share their lookups are two procedures: a waiting
+/// `search_documents -> remember` does not stand for `search_documents -> edit`, which
+/// is proposed, with its whole sequence as its evidence.
+#[tokio::test]
+async fn a_procedure_is_known_by_its_whole_tool_sequence() {
+    let e = env().await;
+    file_procedure(
+        &e,
+        "Remember a preference",
+        "1. search_documents for it 2. remember the preference",
+        "search_documents -> remember",
     );
+    record_runs(
+        &e,
+        &["search_documents", "edit"],
+        &[("c1", "q1"), ("c1", "q2"), ("c2", "q3")],
+    );
+    e.model.answer(
+        json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
+        "properties": {"name": "Change the file the passage names",
+                       "procedureSteps": "1. search_documents for the passage 2. edit the file it names"},
+        "confidence": 0.8, "evidence": "search_documents -> edit"}]}),
+    );
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 1, "{report:?}");
+    let waiting = e.learner.list(&[ProposalStatus::Pending], 10).unwrap();
+    let evidence: Vec<String> = waiting
+        .iter()
+        .filter_map(|p| match &p.action {
+            ProposalAction::Remember { evidence, .. } => Some(evidence.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(evidence.len(), 2, "{waiting:?}");
+    assert!(
+        evidence.contains(&"search_documents -> edit".to_string()),
+        "{evidence:?}"
+    );
+
+    // Filed with its sequence, it is known by it from now on.
+    e.model.answer(
+        json!({"memories": [{"turn": "P1", "class": "Procedure", "subject": null,
+        "properties": {"name": "Edit what was found",
+                       "procedureSteps": "1. search_documents 2. edit"},
+        "confidence": 0.8, "evidence": "search_documents -> edit"}]}),
+    );
+    let report = e.learner.consolidate(true).await.unwrap();
+    assert_eq!(e.model.calls(), 1, "not asked again: {report:?}");
+    assert_eq!(procedure_texts(&e, ProposalStatus::Pending).len(), 2);
 }
 
 /// The same steps under another name are the same procedure: one waiting (or rejected)
@@ -1266,6 +1349,7 @@ async fn a_procedure_with_the_steps_of_one_already_filed_is_not_proposed_again()
         &e,
         "Export the answer",
         "1. search_documents 2. export_document",
+        "search_documents -> export_document",
     );
     record_runs(
         &e,

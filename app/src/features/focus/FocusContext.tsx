@@ -43,6 +43,9 @@ import { recordAnswerVisuals } from '../visuals/recording';
 import { SelectionAsk } from './SelectionAsk';
 import { currentValues } from './liveValues';
 import { onApprovalAnswered } from '../inbox/approvalBus';
+import { modelApi } from '../modelPicker/modelApi';
+import type { ModelOverride, ModelRef } from '../modelPicker/modelTypes';
+import { sideFallback } from './sideFallback';
 
 // The pop-out (stage renderers, side threads) loads when focus first opens.
 const FocusOverlay = lazy(() => import('./FocusOverlay').then(m => ({ default: m.FocusOverlay })));
@@ -176,6 +179,16 @@ interface SideLive {
   onRefine: { kind: VisualRecord['kind']; previous: string; resolve: (result: RefineOutcome) => void } | null;
   /** Receives the reply of a diagram correction run. */
   onRepair: ((outcome: DiagramRepairOutcome) => void) | null;
+  /**
+   * Starts the run's session and sends its request; called again with a fallback model
+   * when the run failed at the provider before any of it was shown (see ./sideFallback).
+   */
+  launch: ((override: ModelOverride | null) => Promise<void>) | null;
+  /** Fallbacks made so far, and the models that failed. */
+  fallbacks: number;
+  tried: ModelRef[];
+  /** A fallback model is being looked up: Stop ends the run instead. */
+  fallingBack: boolean;
 }
 
 export interface SideLiveView {
@@ -509,6 +522,54 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     releaseSideRun(live.threadId);
   }, [mutateThread, releaseSideRun, setRuntimeInstalled]);
 
+  /**
+   * A run is over: one that failed at the provider before any of it was shown runs again
+   * with the model the fallback offers (nobody is asked); anything else settles.
+   */
+  const finish = useCallback((live: SideLive) => {
+    const launch = live.launch;
+    const fallback = launch ? sideFallback(live.transcript, live.fallbacks) : null;
+    if (!launch || !fallback) {
+      settle(live);
+      return;
+    }
+    live.fallbacks += 1;
+    live.tried.push(fallback.failed);
+    live.fallingBack = true;
+    const from = live.transcript.model ?? '';
+    const passages = live.transcript.passages;
+    modelApi
+      .fallbackOffer(fallback.failed, { failure: fallback.kind, detail: fallback.detail, tried: live.tried })
+      .then(offer => {
+        if (live.settled || liveRef.current !== live) return;
+        live.fallingBack = false;
+        if (!offer) {
+          settle(live);
+          return;
+        }
+        const runId = newId('run');
+        live.runId = runId;
+        live.sessionId = null;
+        live.queue = [];
+        live.transcript = {
+          ...initialTranscript(runId, Date.now(), {
+            from,
+            kind: fallback.kind,
+            automatic: true,
+            fromName: offer.failedName,
+            toName: offer.name,
+          }),
+          passages,
+        };
+        setSideLive({ threadId: live.threadId, purpose: live.purpose, transcript: live.transcript });
+        void launch({ model: offer.model, automatic: true, failure: fallback.kind });
+      })
+      .catch(error => {
+        console.error('Fallback model lookup failed:', error);
+        if (!live.settled) settle(live);
+      });
+  }, [settle]);
+
   const flush = useCallback((live: SideLive) => {
     if (live.frame !== null) {
       cancelAnimationFrame(live.frame);
@@ -524,8 +585,8 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       setSideLive({ threadId: live.threadId, purpose: live.purpose, transcript: next });
       return;
     }
-    settle(live);
-  }, [settle]);
+    finish(live);
+  }, [finish]);
 
   const enqueue = useCallback((live: SideLive, action: TranscriptAction, immediate = false) => {
     if (live.settled) return;
@@ -591,6 +652,10 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       onSummary,
       onRefine,
       onRepair,
+      launch: null,
+      fallbacks: 0,
+      tried: [],
+      fallingBack: false,
     };
     liveRef.current = live;
     setSideLive({ threadId, purpose, transcript: live.transcript });
@@ -668,23 +733,27 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
     const ancestors = ancestorsFor(list, level.parentThreadId, level.parentTurnId);
     const scopeTargets = levelTargets(level, list);
     const instructions = conversationsRef.current.find(c => c.id === conversationId)?.systemPrompt?.trim() || null;
-    try {
-      const sessionId = await api.start(sideSessionKey(conversationId, threadId), instructions, conversationId);
-      if (live.settled) return true;
-      live.sessionId = sessionId;
-      setRuntimeInstalled(true);
-      const message = composeSideQuestion(level.target, text, extras, { ancestors, notes, followups: true });
-      const scope = answerScope(scopeForLevels(scopeTargets, extras), workspaceOf(conversationId), false);
-      const withPassages = carried.length > 0
-        ? { ...(scope ?? { sourceIds: [], sourceFiles: [] }), passages: toWire(carried) }
-        : scope;
-      // The question is the user's own words (learning and "Remember that ..." use them);
-      // the context composed around it is not.
-      await api.send(sessionId, message, live.runId, history, { scope: withPassages, textOrigin: 'composed', typedText: text });
-    } catch (error) {
-      const failure = toAgentError(error);
-      enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
-    }
+    const message = composeSideQuestion(level.target, text, extras, { ancestors, notes, followups: true });
+    const scope = answerScope(scopeForLevels(scopeTargets, extras), workspaceOf(conversationId), false);
+    const withPassages = carried.length > 0
+      ? { ...(scope ?? { sourceIds: [], sourceFiles: [] }), passages: toWire(carried) }
+      : scope;
+    const launch = async (override: ModelOverride | null) => {
+      try {
+        const sessionId = await api.start(sideSessionKey(conversationId, threadId), instructions, conversationId, override);
+        if (live.settled) return;
+        live.sessionId = sessionId;
+        setRuntimeInstalled(true);
+        // The question is the user's own words (learning and "Remember that ..." use them);
+        // the context composed around it is not.
+        await api.send(sessionId, message, live.runId, history, { scope: withPassages, textOrigin: 'composed', typedText: text });
+      } catch (error) {
+        const failure = toAgentError(error);
+        enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
+      }
+    };
+    live.launch = launch;
+    await launch(null);
     return true;
   }, [api, beginRun, enqueue, levelTargets, locationThreads, mainTurns, mutateThread, setRuntimeInstalled]);
 
@@ -711,9 +780,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       const instructions = conversationsRef.current.find(c => c.id === level.conversationId)?.systemPrompt?.trim() || null;
       // A session of its own: the request never enters the thread's agent memory.
       const key = sideSessionKey(level.conversationId, `${level.threadId}-summary`);
-      void (async () => {
+      const launch = async (override: ModelOverride | null) => {
         try {
-          const sessionId = await api.start(key, instructions, level.conversationId);
+          const sessionId = await api.start(key, instructions, level.conversationId, override);
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
@@ -722,7 +791,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
         }
-      })();
+      };
+      live.launch = launch;
+      void launch(null);
     });
   }, [api, beginRun, enqueue, findThread, setRuntimeInstalled]);
 
@@ -756,16 +827,20 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         const instructions = conversationsRef.current.find(c => c.id === level.conversationId)?.systemPrompt?.trim() || null;
         // A session of its own: the request never enters the discussion's agent memory.
         const key = sideSessionKey(level.conversationId, `${level.threadId}-refine`);
-        try {
-          const sessionId = await api.start(key, instructions, level.conversationId);
-          if (live.settled) return;
-          live.sessionId = sessionId;
-          setRuntimeInstalled(true);
-          await api.send(sessionId, request, live.runId, [], { scope: answerScope(null, workspaceOf(level.conversationId), false) });
-        } catch (error) {
-          const failure = toAgentError(error);
-          enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
-        }
+        const launch = async (override: ModelOverride | null) => {
+          try {
+            const sessionId = await api.start(key, instructions, level.conversationId, override);
+            if (live.settled) return;
+            live.sessionId = sessionId;
+            setRuntimeInstalled(true);
+            await api.send(sessionId, request, live.runId, [], { scope: answerScope(null, workspaceOf(level.conversationId), false) });
+          } catch (error) {
+            const failure = toAgentError(error);
+            enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
+          }
+        };
+        live.launch = launch;
+        await launch(null);
       })();
     });
   }, [api, beginRun, enqueue, setRuntimeInstalled]);
@@ -798,6 +873,12 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
   const stop = useCallback(() => {
     const live = liveRef.current;
     if (!live || live.settled) return;
+    if (live.fallingBack) {
+      // The failed run is over; no other model is started.
+      live.fallingBack = false;
+      settle(live);
+      return;
+    }
     if (live.sessionId === null) {
       enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
       return;
@@ -812,7 +893,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       console.error('Side answer interrupt failed:', toAgentError(error).message);
       enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
     });
-  }, [api, enqueue]);
+  }, [api, enqueue, settle]);
 
   /** The conversation and message a diagram's answer belongs to, or null when it is not shown any more. */
   const placeOf = useCallback((place: DiagramPlace): { conversationId: string; parentMessageId: string | null } | null => {
@@ -890,9 +971,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         timer = null;
         if (liveRef.current === live && !live.settled) stop();
       }, REPAIR_TIMEOUT_MS);
-      void (async () => {
+      const launch = async (override: ModelOverride | null) => {
         try {
-          const sessionId = await api.start(key, null, conversationId);
+          const sessionId = await api.start(key, null, conversationId, override);
           if (live.settled) {
             closeRepairSession();
             return;
@@ -904,7 +985,9 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
           const failure = toAgentError(error);
           enqueue(live, { type: 'local_failed', error: failure.message, code: failure.code, atMs: Date.now() }, true);
         }
-      })();
+      };
+      live.launch = launch;
+      void launch(null);
     });
   }, [api, beginRun, enqueue, placeOf, setRuntimeInstalled, stop]);
 

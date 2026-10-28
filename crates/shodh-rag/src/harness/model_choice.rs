@@ -33,6 +33,10 @@ pub struct ModelPrefs {
     /// Retry with the fallback model without asking. Off: every fallback
     /// is one click on the error card.
     pub always_fall_back: bool,
+    /// A free model may fall back to a model billed per token (a paid OpenRouter model,
+    /// an API key). Off by default: free stays free, and a used-up free quota is said
+    /// as such instead of spending money.
+    pub allow_paid_backups: bool,
     /// Stealth model ids the user confirmed in the picker (their provider may
     /// log prompts for training).
     pub stealth_accepted: Vec<String>,

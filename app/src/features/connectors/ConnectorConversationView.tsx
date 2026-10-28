@@ -104,6 +104,9 @@ export function ConnectorConversationView({
                       {message.content}
                     </ReactMarkdown>
                   </div>
+                  {author.answeredBy && (
+                    <p className="m-0 text-[12px] text-shodh-text-muted">{`${author.answeredBy}.`}</p>
+                  )}
                 </li>
               );
             }

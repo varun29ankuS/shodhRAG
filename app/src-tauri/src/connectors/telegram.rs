@@ -43,6 +43,7 @@ use shodh_rag::connectors::telegram::respond::{
 use shodh_rag::connectors::telegram::token::TelegramBotToken;
 use shodh_rag::connectors::telegram::updates::{BotSelf, Chat, Person};
 use shodh_rag::connectors::telegram::CancellationToken;
+use shodh_rag::harness::model_fallback::AnsweredBy;
 use shodh_rag::research::results::TextModel;
 use shodh_rag::research::tables::calls::{next_utc_midnight, utc_day, SystemClock};
 use shodh_rag::user_memory::learn::MemoryRequest;
@@ -1156,6 +1157,20 @@ impl TelegramBrain for AppBrain {
         answer: &str,
         learn: bool,
     ) {
+        self.keep_answer(chat, audience, asked, answer, learn, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn keep_answer(
+        &self,
+        chat: &ChatRef,
+        audience: Audience,
+        asked: &Asked,
+        answer: &str,
+        learn: bool,
+        answered_by: Option<AnsweredBy>,
+    ) {
         let link = self.bot().await.ok().map(|b| chat_link(&b.username));
         conversations::keep(
             &self.app,
@@ -1181,6 +1196,7 @@ impl TelegramBrain for AppBrain {
                 learn,
                 // A group's answer is built on others' words: never learning context.
                 answer_as_context: audience != Audience::Group,
+                answered_by: answered_by.and_then(|by| by.note()),
             },
         )
         .await;
@@ -1188,7 +1204,12 @@ impl TelegramBrain for AppBrain {
 
     fn model(&self) -> Result<Arc<dyn TextModel>, String> {
         let llm = self.app.state::<LLMState>();
-        crate::memory_learn::configured_model(&self.data_dir, &llm)
+        crate::memory_learn::answering_model(
+            &self.app,
+            &self.data_dir,
+            &llm,
+            crate::model_fallback::Purpose::Telegram,
+        )
     }
 
     fn private_terms(&self) -> PrivateTerms {

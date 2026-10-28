@@ -22,15 +22,26 @@ const BUTTON = cn(
   FOCUS_RING,
 );
 
+/** The names the line under a fallback answer reads. */
+function fallbackNames(offer: FallbackOffer): FallbackNames {
+  return { fromName: offer.failedName, toName: offer.name };
+}
+
 /** Automatic retries per question, for this app session (bounds the auto-retry loop). */
 const autoRetries = new AutoRetryLedger();
 
 /** What the newest answer's card may do; absent on older answers, the dock and side answers. */
+/** Display names for the line under a fallback answer. */
+export interface FallbackNames {
+  fromName: string;
+  toName: string;
+}
+
 export interface ProviderErrorActions {
   /** Identifies the question across retries (bounds automatic retries). */
   questionKey: string;
   /** Retry the question; `override` runs it with a fallback model. */
-  onRetry: (override: ModelOverride | null, from: string | null) => void;
+  onRetry: (override: ModelOverride | null, from: string | null, names?: FallbackNames | null) => void;
 }
 
 interface ProviderErrorCardProps {
@@ -41,6 +52,10 @@ interface ProviderErrorCardProps {
   message: string | null;
   /** This answer was itself a fallback (fallbacks never chain automatically). */
   fellBack: boolean;
+  /** The model the first try ran with, when this answer was a fallback (`provider/model`). */
+  fellBackFrom?: string | null;
+  /** Part of the answer reached the user before it failed: nothing switches by itself. */
+  streamed?: boolean;
   actions: ProviderErrorActions | null;
   onOpenSettings: () => void;
   compact?: boolean;
@@ -53,7 +68,7 @@ interface ProviderErrorCardProps {
  * only with "always fall back" on, and announced), Change model, or update
  * a rejected key.
  */
-export function ProviderErrorCard({ error, runModel, message, fellBack, actions, onOpenSettings, compact = false }: ProviderErrorCardProps) {
+export function ProviderErrorCard({ error, runModel, message, fellBack, fellBackFrom = null, streamed = false, actions, onOpenSettings, compact = false }: ProviderErrorCardProps) {
   const failed = useMemo(() => modelRefFromRun(runModel), [runModel]);
   const modelLabel = failed?.model ?? runModel ?? 'The model';
   const copy = providerErrorCopy(error, modelLabel, failed?.provider ?? null, message);
@@ -65,8 +80,10 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, actions,
   useEffect(() => {
     if (!actions || !failed || !fallbackHelps(error)) return;
     let alive = true;
+    // The model the first try ran with is never offered back.
+    const first = modelRefFromRun(fellBackFrom);
     modelApi
-      .fallbackOffer(failed)
+      .fallbackOffer(failed, { failure: error.kind, detail: message, tried: first ? [first] : [] })
       .then(next => {
         if (alive) setOffer(next);
       })
@@ -74,9 +91,9 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, actions,
     return () => {
       alive = false;
     };
-  }, [actions, failed, error]);
+  }, [actions, failed, error, message, fellBackFrom]);
 
-  const decision = fallbackDecision(error, offer, fellBack);
+  const decision = fallbackDecision(error, offer, fellBack, streamed);
   const override = (automatic: boolean): ModelOverride | null =>
     offer ? { model: offer.model, automatic, failure: error.kind } : null;
 
@@ -85,7 +102,7 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, actions,
     if (!actions || !offer || decision !== 'automatic' || firedRef.current) return;
     firedRef.current = true;
     setCountdown(null);
-    actions.onRetry({ model: offer.model, automatic: true, failure: error.kind }, runModel);
+    actions.onRetry({ model: offer.model, automatic: true, failure: error.kind }, runModel, fallbackNames(offer));
   }, [actions, offer, decision, error.kind, runModel]);
 
   // Rate limits: count down the provider's wait, then retry the same model once.
@@ -119,10 +136,10 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, actions,
   };
   const useFallback = () => {
     const next = override(false);
-    if (!actions || !next || firedRef.current) return;
+    if (!actions || !next || !offer || firedRef.current) return;
     firedRef.current = true;
     setCountdown(null);
-    actions.onRetry(next, runModel);
+    actions.onRetry(next, runModel, fallbackNames(offer));
   };
 
   return (

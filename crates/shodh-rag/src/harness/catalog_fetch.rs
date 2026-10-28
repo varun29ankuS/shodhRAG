@@ -51,7 +51,7 @@ fn client(timeout: Duration) -> Result<reqwest::Client, FetchError> {
 }
 
 /// GET `url` and read at most [`MAX_LIST_BYTES`] of its body.
-async fn get_bounded(url: &str, timeout: Duration) -> Result<String, FetchError> {
+pub(crate) async fn get_bounded(url: &str, timeout: Duration) -> Result<String, FetchError> {
     let response = client(timeout)?
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")

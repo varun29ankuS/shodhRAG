@@ -22,7 +22,7 @@ import {
 } from '../src/features/connectors/conversations.ts';
 import { attachmentLabel, composeQuestion, readAttachedContext } from '../src/features/ask/imageAttachments.ts';
 
-function msg(role: string, content: string, author?: { author: string; owner: boolean }) {
+function msg(role: string, content: string, author?: { author: string; owner?: boolean; answeredBy?: string | null }) {
   return {
     role,
     content,
@@ -66,6 +66,12 @@ test('authors come from what the connector stored, never trusted blindly', () =>
   assert.deepEqual(messageAuthor(msg('user', 'x', { author: 'Alex', owner: false })), { name: 'Alex', owner: false, shodh: false });
   assert.equal(messageAuthor(msg('user', 'x', { author: 'Me', owner: true })).name, 'You');
   assert.equal(messageAuthor(msg('assistant', 'x')).shodh, true);
+  assert.equal(
+    messageAuthor(msg('assistant', 'x', { author: 'Shodh', answeredBy: 'Answered by Gemma 4 31B — Nemotron Super is unavailable' })).answeredBy,
+    'Answered by Gemma 4 31B — Nemotron Super is unavailable',
+    'the app shows which backup model answered',
+  );
+  assert.equal(messageAuthor(msg('assistant', 'x', { author: 'Shodh', answeredBy: null })).answeredBy, undefined);
   assert.equal(messageAuthor({ role: 'user', content: 'x' }).name, 'Someone');
   const link = messageAuthor({ role: 'user', content: 'x', metadata: { connector: { author: 'A', link: 'javascript:alert(1)' } } });
   assert.equal(link.link, undefined, 'only https links');

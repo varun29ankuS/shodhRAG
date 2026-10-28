@@ -29,6 +29,15 @@ const CHOOSE_ANOTHER = 'choose another model in Settings → Model';
 /** OpenRouter's privacy settings leave no provider for the model (common for :free models). */
 const OPENROUTER_PRIVACY = /no endpoints available matching your guardrail restrictions and data policy/i;
 
+/** OpenRouter's daily limit of free-model requests (per account, across all free models). */
+const OPENROUTER_FREE_DAILY = /free-models-per-day/i;
+
+/** The reset time as the clock on this computer shows it (24-hour). */
+export function resetClock(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 /** Shown as text; never opened without an explicit click. */
 export const OPENROUTER_PRIVACY_SETTINGS = 'openrouter.ai/settings/privacy';
 
@@ -47,6 +56,14 @@ export function providerErrorCopy(error: ProviderError, model: string, provider:
         hint: 'Too many requests for now. Retry in a moment, or answer this one with another model.',
       };
     case 'quota_exhausted':
+      if (message && OPENROUTER_FREE_DAILY.test(message)) {
+        return {
+          title: error.resetsAtMs
+            ? `Today's free OpenRouter quota is used up — it resets at ${resetClock(error.resetsAtMs)}`
+            : `Today's free OpenRouter quota is used up`,
+          hint: 'Another free model shares the same quota. Use a model from another provider for this answer, or connect one in Settings → Model.',
+        };
+      }
       return {
         title: `${model}: the ${who} credits or daily limit are used up`,
         hint: 'Waiting will not help today. Use another model, or add credits with the provider.',
@@ -146,11 +163,13 @@ export type FallbackDecision =
 
 /**
  * What to do with a fallback offer. `fellBack`: this answer already came
- * from a fallback (never chain fallbacks automatically).
+ * from a fallback (never chain fallbacks automatically). `streamed`: part of
+ * the answer had already reached the user, so nothing switches by itself;
+ * the other model is offered as a click.
  */
-export function fallbackDecision(error: ProviderError, offer: FallbackOffer | null, fellBack: boolean): FallbackDecision {
+export function fallbackDecision(error: ProviderError, offer: FallbackOffer | null, fellBack: boolean, streamed = false): FallbackDecision {
   if (!offer || !fallbackHelps(error)) return 'none';
-  return offer.automatic && !fellBack ? 'automatic' : 'offer';
+  return offer.automatic && !fellBack && !streamed ? 'automatic' : 'offer';
 }
 
 /** Counts automatic retries per question for this app session. */

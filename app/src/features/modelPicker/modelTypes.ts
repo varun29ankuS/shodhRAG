@@ -71,6 +71,8 @@ export interface CatalogModel {
   tier: ModelTier;
   privacy: PrivacyNote;
   stealth: boolean;
+  /** Accepts images as input; null or absent when unknown. */
+  imageInput?: boolean | null;
 }
 
 export type ModelSource = 'session' | 'environment' | 'settings';
@@ -93,6 +95,8 @@ export interface ModelPrefs {
   chosen: ModelRef | null;
   fallback: ModelRef | null;
   alwaysFallBack: boolean;
+  /** A free model may fall back to one billed per token (off by default). */
+  allowPaidBackups: boolean;
   stealthAccepted: string[];
   recent: ModelRef[];
   favourites: ModelRef[];
@@ -106,6 +110,7 @@ export const EMPTY_MODEL_PREFS: ModelPrefs = {
   chosen: null,
   fallback: null,
   alwaysFallBack: false,
+  allowPaidBackups: false,
   stealthAccepted: [],
   recent: [],
   favourites: [],
@@ -189,13 +194,26 @@ export interface ProviderError {
   retryAfterSecs: number | null;
   /** The provider behind a router that failed (OpenRouter's upstream), when named. */
   upstream?: string | null;
+  /** When a rate limit or a used-up quota resets (Unix ms), when the provider said. */
+  resetsAtMs?: number | null;
 }
 
 export interface FallbackOffer {
   model: ModelRef;
   name: string;
-  /** "Always fall back" is on: retry without asking. */
+  /** The failed model's display name. */
+  failedName: string;
+  /** Retry without asking: "always fall back" is on, or the model came from a pick. */
   automatic: boolean;
+}
+
+/** What the fallback should know about a failure (`model_fallback_offer`). */
+export interface FallbackQuery {
+  failure: ProviderErrorKind | null;
+  /** The provider's message (an account's rate limit reads differently from one model's). */
+  detail: string | null;
+  /** Models this answer already ran with (never offered again). */
+  tried: ModelRef[];
 }
 
 /** One answer run with another model (sent with `agent_start`). */
@@ -255,6 +273,7 @@ export function readModelPrefs(value: unknown): ModelPrefs {
     chosen: readModelRef(value.chosen),
     fallback: readModelRef(value.fallback),
     alwaysFallBack: value.alwaysFallBack === true,
+    allowPaidBackups: value.allowPaidBackups === true,
     stealthAccepted: Array.isArray(value.stealthAccepted) ? value.stealthAccepted.filter((s): s is string => typeof s === 'string') : [],
     recent: refs(value.recent),
     favourites: refs(value.favourites),
@@ -291,6 +310,7 @@ export function readProviderError(value: unknown): ProviderError | null {
     status: whole(value.status),
     retryAfterSecs: whole(value.retryAfterSecs),
     ...(upstream && upstream.length <= MAX_UPSTREAM_CHARS ? { upstream } : {}),
+    ...(whole(value.resetsAtMs) !== null ? { resetsAtMs: whole(value.resetsAtMs) } : {}),
   };
 }
 

@@ -10,7 +10,8 @@ import type { AgentEventEnvelope } from './events';
 import type { FailureCode } from './reducer';
 import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
 import type { SessionCounts } from './sessionCounts';
-import type { ModelOverride } from '../modelPicker/modelTypes';
+import type { ModelOverride, ProviderError } from '../modelPicker/modelTypes';
+import { readProviderError } from '../modelPicker/modelTypes';
 import type { ConversationMode } from '../../hooks/useConversations';
 import type { CarriedPassageWire } from '../focus/carriedPassages';
 import type { AttachedContext } from '../ask/imageAttachments';
@@ -22,12 +23,15 @@ export const RUNTIME_PROGRESS_EVENT = 'agent_runtime_progress';
 export interface AgentError {
   code: FailureCode;
   message: string;
+  /** For `model_cooling`: the model (as runs name it) and how it failed moments ago. */
+  cooling?: { model: string; providerError: ProviderError };
 }
 
 const CODES: readonly FailureCode[] = [
   'runtime_missing',
   'runtime_invalid',
   'model_config',
+  'model_cooling',
   'busy',
   'invalid_request',
   'session_closed',
@@ -42,7 +46,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function toAgentError(error: unknown): AgentError {
   if (isRecord(error) && typeof error.message === 'string') {
     const code = CODES.includes(error.code as FailureCode) ? (error.code as FailureCode) : 'runtime_error';
-    return { code, message: error.message };
+    const cooling = isRecord(error.cooling) && typeof error.cooling.model === 'string' ? error.cooling : null;
+    const providerError = cooling ? readProviderError(cooling.providerError) : null;
+    return cooling && providerError
+      ? { code, message: error.message, cooling: { model: cooling.model as string, providerError } }
+      : { code, message: error.message };
   }
   if (error instanceof Error) return { code: 'runtime_error', message: error.message };
   if (typeof error === 'string') return { code: 'runtime_error', message: error };

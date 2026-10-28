@@ -37,6 +37,7 @@ import {
   fallbackDecision,
   fallbackHelps,
   providerErrorCopy,
+  resetClock,
 } from '../src/features/modelPicker/providerErrors.ts';
 
 function model(partial: Partial<CatalogModel> & Pick<CatalogModel, 'id'>): CatalogModel {
@@ -209,8 +210,13 @@ test('automatic retry: rate limits only, bounded wait, once per question', () =>
 });
 
 test('fallback: one click by default, automatic only when asked, never chained', () => {
-  const offer = { model: { provider: 'anthropic' as const, model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', automatic: false };
+  const offer = { model: { provider: 'anthropic' as const, model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', failedName: 'Nemotron Super', automatic: false };
   assert.equal(fallbackDecision(RATE, offer, false), 'offer');
+  assert.equal(
+    fallbackDecision(RATE, { ...offer, automatic: true }, false, true),
+    'offer',
+    'part of the answer reached the user: nothing switches by itself, the retry is offered',
+  );
   assert.equal(fallbackDecision(RATE, { ...offer, automatic: true }, false), 'automatic');
   assert.equal(fallbackDecision(RATE, { ...offer, automatic: true }, true), 'offer', 'a fallback answer does not fall back again by itself');
   assert.equal(fallbackDecision(RATE, null, false), 'none');
@@ -331,7 +337,24 @@ test('retry where trying again can help; no automatic retry for the new kinds', 
   }
   assert.equal(fallbackHelps(e('timeout')), true, 'a timeout keeps the fallback offer 504 had');
   assert.equal(fallbackHelps(e('network')), true, 'a broken connection keeps the fallback offer it had');
-  assert.equal(fallbackDecision(e('timeout'), { model: { provider: 'anthropic', model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', automatic: false }, false), 'offer');
+  assert.equal(fallbackDecision(e('timeout'), { model: { provider: 'anthropic', model: 'claude-haiku-4-5' }, name: 'Claude Haiku 4.5', failedName: 'Nemotron Super', automatic: false }, false), 'offer');
+});
+
+test("Ask says when today's free OpenRouter quota resets", () => {
+  const resetsAtMs = new Date(2026, 9, 28, 5, 30).getTime();
+  const daily = readProviderError({ kind: 'quota_exhausted', status: 429, retryAfterSecs: null, resetsAtMs });
+  assert.ok(daily);
+  assert.equal(daily.resetsAtMs, resetsAtMs);
+  const message = '429 {"error":{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day"}}';
+  const copy = providerErrorCopy(daily, 'Nemotron Super', 'openrouter', message);
+  assert.equal(copy.title, "Today's free OpenRouter quota is used up — it resets at 05:30");
+  assert.match(copy.hint, /another provider/);
+  assert.equal(resetClock(resetsAtMs), '05:30');
+  const noTime = providerErrorCopy({ ...daily, resetsAtMs: null }, 'Nemotron Super', 'openrouter', message);
+  assert.equal(noTime.title, "Today's free OpenRouter quota is used up");
+  const credits = providerErrorCopy(daily, 'Claude Opus', 'openrouter', '402 insufficient credits');
+  assert.match(credits.title, /credits or daily limit/, 'credits keep their own words');
+  assert.equal(readProviderError({ kind: 'auth', status: 401, retryAfterSecs: null, resetsAtMs: -5 })?.resetsAtMs, undefined);
 });
 
 test('the upstream provider is read only when it is a short name', () => {

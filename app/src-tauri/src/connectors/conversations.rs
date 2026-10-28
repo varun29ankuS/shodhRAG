@@ -103,6 +103,9 @@ pub struct Exchange {
     /// for a group or a channel: it is built on other people's words, which never reach
     /// the user's memories, not even through the answer.
     pub answer_as_context: bool,
+    /// When the model fell back to another for this answer: "Answered by Gemma 4 31B —
+    /// Nemotron Super is unavailable". Shown under the answer in the app only.
+    pub answered_by: Option<String>,
 }
 
 /// What a window is told.
@@ -237,6 +240,7 @@ pub fn add_exchange(
             "connector": {
                 "connector": exchange.connector.as_str(),
                 "author": "Shodh",
+                "answeredBy": exchange.answered_by,
             }
         })),
         run: None,
@@ -466,6 +470,7 @@ mod tests {
             answered_at: at(2),
             learn: true,
             answer_as_context: true,
+            answered_by: None,
         }
     }
 

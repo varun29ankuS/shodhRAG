@@ -92,6 +92,9 @@ pub enum SwitchReason {
     Failed { kind: ProviderErrorKind },
     /// It failed recently and was skipped (this was its last failure).
     Skipped { last: Option<ProviderErrorKind> },
+    /// This call cannot use it (a subscription outside the agent, a cloud model in
+    /// Local-only mode, a provider no longer connected).
+    Unreachable,
 }
 
 impl SwitchReason {
@@ -100,6 +103,7 @@ impl SwitchReason {
         match self {
             SwitchReason::Failed { kind } => Some(kind),
             SwitchReason::Skipped { last } => last,
+            SwitchReason::Unreachable => None,
         }
     }
 }
@@ -153,6 +157,7 @@ impl AnsweredBy {
 pub fn reason_words(reason: SwitchReason) -> &'static str {
     match reason {
         SwitchReason::Skipped { .. } => "has been failing, so it was skipped",
+        SwitchReason::Unreachable => "cannot answer here",
         SwitchReason::Failed { kind } => match kind {
             ProviderErrorKind::RateLimited => "is rate-limited",
             ProviderErrorKind::QuotaExhausted => "has used up its quota",
@@ -204,6 +209,17 @@ pub struct Answered<T> {
 }
 
 fn skipped_failure(candidate: &Candidate) -> ProviderFailure {
+    if !candidate.reachable {
+        return ProviderFailure {
+            kind: ProviderErrorKind::ModelUnavailable,
+            provider: candidate.model.provider.label().to_string(),
+            upstream: None,
+            model: candidate.model.model.clone(),
+            status: None,
+            detail: "This model is temporarily unavailable here: it answers only in Ask, or                      is not connected, and no other model is set up to answer instead."
+                .to_string(),
+        };
+    }
     let kind = candidate
         .health
         .last_failure()
@@ -321,6 +337,14 @@ where
             if clock.now_ms().saturating_sub(started) >= cap_ms {
                 return Err(exhausted(last, StopReason::TimeCap, switches, tried));
             }
+        }
+        if !candidate.reachable {
+            switches.push(Switch {
+                from: candidate.model.clone(),
+                from_name: candidate.name.clone(),
+                reason: SwitchReason::Unreachable,
+            });
+            continue;
         }
         let Some(admission) = health.admit(&candidate.model, clock.now_ms()) else {
             switches.push(Switch {

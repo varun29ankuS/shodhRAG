@@ -30,7 +30,7 @@ use crate::llm::ProviderFailure;
 pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(20);
 
 /// Which candidates may follow a failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Eligible {
     /// Any candidate.
     Any,
@@ -63,7 +63,7 @@ impl Eligible {
 }
 
 /// What to do after a failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
     /// Try the next candidate that is [`Eligible`]. `retry_after` is the provider's
     /// wait, for when no candidate is eligible (rate limits only).

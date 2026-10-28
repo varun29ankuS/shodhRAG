@@ -107,6 +107,10 @@ pub struct Candidate {
     pub health: Health,
     /// OpenRouter's live availability, when fetched.
     pub availability: Option<Availability>,
+    /// The call can reach it (connected, allowed, usable by this kind of caller). Only
+    /// the requested model can be unreachable: such a fallback is never planned. An
+    /// unreachable requested model is passed over without a call.
+    pub reachable: bool,
 }
 
 /// What [`resolve`] decides from.
@@ -215,6 +219,7 @@ impl ResolveInputs<'_> {
             availability: (model.provider == ProviderId::OpenRouter)
                 .then(|| availability.get(&model.model, now_ms))
                 .flatten(),
+            reachable: self.reachable(model),
         }
     }
 

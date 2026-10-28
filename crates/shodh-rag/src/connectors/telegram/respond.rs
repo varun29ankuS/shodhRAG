@@ -59,13 +59,37 @@ use crate::connectors::slack::answer::{
     answer_prompt_in, search_query, AnswerPassage, AnswerScope, ThreadTurn, MAX_ANSWER_TOKENS,
 };
 use crate::connectors::slack::respond::{
-    at_cap_message, model_failure_message, AnswerQuota, RetryPolicy,
+    at_cap_message, is_daily_free_quota_text, model_failure_message, reset_time, AnswerQuota,
+    RetryPolicy,
 };
 use crate::connectors::slack::sanitize::{sanitize, PrivateTerms};
+use crate::harness::model_fallback::AnsweredBy;
 use crate::harness::provider_error::{classify, ProviderErrorKind};
 use crate::research::results::TextModel;
 use crate::research::tables::calls::{next_utc_midnight, utc_day, Clock};
 use crate::user_memory::learn::{memory_request, MemoryRequest};
+
+/// What a failed model call becomes in Telegram: the daily free model quota says when it
+/// resets, in the computer's time (`offset_of`), and what helps; anything else is the
+/// short reason Slack also gives.
+pub fn model_failure_text(
+    kind: ProviderErrorKind,
+    error: &str,
+    now: DateTime<Utc>,
+    offset_of: fn(DateTime<Utc>) -> FixedOffset,
+) -> String {
+    let now_ms = u64::try_from(now.timestamp_millis()).unwrap_or(0);
+    if kind == ProviderErrorKind::QuotaExhausted && is_daily_free_quota_text(error) {
+        return match reset_time(error, now_ms) {
+            Some(reset) => format!(
+                "Today's free OpenRouter quota is used up, so I can't answer until it resets at {}. Connecting another model provider in Shodh (Settings → Model) lets me answer before then.",
+                reset.with_timezone(&offset_of(reset)).format("%H:%M")
+            ),
+            None => "Today's free OpenRouter quota is used up, so I can't answer until it resets. Connecting another model provider in Shodh (Settings → Model) lets me answer before then.".to_string(),
+        };
+    }
+    model_failure_message(kind).to_string()
+}
 
 pub const NOT_LINKED: &str = "This is a private Shodh assistant. If its owner invited you, open the invite link they sent you.";
 pub const GROUP_NOT_ALLOWED: &str =
@@ -195,6 +219,20 @@ pub trait TelegramBrain: Send + Sync {
         answer: &str,
         learn: bool,
     );
+    /// [`Self::keep`], with the model that wrote the answer when the model fell back to
+    /// another (the app's record says so; the chat is not told).
+    #[allow(clippy::too_many_arguments)]
+    async fn keep_answer(
+        &self,
+        chat: &ChatRef,
+        audience: Audience,
+        asked: &Asked,
+        answer: &str,
+        learn: bool,
+        _answered_by: Option<AnsweredBy>,
+    ) {
+        self.keep(chat, audience, asked, answer, learn).await
+    }
     /// The model the user chose (no tools).
     fn model(&self) -> Result<Arc<dyn TextModel>, String>;
     /// What never leaves this computer (home folder, the user's names).
@@ -923,13 +961,8 @@ impl Responder {
                 let now_ms = u64::try_from(self.clock.now().timestamp_millis()).unwrap_or(0);
                 let kind = classify(&e, None, now_ms).kind;
                 tracing::warn!(target: "shodh::telegram", kind = ?kind, error = %sanitize(&e, &private), "the model call for a Telegram answer failed");
-                return self
-                    .reply(
-                        message,
-                        model_failure_message(kind),
-                        Outcome::ModelFailed(kind),
-                    )
-                    .await;
+                let text = model_failure_text(kind, &e, self.clock.now(), self.offset_of);
+                return self.reply(message, &text, Outcome::ModelFailed(kind)).await;
             }
         };
         // The owner's own chat is their data on their phone: nothing is redacted there.
@@ -969,7 +1002,9 @@ impl Responder {
                 if self.cancelled() {
                     return Outcome::Cancelled;
                 }
-                self.brain.keep(chat, audience, asked, &kept, learn).await;
+                self.brain
+                    .keep_answer(chat, audience, asked, &kept, learn, model.answered_by())
+                    .await;
                 Outcome::Answered(audience)
             }
             Err(SendError::Cancelled) => Outcome::Cancelled,
@@ -1283,6 +1318,8 @@ pub(crate) mod tests {
         pub other_model: StdMutex<Option<Arc<dyn TextModel>>>,
         pub memberships: StdMutex<Vec<(i64, bool)>>,
         pub new_conversations: StdMutex<Vec<i64>>,
+        /// What `keep_answer` was told about the model that answered.
+        pub answered_by: StdMutex<Vec<Option<AnsweredBy>>>,
     }
 
     impl FakeBrain {
@@ -1314,6 +1351,7 @@ pub(crate) mod tests {
                 other_model: StdMutex::new(None),
                 memberships: StdMutex::new(Vec::new()),
                 new_conversations: StdMutex::new(Vec::new()),
+                answered_by: StdMutex::new(Vec::new()),
             }
         }
     }
@@ -1399,6 +1437,18 @@ pub(crate) mod tests {
                 learn,
                 audience,
             ));
+        }
+        async fn keep_answer(
+            &self,
+            chat: &ChatRef,
+            audience: Audience,
+            asked: &Asked,
+            answer: &str,
+            learn: bool,
+            answered_by: Option<AnsweredBy>,
+        ) {
+            self.answered_by.lock().unwrap().push(answered_by);
+            self.keep(chat, audience, asked, answer, learn).await
         }
         fn model(&self) -> Result<Arc<dyn TextModel>, String> {
             if let Some(model) = self.other_model.lock().unwrap().clone() {
@@ -2186,5 +2236,100 @@ pub(crate) mod tests {
         .await;
         assert!(crashed.is_err());
         assert_eq!(tasks.load(Ordering::SeqCst), 0, "the place is given back");
+    }
+
+    const NEMOTRON: &str = "nvidia/nemotron-3-super-120b-a12b:free";
+    const GEMMA: &str = "google/gemma-4-31b-it:free";
+
+    fn nemotron_then_gemma() -> crate::harness::model_fallback::Plan {
+        use crate::harness::model_fallback::testkit::candidate;
+        use crate::harness::model_fallback::{Origin, Plan};
+        Plan {
+            requested: candidate(NEMOTRON, "Nemotron Super", Origin::Requested),
+            fallbacks: vec![candidate(GEMMA, "Gemma 4 31B", Origin::Automatic)],
+        }
+    }
+
+    #[tokio::test]
+    async fn telegram_answers_through_the_fallback_and_the_app_record_names_the_model() {
+        use crate::harness::model_fallback::testkit::{
+            fallback_model, unavailable, ScriptedModels,
+        };
+        let s = setup(RecordingModel::answering("unused"), 5);
+        let models = ScriptedModels::new(vec![
+            (NEMOTRON, Err(unavailable(NEMOTRON))),
+            (GEMMA, Ok("Sixty days [1].")),
+        ]);
+        *s.brain.other_model.lock().unwrap() = Some(Arc::new(fallback_model(
+            nemotron_then_gemma(),
+            models.clone(),
+            0,
+        )));
+        let outcome = s
+            .responder
+            .respond(&update(message(
+                1,
+                OWNER,
+                OWNER,
+                "What is the notice period?",
+            )))
+            .await;
+        assert_eq!(outcome, Outcome::Answered(Audience::Owner));
+        assert_eq!(*models.calls.lock().unwrap(), [NEMOTRON, GEMMA]);
+        let texts = s.bot.texts();
+        assert!(texts[0].contains("Sixty days"), "{texts:?}");
+        assert!(
+            !texts[0].contains("Gemma"),
+            "no notice in the chat: {texts:?}"
+        );
+        let answered = s.brain.answered_by.lock().unwrap();
+        assert_eq!(
+            answered[0].as_ref().and_then(|by| by.note()).as_deref(),
+            Some("Answered by Gemma 4 31B — Nemotron Super is unavailable"),
+            "the app's record says which model answered"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daily_free_quota_says_when_it_resets_in_telegram() {
+        use crate::harness::model_fallback::testkit::{
+            daily_quota, fallback_model, ScriptedModels,
+        };
+        let s = setup(RecordingModel::answering("unused"), 5);
+        // Midnight UTC: 05:30 in India.
+        let reset = Utc.with_ymd_and_hms(2026, 10, 28, 0, 0, 0).unwrap();
+        let reset_ms = u64::try_from(reset.timestamp_millis()).unwrap();
+        let models = ScriptedModels::new(vec![
+            (NEMOTRON, Err(daily_quota(NEMOTRON, reset_ms))),
+            (GEMMA, Ok("must not answer")),
+        ]);
+        let now_ms = u64::try_from(now().timestamp_millis()).unwrap();
+        *s.brain.other_model.lock().unwrap() = Some(Arc::new(fallback_model(
+            nemotron_then_gemma(),
+            models.clone(),
+            now_ms,
+        )));
+        let responder = s.responder.with_offset_of(ist);
+        let outcome = responder
+            .respond(&update(message(
+                1,
+                OWNER,
+                OWNER,
+                "What is the notice period?",
+            )))
+            .await;
+        assert_eq!(
+            outcome,
+            Outcome::ModelFailed(ProviderErrorKind::QuotaExhausted)
+        );
+        assert_eq!(
+            *models.calls.lock().unwrap(),
+            [NEMOTRON],
+            "another free model shares the quota: not tried"
+        );
+        assert_eq!(
+            s.bot.texts(),
+            vec!["Today's free OpenRouter quota is used up, so I can't answer until it resets at 05:30. Connecting another model provider in Shodh (Settings → Model) lets me answer before then.".to_string()]
+        );
     }
 }

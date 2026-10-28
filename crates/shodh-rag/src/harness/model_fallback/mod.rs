@@ -22,6 +22,8 @@ pub mod run;
 pub mod text_model;
 
 #[cfg(test)]
+pub mod testkit;
+#[cfg(test)]
 mod tests;
 
 pub use availability::{

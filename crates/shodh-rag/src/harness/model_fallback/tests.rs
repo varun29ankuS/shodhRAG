@@ -1181,3 +1181,27 @@ fn a_rate_limit_decision_tells_upstream_from_account_limits() {
         other => panic!("{other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_subscription_cannot_answer_a_direct_call_so_the_next_model_does() {
+    let mut setup = Setup::new(ModelRef::new(ProviderId::ClaudeSub, "claude-opus-5-5"));
+    setup.connected = vec![ProviderId::ClaudeSub, ProviderId::Google];
+    let plan = setup.plan(&HealthBook::new(), &AvailabilityBook::new(), T0);
+    assert!(
+        !plan.requested.reachable,
+        "only the agent runtime holds a subscription"
+    );
+    assert_eq!(ids(&plan)[1..], ["gemini-3-flash-preview"]);
+    let rig = make_rig(
+        plan,
+        &[("gemini-3-flash-preview", &[Script::Answer("from gemini")])],
+    );
+    assert_eq!(rig.model.complete("q", 10).await.unwrap(), "from gemini");
+    assert_eq!(rig.provider.calls(), ["gemini-3-flash-preview"]);
+    let by = rig.model.answered_by().unwrap();
+    assert_eq!(by.switches[0].reason, SwitchReason::Unreachable);
+    assert_eq!(
+        by.note().unwrap(),
+        "Answered by Gemini 3 Flash — claude-opus-5-5 cannot answer here"
+    );
+}

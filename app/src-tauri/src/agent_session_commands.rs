@@ -1474,6 +1474,21 @@ async fn start_attempt(
     };
     let code_key = code_folder.as_ref().map(CodeFolder::display);
 
+    // A side run (summary, refinement, diagram fix) falls back by itself: nobody
+    // is asked. One whose configured model failed moments ago starts on a
+    // healthy candidate of the same resolver every model call uses.
+    let model_override = match (model_override, &parent_conversation_id) {
+        (None, Some(_)) => crate::model_fallback::side_run_override(
+            &app,
+            crate::model_picker_commands::configured_model(&llm).as_ref(),
+        )
+        .map(|(model, failure)| ModelOverride {
+            model,
+            automatic: true,
+            failure: failure.map(crate::model_fallback::kind_str),
+        }),
+        (model_override, _) => model_override,
+    };
     // A fallback for one answer runs with its own model; the next start
     // without one returns to the configured model.
     // The switch is audited once the session for that answer is ready.
@@ -1719,6 +1734,8 @@ async fn start_attempt(
 
     let forward_app = app.clone();
     let forward_id = session_id.clone();
+    // The model this session answers with, whose health each finished run updates.
+    let forward_model = crate::model_fallback::session_model(&mode);
     let forward_learn = learn.inner().clone();
     let forward_memory = app.state::<MemoryState>().inner().clone();
     let last_used_ms = Arc::new(AtomicU64::new(now_ms()));
@@ -1744,6 +1761,12 @@ async fn start_attempt(
             forward_memory.observe(&event);
             // A finished answer shows whether its provider's key works.
             crate::connection_health::observe_answer(&forward_app, answer_provider, &event);
+            // ... and whether its model is healthy (the fallback skips failing ones).
+            crate::model_fallback::observe_agent_event(
+                &forward_app,
+                forward_model.as_ref(),
+                &event,
+            );
             if let (Some(answer), Some(audit)) = (tap.observe(&event), &tool_audit) {
                 audit.log.submit(audit.scope.record(
                     &answer.run_id,

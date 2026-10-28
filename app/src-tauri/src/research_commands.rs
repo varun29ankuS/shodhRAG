@@ -626,8 +626,13 @@ pub async fn results_extract(
         let dir = crate::profile::app_data_dir(&app)
             .map_err(|e| ResearchCommandError::unavailable(e.to_string()))?;
         Some(
-            crate::memory_learn::configured_model(&dir, &llm)
-                .map_err(ResearchCommandError::unavailable)?,
+            crate::memory_learn::answering_model(
+                &app,
+                &dir,
+                &llm,
+                crate::model_fallback::Purpose::Extraction,
+            )
+            .map_err(ResearchCommandError::unavailable)?,
         )
     } else {
         None

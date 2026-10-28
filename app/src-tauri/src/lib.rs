@@ -22,6 +22,7 @@ mod mcp;
 mod mcp_commands;
 mod memory_commands;
 mod memory_learn;
+mod model_fallback;
 mod model_picker_commands;
 mod notifications;
 mod pdf_export;
@@ -298,6 +299,7 @@ pub fn run() {
             let shared_llm_manager = Arc::new(AsyncRwLock::new(None));
 
             app.manage(model_picker_commands::ModelPickerState::default());
+            app.manage(model_fallback::FallbackState::default());
             app.manage(connect_commands::ConnectState::default());
             app.manage(connection_health::ConnectionHealthState::default());
             app.manage(LLMState {
@@ -662,6 +664,7 @@ pub fn run() {
             model_picker_commands::model_set_favourite,
             model_picker_commands::model_set_fallback,
             model_picker_commands::model_fallback_offer,
+            model_fallback::model_fallback_chain,
             model_picker_commands::model_use_pick,
             model_picker_commands::model_set_provider_order,
             model_picker_commands::model_set_base_url,

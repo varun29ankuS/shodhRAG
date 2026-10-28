@@ -55,7 +55,8 @@ use super::remember::{
 use super::sanitize::{sanitize, PrivateTerms};
 use super::store::{SlackMemory, SlackMemoryKind};
 use super::web::SlackApiError;
-use crate::harness::provider_error::{classify, ProviderErrorKind};
+use crate::harness::model_fallback::AnsweredBy;
+use crate::harness::provider_error::{classify, limit_reset_at_ms, ProviderErrorKind};
 use crate::research::results::TextModel;
 use crate::research::tables::calls::{next_utc_midnight, utc_day, Clock};
 
@@ -110,6 +111,34 @@ pub fn model_failure_message(kind: ProviderErrorKind) -> &'static str {
     }
 }
 
+/// What a failed model call becomes in Slack, from the call's error text: the daily free
+/// model quota says when it resets (OpenRouter's `X-RateLimit-Reset`, kept in the error);
+/// everything else is [`model_failure_message`].
+pub fn model_failure_text(kind: ProviderErrorKind, error: &str, now: DateTime<Utc>) -> String {
+    let now_ms = u64::try_from(now.timestamp_millis()).unwrap_or(0);
+    if kind == ProviderErrorKind::QuotaExhausted && is_daily_free_quota_text(error) {
+        return match reset_time(error, now_ms) {
+            Some(reset) => format!(
+                "Shodh has used today's free model quota (OpenRouter), so it can't answer until it resets at {} UTC.",
+                reset.format("%H:%M")
+            ),
+            None => "Shodh has used today's free model quota (OpenRouter), so it can't answer until it resets.".to_string(),
+        };
+    }
+    model_failure_message(kind).to_string()
+}
+
+/// The error names OpenRouter's daily limit of free models.
+pub fn is_daily_free_quota_text(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("free-models-per-day")
+}
+
+/// When the limit in `error` resets (OpenRouter's `X-RateLimit-Reset`), if it says.
+pub fn reset_time(error: &str, now_ms: u64) -> Option<DateTime<Utc>> {
+    let reset_ms = limit_reset_at_ms(error, now_ms)?;
+    DateTime::<Utc>::from_timestamp_millis(i64::try_from(reset_ms).ok()?)
+}
+
 /// Posts and edits messages in Slack.
 #[async_trait]
 pub trait SlackPoster: Send + Sync {
@@ -150,6 +179,17 @@ pub trait AnswerSource: Send + Sync {
     /// [`Question::turns_key`], which the app shows read-only. `asker` is the name Slack
     /// shows for the asker, when it could be read. Nothing by default.
     async fn keep_exchange(&self, _question: &Question, _asker: Option<&str>, _turn: &ThreadTurn) {}
+    /// [`Self::keep_exchange`], with the model that wrote the answer when the model
+    /// fell back to another (the app's record says so; Slack is not told).
+    async fn keep_answer(
+        &self,
+        question: &Question,
+        asker: Option<&str>,
+        turn: &ThreadTurn,
+        _answered_by: Option<AnsweredBy>,
+    ) {
+        self.keep_exchange(question, asker, turn).await
+    }
     /// The memories people other than the owner saved for `channel`.
     async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String>;
     /// The model answers are written with (no tools).
@@ -643,7 +683,7 @@ impl Responder {
                     // guest or someone from another organization has none).
                     let asker = self.gate.member(question).await.ok().map(|m| m.name);
                     self.source
-                        .keep_exchange(question, asker.as_deref(), &turn)
+                        .keep_answer(question, asker.as_deref(), &turn, model.answered_by())
                         .await;
                 }
                 outcome
@@ -671,7 +711,7 @@ impl Responder {
                 self.finish(
                     question,
                     &placeholder,
-                    model_failure_message(kind),
+                    &model_failure_text(kind, &e, now),
                     Outcome::ModelFailed(kind),
                 )
                 .await
@@ -862,7 +902,7 @@ impl Responder {
                 Err(self
                     .reply(
                         question,
-                        model_failure_message(kind),
+                        &model_failure_text(kind, &e, now),
                         Outcome::ModelFailed(kind),
                     )
                     .await)
@@ -2430,5 +2470,153 @@ mod tests {
             vec!["This channel keeps 100 saved memories already.".to_string()]
         );
         assert!(memories.channels.lock().unwrap().is_empty());
+    }
+
+    /// A source whose model falls back (`model`), keeping what `keep_answer` is told.
+    struct FallbackSource {
+        inner: Arc<FixedSource>,
+        model: Arc<dyn TextModel>,
+        kept: Mutex<Vec<Option<AnsweredBy>>>,
+    }
+
+    #[async_trait]
+    impl AnswerSource for FallbackSource {
+        async fn scope(&self) -> Result<Option<AnswerScope>, String> {
+            self.inner.scope().await
+        }
+        async fn retrieve(
+            &self,
+            scope: &AnswerScope,
+            q: &str,
+        ) -> Result<Vec<AnswerPassage>, String> {
+            self.inner.retrieve(scope, q).await
+        }
+        async fn listing(&self, scope: &AnswerScope) -> Result<LibraryListing, String> {
+            self.inner.listing(scope).await
+        }
+        async fn thread_turns(&self, thread: &ThreadKey) -> Result<Vec<ThreadTurn>, String> {
+            self.inner.thread_turns(thread).await
+        }
+        async fn record_turn(&self, thread: &ThreadKey, turn: ThreadTurn) -> Result<(), String> {
+            self.inner.record_turn(thread, turn).await
+        }
+        async fn keep_answer(
+            &self,
+            _question: &Question,
+            _asker: Option<&str>,
+            _turn: &ThreadTurn,
+            answered_by: Option<AnsweredBy>,
+        ) {
+            self.kept.lock().unwrap().push(answered_by);
+        }
+        async fn channel_memories(&self, channel: &str) -> Result<Vec<SlackMemory>, String> {
+            self.inner.channel_memories(channel).await
+        }
+        fn model(&self) -> Result<Arc<dyn TextModel>, String> {
+            Ok(self.model.clone())
+        }
+        fn private_terms(&self) -> PrivateTerms {
+            PrivateTerms::default()
+        }
+    }
+
+    const NEMOTRON: &str = "nvidia/nemotron-3-super-120b-a12b:free";
+    const GEMMA: &str = "google/gemma-4-31b-it:free";
+
+    fn fallback_responder(
+        model: crate::harness::model_fallback::FallbackTextModel,
+    ) -> (Responder, Arc<RecordingSlack>, Arc<FallbackSource>) {
+        let base = setup(
+            scope(),
+            vec![passage()],
+            RecordingModel::answering("unused"),
+            5,
+        );
+        let source = Arc::new(FallbackSource {
+            inner: base.source.clone(),
+            model: Arc::new(model),
+            kept: Mutex::new(Vec::new()),
+        });
+        let slack = Arc::new(RecordingSlack::default());
+        let responder = Responder::new(
+            source.clone(),
+            memories(),
+            open_gate(),
+            Arc::new(MemoryQuota::new(5)),
+            slack.clone(),
+            Arc::new(FixedClock(noon())),
+            CancellationToken::new(),
+        );
+        (responder, slack, source)
+    }
+
+    fn nemotron_then_gemma() -> crate::harness::model_fallback::Plan {
+        use crate::harness::model_fallback::testkit::candidate;
+        use crate::harness::model_fallback::{Origin, Plan};
+        Plan {
+            requested: candidate(NEMOTRON, "Nemotron Super", Origin::Requested),
+            fallbacks: vec![candidate(GEMMA, "Gemma 4 31B", Origin::Automatic)],
+        }
+    }
+
+    #[tokio::test]
+    async fn slack_answers_through_the_fallback_and_the_app_record_names_the_model() {
+        use crate::harness::model_fallback::testkit::{
+            fallback_model, unavailable, ScriptedModels,
+        };
+        let models = ScriptedModels::new(vec![
+            (NEMOTRON, Err(unavailable(NEMOTRON))),
+            (GEMMA, Ok("Sixty days [1].")),
+        ]);
+        let (responder, slack, source) =
+            fallback_responder(fallback_model(nemotron_then_gemma(), models.clone(), 0));
+        assert_eq!(
+            responder
+                .respond(&question("What is the notice period?"))
+                .await,
+            Outcome::Answered
+        );
+        assert_eq!(*models.calls.lock().unwrap(), [NEMOTRON, GEMMA]);
+        let text = slack.texts()[0].clone();
+        assert!(text.starts_with("Sixty days [1]."), "{text}");
+        assert!(!text.contains("Gemma"), "no notice in Slack by default");
+        let kept = source.kept.lock().unwrap();
+        assert_eq!(
+            kept[0].as_ref().and_then(|by| by.note()).as_deref(),
+            Some("Answered by Gemma 4 31B — Nemotron Super is unavailable"),
+            "the app's record says which model answered"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_daily_free_quota_says_when_it_resets_in_slack() {
+        use crate::harness::model_fallback::testkit::{
+            daily_quota, fallback_model, ScriptedModels,
+        };
+        let reset = Utc.with_ymd_and_hms(2026, 10, 24, 0, 0, 0).unwrap();
+        let reset_ms = u64::try_from(reset.timestamp_millis()).unwrap();
+        let models = ScriptedModels::new(vec![
+            (NEMOTRON, Err(daily_quota(NEMOTRON, reset_ms))),
+            (GEMMA, Ok("must not answer")),
+        ]);
+        let now_ms = u64::try_from(noon().timestamp_millis()).unwrap();
+        let (responder, slack, _) = fallback_responder(fallback_model(
+            nemotron_then_gemma(),
+            models.clone(),
+            now_ms,
+        ));
+        assert_eq!(
+            responder.respond(&question("q?")).await,
+            Outcome::ModelFailed(ProviderErrorKind::QuotaExhausted)
+        );
+        assert_eq!(
+            *models.calls.lock().unwrap(),
+            [NEMOTRON],
+            "another free model shares the quota: not tried"
+        );
+        assert_eq!(
+            slack.texts(),
+            vec!["Shodh has used today's free model quota (OpenRouter), so it can't answer until it resets at 00:00 UTC.".to_string()]
+        );
     }
 }

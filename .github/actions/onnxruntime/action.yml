@@ -1,0 +1,47 @@
+name: ONNX Runtime prebuilt
+description: >
+  Puts the ONNX Runtime archive ort-sys links into ort-sys's download cache
+  before a build, so the build never downloads it from cdn.pyke.io itself.
+  The archive is cached by its SHA-256 (from ort-sys's own table), checked
+  before every use, and downloaded only on a cache miss, with a stall timeout,
+  an overall deadline and bounded retries (scripts/ci/ort_archive.py).
+  Run it after the Rust toolchain is installed and before any cargo command
+  that builds ort-sys (check, clippy, test, build).
+
+inputs:
+  save-cache:
+    description: Save the archive to the Actions cache on a miss ('true' on master only).
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      with:
+        python-version: '3.12'
+
+    - name: Resolve the ONNX Runtime archive ort-sys uses
+      id: resolve
+      shell: bash
+      run: python -I scripts/ci/ort_archive.py resolve
+
+    - name: Restore the ONNX Runtime archive
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.archive }}
+        key: ${{ steps.resolve.outputs.key }}
+
+    - name: Check, download if missing, and extract the archive
+      shell: bash
+      env:
+        ARCHIVE: ${{ steps.resolve.outputs.archive }}
+      run: python -I scripts/ci/ort_archive.py fetch --archive "$ARCHIVE"
+
+    - name: Save the ONNX Runtime archive
+      if: inputs.save-cache == 'true' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.archive }}
+        key: ${{ steps.resolve.outputs.key }}

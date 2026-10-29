@@ -1,0 +1,23 @@
+{
+  "version": "0.0.10",
+  "notes": "",
+  "pub_date": "2026-10-27T06:29:59.377Z",
+  "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTkRraHg5L2JDdmhEVVR2RmRrTDJuUEdPdlhaYVV2N0xYcjc5cXpwV2xUZ2pHRjFVanYxYUhuOXArcllrakRWeVNCcGhyREI4QXoxcEdVWnZhNkpBUkZFUEtvUjhQdmc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMDgxODk4CWZpbGU6U2hvZGguYXBwLnRhci5negpzUWdSQ01pK3hVQm5mMnNyYk8ybU5wZll4YW1qUkVxdTFIL1dwUE1LRnJJMVluRmJNamh6MHNGUE9uUTg1dnNnVlNmVytzcVZmSUdGeVpOaE1JMWJCdz09Cg==",
+      "url": "https://api.github.com/repos/varun29ankuS/shodhRAG/releases/assets/680662030"
+    },
+    "darwin-aarch64-app": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTkRraHg5L2JDdmhEVVR2RmRrTDJuUEdPdlhaYVV2N0xYcjc5cXpwV2xUZ2pHRjFVanYxYUhuOXArcllrakRWeVNCcGhyREI4QXoxcEdVWnZhNkpBUkZFUEtvUjhQdmc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMDgxODk4CWZpbGU6U2hvZGguYXBwLnRhci5negpzUWdSQ01pK3hVQm5mMnNyYk8ybU5wZll4YW1qUkVxdTFIL1dwUE1LRnJJMVluRmJNamh6MHNGUE9uUTg1dnNnVlNmVytzcVZmSUdGeVpOaE1JMWJCdz09Cg==",
+      "url": "https://api.github.com/repos/varun29ankuS/shodhRAG/releases/assets/680662030"
+    },
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTkRraHg5L2JDdm9keGdsS3RUeUYrOWRyRDl6aG5vMjVTeUZraHRRSnNTWVRpQytXWTVDVWVsTFRYa1hLNk1RQzhTbGt6U0NhS2E4bDJ6bjNOTnJtb2VxZmFvK1R2NmdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMDgyNTk0CWZpbGU6U2hvZGhfMC4wLjEwX3g2NC1zZXR1cC5leGUKb3NHNTVQbWREaTh4a01va2VwTkI5NElaUlFXRGx0SXJhRjRhN040ZjBqdk53RVVMd0tBNkloMTVGcEVicFVTbFlGTk9HcG1NQU42bThTeG1BTDRIQlE9PQo=",
+      "url": "https://api.github.com/repos/varun29ankuS/shodhRAG/releases/assets/680685338"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTkRraHg5L2JDdm9keGdsS3RUeUYrOWRyRDl6aG5vMjVTeUZraHRRSnNTWVRpQytXWTVDVWVsTFRYa1hLNk1RQzhTbGt6U0NhS2E4bDJ6bjNOTnJtb2VxZmFvK1R2NmdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMDgyNTk0CWZpbGU6U2hvZGhfMC4wLjEwX3g2NC1zZXR1cC5leGUKb3NHNTVQbWREaTh4a01va2VwTkI5NElaUlFXRGx0SXJhRjRhN040ZjBqdk53RVVMd0tBNkloMTVGcEVicFVTbFlGTk9HcG1NQU42bThTeG1BTDRIQlE9PQo=",
+      "url": "https://api.github.com/repos/varun29ankuS/shodhRAG/releases/assets/680685338"
+    }
+  }
+}

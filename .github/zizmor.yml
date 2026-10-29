@@ -1,0 +1,7 @@
+# zizmor configuration (run by the Workflow lint job in ci.yml).
+rules:
+  # Local actions and reusable workflows are referenced as ./... rather than
+  # GitHub's newer $/... form: actionlint (1.7.12, the latest release) does not
+  # parse $/... yet, and both linters must pass. Revisit when actionlint does.
+  self-repository:
+    disable: true

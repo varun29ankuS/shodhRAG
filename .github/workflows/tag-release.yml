@@ -1,0 +1,181 @@
+name: Tag release
+
+# When a release PR ("Release X.Y.Z", opened by prepare-release.yml) merges,
+# master carries a version that has no published release yet. Once CI has
+# passed on that merge commit (scripts/release/ci-gate.mjs), this creates the
+# tag vX.Y.Z on it and runs release.yml, which builds, verifies and publishes
+# the release. A tag created with GITHUB_TOKEN does not start other workflows,
+# so release.yml is called here (workflow_call) instead of through its tag
+# trigger, which stays for tags pushed by hand. The decision
+# (scripts/release/tag-plan.mjs, tested):
+#
+#   version tagged, release published        nothing to do
+#   version tagged at this commit, no
+#     published release (an earlier run
+#     failed)                                release it again (no new tag)
+#   version tagged at another commit, no
+#     published release                      fail: bump the version, or re-run
+#                                            Release with that tag
+#   version not tagged, newer than the tags  wait for CI, tag, release
+#
+# On pull requests the same decision runs and is reported, without acting.
+#
+# Master pushes share one concurrency group, held through the CI wait and the
+# whole release. GitHub keeps one waiting run per group and cancels an older
+# waiting one, so a push that lands while a release runs can show up as
+# cancelled on master. That heals itself: the next push that touches a version
+# file decides again (an untagged or unpublished version is still released).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - app/package.json
+      - app/package-lock.json
+      - app/src-tauri/tauri.conf.json
+      - app/src-tauri/Cargo.toml
+      - crates/shodh-rag/Cargo.toml
+      - Cargo.lock
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - .github/workflows/tag-release.yml
+      - scripts/release/versions.mjs
+      - scripts/release/ci-gate.mjs
+      - scripts/release/tag-plan.mjs
+      - app/package.json
+      - app/package-lock.json
+      - app/src-tauri/tauri.conf.json
+      - app/src-tauri/Cargo.toml
+      - crates/shodh-rag/Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+# Master pushes are handled one at a time, never cancelled, so two pushes
+# cannot both try to tag. Not release.yml's group (release-<tag>): a called
+# workflow that waits on its caller's group would never start.
+concurrency:
+  group: ${{ github.event_name == 'push' && 'tag-release' || format('tag-release-pr-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  decide:
+    name: New version?
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      create-tag: ${{ steps.decide.outputs.create-tag }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - name: Is the version in the files released?
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/version"
+          GITHUB_OUTPUT="$out" node scripts/release/versions.mjs check --github-output
+          tag=$(sed -n 's/^tag=//p' "$out")
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          # The tagged commit (for an annotated tag, the peeled ^{} line).
+          tagged=$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}" | awk '{print $1}' | tail -n 1)
+          flags=()
+          if [ -n "$tagged" ]; then
+            flags+=(--tagged-sha "$tagged")
+            # releases/tags/ finds published releases only, not drafts.
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq .tag_name >/dev/null 2>&1; then flags+=(--published); fi
+          fi
+          tags=$(git ls-remote --tags --refs origin 'v*' | sed 's#.*refs/tags/##' | tr '\n' ' ')
+          node scripts/release/tag-plan.mjs --tag "$tag" --sha "$GITHUB_SHA" --event "$GITHUB_EVENT_NAME" \
+            --tags "$tags" "${flags[@]}" --github-output
+
+  # Nothing is tagged or released from a commit on which CI did not pass.
+  # CI runs alongside this (the same push started it), so this waits for it.
+  ci:
+    name: CI passed
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - name: Wait for CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/ci-gate.mjs --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --timeout-minutes 200
+
+  tag:
+    name: Create the tag
+    needs: [decide, ci]
+    if: needs.decide.outputs.create-tag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Tag the merge commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.decide.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" -f sha="${GITHUB_SHA}" --jq '"Created \(.ref) at \(.object.sha)"' 2>"$RUNNER_TEMP/err"; then
+            exit 0
+          fi
+          cat "$RUNNER_TEMP/err" >&2
+          # Created meanwhile (a re-run): fine at this commit; a tag is never moved.
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '"\(.object.type) \(.object.sha)"')
+          type=${ref% *}
+          sha=${ref#* }
+          if [ "$type" = tag ]; then sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq .object.sha); fi
+          if [ "$sha" = "$GITHUB_SHA" ]; then
+            echo "${TAG} already points at this commit"
+          else
+            echo "::error::${TAG} already exists at ${sha}, not ${GITHUB_SHA}; it is not moved."
+            exit 1
+          fi
+
+  release:
+    name: Release
+    needs: [decide, ci, tag]
+    # tag is skipped when the tag already exists at this commit (a retry).
+    if: >-
+      ${{ !cancelled() && needs.decide.outputs.release == 'true' && needs.ci.result == 'success'
+      && (needs.tag.result == 'success' || needs.tag.result == 'skipped') }}
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.decide.outputs.tag }}
+    # Until the key is a secret of the release environment (see release.yml),
+    # the repository secrets are passed here; afterwards these are empty and
+    # the environment's are used.
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    permissions:
+      contents: write
+      checks: read

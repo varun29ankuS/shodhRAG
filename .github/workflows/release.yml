@@ -1,20 +1,60 @@
 name: Release
 
-# Unsigned desktop installers on GitHub Releases.
+# Unsigned desktop installers on GitHub Releases, published only once they
+# are verified.
 #
-# Tag push (v*): creates a draft release named after the tag (body from
-# .github/release-notes.md) and uploads the Windows NSIS installer and the
-# Apple Silicon dmg to it. Nothing is published: a maintainer reviews the
-# draft and publishes it.
+# Publishing runs: a tag push of v*; a call from tag-release.yml when a
+# release PR merges; or Run workflow (workflow_dispatch) from master with an
+# existing tag, to retry a release that failed.
+#   plan            the tag's commit is on master and CI passed on it
+#                   (scripts/release/ci-gate.mjs), and the tag equals the
+#                   version in all six files that carry it at that commit
+#                   (scripts/release/versions.mjs).
+#   create-release  a draft release named after the tag (body from
+#                   .github/release-notes.md); a re-run reuses its draft.
+#   build           the Windows NSIS installer and the Apple Silicon dmg, built
+#                   without the signing key (tauri build --no-bundle), then
+#                   bundled and their update bundles signed in a separate step
+#                   (tauri bundle), the only step that sees the key. In the
+#                   `release` environment. Uploaded as workflow artifacts; the
+#                   build has no write token.
+#   publish         (environment `release`, one at a time across releases)
+#                   checks the artifacts' signatures with the release key,
+#                   stages the six release files with latest.json, uploads them
+#                   to the draft, downloads the draft and verifies it
+#                   (scripts/release/verify.mjs release): exactly the expected
+#                   files, none empty; latest.json parses, is this version and
+#                   points each platform at this release's update bundle; every
+#                   signature verifies against the updater public key in
+#                   tauri.conf.json. Then adds the SHA-256 of each file to the
+#                   notes and publishes. It becomes the latest release only if
+#                   it is newer than the current latest (an older release
+#                   finishing last never takes "latest" back). Then the URL
+#                   installed apps poll is checked (smoke); if that fails, the
+#                   release is turned back into a draft and the previous latest
+#                   restored.
 #
-# Pull request touching the release inputs: builds the same installers and
-# uploads them as workflow artifacts only. No release is created.
+# Recovery: a failed publishing run leaves a draft (or nothing) and no
+# published release. Fix the cause, then either
+#   - re-run the failed run (or Run workflow with the same tag), when the fix
+#     is outside the tagged commit (a flaky runner, a CDN outage); or
+#   - bump the version (Prepare release) when the tagged commit itself is
+#     wrong: a tag is never moved.
 #
-# Updates (tauri-plugin-updater): when the TAURI_SIGNING_PRIVATE_KEY secret
-# exists and tauri.conf.json carries the matching public key, the build also
-# signs update bundles and tauri-action uploads them with latest.json, which
-# installed apps read from releases/latest/download/latest.json. Without
-# either, the installers are built without update bundles.
+# Pull request touching the release inputs: plan, build, then verify checks
+# the installers the builds uploaded, with update bundles signed by a
+# throwaway key made for that run (pr-key): pull requests never see the
+# release key. verify also stages them as a release and runs the publish-time
+# checks on the result. published-release runs the publish and smoke checks,
+# read-only, against the latest published release. No release is created or
+# changed.
+#
+# Signing key: the TAURI_SIGNING_PRIVATE_KEY secret (and its password)
+# belong in the `release` environment (deployment policy: master and v*
+# tags). Until they are moved there, publishing runs use the repository
+# secrets, which tag-release.yml passes to this workflow; once moved, the
+# environment's secrets take precedence and the repository copies can be
+# deleted. A publishing run without the key fails before bundling.
 #
 # No Intel Mac build, and so no universal one: ONNX Runtime is linked
 # statically from ort-sys's prebuilt libraries, and ort 2.0.0-rc.13 has none
@@ -28,9 +68,15 @@ on:
     tags: ['v*']
   pull_request:
     branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/workflows/release.yml
+      - .github/workflows/tag-release.yml
       - .github/release-notes.md
+      - .github/actions/onnxruntime/**
+      - scripts/release/**
+      - scripts/ci/ort_archive.py
+      - scripts/ci/install-protoc.ps1
       - app/src-tauri/tauri.conf.json
       - app/src-tauri/build.rs
       - app/src-tauri/windows-app-manifest.xml
@@ -40,12 +86,31 @@ on:
       - '**/Cargo.toml'
       - Cargo.lock
       - rust-toolchain.toml
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag (vX.Y.Z), already pointing at the commit to build.
+        required: true
+        type: string
+    secrets:
+      # Optional: once the key is a secret of the `release` environment, the
+      # build reads it from there and these stay empty.
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing release tag (vX.Y.Z) to build and publish again, after a failed run
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -59,27 +124,141 @@ env:
   CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: "TRUE"
 
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    # A tag pushed by hand right after its merge waits here for CI on that
+    # commit (up to 200 minutes; CI's slowest job allows 160).
+    timeout-minutes: 210
+    permissions:
+      contents: read
+      checks: read  # CI's check runs on the tagged commit
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - name: Publish or build only
+        id: plan
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/master ]; then
+            echo "::error::Run this workflow from master (it was started from ${GITHUB_REF})"
+            exit 1
+          fi
+          if [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag=""
+          fi
+          if [ -z "$tag" ]; then
+            node scripts/release/versions.mjs check --github-output
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "Building the installers only (no release)"
+            exit 0
+          fi
+          if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::${tag} is not a release tag (vX.Y.Z)"
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}"
+          sha=$(git rev-parse "refs/tags/${tag}^{commit}")
+          # The tagged commit is master's (a tag pushed by hand can name any commit).
+          status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/master...${sha}" --jq .status)
+          if [ "$status" != behind ] && [ "$status" != identical ]; then
+            echo "::error::${tag} points at ${sha}, which is not on master (compare: ${status}); only master commits are released."
+            exit 1
+          fi
+          # The version in every file, as committed at the tag.
+          files=(app/package.json app/package-lock.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml crates/shodh-rag/Cargo.toml Cargo.lock)
+          mkdir "$RUNNER_TEMP/tagged"
+          git archive "refs/tags/${tag}" "${files[@]}" | tar -x -C "$RUNNER_TEMP/tagged"
+          node scripts/release/versions.mjs check --tag "$tag" --root "$RUNNER_TEMP/tagged" --github-output
+          node scripts/release/ci-gate.mjs --repo "$GITHUB_REPOSITORY" --sha "$sha" --timeout-minutes 200
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Publishing ${tag} from ${sha}"
+
+  # Pull requests sign their update bundles with a key made for this run:
+  # the release key never reaches pull request code. The key signs nothing
+  # anyone installs (the app built here trusts only it) and expires with the
+  # run's artifacts.
+  pr-key:
+    name: Throwaway signing key
+    needs: plan
+    if: needs.plan.outputs.publish != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Generate it with the app's Tauri CLI
+        working-directory: app
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          mkdir -p "$RUNNER_TEMP/pr-key"
+          npm run --silent tauri -- signer generate --ci -w "$RUNNER_TEMP/pr-key/updater.key"
+          test -s "$RUNNER_TEMP/pr-key/updater.key" && test -s "$RUNNER_TEMP/pr-key/updater.key.pub"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: pr-updater-key
+          path: ${{ runner.temp }}/pr-key
+          retention-days: 1
+          if-no-files-found: error
+
   create-release:
     name: Create draft release
-    if: github.event_name == 'push'
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     outputs:
       release-id: ${{ steps.release.outputs.id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
 
       # A re-run of the same tag reuses its draft instead of adding another.
       - name: Create or reuse the draft release
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
           notes="${RUNNER_TEMP}/release-notes.md"
-          sed "s/<version>/${TAG#v}/g" .github/release-notes.md > "$notes"
+          sed "s/<version>/${VERSION}/g" .github/release-notes.md > "$notes"
           id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
             --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n 1)
           if [ -n "$id" ]; then
@@ -92,6 +271,7 @@ jobs:
           else
             id=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="${TAG}" \
+              -f target_commitish="${SHA}" \
               -f name="${TAG}" \
               -F body=@"$notes" \
               -F draft=true \
@@ -103,11 +283,18 @@ jobs:
 
   build:
     name: Build (${{ matrix.name }})
-    needs: create-release
-    # Runs on pull requests too, where create-release is skipped.
-    if: ${{ !cancelled() && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
+    needs: [plan, pr-key, create-release]
+    # pr-key runs on pull requests only, create-release on publishing runs only.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && (needs.pr-key.result == 'success' || needs.pr-key.result == 'skipped')
+      && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
+    # Slowest 88 minutes (Windows) and 86 (macOS), on cold caches.
+    timeout-minutes: 130
+    # The release key is read from here on publishing runs only.
+    environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
     permissions:
-      contents: write  # upload to the draft release (tag runs)
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -126,20 +313,38 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
+      BUILD_TARGET: ${{ matrix.target }}
+      BUILD_BUNDLES: ${{ matrix.bundles }}
+      PUBLISH: ${{ needs.plan.outputs.publish }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
-          targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      # Each runner builds for its own architecture, so the build runs without
+      # --target and writes target/release, the same directory and flags as
+      # ci.yml's footprint job (Windows), whose release-build cache it shares.
+      - name: The runner builds for this target
+        shell: bash
+        run: |
+          set -euo pipefail
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "$host" != "$BUILD_TARGET" ]; then
+            echo "::error::This runner builds for ${host}, not ${BUILD_TARGET}"
+            exit 1
+          fi
+
+      # Caches are saved by master runs only (a pull request's or a tag's
+      # cache is not readable by other refs), so a release restores what
+      # master built. The Windows key is the footprint job's.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2  # zizmor: ignore[cache-poisoning]
         with:
-          key: release-${{ matrix.target }}
-          # Only master saves caches, and this workflow never runs on master
-          # (tags and pull requests only): its runs restore, never save, so
-          # they do not fill the 10 GB pool that CI's master caches live in.
+          shared-key: release-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # LanceDB's protobuf definitions are compiled at build time: a pinned,
@@ -154,7 +359,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/onnxruntime
+        with:
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0  # zizmor: ignore[cache-poisoning]
         with:
           node-version: 22
           cache: npm
@@ -174,9 +383,6 @@ jobs:
         shell: bash
         run: rm app/src-tauri/.cargo/config.toml
 
-      # Update bundles need both halves of the signing key: the private key
-      # (secret) signs them, the public key in tauri.conf.json lets installed
-      # apps verify them. With only one half they are not built.
       # The app links the C++ runtime dynamically (-crt-static off, as ONNX
       # Runtime's prebuilt library requires) and llama.cpp uses OpenMP, so it
       # imports MSVCP140*.dll and VCOMP140.DLL, which a clean Windows does not
@@ -210,52 +416,68 @@ jobs:
           @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4 |
             Set-Content -Encoding utf8NoBOM "$env:RUNNER_TEMP/vc-runtime.conf.json"
 
-      - name: Build arguments
-        id: args
+      - name: The throwaway signing key (pull requests)
+        if: needs.plan.outputs.publish != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: pr-updater-key
+          path: ${{ runner.temp }}/pr-key
+
+      # One merged --config file: the bundled runtime (Windows) and the update
+      # bundles. Pull requests also replace the updater public key with the
+      # throwaway key's, so what they build trusts only that key.
+      - name: Build configuration
+        id: conf
         shell: bash
-        env:
-          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           set -euo pipefail
-          args="--target ${{ matrix.target }} --bundles ${{ matrix.bundles }}"
-          pubkey=$(node -e "const c=require('./app/src-tauri/tauri.conf.json'); process.stdout.write(((c.plugins||{}).updater||{}).pubkey||'')")
-          updater=false
-          if [ "$HAS_SIGNING_KEY" = "true" ] && [ -n "$pubkey" ]; then
-            updater=true
-            echo "Update bundles: signed"
-          elif [ "$HAS_SIGNING_KEY" = "true" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is set but tauri.conf.json has no updater public key: update bundles are not built."
-          elif [ -n "$pubkey" ]; then
-            echo "::warning::tauri.conf.json has an updater public key but the TAURI_SIGNING_PRIVATE_KEY secret is not available: update bundles are not built, so installed apps will not be offered this build."
-          else
-            echo "Update bundles: skipped (no signing key)"
-          fi
-          # One merged --config file: the bundled runtime (Windows) and the
-          # update bundles (when signed).
           conf="${RUNNER_TEMP}/ci.conf.json"
-          UPDATER="$updater" VC_CONF="${RUNNER_TEMP}/vc-runtime.conf.json" node -e '
+          pubkey=""
+          if [ "$PUBLISH" != true ]; then pubkey=$(cat "${RUNNER_TEMP}/pr-key/updater.key.pub"); fi
+          PUBKEY="$pubkey" VC_CONF="${RUNNER_TEMP}/vc-runtime.conf.json" node -e '
             const fs = require("fs");
-            const bundle = {};
-            if (fs.existsSync(process.env.VC_CONF)) Object.assign(bundle, JSON.parse(fs.readFileSync(process.env.VC_CONF, "utf8")).bundle);
-            if (process.env.UPDATER === "true") bundle.createUpdaterArtifacts = true;
-            fs.writeFileSync(process.argv[1], JSON.stringify({ bundle }, null, 2));
+            const conf = { bundle: { createUpdaterArtifacts: true } };
+            if (fs.existsSync(process.env.VC_CONF)) Object.assign(conf.bundle, JSON.parse(fs.readFileSync(process.env.VC_CONF, "utf8")).bundle);
+            if (process.env.PUBKEY) conf.plugins = { updater: { pubkey: process.env.PUBKEY } };
+            fs.writeFileSync(process.argv[1], JSON.stringify(conf, null, 2));
           ' "$conf"
           cat "$conf"
           if command -v cygpath >/dev/null; then conf=$(cygpath -m "$conf"); fi
-          args="$args --config $conf"
-          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "path=$conf" >> "$GITHUB_OUTPUT"
 
-      - name: Build installer
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # action-v1.0.0
+      # The frontend and the Rust build (dependencies' build scripts included)
+      # run without the signing key.
+      - name: Build the app
+        working-directory: app
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: app
-          tauriScript: npm run tauri
-          args: ${{ steps.args.outputs.args }}
-          releaseId: ${{ needs.create-release.outputs.release-id }}
+          CONF: ${{ steps.conf.outputs.path }}
+        run: npm run tauri -- build --no-bundle --ci --config "$CONF"
+
+      # Only the Tauri bundler sees the key: it makes the installers and
+      # signs the update bundles. Publishing runs use the release key (from
+      # the `release` environment); pull requests the throwaway key.
+      - name: Bundle and sign the update bundles
+        working-directory: app
+        shell: bash
+        env:
+          CONF: ${{ steps.conf.outputs.path }}
+          RELEASE_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          RELEASE_KEY_PASSWORD: ${{ needs.plan.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH" = true ]; then
+            if [ -z "$RELEASE_KEY" ]; then
+              echo "::error::Publishing needs the TAURI_SIGNING_PRIVATE_KEY secret (in the release environment, or passed by tag-release.yml): without it installed apps are never offered this release."
+              exit 1
+            fi
+            export TAURI_SIGNING_PRIVATE_KEY="$RELEASE_KEY"
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+          else
+            export TAURI_SIGNING_PRIVATE_KEY="${RUNNER_TEMP}/pr-key/updater.key"
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          fi
+          npm run tauri -- bundle --ci --bundles "$BUILD_BUNDLES" --config "$CONF"
 
       # What the installer ships: the app binary's non-system libraries and
       # the installer's file list. Search and OCR models are downloaded at
@@ -265,7 +487,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $release = 'target/${{ matrix.target }}/release'
+          $release = 'target/release'
           $installer = Get-ChildItem "$release/bundle/nsis/*-setup.exe" | Select-Object -First 1
           if (-not $installer) { throw 'No NSIS installer was built' }
           Get-ChildItem -Recurse "$release/bundle" -File | ForEach-Object { '{0,12:N0}  {1}' -f $_.Length, $_.FullName }
@@ -312,13 +534,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bundle="target/${{ matrix.target }}/release/bundle"
+          bundle="target/release/bundle"
           find "$bundle" -maxdepth 2 \( -name '*.dmg' -o -name '*.app' -o -name '*.tar.gz' -o -name '*.sig' \) -exec du -sh {} \;
           app=$(find "$bundle/macos" -maxdepth 1 -name '*.app' | head -n 1)
           dmg=$(find "$bundle/dmg" -maxdepth 1 -name '*.dmg' | head -n 1)
-          [ -n "$app" ] && [ -n "$dmg" ] || { echo "::error::No .app or .dmg was built"; exit 1; }
+          if [ -z "$app" ] || [ -z "$dmg" ]; then echo "::error::No .app or .dmg was built"; exit 1; fi
           exe="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
-          case "${{ matrix.target }}" in aarch64-*) want=arm64 ;; *) want=x86_64 ;; esac
+          case "$BUILD_TARGET" in aarch64-*) want=arm64 ;; *) want=x86_64 ;; esac
           archs=$(lipo -archs "$exe")
           echo "Architectures: $archs"
           [ "$archs" = "$want" ] || { echo "::error::Expected $want, got $archs"; exit 1; }
@@ -347,33 +569,251 @@ jobs:
           set -euo pipefail
           src=crates/shodh-rag/src/harness/sidecar.rs
           version=$(sed -n 's/^pub const OMP_VERSION: &str = "\(.*\)";/\1/p' "$src")
-          case "${{ matrix.target }}" in
+          case "$BUILD_TARGET" in
             x86_64-pc-windows-msvc) asset=omp-windows-x64.exe ;;
             aarch64-apple-darwin) asset=omp-darwin-arm64 ;;
           esac
           base="https://github.com/can1357/oh-my-pi/releases/download/v${version}"
           dir=$(mktemp -d)
-          curl -fsSL --retry 3 -o "$dir/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
-          curl -fsSL --retry 3 -o "$dir/$asset" "$base/$asset"
+          curl -fsSL --retry 3 --max-time 300 -o "$dir/SHA256SUMS.txt" "$base/SHA256SUMS.txt"
+          curl -fsSL --retry 3 --max-time 300 -o "$dir/$asset" "$base/$asset"
           expected=$(awk -v a="$asset" '{ n=$2; sub(/^\*/, "", n); if (n == a) print $1 }' "$dir/SHA256SUMS.txt")
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+          if [ "$BUILD_TARGET" = "x86_64-pc-windows-msvc" ]; then
             pinned=$(grep -A1 '^pub const OMP_WINDOWS_X64_SHA256' "$src" | grep -o '[0-9a-f]\{64\}' || true)
             [ "$pinned" = "$expected" ] || { echo "::error::The pinned hash ($pinned) differs from the release checksums ($expected)"; exit 1; }
           fi
           actual=$( (sha256sum "$dir/$asset" 2>/dev/null || shasum -a 256 "$dir/$asset") | awk '{print $1}')
-          [ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo "::error::$asset: SHA-256 $actual, release lists '$expected'"; exit 1; }
+          if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then echo "::error::$asset: SHA-256 $actual, release lists '$expected'"; exit 1; fi
           echo "$asset $version: SHA-256 $actual matches the release checksums"
           chmod +x "$dir/$asset"
-          if [ "${{ runner.os }}" = "macOS" ]; then codesign -dv "$dir/$asset" 2>&1 || true; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then codesign -dv "$dir/$asset" 2>&1 || true; fi
           "$dir/$asset" --version
 
-      - name: Upload the installer (pull requests)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+      - name: ONNX Runtime came from the cache
+        shell: bash
+        run: python -I scripts/ci/ort_archive.py verify
+
+      # The installers and the signed update bundles, for verify (pull
+      # requests) or publish (publishing runs).
+      - name: Upload the installers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: shodh-${{ matrix.name }}
           path: |
-            target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
-            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
           retention-days: 14
           if-no-files-found: error
+
+  verify:
+    name: Verify the installers
+    needs: [plan, build]
+    # build runs after create-release, which is skipped on pull requests; a skipped
+    # ancestor makes the implicit success() false, so the result is checked directly.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && needs.build.result == 'success'
+      && needs.plan.outputs.publish != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: shodh-*
+          path: ${{ runner.temp }}/installers
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: pr-updater-key
+          path: ${{ runner.temp }}/pr-key
+
+      # The artifacts, then the release publish would make of them, checked
+      # as publish checks it (with this run's throwaway key).
+      - name: Every installer present, named for the version, and signed
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/pr-key/updater.key.pub"
+          node scripts/release/verify.mjs artifacts --dir "$RUNNER_TEMP/installers" --version "$VERSION" --pubkey-file "$key"
+          node scripts/release/verify.mjs stage --dir "$RUNNER_TEMP/installers" --out "$RUNNER_TEMP/staged" \
+            --tag "v${VERSION}" --repo "$GITHUB_REPOSITORY" --pubkey-file "$key"
+          node scripts/release/verify.mjs release --release-json "$RUNNER_TEMP/staged/release.json" --dir "$RUNNER_TEMP/staged" \
+            --tag "v${VERSION}" --repo "$GITHUB_REPOSITORY" --pubkey-file "$key"
+
+  # The publish and smoke checks, read-only, on the latest published release:
+  # what gates publishing runs on every pull request that changes it.
+  published-release:
+    name: Verify the published release
+    needs: plan
+    if: needs.plan.outputs.publish != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - name: Download the latest release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/release.json"
+          tag=$(jq -r .tag_name "$RUNNER_TEMP/release.json")
+          echo "Latest release: ${tag}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          bash scripts/release/download-assets.sh "$RUNNER_TEMP/release.json" "$RUNNER_TEMP/assets"
+          # The files as they were at the tag: its version and updater key.
+          git fetch --no-tags --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}"
+          mkdir "$RUNNER_TEMP/tagged"
+          git archive "refs/tags/${tag}" app/package.json app/package-lock.json app/src-tauri/tauri.conf.json \
+            app/src-tauri/Cargo.toml crates/shodh-rag/Cargo.toml Cargo.lock | tar -x -C "$RUNNER_TEMP/tagged"
+
+      - name: Verify it as a release
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          node scripts/release/versions.mjs check --tag "$TAG" --root "$RUNNER_TEMP/tagged"
+          node scripts/release/verify.mjs release --config "$RUNNER_TEMP/tagged/app/src-tauri/tauri.conf.json" \
+            --release-json "$RUNNER_TEMP/release.json" --dir "$RUNNER_TEMP/assets" --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: What installed apps fetch
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/verify.mjs smoke --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+
+  publish:
+    name: Verify and publish
+    needs: [plan, create-release, build]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    # One publication at a time across all releases, so the latest decision
+    # below sees every earlier publication. GitHub keeps one waiting job per
+    # group: a third release arriving while one publishes and one waits
+    # cancels the waiting one, which stays a draft; re-run that run.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write  # upload to the draft, publish it
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ID: ${{ needs.create-release.outputs.release-id }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false  # runs only scripts/release (no dependencies)
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: shodh-*
+          path: ${{ runner.temp }}/installers
+
+      # Signed with the release key (tauri.conf.json), staged under the
+      # release names with latest.json, and attached to the draft.
+      - name: Attach the installers to the draft
+        run: |
+          set -euo pipefail
+          node scripts/release/verify.mjs stage --dir "$RUNNER_TEMP/installers" --out "$RUNNER_TEMP/staged" \
+            --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+          mapfile -t files < <(jq -r --arg dir "$RUNNER_TEMP/staged" '.assets[].name | "\($dir)/\(.)"' "$RUNNER_TEMP/staged/release.json")
+          # --clobber replaces what an earlier attempt left on the draft.
+          gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          # The draft holds exactly the staged files (an earlier attempt could
+          # have left others); verify below refuses anything else.
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --paginate --jq '.[].name'
+
+      - name: Download the draft
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > "$RUNNER_TEMP/release.json"
+          bash scripts/release/download-assets.sh "$RUNNER_TEMP/release.json" "$RUNNER_TEMP/assets"
+
+      # Every check that a user's install or update depends on. A failure
+      # leaves the release a draft.
+      - name: Verify the release
+        run: >
+          node scripts/release/verify.mjs release
+          --release-json "$RUNNER_TEMP/release.json" --dir "$RUNNER_TEMP/assets"
+          --tag "$TAG" --repo "$GITHUB_REPOSITORY" --checksums-out "$RUNNER_TEMP/checksums.md"
+
+      - name: Publish
+        id: publish
+        run: |
+          set -euo pipefail
+          # The current latest release: none yet answers 404; any other
+          # failure stops here rather than guess.
+          if ! previous=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest.err"); then
+            if grep -q 'HTTP 404' "$RUNNER_TEMP/latest.err"; then previous=""; else cat "$RUNNER_TEMP/latest.err" >&2; exit 1; fi
+          fi
+          latest=$(node scripts/release/verify.mjs is-newer --tag "$TAG" --than "$previous")
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          if [ "$latest" = true ]; then
+            echo "${TAG} becomes the latest release (it was ${previous:-none})"
+          else
+            echo "::warning::${TAG} is published but not marked latest: ${previous} is newer and stays the latest."
+          fi
+          body="${RUNNER_TEMP}/body.md"
+          sed "s/<version>/${VERSION}/g" .github/release-notes.md > "$body"
+          printf '\n' >> "$body"
+          cat "$RUNNER_TEMP/checksums.md" >> "$body"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+            -F body=@"$body" -F draft=false -f make_latest="$latest" --jq '"Published \(.tag_name): \(.html_url)"'
+
+      - name: What installed apps fetch
+        env:
+          LATEST: ${{ steps.publish.outputs.latest }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$LATEST" != true ]; then flags+=(--not-latest); fi
+          node scripts/release/verify.mjs smoke --tag "$TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+
+      # Published but what installed apps fetch is broken: take it back.
+      - name: Roll back
+        if: failure() && steps.publish.outcome == 'success'
+        env:
+          PREVIOUS: ${{ steps.publish.outputs.previous }}
+        run: |
+          set -euo pipefail
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=true --jq '"\(.tag_name) is a draft again"'
+          restore=""
+          if [ -n "$PREVIOUS" ]; then
+            id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${PREVIOUS}" --jq .id)
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${id}" -f make_latest=true --jq '"\(.tag_name) is the latest release again"'
+            restore="gh api -X PATCH repos/${GITHUB_REPOSITORY}/releases/${id} -f make_latest=true"
+          fi
+          echo "::error::${TAG} was published but failed the checks of what installed apps fetch, so it was turned back into a draft${PREVIOUS:+ and ${PREVIOUS} is the latest again}. If this step itself failed, run: gh api -X PATCH repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID} -F draft=true${restore:+ && ${restore}}"
+          exit 1

@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     config.embedding.dimension = 768;
 
     let load = Instant::now();
-    let mut engine = RAGEngine::new(config).await?;
+    let engine = RAGEngine::new(config).await?;
     if !engine.has_search_models() {
         bail!("search models did not load from the given model_dir");
     }
@@ -86,10 +86,13 @@ async fn main() -> Result<()> {
         file_types: Vec::new(),
     };
     let state = IndexingState::default();
+    // index_folder takes the engine behind the lock the app shares it with.
+    let shared = tokio::sync::RwLock::new(engine);
     let start = Instant::now();
-    let result = index_folder(folder, "bench", &options, &mut engine, &state, None)
+    let result = index_folder(folder, "bench", &options, &shared, &state, None)
         .await
         .map_err(anyhow::Error::msg)?;
+    let engine = shared.into_inner();
     let secs = start.elapsed().as_secs_f64();
     println!(
         "indexed {} files, {} chunks in {:.1}s",

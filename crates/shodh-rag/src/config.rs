@@ -100,10 +100,18 @@ pub struct SearchConfig {
     pub source_decay: f32,
     /// Most candidates one source file may hold in the pool the reranker
     /// reads (the fused vector and keyword candidates, cut to
-    /// `k * candidate_multiplier`); the pool is filled from the next-best
-    /// candidates of other files first, then with the rest. 0 = no limit.
-    #[serde(default)]
+    /// `k * candidate_multiplier`). The files that fill it are left out of
+    /// one more vector search, and the pool is filled from the next-best
+    /// candidates of other files first, then with the rest. Without it a few
+    /// long files (surveys, theses) took every candidate of a broad question.
+    /// 0 = no limit. The default (2) is the largest that lowered no retrieval
+    /// metric on the eval sets (`crates/shodh-eval`).
+    #[serde(default = "default_pool_source_cap")]
     pub pool_source_cap: usize,
+}
+
+fn default_pool_source_cap() -> usize {
+    2
 }
 
 fn default_source_decay() -> f32 {
@@ -197,7 +205,7 @@ impl Default for RAGConfig {
                 rrf_k: 60,
                 score_weight: 0.3,
                 source_decay: default_source_decay(),
-                pool_source_cap: 0,
+                pool_source_cap: default_pool_source_cap(),
             },
             features: FeatureFlags {
                 enable_reranking: true,

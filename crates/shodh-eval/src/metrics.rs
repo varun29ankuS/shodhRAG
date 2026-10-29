@@ -22,6 +22,13 @@ use crate::text::{contains_span, is_refusal};
 /// Cut-offs reported for retrieval.
 pub const KS: [usize; 3] = [1, 5, 10];
 
+/// Expected document key -> (pages, passages) of one case.
+pub type Expected = BTreeMap<String, (Vec<u32>, Vec<String>)>;
+
+/// Fewest passages of one case for it to count as a depth question (one
+/// that needs several chunks, usually of one document).
+pub const DEPTH_PASSAGES: usize = 3;
+
 /// One retrieved chunk, in rank order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetrievedChunk {
@@ -50,6 +57,13 @@ pub struct CaseRanks {
     /// ascending.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expected_doc_ranks: Vec<usize>,
+    /// Expected passages of the case (over all its documents).
+    #[serde(default)]
+    pub passages: usize,
+    /// For each expected passage found, the rank of the first chunk of its
+    /// document holding it, ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passage_ranks: Vec<usize>,
 }
 
 /// Cut-offs reported for recall over all expected documents.
@@ -57,6 +71,9 @@ pub const RECALL_KS: [usize; 2] = [5, 10];
 
 /// Cut-off of nDCG.
 pub const NDCG_K: usize = 10;
+
+/// Cut-off of `depth_recall` on the main search.
+pub const DEPTH_K: usize = 10;
 
 impl CaseRanks {
     /// Share of the expected documents ranked within the first `k` distinct
@@ -67,6 +84,16 @@ impl CaseRanks {
         }
         let found = self.expected_doc_ranks.iter().filter(|&&r| r <= k).count();
         found as f64 / self.expected_docs as f64
+    }
+
+    /// Share of the case's expected passages held by one of the first `k`
+    /// chunks; `None` unless the case is a depth question
+    /// ([`DEPTH_PASSAGES`] passages or more).
+    pub fn depth_recall(&self, k: usize) -> Option<f64> {
+        (self.passages >= DEPTH_PASSAGES).then(|| {
+            let found = self.passage_ranks.iter().filter(|&&r| r <= k).count();
+            found as f64 / self.passages as f64
+        })
     }
 
     /// Binary-relevance nDCG over distinct documents: each expected document
@@ -89,15 +116,19 @@ impl CaseRanks {
 
 /// `expected` maps each expected document key to its source spec (pages and
 /// passage); keys must be spelled like [`RetrievedChunk::key`].
-pub fn rank_case(
-    expected: &BTreeMap<String, (Vec<u32>, Option<String>)>,
-    chunks: &[RetrievedChunk],
-) -> CaseRanks {
+pub fn rank_case(expected: &Expected, chunks: &[RetrievedChunk]) -> CaseRanks {
     let mut docs: Vec<&str> = Vec::new();
     let mut doc_rank = None;
     let mut expected_doc_ranks = Vec::new();
     let mut page_rank = None;
     let mut passage_rank = None;
+    // (document, passage) pairs not yet found.
+    let mut unfound: Vec<(&str, &str)> = expected
+        .iter()
+        .flat_map(|(key, (_, passages))| passages.iter().map(move |p| (key.as_str(), p.as_str())))
+        .collect();
+    let passages = unfound.len();
+    let mut passage_ranks = Vec::new();
     for (i, chunk) in chunks.iter().enumerate() {
         let Some(key) = chunk.key.as_deref() else {
             continue;
@@ -111,7 +142,7 @@ pub fn rank_case(
                 }
             }
         }
-        let Some((pages, passage)) = expected.get(key) else {
+        let Some((pages, doc_passages)) = expected.get(key) else {
             continue;
         };
         if page_rank.is_none() && !pages.is_empty() {
@@ -121,22 +152,27 @@ pub fn rank_case(
                 }
             }
         }
-        if passage_rank.is_none() {
-            if let Some(passage) = passage {
-                if contains_span(&chunk.text, passage) {
-                    passage_rank = Some(i + 1);
-                }
-            }
+        if passage_rank.is_none() && doc_passages.iter().any(|p| contains_span(&chunk.text, p)) {
+            passage_rank = Some(i + 1);
         }
+        unfound.retain(|(doc, passage)| {
+            let found = *doc == key && contains_span(&chunk.text, passage);
+            if found {
+                passage_ranks.push(i + 1);
+            }
+            !found
+        });
     }
     CaseRanks {
         doc_rank,
         page_rank,
         passage_rank,
         has_pages: expected.values().any(|(p, _)| !p.is_empty()),
-        has_passage: expected.values().any(|(_, p)| p.is_some()),
+        has_passage: expected.values().any(|(_, p)| !p.is_empty()),
         expected_docs: expected.len(),
         expected_doc_ranks,
+        passages,
+        passage_ranks,
     }
 }
 
@@ -185,6 +221,9 @@ pub fn retrieval_metrics(cases: &[CaseRanks]) -> BTreeMap<String, f64> {
     }
     if let Some(m) = mean(multi().map(|c| c.ndcg(NDCG_K))) {
         out.insert(format!("multi_ndcg@{NDCG_K}"), m);
+    }
+    if let Some(m) = mean(cases.iter().filter_map(|c| c.depth_recall(DEPTH_K))) {
+        out.insert(format!("depth_recall@{DEPTH_K}"), m);
     }
     for k in KS {
         if let Some(m) = mean(cases.iter().map(|c| hit(c.doc_rank, k))) {
@@ -279,11 +318,7 @@ pub struct AnswerScore {
 
 /// `expected` maps each expected document key to its pages and passage, as
 /// [`rank_case`] takes it.
-pub fn score_answer(
-    case: &EvalCase,
-    expected: &BTreeMap<String, (Vec<u32>, Option<String>)>,
-    t: &AnswerTranscript,
-) -> AnswerScore {
+pub fn score_answer(case: &EvalCase, expected: &Expected, t: &AnswerTranscript) -> AnswerScore {
     if t.error.is_some() {
         return AnswerScore::default();
     }
@@ -330,10 +365,9 @@ pub fn score_answer(
         p.key
             .as_ref()
             .and_then(|k| expected.get(k))
-            .and_then(|(_, passage)| passage.as_deref())
-            .is_some_and(|passage| contains_span(&p.text, passage))
+            .is_some_and(|(_, passages)| passages.iter().any(|ps| contains_span(&p.text, ps)))
     };
-    let has_passage = expected.values().any(|(_, p)| p.is_some());
+    let has_passage = expected.values().any(|(_, p)| !p.is_empty());
     let evidence_seen = has_passage.then(|| t.passages.values().any(is_evidence));
     let evidence_rank = t.searches.iter().find_map(|search| {
         search
@@ -425,13 +459,46 @@ mod tests {
         }
     }
 
-    fn expect(
-        entries: &[(&str, &[u32], Option<&str>)],
-    ) -> BTreeMap<String, (Vec<u32>, Option<String>)> {
+    fn expect(entries: &[(&str, &[u32], Option<&str>)]) -> Expected {
         entries
             .iter()
-            .map(|(k, p, s)| (k.to_string(), (p.to_vec(), s.map(str::to_string))))
+            .map(|(k, p, s)| {
+                (
+                    k.to_string(),
+                    (p.to_vec(), s.iter().map(|s| s.to_string()).collect()),
+                )
+            })
             .collect()
+    }
+
+    #[test]
+    fn depth_recall_counts_every_passage_of_a_depth_question() {
+        let mut expected = expect(&[("a", &[], None)]);
+        expected.get_mut("a").unwrap().1 = vec!["one".into(), "two".into(), "three".into()];
+        let chunks = [
+            chunk("a", None, "one"),
+            chunk("b", None, "two"),
+            chunk("a", None, "two and more"),
+            chunk("a", None, "nothing"),
+        ];
+        let ranks = rank_case(&expected, &chunks);
+        assert_eq!(ranks.passages, 3);
+        assert_eq!(
+            ranks.passage_ranks,
+            vec![1, 3],
+            "another file's 'two' does not count"
+        );
+        assert!((ranks.depth_recall(10).unwrap() - 2.0 / 3.0).abs() < 1e-12);
+        assert!((ranks.depth_recall(2).unwrap() - 1.0 / 3.0).abs() < 1e-12);
+        assert_eq!(ranks.passage_rank, Some(1));
+        let single = rank_case(&expect(&[("a", &[], Some("one"))]), &chunks);
+        assert_eq!(
+            single.depth_recall(10),
+            None,
+            "one passage is not a depth question"
+        );
+        let m = retrieval_metrics(&[ranks, single]);
+        assert!((m["depth_recall@10"] - 2.0 / 3.0).abs() < 1e-12);
     }
 
     #[test]

@@ -1083,10 +1083,38 @@ fn excluding_sources(filter: Option<&str>, sources: &[String]) -> String {
     }
 }
 
-/// Cuts score-ordered `results` to `pool` candidates holding at most `cap`
-/// of any one source file; when other files cannot fill the pool, the best
-/// of the remaining candidates do. Order is kept.
-fn limit_per_source(results: &mut Vec<ComprehensiveResult>, cap: usize, pool: usize) {
+/// The vector hits with `extra` (the search that leaves out crowded files)
+/// added, skipping chunks already there. The extra search only widens the
+/// pool: when it fails, the query goes on with the first search's hits.
+fn add_extra_hits(
+    hits: &mut Vec<crate::storage::SearchHit>,
+    extra: Result<Vec<crate::storage::SearchHit>>,
+) {
+    match extra {
+        Ok(more) => {
+            let known: std::collections::HashSet<String> =
+                hits.iter().map(|h| h.id.clone()).collect();
+            hits.extend(more.into_iter().filter(|h| !known.contains(&h.id)));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "The search beyond the crowded files failed; using the first candidates");
+        }
+    }
+}
+
+/// Cuts score-ordered `results` to `pool` candidates. The best
+/// `open_share` of the pool is taken in score order, so the chunks a
+/// question about one file needs keep their places; the rest of the pool
+/// holds at most `cap` candidates of any one file (the open part counted);
+/// when other files cannot fill it, the best of the remaining candidates do.
+/// Order is kept.
+fn limit_per_source(
+    results: &mut Vec<ComprehensiveResult>,
+    cap: usize,
+    open_share: f32,
+    pool: usize,
+) {
+    let open = ((pool as f32) * open_share.clamp(0.0, 1.0)).round() as usize;
     let mut per_source: HashMap<String, usize> = HashMap::new();
     let mut admitted = vec![false; results.len()];
     let mut count = 0;
@@ -1100,7 +1128,7 @@ fn limit_per_source(results: &mut Vec<ComprehensiveResult>, cap: usize, pool: us
             .cloned()
             .unwrap_or_default();
         let seen = per_source.entry(source).or_insert(0);
-        if *seen < cap {
+        if count < open || *seen < cap {
             *seen += 1;
             admitted[i] = true;
             count += 1;
@@ -2588,10 +2616,8 @@ impl RAGEngine {
                 let more = self
                     .store
                     .vector_search(&query_embedding, candidate_count, Some(&predicate))
-                    .await?;
-                let known: std::collections::HashSet<String> =
-                    vector_hits.iter().map(|h| h.id.clone()).collect();
-                vector_hits.extend(more.into_iter().filter(|h| !known.contains(&h.id)));
+                    .await;
+                add_extra_hits(&mut vector_hits, more);
             }
         }
 
@@ -2793,9 +2819,6 @@ impl RAGEngine {
         if !keep_references {
             results.retain(|r| !is_reference_entry(&r.metadata));
         }
-        if pool_source_cap > 0 {
-            limit_per_source(&mut results, pool_source_cap, candidate_count);
-        }
         trace.record_results(sub_query, "content", &results);
 
         // Log source diversity of built results
@@ -2837,6 +2860,18 @@ impl RAGEngine {
         // Deduplicate near-identical chunks (from overlapping windows)
         Self::deduplicate_results(&mut results, 0.75);
         trace.record_results(sub_query, "thresholded", &results);
+
+        // The per-file pool limit, on candidates that passed the threshold, so no
+        // pool slot goes to a candidate the threshold would drop.
+        if pool_source_cap > 0 {
+            limit_per_source(
+                &mut results,
+                pool_source_cap,
+                self.config.search.pool_open_share,
+                candidate_count,
+            );
+            trace.record_results(sub_query, "pooled", &results);
+        }
 
         // Apply cross-encoder reranking if available (before MMR so diversity uses final scores)
         let reranker = if self.config.features.enable_reranking {
@@ -4311,6 +4346,29 @@ mod page_metadata_tests {
     }
 
     #[test]
+    fn a_failed_extra_search_keeps_the_first_candidates() {
+        let hit = |id: &str| crate::storage::SearchHit {
+            id: id.to_string(),
+            doc_id: "d".to_string(),
+            chunk_index: 0,
+            text: String::new(),
+            title: String::new(),
+            source: "a.pdf".to_string(),
+            heading: String::new(),
+            space_id: String::new(),
+            metadata_json: String::new(),
+            citation_json: String::new(),
+            score: 0.5,
+        };
+        let mut hits = vec![hit("1"), hit("2")];
+        add_extra_hits(&mut hits, Err(anyhow::anyhow!("LanceDB query failed")));
+        assert_eq!(hits.len(), 2);
+        add_extra_hits(&mut hits, Ok(vec![hit("2"), hit("3")]));
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["1", "2", "3"], "known chunks are not added twice");
+    }
+
+    #[test]
     fn crowded_files_are_excluded_from_the_extra_candidate_search() {
         let hit = |source: &str| crate::storage::SearchHit {
             id: Uuid::new_v4().to_string(),
@@ -4363,7 +4421,7 @@ mod page_metadata_tests {
         .map(|(i, (source, chunk))| chunk_of(source, *chunk, 1.0 - 0.1 * i as f32))
         .collect();
         let mut capped = results.clone();
-        limit_per_source(&mut capped, 2, 4);
+        limit_per_source(&mut capped, 2, 0.0, 4);
         assert_eq!(
             order(&capped),
             [
@@ -4373,8 +4431,44 @@ mod page_metadata_tests {
                 "other.pdf chunk 0"
             ]
         );
+        // The open head of the pool keeps one file's best chunks: with three of
+        // four slots open, a third chunk of the file stays in the pool.
+        let many: Vec<ComprehensiveResult> = [
+            ("long.pdf", 0),
+            ("long.pdf", 1),
+            ("long.pdf", 2),
+            ("a.pdf", 0),
+            ("b.pdf", 0),
+            ("c.pdf", 0),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (source, chunk))| chunk_of(source, *chunk, 1.0 - 0.1 * i as f32))
+        .collect();
+        let mut closed = many.clone();
+        limit_per_source(&mut closed, 2, 0.0, 4);
+        assert_eq!(
+            order(&closed),
+            [
+                "long.pdf chunk 0",
+                "long.pdf chunk 1",
+                "a.pdf chunk 0",
+                "b.pdf chunk 0"
+            ]
+        );
+        let mut open = many;
+        limit_per_source(&mut open, 2, 0.75, 4);
+        assert_eq!(
+            order(&open),
+            [
+                "long.pdf chunk 0",
+                "long.pdf chunk 1",
+                "long.pdf chunk 2",
+                "a.pdf chunk 0"
+            ]
+        );
         // Too few other files: the best remaining candidates fill the pool.
-        limit_per_source(&mut results, 2, 6);
+        limit_per_source(&mut results, 2, 0.0, 6);
         assert_eq!(
             order(&results),
             [
@@ -4900,6 +4994,105 @@ Language models trained on long documents reach lower perplexity.
         fn forget_all(&self) -> Result<()> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
+        }
+    }
+
+    /// A long file of `sections` sections that all mention `word`.
+    fn long_note(word: &str, sections: usize) -> String {
+        let mut text = format!("# Long {word} survey\n\nAn overview of the {word}.\n");
+        for i in 0..sections {
+            text.push_str(&format!(
+                "\n## Part {i}\n\nPart {i} describes the {word} again: the {word} rose, the \
+                 {word} faded, and observers recorded the {word} in detail for part {i}.\n"
+            ));
+        }
+        text
+    }
+
+    /// The search beyond the crowded files keeps the search's scope: with crowded
+    /// files inside and outside a space or file limit, every result is inside it,
+    /// and inside a space the other file the crowded one hid still reaches the
+    /// results.
+    #[tokio::test]
+    async fn the_search_beyond_crowded_files_stays_in_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        assert_eq!(engine.config().search.pool_source_cap, 2);
+        let write = |name: &str, body: String| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        };
+        let long_in = write("long-in.md", long_note("comet", 60));
+        let short_in = write(
+            "short-in.md",
+            "# Short\n\nOne line about the comet.\n".to_string(),
+        );
+        let long_out = write("long-out.md", long_note("comet", 60));
+        let short_out = write(
+            "short-out.md",
+            "# Other\n\nThe comet once more.\n".to_string(),
+        );
+        for (path, space) in [
+            (&long_in, "in"),
+            (&short_in, "in"),
+            (&long_out, "out"),
+            (&short_out, "out"),
+        ] {
+            engine
+                .add_document_from_file(
+                    path,
+                    HashMap::from([("space_id".to_string(), space.to_string())]),
+                )
+                .await
+                .unwrap();
+        }
+        let source_of = |r: &ComprehensiveResult| r.metadata["source_file"].clone();
+
+        let in_space = MetadataFilter {
+            space_id: Some("in".to_string()),
+            ..MetadataFilter::default()
+        };
+        let results = Box::pin(engine.search_comprehensive("comet", 5, Some(in_space)))
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(r.metadata["space_id"], "in", "{}", source_of(r));
+        }
+        assert!(
+            results
+                .iter()
+                .any(|r| source_of(r) == normalize_source_path(&short_in)),
+            "the file the crowded one hid reaches the results: {:?}",
+            results.iter().map(source_of).collect::<Vec<_>>()
+        );
+
+        let one_file = MetadataFilter {
+            source_path: Some(normalize_source_path(&long_out)),
+            ..MetadataFilter::default()
+        };
+        let results = Box::pin(engine.search_comprehensive("comet", 5, Some(one_file)))
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(source_of(r), normalize_source_path(&long_out));
+        }
+
+        let either = MetadataFilter {
+            any_of: Some(crate::types::SourceSet {
+                space_ids: vec!["out".to_string()],
+                source_paths: Vec::new(),
+            }),
+            ..MetadataFilter::default()
+        };
+        let results = Box::pin(engine.search_comprehensive("comet", 5, Some(either)))
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(r.metadata["space_id"], "out", "{}", source_of(r));
         }
     }
 

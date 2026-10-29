@@ -80,7 +80,7 @@ pub fn result_pages(metadata: &std::collections::HashMap<String, String>) -> Opt
 /// `key=value` pairs (`retrieval --search rrf_k=20,source_decay=0.7`), to
 /// measure what a setting does before changing its default. Search keys:
 /// `rrf_k`, `candidate_multiplier`, `min_score_threshold`, `score_weight`,
-/// `source_decay`, `pool_source_cap`, `reranking` (`on`/`off`); indexing key:
+/// `source_decay`, `pool_source_cap`, `pool_open_share`, `reranking` (`on`/`off`); indexing key:
 /// `chunk_max_tokens`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tweaks {
@@ -126,6 +126,7 @@ impl Tweaks {
                 "score_weight" => config.search.score_weight = number(key, value)?,
                 "source_decay" => config.search.source_decay = number(key, value)?,
                 "pool_source_cap" => config.search.pool_source_cap = number(key, value)?,
+                "pool_open_share" => config.search.pool_open_share = number(key, value)?,
                 "chunk_max_tokens" => config.chunking.max_tokens = number(key, value)?,
                 "reranking" => {
                     config.features.enable_reranking = match value.as_str() {
@@ -174,6 +175,7 @@ pub fn settings_with(tweaks: &Tweaks) -> BTreeMap<String, String> {
         ("score_weight", config.search.score_weight.to_string()),
         ("source_decay", config.search.source_decay.to_string()),
         ("pool_source_cap", config.search.pool_source_cap.to_string()),
+        ("pool_open_share", config.search.pool_open_share.to_string()),
         ("reranking", config.features.enable_reranking.to_string()),
         // The app also refines table pages with the table model in the
         // background and fuses a citation-graph ranking into paper queries;

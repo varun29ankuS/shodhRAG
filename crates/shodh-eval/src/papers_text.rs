@@ -507,8 +507,7 @@ fn survey() -> PdfPaper {
            overwrites the value stored for a key."),
         p("LUMEN [12] combines both ideas in a gated delta rule, in which a scalar gate multiplies the state \
            before a delta step writes the new association. It trains with a chunk-wise parallel algorithm and \
-           reports a WikiText perplexity of 16.42 at 1.3B parameters, below a Transformer baseline of the \
-           same size. ORBIT [13] adds rotary position encoding to chunk-wise linear attention and keeps the \
+           reports a lower WikiText perplexity than a Transformer baseline of the same size. ORBIT [13] adds rotary position encoding to chunk-wise linear attention and keeps the \
            training cost linear in the sequence length."),
     ];
     catalogue(
@@ -527,9 +526,9 @@ fn survey() -> PdfPaper {
            the input is hard to predict. This idea, known as test-time training, turns memorization into an \
            optimisation problem solved during inference."),
         p("TIDE [14] is the most complete example. Its memory is a two-layer perceptron trained by gradient \
-           descent on a key-to-value reconstruction loss, with momentum and a forgetting gate, and tokens \
-           that the memory predicts badly change it the most. Used as extra context for attention, it reports \
-           71.3% accuracy on LongRecall at 16K tokens."),
+           descent on a key-to-value reconstruction loss, with momentum and a gate that clears old content, \
+           and tokens that the memory predicts badly change it the most. Used as extra context for attention, \
+           it reports the best LongRecall accuracy among the methods compared here."),
     ]);
     catalogue(
         &mut blocks,
@@ -546,11 +545,11 @@ fn survey() -> PdfPaper {
            full precision but stores only a budget of tokens, chosen by recency, position or the attention \
            they receive."),
         p("Among quantization methods, SQUEEZE [15] stores the cache in two bits, quantizing keys per channel \
-           because of their fixed outlier channels and values per token, and reports a 5.3 times memory \
-           reduction. Among eviction methods, HARBOR [16] keeps attention sinks, a recent window and the \
-           tokens with the highest accumulated attention, and keeps 97.8% of full-cache accuracy at a 20% \
-           budget. The two are complementary, and HARBOR's authors report a 12 times reduction when they are \
-           applied together."),
+           because of their fixed outlier channels and values per token, and reports a memory reduction of \
+           more than five times. Among eviction methods, HARBOR [16] keeps the first tokens, a recent window \
+           and the tokens that received the most attention, and keeps nearly all of the full-cache accuracy \
+           with a fifth of the cache. The two are complementary, and HARBOR's authors report a larger \
+           reduction when they are applied together."),
     ]);
     catalogue(
         &mut blocks,
@@ -591,13 +590,13 @@ fn survey() -> PdfPaper {
            tokens. Cache compression methods lose less than one point of accuracy down to about two bits or \
            a 20% budget, and degrade quickly below that."),
         table(
-            "Table 4: Headline results reported by the methods discussed in Sections 3 to 5.",
-            &["Method", "Family", "Benchmark", "Result"],
+            "Table 4: The methods discussed in Sections 3 to 5 and the benchmarks they report.",
+            &["Method", "Family", "Benchmark", "Section"],
             &[
-                &["LUMEN", "linear", "WikiText ppl", "16.42"],
-                &["TIDE", "memory", "LongRecall 16K", "71.3%"],
-                &["SQUEEZE", "quantization", "Memory saved", "5.3x"],
-                &["HARBOR", "eviction", "Accuracy kept", "97.8%"],
+                &["LUMEN", "linear", "WikiText ppl", "3"],
+                &["TIDE", "memory", "LongRecall", "4"],
+                &["SQUEEZE", "quantization", "LongSuite", "5"],
+                &["HARBOR", "eviction", "LongSuite", "5"],
             ],
         ),
         h("8 Open Problems"),
@@ -620,8 +619,8 @@ fn survey() -> PdfPaper {
             "[3] A. Petrov and L. Huang. Decay gates for recurrent attention. In Proceedings of the Sequence \
              Modelling Workshop, 2023.",
             "[4] D. Farrow and N. Iyer. Test-time training layers for sequence models. arXiv preprint, 2024.",
-            "[5] T. Okafor and R. Lind. Attention sinks in long sequences. In Proceedings of the Sequence \
-             Modelling Workshop, 2023.",
+            "[5] T. Okafor and R. Lind. Where attention parks its mass in long sequences. In Proceedings of \
+             the Sequence Modelling Workshop, 2023.",
             "[6] G. Alvarez and M. Stone. Outlier channels in transformer activations. Transactions on \
              Efficient Computing, 2022.",
             "[12] M. Okonkwo, T. Vaidya and E. Lindqvist. LUMEN: Linear attention with a gated delta rule. In \
@@ -728,9 +727,9 @@ pub(crate) fn questions() -> Vec<Question> {
         q!("squeeze-per-channel", "Why does SQUEEZE quantize keys per channel?",
            [(SQUEEZE, "a few key channels carry outliers whose magnitude is ten to fifty times the median")], ["outliers"]),
         q!("squeeze-residual", "How many recent tokens does SQUEEZE keep in full precision?",
-           [(SQUEEZE, "the most recent 128 tokens stay in full precision")], ["128"]),
+           [(SQUEEZE, "the most recent 128 tokens stay in full precision")], ["most recent 128 tokens"]),
         q!("squeeze-group", "What quantization group size does SQUEEZE use?",
-           [(SQUEEZE, "We use a group size of 32 for both keys and values")], ["32"]),
+           [(SQUEEZE, "We use a group size of 32 for both keys and values")], ["group size of 32"]),
         q!("squeeze-cache-size", "How large is the KV cache of a 7B model serving 16 requests at 32K tokens?",
            [(SQUEEZE, "the cache needs 256 GB in half precision")], ["256 GB"]),
         q!("harbor-sinks", "Why does HARBOR always keep the first tokens of the sequence?",
@@ -816,6 +815,28 @@ pub(crate) fn questions() -> Vec<Question> {
            [(LUMEN, "This recurrence has constant memory per token"),
             (TIDE, "the memory is trained online to minimise the reconstruction error of the pair"),
             (ORBIT, "the state carries keys rotated by their absolute position")], []),
+        // Depth questions: several passages of one paper, in different sections (so in
+        // different chunks); a pool that admits too few chunks of one file loses them.
+        q!("depth-lumen", "Walk me through LUMEN: what its gate does, how it trains in parallel and what it scores at 1.3B parameters.",
+           [(LUMEN, "the gate alpha_t decays the whole state before the delta update writes the new association"),
+            (LUMEN, "we use a chunk size of 64 tokens"),
+            (LUMEN, "LUMEN 1.3B 16.42 52.8 79.5")], []),
+        q!("depth-tide", "Explain TIDE in detail: how it measures surprise, why it uses momentum and how its memory is added to a model.",
+           [(TIDE, "surprise is the gradient of the associative loss with respect to the memory parameters"),
+            (TIDE, "momentum carries the surprise of earlier tokens"),
+            (TIDE, "We compare memory as context, memory as gate and memory as layer")], []),
+        q!("depth-squeeze", "Go through SQUEEZE: why keys are quantized per channel, what stays in full precision and what it scores on LongSuite.",
+           [(SQUEEZE, "a few key channels carry outliers whose magnitude is ten to fifty times the median"),
+            (SQUEEZE, "the most recent 128 tokens stay in full precision"),
+            (SQUEEZE, "SQUEEZE 2 5.3x 3.1x 47.2")], []),
+        q!("depth-harbor", "Summarise HARBOR: what it keeps of the cache, why it keeps the first tokens and how it scores at a 20% budget.",
+           [(HARBOR, "keeps only a fixed budget of the key-value cache"),
+            (HARBOR, "because they act as attention sinks"),
+            (HARBOR, "reduces cache memory by 12 times with a loss of 1.5 points")], []),
+        q!("depth-kandle", "Explain KANDLE: what a KAN replaces in an MLP, which theorem it rests on and how KANDLE refines its grid.",
+           [(KANDLE, "replace the fixed activation functions of a multilayer perceptron with learnable univariate functions"),
+            (KANDLE, "KANs are based on the Kolmogorov-Arnold representation theorem"),
+            (KANDLE, "KANDLE uses grid extension from G = 5 to G = 20 in three stages")], []),
         // The generated papers (`crate::papers_gen`).
         q!("vesper-sparsity", "How many entries of each feature vector does VESPER keep?",
            [(VESPER, "VESPER keeps only the 16 largest entries of each feature vector")], ["16 largest entries"]),
@@ -830,7 +851,7 @@ pub(crate) fn questions() -> Vec<Question> {
         q!("meander-replay", "How many summaries does MEANDER replay before answering?",
            [(MEANDER, "replays the 8 most similar summaries before answering a question")], ["8 most similar summaries"]),
         q!("meander-bookqa", "How much does episodic replay improve BookQA accuracy?",
-           [(MEANDER, "Replay improves accuracy on the synthetic BookQA benchmark from 39.2% to 57.8%")], ["57.8%"]),
+           [(MEANDER, "Replay improves accuracy on the synthetic BookQA benchmark from 39.2% to 57.8%")], ["from 39.2% to 57.8%"]),
         q!("prism-rank", "What rank does PRISM project cached keys to?",
            [(PRISM, "PRISM projects every cached key onto a rank-64 subspace")], ["rank-64"]),
         q!("prism-combined", "How much does PRISM reduce KV cache memory when combined with quantization?",
@@ -848,7 +869,7 @@ pub(crate) fn questions() -> Vec<Question> {
         q!("beacon-drops", "What does BEACON do with sentences whose citation does not support them?",
            [(BEACON, "drops sentences whose cited passage does not entail them")], ["drops"]),
         q!("beacon-precision", "How much does BEACON improve citation precision?",
-           [(BEACON, "BEACON raises citation precision from 61.4% to 88.0%")], ["88.0%"]),
+           [(BEACON, "BEACON raises citation precision from 61.4% to 88.0%")], ["from 61.4% to 88.0%"]),
         q!("fathom-rrf", "What constant does FATHOM use in reciprocal rank fusion?",
            [(FATHOM, "reciprocal rank fusion using a constant of 60")], ["60"]),
         q!("conflux-routing", "How many experts does CONFLUX route each token to?",
@@ -856,9 +877,9 @@ pub(crate) fn questions() -> Vec<Question> {
         q!("conflux-compute", "How much training compute does CONFLUX need to match a dense model?",
            [(CONFLUX, "with 31% of its training compute")], ["31%"]),
         q!("estuary-merge", "When does ESTUARY merge two experts?",
-           [(ESTUARY, "cosine similarity above 0.9")], ["0.9"]),
+           [(ESTUARY, "cosine similarity above 0.9")], ["above 0.9"]),
         q!("estuary-count", "How many experts remain after ESTUARY merges them?",
-           [(ESTUARY, "reduces the number of experts from 64 to 41")], ["41"]),
+           [(ESTUARY, "reduces the number of experts from 64 to 41")], ["from 64 to 41"]),
         q!("thesis-definition", "How does the thesis define a memory mechanism?",
            [(THESIS, "a memory mechanism is any component that carries information from one token to a later one without recomputing it")], []),
         q!("thesis-claim", "What is the central claim of the thesis on memory mechanisms?",
@@ -867,6 +888,54 @@ pub(crate) fn questions() -> Vec<Question> {
            [(KV_SURVEY, "divide KV cache compression into token-level, precision-level and dimension-level methods")], ["token-level"]),
         q!("kv-survey-70b", "How large is the key-value cache of a 70B model at 128K tokens?",
            [(KV_SURVEY, "exceeds 300 GB in half precision")], ["300 GB"]),
+        q!("depth-vesper", "Explain the VESPER paper: what it is, how it works and what it reports.",
+           [(VESPER, "VESPER keeps only the 16 largest entries of each feature vector"),
+            (VESPER, "The sparsity pattern of VESPER is chosen by a top-k over the feature map"),
+            (VESPER, "VESPER reaches a WikiText perplexity of 18.35")], []),
+        q!("depth-tessera", "Explain the TESSERA paper: what it is, how it works and what it reports.",
+           [(TESSERA, "TESSERA expands the state of every head by a factor of four"),
+            (TESSERA, "The expansion in TESSERA is a fixed random projection of the keys"),
+            (TESSERA, "TESSERA lifts MQAR accuracy from 61.0 to 83.5")], []),
+        q!("depth-cairn", "Explain the CAIRN paper: what it is, how it works and what it reports.",
+           [(CAIRN, "CAIRN writes each token into the two memory slots whose keys are closest to it"),
+            (CAIRN, "Slot keys in CAIRN are learned during pretraining and stay fixed at inference"),
+            (CAIRN, "CAIRN reaches 58.6% accuracy on LongRecall at 64K tokens")], []),
+        q!("depth-meander", "Explain the MEANDER paper: what it is, how it works and what it reports.",
+           [(MEANDER, "replays the 8 most similar summaries before answering a question"),
+            (MEANDER, "Summaries in MEANDER are the mean of the hidden states of a paragraph"),
+            (MEANDER, "Replay improves accuracy on the synthetic BookQA benchmark from 39.2% to 57.8%")], []),
+        q!("depth-prism", "Explain the PRISM paper: what it is, how it works and what it reports.",
+           [(PRISM, "PRISM projects every cached key onto a rank-64 subspace"),
+            (PRISM, "The subspace of PRISM is the span of the top singular vectors of keys"),
+            (PRISM, "by 9.8 times when combined with two-bit quantization")], []),
+        q!("depth-sentinel", "Explain the SENTINEL paper: what it is, how it works and what it reports.",
+           [(SENTINEL, "SENTINEL keeps the cache in host memory"),
+            (SENTINEL, "Prefetching in SENTINEL overlaps the transfer of layer l + 1 with the attention of layer l"),
+            (SENTINEL, "SENTINEL serves 1M-token contexts on a single 24 GB GPU")], []),
+        q!("depth-rivulet", "Explain the RIVULET paper: what it is, how it works and what it reports.",
+           [(RIVULET, "truncated Fourier series of 12 terms"),
+            (RIVULET, "The frequencies of RIVULET are fixed integers"),
+            (RIVULET, "RIVULET trains 2.7 times faster per step than a spline KAN of the same width")], []),
+        q!("depth-quarry", "Explain the QUARRY paper: what it is, how it works and what it reports.",
+           [(QUARRY, "physics-informed loss that adds the squared PDE residual at 4,096 collocation points"),
+            (QUARRY, "Boundary conditions in QUARRY are imposed exactly"),
+            (QUARRY, "relative L2 error of 3.4e-4")], []),
+        q!("depth-beacon", "Explain the BEACON paper: what it is, how it works and what it reports.",
+           [(BEACON, "drops sentences whose cited passage does not entail them"),
+            (BEACON, "Entailment in BEACON is checked by a small cross-encoder"),
+            (BEACON, "BEACON raises citation precision from 61.4% to 88.0%")], []),
+        q!("depth-fathom", "Explain the FATHOM paper: what it is, how it works and what it reports.",
+           [(FATHOM, "reciprocal rank fusion using a constant of 60"),
+            (FATHOM, "FATHOM indexes the title and abstract of each paper as a separate field"),
+            (FATHOM, "FATHOM improves recall at 10 from 0.71 to 0.84")], []),
+        q!("depth-conflux", "Explain the CONFLUX paper: what it is, how it works and what it reports.",
+           [(CONFLUX, "CONFLUX routes every token to 2 of 64 experts"),
+            (CONFLUX, "The router of CONFLUX adds a learned bias per expert"),
+            (CONFLUX, "with 31% of its training compute")], []),
+        q!("depth-estuary", "Explain the ESTUARY paper: what it is, how it works and what it reports.",
+           [(ESTUARY, "cosine similarity above 0.9"),
+            (ESTUARY, "Merged experts in ESTUARY take the average of their weights"),
+            (ESTUARY, "reduces the number of experts from 64 to 41")], []),
         q!("which-two-of-64", "Which paper routes each token to 2 of 64 experts?",
            [(CONFLUX, "CONFLUX routes every token to 2 of 64 experts")], ["CONFLUX"]),
         q!("which-fourier-kan", "Which paper replaces B-splines with Fourier series in a Kolmogorov-Arnold network?",

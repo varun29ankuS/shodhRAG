@@ -463,8 +463,13 @@ impl Comparison {
     }
 }
 
-/// Gate `report` against `baseline`: same kind, dataset and corpus, every
-/// baseline metric present and not worse than its noise allows.
+/// Settings that may differ between a baseline and a run (repetitions only
+/// change how the noise is estimated).
+const UNCOMPARED_SETTINGS: [&str; 1] = ["runs"];
+
+/// Gate `report` against `baseline`: same kind, dataset, corpus and engine
+/// settings, every baseline metric present and not worse than its noise
+/// allows.
 pub fn compare(baseline: &Baseline, report: &RunReport) -> Comparison {
     let mut problems = Vec::new();
     if baseline.kind != report.kind {
@@ -487,6 +492,22 @@ pub fn compare(baseline: &Baseline, report: &RunReport) -> Comparison {
             short(&baseline.corpus_hash),
             short(&report.corpus_hash)
         ));
+    }
+    let keys: std::collections::BTreeSet<&String> = baseline
+        .settings
+        .keys()
+        .chain(report.settings.keys())
+        .filter(|k| !UNCOMPARED_SETTINGS.contains(&k.as_str()))
+        .collect();
+    for key in keys {
+        let (was, now) = (baseline.settings.get(key), report.settings.get(key));
+        if was != now {
+            problems.push(format!(
+                "setting {key} changed (baseline {}, report {}): record a new baseline",
+                was.map_or("unset", String::as_str),
+                now.map_or("unset", String::as_str)
+            ));
+        }
     }
     let rows = baseline
         .metrics
@@ -603,6 +624,19 @@ mod tests {
         changed.corpus_hash = "ch".into();
         changed.dataset_hash = "other".into();
         assert!(!compare(&base, &changed).passed());
+        // A changed engine setting fails; the number of repetitions does not.
+        let mut tuned = report(&[("a", &[1.0]), ("b", &[1.0])]);
+        tuned.settings.insert("runs".into(), "1".into());
+        assert!(compare(&base, &tuned).passed());
+        tuned.settings.insert("pool_source_cap".into(), "2".into());
+        let outcome = compare(&base, &tuned);
+        assert!(!outcome.passed());
+        assert!(
+            outcome.problems[0]
+                .contains("setting pool_source_cap changed (baseline unset, report 2)"),
+            "{:?}",
+            outcome.problems
+        );
     }
 
     #[test]

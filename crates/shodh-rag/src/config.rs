@@ -108,6 +108,15 @@ pub struct SearchConfig {
     /// metric on the eval sets (`crates/shodh-eval`).
     #[serde(default = "default_pool_source_cap")]
     pub pool_source_cap: usize,
+    /// Share of the pool (0..=1) filled in score order before
+    /// `pool_source_cap` applies, so the best candidates of one file (what a
+    /// question about that file needs) are never displaced.
+    #[serde(default = "default_pool_open_share")]
+    pub pool_open_share: f32,
+}
+
+fn default_pool_open_share() -> f32 {
+    0.0
 }
 
 fn default_pool_source_cap() -> usize {
@@ -144,6 +153,9 @@ impl RAGConfig {
         }
         if !(0.0..=1.0).contains(&self.search.min_score_threshold) {
             return Err("search.min_score_threshold must be in [0.0, 1.0]".into());
+        }
+        if !(0.0..=1.0).contains(&self.search.pool_open_share) {
+            return Err("search.pool_open_share must be in [0.0, 1.0]".into());
         }
         if !(0.0..=1.0).contains(&self.search.source_decay) {
             return Err("search.source_decay must be in [0.0, 1.0]".into());
@@ -206,6 +218,7 @@ impl Default for RAGConfig {
                 score_weight: 0.3,
                 source_decay: default_source_decay(),
                 pool_source_cap: default_pool_source_cap(),
+                pool_open_share: default_pool_open_share(),
             },
             features: FeatureFlags {
                 enable_reranking: true,

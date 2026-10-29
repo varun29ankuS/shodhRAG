@@ -728,11 +728,81 @@ fn kv_survey() -> PdfPaper {
     }
 }
 
-/// The generated papers: method papers, the thesis and the KV cache survey.
+/// Reading notes: two per topic, generated text only (no question is about
+/// them). They bring the library to more files than the rerank pool can hold
+/// at two candidates each, the case in which a per-file pool limit could
+/// crowd out the chunks a question about one paper needs.
+pub(crate) const NOTES: &[(&str, &str, &Family)] = &[
+    (
+        "notes/linear-attention-notes-1.pdf",
+        "linear attention",
+        &LINEAR,
+    ),
+    (
+        "notes/linear-attention-notes-2.pdf",
+        "linear attention",
+        &LINEAR,
+    ),
+    (
+        "notes/long-term-memory-notes-1.pdf",
+        "long-term memory",
+        &MEMORY,
+    ),
+    (
+        "notes/long-term-memory-notes-2.pdf",
+        "long-term memory",
+        &MEMORY,
+    ),
+    ("notes/kv-cache-notes-1.pdf", "KV cache compression", &KV),
+    ("notes/kv-cache-notes-2.pdf", "KV cache compression", &KV),
+    ("notes/kan-notes-1.pdf", "Kolmogorov-Arnold networks", &KAN),
+    ("notes/kan-notes-2.pdf", "Kolmogorov-Arnold networks", &KAN),
+    (
+        "notes/rag-notes-1.pdf",
+        "retrieval-augmented generation",
+        &RAG,
+    ),
+    (
+        "notes/rag-notes-2.pdf",
+        "retrieval-augmented generation",
+        &RAG,
+    ),
+    ("notes/moe-notes-1.pdf", "mixture-of-experts", &MOE),
+    ("notes/moe-notes-2.pdf", "mixture-of-experts", &MOE),
+];
+
+fn note(path: &'static str, topic: &str, family: &Family) -> PdfPaper {
+    let rng = &mut Rng::new(path);
+    let mut blocks = vec![
+        Block::Title(format!("Reading group notes: {topic}")),
+        Block::Authors("Reading group of the Ashbury machine learning lab".to_string()),
+        h("1 Background"),
+    ];
+    discussion(rng, &mut blocks, 3, &[INTRO, DISCUSSION], topic, family);
+    blocks.push(h("2 Methods we read"));
+    discussion(rng, &mut blocks, 3, &[METHOD], topic, family);
+    blocks.push(h("3 Results we discussed"));
+    discussion(rng, &mut blocks, 3, &[EXPERIMENTS], topic, family);
+    blocks.push(h("4 Open questions"));
+    discussion(rng, &mut blocks, 2, &[DISCUSSION], topic, family);
+    PdfPaper {
+        path,
+        title: "Reading group notes",
+        blocks,
+    }
+}
+
+/// The generated papers: method papers, the thesis, the KV cache survey and
+/// the reading notes.
 pub(crate) fn pdf_papers() -> Vec<PdfPaper> {
     let mut papers: Vec<PdfPaper> = METHODS.iter().map(method_paper).collect();
     papers.push(thesis());
     papers.push(kv_survey());
+    papers.extend(
+        NOTES
+            .iter()
+            .map(|&(path, topic, family)| note(path, topic, family)),
+    );
     papers
 }
 

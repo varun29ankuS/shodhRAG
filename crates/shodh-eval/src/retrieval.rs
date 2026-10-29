@@ -41,17 +41,22 @@ pub struct RetrievalOptions {
     pub tweaks: Tweaks,
 }
 
-/// Expected document key -> (pages, passage) for one case.
-pub fn expected_map(
-    corpus: &std::path::Path,
-    case: &EvalCase,
-) -> BTreeMap<String, (Vec<u32>, Option<String>)> {
-    let mut map: BTreeMap<String, (Vec<u32>, Option<String>)> = BTreeMap::new();
+/// Expected document key -> (pages, passages) for one case. A file listed
+/// several times (a question that needs several passages of one document)
+/// gets all of its pages and passages.
+pub fn expected_map(corpus: &std::path::Path, case: &EvalCase) -> crate::metrics::Expected {
+    let mut map = crate::metrics::Expected::new();
     for source in &case.sources {
         let entry = map.entry(expected_key(corpus, &source.file)).or_default();
-        entry.0.extend(source.pages.iter().copied());
-        if entry.1.is_none() {
-            entry.1 = source.passage.clone();
+        for page in &source.pages {
+            if !entry.0.contains(page) {
+                entry.0.push(*page);
+            }
+        }
+        if let Some(passage) = &source.passage {
+            if !entry.1.contains(passage) {
+                entry.1.push(passage.clone());
+            }
         }
     }
     map
@@ -76,6 +81,8 @@ struct Searched {
     records: Vec<CaseRecord>,
     /// `recall@20` per case.
     wide_recall: Vec<f64>,
+    /// `depth_recall@20` per depth case.
+    wide_depth: Vec<f64>,
     diagnostics: Vec<BTreeMap<String, f64>>,
 }
 
@@ -114,6 +121,18 @@ fn case_diagnostics(
     out
 }
 
+/// Gated diversity: the mean number of distinct files among the first 10
+/// results of the cases whose answer spans several documents (for them, one
+/// file is never the whole answer). `None` without such cases.
+fn multi_files(records: &[CaseRecord]) -> Option<f64> {
+    let counts: Vec<f64> = records
+        .iter()
+        .filter(|r| r.ranks.as_ref().is_some_and(|k| k.expected_docs > 1))
+        .filter_map(|r| r.unique_sources.get("10").map(|&n| n as f64))
+        .collect();
+    (!counts.is_empty()).then(|| counts.iter().sum::<f64>() / counts.len() as f64)
+}
+
 /// Mean of each diagnostic over the cases that have it.
 fn mean_diagnostics(cases: &[BTreeMap<String, f64>]) -> BTreeMap<String, f64> {
     let mut sums: BTreeMap<String, (f64, usize)> = BTreeMap::new();
@@ -147,6 +166,7 @@ async fn search_all(
     let mut searched = Searched {
         records: Vec::with_capacity(cases.len()),
         wide_recall: Vec::with_capacity(cases.len()),
+        wide_depth: Vec::new(),
         diagnostics: Vec::with_capacity(cases.len()),
     };
     // Indexed source of each document key, to tell a passage the search did
@@ -183,9 +203,11 @@ async fn search_all(
         let wide: Vec<RetrievedChunk> = wide_results.iter().map(|r| index.chunk(r)).collect();
         let expected = expected_map(&index.root, case);
         let ranks = rank_case(&expected, &chunks);
-        searched
-            .wide_recall
-            .push(rank_case(&expected, &wide).recall(WIDE_K));
+        let wide_ranks = rank_case(&expected, &wide);
+        searched.wide_recall.push(wide_ranks.recall(WIDE_K));
+        if let Some(depth) = wide_ranks.depth_recall(WIDE_K) {
+            searched.wide_depth.push(depth);
+        }
         let mut diagnostics = case_diagnostics(&chunks, &wide, expected.len(), &trace);
         if let Some(held) = passage_indexed {
             diagnostics.insert(
@@ -256,10 +278,10 @@ async fn passage_indexed(
     case: &EvalCase,
 ) -> Result<PassageCheck> {
     let mut any = false;
-    for (key, (_, passage)) in expected_map(&index.root, case) {
-        let Some(passage) = passage else {
+    for (key, (_, passages)) in expected_map(&index.root, case) {
+        if passages.is_empty() {
             continue;
-        };
+        }
         any = true;
         let Some(source) = sources.get(&key) else {
             return Ok(PassageCheck {
@@ -274,13 +296,15 @@ async fn passage_indexed(
             .chunks_of_source(source)
             .await
             .with_context(|| format!("listing the chunks of {key}"))?;
-        if !chunks.iter().any(|c| contains_span(&c.text, &passage)) {
-            let nearest = nearest_chunk(chunks.iter().map(|c| c.text.as_str()), &passage)
-                .map(|text| text.chars().take(NEAREST_CHARS).collect());
-            return Ok(PassageCheck {
-                indexed: Some(false),
-                nearest,
-            });
+        for passage in &passages {
+            if !chunks.iter().any(|c| contains_span(&c.text, passage)) {
+                let nearest = nearest_chunk(chunks.iter().map(|c| c.text.as_str()), passage)
+                    .map(|text| text.chars().take(NEAREST_CHARS).collect());
+                return Ok(PassageCheck {
+                    indexed: Some(false),
+                    nearest,
+                });
+            }
         }
     }
     Ok(PassageCheck {
@@ -368,6 +392,15 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
             format!("recall@{WIDE_K}"),
             searched.wide_recall.iter().sum::<f64>() / searched.wide_recall.len() as f64,
         );
+        if !searched.wide_depth.is_empty() {
+            metrics.insert(
+                format!("depth_recall@{WIDE_K}"),
+                searched.wide_depth.iter().sum::<f64>() / searched.wide_depth.len() as f64,
+            );
+        }
+        if let Some(files) = multi_files(&searched.records) {
+            metrics.insert("multi_files@10".to_string(), files);
+        }
         per_run.push(metrics);
         let mut diagnostics = mean_diagnostics(&searched.diagnostics);
         diagnostics.insert("chunks".to_string(), index.ingest.chunks as f64);
@@ -408,6 +441,23 @@ mod tests {
             pages: None,
             text: String::new(),
         }
+    }
+
+    #[test]
+    fn multi_files_counts_only_cases_with_several_expected_documents() {
+        let record = |expected_docs: usize, files: usize| CaseRecord {
+            ranks: Some(crate::metrics::CaseRanks {
+                expected_docs,
+                ..Default::default()
+            }),
+            unique_sources: [("10".to_string(), files)].into_iter().collect(),
+            ..CaseRecord::default()
+        };
+        assert_eq!(
+            multi_files(&[record(1, 9), record(2, 3), record(3, 5)]),
+            Some(4.0)
+        );
+        assert_eq!(multi_files(&[record(1, 9)]), None);
     }
 
     #[test]

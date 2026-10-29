@@ -147,6 +147,10 @@ pub struct CaseRecord {
     /// (`"10"`, `"20"`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unique_sources: BTreeMap<String, usize>,
+    /// Retrieval: whether the index holds every expected passage in a chunk
+    /// of its document (`false`: lost before ranking, in parsing or chunking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passage_indexed: Option<bool>,
     /// Retrieval: what each stage of the search kept (results and files).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<shodh_rag::rag_engine::SearchTrace>,

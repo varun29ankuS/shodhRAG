@@ -3703,6 +3703,17 @@ impl RAGEngine {
         self.store.document_sources().await
     }
 
+    /// Every stored chunk of one source, in chunk order: what the index holds
+    /// for a document.
+    pub async fn chunks_of_source(&self, source: &str) -> Result<Vec<crate::storage::SearchHit>> {
+        let mut chunks = self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1_000_000)
+            .await?;
+        chunks.sort_by_key(|c| c.chunk_index);
+        Ok(chunks)
+    }
+
     /// One row per indexed source and space: its title.
     pub async fn document_titles(&self) -> Result<Vec<crate::storage::DocumentTitleRow>> {
         self.store.document_titles().await

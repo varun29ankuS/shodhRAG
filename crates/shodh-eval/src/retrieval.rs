@@ -13,11 +13,12 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 
-use crate::corpus::{corpus_hash, expected_key};
+use crate::corpus::{corpus_hash, expected_key, relative_key};
 use crate::dataset::{Dataset, EvalCase};
 use crate::engine::{index_corpus_with, settings_with, IndexedCorpus, Tweaks};
 use crate::metrics::{rank_case, retrieval_metrics, unique_sources, RetrievedChunk};
 use crate::report::{combine_runs, summarize_latencies, CaseRecord, RunKind, RunReport, TopResult};
+use crate::text::contains_span;
 
 /// Results fetched per question (the top of the agent tool's range).
 pub const DEFAULT_K: usize = 10;
@@ -148,7 +149,20 @@ async fn search_all(
         wide_recall: Vec::with_capacity(cases.len()),
         diagnostics: Vec::with_capacity(cases.len()),
     };
+    // Indexed source of each document key, to tell a passage the search did
+    // not rank from one the index does not hold (lost in parsing or chunking).
+    let sources: BTreeMap<String, String> = index
+        .rag
+        .read()
+        .await
+        .document_sources()
+        .await
+        .context("listing the indexed sources")?
+        .into_iter()
+        .filter_map(|row| relative_key(&index.root_key, &row.source).map(|key| (key, row.source)))
+        .collect();
     for case in cases {
+        let passage_indexed = passage_indexed(index, &sources, case).await?;
         let engine = index.rag.read().await;
         let started = Instant::now();
         let (results, trace) = engine
@@ -169,7 +183,13 @@ async fn search_all(
         searched
             .wide_recall
             .push(rank_case(&expected, &wide).recall(WIDE_K));
-        let diagnostics = case_diagnostics(&chunks, &wide, expected.len(), &trace);
+        let mut diagnostics = case_diagnostics(&chunks, &wide, expected.len(), &trace);
+        if let Some(held) = passage_indexed {
+            diagnostics.insert(
+                "passage_not_in_index".to_string(),
+                if held { 0.0 } else { 1.0 },
+            );
+        }
         let spread: BTreeMap<String, usize> = [
             ("10".to_string(), unique_sources(&chunks, 10)),
             (WIDE_K.to_string(), unique_sources(&wide, WIDE_K)),
@@ -186,10 +206,41 @@ async fn search_all(
             latency_ms: Some(ms),
             unique_sources: spread,
             trace: Some(trace),
+            passage_indexed,
             ..CaseRecord::default()
         });
     }
     Ok(searched)
+}
+
+/// Whether every expected passage of `case` is in a stored chunk of its
+/// document (`None` when the case gives no passage).
+async fn passage_indexed(
+    index: &IndexedCorpus,
+    sources: &BTreeMap<String, String>,
+    case: &EvalCase,
+) -> Result<Option<bool>> {
+    let mut any = false;
+    for (key, (_, passage)) in expected_map(&index.root, case) {
+        let Some(passage) = passage else {
+            continue;
+        };
+        any = true;
+        let Some(source) = sources.get(&key) else {
+            return Ok(Some(false));
+        };
+        let chunks = index
+            .rag
+            .read()
+            .await
+            .chunks_of_source(source)
+            .await
+            .with_context(|| format!("listing the chunks of {key}"))?;
+        if !chunks.iter().any(|c| contains_span(&c.text, &passage)) {
+            return Ok(Some(false));
+        }
+    }
+    Ok(any.then_some(true))
 }
 
 /// The OCR choice as report settings.

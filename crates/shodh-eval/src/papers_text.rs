@@ -2,6 +2,10 @@
 //! questions. Every method, author, benchmark and number is invented.
 
 use crate::papers::{eq, fig, h, p, refs, table, Block, PdfPaper, Question};
+use crate::papers_gen::{
+    BEACON, CAIRN, CONFLUX, ESTUARY, FATHOM, KV_SURVEY, MEANDER, PRISM, QUARRY, RIVULET, SENTINEL,
+    TESSERA, THESIS, VESPER,
+};
 
 pub const LUMEN: &str = "papers/lumen-gated-delta-rule.pdf";
 pub const TIDE: &str = "papers/tide-test-time-memory.pdf";
@@ -368,9 +372,9 @@ fn kandle() -> PdfPaper {
 }
 
 /// A method in the survey's catalogue: name, year, mechanism, result.
-type Entry = (&'static str, u32, &'static str, &'static str);
+pub(crate) type Entry = (&'static str, u32, &'static str, &'static str);
 
-const LINEAR_FAMILY: &[Entry] = &[
+pub(crate) const LINEAR_FAMILY: &[Entry] = &[
     ("Alder", 2021, "It replaces the softmax with a positive random feature map so that attention can be computed as a running sum.", "It reports a WikiText perplexity of 21.4 at 350M parameters."),
     ("Basalt", 2022, "It adds a learned scalar decay to every head so that the state forgets at a rate chosen per head.", "It reports a WikiText perplexity of 19.8 at 350M parameters."),
     ("Cobalt", 2022, "It normalises the read-out by the running sum of keys, which keeps the output scale stable over long inputs.", "Its authors measure a 1.9 times speedup over softmax attention at 8K tokens."),
@@ -384,7 +388,7 @@ const LINEAR_FAMILY: &[Entry] = &[
     ("Moss", 2025, "It applies a learned orthogonal transition to the state before each write, so information rotates rather than decays.", "It keeps 80% MQAR recall at 512 key-value pairs."),
 ];
 
-const MEMORY_FAMILY: &[Entry] = &[
+pub(crate) const MEMORY_FAMILY: &[Entry] = &[
     ("Heron", 2020, "It keeps an external memory of past segment summaries that later segments read with cross-attention.", "It improves LongRecall accuracy at 64K tokens to 35.0%."),
     ("Iris", 2021, "It compresses each segment into eight memory slots with a learned pooling layer before discarding the tokens.", "It reports 28.4% LongRecall accuracy at 64K tokens."),
     ("Juniper", 2022, "It trains a fast-weight matrix with a Hebbian rule inside each layer and resets it at document boundaries.", "It is 1.2 times slower than a Transformer at 4K tokens."),
@@ -398,7 +402,7 @@ const MEMORY_FAMILY: &[Entry] = &[
     ("Quartz", 2025, "It shares one memory across the layers of a model and lets each layer write to its own region of it.", "It uses 30% fewer parameters than a per-layer memory of equal recall."),
 ];
 
-const QUANT_FAMILY: &[Entry] = &[
+pub(crate) const QUANT_FAMILY: &[Entry] = &[
     ("Opal", 2022, "It stores the cache in eight-bit integers with one scale per attention head.", "It halves cache memory with no measurable accuracy loss."),
     ("Pumice", 2023, "It quantizes keys and values per token to four bits and keeps the attention sink tokens in full precision.", "It reduces cache memory by 3.6 times."),
     ("Quill", 2023, "It applies a random rotation to keys before quantizing them, which spreads outliers across channels.", "It loses 1.1 points on LongSuite at three bits."),
@@ -412,7 +416,7 @@ const QUANT_FAMILY: &[Entry] = &[
     ("Zinnia", 2025, "It decides the precision of each block of tokens from the norm of its keys, spending bits on the largest keys.", "It reaches an average of 2.2 bits per number."),
 ];
 
-const EVICTION_FAMILY: &[Entry] = &[
+pub(crate) const EVICTION_FAMILY: &[Entry] = &[
     ("Vetch", 2022, "It evicts tokens uniformly at random once the cache is full, a baseline that is surprisingly hard to beat on short tasks.", "It keeps 81% of full-cache accuracy at a 50% budget."),
     ("Wren", 2023, "It keeps a fixed window of recent tokens plus the first few tokens of the sequence.", "It keeps 72% of full-cache accuracy at a 20% budget."),
     ("Xylem", 2023, "It merges evicted tokens into their most similar kept neighbour instead of dropping them.", "It keeps 93% of full-cache accuracy at a 20% budget."),
@@ -788,11 +792,13 @@ pub(crate) fn questions() -> Vec<Question> {
         q!("multi-lumen-tide", "How do LUMEN and TIDE differ in the way they write to memory?",
            [(LUMEN, "The delta rule writes the difference between the new value and the value currently retrieved for the key"),
             (TIDE, "the memory is trained online to minimise the reconstruction error of the pair")], []),
+        // The live failure: a broad question over a library with long surveys and a thesis
+        // returned passages from two files. The method papers must come through.
         q!("multi-long-context-memory", "What approaches in my papers reduce the memory needed for long-context inference?",
            [(SQUEEZE, "reduces KV cache memory by 5.3 times"),
             (HARBOR, "keeps only a fixed budget of the key-value cache"),
-            (LUMEN, "keeps a fixed-size state instead of a growing key-value cache"),
-            (SURVEY, "This survey reviews three responses to these limits")], []),
+            (PRISM, "PRISM projects every cached key onto a rank-64 subspace"),
+            (SENTINEL, "SENTINEL keeps the cache in host memory")], []),
         q!("multi-chunkwise", "Which methods train linear attention with a chunk-wise parallel form?",
            [(LUMEN, "We split the sequence into chunks and compute each chunk's contribution with matrix multiplications"),
             (ORBIT, "The output of a query combines an intra-chunk term computed with masked attention and an inter-chunk term read from the state")], []),
@@ -810,6 +816,82 @@ pub(crate) fn questions() -> Vec<Question> {
            [(LUMEN, "This recurrence has constant memory per token"),
             (TIDE, "the memory is trained online to minimise the reconstruction error of the pair"),
             (ORBIT, "the state carries keys rotated by their absolute position")], []),
+        // The generated papers (`crate::papers_gen`).
+        q!("vesper-sparsity", "How many entries of each feature vector does VESPER keep?",
+           [(VESPER, "VESPER keeps only the 16 largest entries of each feature vector")], ["16 largest entries"]),
+        q!("vesper-perplexity", "What WikiText perplexity does VESPER reach at 760M parameters?",
+           [(VESPER, "VESPER reaches a WikiText perplexity of 18.35")], ["18.35"]),
+        q!("tessera-expansion", "By what factor does TESSERA expand the state of each head?",
+           [(TESSERA, "TESSERA expands the state of every head by a factor of four")], ["factor of four"]),
+        q!("tessera-mqar", "How much does TESSERA improve MQAR accuracy?",
+           [(TESSERA, "TESSERA lifts MQAR accuracy from 61.0 to 83.5")], ["83.5"]),
+        q!("cairn-slots", "How many memory slots does CAIRN write each token into?",
+           [(CAIRN, "CAIRN writes each token into the two memory slots whose keys are closest to it")], ["two memory slots"]),
+        q!("meander-replay", "How many summaries does MEANDER replay before answering?",
+           [(MEANDER, "replays the 8 most similar summaries before answering a question")], ["8 most similar summaries"]),
+        q!("meander-bookqa", "How much does episodic replay improve BookQA accuracy?",
+           [(MEANDER, "Replay improves accuracy on the synthetic BookQA benchmark from 39.2% to 57.8%")], ["57.8%"]),
+        q!("prism-rank", "What rank does PRISM project cached keys to?",
+           [(PRISM, "PRISM projects every cached key onto a rank-64 subspace")], ["rank-64"]),
+        q!("prism-combined", "How much does PRISM reduce KV cache memory when combined with quantization?",
+           [(PRISM, "by 9.8 times when combined with two-bit quantization")], ["9.8 times"]),
+        q!("sentinel-prefetch", "How does SENTINEL decide which KV cache pages to prefetch?",
+           [(SENTINEL, "prefetches the pages that the previous layer's queries attended to most")], []),
+        q!("sentinel-context", "What context length can SENTINEL serve on a single 24 GB GPU?",
+           [(SENTINEL, "SENTINEL serves 1M-token contexts on a single 24 GB GPU")], ["1M-token"]),
+        q!("rivulet-fourier", "What does RIVULET use on a KAN's edges instead of B-splines?",
+           [(RIVULET, "truncated Fourier series of 12 terms")], ["Fourier series"]),
+        q!("quarry-error", "What error does QUARRY reach on the Poisson equation?",
+           [(QUARRY, "relative L2 error of 3.4e-4")], ["3.4e-4"]),
+        q!("quarry-boundary", "How does QUARRY impose boundary conditions?",
+           [(QUARRY, "Boundary conditions in QUARRY are imposed exactly")], []),
+        q!("beacon-drops", "What does BEACON do with sentences whose citation does not support them?",
+           [(BEACON, "drops sentences whose cited passage does not entail them")], ["drops"]),
+        q!("beacon-precision", "How much does BEACON improve citation precision?",
+           [(BEACON, "BEACON raises citation precision from 61.4% to 88.0%")], ["88.0%"]),
+        q!("fathom-rrf", "What constant does FATHOM use in reciprocal rank fusion?",
+           [(FATHOM, "reciprocal rank fusion using a constant of 60")], ["60"]),
+        q!("conflux-routing", "How many experts does CONFLUX route each token to?",
+           [(CONFLUX, "CONFLUX routes every token to 2 of 64 experts")], ["2 of 64"]),
+        q!("conflux-compute", "How much training compute does CONFLUX need to match a dense model?",
+           [(CONFLUX, "with 31% of its training compute")], ["31%"]),
+        q!("estuary-merge", "When does ESTUARY merge two experts?",
+           [(ESTUARY, "cosine similarity above 0.9")], ["0.9"]),
+        q!("estuary-count", "How many experts remain after ESTUARY merges them?",
+           [(ESTUARY, "reduces the number of experts from 64 to 41")], ["41"]),
+        q!("thesis-definition", "How does the thesis define a memory mechanism?",
+           [(THESIS, "a memory mechanism is any component that carries information from one token to a later one without recomputing it")], []),
+        q!("thesis-claim", "What is the central claim of the thesis on memory mechanisms?",
+           [(THESIS, "write policies matter more than memory size")], ["write policies"]),
+        q!("kv-survey-taxonomy", "How does the KV cache compression survey divide the methods it covers?",
+           [(KV_SURVEY, "divide KV cache compression into token-level, precision-level and dimension-level methods")], ["token-level"]),
+        q!("kv-survey-70b", "How large is the key-value cache of a 70B model at 128K tokens?",
+           [(KV_SURVEY, "exceeds 300 GB in half precision")], ["300 GB"]),
+        q!("which-two-of-64", "Which paper routes each token to 2 of 64 experts?",
+           [(CONFLUX, "CONFLUX routes every token to 2 of 64 experts")], ["CONFLUX"]),
+        q!("which-fourier-kan", "Which paper replaces B-splines with Fourier series in a Kolmogorov-Arnold network?",
+           [(RIVULET, "RIVULET replaces the B-splines of a KAN with truncated Fourier series")], ["RIVULET"]),
+        q!("which-offload", "Which paper offloads the KV cache to host memory?",
+           [(SENTINEL, "SENTINEL keeps the cache in host memory")], ["SENTINEL"]),
+        q!("multi-moe", "How do CONFLUX and ESTUARY change the experts of a mixture-of-experts model?",
+           [(CONFLUX, "CONFLUX routes every token to 2 of 64 experts"),
+            (ESTUARY, "ESTUARY merges experts whose weight vectors have a cosine similarity above 0.9")], []),
+        q!("multi-rag", "How do BEACON and FATHOM improve retrieval-augmented generation?",
+           [(BEACON, "BEACON asks the generator to cite a passage for every sentence"),
+            (FATHOM, "FATHOM fuses a BM25 ranking and a dense ranking")], []),
+        q!("multi-kan-edges", "What functions do RIVULET and KANDLE put on the edges of a KAN?",
+           [(RIVULET, "truncated Fourier series of 12 terms"),
+            (KANDLE, "Each edge function is a cubic B-spline plus a residual SiLU term")], []),
+        q!("multi-memory-writes", "How do CAIRN and TIDE decide where and how much to write into memory?",
+           [(CAIRN, "CAIRN writes each token into the two memory slots whose keys are closest to it"),
+            (TIDE, "surprise is the gradient of the associative loss with respect to the memory parameters")], []),
+        q!("multi-linear-state", "How do VESPER and TESSERA change the state of linear attention?",
+           [(VESPER, "so a state write touches a small fraction of the state"),
+            (TESSERA, "TESSERA expands the state of every head by a factor of four")], []),
+        q!("multi-beyond-gpu", "How can a model serve contexts whose KV cache does not fit in GPU memory?",
+           [(SENTINEL, "SENTINEL keeps the cache in host memory"),
+            (PRISM, "PRISM projects every cached key onto a rank-64 subspace"),
+            (SQUEEZE, "a tuning-free method that stores the cache in two bits per number")], []),
     ]
 }
 
@@ -825,5 +907,13 @@ pub(crate) fn unanswerable_questions() -> Vec<(&'static str, &'static str)> {
             "How does SQUEEZE perform on image classification?",
         ),
         ("none-cluster", "How many GPUs were used to train KANDLE?"),
+        (
+            "none-moe-translation",
+            "What BLEU score does CONFLUX reach on French-English translation?",
+        ),
+        (
+            "none-thesis-advisor",
+            "Who supervised the thesis on memory mechanisms?",
+        ),
     ]
 }

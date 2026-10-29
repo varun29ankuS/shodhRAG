@@ -5,8 +5,10 @@
 //! dataset and corpus hashes. The gate fails when a metric is worse than the
 //! baseline mean by more than the measured noise:
 //! `max(NOISE_SIGMA * stddev, EPSILON)`. Retrieval is deterministic, so its
-//! measured stddev is 0 and any drop beyond `EPSILON` fails. Latency is
-//! reported, never gated.
+//! measured stddev is 0 and any drop beyond `EPSILON` fails. Latency and
+//! the diagnostics (how many files the results come from, per search stage)
+//! are reported, never gated: more files is not better for a question one
+//! document answers.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -141,6 +143,13 @@ pub struct CaseRecord {
     /// Retrieval: the first result (document, pages, start of its text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top: Option<TopResult>,
+    /// Retrieval: distinct documents among the first n results, by n
+    /// (`"10"`, `"20"`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unique_sources: BTreeMap<String, usize>,
+    /// Retrieval: what each stage of the search kept (results and files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<shodh_rag::rag_engine::SearchTrace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +194,9 @@ pub struct RunReport {
     /// What was run (k, models, provider): recorded for reproducibility.
     pub settings: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, MetricStats>,
+    /// Reported, never gated (see the module docs).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub diagnostics: BTreeMap<String, MetricStats>,
     /// Per search (retrieval) or per answer (answers), across all runs.
     pub latency: LatencySummary,
     /// Answers: from sending the question to the first streamed text.
@@ -253,6 +265,20 @@ impl RunReport {
                 "| {name} | {:.4} | {:.4} | {:.4} | {:.4} | {} |",
                 s.mean, s.stddev, s.min, s.max, s.runs
             );
+        }
+        if !self.diagnostics.is_empty() {
+            let _ = writeln!(
+                md,
+                "\n| Diagnostic (not gated) | Mean | Std | Min | Max | Runs |"
+            );
+            let _ = writeln!(md, "|---|---|---|---|---|---|");
+            for (name, s) in &self.diagnostics {
+                let _ = writeln!(
+                    md,
+                    "| {name} | {:.4} | {:.4} | {:.4} | {:.4} | {} |",
+                    s.mean, s.stddev, s.min, s.max, s.runs
+                );
+            }
         }
         let l = &self.latency;
         let what = match self.kind {
@@ -495,6 +521,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), MetricStats::from_values(v).unwrap()))
                 .collect(),
+            diagnostics: BTreeMap::new(),
             latency: LatencySummary::default(),
             first_token: None,
             provider_errors: BTreeMap::new(),
@@ -587,6 +614,14 @@ mod tests {
         assert!(md.contains("| hit@5 | 1.0000 |"));
         assert!(md.contains("`c1` q? (document rank none)"));
         assert!(!md.contains("Time to first token"));
+        assert!(!md.contains("Diagnostic (not gated)"));
+        r.diagnostics.insert(
+            "unique_sources@10".into(),
+            MetricStats::from_values(&[3.5]).unwrap(),
+        );
+        r.write(&path).unwrap();
+        assert_eq!(RunReport::read(&path).unwrap(), r);
+        assert!(r.markdown().contains("| unique_sources@10 | 3.5000 |"));
         r.first_token = Some(summarize_latencies(&[300.0, 900.0]));
         r.provider_errors.insert("rate_limited".into(), 2);
         r.stopped = Some("quota used up".into());

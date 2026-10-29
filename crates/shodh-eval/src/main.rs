@@ -9,8 +9,9 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use shodh_eval::corpus::{absolute_dir, default_output_dir, prepare_output_dir, LOCAL_DIR};
 use shodh_eval::dataset::Dataset;
+use shodh_eval::engine::Tweaks;
 use shodh_eval::report::{compare, Baseline, RunReport};
-use shodh_eval::{answers, generate, models, ocr, retrieval, scan, synth};
+use shodh_eval::{answers, generate, models, ocr, papers, retrieval, scan, synth};
 use shodh_rag::config::{OcrConfig, OcrEngineChoice};
 
 const USAGE: &str = "\
@@ -19,10 +20,12 @@ shodh-eval: retrieval and answer quality of shodh
 USAGE:
   shodh-eval synth     --out <dir>
   shodh-eval synth-scanned --out <dir>
+  shodh-eval synth-papers --out <dir>
   shodh-eval models    --models <dir> [--answer-check]
   shodh-eval retrieval --corpus <dir> --models <dir> [--dataset <file>] [--runs <n>] [--k <n>]
                        [--out <dir>] [--write-baseline <file>]
                        [--ocr auto|system|ppocr] [--ocr-dpi <n>] [--system-ocr-dpi <n>]
+                       [--search key=value,...]
   shodh-eval ocr       --corpus <dir> --truth <ground-truth.json> --engine ppocr|system
                        [--models <dir> | --ocr-model <dir>] [--det-band-pixels <n>] [--threads <n>]
                        [--dpi <n>] [--worker] [--out <file>]
@@ -156,6 +159,19 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                 out.display()
             );
         }
+        "synth-papers" => {
+            let args = Args::parse(rest, &["out"], &[])?;
+            let out = args.required_path("out")?;
+            let corpus = papers::build();
+            corpus.check()?;
+            corpus.to_synth().write(&out)?;
+            eprintln!(
+                "Wrote {} files and {} cases to {}",
+                corpus.files.len(),
+                corpus.dataset.cases.len(),
+                out.display()
+            );
+        }
         "ocr" => {
             let args = Args::parse(
                 rest,
@@ -241,9 +257,14 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                     "ocr",
                     "ocr-dpi",
                     "system-ocr-dpi",
+                    "search",
                 ],
                 &[],
             )?;
+            let tweaks = match args.values.get("search") {
+                Some(spec) => Tweaks::parse(spec).context("--search")?,
+                None => Tweaks::default(),
+            };
             let (corpus, out, dataset) = corpus_inputs(&args, true)?;
             let dataset = dataset.ok_or_else(|| anyhow!("no dataset"))?;
             let mut ocr = OcrConfig {
@@ -266,6 +287,7 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                 runs: args.number("runs", 1usize)?,
                 k: args.number("k", retrieval::DEFAULT_K)?,
                 ocr,
+                tweaks,
             })
             .await?;
             write_outputs(&out, &report)?;

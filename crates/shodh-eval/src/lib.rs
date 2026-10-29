@@ -19,6 +19,8 @@ pub mod generate;
 pub mod metrics;
 pub mod models;
 pub mod ocr;
+pub mod papers;
+pub mod papers_text;
 pub mod pdf;
 pub mod provider;
 pub mod report;

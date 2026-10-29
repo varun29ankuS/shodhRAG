@@ -215,6 +215,7 @@ jobs:
           --corpus crates/shodh-eval/data/synthetic/corpus
           --dataset crates/shodh-eval/data/synthetic/dataset.json
           --models "${{ runner.temp }}/shodh-models"
+          --runs 3 --write-baseline eval-out/baseline.json
           --out eval-out
 
       - name: Compare with baseline
@@ -230,6 +231,7 @@ jobs:
           --dataset crates/shodh-eval/data/scanned/dataset.json
           --models "${{ runner.temp }}/shodh-models"
           --ocr ppocr
+          --runs 3 --write-baseline eval-out-scanned/baseline.json
           --out eval-out-scanned
 
       - name: Compare scanned with baseline
@@ -237,6 +239,18 @@ jobs:
           cargo run --package shodh-eval -- compare
           --baseline crates/shodh-eval/data/scanned/baseline.json
           --report eval-out-scanned/retrieval-report.json
+
+      - name: Generate the paper corpus
+        run: cargo run --package shodh-eval -- synth-papers --out crates/shodh-eval/data/papers
+
+      - name: Paper retrieval eval
+        run: >
+          cargo run --package shodh-eval -- retrieval
+          --corpus crates/shodh-eval/data/papers/corpus
+          --dataset crates/shodh-eval/data/papers/dataset.json
+          --models "${{ runner.temp }}/shodh-models"
+          --runs 3 --write-baseline eval-out-papers/baseline.json
+          --out eval-out-papers
 
       - name: Upload eval report
         if: always()
@@ -246,8 +260,89 @@ jobs:
           path: |
             eval-out/retrieval-report.json
             eval-out/retrieval-summary.md
+            eval-out/baseline.json
             eval-out-scanned/retrieval-report.json
             eval-out-scanned/retrieval-summary.md
+            eval-out-scanned/baseline.json
+            eval-out-papers/retrieval-report.json
+            eval-out-papers/retrieval-summary.md
+            eval-out-papers/baseline.json
+            crates/shodh-eval/data/papers/
+          if-no-files-found: ignore
+
+  eval-sweep:
+    name: Retrieval sweep (measurement)
+    runs-on: windows-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+
+      - name: Install Protobuf compiler
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
+
+      - name: Restore search models
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
+
+      - name: Install search and OCR models
+        run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
+
+      - name: Generate the paper corpus
+        run: cargo run --package shodh-eval -- synth-papers --out eval-papers
+
+      - name: Sweep search settings
+        shell: pwsh
+        run: |
+          $exe = "target/debug/shodh-eval.exe"
+          $models = "${{ runner.temp }}/shodh-models"
+          $variants = [ordered]@{
+            "default" = ""
+            "decay-0.3" = "source_decay=0.3"
+            "decay-0.7" = "source_decay=0.7"
+            "decay-0.85" = "source_decay=0.85"
+            "decay-1.0" = "source_decay=1.0"
+            "poolcap-4" = "pool_source_cap=4"
+            "poolcap-8" = "pool_source_cap=8"
+            "rrf-20" = "rrf_k=20"
+            "mult-2" = "candidate_multiplier=2"
+            "mult-2-poolcap-4" = "candidate_multiplier=2,pool_source_cap=4"
+            "mult-10" = "candidate_multiplier=10"
+            "threshold-0" = "min_score_threshold=0"
+            "rerank-off" = "reranking=off"
+            "chunk-256" = "chunk_max_tokens=256"
+          }
+          $corpora = @(
+            @{ name = "papers"; dir = "eval-papers/corpus"; ds = "eval-papers/dataset.json" },
+            @{ name = "synthetic"; dir = "crates/shodh-eval/data/synthetic/corpus"; ds = "crates/shodh-eval/data/synthetic/dataset.json" }
+          )
+          foreach ($corpus in $corpora) {
+            foreach ($name in $variants.Keys) {
+              $a = @("retrieval", "--corpus", $corpus.dir, "--dataset", $corpus.ds, "--models", $models, "--out", "eval-sweep/$($corpus.name)-$name")
+              if ($variants[$name]) { $a += @("--search", $variants[$name]) }
+              & $exe @a | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "sweep $($corpus.name) $name failed" }
+              Write-Output "done $($corpus.name) $name"
+            }
+          }
+
+      - name: Upload sweep reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-sweep
+          path: eval-sweep/
           if-no-files-found: ignore
 
   frontend:

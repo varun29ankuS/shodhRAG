@@ -516,6 +516,7 @@ pub async fn run(opts: &AnswerOptions) -> Result<RunReport> {
         created_at: chrono::Utc::now().to_rfc3339(),
         settings,
         metrics: combine_runs(&[answer_metrics(&scores, errors)]),
+        diagnostics: BTreeMap::new(),
         latency: summarize_latencies(&latencies),
         first_token: Some(summarize_latencies(&first_tokens)),
         provider_errors,

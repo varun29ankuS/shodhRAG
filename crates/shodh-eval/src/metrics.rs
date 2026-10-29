@@ -2,7 +2,9 @@
 //!
 //! Retrieval (no LLM): the first rank of an expected document (results are
 //! chunks; a document counts once, at its first chunk), of a chunk on an
-//! expected page, and of a chunk containing an expected passage.
+//! expected page, and of a chunk containing an expected passage; and, for
+//! questions answered by several documents, the rank of every expected
+//! document (recall and nDCG).
 //!
 //! Answers: fact recall, citation correctness (the passages an answer cites
 //! contain the facts it states), the grounding verifier's verdicts, and
@@ -41,6 +43,48 @@ pub struct CaseRanks {
     pub passage_rank: Option<usize>,
     pub has_pages: bool,
     pub has_passage: bool,
+    /// Expected documents of the case.
+    #[serde(default)]
+    pub expected_docs: usize,
+    /// Rank among distinct documents of every expected document retrieved,
+    /// ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_doc_ranks: Vec<usize>,
+}
+
+/// Cut-offs reported for recall over all expected documents.
+pub const RECALL_KS: [usize; 2] = [5, 10];
+
+/// Cut-off of nDCG.
+pub const NDCG_K: usize = 10;
+
+impl CaseRanks {
+    /// Share of the expected documents ranked within the first `k` distinct
+    /// documents (0 when the case expects none).
+    pub fn recall(&self, k: usize) -> f64 {
+        if self.expected_docs == 0 {
+            return 0.0;
+        }
+        let found = self.expected_doc_ranks.iter().filter(|&&r| r <= k).count();
+        found as f64 / self.expected_docs as f64
+    }
+
+    /// Binary-relevance nDCG over distinct documents: each expected document
+    /// gains 1 at its rank; the ideal ranks every expected document first.
+    pub fn ndcg(&self, k: usize) -> f64 {
+        let gain = |rank: usize| 1.0 / ((rank + 1) as f64).log2();
+        let ideal: f64 = (1..=self.expected_docs.min(k)).map(gain).sum();
+        if ideal == 0.0 {
+            return 0.0;
+        }
+        let dcg: f64 = self
+            .expected_doc_ranks
+            .iter()
+            .filter(|&&r| r <= k)
+            .map(|&r| gain(r))
+            .sum();
+        dcg / ideal
+    }
 }
 
 /// `expected` maps each expected document key to its source spec (pages and
@@ -51,6 +95,7 @@ pub fn rank_case(
 ) -> CaseRanks {
     let mut docs: Vec<&str> = Vec::new();
     let mut doc_rank = None;
+    let mut expected_doc_ranks = Vec::new();
     let mut page_rank = None;
     let mut passage_rank = None;
     for (i, chunk) in chunks.iter().enumerate() {
@@ -59,8 +104,11 @@ pub fn rank_case(
         };
         if !docs.contains(&key) {
             docs.push(key);
-            if doc_rank.is_none() && expected.contains_key(key) {
-                doc_rank = Some(docs.len());
+            if expected.contains_key(key) {
+                expected_doc_ranks.push(docs.len());
+                if doc_rank.is_none() {
+                    doc_rank = Some(docs.len());
+                }
             }
         }
         let Some((pages, passage)) = expected.get(key) else {
@@ -87,7 +135,19 @@ pub fn rank_case(
         passage_rank,
         has_pages: expected.values().any(|(p, _)| !p.is_empty()),
         has_passage: expected.values().any(|(_, p)| p.is_some()),
+        expected_docs: expected.len(),
+        expected_doc_ranks,
     }
+}
+
+/// Distinct source documents (corpus files or not) among the first `k`
+/// chunks.
+pub fn unique_sources(chunks: &[RetrievedChunk], k: usize) -> usize {
+    let mut seen: BTreeSet<Option<&str>> = BTreeSet::new();
+    for chunk in chunks.iter().take(k) {
+        seen.insert(chunk.key.as_deref());
+    }
+    seen.len()
 }
 
 fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
@@ -105,9 +165,27 @@ fn hit(rank: Option<usize>, k: usize) -> f64 {
 
 /// Aggregate retrieval metrics (all higher-is-better, in 0..=1): `hit@k` and
 /// `mrr` over documents, `page_hit@k` over cases with pages, `passage_hit@k`
-/// over cases with a passage. Metrics without applicable cases are absent.
+/// over cases with a passage, `recall@k` (share of a case's expected
+/// documents in its first k documents) and `ndcg@10` over all cases, and the
+/// same two over the cases that expect several documents (`multi_recall@k`,
+/// `multi_ndcg@10`). Metrics without applicable cases are absent.
 pub fn retrieval_metrics(cases: &[CaseRanks]) -> BTreeMap<String, f64> {
     let mut out = BTreeMap::new();
+    let multi = || cases.iter().filter(|c| c.expected_docs > 1);
+    for k in RECALL_KS {
+        if let Some(m) = mean(cases.iter().map(|c| c.recall(k))) {
+            out.insert(format!("recall@{k}"), m);
+        }
+        if let Some(m) = mean(multi().map(|c| c.recall(k))) {
+            out.insert(format!("multi_recall@{k}"), m);
+        }
+    }
+    if let Some(m) = mean(cases.iter().map(|c| c.ndcg(NDCG_K))) {
+        out.insert(format!("ndcg@{NDCG_K}"), m);
+    }
+    if let Some(m) = mean(multi().map(|c| c.ndcg(NDCG_K))) {
+        out.insert(format!("multi_ndcg@{NDCG_K}"), m);
+    }
     for k in KS {
         if let Some(m) = mean(cases.iter().map(|c| hit(c.doc_rank, k))) {
             out.insert(format!("hit@{k}"), m);
@@ -367,6 +445,39 @@ mod tests {
         assert_eq!(ranks.doc_rank, Some(2));
         assert_eq!(ranks.page_rank, Some(3));
         assert_eq!(ranks.passage_rank, Some(3));
+        assert_eq!(
+            (ranks.expected_docs, ranks.expected_doc_ranks),
+            (1, vec![2])
+        );
+        assert_eq!(unique_sources(&chunks, 2), 1);
+        assert_eq!(unique_sources(&chunks, 10), 2);
+    }
+
+    #[test]
+    fn recall_and_ndcg_count_every_expected_document() {
+        let chunks = [
+            chunk("a", None, "x"),
+            chunk("a", None, "x2"),
+            chunk("other", None, "y"),
+            chunk("c", None, "z"),
+        ];
+        let expected = expect(&[("a", &[], None), ("b", &[], None), ("c", &[], None)]);
+        let ranks = rank_case(&expected, &chunks);
+        assert_eq!(ranks.expected_doc_ranks, vec![1, 3]);
+        assert!((ranks.recall(10) - 2.0 / 3.0).abs() < 1e-12);
+        assert!((ranks.recall(2) - 1.0 / 3.0).abs() < 1e-12);
+        let ideal = 1.0 + 1.0 / 3f64.log2() + 0.5;
+        let dcg = 1.0 + 0.5;
+        assert!((ranks.ndcg(10) - dcg / ideal).abs() < 1e-12);
+        let single = rank_case(&expect(&[("c", &[], None)]), &chunks);
+        // One expected document at document rank 3: 1 / log2(4).
+        assert!((single.ndcg(10) - 0.5).abs() < 1e-12);
+        let m = retrieval_metrics(&[ranks.clone(), single]);
+        assert!((m["recall@10"] - (2.0 / 3.0 + 1.0) / 2.0).abs() < 1e-12);
+        assert!((m["multi_recall@10"] - 2.0 / 3.0).abs() < 1e-12);
+        assert!((m["multi_ndcg@10"] - dcg / ideal).abs() < 1e-12);
+        let none = CaseRanks::default();
+        assert_eq!((none.recall(10), none.ndcg(10)), (0.0, 0.0));
     }
 
     #[test]
@@ -395,6 +506,7 @@ mod tests {
                 passage_rank: None,
                 has_pages: true,
                 has_passage: false,
+                ..CaseRanks::default()
             },
             CaseRanks {
                 doc_rank: Some(4),
@@ -402,6 +514,7 @@ mod tests {
                 passage_rank: Some(6),
                 has_pages: false,
                 has_passage: true,
+                ..CaseRanks::default()
             },
             CaseRanks {
                 doc_rank: None,

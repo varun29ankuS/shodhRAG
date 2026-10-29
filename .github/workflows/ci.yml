@@ -241,9 +241,11 @@ jobs:
           --report eval-out-scanned/retrieval-report.json
 
       - name: Generate the paper corpus
+        if: success() || failure()
         run: cargo run --package shodh-eval -- synth-papers --out crates/shodh-eval/data/papers
 
       - name: Paper retrieval eval
+        if: success() || failure()
         run: >
           cargo run --package shodh-eval -- retrieval
           --corpus crates/shodh-eval/data/papers/corpus
@@ -316,6 +318,9 @@ jobs:
             "poolcap-4" = "pool_source_cap=4"
             "poolcap-8" = "pool_source_cap=8"
             "rrf-20" = "rrf_k=20"
+            "mult-1" = "candidate_multiplier=1"
+            "mult-1-poolcap-2" = "candidate_multiplier=1,pool_source_cap=2"
+            "mult-1-poolcap-3" = "candidate_multiplier=1,pool_source_cap=3"
             "mult-2" = "candidate_multiplier=2"
             "mult-2-poolcap-4" = "candidate_multiplier=2,pool_source_cap=4"
             "mult-10" = "candidate_multiplier=10"
@@ -327,15 +332,16 @@ jobs:
             @{ name = "papers"; dir = "eval-papers/corpus"; ds = "eval-papers/dataset.json" },
             @{ name = "synthetic"; dir = "crates/shodh-eval/data/synthetic/corpus"; ds = "crates/shodh-eval/data/synthetic/dataset.json" }
           )
+          $failed = @()
           foreach ($corpus in $corpora) {
             foreach ($name in $variants.Keys) {
               $a = @("retrieval", "--corpus", $corpus.dir, "--dataset", $corpus.ds, "--models", $models, "--out", "eval-sweep/$($corpus.name)-$name")
               if ($variants[$name]) { $a += @("--search", $variants[$name]) }
               & $exe @a | Out-Null
-              if ($LASTEXITCODE -ne 0) { throw "sweep $($corpus.name) $name failed" }
-              Write-Output "done $($corpus.name) $name"
+              if ($LASTEXITCODE -ne 0) { $failed += "$($corpus.name) $name" } else { Write-Output "done $($corpus.name) $name" }
             }
           }
+          if ($failed.Count -gt 0) { throw "failed: $($failed -join ', ')" }
 
       - name: Upload sweep reports
         if: always()

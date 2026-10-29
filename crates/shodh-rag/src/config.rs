@@ -93,6 +93,40 @@ pub struct SearchConfig {
     pub rrf_k: usize,
     /// Weight for original similarity scores in RRF fusion (0.0 = pure RRF, higher = more score influence)
     pub score_weight: f32,
+    /// Diminishing returns per source file after reranking: a result's score is
+    /// multiplied by this once for every result of the same file ranked above it
+    /// (1.0 = no diversity, 0.0 = one result per file first). In 0..=1.
+    #[serde(default = "default_source_decay")]
+    pub source_decay: f32,
+    /// Most candidates one source file may hold in the pool the reranker
+    /// reads (the fused vector and keyword candidates, cut to
+    /// `k * candidate_multiplier`). The files that fill it are left out of
+    /// one more vector search, and the pool is filled from the next-best
+    /// candidates of other files first, then with the rest. Without it a few
+    /// long files (surveys, theses) took every candidate of a broad question.
+    /// 0 = no limit, the default: on the eval's 33-file paper library every
+    /// limit tried (2 to 4, with and without an open head) raised multi-paper
+    /// recall but lowered `depth_recall@20`, the questions that need several
+    /// chunks of one paper (`crates/shodh-eval`, README).
+    #[serde(default = "default_pool_source_cap")]
+    pub pool_source_cap: usize,
+    /// Share of the pool (0..=1) filled in score order before
+    /// `pool_source_cap` applies, so the best candidates of one file (what a
+    /// question about that file needs) are never displaced.
+    #[serde(default = "default_pool_open_share")]
+    pub pool_open_share: f32,
+}
+
+fn default_pool_open_share() -> f32 {
+    0.0
+}
+
+fn default_pool_source_cap() -> usize {
+    0
+}
+
+fn default_source_decay() -> f32 {
+    0.5
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +155,12 @@ impl RAGConfig {
         }
         if !(0.0..=1.0).contains(&self.search.min_score_threshold) {
             return Err("search.min_score_threshold must be in [0.0, 1.0]".into());
+        }
+        if !(0.0..=1.0).contains(&self.search.pool_open_share) {
+            return Err("search.pool_open_share must be in [0.0, 1.0]".into());
+        }
+        if !(0.0..=1.0).contains(&self.search.source_decay) {
+            return Err("search.source_decay must be in [0.0, 1.0]".into());
         }
         let dpi_ok = |dpi: u32| (72..=600).contains(&dpi);
         if !dpi_ok(self.ocr.render_dpi) || self.ocr.system_render_dpi.is_some_and(|d| !dpi_ok(d)) {
@@ -178,6 +218,9 @@ impl Default for RAGConfig {
                 hybrid_alpha: 0.7,
                 rrf_k: 60,
                 score_weight: 0.3,
+                source_decay: default_source_decay(),
+                pool_source_cap: default_pool_source_cap(),
+                pool_open_share: default_pool_open_share(),
             },
             features: FeatureFlags {
                 enable_reranking: true,

@@ -1,0 +1,114 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Reading group notes) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4697 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Reading group notes: KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Reading group of the Ashbury machine learning lab) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Despite steady progress, the interaction between the eviction score and the decoding step is) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (still poorly understood. Earlier KV cache compression methods improved the quantization) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (group but left the head dimension unchanged. Recent work has made the eviction score a) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (central concern, because it decides how far KV cache compression models can scale. Most) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (prior methods treat the cache page as fixed and tune the cache budget around it.) Tj ET
+BT /F1 10.0 Tf 72.00 572.00 Td (We expect the prefill stage to interact with the outlier channel at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 559.00 Td (leave to future work. Our analysis covers models up to 1.3B parameters, and larger models) Tj ET
+BT /F1 10.0 Tf 72.00 546.00 Td (may behave differently. Combining KV cache compression with methods that target the outlier) Tj ET
+BT /F1 10.0 Tf 72.00 533.00 Td (channel is a promising direction. The results suggest that the cache page is the main lever) Tj ET
+BT /F1 10.0 Tf 72.00 520.00 Td (for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 500.00 Td (Practitioners report that the head dimension is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (Earlier KV cache compression methods improved the prefill stage but left the cache budget) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (unchanged. Despite steady progress, the interaction between the key-value cache and the) Tj ET
+BT /F1 10.0 Tf 72.00 461.00 Td (quantization group is still poorly understood. A practical system has to balance the cost of) Tj ET
+BT /F1 10.0 Tf 72.00 448.00 Td (the attention sink against the quality of the eviction score.) Tj ET
+BT /F2 12.0 Tf 72.00 428.00 Td (2 Methods we read) Tj ET
+BT /F1 10.0 Tf 72.00 408.00 Td (We implement the key-value cache as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (results to memory. During inference KV cache compression caches the prefill stage, so each) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (new token costs a constant amount of work. Gradients through the decoding step are clipped) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (at a norm of 4.0. Unlike the full-precision cache, KV cache compression updates the decoding) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (step only when the outlier channel changes.) Tj ET
+BT /F1 10.0 Tf 72.00 336.00 Td (We implement the quantization group as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 323.00 Td (results to memory. To keep training stable, KV cache compression normalises the quantization) Tj ET
+BT /F1 10.0 Tf 72.00 310.00 Td (group before it is combined with the decoding step. KV cache compression computes the) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (prefill stage once per layer and reuses it for every head. A coefficient controls how) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (strongly the attention sink depends on the cache budget; we set it to 0.2 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 264.00 Td (Each block of KV cache compression applies the quantization group after a short convolution) Tj ET
+BT /F1 10.0 Tf 72.00 251.00 Td (of width 2. The outlier channel is initialised so that KV cache compression starts training) Tj ET
+BT /F1 10.0 Tf 72.00 238.00 Td (close to per-token quantization. A coefficient controls how strongly the attention sink) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (depends on the eviction score; we set it to 0.3 throughout. KV cache compression computes) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (the key-value cache once per layer and reuses it for every head.) Tj ET
+BT /F2 12.0 Tf 72.00 192.00 Td (3 Results we discussed) Tj ET
+BT /F1 10.0 Tf 72.00 172.00 Td (We train every model for 50B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 159.00 Td (seeds. Variance across seeds stays below 0.6 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 146.00 Td (Throughput is measured with a batch size of 64 on a single accelerator. With the outlier) Tj ET
+BT /F1 10.0 Tf 72.00 133.00 Td (channel frozen, KV cache compression still recovers most of its improvement on RULER-Synth.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2576 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (We train every model for 20B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (seeds. KV cache compression scores 72.9% on RULER-Synth, compared with 69.9% for per-token) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (quantization. On NeedleBench, KV cache compression improves over per-token quantization by) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (5.4 points. Ablating the cache page lowers the NeedleBench score by 5.8 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (drop among all components.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (Ablating the eviction score lowers the NeedleBench score by 3.6 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (among all components. On NeedleBench, KV cache compression improves over the full-precision) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (cache by 4.4 points. Throughput is measured with a batch size of 128 on a single) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (accelerator. KV cache compression scores 44.0% on RULER-Synth, compared with 81.3% for a) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (recent-window policy.) Tj ET
+BT /F2 12.0 Tf 72.00 576.00 Td (4 Open questions) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (The results suggest that the cache budget is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (The quantization group also makes KV cache compression easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (behaviour can be read off per token. A limitation of KV cache compression is that the) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (quantization group must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (The results suggest that the decoding step is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (A limitation of KV cache compression is that the prefill stage must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (each model size. The head dimension also makes KV cache compression easier to inspect, since) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (its behaviour can be read off per token. Combining KV cache compression with methods that) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (target the cache budget is a promising direction.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+0000005300 00000 n 
+0000005436 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+8063
+%%EOF

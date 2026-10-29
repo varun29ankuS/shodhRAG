@@ -1,0 +1,110 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (HARBOR: Heavy-Hitter Aware Eviction for Long-Context KV Caches) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4418 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (HARBOR: Heavy-Hitter Aware Eviction for Long-Context KV) Tj ET
+BT /F2 16.0 Tf 72.00 698.00 Td (Caches) Tj ET
+BT /F1 10.0 Tf 72.00 672.00 Td (Nadia Ferreira, Jonas Ekholm \(Lattice AI Lab\)) Tj ET
+BT /F2 12.0 Tf 72.00 642.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (Most cached tokens are rarely attended to. HARBOR is a training-free eviction policy that) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (keeps only a fixed budget of the key-value cache: the first tokens of the sequence, a window) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (of recent tokens, and the heavy hitters that have received the most attention so far. At a) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (cache budget of 20% HARBOR keeps 97.8% of the full-cache accuracy on LongSuite.) Tj ET
+BT /F2 12.0 Tf 72.00 563.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (Attention in trained language models is sparse: in a typical layer, five percent of the) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (tokens receive more than half of the attention mass. If the tokens that matter can be) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (identified while decoding, the rest of the cache can be dropped without retraining.) Tj ET
+BT /F2 12.0 Tf 72.00 497.00 Td (2 Method) Tj ET
+BT /F1 10.0 Tf 72.00 477.00 Td (HARBOR always keeps the first four tokens because they act as attention sinks: the softmax) Tj ET
+BT /F1 10.0 Tf 72.00 464.00 Td (must place its mass somewhere, and models learn to park it on the first positions, so) Tj ET
+BT /F1 10.0 Tf 72.00 451.00 Td (evicting them changes every later attention distribution. It also keeps the 256 most recent) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (tokens, which carry the local context.) Tj ET
+BT /F1 10.0 Tf 72.00 418.00 Td (The remaining budget goes to heavy hitters. Each cached token keeps a running sum of the) Tj ET
+BT /F1 10.0 Tf 72.00 405.00 Td (attention it has received from all queries so far, and HARBOR ranks tokens by this) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (accumulated attention score. When the cache is full the token with the lowest score outside) Tj ET
+BT /F1 10.0 Tf 72.00 379.00 Td (the sinks and the recent window is evicted.) Tj ET
+BT /F1 10.0 Tf 150.00 359.00 Td (A_j = sum over t of softmax\(q_t K^T\)_j,   evict argmin A_j         \(1\)) Tj ET
+BT /F2 12.0 Tf 72.00 337.00 Td (3 Results) Tj ET
+BT /F1 9.0 Tf 72.00 317.00 Td (Table 1: LongSuite accuracy by cache budget, 7B model.) Tj ET
+BT /F2 9.0 Tf 72.00 303.00 Td (Policy) Tj ET
+BT /F2 9.0 Tf 222.00 303.00 Td (Budget) Tj ET
+BT /F2 9.0 Tf 322.00 303.00 Td (LongSuite) Tj ET
+BT /F2 9.0 Tf 422.00 303.00 Td (Kept) Tj ET
+BT /F1 9.0 Tf 72.00 290.00 Td (Full cache) Tj ET
+BT /F1 9.0 Tf 222.00 290.00 Td (100%) Tj ET
+BT /F1 9.0 Tf 322.00 290.00 Td (47.6) Tj ET
+BT /F1 9.0 Tf 422.00 290.00 Td (100%) Tj ET
+BT /F1 9.0 Tf 72.00 277.00 Td (Recent window only) Tj ET
+BT /F1 9.0 Tf 222.00 277.00 Td (20%) Tj ET
+BT /F1 9.0 Tf 322.00 277.00 Td (33.0) Tj ET
+BT /F1 9.0 Tf 422.00 277.00 Td (69.3%) Tj ET
+BT /F1 9.0 Tf 72.00 264.00 Td (HARBOR) Tj ET
+BT /F1 9.0 Tf 222.00 264.00 Td (20%) Tj ET
+BT /F1 9.0 Tf 322.00 264.00 Td (46.6) Tj ET
+BT /F1 9.0 Tf 422.00 264.00 Td (97.8%) Tj ET
+BT /F1 9.0 Tf 72.00 251.00 Td (HARBOR + SQUEEZE) Tj ET
+BT /F1 9.0 Tf 222.00 251.00 Td (20%) Tj ET
+BT /F1 9.0 Tf 322.00 251.00 Td (46.1) Tj ET
+BT /F1 9.0 Tf 422.00 251.00 Td (96.8%) Tj ET
+BT /F1 10.0 Tf 72.00 228.00 Td (Eviction and quantization address different redundancy and combine well: applying HARBOR on) Tj ET
+BT /F1 10.0 Tf 72.00 215.00 Td (top of SQUEEZE two-bit quantization reduces cache memory by 12 times with a loss of 1.5) Tj ET
+BT /F1 10.0 Tf 72.00 202.00 Td (points.) Tj ET
+BT /F2 12.0 Tf 72.00 182.00 Td (4 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (An evicted token cannot be recovered. Questions about a detail that received little) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (attention early in a long document are the main failure case, which a quantized cache does) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (not have.) Tj ET
+BT /F2 12.0 Tf 72.00 116.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 96.00 Td ([1] P. Raman, O. Weiss and D. Feld. SQUEEZE: Two-bit key-value cache quantization with) Tj ET
+BT /F1 9.0 Tf 86.00 85.00 Td (per-channel keys. arXiv preprint, 2024.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 336 >>
+stream
+BT /F1 9.0 Tf 72.00 720.00 Td ([2] T. Okafor and R. Lind. Attention sinks in long sequences. In Proceedings of the Sequence) Tj ET
+BT /F1 9.0 Tf 86.00 709.00 Td (Modelling Workshop, 2023.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000459 00000 n 
+0000000595 00000 n 
+0000005064 00000 n 
+0000005200 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+5586
+%%EOF

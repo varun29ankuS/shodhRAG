@@ -1,0 +1,153 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (TESSERA: State Expansion for Recurrent Language Models) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4123 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (TESSERA: State Expansion for Recurrent Language Models) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Kofi Asante, Maren Holt \(Fjordline AI\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (TESSERA expands the state of every head by a factor of four and contracts it again before) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (the read-out with a learned projection. Despite steady progress, the interaction between the) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (associative recall and the causal mask is still poorly understood. Earlier linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (methods improved the feature map but left the chunk-wise kernel unchanged.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Most prior methods treat the causal mask as fixed and tune the key dimension around it.) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (Recent work has made the state size a central concern, because it decides how far linear) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (attention models can scale. Practitioners report that the key dimension is the first) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (component to fail on long inputs. A practical system has to balance the cost of the) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (chunk-wise kernel against the quality of the decay gate.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (A practical system has to balance the cost of the outer-product write against the quality of) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (the decay gate. Practitioners report that the feature map is the first component to fail on) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (long inputs. We argue that the outer-product write deserves as much attention as the decay) Tj ET
+BT /F1 10.0 Tf 72.00 454.00 Td (gate.) Tj ET
+BT /F2 12.0 Tf 72.00 434.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (The decay gate also makes TESSERA easier to inspect, since its behaviour can be read off per) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (token. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 388.00 Td (differently.) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (A coefficient controls how strongly the causal mask depends on the state size; we set it to) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (0.2 throughout. Gradients through the recurrent state are clipped at a norm of 4.0. During) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (inference TESSERA caches the feature map, so each new token costs a constant amount of work.) Tj ET
+BT /F2 12.0 Tf 72.00 322.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 302.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (The expansion in TESSERA is a fixed random projection of the keys, while the contraction is) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (learned with the rest of the model. Each block of TESSERA applies the decay gate after a) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (short convolution of width 2. Gradients through the outer-product write are clipped at a) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (norm of 3.0. TESSERA computes the key dimension once per layer and reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 150.00 223.00 Td (S_t = S_{t-1} + v_t \(P k_t\)^T,   o_t = C S_t P q_t               \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (A coefficient controls how strongly the recurrent state depends on the decay gate; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (to 0.5 throughout. We implement the feature map as a fused kernel, which avoids writing) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (intermediate results to memory. To keep training stable, TESSERA normalises the state size) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (before it is combined with the key dimension. Unlike a Transformer++ baseline, TESSERA) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (updates the associative recall only when the feature map changes.) Tj ET
+BT /F2 12.0 Tf 72.00 129.00 Td (3.2 Implementation) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4442 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (A coefficient controls how strongly the causal mask depends on the decay gate; we set it to) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (0.7 throughout. The state size in TESSERA is parameterised by a small linear layer with 16) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (hidden units. We implement the feature map as a fused kernel, which avoids writing) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (intermediate results to memory. The associative recall is initialised so that TESSERA starts) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (training close to softmax attention.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (We implement the decay gate as a fused kernel, which avoids writing intermediate results to) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (memory. Unlike gated linear attention, TESSERA updates the causal mask only when the key) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (dimension changes. Each block of TESSERA applies the state size after a short convolution of) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (width 7.) Tj ET
+BT /F2 12.0 Tf 72.00 589.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 569.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 549.00 Td (Throughput is measured with a batch size of 128 on a single accelerator. We train every) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (model for 90B tokens with the same data order and report the mean of three seeds. Ablating) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (the feature map lowers the WikiText score by 5.0 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (components. TESSERA scores 73.5% on MQAR, compared with 74.4% for a Transformer++ baseline.) Tj ET
+BT /F2 12.0 Tf 72.00 490.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 470.00 Td (TESSERA lifts MQAR accuracy from 61.0 to 83.5 at 1.3B parameters. With the chunk-wise kernel) Tj ET
+BT /F1 10.0 Tf 72.00 457.00 Td (frozen, TESSERA still recovers most of its improvement on LAMBADA. The gains of TESSERA grow) Tj ET
+BT /F1 10.0 Tf 72.00 444.00 Td (with the input length, as the feature map becomes the bottleneck. We train every model for) Tj ET
+BT /F1 10.0 Tf 72.00 431.00 Td (90B tokens with the same data order and report the mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (Throughput is measured with a batch size of 64 on a single accelerator. On WikiText, TESSERA) Tj ET
+BT /F1 10.0 Tf 72.00 398.00 Td (improves over gated linear attention by 4.6 points. We train every model for 20B tokens with) Tj ET
+BT /F1 10.0 Tf 72.00 385.00 Td (the same data order and report the mean of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 365.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 345.00 Td (On LAMBADA, TESSERA improves over softmax attention by 3.8 points. With the decay gate) Tj ET
+BT /F1 10.0 Tf 72.00 332.00 Td (frozen, TESSERA still recovers most of its improvement on LAMBADA. We train every model for) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (80B tokens with the same data order and report the mean of three seeds. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (read-out projection lowers the LAMBADA score by 4.8 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 293.00 Td (components.) Tj ET
+BT /F2 12.0 Tf 72.00 273.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 253.00 Td (A limitation of TESSERA is that the associative recall must be tuned separately for each) Tj ET
+BT /F1 10.0 Tf 72.00 240.00 Td (model size. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 227.00 Td (differently. The decay gate also makes TESSERA easier to inspect, since its behaviour can be) Tj ET
+BT /F1 10.0 Tf 72.00 214.00 Td (read off per token. The results suggest that the feature map is the main lever for quality) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (at a fixed budget.) Tj ET
+BT /F2 12.0 Tf 72.00 181.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 161.00 Td (A limitation of TESSERA is that the state size must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 148.00 Td (Combining TESSERA with methods that target the causal mask is a promising direction. We) Tj ET
+BT /F1 10.0 Tf 72.00 135.00 Td (expect the read-out projection to interact with the decay gate at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 122.00 Td (leave to future work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1086 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] F. Fujita and I. Ivanova. Causal mask for linear attention models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (Learning Systems Conference, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] O. Okoro and Q. Quinn. Read-out projection for linear attention models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 665.00 Td (2017.) Tj ET
+BT /F1 9.0 Tf 72.00 652.00 Td ([3] N. Nakamura and I. Ivanova. Key dimension for linear attention models. arXiv preprint, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 639.00 Td ([4] O. Okoro and J. Jansen. Chunk-wise kernel for linear attention models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 628.00 Td (Learning Systems Conference, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 615.00 Td ([5] N. Nakamura and K. Kowalski. Key dimension for linear attention models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 604.00 Td (2024.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000458 00000 n 
+0000000594 00000 n 
+0000004768 00000 n 
+0000004904 00000 n 
+0000009397 00000 n 
+0000009535 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10673
+%%EOF

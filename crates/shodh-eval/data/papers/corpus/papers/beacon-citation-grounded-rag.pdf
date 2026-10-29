@@ -1,0 +1,152 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (BEACON: Citation-Grounded Retrieval-Augmented Generation) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4011 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (BEACON: Citation-Grounded Retrieval-Augmented Generation) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Nora Lindberg, Samuel Okafor \(Harbourview AI\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (BEACON asks the generator to cite a passage for every sentence and drops sentences whose) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (cited passage does not entail them. Despite steady progress, the interaction between the) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (grounding check and the keyword index is still poorly understood. Most prior methods treat) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (the passage index as fixed and tune the dense embedding around it.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Practitioners report that the reranker is the first component to fail on long inputs. This) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (work studies BEACON, a method that rethinks the dense embedding. A practical system has to) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (balance the cost of the query rewrite against the quality of the citation. Despite steady) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (progress, the interaction between the context window and the query rewrite is still poorly) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (understood.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Most prior methods treat the grounding check as fixed and tune the dense embedding around) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (it. Practitioners report that the keyword index is the first component to fail on long) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (inputs. This work studies BEACON, a method that rethinks the passage index.) Tj ET
+BT /F2 12.0 Tf 72.00 447.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (A limitation of BEACON is that the citation must be tuned separately for each model size. We) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (expect the chunk size to interact with the dense embedding at larger scales, which we leave) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (to future work.) Tj ET
+BT /F1 10.0 Tf 72.00 381.00 Td (The citation in BEACON is parameterised by a small linear layer with 256 hidden units. Each) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (block of BEACON applies the grounding check after a short convolution of width 7. During) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (inference BEACON caches the query rewrite, so each new token costs a constant amount of) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (work.) Tj ET
+BT /F2 12.0 Tf 72.00 322.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 302.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (Entailment in BEACON is checked by a small cross-encoder that reads the sentence and its) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (cited passage together. BEACON computes the keyword index once per layer and reuses it for) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (every head. During inference BEACON caches the query rewrite, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (constant amount of work. To keep training stable, BEACON normalises the dense embedding) Tj ET
+BT /F1 10.0 Tf 72.00 230.00 Td (before it is combined with the query rewrite.) Tj ET
+BT /F1 10.0 Tf 150.00 210.00 Td (keep\(s\) = 1[ p_entail\(s, passage\(s\)\) > 0.5 ]                    \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (Unlike a dense retriever, BEACON updates the chunk size only when the context window) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (changes. Each block of BEACON applies the reranker after a short convolution of width 9. The) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (chunk size in BEACON is parameterised by a small linear layer with 64 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (Gradients through the chunk size are clipped at a norm of 8.0.) Tj ET
+BT /F2 12.0 Tf 72.00 129.00 Td (3.2 Implementation) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4511 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (To keep training stable, BEACON normalises the citation before it is combined with the dense) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (embedding. Unlike BM25, BEACON updates the passage index only when the reranker changes. The) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (grounding check in BEACON is parameterised by a small linear layer with 128 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (Gradients through the keyword index are clipped at a norm of 6.0.) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (Gradients through the keyword index are clipped at a norm of 9.0. BEACON computes the) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (context window once per layer and reuses it for every head. To keep training stable, BEACON) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (normalises the dense embedding before it is combined with the context window.) Tj ET
+BT /F2 12.0 Tf 72.00 615.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 595.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 575.00 Td (Throughput is measured with a batch size of 32 on a single accelerator. On CiteBench, BEACON) Tj ET
+BT /F1 10.0 Tf 72.00 562.00 Td (improves over a dense retriever by 2.8 points. We train every model for 60B tokens with the) Tj ET
+BT /F1 10.0 Tf 72.00 549.00 Td (same data order and report the mean of three seeds. BEACON scores 53.2% on SciDocs-Lite,) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (compared with 41.8% for a closed-book model.) Tj ET
+BT /F2 12.0 Tf 72.00 516.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 496.00 Td (BEACON raises citation precision from 61.4% to 88.0% on the synthetic CiteBench. On) Tj ET
+BT /F1 10.0 Tf 72.00 483.00 Td (SciDocs-Lite, BEACON improves over a closed-book model by 6.4 points. With the citation) Tj ET
+BT /F1 10.0 Tf 72.00 470.00 Td (frozen, BEACON still recovers most of its improvement on SciDocs-Lite. The gains of BEACON) Tj ET
+BT /F1 10.0 Tf 72.00 457.00 Td (grow with the input length, as the query rewrite becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (We train every model for 80B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 424.00 Td (seeds. Variance across seeds stays below 0.9 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (Ablating the keyword index lowers the SciDocs-Lite score by 6.4 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 398.00 Td (among all components.) Tj ET
+BT /F2 12.0 Tf 72.00 378.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 358.00 Td (With the chunk size frozen, BEACON still recovers most of its improvement on OpenQA-Synth.) Tj ET
+BT /F1 10.0 Tf 72.00 345.00 Td (The gains of BEACON grow with the input length, as the retriever becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 332.00 Td (Ablating the chunk size lowers the SciDocs-Lite score by 5.6 points, the largest drop among) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (all components. Throughput is measured with a batch size of 256 on a single accelerator.) Tj ET
+BT /F2 12.0 Tf 72.00 299.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 279.00 Td (The results suggest that the reranker is the main lever for quality at a fixed budget. We) Tj ET
+BT /F1 10.0 Tf 72.00 266.00 Td (expect the dense embedding to interact with the reranker at larger scales, which we leave to) Tj ET
+BT /F1 10.0 Tf 72.00 253.00 Td (future work. Combining BEACON with methods that target the grounding check is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 240.00 Td (direction. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 227.00 Td (differently.) Tj ET
+BT /F2 12.0 Tf 72.00 207.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 187.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 174.00 Td (We expect the passage index to interact with the citation at larger scales, which we leave) Tj ET
+BT /F1 10.0 Tf 72.00 161.00 Td (to future work. Combining BEACON with methods that target the chunk size is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 148.00 Td (direction.) Tj ET
+BT /F2 12.0 Tf 72.00 128.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 108.00 Td ([1] X. Xu and P. Petrova. Query rewrite for retrieval-augmented generation models. Transactions) Tj ET
+BT /F1 9.0 Tf 86.00 97.00 Td (on Efficient Computing, 2016.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 970 >>
+stream
+BT /F1 9.0 Tf 72.00 720.00 Td ([2] X. Xu and S. Sandoval. Keyword index for retrieval-augmented generation models. In) Tj ET
+BT /F1 9.0 Tf 86.00 709.00 Td (Proceedings of the Learning Systems Conference, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 696.00 Td ([3] Z. Zielinski and Y. Yilmaz. Passage index for retrieval-augmented generation models. In) Tj ET
+BT /F1 9.0 Tf 86.00 685.00 Td (Proceedings of the Learning Systems Conference, 2016.) Tj ET
+BT /F1 9.0 Tf 72.00 672.00 Td ([4] P. Petrova and R. Rossi. Passage index for retrieval-augmented generation models. arXiv) Tj ET
+BT /F1 9.0 Tf 86.00 661.00 Td (preprint, 2022.) Tj ET
+BT /F1 9.0 Tf 72.00 648.00 Td ([5] U. Ueda and B. Bergstrom. Query rewrite for retrieval-augmented generation models.) Tj ET
+BT /F1 9.0 Tf 86.00 637.00 Td (Transactions on Efficient Computing, 2022.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000460 00000 n 
+0000000596 00000 n 
+0000004658 00000 n 
+0000004794 00000 n 
+0000009356 00000 n 
+0000009494 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10515
+%%EOF

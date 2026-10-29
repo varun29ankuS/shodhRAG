@@ -267,7 +267,9 @@ jobs:
   eval-retrieval:
     name: Retrieval eval
     runs-on: windows-latest
-    timeout-minutes: 35  # slowest 21 minutes
+    # Slowest 21 minutes before the paper library (33 files, 99 questions);
+    # one paper run measured 30 minutes on windows-latest.
+    timeout-minutes: 75
     env:
       # Line tables only: smaller debug builds and caches (release is untouched).
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -351,6 +353,20 @@ jobs:
           --baseline crates/shodh-eval/data/scanned/baseline.json
           --report eval-out-scanned/retrieval-report.json
 
+      - name: Paper retrieval eval
+        run: >
+          cargo run --package shodh-eval -- retrieval
+          --corpus crates/shodh-eval/data/papers/corpus
+          --dataset crates/shodh-eval/data/papers/dataset.json
+          --models "${{ runner.temp }}/shodh-models"
+          --out eval-out-papers
+
+      - name: Compare papers with baseline
+        run: >
+          cargo run --package shodh-eval -- compare
+          --baseline crates/shodh-eval/data/papers/baseline.json
+          --report eval-out-papers/retrieval-report.json
+
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify
 
@@ -364,6 +380,8 @@ jobs:
             eval-out/retrieval-summary.md
             eval-out-scanned/retrieval-report.json
             eval-out-scanned/retrieval-summary.md
+            eval-out-papers/retrieval-report.json
+            eval-out-papers/retrieval-summary.md
           if-no-files-found: ignore
 
   frontend:

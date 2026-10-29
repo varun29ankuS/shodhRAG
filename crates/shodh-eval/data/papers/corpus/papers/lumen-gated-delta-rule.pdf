@@ -1,0 +1,155 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (LUMEN: Linear Attention with a Gated Delta Rule) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4435 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (LUMEN: Linear Attention with a Gated Delta Rule) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Mira Okonkwo, Tarun Vaidya, Elsa Lindqvist \(Halvard Institute\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Linear attention replaces the softmax with a kernel feature map so that a model keeps a) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (fixed-size state instead of a growing key-value cache. Its weakness is recall: the state) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (only ever accumulates, so old associations interfere with new ones. We present LUMEN, a) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (linear attention layer whose state is updated by a gated delta rule. A scalar gate decays) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (the state and a delta step overwrites the value stored under the current key. LUMEN trains) Tj ET
+BT /F1 10.0 Tf 72.00 579.00 Td (in parallel over chunks, runs as a recurrence at inference, and matches a Transformer of the) Tj ET
+BT /F1 10.0 Tf 72.00 566.00 Td (same size in perplexity while improving associative recall.) Tj ET
+BT /F2 12.0 Tf 72.00 546.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (Softmax attention compares every query with every key, so its cost grows quadratically, as) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (O\(n^2\) in the sequence length n, and its key-value cache grows linearly with the context.) Tj ET
+BT /F1 10.0 Tf 72.00 500.00 Td (Linear attention removes both costs by writing each key-value pair into a matrix-valued) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (state and reading it with the query. The price is that the state has a fixed capacity and no) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (way to remove what it stored, which shows up as poor recall on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 454.00 Td (Two remedies have been studied separately. Decay gates shrink the whole state at every step,) Tj ET
+BT /F1 10.0 Tf 72.00 441.00 Td (which frees capacity but forgets uniformly. The delta rule instead replaces the value stored) Tj ET
+BT /F1 10.0 Tf 72.00 428.00 Td (under a key, which edits memory precisely but never frees space. LUMEN combines the two in) Tj ET
+BT /F1 10.0 Tf 72.00 415.00 Td (one update and shows that the combination is better than either alone.) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (Our contributions are threefold. First, we define the gated delta rule and show that it is a) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (single step of online gradient descent on a regression loss with weight decay. Second, we) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (derive a chunk-wise parallel form that trains efficiently on accelerators. Third, we train) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (models up to 1.3B parameters and report language modelling and recall results.) Tj ET
+BT /F2 12.0 Tf 72.00 336.00 Td (2 Background: Linear Attention) Tj ET
+BT /F1 10.0 Tf 72.00 316.00 Td (A causal linear attention layer keeps a state S_t, a matrix with one row per value dimension) Tj ET
+BT /F1 10.0 Tf 72.00 303.00 Td (and one column per key dimension. At each step it adds the outer product of the value and) Tj ET
+BT /F1 10.0 Tf 72.00 290.00 Td (the key and reads the output with the query:) Tj ET
+BT /F1 10.0 Tf 150.00 270.00 Td (S_t = S_{t-1} + v_t k_t^T,    o_t = S_t q_t                    \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (This recurrence has constant memory per token. Because nothing is ever removed, the state) Tj ET
+BT /F1 10.0 Tf 72.00 235.00 Td (saturates once the number of stored pairs exceeds the key dimension, and retrieval of an) Tj ET
+BT /F1 10.0 Tf 72.00 222.00 Td (early key returns a mixture of everything written since.) Tj ET
+BT /F2 12.0 Tf 72.00 202.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 182.00 Td (3.1 The Gated Delta Rule) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (The delta rule writes the difference between the new value and the value currently retrieved) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (for the key, scaled by a learned writing strength beta_t. We add a gate alpha_t in \(0, 1\),) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (computed from the input token, that multiplies the state before the write:) Tj ET
+BT /F1 10.0 Tf 150.00 116.00 Td (S_t = alpha_t S_{t-1} \(I - beta_t k_t k_t^T\) + beta_t v_t k_t^T   \(2\)) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 5414 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (In this update the gate alpha_t decays the whole state before the delta update writes the) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (new association, so the layer can clear its memory at a document boundary while still) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (editing single associations inside a document. With alpha_t fixed at 1 the update reduces to) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (the plain delta rule, and with beta_t fixed at 0 it reduces to a decaying state.) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (Equation \(2\) is one step of online gradient descent with learning rate beta_t on the loss) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (||S k_t - v_t||^2, followed by weight decay with factor alpha_t. Keys are L2-normalised so) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (that the update is a contraction and training stays stable.) Tj ET
+BT /F2 12.0 Tf 72.00 615.00 Td (3.2 Chunk-wise Parallel Form) Tj ET
+BT /F1 10.0 Tf 72.00 595.00 Td (Running Equation \(2\) token by token is sequential and slow on accelerators. We split the) Tj ET
+BT /F1 10.0 Tf 72.00 582.00 Td (sequence into chunks and compute each chunk's contribution with matrix multiplications,) Tj ET
+BT /F1 10.0 Tf 72.00 569.00 Td (passing only the state from one chunk to the next. The products of the delta terms inside a) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (chunk are kept in a compact WY representation, so no d by d matrix is formed per token. In) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (all experiments we use a chunk size of 64 tokens, which balanced memory and speed on our) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (hardware.) Tj ET
+BT /F2 12.0 Tf 72.00 510.00 Td (4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 490.00 Td (We train models of 340M and 1.3B parameters on 100B tokens of the synthetic WebMix corpus) Tj ET
+BT /F1 10.0 Tf 72.00 477.00 Td (with the same data order for every architecture. We report perplexity on WikiText, accuracy) Tj ET
+BT /F1 10.0 Tf 72.00 464.00 Td (on LAMBADA, and accuracy on the MQAR associative recall task with 256 key-value pairs.) Tj ET
+BT /F1 9.0 Tf 72.00 444.00 Td (Table 2: Language modelling and recall at 1.3B parameters.) Tj ET
+BT /F2 9.0 Tf 72.00 430.00 Td (Model) Tj ET
+BT /F2 9.0 Tf 222.00 430.00 Td (Params) Tj ET
+BT /F2 9.0 Tf 297.00 430.00 Td (Wiki ppl) Tj ET
+BT /F2 9.0 Tf 372.00 430.00 Td (LAMBADA) Tj ET
+BT /F2 9.0 Tf 447.00 430.00 Td (MQAR) Tj ET
+BT /F1 9.0 Tf 72.00 417.00 Td (Transformer++) Tj ET
+BT /F1 9.0 Tf 222.00 417.00 Td (1.3B) Tj ET
+BT /F1 9.0 Tf 297.00 417.00 Td (16.85) Tj ET
+BT /F1 9.0 Tf 372.00 417.00 Td (51.9) Tj ET
+BT /F1 9.0 Tf 447.00 417.00 Td (88.4) Tj ET
+BT /F1 9.0 Tf 72.00 404.00 Td (Linear attention) Tj ET
+BT /F1 9.0 Tf 222.00 404.00 Td (1.3B) Tj ET
+BT /F1 9.0 Tf 297.00 404.00 Td (19.73) Tj ET
+BT /F1 9.0 Tf 372.00 404.00 Td (44.1) Tj ET
+BT /F1 9.0 Tf 447.00 404.00 Td (21.6) Tj ET
+BT /F1 9.0 Tf 72.00 391.00 Td (Delta rule) Tj ET
+BT /F1 9.0 Tf 222.00 391.00 Td (1.3B) Tj ET
+BT /F1 9.0 Tf 297.00 391.00 Td (17.40) Tj ET
+BT /F1 9.0 Tf 372.00 391.00 Td (49.8) Tj ET
+BT /F1 9.0 Tf 447.00 391.00 Td (70.2) Tj ET
+BT /F1 9.0 Tf 72.00 378.00 Td (LUMEN) Tj ET
+BT /F1 9.0 Tf 222.00 378.00 Td (1.3B) Tj ET
+BT /F1 9.0 Tf 297.00 378.00 Td (16.42) Tj ET
+BT /F1 9.0 Tf 372.00 378.00 Td (52.8) Tj ET
+BT /F1 9.0 Tf 447.00 378.00 Td (79.5) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (LUMEN improves WikiText perplexity over the Transformer++ baseline and closes most of the) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (recall gap that plain linear attention leaves. The gate and the delta step are both needed:) Tj ET
+BT /F1 10.0 Tf 72.00 329.00 Td (removing the gate costs 0.98 perplexity, and removing the delta step costs 58 points of MQAR) Tj ET
+BT /F1 10.0 Tf 72.00 316.00 Td (accuracy.) Tj ET
+BT /F1 9.0 Tf 72.00 296.00 Td (Figure 2: Training throughput at 16K context. LUMEN processes 41K tokens per second per GPU, 2.3) Tj ET
+BT /F1 9.0 Tf 72.00 285.00 Td (times the FlashAttention-2 baseline, and its advantage grows with the context length.) Tj ET
+BT /F2 12.0 Tf 72.00 264.00 Td (5 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 244.00 Td (The fixed-size state remains a bottleneck for tasks that must reproduce long inputs) Tj ET
+BT /F1 10.0 Tf 72.00 231.00 Td (verbatim: exact copying of long spans remains weaker than in softmax attention, and in our) Tj ET
+BT /F1 10.0 Tf 72.00 218.00 Td (tests a hybrid with two softmax layers was needed to match it. We also have not studied) Tj ET
+BT /F1 10.0 Tf 72.00 205.00 Td (models above 1.3B parameters.) Tj ET
+BT /F2 12.0 Tf 72.00 185.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 165.00 Td ([1] J. Halloran and P. Ibe. Fast weight memories for sequence learning. Journal of Neural) Tj ET
+BT /F1 9.0 Tf 86.00 154.00 Td (Recurrence, 1993.) Tj ET
+BT /F1 9.0 Tf 72.00 141.00 Td ([2] K. Marr, S. Oduya and T. Brandt. Kernelized attention with feature maps. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 130.00 Td (the Learning Systems Conference, 2020.) Tj ET
+BT /F1 9.0 Tf 72.00 117.00 Td ([3] R. Castellan. The delta rule revisited for linear transformers. arXiv preprint, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 104.00 Td ([4] A. Petrov and L. Huang. Decay gates for recurrent attention. In Proceedings of the Sequence) Tj ET
+BT /F1 9.0 Tf 86.00 93.00 Td (Modelling Workshop, 2023.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000444 00000 n 
+0000000580 00000 n 
+0000005066 00000 n 
+0000005202 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+10667
+%%EOF

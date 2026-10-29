@@ -1,0 +1,89 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (KANDLE: Grid-Adaptive Kolmogorov-Arnold Networks) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4371 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (KANDLE: Grid-Adaptive Kolmogorov-Arnold Networks) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Ilse Vermeer, Rohan Kapoor, Yuki Sato \(Meridian Mathematics Group\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Kolmogorov-Arnold networks \(KANs\) replace the fixed activation functions of a multilayer) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (perceptron with learnable univariate functions. We present KANDLE, a KAN whose B-spline) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (activations refine their grids during training. On the Feynman equations benchmark KANDLE) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (reaches a median RMSE of 1.2e-4 with ten times fewer parameters than an MLP of similar) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (accuracy.) Tj ET
+BT /F2 12.0 Tf 72.00 572.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (KANs are based on the Kolmogorov-Arnold representation theorem, which states that every) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (continuous multivariate function on a bounded domain can be written as a finite composition) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (of continuous functions of one variable and addition. A KAN layer generalises this) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (construction to arbitrary widths and depths.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (In a multilayer perceptron the nodes apply fixed nonlinearities and the edges carry scalar) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (weights. In a KAN the learnable activation functions sit on edges and the nodes only sum) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (their inputs, so every edge is a small function that can be plotted and, often, recognised.) Tj ET
+BT /F2 12.0 Tf 72.00 447.00 Td (2 Method) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (Each edge function is a cubic B-spline plus a residual SiLU term. The spline has order k = 3) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (and G grid intervals over the range of its input:) Tj ET
+BT /F1 10.0 Tf 150.00 394.00 Td (phi\(x\) = w_b silu\(x\) + w_s sum_i c_i B_i\(x\)                     \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (Coarse grids train quickly but limit accuracy, and fine grids from the start train slowly.) Tj ET
+BT /F1 10.0 Tf 72.00 359.00 Td (KANDLE uses grid extension from G = 5 to G = 20 in three stages: when the loss plateaus,) Tj ET
+BT /F1 10.0 Tf 72.00 346.00 Td (each spline is refitted by least squares on a finer grid, so training continues from the) Tj ET
+BT /F1 10.0 Tf 72.00 333.00 Td (coarse solution instead of restarting.) Tj ET
+BT /F1 10.0 Tf 72.00 313.00 Td (After training, edges whose L1 norm falls below a threshold are pruned, and the remaining) Tj ET
+BT /F1 10.0 Tf 72.00 300.00 Td (edge functions can be matched against a library of symbolic forms such as sin, exp and x^2.) Tj ET
+BT /F2 12.0 Tf 72.00 280.00 Td (3 Results) Tj ET
+BT /F1 9.0 Tf 72.00 260.00 Td (Table 1: Median test RMSE on the Feynman equations benchmark.) Tj ET
+BT /F2 9.0 Tf 72.00 246.00 Td (Model) Tj ET
+BT /F2 9.0 Tf 222.00 246.00 Td (Parameters) Tj ET
+BT /F2 9.0 Tf 377.00 246.00 Td (RMSE) Tj ET
+BT /F1 9.0 Tf 72.00 233.00 Td (MLP \(4 layers\)) Tj ET
+BT /F1 9.0 Tf 222.00 233.00 Td (12,400) Tj ET
+BT /F1 9.0 Tf 377.00 233.00 Td (3.1e-4) Tj ET
+BT /F1 9.0 Tf 72.00 220.00 Td (KAN \(fixed grid G = 5\)) Tj ET
+BT /F1 9.0 Tf 222.00 220.00 Td (1,180) Tj ET
+BT /F1 9.0 Tf 377.00 220.00 Td (9.6e-4) Tj ET
+BT /F1 9.0 Tf 72.00 207.00 Td (KANDLE \(G = 5 to 20\)) Tj ET
+BT /F1 9.0 Tf 222.00 207.00 Td (1,240) Tj ET
+BT /F1 9.0 Tf 377.00 207.00 Td (1.2e-4) Tj ET
+BT /F1 10.0 Tf 72.00 184.00 Td (Grid extension accounts for most of the improvement over a fixed-grid KAN. Training is) Tj ET
+BT /F1 10.0 Tf 72.00 171.00 Td (slower per step than for an MLP, by a factor of about 6, because each edge evaluates a) Tj ET
+BT /F1 10.0 Tf 72.00 158.00 Td (spline.) Tj ET
+BT /F2 12.0 Tf 72.00 138.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 118.00 Td ([1] V. Arnoldsen. On the representation of continuous functions of several variables.) Tj ET
+BT /F1 9.0 Tf 86.00 107.00 Td (Mathematical Notes, 1957.) Tj ET
+BT /F1 9.0 Tf 72.00 94.00 Td ([2] C. de Boor-Lind. A practical guide to splines for learning. Numerical Methods Press, 2001.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000320 00000 n 
+0000000439 00000 n 
+0000000575 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R /Info 5 0 R >>
+startxref
+4997
+%%EOF

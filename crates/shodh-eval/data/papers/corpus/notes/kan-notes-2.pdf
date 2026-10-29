@@ -1,0 +1,118 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Reading group notes) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4287 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Reading group notes: Kolmogorov-Arnold networks) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Reading group of the Ashbury machine learning lab) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Recent work has made the residual activation a central concern, because it decides how far) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (Kolmogorov-Arnold network models can scale. We argue that the layer width deserves as much) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (attention as the symbolic formula. This work studies Kolmogorov-Arnold networks, a method) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (that rethinks the spline grid. Most prior methods treat the symbolic formula as fixed and) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (tune the grid interval around it.) Tj ET
+BT /F1 10.0 Tf 72.00 572.00 Td (Combining Kolmogorov-Arnold networks with methods that target the pruning threshold is a) Tj ET
+BT /F1 10.0 Tf 72.00 559.00 Td (promising direction. We expect the spline grid to interact with the grid interval at larger) Tj ET
+BT /F1 10.0 Tf 72.00 546.00 Td (scales, which we leave to future work. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 533.00 Td (larger models may behave differently. The pruning threshold also makes Kolmogorov-Arnold) Tj ET
+BT /F1 10.0 Tf 72.00 520.00 Td (networks easier to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 500.00 Td (Practitioners report that the grid interval is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (This work studies Kolmogorov-Arnold networks, a method that rethinks the residual) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (activation. Earlier Kolmogorov-Arnold network methods improved the collocation point but) Tj ET
+BT /F1 10.0 Tf 72.00 461.00 Td (left the grid interval unchanged. Most prior methods treat the collocation point as fixed) Tj ET
+BT /F1 10.0 Tf 72.00 448.00 Td (and tune the spline grid around it.) Tj ET
+BT /F2 12.0 Tf 72.00 428.00 Td (2 Methods we read) Tj ET
+BT /F1 10.0 Tf 72.00 408.00 Td (The layer width in Kolmogorov-Arnold networks is parameterised by a small linear layer with) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (32 hidden units. Each block of Kolmogorov-Arnold networks applies the layer width after a) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (short convolution of width 7. Gradients through the symbolic formula are clipped at a norm) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (of 5.0. The residual activation is initialised so that Kolmogorov-Arnold networks starts) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (training close to a fixed-grid KAN.) Tj ET
+BT /F1 10.0 Tf 72.00 336.00 Td (The grid interval in Kolmogorov-Arnold networks is parameterised by a small linear layer) Tj ET
+BT /F1 10.0 Tf 72.00 323.00 Td (with 64 hidden units. To keep training stable, Kolmogorov-Arnold networks normalises the) Tj ET
+BT /F1 10.0 Tf 72.00 310.00 Td (layer width before it is combined with the univariate function. We implement the spline grid) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (as a fused kernel, which avoids writing intermediate results to memory. During inference) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (Kolmogorov-Arnold networks caches the univariate function, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 271.00 Td (constant amount of work.) Tj ET
+BT /F1 10.0 Tf 72.00 251.00 Td (The pruning threshold is initialised so that Kolmogorov-Arnold networks starts training) Tj ET
+BT /F1 10.0 Tf 72.00 238.00 Td (close to an MLP. Unlike an MLP, Kolmogorov-Arnold networks updates the edge function only) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (when the pruning threshold changes. During inference Kolmogorov-Arnold networks caches the) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (symbolic formula, so each new token costs a constant amount of work. A coefficient controls) Tj ET
+BT /F1 10.0 Tf 72.00 199.00 Td (how strongly the pruning threshold depends on the univariate function; we set it to 0.5) Tj ET
+BT /F1 10.0 Tf 72.00 186.00 Td (throughout.) Tj ET
+BT /F2 12.0 Tf 72.00 166.00 Td (3 Results we discussed) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 3349 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (The gains of Kolmogorov-Arnold networks grow with the input length, as the residual) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (activation becomes the bottleneck. We train every model for 70B tokens with the same data) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (order and report the mean of three seeds. With the collocation point frozen,) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (Kolmogorov-Arnold networks still recovers most of its improvement on the Feynman equations.) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (On the Feynman equations, Kolmogorov-Arnold networks improves over a Fourier feature network) Tj ET
+BT /F1 10.0 Tf 72.00 655.00 Td (by 6.4 points.) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (Ablating the spline grid lowers the a PDE suite score by 3.4 points, the largest drop among) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (all components. Variance across seeds stays below 0.3 points for every configuration we) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (report. Throughput is measured with a batch size of 128 on a single accelerator. With the) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (spline grid frozen, Kolmogorov-Arnold networks still recovers most of its improvement on a) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (PDE suite.) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (Ablating the collocation point lowers the a PDE suite score by 1.9 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (among all components. The gains of Kolmogorov-Arnold networks grow with the input length, as) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (the residual activation becomes the bottleneck. Throughput is measured with a batch size of) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (64 on a single accelerator. With the residual activation frozen, Kolmogorov-Arnold networks) Tj ET
+BT /F1 10.0 Tf 72.00 511.00 Td (still recovers most of its improvement on a tabular regression suite.) Tj ET
+BT /F2 12.0 Tf 72.00 491.00 Td (4 Open questions) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (Combining Kolmogorov-Arnold networks with methods that target the pruning threshold is a) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (promising direction. A limitation of Kolmogorov-Arnold networks is that the grid interval) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (must be tuned separately for each model size. Our analysis covers models up to 1.3B) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (parameters, and larger models may behave differently. The basis function also makes) Tj ET
+BT /F1 10.0 Tf 72.00 419.00 Td (Kolmogorov-Arnold networks easier to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (Combining Kolmogorov-Arnold networks with methods that target the residual activation is a) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (promising direction. A limitation of Kolmogorov-Arnold networks is that the edge function) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (must be tuned separately for each model size. We expect the basis function to interact with) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (the pruning threshold at larger scales, which we leave to future work. Our analysis covers) Tj ET
+BT /F1 10.0 Tf 72.00 347.00 Td (models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+0000004890 00000 n 
+0000005026 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+8426
+%%EOF

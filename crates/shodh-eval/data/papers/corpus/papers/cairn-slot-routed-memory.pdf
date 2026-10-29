@@ -1,0 +1,153 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (CAIRN: Associative Memory with Learned Slot Routing) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4150 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (CAIRN: Associative Memory with Learned Slot Routing) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Ewa Sobczak, Tomas Lindahl \(Greyfield University\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (CAIRN writes each token into the two memory slots whose keys are closest to it and leaves) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (the other 254 slots unchanged. Practitioners report that the memory capacity is the first) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (component to fail on long inputs. This work studies CAIRN, a method that rethinks the write) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (policy.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Earlier long-term memory methods improved the replay buffer but left the associative loss) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (unchanged. Despite steady progress, the interaction between the replay buffer and the) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (forgetting rate is still poorly understood. Most prior methods treat the write policy as) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (fixed and tune the replay buffer around it. Recent work has made the memory capacity a) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (central concern, because it decides how far long-term memory models can scale.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Most prior methods treat the forgetting rate as fixed and tune the read gate around it. This) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (work studies CAIRN, a method that rethinks the associative loss. A practical system has to) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (balance the cost of the memory capacity against the quality of the memory slot.) Tj ET
+BT /F2 12.0 Tf 72.00 447.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (We expect the segment summary to interact with the memory slot at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (leave to future work.) Tj ET
+BT /F1 10.0 Tf 72.00 381.00 Td (Each block of CAIRN applies the forgetting rate after a short convolution of width 6. Unlike) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (a recurrent baseline, CAIRN updates the write policy only when the segment summary changes.) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (To keep training stable, CAIRN normalises the write policy before it is combined with the) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (memory capacity.) Tj ET
+BT /F2 12.0 Tf 72.00 322.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 302.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (Slot keys in CAIRN are learned during pretraining and stay fixed at inference, so routing a) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (token costs one comparison per slot. The memory slot is initialised so that CAIRN starts) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (training close to a recurrent baseline. A coefficient controls how strongly the replay) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (buffer depends on the test-time update; we set it to 0.5 throughout. We implement the) Tj ET
+BT /F1 10.0 Tf 72.00 230.00 Td (test-time update as a fused kernel, which avoids writing intermediate results to memory.) Tj ET
+BT /F1 10.0 Tf 150.00 210.00 Td (M_j = M_j + g_t v_t  for the 2 slots j nearest to k_t              \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (We implement the segment summary as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (results to memory. Unlike a memory-free model, CAIRN updates the retrieval key only when the) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (forgetting rate changes. During inference CAIRN caches the associative loss, so each new) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (token costs a constant amount of work. To keep training stable, CAIRN normalises the) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (associative loss before it is combined with the write policy.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4384 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (3.2 Implementation) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (During inference CAIRN caches the retrieval key, so each new token costs a constant amount) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (of work. Unlike a recurrent baseline, CAIRN updates the replay buffer only when the) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (forgetting rate changes. The forgetting rate is initialised so that CAIRN starts training) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (close to a sliding-window Transformer. The retrieval key in CAIRN is parameterised by a) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (small linear layer with 16 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (During inference CAIRN caches the test-time update, so each new token costs a constant) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (amount of work. CAIRN computes the segment summary once per layer and reuses it for every) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (head. Each block of CAIRN applies the retrieval key after a short convolution of width 7.) Tj ET
+BT /F2 12.0 Tf 72.00 582.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 562.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 542.00 Td (We train every model for 20B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (seeds. With the memory slot frozen, CAIRN still recovers most of its improvement on BookQA.) Tj ET
+BT /F1 10.0 Tf 72.00 516.00 Td (The gains of CAIRN grow with the input length, as the memory slot becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 503.00 Td (Ablating the retrieval key lowers the BookQA score by 3.1 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 490.00 Td (components.) Tj ET
+BT /F2 12.0 Tf 72.00 470.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 450.00 Td (CAIRN reaches 58.6% accuracy on LongRecall at 64K tokens. On LongRecall, CAIRN improves over) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (a memory-free model by 6.2 points. Throughput is measured with a batch size of 128 on a) Tj ET
+BT /F1 10.0 Tf 72.00 424.00 Td (single accelerator. The gains of CAIRN grow with the input length, as the retrieval key) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 391.00 Td (With the segment summary frozen, CAIRN still recovers most of its improvement on BookQA.) Tj ET
+BT /F1 10.0 Tf 72.00 378.00 Td (Variance across seeds stays below 0.7 points for every configuration we report. On) Tj ET
+BT /F1 10.0 Tf 72.00 365.00 Td (LongRecall, CAIRN improves over a recurrent baseline by 3.6 points.) Tj ET
+BT /F2 12.0 Tf 72.00 345.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 325.00 Td (Ablating the forgetting rate lowers the LongRecall score by 3.9 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 312.00 Td (among all components. We train every model for 70B tokens with the same data order and) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (report the mean of three seeds. CAIRN scores 65.5% on PassKey-Synth, compared with 53.2% for) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (a memory-free model. Variance across seeds stays below 0.9 points for every configuration we) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (report.) Tj ET
+BT /F2 12.0 Tf 72.00 253.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 233.00 Td (The forgetting rate also makes CAIRN easier to inspect, since its behaviour can be read off) Tj ET
+BT /F1 10.0 Tf 72.00 220.00 Td (per token. Combining CAIRN with methods that target the read gate is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (A limitation of CAIRN is that the segment summary must be tuned separately for each model) Tj ET
+BT /F1 10.0 Tf 72.00 194.00 Td (size. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (differently.) Tj ET
+BT /F2 12.0 Tf 72.00 161.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 141.00 Td (The results suggest that the retrieval key is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 128.00 Td (Combining CAIRN with methods that target the associative loss is a promising direction. A) Tj ET
+BT /F1 10.0 Tf 72.00 115.00 Td (limitation of CAIRN is that the replay buffer must be tuned separately for each model size.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1144 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] F. Fujita and L. Laurent. Memory capacity for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (Learning Systems Conference, 2019.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] A. Adeyemi and I. Ivanova. Replay buffer for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 665.00 Td (Learning Systems Conference, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 652.00 Td ([3] R. Rossi and P. Petrova. Associative loss for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 641.00 Td (Learning Systems Conference, 2016.) Tj ET
+BT /F1 9.0 Tf 72.00 628.00 Td ([4] J. Jansen and Z. Zielinski. Segment summary for long-term memory models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 617.00 Td (Efficient Computing, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 604.00 Td ([5] D. Dubois and M. Moreau. Memory capacity for long-term memory models. arXiv preprint, 2024.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000455 00000 n 
+0000000591 00000 n 
+0000004792 00000 n 
+0000004928 00000 n 
+0000009363 00000 n 
+0000009501 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10697
+%%EOF

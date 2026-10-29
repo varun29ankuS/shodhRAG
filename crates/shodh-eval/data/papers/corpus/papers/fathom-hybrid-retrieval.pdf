@@ -1,0 +1,155 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (FATHOM: Hybrid Sparse-Dense Retrieval for Scientific Papers) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4156 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (FATHOM: Hybrid Sparse-Dense Retrieval for Scientific) Tj ET
+BT /F2 16.0 Tf 72.00 698.00 Td (Papers) Tj ET
+BT /F1 10.0 Tf 72.00 672.00 Td (Iris Navarro, Bjorn Aalto \(Northgate Information Lab\)) Tj ET
+BT /F2 12.0 Tf 72.00 642.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (FATHOM fuses a BM25 ranking and a dense ranking with reciprocal rank fusion using a constant) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (of 60. Most prior methods treat the chunk size as fixed and tune the context window around) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (it. A practical system has to balance the cost of the citation against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (chunk size.) Tj ET
+BT /F2 12.0 Tf 72.00 563.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (Despite steady progress, the interaction between the keyword index and the chunk size is) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (still poorly understood. Earlier retrieval-augmented generation methods improved the chunk) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (size but left the keyword index unchanged. Most prior methods treat the reranker as fixed) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (and tune the context window around it. We argue that the citation deserves as much attention) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (as the retriever.) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (Earlier retrieval-augmented generation methods improved the dense embedding but left the) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (context window unchanged. Recent work has made the reranker a central concern, because it) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (decides how far retrieval-augmented generation models can scale. This work studies FATHOM, a) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (method that rethinks the retriever.) Tj ET
+BT /F2 12.0 Tf 72.00 412.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (Combining FATHOM with methods that target the reranker is a promising direction. We expect) Tj ET
+BT /F1 10.0 Tf 72.00 379.00 Td (the keyword index to interact with the chunk size at larger scales, which we leave to future) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (work.) Tj ET
+BT /F1 10.0 Tf 72.00 346.00 Td (Unlike a dense retriever, FATHOM updates the context window only when the keyword index) Tj ET
+BT /F1 10.0 Tf 72.00 333.00 Td (changes. Each block of FATHOM applies the citation after a short convolution of width 3. To) Tj ET
+BT /F1 10.0 Tf 72.00 320.00 Td (keep training stable, FATHOM normalises the context window before it is combined with the) Tj ET
+BT /F1 10.0 Tf 72.00 307.00 Td (retriever.) Tj ET
+BT /F2 12.0 Tf 72.00 287.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 267.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 247.00 Td (FATHOM indexes the title and abstract of each paper as a separate field and boosts matches) Tj ET
+BT /F1 10.0 Tf 72.00 234.00 Td (in them by a factor of two. To keep training stable, FATHOM normalises the grounding check) Tj ET
+BT /F1 10.0 Tf 72.00 221.00 Td (before it is combined with the reranker. We implement the grounding check as a fused kernel,) Tj ET
+BT /F1 10.0 Tf 72.00 208.00 Td (which avoids writing intermediate results to memory. Gradients through the keyword index are) Tj ET
+BT /F1 10.0 Tf 72.00 195.00 Td (clipped at a norm of 3.0.) Tj ET
+BT /F1 10.0 Tf 150.00 175.00 Td (score\(d\) = 1 / \(60 + rank_bm25\(d\)\) + 1 / \(60 + rank_dense\(d\)\)     \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 153.00 Td (FATHOM computes the passage index once per layer and reuses it for every head. Unlike a) Tj ET
+BT /F1 10.0 Tf 72.00 140.00 Td (closed-book model, FATHOM updates the query rewrite only when the grounding check changes. A) Tj ET
+BT /F1 10.0 Tf 72.00 127.00 Td (coefficient controls how strongly the passage index depends on the query rewrite; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 114.00 Td (to 0.2 throughout. We implement the context window as a fused kernel, which avoids writing) Tj ET
+BT /F1 10.0 Tf 72.00 101.00 Td (intermediate results to memory.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4282 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (3.2 Implementation) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (The retriever is initialised so that FATHOM starts training close to a dense retriever.) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (Gradients through the query rewrite are clipped at a norm of 8.0. We implement the dense) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (embedding as a fused kernel, which avoids writing intermediate results to memory. The query) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (rewrite in FATHOM is parameterised by a small linear layer with 64 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 641.00 Td (Each block of FATHOM applies the retriever after a short convolution of width 5. The) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (reranker is initialised so that FATHOM starts training close to a dense retriever. We) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (implement the retriever as a fused kernel, which avoids writing intermediate results to) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (memory.) Tj ET
+BT /F2 12.0 Tf 72.00 582.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 562.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 542.00 Td (The gains of FATHOM grow with the input length, as the passage index becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (FATHOM scores 47.2% on CiteBench, compared with 91.6% for BM25. With the context window) Tj ET
+BT /F1 10.0 Tf 72.00 516.00 Td (frozen, FATHOM still recovers most of its improvement on OpenQA-Synth. We train every model) Tj ET
+BT /F1 10.0 Tf 72.00 503.00 Td (for 30B tokens with the same data order and report the mean of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 483.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 463.00 Td (FATHOM improves recall at 10 from 0.71 to 0.84 on the synthetic SciDocs-Lite benchmark.) Tj ET
+BT /F1 10.0 Tf 72.00 450.00 Td (FATHOM scores 75.0% on SciDocs-Lite, compared with 74.6% for a closed-book model. On) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (SciDocs-Lite, FATHOM improves over a dense retriever by 3.0 points. The gains of FATHOM grow) Tj ET
+BT /F1 10.0 Tf 72.00 424.00 Td (with the input length, as the query rewrite becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 404.00 Td (On CiteBench, FATHOM improves over a dense retriever by 2.2 points. FATHOM scores 54.8% on) Tj ET
+BT /F1 10.0 Tf 72.00 391.00 Td (CiteBench, compared with 63.0% for a closed-book model. Throughput is measured with a batch) Tj ET
+BT /F1 10.0 Tf 72.00 378.00 Td (size of 64 on a single accelerator.) Tj ET
+BT /F2 12.0 Tf 72.00 358.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 338.00 Td (Variance across seeds stays below 0.4 points for every configuration we report. With the) Tj ET
+BT /F1 10.0 Tf 72.00 325.00 Td (passage index frozen, FATHOM still recovers most of its improvement on SciDocs-Lite. We) Tj ET
+BT /F1 10.0 Tf 72.00 312.00 Td (train every model for 80B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (seeds. FATHOM scores 43.5% on CiteBench, compared with 77.3% for BM25.) Tj ET
+BT /F2 12.0 Tf 72.00 279.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 259.00 Td (A limitation of FATHOM is that the query rewrite must be tuned separately for each model) Tj ET
+BT /F1 10.0 Tf 72.00 246.00 Td (size. The results suggest that the dense embedding is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 233.00 Td (budget. Combining FATHOM with methods that target the query rewrite is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 220.00 Td (direction. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (differently.) Tj ET
+BT /F2 12.0 Tf 72.00 187.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 167.00 Td (A limitation of FATHOM is that the dense embedding must be tuned separately for each model) Tj ET
+BT /F1 10.0 Tf 72.00 154.00 Td (size. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 141.00 Td (differently. We expect the grounding check to interact with the query rewrite at larger) Tj ET
+BT /F1 10.0 Tf 72.00 128.00 Td (scales, which we leave to future work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1154 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] J. Jansen and O. Okoro. Keyword index for retrieval-augmented generation models. arXiv) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (preprint, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] B. Bergstrom and E. Eriksen. Passage index for retrieval-augmented generation models. arXiv) Tj ET
+BT /F1 9.0 Tf 86.00 665.00 Td (preprint, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 652.00 Td ([3] C. Castillo and N. Nakamura. Retriever for retrieval-augmented generation models. arXiv) Tj ET
+BT /F1 9.0 Tf 86.00 641.00 Td (preprint, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 628.00 Td ([4] T. Tanaka and R. Rossi. Citation for retrieval-augmented generation models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 617.00 Td (Efficient Computing, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 604.00 Td ([5] P. Petrova and C. Castillo. Context window for retrieval-augmented generation models.) Tj ET
+BT /F1 9.0 Tf 86.00 593.00 Td (Transactions on Efficient Computing, 2017.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000463 00000 n 
+0000000599 00000 n 
+0000004806 00000 n 
+0000004942 00000 n 
+0000009275 00000 n 
+0000009413 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10619
+%%EOF

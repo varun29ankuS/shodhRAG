@@ -1,0 +1,34 @@
+\documentclass{article}
+\usepackage{amsmath}
+\title{ORBIT: Rotary Position Encoding for Chunk-wise Linear Attention}
+\author{Bram Achterberg \and Sara Moreno}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Linear attention has no notion of token order beyond what its gates provide. We present ORBIT, which applies rotary position encoding to the queries and keys of chunk-wise linear attention without giving up its parallel training. Training cost stays linear in the sequence length, and ORBIT improves length extrapolation from 2K to 32K tokens.
+\end{abstract}
+
+\section{Introduction}
+Softmax attention with rotary position encoding is the standard way to give a Transformer a sense of relative position. Linear attention cannot use it directly, because the rotation of a key depends on its absolute position and is folded into the state when the key is written.
+
+ORBIT applies the rotation to queries and keys before the feature map and stores rotated keys in the state. Inside a chunk, relative positions are exact; across chunks, the state carries keys rotated by their absolute position, and the query is rotated by its own position, so their product depends only on the distance between them.
+
+\section{Method}
+For a chunk of length $C$ starting at position $s$ we write
+\begin{equation}
+\mathbf{S}_{s+C} = \mathbf{S}_{s} + \sum_{i=s}^{s+C-1} \mathbf{v}_i \, (\mathbf{R}_{i} \mathbf{k}_i)^\top ,
+\end{equation}
+where $\mathbf{S}_t$ is the state matrix after token t and $\mathbf{R}_i$ is the rotation matrix for position $i$. The output of a query combines an intra-chunk term computed with masked attention and an inter-chunk term read from the state.
+
+The intra-chunk term costs $O(C^2 d)$ and the inter-chunk term $O(C d^2)$ per chunk, so for a fixed chunk size the training complexity is linear in the sequence length. We use a chunk size of 128 tokens.
+
+\section{Experiments}
+We train 760M-parameter models on sequences of 2K tokens and evaluate perplexity at up to 32K tokens. Without position encoding, perplexity at 32K tokens rises to 31.5; with ORBIT it stays at 18.7, close to its value of 17.9 at 2K tokens.
+
+\begin{thebibliography}{9}
+\bibitem{rope} L. Sun and W. Chao. Rotary position embedding for transformers. arXiv preprint, 2021.
+\bibitem{lumen} M. Okonkwo, T. Vaidya and E. Lindqvist. LUMEN: Linear attention with a gated delta rule. In Proceedings of the Learning Systems Conference, 2024.
+\bibitem{chunk} H. Varga. Chunk-wise training of recurrent attention. arXiv preprint, 2023.
+\end{thebibliography}
+\end{document}

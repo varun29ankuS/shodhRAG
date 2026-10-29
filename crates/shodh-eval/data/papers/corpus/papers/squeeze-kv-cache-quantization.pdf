@@ -1,0 +1,120 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (SQUEEZE: Two-Bit Key-Value Cache Quantization with Per-Channel Keys) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4783 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (SQUEEZE: Two-Bit Key-Value Cache Quantization with) Tj ET
+BT /F2 16.0 Tf 72.00 698.00 Td (Per-Channel Keys) Tj ET
+BT /F1 10.0 Tf 72.00 672.00 Td (Priya Raman, Oskar Weiss, Dana Feld \(Corvid Systems Research\)) Tj ET
+BT /F2 12.0 Tf 72.00 642.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (During long-context inference the key-value cache, not the model weights, dominates GPU) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (memory. We present SQUEEZE, a tuning-free method that stores the cache in two bits per) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (number. Keys are quantized per channel and values per token, following the structure of) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (their outliers, and a small window of recent tokens is kept in full precision. SQUEEZE) Tj ET
+BT /F1 10.0 Tf 72.00 570.00 Td (reduces KV cache memory by 5.3 times and raises decoding throughput by 3.1 times with an) Tj ET
+BT /F1 10.0 Tf 72.00 557.00 Td (average accuracy loss of 0.4 points on LongSuite.) Tj ET
+BT /F2 12.0 Tf 72.00 537.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (For a 7B model serving a batch of 16 requests at 32K tokens, the cache needs 256 GB in half) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (precision, far more than the weights. Quantizing the cache is attractive because it needs no) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (retraining, but naive two-bit quantization destroys accuracy. We analyse why and design a) Tj ET
+BT /F1 10.0 Tf 72.00 478.00 Td (quantizer around what we find.) Tj ET
+BT /F2 12.0 Tf 72.00 458.00 Td (2 Analysis of the Cache) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (We inspected the cached keys and values of every layer of three model families. Keys and) Tj ET
+BT /F1 10.0 Tf 72.00 425.00 Td (values behave differently. In the keys, a few key channels carry outliers whose magnitude is) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (ten to fifty times the median, and they are the same channels for every token. Values show) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (no fixed outlier channels, but their error matters per token because the attention output is) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (a weighted sum of value rows.) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (This motivates quantizing keys per channel, so that each outlier channel gets its own scale,) Tj ET
+BT /F1 10.0 Tf 72.00 353.00 Td (and quantizing values per token, so that the error of each value row is bounded. Quantizing) Tj ET
+BT /F1 10.0 Tf 72.00 340.00 Td (keys per token, as earlier work did, spreads one outlier's range over the whole row and) Tj ET
+BT /F1 10.0 Tf 72.00 327.00 Td (leaves the other channels with almost no resolution.) Tj ET
+BT /F2 12.0 Tf 72.00 307.00 Td (3 Method) Tj ET
+BT /F1 10.0 Tf 72.00 287.00 Td (Each quantization group shares a scale and a zero point. We use a group size of 32 for both) Tj ET
+BT /F1 10.0 Tf 72.00 274.00 Td (keys and values and asymmetric rounding to two bits:) Tj ET
+BT /F1 10.0 Tf 150.00 254.00 Td (Q\(x\) = round\(\(x - z\) / s\),  s = \(max - min\) / 3,  z = min           \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 232.00 Td (Per-channel quantization of keys needs a group of tokens to be complete before it can be) Tj ET
+BT /F1 10.0 Tf 72.00 219.00 Td (quantized, so the newest tokens wait in a residual buffer: the most recent 128 tokens stay) Tj ET
+BT /F1 10.0 Tf 72.00 206.00 Td (in full precision and are quantized together once the buffer is full. Attention is computed) Tj ET
+BT /F1 10.0 Tf 72.00 193.00 Td (over the quantized part and the residual part and the two results are combined.) Tj ET
+BT /F2 12.0 Tf 72.00 173.00 Td (4 Results) Tj ET
+BT /F1 9.0 Tf 72.00 153.00 Td (Table 1: Memory, throughput and LongSuite accuracy, 7B model, 32K context.) Tj ET
+BT /F2 9.0 Tf 72.00 139.00 Td (Method) Tj ET
+BT /F2 9.0 Tf 222.00 139.00 Td (Bits) Tj ET
+BT /F2 9.0 Tf 297.00 139.00 Td (Memory) Tj ET
+BT /F2 9.0 Tf 372.00 139.00 Td (Throughput) Tj ET
+BT /F2 9.0 Tf 447.00 139.00 Td (LongSuite) Tj ET
+BT /F1 9.0 Tf 72.00 126.00 Td (Full precision) Tj ET
+BT /F1 9.0 Tf 222.00 126.00 Td (16) Tj ET
+BT /F1 9.0 Tf 297.00 126.00 Td (1.0x) Tj ET
+BT /F1 9.0 Tf 372.00 126.00 Td (1.0x) Tj ET
+BT /F1 9.0 Tf 447.00 126.00 Td (47.6) Tj ET
+BT /F1 9.0 Tf 72.00 113.00 Td (Per-token 2-bit) Tj ET
+BT /F1 9.0 Tf 222.00 113.00 Td (2) Tj ET
+BT /F1 9.0 Tf 297.00 113.00 Td (5.3x) Tj ET
+BT /F1 9.0 Tf 372.00 113.00 Td (3.1x) Tj ET
+BT /F1 9.0 Tf 447.00 113.00 Td (31.2) Tj ET
+BT /F1 9.0 Tf 72.00 100.00 Td (SQUEEZE) Tj ET
+BT /F1 9.0 Tf 222.00 100.00 Td (2) Tj ET
+BT /F1 9.0 Tf 297.00 100.00 Td (5.3x) Tj ET
+BT /F1 9.0 Tf 372.00 100.00 Td (3.1x) Tj ET
+BT /F1 9.0 Tf 447.00 100.00 Td (47.2) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 1240 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (SQUEEZE keeps accuracy within 0.4 points of full precision on average while using a fifth of) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (the memory, and the larger batches it allows raise throughput by 3.1 times. The residual) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (buffer is essential: without it accuracy drops by 2.7 points on the retrieval tasks.) Tj ET
+BT /F2 12.0 Tf 72.00 674.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 654.00 Td (Quantization reduces the size of every cached entry but keeps every entry. It is therefore) Tj ET
+BT /F1 10.0 Tf 72.00 641.00 Td (complementary to methods that decide which tokens to keep, and the two can be applied) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (together.) Tj ET
+BT /F2 12.0 Tf 72.00 608.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 588.00 Td ([1] G. Alvarez and M. Stone. Outlier channels in transformer activations. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 577.00 Td (Efficient Computing, 2022.) Tj ET
+BT /F1 9.0 Tf 72.00 564.00 Td ([2] Y. Kato. Asymmetric low-bit rounding for inference. arXiv preprint, 2023.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000464 00000 n 
+0000000600 00000 n 
+0000005434 00000 n 
+0000005570 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+6861
+%%EOF

@@ -3,19 +3,25 @@
   "dataset_id": "synthetic-v1",
   "dataset_hash": "26c12c6b06498b390057be75f5cdbafee993cdbcad0776f549dbd0a5a8164936",
   "corpus_hash": "a0dd1b9f61d3abd55c1a96ab9ff130b3d60b5f19d1a7e874e12d7d60ac9d5349",
-  "recorded_at": "2026-10-11T19:16:40.860282+00:00",
+  "recorded_at": "2026-10-29T16:40:24.001652200+00:00",
   "settings": {
+    "candidate_multiplier": "5",
     "chunk_max_tokens": "380",
     "citation_graph": "off",
     "embedding": "multilingual-e5-base",
     "k": "10",
+    "min_score_threshold": "0.02",
     "ocr": "auto",
     "ocr_model": "pp-ocrv6-small",
     "ocr_render_dpi": "300",
+    "pool_open_share": "0",
+    "pool_source_cap": "0",
     "reranker": "ms-marco-MiniLM-L6-v2",
     "reranking": "true",
     "rrf_k": "60",
     "runs": "3",
+    "score_weight": "0.3",
+    "source_decay": "0.5",
     "system_ocr_render_dpi": "96 (page size)",
     "table_refinement": "off"
   },
@@ -55,6 +61,41 @@
       "max": 0.9888888888888889,
       "runs": 3
     },
+    "multi_files@10": {
+      "mean": 3.0,
+      "stddev": 0.0,
+      "min": 3.0,
+      "max": 3.0,
+      "runs": 3
+    },
+    "multi_ndcg@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "multi_recall@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "multi_recall@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "ndcg@10": {
+      "mean": 0.9917984389682545,
+      "stddev": 1.3597399555105182e-16,
+      "min": 0.9917984389682546,
+      "max": 0.9917984389682546,
+      "runs": 3
+    },
     "page_hit@1": {
       "mean": 0.9393939393939394,
       "stddev": 0.0,
@@ -91,6 +132,27 @@
       "runs": 3
     },
     "passage_hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "recall@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "recall@20": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 3
+    },
+    "recall@5": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,

@@ -1,0 +1,152 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (CONFLUX: Load-Balanced Routing for Mixture-of-Experts) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 3991 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (CONFLUX: Load-Balanced Routing for Mixture-of-Experts) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Helena Sousa, Wei Jian \(Summit Lane Research\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (CONFLUX routes every token to 2 of 64 experts and adds an auxiliary loss that penalises) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (uneven expert load. Practitioners report that the gating network is the first component to) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (fail on long inputs. Most prior methods treat the gating network as fixed and tune the) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (expert around it.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (We argue that the expert deserves as much attention as the load balance. Earlier) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (mixture-of-experts methods improved the token dropping but left the shared expert unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (This work studies CONFLUX, a method that rethinks the auxiliary loss. Recent work has made) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (the auxiliary loss a central concern, because it decides how far mixture-of-experts models) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (can scale.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Practitioners report that the expert is the first component to fail on long inputs. A) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (practical system has to balance the cost of the expert against the quality of the load) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (balance. Recent work has made the top-k routing a central concern, because it decides how) Tj ET
+BT /F1 10.0 Tf 72.00 454.00 Td (far mixture-of-experts models can scale.) Tj ET
+BT /F2 12.0 Tf 72.00 434.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (The auxiliary loss also makes CONFLUX easier to inspect, since its behaviour can be read off) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (per token. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 388.00 Td (differently.) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (The capacity factor in CONFLUX is parameterised by a small linear layer with 512 hidden) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (units. During inference CONFLUX caches the expert parallelism, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (constant amount of work. CONFLUX computes the auxiliary loss once per layer and reuses it) Tj ET
+BT /F1 10.0 Tf 72.00 329.00 Td (for every head.) Tj ET
+BT /F2 12.0 Tf 72.00 309.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 289.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (The router of CONFLUX adds a learned bias per expert that is raised for under-used experts) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (between training steps. To keep training stable, CONFLUX normalises the capacity factor) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (before it is combined with the auxiliary loss. CONFLUX computes the auxiliary loss once per) Tj ET
+BT /F1 10.0 Tf 72.00 230.00 Td (layer and reuses it for every head. The load balance in CONFLUX is parameterised by a small) Tj ET
+BT /F1 10.0 Tf 72.00 217.00 Td (linear layer with 16 hidden units.) Tj ET
+BT /F1 10.0 Tf 150.00 197.00 Td (loss_aux = 64 * sum_e f_e p_e                                   \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (Gradients through the shared expert are clipped at a norm of 6.0. We implement the router as) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (a fused kernel, which avoids writing intermediate results to memory. To keep training) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (stable, CONFLUX normalises the expert before it is combined with the router. Unlike switch) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (routing, CONFLUX updates the shared expert only when the expert changes.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4471 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (3.2 Implementation) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (A coefficient controls how strongly the auxiliary loss depends on the shared expert; we set) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (it to 0.9 throughout. We implement the auxiliary loss as a fused kernel, which avoids) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (writing intermediate results to memory. Each block of CONFLUX applies the auxiliary loss) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (after a short convolution of width 6. Gradients through the expert are clipped at a norm of) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (3.0.) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (CONFLUX computes the expert once per layer and reuses it for every head. During inference) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (CONFLUX caches the shared expert, so each new token costs a constant amount of work.) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (Gradients through the router are clipped at a norm of 5.0.) Tj ET
+BT /F2 12.0 Tf 72.00 582.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 562.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 542.00 Td (On a translation suite, CONFLUX improves over a top-1 router by 2.1 points. Throughput is) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (measured with a batch size of 128 on a single accelerator. We train every model for 60B) Tj ET
+BT /F1 10.0 Tf 72.00 516.00 Td (tokens with the same data order and report the mean of three seeds. Ablating the router) Tj ET
+BT /F1 10.0 Tf 72.00 503.00 Td (lowers the a translation suite score by 2.5 points, the largest drop among all components.) Tj ET
+BT /F2 12.0 Tf 72.00 483.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 463.00 Td (CONFLUX matches a dense 1.3B model's perplexity with 31% of its training compute. Ablating) Tj ET
+BT /F1 10.0 Tf 72.00 450.00 Td (the token dropping lowers the a translation suite score by 5.4 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (among all components. On WebMix perplexity, CONFLUX improves over a dense model by 3.0) Tj ET
+BT /F1 10.0 Tf 72.00 424.00 Td (points. The gains of CONFLUX grow with the input length, as the token dropping becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 391.00 Td (With the capacity factor frozen, CONFLUX still recovers most of its improvement on a) Tj ET
+BT /F1 10.0 Tf 72.00 378.00 Td (reasoning suite. Ablating the auxiliary loss lowers the a reasoning suite score by 3.0) Tj ET
+BT /F1 10.0 Tf 72.00 365.00 Td (points, the largest drop among all components. The gains of CONFLUX grow with the input) Tj ET
+BT /F1 10.0 Tf 72.00 352.00 Td (length, as the expert parallelism becomes the bottleneck.) Tj ET
+BT /F2 12.0 Tf 72.00 332.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 312.00 Td (We train every model for 60B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (seeds. Throughput is measured with a batch size of 32 on a single accelerator. The gains of) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (CONFLUX grow with the input length, as the gating network becomes the bottleneck. Variance) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (across seeds stays below 0.8 points for every configuration we report.) Tj ET
+BT /F2 12.0 Tf 72.00 253.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 233.00 Td (The router also makes CONFLUX easier to inspect, since its behaviour can be read off per) Tj ET
+BT /F1 10.0 Tf 72.00 220.00 Td (token. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (differently. Combining CONFLUX with methods that target the load balance is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 194.00 Td (direction. The results suggest that the capacity factor is the main lever for quality at a) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (fixed budget.) Tj ET
+BT /F2 12.0 Tf 72.00 161.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 141.00 Td (The expert also makes CONFLUX easier to inspect, since its behaviour can be read off per) Tj ET
+BT /F1 10.0 Tf 72.00 128.00 Td (token. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 115.00 Td (differently. The results suggest that the token dropping is the main lever for quality at a) Tj ET
+BT /F1 10.0 Tf 72.00 102.00 Td (fixed budget.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 999 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] E. Eriksen and O. Okoro. Token dropping for mixture-of-experts models. arXiv preprint, 2023.) Tj ET
+BT /F1 9.0 Tf 72.00 687.00 Td ([2] V. Varga and L. Laurent. Load balance for mixture-of-experts models. arXiv preprint, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 674.00 Td ([3] O. Okoro and I. Ivanova. Top-k routing for mixture-of-experts models. arXiv preprint, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 661.00 Td ([4] C. Castillo and Y. Yilmaz. Auxiliary loss for mixture-of-experts models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 650.00 Td (Efficient Computing, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 637.00 Td ([5] A. Adeyemi and J. Jansen. Capacity factor for mixture-of-experts models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 626.00 Td (the Learning Systems Conference, 2020.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000457 00000 n 
+0000000593 00000 n 
+0000004635 00000 n 
+0000004771 00000 n 
+0000009293 00000 n 
+0000009431 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10481
+%%EOF

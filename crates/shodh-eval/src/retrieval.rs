@@ -2,6 +2,10 @@
 //! answerable question the way the agent's `search_documents` tool does
 //! (`search_comprehensive`, no filter), and rank the expected evidence.
 //! No LLM is involved, so this runs in CI.
+//!
+//! Each question is searched twice: with `k` results (every metric but
+//! `recall@20`) and with [`WIDE_K`], the most the agent's tool asks for
+//! (`recall@20` and how many files the results come from).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -9,14 +13,19 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 
-use crate::corpus::{corpus_hash, expected_key};
+use crate::corpus::{corpus_hash, expected_key, relative_key};
 use crate::dataset::{Dataset, EvalCase};
-use crate::engine::{index_corpus_with, settings, IndexedCorpus};
-use crate::metrics::{rank_case, retrieval_metrics, RetrievedChunk};
+use crate::engine::{index_corpus_with, settings_with, IndexedCorpus, Tweaks};
+use crate::metrics::{rank_case, retrieval_metrics, unique_sources, RetrievedChunk};
 use crate::report::{combine_runs, summarize_latencies, CaseRecord, RunKind, RunReport, TopResult};
+use crate::text::{contains_span, normalize_text};
 
 /// Results fetched per question (the top of the agent tool's range).
 pub const DEFAULT_K: usize = 10;
+
+/// Results of the second search per question: the most `search_documents`
+/// returns.
+pub const WIDE_K: usize = 20;
 
 pub struct RetrievalOptions {
     /// Absolute corpus folder.
@@ -28,19 +37,26 @@ pub struct RetrievalOptions {
     pub k: usize,
     /// OCR engine and render resolutions for scanned files.
     pub ocr: shodh_rag::config::OcrConfig,
+    /// Engine settings changed from the app's defaults.
+    pub tweaks: Tweaks,
 }
 
-/// Expected document key -> (pages, passage) for one case.
-pub fn expected_map(
-    corpus: &std::path::Path,
-    case: &EvalCase,
-) -> BTreeMap<String, (Vec<u32>, Option<String>)> {
-    let mut map: BTreeMap<String, (Vec<u32>, Option<String>)> = BTreeMap::new();
+/// Expected document key -> (pages, passages) for one case. A file listed
+/// several times (a question that needs several passages of one document)
+/// gets all of its pages and passages.
+pub fn expected_map(corpus: &std::path::Path, case: &EvalCase) -> crate::metrics::Expected {
+    let mut map = crate::metrics::Expected::new();
     for source in &case.sources {
         let entry = map.entry(expected_key(corpus, &source.file)).or_default();
-        entry.0.extend(source.pages.iter().copied());
-        if entry.1.is_none() {
-            entry.1 = source.passage.clone();
+        for page in &source.pages {
+            if !entry.0.contains(page) {
+                entry.0.push(*page);
+            }
+        }
+        if let Some(passage) = &source.passage {
+            if !entry.1.contains(passage) {
+                entry.1.push(passage.clone());
+            }
         }
     }
     map
@@ -60,12 +76,84 @@ fn distinct_keys(chunks: &[RetrievedChunk]) -> Vec<String> {
     keys
 }
 
+/// One run's searches: the case records and the per-case diagnostics.
+struct Searched {
+    records: Vec<CaseRecord>,
+    /// `recall@20` per case.
+    wide_recall: Vec<f64>,
+    /// `depth_recall@20` per depth case.
+    wide_depth: Vec<f64>,
+    diagnostics: Vec<BTreeMap<String, f64>>,
+}
+
+/// Per-case diagnostics: distinct files among the first 10 and 20 results
+/// (all cases, and the cases expecting several documents), and the files
+/// each stage of an undecomposed search kept.
+fn case_diagnostics(
+    narrow: &[RetrievedChunk],
+    wide: &[RetrievedChunk],
+    expected_docs: usize,
+    trace: &shodh_rag::rag_engine::SearchTrace,
+) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    let at10 = unique_sources(narrow, 10) as f64;
+    let at20 = unique_sources(wide, WIDE_K) as f64;
+    out.insert("unique_sources@10".to_string(), at10);
+    out.insert(format!("unique_sources@{WIDE_K}"), at20);
+    if expected_docs > 1 {
+        out.insert("multi_unique_sources@10".to_string(), at10);
+        out.insert(format!("multi_unique_sources@{WIDE_K}"), at20);
+    }
+    let decomposed = trace.sub_queries > 1;
+    out.insert("decomposed".to_string(), if decomposed { 1.0 } else { 0.0 });
+    if !decomposed {
+        for stage in &trace.stages {
+            out.insert(
+                format!("stage_{}_results", stage.stage),
+                stage.results as f64,
+            );
+            out.insert(
+                format!("stage_{}_sources", stage.stage),
+                stage.unique_sources as f64,
+            );
+        }
+    }
+    out
+}
+
+/// Gated diversity: the mean number of distinct files among the first 10
+/// results of the cases whose answer spans several documents (for them, one
+/// file is never the whole answer). `None` without such cases.
+fn multi_files(records: &[CaseRecord]) -> Option<f64> {
+    let counts: Vec<f64> = records
+        .iter()
+        .filter(|r| r.ranks.as_ref().is_some_and(|k| k.expected_docs > 1))
+        .filter_map(|r| r.unique_sources.get("10").map(|&n| n as f64))
+        .collect();
+    (!counts.is_empty()).then(|| counts.iter().sum::<f64>() / counts.len() as f64)
+}
+
+/// Mean of each diagnostic over the cases that have it.
+fn mean_diagnostics(cases: &[BTreeMap<String, f64>]) -> BTreeMap<String, f64> {
+    let mut sums: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    for case in cases {
+        for (name, value) in case {
+            let entry = sums.entry(name.clone()).or_default();
+            entry.0 += value;
+            entry.1 += 1;
+        }
+    }
+    sums.into_iter()
+        .map(|(name, (sum, n))| (name, sum / n as f64))
+        .collect()
+}
+
 async fn search_all(
     index: &IndexedCorpus,
     cases: &[&EvalCase],
     k: usize,
     latencies: &mut Vec<f64>,
-) -> Result<Vec<CaseRecord>> {
+) -> Result<Searched> {
     // The first search loads the embedder and the reranker; keep that out
     // of the latency figures.
     index
@@ -75,30 +163,154 @@ async fn search_all(
         .search_comprehensive("warm up the search models", k, None)
         .await
         .context("warm-up search")?;
-    let mut records = Vec::with_capacity(cases.len());
+    let mut searched = Searched {
+        records: Vec::with_capacity(cases.len()),
+        wide_recall: Vec::with_capacity(cases.len()),
+        wide_depth: Vec::new(),
+        diagnostics: Vec::with_capacity(cases.len()),
+    };
+    // Indexed source of each document key, to tell a passage the search did
+    // not rank from one the index does not hold (lost in parsing or chunking).
+    let sources: BTreeMap<String, String> = index
+        .rag
+        .read()
+        .await
+        .document_sources()
+        .await
+        .context("listing the indexed sources")?
+        .into_iter()
+        .filter_map(|row| relative_key(&index.root_key, &row.source).map(|key| (key, row.source)))
+        .collect();
     for case in cases {
+        let PassageCheck {
+            indexed: passage_indexed,
+            nearest: passage_nearest,
+        } = passage_indexed(index, &sources, case).await?;
         let engine = index.rag.read().await;
         let started = Instant::now();
-        let results = engine
-            .search_comprehensive(&case.question, k, None)
+        let (results, trace) = engine
+            .search_traced(&case.question, k, None)
             .await
             .with_context(|| format!("searching case '{}'", case.id))?;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let wide_results = engine
+            .search_comprehensive(&case.question, WIDE_K, None)
+            .await
+            .with_context(|| format!("searching case '{}' for {WIDE_K}", case.id))?;
         drop(engine);
         latencies.push(ms);
         let chunks: Vec<RetrievedChunk> = results.iter().map(|r| index.chunk(r)).collect();
-        let ranks = rank_case(&expected_map(&index.root, case), &chunks);
-        records.push(CaseRecord {
+        let wide: Vec<RetrievedChunk> = wide_results.iter().map(|r| index.chunk(r)).collect();
+        let expected = expected_map(&index.root, case);
+        let ranks = rank_case(&expected, &chunks);
+        let wide_ranks = rank_case(&expected, &wide);
+        searched.wide_recall.push(wide_ranks.recall(WIDE_K));
+        if let Some(depth) = wide_ranks.depth_recall(WIDE_K) {
+            searched.wide_depth.push(depth);
+        }
+        let mut diagnostics = case_diagnostics(&chunks, &wide, expected.len(), &trace);
+        if let Some(held) = passage_indexed {
+            diagnostics.insert(
+                "passage_not_in_index".to_string(),
+                if held { 0.0 } else { 1.0 },
+            );
+        }
+        let spread: BTreeMap<String, usize> = [
+            ("10".to_string(), unique_sources(&chunks, 10)),
+            (WIDE_K.to_string(), unique_sources(&wide, WIDE_K)),
+        ]
+        .into_iter()
+        .collect();
+        searched.diagnostics.push(diagnostics);
+        searched.records.push(CaseRecord {
             id: case.id.clone(),
             question: case.question.clone(),
             ranks: Some(ranks),
             retrieved: distinct_keys(&chunks),
             top: chunks.first().map(TopResult::of),
             latency_ms: Some(ms),
+            unique_sources: spread,
+            trace: Some(trace),
+            passage_indexed,
+            passage_nearest,
             ..CaseRecord::default()
         });
     }
-    Ok(records)
+    Ok(searched)
+}
+
+/// Whether every expected passage of `case` is in a stored chunk of its
+/// document (`None` when the case gives no passage).
+/// What the index holds for a case's expected passages: whether every one
+/// is in a stored chunk of its document (`None` when the case gives no
+/// passage) and, for the first one that is not, the start of the stored
+/// chunk sharing the most words with it (to see how parsing changed it).
+struct PassageCheck {
+    indexed: Option<bool>,
+    nearest: Option<String>,
+}
+
+/// Characters of the nearest chunk kept in a report.
+const NEAREST_CHARS: usize = 400;
+
+/// The chunk text sharing the most normalised words with `passage`.
+fn nearest_chunk<'a>(texts: impl Iterator<Item = &'a str>, passage: &str) -> Option<&'a str> {
+    let wanted: std::collections::BTreeSet<String> = normalize_text(passage)
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    texts
+        .map(|text| {
+            let words: std::collections::BTreeSet<String> = normalize_text(text)
+                .split(' ')
+                .map(str::to_string)
+                .collect();
+            (wanted.intersection(&words).count(), text)
+        })
+        .filter(|(shared, _)| *shared > 0)
+        .max_by_key(|(shared, _)| *shared)
+        .map(|(_, text)| text)
+}
+
+async fn passage_indexed(
+    index: &IndexedCorpus,
+    sources: &BTreeMap<String, String>,
+    case: &EvalCase,
+) -> Result<PassageCheck> {
+    let mut any = false;
+    for (key, (_, passages)) in expected_map(&index.root, case) {
+        if passages.is_empty() {
+            continue;
+        }
+        any = true;
+        let Some(source) = sources.get(&key) else {
+            return Ok(PassageCheck {
+                indexed: Some(false),
+                nearest: None,
+            });
+        };
+        let chunks = index
+            .rag
+            .read()
+            .await
+            .chunks_of_source(source)
+            .await
+            .with_context(|| format!("listing the chunks of {key}"))?;
+        for passage in &passages {
+            if !chunks.iter().any(|c| contains_span(&c.text, passage)) {
+                let nearest = nearest_chunk(chunks.iter().map(|c| c.text.as_str()), passage)
+                    .map(|text| text.chars().take(NEAREST_CHARS).collect());
+                return Ok(PassageCheck {
+                    indexed: Some(false),
+                    nearest,
+                });
+            }
+        }
+    }
+    Ok(PassageCheck {
+        indexed: any.then_some(true),
+        nearest: None,
+    })
 }
 
 /// The OCR choice as report settings.
@@ -145,6 +357,7 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
         bail!("the dataset has no answerable cases to search for");
     }
     let mut per_run = Vec::with_capacity(opts.runs);
+    let mut diagnostics_per_run = Vec::with_capacity(opts.runs);
     let mut ingests = Vec::with_capacity(opts.runs);
     let mut latencies = Vec::new();
     let mut last = Vec::new();
@@ -154,7 +367,7 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
             opts.runs,
             opts.corpus.display()
         );
-        let index = index_corpus_with(&opts.corpus, &opts.models, &opts.ocr).await?;
+        let index = index_corpus_with(&opts.corpus, &opts.models, &opts.ocr, &opts.tweaks).await?;
         eprintln!(
             "run {run}/{}: {}/{} files, {} chunks in {:.1} s; searching {} questions",
             opts.runs,
@@ -164,18 +377,38 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
             index.ingest.seconds,
             cases.len()
         );
-        let records = search_all(&index, &cases, opts.k, &mut latencies).await?;
-        let ranks: Vec<_> = records.iter().filter_map(|r| r.ranks.clone()).collect();
+        let searched = search_all(&index, &cases, opts.k, &mut latencies).await?;
+        let ranks: Vec<_> = searched
+            .records
+            .iter()
+            .filter_map(|r| r.ranks.clone())
+            .collect();
         let mut metrics = retrieval_metrics(&ranks);
         metrics.insert(
             "ingest_ok".to_string(),
             index.ingest.files_indexed as f64 / index.ingest.files_seen as f64,
         );
+        metrics.insert(
+            format!("recall@{WIDE_K}"),
+            searched.wide_recall.iter().sum::<f64>() / searched.wide_recall.len() as f64,
+        );
+        if !searched.wide_depth.is_empty() {
+            metrics.insert(
+                format!("depth_recall@{WIDE_K}"),
+                searched.wide_depth.iter().sum::<f64>() / searched.wide_depth.len() as f64,
+            );
+        }
+        if let Some(files) = multi_files(&searched.records) {
+            metrics.insert("multi_files@10".to_string(), files);
+        }
         per_run.push(metrics);
+        let mut diagnostics = mean_diagnostics(&searched.diagnostics);
+        diagnostics.insert("chunks".to_string(), index.ingest.chunks as f64);
+        diagnostics_per_run.push(diagnostics);
         ingests.push(index.ingest.clone());
-        last = records;
+        last = searched.records;
     }
-    let mut settings = settings();
+    let mut settings = settings_with(&opts.tweaks);
     settings.insert("k".to_string(), opts.k.to_string());
     settings.insert("runs".to_string(), opts.runs.to_string());
     settings.extend(ocr_settings(&opts.ocr));
@@ -187,6 +420,7 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
         created_at: chrono::Utc::now().to_rfc3339(),
         settings,
         metrics: combine_runs(&per_run),
+        diagnostics: combine_runs(&diagnostics_per_run),
         latency: summarize_latencies(&latencies),
         first_token: None,
         provider_errors: BTreeMap::new(),
@@ -194,4 +428,85 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
         ingest: ingests,
         cases: last,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shodh_rag::rag_engine::{SearchStage, SearchTrace};
+
+    fn chunk(key: &str) -> RetrievedChunk {
+        RetrievedChunk {
+            key: Some(key.into()),
+            pages: None,
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn multi_files_counts_only_cases_with_several_expected_documents() {
+        let record = |expected_docs: usize, files: usize| CaseRecord {
+            ranks: Some(crate::metrics::CaseRanks {
+                expected_docs,
+                ..Default::default()
+            }),
+            unique_sources: [("10".to_string(), files)].into_iter().collect(),
+            ..CaseRecord::default()
+        };
+        assert_eq!(
+            multi_files(&[record(1, 9), record(2, 3), record(3, 5)]),
+            Some(4.0)
+        );
+        assert_eq!(multi_files(&[record(1, 9)]), None);
+    }
+
+    #[test]
+    fn the_nearest_chunk_shares_the_most_words() {
+        let texts = [
+            "| TIDE | as context | 93.0 |",
+            "Abstract about memory",
+            "nothing",
+        ];
+        assert_eq!(
+            nearest_chunk(texts.iter().copied(), "TIDE as context 93.0 71.3"),
+            Some("| TIDE | as context | 93.0 |")
+        );
+        assert_eq!(nearest_chunk(texts.iter().copied(), "zebra"), None);
+    }
+
+    #[test]
+    fn diagnostics_count_files_and_skip_stages_of_decomposed_searches() {
+        let narrow = [chunk("a"), chunk("a"), chunk("b")];
+        let wide = [chunk("a"), chunk("b"), chunk("c"), chunk("a")];
+        let stage = |stage: &str, results, unique_sources| SearchStage {
+            sub_query: 0,
+            stage: stage.to_string(),
+            results,
+            unique_sources,
+        };
+        let trace = SearchTrace {
+            sub_queries: 1,
+            stages: vec![stage("vector", 50, 2), stage("returned", 10, 2)],
+        };
+        let single = case_diagnostics(&narrow, &wide, 1, &trace);
+        assert_eq!(single["unique_sources@10"], 2.0);
+        assert_eq!(single["unique_sources@20"], 3.0);
+        assert_eq!(single["stage_vector_sources"], 2.0);
+        assert_eq!(single["stage_vector_results"], 50.0);
+        assert_eq!(single["decomposed"], 0.0);
+        assert!(!single.contains_key("multi_unique_sources@10"));
+        let decomposed = SearchTrace {
+            sub_queries: 2,
+            ..trace
+        };
+        let multi = case_diagnostics(&narrow, &wide, 3, &decomposed);
+        assert_eq!(multi["multi_unique_sources@20"], 3.0);
+        assert_eq!(multi["decomposed"], 1.0);
+        assert!(!multi.contains_key("stage_vector_sources"));
+        let mean = mean_diagnostics(&[single, multi]);
+        assert_eq!(mean["unique_sources@20"], 3.0);
+        assert_eq!(mean["decomposed"], 0.5);
+        assert_eq!(mean["stage_vector_sources"], 2.0);
+        assert_eq!(mean["multi_unique_sources@10"], 2.0);
+    }
 }

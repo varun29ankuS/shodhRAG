@@ -76,9 +76,83 @@ pub fn result_pages(metadata: &std::collections::HashMap<String, String>) -> Opt
     }
 }
 
+/// Engine settings that differ from the app's defaults for one run, as
+/// `key=value` pairs (`retrieval --search rrf_k=20,source_decay=0.7`), to
+/// measure what a setting does before changing its default. Search keys:
+/// `rrf_k`, `candidate_multiplier`, `min_score_threshold`, `score_weight`,
+/// `source_decay`, `pool_source_cap`, `pool_open_share`, `reranking` (`on`/`off`); indexing key:
+/// `chunk_max_tokens`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Tweaks {
+    pairs: Vec<(String, String)>,
+}
+
+impl Tweaks {
+    /// Parse `key=value,key=value`; every key must be known and every value
+    /// valid for it.
+    pub fn parse(spec: &str) -> Result<Self> {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let Some((key, value)) = item.split_once('=') else {
+                bail!("'{item}' is not key=value");
+            };
+            let (key, value) = (key.trim().to_string(), value.trim().to_string());
+            if pairs.iter().any(|(k, _)| *k == key) {
+                bail!("{key} is given twice");
+            }
+            pairs.push((key, value));
+        }
+        let tweaks = Self { pairs };
+        tweaks.apply(&mut RAGConfig::default())?;
+        Ok(tweaks)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    /// Set every pair on `config` and validate the result.
+    pub fn apply(&self, config: &mut RAGConfig) -> Result<()> {
+        fn number<T: std::str::FromStr>(key: &str, value: &str) -> Result<T> {
+            value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{key} must be a number, got '{value}'"))
+        }
+        for (key, value) in &self.pairs {
+            match key.as_str() {
+                "rrf_k" => config.search.rrf_k = number(key, value)?,
+                "candidate_multiplier" => config.search.candidate_multiplier = number(key, value)?,
+                "min_score_threshold" => config.search.min_score_threshold = number(key, value)?,
+                "score_weight" => config.search.score_weight = number(key, value)?,
+                "source_decay" => config.search.source_decay = number(key, value)?,
+                "pool_source_cap" => config.search.pool_source_cap = number(key, value)?,
+                "pool_open_share" => config.search.pool_open_share = number(key, value)?,
+                "chunk_max_tokens" => config.chunking.max_tokens = number(key, value)?,
+                "reranking" => {
+                    config.features.enable_reranking = match value.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => bail!("reranking must be on or off, got '{other}'"),
+                    }
+                }
+                other => bail!("unknown setting '{other}'"),
+            }
+        }
+        config.validate().map_err(anyhow::Error::msg)
+    }
+}
+
 /// Engine settings recorded in reports.
 pub fn settings() -> BTreeMap<String, String> {
-    let config = RAGConfig::default();
+    settings_with(&Tweaks::default())
+}
+
+/// Engine settings recorded in reports, with `tweaks` applied.
+pub fn settings_with(tweaks: &Tweaks) -> BTreeMap<String, String> {
+    let mut config = RAGConfig::default();
+    // `Tweaks::parse` validated the pairs; a failure here leaves the defaults
+    // and is reported by the run itself.
+    let _ = tweaks.apply(&mut config);
     [
         (
             "embedding",
@@ -90,6 +164,18 @@ pub fn settings() -> BTreeMap<String, String> {
         ),
         ("chunk_max_tokens", config.chunking.max_tokens.to_string()),
         ("rrf_k", config.search.rrf_k.to_string()),
+        (
+            "candidate_multiplier",
+            config.search.candidate_multiplier.to_string(),
+        ),
+        (
+            "min_score_threshold",
+            config.search.min_score_threshold.to_string(),
+        ),
+        ("score_weight", config.search.score_weight.to_string()),
+        ("source_decay", config.search.source_decay.to_string()),
+        ("pool_source_cap", config.search.pool_source_cap.to_string()),
+        ("pool_open_share", config.search.pool_open_share.to_string()),
         ("reranking", config.features.enable_reranking.to_string()),
         // The app also refines table pages with the table model in the
         // background and fuses a citation-graph ranking into paper queries;
@@ -105,16 +191,17 @@ pub fn settings() -> BTreeMap<String, String> {
 /// Index `corpus` (an absolute folder) with the models in `models` into a
 /// new temporary index, reading scans with the app's default OCR choice.
 pub async fn index_corpus(corpus: &Path, models: &Path) -> Result<IndexedCorpus> {
-    index_corpus_with(corpus, models, &OcrConfig::default()).await
+    index_corpus_with(corpus, models, &OcrConfig::default(), &Tweaks::default()).await
 }
 
-/// [`index_corpus`] with the OCR engine and render resolutions of `ocr`.
-/// Choosing PP-OCRv6 fails when its model is not in `models`, rather than
-/// quietly measuring another engine.
+/// [`index_corpus`] with the OCR engine and render resolutions of `ocr` and
+/// the engine settings changed by `tweaks`. Choosing PP-OCRv6 fails when its
+/// model is not in `models`, rather than quietly measuring another engine.
 pub async fn index_corpus_with(
     corpus: &Path,
     models: &Path,
     ocr: &OcrConfig,
+    tweaks: &Tweaks,
 ) -> Result<IndexedCorpus> {
     if ocr.engine == OcrEngineChoice::PpOcr
         && !shodh_rag::processing::ocr::is_installed(&shodh_rag::processing::ocr::model_dir(models))
@@ -137,6 +224,7 @@ pub async fn index_corpus_with(
     config.embedding.use_e5 = true;
     config.embedding.dimension = 768;
     config.ocr = ocr.clone();
+    tweaks.apply(&mut config)?;
     let engine = RAGEngine::new(config).await.context("opening the engine")?;
     if !engine.has_search_models() {
         bail!(
@@ -194,4 +282,35 @@ pub async fn index_corpus_with(
         ingest,
         data_dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tweaks_set_known_keys_and_reject_the_rest() {
+        let tweaks =
+            Tweaks::parse("rrf_k=20, source_decay=0.8,reranking=off,chunk_max_tokens=256").unwrap();
+        let mut config = RAGConfig::default();
+        tweaks.apply(&mut config).unwrap();
+        assert_eq!(config.search.rrf_k, 20);
+        assert!((config.search.source_decay - 0.8).abs() < 1e-6);
+        assert!(!config.features.enable_reranking);
+        assert_eq!(config.chunking.max_tokens, 256);
+        let recorded = settings_with(&tweaks);
+        assert_eq!(recorded["rrf_k"], "20");
+        assert_eq!(recorded["reranking"], "false");
+        assert!(Tweaks::parse("").unwrap().is_empty());
+        for bad in [
+            "rrf_k",
+            "rrf_k=x",
+            "unknown=1",
+            "rrf_k=1,rrf_k=2",
+            "source_decay=1.5",
+            "reranking=maybe",
+        ] {
+            assert!(Tweaks::parse(bad).is_err(), "{bad}");
+        }
+    }
 }

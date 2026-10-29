@@ -1,0 +1,116 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Reading group notes) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4781 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Reading group notes: long-term memory) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Reading group of the Ashbury machine learning lab) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (A practical system has to balance the cost of the read gate against the quality of the write) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (policy. We argue that the test-time update deserves as much attention as the replay buffer.) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (Practitioners report that the forgetting rate is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (Earlier long-term memory methods improved the write policy but left the test-time update) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 572.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 559.00 Td (We expect the replay buffer to interact with the associative loss at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 546.00 Td (leave to future work. Combining long-term memory with methods that target the write policy) Tj ET
+BT /F1 10.0 Tf 72.00 533.00 Td (is a promising direction. The write policy also makes long-term memory easier to inspect,) Tj ET
+BT /F1 10.0 Tf 72.00 520.00 Td (since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 500.00 Td (This work studies long-term memory, a method that rethinks the replay buffer. Practitioners) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (report that the retrieval key is the first component to fail on long inputs. Despite steady) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (progress, the interaction between the associative loss and the retrieval key is still poorly) Tj ET
+BT /F1 10.0 Tf 72.00 461.00 Td (understood. A practical system has to balance the cost of the replay buffer against the) Tj ET
+BT /F1 10.0 Tf 72.00 448.00 Td (quality of the memory slot.) Tj ET
+BT /F2 12.0 Tf 72.00 428.00 Td (2 Methods we read) Tj ET
+BT /F1 10.0 Tf 72.00 408.00 Td (Unlike a recurrent baseline, long-term memory updates the write policy only when the) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (retrieval key changes. The replay buffer in long-term memory is parameterised by a small) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (linear layer with 128 hidden units. We implement the read gate as a fused kernel, which) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (avoids writing intermediate results to memory. A coefficient controls how strongly the) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (retrieval key depends on the read gate; we set it to 0.7 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 336.00 Td (Unlike a memory-free model, long-term memory updates the memory slot only when the memory) Tj ET
+BT /F1 10.0 Tf 72.00 323.00 Td (capacity changes. The read gate in long-term memory is parameterised by a small linear layer) Tj ET
+BT /F1 10.0 Tf 72.00 310.00 Td (with 64 hidden units. A coefficient controls how strongly the read gate depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (forgetting rate; we set it to 0.5 throughout. To keep training stable, long-term memory) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (normalises the memory slot before it is combined with the replay buffer.) Tj ET
+BT /F1 10.0 Tf 72.00 264.00 Td (Unlike a sliding-window Transformer, long-term memory updates the segment summary only when) Tj ET
+BT /F1 10.0 Tf 72.00 251.00 Td (the replay buffer changes. A coefficient controls how strongly the retrieval key depends on) Tj ET
+BT /F1 10.0 Tf 72.00 238.00 Td (the associative loss; we set it to 0.6 throughout. The test-time update is initialised so) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (that long-term memory starts training close to a recurrent baseline. To keep training) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (stable, long-term memory normalises the read gate before it is combined with the associative) Tj ET
+BT /F1 10.0 Tf 72.00 199.00 Td (loss.) Tj ET
+BT /F2 12.0 Tf 72.00 179.00 Td (3 Results we discussed) Tj ET
+BT /F1 10.0 Tf 72.00 159.00 Td (On PassKey-Synth, long-term memory improves over a sliding-window Transformer by 1.9 points.) Tj ET
+BT /F1 10.0 Tf 72.00 146.00 Td (We train every model for 40B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 133.00 Td (seeds. Ablating the associative loss lowers the LongRecall score by 3.5 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 120.00 Td (drop among all components. The gains of long-term memory grow with the input length, as the) Tj ET
+BT /F1 10.0 Tf 72.00 107.00 Td (memory capacity becomes the bottleneck.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2573 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (With the associative loss frozen, long-term memory still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (BookQA. The gains of long-term memory grow with the input length, as the associative loss) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (becomes the bottleneck. We train every model for 70B tokens with the same data order and) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (report the mean of three seeds. Long-term memory scores 87.1% on PassKey-Synth, compared) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (with 72.1% for a sliding-window Transformer.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (Long-term memory scores 90.4% on PassKey-Synth, compared with 87.1% for a memory-free model.) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (Ablating the test-time update lowers the LongRecall score by 5.4 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (among all components. Throughput is measured with a batch size of 64 on a single) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (accelerator. The gains of long-term memory grow with the input length, as the write policy) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (becomes the bottleneck.) Tj ET
+BT /F2 12.0 Tf 72.00 576.00 Td (4 Open questions) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (We expect the retrieval key to interact with the memory slot at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (leave to future work. The results suggest that the write policy is the main lever for) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (quality at a fixed budget. The memory slot also makes long-term memory easier to inspect,) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (since its behaviour can be read off per token. Our analysis covers models up to 1.3B) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (Combining long-term memory with methods that target the write policy is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (direction. We expect the forgetting rate to interact with the replay buffer at larger) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (scales, which we leave to future work. A limitation of long-term memory is that the segment) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (summary must be tuned separately for each model size.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+0000005384 00000 n 
+0000005520 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+8144
+%%EOF

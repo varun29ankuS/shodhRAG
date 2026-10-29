@@ -1,0 +1,117 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Reading group notes) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4966 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Reading group notes: retrieval-augmented generation) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Reading group of the Ashbury machine learning lab) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Practitioners report that the chunk size is the first component to fail on long inputs. A) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (practical system has to balance the cost of the dense embedding against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (citation. Recent work has made the retriever a central concern, because it decides how far) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (retrieval-augmented generation models can scale. Despite steady progress, the interaction) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (between the citation and the query rewrite is still poorly understood.) Tj ET
+BT /F1 10.0 Tf 72.00 572.00 Td (The context window also makes retrieval-augmented generation easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 559.00 Td (behaviour can be read off per token. We expect the query rewrite to interact with the chunk) Tj ET
+BT /F1 10.0 Tf 72.00 546.00 Td (size at larger scales, which we leave to future work. A limitation of retrieval-augmented) Tj ET
+BT /F1 10.0 Tf 72.00 533.00 Td (generation is that the reranker must be tuned separately for each model size. Combining) Tj ET
+BT /F1 10.0 Tf 72.00 520.00 Td (retrieval-augmented generation with methods that target the citation is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 507.00 Td (direction.) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (A practical system has to balance the cost of the grounding check against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (context window. Despite steady progress, the interaction between the query rewrite and the) Tj ET
+BT /F1 10.0 Tf 72.00 461.00 Td (reranker is still poorly understood. Recent work has made the reranker a central concern,) Tj ET
+BT /F1 10.0 Tf 72.00 448.00 Td (because it decides how far retrieval-augmented generation models can scale. Most prior) Tj ET
+BT /F1 10.0 Tf 72.00 435.00 Td (methods treat the context window as fixed and tune the query rewrite around it.) Tj ET
+BT /F2 12.0 Tf 72.00 415.00 Td (2 Methods we read) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (To keep training stable, retrieval-augmented generation normalises the query rewrite before) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (it is combined with the retriever. Each block of retrieval-augmented generation applies the) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (citation after a short convolution of width 8. A coefficient controls how strongly the) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (grounding check depends on the reranker; we set it to 0.8 throughout. We implement the) Tj ET
+BT /F1 10.0 Tf 72.00 343.00 Td (grounding check as a fused kernel, which avoids writing intermediate results to memory.) Tj ET
+BT /F1 10.0 Tf 72.00 323.00 Td (The chunk size in retrieval-augmented generation is parameterised by a small linear layer) Tj ET
+BT /F1 10.0 Tf 72.00 310.00 Td (with 512 hidden units. A coefficient controls how strongly the reranker depends on the dense) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (embedding; we set it to 0.6 throughout. The query rewrite is initialised so that) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (retrieval-augmented generation starts training close to BM25. Retrieval-augmented generation) Tj ET
+BT /F1 10.0 Tf 72.00 271.00 Td (computes the keyword index once per layer and reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 72.00 251.00 Td (To keep training stable, retrieval-augmented generation normalises the context window before) Tj ET
+BT /F1 10.0 Tf 72.00 238.00 Td (it is combined with the passage index. A coefficient controls how strongly the passage index) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (depends on the citation; we set it to 0.7 throughout. Unlike BM25, retrieval-augmented) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (generation updates the chunk size only when the query rewrite changes. Each block of) Tj ET
+BT /F1 10.0 Tf 72.00 199.00 Td (retrieval-augmented generation applies the keyword index after a short convolution of width) Tj ET
+BT /F1 10.0 Tf 72.00 186.00 Td (2.) Tj ET
+BT /F2 12.0 Tf 72.00 166.00 Td (3 Results we discussed) Tj ET
+BT /F1 10.0 Tf 72.00 146.00 Td (Variance across seeds stays below 0.9 points for every configuration we report. The gains of) Tj ET
+BT /F1 10.0 Tf 72.00 133.00 Td (retrieval-augmented generation grow with the input length, as the reranker becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 120.00 Td (bottleneck. Retrieval-augmented generation scores 44.2% on SciDocs-Lite, compared with 73.5%) Tj ET
+BT /F1 10.0 Tf 72.00 107.00 Td (for a dense retriever. On CiteBench, retrieval-augmented generation improves over BM25 by) Tj ET
+BT /F1 10.0 Tf 72.00 94.00 Td (1.1 points.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2622 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Retrieval-augmented generation scores 57.4% on CiteBench, compared with 59.2% for a dense) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (retriever. Variance across seeds stays below 0.7 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Throughput is measured with a batch size of 512 on a single accelerator. We train every) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (model for 30B tokens with the same data order and report the mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (Retrieval-augmented generation scores 75.4% on CiteBench, compared with 42.0% for BM25. We) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (train every model for 80B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (seeds. On SciDocs-Lite, retrieval-augmented generation improves over a closed-book model by) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (6.6 points. With the passage index frozen, retrieval-augmented generation still recovers) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (most of its improvement on SciDocs-Lite.) Tj ET
+BT /F2 12.0 Tf 72.00 589.00 Td (4 Open questions) Tj ET
+BT /F1 10.0 Tf 72.00 569.00 Td (We expect the reranker to interact with the query rewrite at larger scales, which we leave) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (to future work. The passage index also makes retrieval-augmented generation easier to) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (inspect, since its behaviour can be read off per token. A limitation of retrieval-augmented) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (generation is that the retriever must be tuned separately for each model size. Combining) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (retrieval-augmented generation with methods that target the dense embedding is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (direction.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (The query rewrite also makes retrieval-augmented generation easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (behaviour can be read off per token. Combining retrieval-augmented generation with methods) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (that target the grounding check is a promising direction. We expect the citation to interact) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (with the chunk size at larger scales, which we leave to future work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+0000005569 00000 n 
+0000005705 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+8378
+%%EOF

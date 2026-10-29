@@ -1,0 +1,138 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (TIDE: Learning to Memorize at Test Time with Surprise-Gated Updates) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4402 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (TIDE: Learning to Memorize at Test Time with) Tj ET
+BT /F2 16.0 Tf 72.00 698.00 Td (Surprise-Gated Updates) Tj ET
+BT /F1 10.0 Tf 72.00 672.00 Td (Sofia Brandauer, Kwame Mensah, Lin Qiaoyu \(Northfield Lab for Machine Learning\)) Tj ET
+BT /F2 12.0 Tf 72.00 642.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (Attention is an excellent short-term memory but cannot scale to millions of tokens. We) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (introduce TIDE, a neural long-term memory module that keeps learning while the model is) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (being used. The memory is a small multilayer perceptron whose weights are updated at test) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (time by gradient descent on an associative loss, so that it memorizes the tokens that) Tj ET
+BT /F1 10.0 Tf 72.00 570.00 Td (surprise it most. TIDE reaches 71.3% accuracy on LongRecall at 16K tokens and scales to) Tj ET
+BT /F1 10.0 Tf 72.00 557.00 Td (inputs of two million tokens.) Tj ET
+BT /F2 12.0 Tf 72.00 537.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (Models with a fixed state, such as linear attention, compress the past into a matrix and) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (lose detail as the context grows. Models with attention keep every token but pay for it in) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (memory. Test-time training offers a third option: treat memorization as learning, and let a) Tj ET
+BT /F1 10.0 Tf 72.00 478.00 Td (parametric memory adapt to each input as it streams by.) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (We take inspiration from human memory, where events that violate expectations are remembered) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (better. In TIDE, surprise is the gradient of the associative loss with respect to the memory) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (parameters: a token whose value the memory predicts badly produces a large gradient and) Tj ET
+BT /F1 10.0 Tf 72.00 419.00 Td (changes the memory a lot, while an expected token leaves it almost untouched.) Tj ET
+BT /F2 12.0 Tf 72.00 399.00 Td (2 The Memory Module) Tj ET
+BT /F1 10.0 Tf 72.00 379.00 Td (The memory M is a two-layer perceptron that maps keys to values. Each incoming token is) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (projected to a key k_t and a value v_t, and the memory is trained online to minimise the) Tj ET
+BT /F1 10.0 Tf 72.00 353.00 Td (reconstruction error of the pair:) Tj ET
+BT /F1 10.0 Tf 150.00 333.00 Td (loss\(M; x_t\) = || M\(k_t\) - v_t ||^2                            \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 311.00 Td (A single gradient step per token would react only to the present token. Instead, momentum) Tj ET
+BT /F1 10.0 Tf 72.00 298.00 Td (carries the surprise of earlier tokens, so that the tokens following a surprising event are) Tj ET
+BT /F1 10.0 Tf 72.00 285.00 Td (also memorized even when each of them looks unremarkable on its own. The update with) Tj ET
+BT /F1 10.0 Tf 72.00 272.00 Td (momentum eta_t and step size theta_t is:) Tj ET
+BT /F1 10.0 Tf 150.00 252.00 Td (U_t = eta_t U_{t-1} - theta_t grad loss\(M_{t-1}; x_t\)              \(2\)) Tj ET
+BT /F1 10.0 Tf 150.00 230.00 Td (M_t = \(1 - a_t\) M_{t-1} + U_t                                  \(3\)) Tj ET
+BT /F1 10.0 Tf 72.00 208.00 Td (Old information is removed by a data-dependent forgetting gate a_t in Equation \(3\). When the) Tj ET
+BT /F1 10.0 Tf 72.00 195.00 Td (input changes topic the gate approaches one and clears most of the memory; within a topic it) Tj ET
+BT /F1 10.0 Tf 72.00 182.00 Td (stays near zero. All three coefficients eta_t, theta_t and a_t are predicted from the token) Tj ET
+BT /F1 10.0 Tf 72.00 169.00 Td (by small linear layers.) Tj ET
+BT /F2 12.0 Tf 72.00 149.00 Td (3 Adding Memory to a Model) Tj ET
+BT /F1 10.0 Tf 72.00 129.00 Td (We compare memory as context, memory as gate and memory as layer. As context, the memory's) Tj ET
+BT /F1 10.0 Tf 72.00 116.00 Td (output for the current segment is prepended to the attention window. As a gate, the memory) Tj ET
+BT /F1 10.0 Tf 72.00 103.00 Td (and a sliding-window attention run in parallel and their outputs are mixed. As a layer, the) Tj ET
+BT /F1 10.0 Tf 72.00 90.00 Td (memory is stacked in front of the attention blocks.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 3350 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Training uses a parallel form: the sequence is split into segments of 512 tokens, the) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (gradients inside a segment are computed with respect to the memory at the segment start, and) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (momentum is accumulated with a parallel scan.) Tj ET
+BT /F2 12.0 Tf 72.00 674.00 Td (4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 654.00 Td (We evaluate on the synthetic LongRecall benchmark, which hides 64 facts in filler text and) Tj ET
+BT /F1 10.0 Tf 72.00 641.00 Td (asks for one of them, and on language modelling with the WebMix corpus. All models have 760M) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (parameters.) Tj ET
+BT /F1 9.0 Tf 72.00 608.00 Td (Table 3: LongRecall accuracy \(%\) by context length.) Tj ET
+BT /F2 9.0 Tf 72.00 594.00 Td (Model) Tj ET
+BT /F2 9.0 Tf 222.00 594.00 Td (4K) Tj ET
+BT /F2 9.0 Tf 297.00 594.00 Td (16K) Tj ET
+BT /F2 9.0 Tf 372.00 594.00 Td (64K) Tj ET
+BT /F2 9.0 Tf 447.00 594.00 Td (256K) Tj ET
+BT /F1 9.0 Tf 72.00 581.00 Td (Transformer \(window 4K\)) Tj ET
+BT /F1 9.0 Tf 222.00 581.00 Td (92.1) Tj ET
+BT /F1 9.0 Tf 297.00 581.00 Td (24.0) Tj ET
+BT /F1 9.0 Tf 372.00 581.00 Td (6.2) Tj ET
+BT /F1 9.0 Tf 447.00 581.00 Td (1.5) Tj ET
+BT /F1 9.0 Tf 72.00 568.00 Td (Linear attention) Tj ET
+BT /F1 9.0 Tf 222.00 568.00 Td (58.4) Tj ET
+BT /F1 9.0 Tf 297.00 568.00 Td (31.7) Tj ET
+BT /F1 9.0 Tf 372.00 568.00 Td (12.9) Tj ET
+BT /F1 9.0 Tf 447.00 568.00 Td (4.1) Tj ET
+BT /F1 9.0 Tf 72.00 555.00 Td (TIDE as context) Tj ET
+BT /F1 9.0 Tf 222.00 555.00 Td (93.0) Tj ET
+BT /F1 9.0 Tf 297.00 555.00 Td (71.3) Tj ET
+BT /F1 9.0 Tf 372.00 555.00 Td (60.8) Tj ET
+BT /F1 9.0 Tf 447.00 555.00 Td (48.2) Tj ET
+BT /F1 9.0 Tf 72.00 542.00 Td (TIDE as layer) Tj ET
+BT /F1 9.0 Tf 222.00 542.00 Td (90.6) Tj ET
+BT /F1 9.0 Tf 297.00 542.00 Td (66.5) Tj ET
+BT /F1 9.0 Tf 372.00 542.00 Td (55.1) Tj ET
+BT /F1 9.0 Tf 447.00 542.00 Td (41.0) Tj ET
+BT /F1 10.0 Tf 72.00 519.00 Td (Memory as context is the strongest variant. Removing momentum lowers accuracy at 16K tokens) Tj ET
+BT /F1 10.0 Tf 72.00 506.00 Td (from 71.3% to 52.9%, and removing the forgetting gate makes training unstable beyond 64K) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (tokens.) Tj ET
+BT /F2 12.0 Tf 72.00 473.00 Td (5 Conclusion) Tj ET
+BT /F1 10.0 Tf 72.00 453.00 Td (Treating memory as a model that learns at test time gives long-context recall that neither) Tj ET
+BT /F1 10.0 Tf 72.00 440.00 Td (attention nor fixed-state recurrences reach at this scale. The cost is a slower forward) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (pass: TIDE is 1.4 times slower than a Transformer of the same size at 4K tokens.) Tj ET
+BT /F2 12.0 Tf 72.00 407.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 387.00 Td ([1] M. Okonkwo, T. Vaidya and E. Lindqvist. LUMEN: Linear attention with a gated delta rule. In) Tj ET
+BT /F1 9.0 Tf 86.00 376.00 Td (Proceedings of the Learning Systems Conference, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 363.00 Td ([2] D. Farrow and N. Iyer. Test-time training layers for sequence models. arXiv preprint, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 350.00 Td ([3] H. Lindgren. Surprise and memory consolidation. Cognitive Systems Review, 2019.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000464 00000 n 
+0000000600 00000 n 
+0000005053 00000 n 
+0000005189 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+8590
+%%EOF

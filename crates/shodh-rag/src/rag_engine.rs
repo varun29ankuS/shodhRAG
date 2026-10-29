@@ -25,6 +25,62 @@ use crate::types::{
     ChunkRecord, Citation, ComprehensiveResult, DocumentFormat, MetadataFilter, SimpleSearchResult,
 };
 
+/// How many results, from how many source files, one stage of a search kept.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SearchStage {
+    /// 0-based index of the sub-query the stage belongs to (0 when the query
+    /// was not decomposed).
+    pub sub_query: usize,
+    /// `vector` (nearest chunks), `candidates` (fused vector and keyword
+    /// candidates), `content` (bibliography entries dropped unless the query
+    /// asks about citations), `thresholded` (score threshold and duplicates
+    /// removed: what the reranker reads), `returned` (cut to `k`).
+    pub stage: String,
+    pub results: usize,
+    pub unique_sources: usize,
+}
+
+/// What each stage of a search kept, for measuring where results from
+/// different files are lost ([`RAGEngine::search_traced`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SearchTrace {
+    /// Queries searched: 1, or the sub-queries of a decomposed query.
+    pub sub_queries: usize,
+    pub stages: Vec<SearchStage>,
+}
+
+impl SearchTrace {
+    fn record<'a>(
+        &mut self,
+        sub_query: usize,
+        stage: &str,
+        sources: impl Iterator<Item = &'a str>,
+    ) {
+        let mut results = 0;
+        let mut unique = std::collections::HashSet::new();
+        for source in sources {
+            results += 1;
+            unique.insert(source);
+        }
+        self.stages.push(SearchStage {
+            sub_query,
+            stage: stage.to_string(),
+            results,
+            unique_sources: unique.len(),
+        });
+    }
+
+    fn record_results(&mut self, sub_query: usize, stage: &str, results: &[ComprehensiveResult]) {
+        self.record(
+            sub_query,
+            stage,
+            results
+                .iter()
+                .map(|r| r.metadata.get("source_file").map_or("", String::as_str)),
+        );
+    }
+}
+
 /// One document's chunks, embedded and converted to storage records but not
 /// yet written. Lets ingestion finish all fallible work before touching the index.
 struct PreparedDocument {
@@ -995,6 +1051,100 @@ fn join_neighbors(
         parts.after.push(push_neighbor(&mut text, piece, hit));
     }
     (text, parts)
+}
+
+/// The sources holding at least `cap` of `hits`, in first-seen order.
+fn crowded_sources(hits: &[crate::storage::SearchHit], cap: usize) -> Vec<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for hit in hits {
+        match counts.iter_mut().find(|(source, _)| *source == hit.source) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((hit.source.as_str(), 1)),
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= cap)
+        .map(|(source, _)| source.to_string())
+        .collect()
+}
+
+/// A LanceDB predicate: `filter` (if any) and none of `sources`.
+fn excluding_sources(filter: Option<&str>, sources: &[String]) -> String {
+    let list = sources
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let exclusion = format!("source NOT IN ({list})");
+    match filter {
+        Some(f) if !f.trim().is_empty() => format!("({f}) AND {exclusion}"),
+        _ => exclusion,
+    }
+}
+
+/// The vector hits with `extra` (the search that leaves out crowded files)
+/// added, skipping chunks already there. The extra search only widens the
+/// pool: when it fails, the query goes on with the first search's hits.
+fn add_extra_hits(
+    hits: &mut Vec<crate::storage::SearchHit>,
+    extra: Result<Vec<crate::storage::SearchHit>>,
+) {
+    match extra {
+        Ok(more) => {
+            let known: std::collections::HashSet<String> =
+                hits.iter().map(|h| h.id.clone()).collect();
+            hits.extend(more.into_iter().filter(|h| !known.contains(&h.id)));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "The search beyond the crowded files failed; using the first candidates");
+        }
+    }
+}
+
+/// Cuts score-ordered `results` to `pool` candidates. The best
+/// `open_share` of the pool is taken in score order, so the chunks a
+/// question about one file needs keep their places; the rest of the pool
+/// holds at most `cap` candidates of any one file (the open part counted);
+/// when other files cannot fill it, the best of the remaining candidates do.
+/// Order is kept.
+fn limit_per_source(
+    results: &mut Vec<ComprehensiveResult>,
+    cap: usize,
+    open_share: f32,
+    pool: usize,
+) {
+    let open = ((pool as f32) * open_share.clamp(0.0, 1.0)).round() as usize;
+    let mut per_source: HashMap<String, usize> = HashMap::new();
+    let mut admitted = vec![false; results.len()];
+    let mut count = 0;
+    for (i, result) in results.iter().enumerate() {
+        if count == pool {
+            break;
+        }
+        let source = result
+            .metadata
+            .get("source_file")
+            .cloned()
+            .unwrap_or_default();
+        let seen = per_source.entry(source).or_insert(0);
+        if count < open || *seen < cap {
+            *seen += 1;
+            admitted[i] = true;
+            count += 1;
+        }
+    }
+    for flag in admitted.iter_mut() {
+        if count == pool {
+            break;
+        }
+        if !*flag {
+            *flag = true;
+            count += 1;
+        }
+    }
+    let mut flags = admitted.into_iter();
+    results.retain(|_| flags.next().unwrap_or(false));
 }
 
 /// Whether a chunk is one bibliography entry.
@@ -2347,6 +2497,18 @@ impl RAGEngine {
         k: usize,
         filter: Option<MetadataFilter>,
     ) -> Result<Vec<ComprehensiveResult>> {
+        Ok(self.search_traced(query, k, filter).await?.0)
+    }
+
+    /// [`Self::search_comprehensive`], also returning how many results from how
+    /// many files each stage of the search kept.
+    pub async fn search_traced(
+        &self,
+        query: &str,
+        k: usize,
+        filter: Option<MetadataFilter>,
+    ) -> Result<(Vec<ComprehensiveResult>, SearchTrace)> {
+        let mut trace = SearchTrace::default();
         // Checked before decomposition: sub-query failures are swallowed
         // there, which would turn "not installed" into "no results".
         self.require_embeddings()?;
@@ -2357,6 +2519,7 @@ impl RAGEngine {
         // Decompose complex queries into independent sub-queries
         let decomposed = crate::rag::query_decomposer::decompose_query(query);
 
+        trace.sub_queries = decomposed.sub_queries.len();
         if decomposed.sub_queries.len() > 1 {
             tracing::debug!(
                 original = query,
@@ -2367,7 +2530,7 @@ impl RAGEngine {
 
             // Search each sub-query independently
             let mut result_sets = Vec::new();
-            for sub_query in &decomposed.sub_queries {
+            for (index, sub_query) in decomposed.sub_queries.iter().enumerate() {
                 match self
                     .search_single_query(
                         sub_query,
@@ -2375,6 +2538,7 @@ impl RAGEngine {
                         filter.clone(),
                         graph_ranks.as_ref(),
                         keep_references,
+                        (index, &mut trace),
                     )
                     .await
                 {
@@ -2386,7 +2550,7 @@ impl RAGEngine {
             }
 
             if result_sets.is_empty() {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), trace));
             }
 
             // Merge with round-robin interleaving and deduplication
@@ -2395,14 +2559,21 @@ impl RAGEngine {
             // Expand with neighbors on the merged set
             self.expand_with_neighbors(&mut merged, 1).await;
 
-            return Ok(merged);
+            return Ok((merged, trace));
         }
 
         let mut results = self
-            .search_single_query(query, k, filter, graph_ranks.as_ref(), keep_references)
+            .search_single_query(
+                query,
+                k,
+                filter,
+                graph_ranks.as_ref(),
+                keep_references,
+                (0, &mut trace),
+            )
             .await?;
         self.expand_with_neighbors(&mut results, 1).await;
-        Ok(results)
+        Ok((results, trace))
     }
 
     /// Execute a single search query through the full pipeline.
@@ -2413,6 +2584,7 @@ impl RAGEngine {
         filter: Option<MetadataFilter>,
         graph_ranks: Option<&HashMap<String, usize>>,
         keep_references: bool,
+        (sub_query, trace): (usize, &mut SearchTrace),
     ) -> Result<Vec<ComprehensiveResult>> {
         // Use same candidate count for both vector and FTS for balanced fusion
         let candidate_count = k * self.config.search.candidate_multiplier;
@@ -2427,10 +2599,27 @@ impl RAGEngine {
         let source_filter = filter.as_ref().and_then(|f| f.source_path.as_deref());
 
         // Vector search via LanceDB
-        let vector_hits = self
+        let mut vector_hits = self
             .store
             .vector_search(&query_embedding, candidate_count, lance_filter.as_deref())
             .await?;
+
+        // A few long files (surveys, theses, books) can hold every nearest chunk of a
+        // broad query, and then no other file reaches the reranker at all. With a
+        // per-file pool limit, the files that already fill it are excluded from one
+        // more vector search, so the pool can be filled from the next files.
+        let pool_source_cap = self.config.search.pool_source_cap;
+        if pool_source_cap > 0 {
+            let crowded = crowded_sources(&vector_hits, pool_source_cap);
+            if !crowded.is_empty() {
+                let predicate = excluding_sources(lance_filter.as_deref(), &crowded);
+                let more = self
+                    .store
+                    .vector_search(&query_embedding, candidate_count, Some(&predicate))
+                    .await;
+                add_extra_hits(&mut vector_hits, more);
+            }
+        }
 
         let vector_results: Vec<(String, f32)> = vector_hits
             .iter()
@@ -2480,6 +2669,11 @@ impl RAGEngine {
         }
 
         // Log source diversity at each stage for diagnostics
+        trace.record(
+            sub_query,
+            "vector",
+            vector_hits.iter().map(|h| h.source.as_str()),
+        );
         let vector_sources: std::collections::HashSet<&str> =
             vector_hits.iter().map(|h| h.source.as_str()).collect();
         tracing::info!(
@@ -2492,12 +2686,19 @@ impl RAGEngine {
             "Hybrid search candidates"
         );
 
-        // Score-aware Reciprocal Rank Fusion — preserves original quality signals
+        // Score-aware Reciprocal Rank Fusion — preserves original quality signals.
+        // With a per-file pool limit every fused candidate is kept, so the pool
+        // can be filled from deeper candidates of other files.
+        let fused_depth = if pool_source_cap > 0 {
+            vector_results.len() + fts_results.len()
+        } else {
+            candidate_count
+        };
         let fused = score_aware_rrf(
             vector_results,
             fts_results,
             self.config.search.rrf_k,
-            candidate_count, // Get more candidates for reranking
+            fused_depth,
             self.config.search.score_weight,
         );
 
@@ -2609,6 +2810,8 @@ impl RAGEngine {
             }
         }
 
+        trace.record_results(sub_query, "candidates", &results);
+
         // Bibliography entries are short and dense in names and topics, so they score
         // well on almost any query and pushed real content down. They answer only
         // queries about citations; dropped before the threshold, reranking and the
@@ -2616,6 +2819,7 @@ impl RAGEngine {
         if !keep_references {
             results.retain(|r| !is_reference_entry(&r.metadata));
         }
+        trace.record_results(sub_query, "content", &results);
 
         // Log source diversity of built results
         {
@@ -2655,9 +2859,26 @@ impl RAGEngine {
 
         // Deduplicate near-identical chunks (from overlapping windows)
         Self::deduplicate_results(&mut results, 0.75);
+        trace.record_results(sub_query, "thresholded", &results);
+
+        // The per-file pool limit, on candidates that passed the threshold, so no
+        // pool slot goes to a candidate the threshold would drop.
+        if pool_source_cap > 0 {
+            limit_per_source(
+                &mut results,
+                pool_source_cap,
+                self.config.search.pool_open_share,
+                candidate_count,
+            );
+            trace.record_results(sub_query, "pooled", &results);
+        }
 
         // Apply cross-encoder reranking if available (before MMR so diversity uses final scores)
-        let reranker = self.reranker.get();
+        let reranker = if self.config.features.enable_reranking {
+            self.reranker.get()
+        } else {
+            None
+        };
         if let Some(reranker) = &reranker {
             if results.len() > 1 {
                 // The cross-encoder reads each passage with the context it was
@@ -2691,7 +2912,7 @@ impl RAGEngine {
         // MMR diversity: penalize repeated source files to spread results across documents.
         // Each additional chunk from the same source gets score *= lambda^count.
         // This naturally balances depth vs diversity without an artificial hard cap.
-        Self::apply_mmr_diversity(&mut results, 0.5);
+        Self::apply_mmr_diversity(&mut results, self.config.search.source_decay);
         Self::demote_reference_entries(&mut results);
 
         // Log final diversity before truncation
@@ -2711,6 +2932,7 @@ impl RAGEngine {
 
         // Final truncation to requested k
         results.truncate(k);
+        trace.record_results(sub_query, "returned", &results);
 
         Ok(results)
     }
@@ -3564,6 +3786,17 @@ impl RAGEngine {
         self.store.document_sources().await
     }
 
+    /// Every stored chunk of one source, in chunk order: what the index holds
+    /// for a document.
+    pub async fn chunks_of_source(&self, source: &str) -> Result<Vec<crate::storage::SearchHit>> {
+        let mut chunks = self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1_000_000)
+            .await?;
+        chunks.sort_by_key(|c| c.chunk_index);
+        Ok(chunks)
+    }
+
     /// One row per indexed source and space: its title.
     pub async fn document_titles(&self) -> Result<Vec<crate::storage::DocumentTitleRow>> {
         self.store.document_titles().await
@@ -3671,6 +3904,23 @@ impl RAGEngine {
     /// Access to config
     pub fn config(&self) -> &RAGConfig {
         &self.config
+    }
+
+    /// Replace the search settings (fusion, threshold, candidates, diversity)
+    /// and whether results are reranked. Takes effect on the next search; the
+    /// index is unchanged. Reranking can only be turned on when the reranker
+    /// was located at start (`features.enable_reranking` set then).
+    pub fn set_search_config(
+        &mut self,
+        search: crate::config::SearchConfig,
+        enable_reranking: bool,
+    ) -> Result<()> {
+        let mut config = self.config.clone();
+        config.search = search;
+        config.features.enable_reranking = enable_reranking;
+        config.validate().map_err(anyhow::Error::msg)?;
+        self.config = config;
+        Ok(())
     }
 
     /// Trigger index creation if needed (after large ingestion)
@@ -4093,6 +4343,143 @@ mod page_metadata_tests {
             snippet: format!("{source} chunk {chunk_index}"),
             source_index: "hybrid".to_string(),
         }
+    }
+
+    #[test]
+    fn a_failed_extra_search_keeps_the_first_candidates() {
+        let hit = |id: &str| crate::storage::SearchHit {
+            id: id.to_string(),
+            doc_id: "d".to_string(),
+            chunk_index: 0,
+            text: String::new(),
+            title: String::new(),
+            source: "a.pdf".to_string(),
+            heading: String::new(),
+            space_id: String::new(),
+            metadata_json: String::new(),
+            citation_json: String::new(),
+            score: 0.5,
+        };
+        let mut hits = vec![hit("1"), hit("2")];
+        add_extra_hits(&mut hits, Err(anyhow::anyhow!("LanceDB query failed")));
+        assert_eq!(hits.len(), 2);
+        add_extra_hits(&mut hits, Ok(vec![hit("2"), hit("3")]));
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["1", "2", "3"], "known chunks are not added twice");
+    }
+
+    #[test]
+    fn crowded_files_are_excluded_from_the_extra_candidate_search() {
+        let hit = |source: &str| crate::storage::SearchHit {
+            id: Uuid::new_v4().to_string(),
+            doc_id: source.to_string(),
+            chunk_index: 0,
+            text: String::new(),
+            title: String::new(),
+            source: source.to_string(),
+            heading: String::new(),
+            space_id: String::new(),
+            metadata_json: String::new(),
+            citation_json: String::new(),
+            score: 0.5,
+        };
+        let hits = [
+            hit("survey.pdf"),
+            hit("thesis.pdf"),
+            hit("survey.pdf"),
+            hit("o'brien.pdf"),
+        ];
+        assert_eq!(crowded_sources(&hits, 2), ["survey.pdf"]);
+        assert_eq!(crowded_sources(&hits, 1).len(), 3);
+        assert!(crowded_sources(&hits, 3).is_empty());
+        assert_eq!(
+            excluding_sources(None, &["survey.pdf".to_string(), "o'brien.pdf".to_string()]),
+            "source NOT IN ('survey.pdf', 'o''brien.pdf')"
+        );
+        assert_eq!(
+            excluding_sources(Some("space_id = 'a'"), &["x.pdf".to_string()]),
+            "(space_id = 'a') AND source NOT IN ('x.pdf')"
+        );
+    }
+
+    #[test]
+    fn the_pool_limit_admits_other_files_first_and_keeps_order() {
+        let order = |results: &[ComprehensiveResult]| -> Vec<String> {
+            results.iter().map(|r| r.snippet.clone()).collect()
+        };
+        let mut results: Vec<ComprehensiveResult> = [
+            ("long.pdf", 0),
+            ("long.pdf", 1),
+            ("long.pdf", 2),
+            ("long.pdf", 3),
+            ("short.pdf", 0),
+            ("long.pdf", 4),
+            ("other.pdf", 0),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (source, chunk))| chunk_of(source, *chunk, 1.0 - 0.1 * i as f32))
+        .collect();
+        let mut capped = results.clone();
+        limit_per_source(&mut capped, 2, 0.0, 4);
+        assert_eq!(
+            order(&capped),
+            [
+                "long.pdf chunk 0",
+                "long.pdf chunk 1",
+                "short.pdf chunk 0",
+                "other.pdf chunk 0"
+            ]
+        );
+        // The open head of the pool keeps one file's best chunks: with three of
+        // four slots open, a third chunk of the file stays in the pool.
+        let many: Vec<ComprehensiveResult> = [
+            ("long.pdf", 0),
+            ("long.pdf", 1),
+            ("long.pdf", 2),
+            ("a.pdf", 0),
+            ("b.pdf", 0),
+            ("c.pdf", 0),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (source, chunk))| chunk_of(source, *chunk, 1.0 - 0.1 * i as f32))
+        .collect();
+        let mut closed = many.clone();
+        limit_per_source(&mut closed, 2, 0.0, 4);
+        assert_eq!(
+            order(&closed),
+            [
+                "long.pdf chunk 0",
+                "long.pdf chunk 1",
+                "a.pdf chunk 0",
+                "b.pdf chunk 0"
+            ]
+        );
+        let mut open = many;
+        limit_per_source(&mut open, 2, 0.75, 4);
+        assert_eq!(
+            order(&open),
+            [
+                "long.pdf chunk 0",
+                "long.pdf chunk 1",
+                "long.pdf chunk 2",
+                "a.pdf chunk 0"
+            ]
+        );
+        // Too few other files: the best remaining candidates fill the pool.
+        limit_per_source(&mut results, 2, 0.0, 6);
+        assert_eq!(
+            order(&results),
+            [
+                "long.pdf chunk 0",
+                "long.pdf chunk 1",
+                "long.pdf chunk 2",
+                "long.pdf chunk 3",
+                "short.pdf chunk 0",
+                "other.pdf chunk 0"
+            ]
+        );
     }
 
     #[test]
@@ -4607,6 +4994,108 @@ Language models trained on long documents reach lower perplexity.
         fn forget_all(&self) -> Result<()> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
+        }
+    }
+
+    /// A long file of `sections` sections that all mention `word`.
+    fn long_note(word: &str, sections: usize) -> String {
+        let mut text = format!("# Long {word} survey\n\nAn overview of the {word}.\n");
+        for i in 0..sections {
+            text.push_str(&format!(
+                "\n## Part {i}\n\nPart {i} describes the {word} again: the {word} rose, the \
+                 {word} faded, and observers recorded the {word} in detail for part {i}.\n"
+            ));
+        }
+        text
+    }
+
+    /// The search beyond the crowded files keeps the search's scope: with crowded
+    /// files inside and outside a space or file limit, every result is inside it,
+    /// and inside a space the other file the crowded one hid still reaches the
+    /// results.
+    #[tokio::test]
+    async fn the_search_beyond_crowded_files_stays_in_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let mut search = engine.config().search.clone();
+        search.pool_source_cap = 2;
+        let rerank = engine.config().features.enable_reranking;
+        engine.set_search_config(search, rerank).unwrap();
+        let write = |name: &str, body: String| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            path
+        };
+        let long_in = write("long-in.md", long_note("comet", 60));
+        let short_in = write(
+            "short-in.md",
+            "# Short\n\nOne line about the comet.\n".to_string(),
+        );
+        let long_out = write("long-out.md", long_note("comet", 60));
+        let short_out = write(
+            "short-out.md",
+            "# Other\n\nThe comet once more.\n".to_string(),
+        );
+        for (path, space) in [
+            (&long_in, "in"),
+            (&short_in, "in"),
+            (&long_out, "out"),
+            (&short_out, "out"),
+        ] {
+            engine
+                .add_document_from_file(
+                    path,
+                    HashMap::from([("space_id".to_string(), space.to_string())]),
+                )
+                .await
+                .unwrap();
+        }
+        let source_of = |r: &ComprehensiveResult| r.metadata["source_file"].clone();
+
+        let in_space = MetadataFilter {
+            space_id: Some("in".to_string()),
+            ..MetadataFilter::default()
+        };
+        let results = Box::pin(engine.search_comprehensive("comet", 5, Some(in_space)))
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(r.metadata["space_id"], "in", "{}", source_of(r));
+        }
+        assert!(
+            results
+                .iter()
+                .any(|r| source_of(r) == normalize_source_path(&short_in)),
+            "the file the crowded one hid reaches the results: {:?}",
+            results.iter().map(source_of).collect::<Vec<_>>()
+        );
+
+        let one_file = MetadataFilter {
+            source_path: Some(normalize_source_path(&long_out)),
+            ..MetadataFilter::default()
+        };
+        let results = Box::pin(engine.search_comprehensive("comet", 5, Some(one_file)))
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(source_of(r), normalize_source_path(&long_out));
+        }
+
+        let either = MetadataFilter {
+            any_of: Some(crate::types::SourceSet {
+                space_ids: vec!["out".to_string()],
+                source_paths: Vec::new(),
+            }),
+            ..MetadataFilter::default()
+        };
+        let results = Box::pin(engine.search_comprehensive("comet", 5, Some(either)))
+            .await
+            .unwrap();
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(r.metadata["space_id"], "out", "{}", source_of(r));
         }
     }
 

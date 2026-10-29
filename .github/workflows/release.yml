@@ -611,7 +611,12 @@ jobs:
   verify:
     name: Verify the installers
     needs: [plan, build]
-    if: needs.plan.outputs.publish != 'true'
+    # build runs after create-release, which is skipped on pull requests; a skipped
+    # ancestor makes the implicit success() false, so the result is checked directly.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && needs.build.result == 'success'
+      && needs.plan.outputs.publish != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

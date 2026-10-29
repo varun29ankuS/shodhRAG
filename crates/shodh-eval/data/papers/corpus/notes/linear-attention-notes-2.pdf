@@ -1,0 +1,114 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Reading group notes) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4661 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Reading group notes: linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Reading group of the Ashbury machine learning lab) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Most prior methods treat the causal mask as fixed and tune the chunk-wise kernel around it.) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (Despite steady progress, the interaction between the associative recall and the key) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (dimension is still poorly understood. This work studies linear attention, a method that) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (rethinks the outer-product write. Earlier linear attention methods improved the) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (outer-product write but left the state size unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 572.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 559.00 Td (We expect the read-out projection to interact with the associative recall at larger scales,) Tj ET
+BT /F1 10.0 Tf 72.00 546.00 Td (which we leave to future work. A limitation of linear attention is that the feature map must) Tj ET
+BT /F1 10.0 Tf 72.00 533.00 Td (be tuned separately for each model size. The key dimension also makes linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 520.00 Td (easier to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 500.00 Td (We argue that the feature map deserves as much attention as the causal mask. Practitioners) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (report that the chunk-wise kernel is the first component to fail on long inputs. Most prior) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (methods treat the recurrent state as fixed and tune the decay gate around it. A practical) Tj ET
+BT /F1 10.0 Tf 72.00 461.00 Td (system has to balance the cost of the chunk-wise kernel against the quality of the causal) Tj ET
+BT /F1 10.0 Tf 72.00 448.00 Td (mask.) Tj ET
+BT /F2 12.0 Tf 72.00 428.00 Td (2 Methods we read) Tj ET
+BT /F1 10.0 Tf 72.00 408.00 Td (During inference linear attention caches the causal mask, so each new token costs a constant) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (amount of work. Each block of linear attention applies the feature map after a short) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (convolution of width 2. A coefficient controls how strongly the key dimension depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (associative recall; we set it to 0.4 throughout. To keep training stable, linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (normalises the state size before it is combined with the associative recall.) Tj ET
+BT /F1 10.0 Tf 72.00 336.00 Td (A coefficient controls how strongly the outer-product write depends on the chunk-wise) Tj ET
+BT /F1 10.0 Tf 72.00 323.00 Td (kernel; we set it to 0.2 throughout. We implement the outer-product write as a fused kernel,) Tj ET
+BT /F1 10.0 Tf 72.00 310.00 Td (which avoids writing intermediate results to memory. The chunk-wise kernel is initialised so) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (that linear attention starts training close to softmax attention. Linear attention computes) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (the causal mask once per layer and reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 72.00 264.00 Td (During inference linear attention caches the chunk-wise kernel, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 251.00 Td (constant amount of work. A coefficient controls how strongly the causal mask depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 238.00 Td (read-out projection; we set it to 0.7 throughout. To keep training stable, linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (normalises the outer-product write before it is combined with the decay gate. Each block of) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (linear attention applies the chunk-wise kernel after a short convolution of width 5.) Tj ET
+BT /F2 12.0 Tf 72.00 192.00 Td (3 Results we discussed) Tj ET
+BT /F1 10.0 Tf 72.00 172.00 Td (On WikiText, linear attention improves over gated linear attention by 3.0 points. Ablating) Tj ET
+BT /F1 10.0 Tf 72.00 159.00 Td (the read-out projection lowers the MQAR score by 2.1 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 146.00 Td (components. Throughput is measured with a batch size of 256 on a single accelerator.) Tj ET
+BT /F1 10.0 Tf 72.00 133.00 Td (Variance across seeds stays below 0.8 points for every configuration we report.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2585 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Ablating the decay gate lowers the LAMBADA score by 4.9 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (components. On LAMBADA, linear attention improves over softmax attention by 6.1 points.) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Linear attention scores 60.6% on LAMBADA, compared with 92.6% for gated linear attention.) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (With the key dimension frozen, linear attention still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (MQAR.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (Linear attention scores 93.6% on WikiText, compared with 91.9% for gated linear attention.) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (With the read-out projection frozen, linear attention still recovers most of its improvement) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (on LAMBADA. Ablating the feature map lowers the LAMBADA score by 4.8 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (drop among all components. The gains of linear attention grow with the input length, as the) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (key dimension becomes the bottleneck.) Tj ET
+BT /F2 12.0 Tf 72.00 576.00 Td (4 Open questions) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (The results suggest that the chunk-wise kernel is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (budget. We expect the key dimension to interact with the feature map at larger scales, which) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (we leave to future work. The recurrent state also makes linear attention easier to inspect,) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (since its behaviour can be read off per token. A limitation of linear attention is that the) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (associative recall must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (The results suggest that the feature map is the main lever for quality at a fixed budget. We) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (expect the recurrent state to interact with the chunk-wise kernel at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (leave to future work. Our analysis covers models up to 1.3B parameters, and larger models) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (may behave differently. The feature map also makes linear attention easier to inspect, since) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (its behaviour can be read off per token.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+0000005264 00000 n 
+0000005400 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+8036
+%%EOF

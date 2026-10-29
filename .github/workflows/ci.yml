@@ -267,7 +267,9 @@ jobs:
   eval-retrieval:
     name: Retrieval eval
     runs-on: windows-latest
-    timeout-minutes: 35  # slowest 21 minutes
+    # Slowest 21 minutes before the paper library (33 files, 99 questions);
+    # one paper run measured 30 minutes on windows-latest.
+    timeout-minutes: 75
     env:
       # Line tables only: smaller debug builds and caches (release is untouched).
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -380,92 +382,6 @@ jobs:
             eval-out-scanned/retrieval-summary.md
             eval-out-papers/retrieval-report.json
             eval-out-papers/retrieval-summary.md
-          if-no-files-found: ignore
-
-  # Temporary: measures the pool settings on the regenerated paper library and
-  # records 3-run baselines for each. Removed before merge.
-  eval-sweep:
-    name: Retrieval sweep (measurement, ${{ matrix.name }})
-    runs-on: windows-latest
-    timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: before
-            search: "pool_source_cap=0"
-          - name: cap2-open0
-            search: "pool_source_cap=2,pool_open_share=0"
-          - name: cap2-open0.5
-            search: "pool_source_cap=2,pool_open_share=0.5"
-          - name: cap3-open0.5
-            search: "pool_source_cap=3,pool_open_share=0.5"
-          - name: cap2-open0.7
-            search: "pool_source_cap=2,pool_open_share=0.7"
-          - name: cap4-open0.7
-            search: "pool_source_cap=4,pool_open_share=0.7"
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
-        with:
-          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          save-if: false
-
-      - name: Install Protobuf compiler
-        shell: pwsh
-        run: ./scripts/ci/install-protoc.ps1
-
-      - uses: ./.github/actions/onnxruntime
-
-      - name: Restore search models
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ${{ runner.temp }}/shodh-models
-          key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
-
-      - name: Install search and OCR models
-        run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
-
-      - name: Generate the paper corpus
-        run: cargo run --package shodh-eval -- synth-papers --out eval-papers
-
-      - name: Measure
-        shell: pwsh
-        env:
-          SEARCH: ${{ matrix.search }}
-          NAME: ${{ matrix.name }}
-        run: |
-          $exe = "target/debug/shodh-eval.exe"
-          $models = "${{ runner.temp }}/shodh-models"
-          $sets = @(
-            @{ name = "papers"; corpus = "eval-papers/corpus"; dataset = "eval-papers/dataset.json"; extra = @() },
-            @{ name = "synthetic"; corpus = "crates/shodh-eval/data/synthetic/corpus"; dataset = "crates/shodh-eval/data/synthetic/dataset.json"; extra = @() },
-            @{ name = "scanned"; corpus = "crates/shodh-eval/data/scanned/corpus"; dataset = "crates/shodh-eval/data/scanned/dataset.json"; extra = @("--ocr", "ppocr") }
-          )
-          foreach ($set in $sets) {
-            $out = "eval-sweep/$env:NAME/$($set.name)"
-            $started = Get-Date
-            & $exe retrieval --corpus $set.corpus --dataset $set.dataset --models $models --search $env:SEARCH --runs 3 --write-baseline "$out/baseline.json" --out $out @($set.extra) | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "$($set.name) failed" }
-            Write-Output "$($set.name): $([int]((Get-Date) - $started).TotalMinutes) min for 3 runs"
-          }
-
-      - name: Upload measurements
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: eval-sweep-${{ matrix.name }}
-          path: |
-            eval-sweep/
-            eval-papers/
           if-no-files-found: ignore
 
   frontend:

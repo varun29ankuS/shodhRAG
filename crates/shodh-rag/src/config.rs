@@ -104,8 +104,10 @@ pub struct SearchConfig {
     /// one more vector search, and the pool is filled from the next-best
     /// candidates of other files first, then with the rest. Without it a few
     /// long files (surveys, theses) took every candidate of a broad question.
-    /// 0 = no limit. The default (2) is the largest that lowered no retrieval
-    /// metric on the eval sets (`crates/shodh-eval`).
+    /// 0 = no limit, the default: on the eval's 33-file paper library every
+    /// limit tried (2 to 4, with and without an open head) raised multi-paper
+    /// recall but lowered `depth_recall@20`, the questions that need several
+    /// chunks of one paper (`crates/shodh-eval`, README).
     #[serde(default = "default_pool_source_cap")]
     pub pool_source_cap: usize,
     /// Share of the pool (0..=1) filled in score order before
@@ -120,7 +122,7 @@ fn default_pool_open_share() -> f32 {
 }
 
 fn default_pool_source_cap() -> usize {
-    2
+    0
 }
 
 fn default_source_decay() -> f32 {

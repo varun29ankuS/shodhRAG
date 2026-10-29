@@ -108,8 +108,8 @@ threads, and the scanned baseline holds unchanged.
 
 ## Paper corpus
 
-`data/papers/` is a synthetic research library of 21 papers (371 chunks once
-indexed), for the questions researchers ask of their own papers. Seven papers
+`data/papers/` is a synthetic research library of 21 papers and 12 reading
+notes (33 files), for the questions researchers ask of their own papers. Seven papers
 are hand-written in `src/papers_text.rs`: six preprint-style PDFs (title,
 authors, numbered sections, display equations, tables, figure captions,
 bibliography, running headers) and one LaTeX source. Fourteen are generated
@@ -117,20 +117,27 @@ by `src/papers_gen.rs` around hand-written anchor sentences: twelve method
 papers in six topics, a thesis and a survey of KV cache compression. Their
 remaining text comes from per-topic vocabularies and sentence templates, drawn
 with a seeded generator. Three papers are long (two surveys and the thesis),
-and they share the other papers' vocabulary. The library is about seven
-times larger than the candidate pool a search reranks at `k = 10`, which is
-the condition under which long papers crowd the others out.
+and they share the other papers' vocabulary. Twelve reading notes (two per
+topic, generated text only) make the library larger than a 50-candidate pool
+holds at two candidates per file. The library is several times larger than
+the pool a search reranks at `k = 10`, the condition under which long papers
+crowd the others out, and has more files than the pool, the condition under
+which a per-file pool limit could crowd out the chunks a question about one
+paper needs.
 
 The 82 answerable questions cover definitions and mechanisms, equations,
 tables and figures, "which paper ..." questions (answered by the paper, not by
 the works that cite it), a citation question, and 15 questions that need 2 to
 4 papers. Among them is `multi-long-context-memory`, a broad question that
-once returned passages from only two files. There are also 6 unanswerable
+once returned passages from only two files. Depth questions (17) ask about
+one paper in detail and list three of its passages, in three different
+sections and so in three different chunks. There are also 6 unanswerable
 questions. A case names its files and passages; the page is found by laying
 out the paper. Every method, author, benchmark and number is invented, and
 unit tests check that the committed files are the generator's output, that
-every passage is on exactly one page of its paper, and that every fact is in
-its sources. Regenerate after changing the generator:
+every passage is on exactly one page of its paper and in no file the case
+does not list, that every fact is in its sources, and that no other file
+holds a key fact (a number, or a phrase of several words). Regenerate after changing the generator:
 
 ```
 shodh-eval synth-papers --out crates/shodh-eval/data/papers
@@ -161,24 +168,37 @@ of an expected file on an expected page), `passage_hit@k` (a chunk containing
 the expected passage), `recall@5/10` (the share of a case's expected documents
 among its first k documents) and `ndcg@10` (binary relevance per expected
 document), the same over the cases that expect several documents
-(`multi_recall@k`, `multi_ndcg@10`), `recall@20` (from a second search with
-20 results, the most the agent's tool asks for), and `ingest_ok` (files indexed
-/ files seen).
+(`multi_recall@k`, `multi_ndcg@10`), `multi_files@10` (distinct files among
+the first 10 results of those cases), `depth_recall@10` (the share of a
+depth question's passages held by its first 10 results; a case is a depth
+question when it lists three passages or more), `recall@20` and
+`depth_recall@20` (from a second search with 20 results, the most the agent's
+tool asks for), and `ingest_ok` (files indexed / files seen).
 
 Reported, never gated: search latency p50/p95, and diagnostics. The
 diagnostics are the distinct files among the first 10 and 20 results, and how
 many results and files each search stage keeps (`vector`, `candidates`,
-`content`, `thresholded`, `returned`; from `RAGEngine::search_traced`).
+`content`, `thresholded`, `pooled`, `returned`; from
+`RAGEngine::search_traced`).
 `passage_not_in_index` is the share of cases whose passage is in no stored
 chunk of its document, which means it was lost in parsing or chunking rather
 than in ranking; such a case also records the stored chunk nearest to it.
-More files is not better for a question one document answers, so file counts
-are never gated.
+More files is not better for a question one document answers, so only the
+multi-document cases' file count is gated.
 
 `--search` measures engine settings before their defaults change:
 `rrf_k`, `candidate_multiplier`, `min_score_threshold`, `score_weight`,
-`source_decay`, `pool_source_cap`, `reranking` (`on`/`off`) and
+`source_decay`, `pool_source_cap`, `pool_open_share`, `reranking` (`on`/`off`) and
 `chunk_max_tokens`, for example `--search pool_source_cap=3,source_decay=0.7`.
+
+The per-file pool limit (`pool_source_cap`, with `pool_open_share` for the
+part of the pool filled in score order first) is off by default. On the paper
+library every limit tried, 2 to 4 per file and with 0 to 70% of the pool
+open, raised `multi_recall@10` (0.711 to 0.756-0.789) and `multi_files@10`.
+Every one also lowered `depth_recall@20` (0.869 to 0.837-0.853), and a limit
+of 2 with no open part lowered `passage_hit@10` too. Fewer chunks of one
+paper reached the reranker. Measure a new pool policy with `--search` on all
+three sets before changing the default.
 
 **Answer metrics** (opt-in; never in CI): `fact_recall`, `citation_correct`
 (stated facts found in a passage the answer cites), `cited_expected_source`,
@@ -223,8 +243,9 @@ shodh-eval retrieval --corpus crates/shodh-eval/data/synthetic/corpus \
   --write-baseline crates/shodh-eval/data/synthetic/baseline.json
 ```
 
-`compare` fails when the dataset or corpus changed, a metric is missing, or a
-metric is below `mean - max(3 * stddev, 1e-9)`. Retrieval is deterministic
+`compare` fails when the dataset, the corpus or an engine setting changed
+(the number of runs excepted), a metric is missing, or a metric is below
+`mean - max(3 * stddev, 1e-9)`. Retrieval is deterministic
 (stddev 0), so any drop fails. A change that improves retrieval, or changes
 the corpus or dataset, records a new baseline in the same PR. The `Retrieval
 eval` CI job runs this on every PR.

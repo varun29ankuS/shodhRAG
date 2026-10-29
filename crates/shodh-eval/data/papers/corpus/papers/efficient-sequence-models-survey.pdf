@@ -67,13 +67,13 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
 endobj
 9 0 obj
-<< /Length 5089 >>
+<< /Length 5065 >>
 stream
 BT /F1 10.0 Tf 72.00 720.00 Td (LUMEN [12] combines both ideas in a gated delta rule, in which a scalar gate multiplies the) Tj ET
 BT /F1 10.0 Tf 72.00 707.00 Td (state before a delta step writes the new association. It trains with a chunk-wise parallel) Tj ET
-BT /F1 10.0 Tf 72.00 694.00 Td (algorithm and reports a WikiText perplexity of 16.42 at 1.3B parameters, below a Transformer) Tj ET
-BT /F1 10.0 Tf 72.00 681.00 Td (baseline of the same size. ORBIT [13] adds rotary position encoding to chunk-wise linear) Tj ET
-BT /F1 10.0 Tf 72.00 668.00 Td (attention and keeps the training cost linear in the sequence length.) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (algorithm and reports a lower WikiText perplexity than a Transformer baseline of the same) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (size. ORBIT [13] adds rotary position encoding to chunk-wise linear attention and keeps the) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (training cost linear in the sequence length.) Tj ET
 BT /F2 12.0 Tf 72.00 648.00 Td (3.1 Catalogue of linear attention variants) Tj ET
 BT /F1 10.0 Tf 72.00 628.00 Td (The following methods are representative of the linear attention family. Each entry gives) Tj ET
 BT /F1 10.0 Tf 72.00 615.00 Td (the main idea and the headline result reported by its authors; numbers are not directly) Tj ET
@@ -119,7 +119,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
 endobj
 11 0 obj
-<< /Length 4704 >>
+<< /Length 4774 >>
 stream
 BT /F2 12.0 Tf 72.00 720.00 Td (4 Memory Modules that Learn at Inference) Tj ET
 BT /F1 10.0 Tf 72.00 700.00 Td (A fixed-size state must decide at write time what to keep. Learned memories instead fit a) Tj ET
@@ -127,40 +127,41 @@ BT /F1 10.0 Tf 72.00 687.00 Td (small network to the stream of keys and values w
 BT /F1 10.0 Tf 72.00 674.00 Td (spent where the input is hard to predict. This idea, known as test-time training, turns) Tj ET
 BT /F1 10.0 Tf 72.00 661.00 Td (memorization into an optimisation problem solved during inference.) Tj ET
 BT /F1 10.0 Tf 72.00 641.00 Td (TIDE [14] is the most complete example. Its memory is a two-layer perceptron trained by) Tj ET
-BT /F1 10.0 Tf 72.00 628.00 Td (gradient descent on a key-to-value reconstruction loss, with momentum and a forgetting gate,) Tj ET
-BT /F1 10.0 Tf 72.00 615.00 Td (and tokens that the memory predicts badly change it the most. Used as extra context for) Tj ET
-BT /F1 10.0 Tf 72.00 602.00 Td (attention, it reports 71.3% accuracy on LongRecall at 16K tokens.) Tj ET
-BT /F2 12.0 Tf 72.00 582.00 Td (4.1 Catalogue of memory modules) Tj ET
-BT /F1 10.0 Tf 72.00 562.00 Td (The following methods add an explicit or learned memory to a sequence model. They differ in) Tj ET
-BT /F1 10.0 Tf 72.00 549.00 Td (what is stored, when it is written, and whether the memory is trained in advance or at) Tj ET
-BT /F1 10.0 Tf 72.00 536.00 Td (inference.) Tj ET
-BT /F1 10.0 Tf 72.00 516.00 Td (Heron \(2020\) belongs to the recurrent memory family. It keeps an external memory of past) Tj ET
-BT /F1 10.0 Tf 72.00 503.00 Td (segment summaries that later segments read with cross-attention. It improves LongRecall) Tj ET
-BT /F1 10.0 Tf 72.00 490.00 Td (accuracy at 64K tokens to 35.0%.) Tj ET
-BT /F1 10.0 Tf 72.00 470.00 Td (Within the recurrent memory line of work, Iris \(2021\) is notable for one design choice. It) Tj ET
-BT /F1 10.0 Tf 72.00 457.00 Td (compresses each segment into eight memory slots with a learned pooling layer before) Tj ET
-BT /F1 10.0 Tf 72.00 444.00 Td (discarding the tokens. It reports 28.4% LongRecall accuracy at 64K tokens.) Tj ET
-BT /F1 10.0 Tf 72.00 424.00 Td (Juniper, published in 2022, is a recurrent memory method. It trains a fast-weight matrix) Tj ET
-BT /F1 10.0 Tf 72.00 411.00 Td (with a Hebbian rule inside each layer and resets it at document boundaries. It is 1.2 times) Tj ET
-BT /F1 10.0 Tf 72.00 398.00 Td (slower than a Transformer at 4K tokens.) Tj ET
-BT /F1 10.0 Tf 72.00 378.00 Td (Kelp \(2023\) belongs to the recurrent memory family. It stores key-value pairs in a) Tj ET
-BT /F1 10.0 Tf 72.00 365.00 Td (differentiable hash table that grows by doubling when it is three quarters full. It keeps) Tj ET
-BT /F1 10.0 Tf 72.00 352.00 Td (90% recall up to 128K tokens on its own benchmark.) Tj ET
-BT /F1 10.0 Tf 72.00 332.00 Td (Within the recurrent memory line of work, Larch \(2023\) is notable for one design choice. It) Tj ET
-BT /F1 10.0 Tf 72.00 319.00 Td (updates a small recurrent network by one gradient step per segment, an early form of) Tj ET
-BT /F1 10.0 Tf 72.00 306.00 Td (test-time training. It reports 41.7% LongRecall accuracy at 64K tokens.) Tj ET
-BT /F1 10.0 Tf 72.00 286.00 Td (Marrow, published in 2024, is a recurrent memory method. It mixes a sliding-window attention) Tj ET
-BT /F1 10.0 Tf 72.00 273.00 Td (with a recurrent summary through a learned scalar gate per channel. It reaches a WikiText) Tj ET
-BT /F1 10.0 Tf 72.00 260.00 Td (perplexity of 18.9 at 760M parameters.) Tj ET
-BT /F1 10.0 Tf 72.00 240.00 Td (Nimbus \(2024\) belongs to the recurrent memory family. It routes each token either to a) Tj ET
-BT /F1 10.0 Tf 72.00 227.00 Td (memory write or to a skip path, chosen by a learned router. It halves the number of memory) Tj ET
-BT /F1 10.0 Tf 72.00 214.00 Td (writes with no loss in recall.) Tj ET
-BT /F1 10.0 Tf 72.00 194.00 Td (Within the recurrent memory line of work, Nettle \(2024\) is notable for one design choice. It) Tj ET
-BT /F1 10.0 Tf 72.00 181.00 Td (keeps a sparse set of memory slots addressed by learned keys and writes each token into its) Tj ET
-BT /F1 10.0 Tf 72.00 168.00 Td (two nearest slots. It reports 44.9% LongRecall accuracy at 64K tokens.) Tj ET
-BT /F1 10.0 Tf 72.00 148.00 Td (Osprey, published in 2025, is a recurrent memory method. It trains its memory with a) Tj ET
-BT /F1 10.0 Tf 72.00 135.00 Td (second-order optimiser at inference, using a diagonal estimate of the curvature. It reports) Tj ET
-BT /F1 10.0 Tf 72.00 122.00 Td (63.0% LongRecall accuracy at 64K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (gradient descent on a key-to-value reconstruction loss, with momentum and a gate that clears) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (old content, and tokens that the memory predicts badly change it the most. Used as extra) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (context for attention, it reports the best LongRecall accuracy among the methods compared) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (here.) Tj ET
+BT /F2 12.0 Tf 72.00 569.00 Td (4.1 Catalogue of memory modules) Tj ET
+BT /F1 10.0 Tf 72.00 549.00 Td (The following methods add an explicit or learned memory to a sequence model. They differ in) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (what is stored, when it is written, and whether the memory is trained in advance or at) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (inference.) Tj ET
+BT /F1 10.0 Tf 72.00 503.00 Td (Heron \(2020\) belongs to the recurrent memory family. It keeps an external memory of past) Tj ET
+BT /F1 10.0 Tf 72.00 490.00 Td (segment summaries that later segments read with cross-attention. It improves LongRecall) Tj ET
+BT /F1 10.0 Tf 72.00 477.00 Td (accuracy at 64K tokens to 35.0%.) Tj ET
+BT /F1 10.0 Tf 72.00 457.00 Td (Within the recurrent memory line of work, Iris \(2021\) is notable for one design choice. It) Tj ET
+BT /F1 10.0 Tf 72.00 444.00 Td (compresses each segment into eight memory slots with a learned pooling layer before) Tj ET
+BT /F1 10.0 Tf 72.00 431.00 Td (discarding the tokens. It reports 28.4% LongRecall accuracy at 64K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (Juniper, published in 2022, is a recurrent memory method. It trains a fast-weight matrix) Tj ET
+BT /F1 10.0 Tf 72.00 398.00 Td (with a Hebbian rule inside each layer and resets it at document boundaries. It is 1.2 times) Tj ET
+BT /F1 10.0 Tf 72.00 385.00 Td (slower than a Transformer at 4K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 365.00 Td (Kelp \(2023\) belongs to the recurrent memory family. It stores key-value pairs in a) Tj ET
+BT /F1 10.0 Tf 72.00 352.00 Td (differentiable hash table that grows by doubling when it is three quarters full. It keeps) Tj ET
+BT /F1 10.0 Tf 72.00 339.00 Td (90% recall up to 128K tokens on its own benchmark.) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (Within the recurrent memory line of work, Larch \(2023\) is notable for one design choice. It) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (updates a small recurrent network by one gradient step per segment, an early form of) Tj ET
+BT /F1 10.0 Tf 72.00 293.00 Td (test-time training. It reports 41.7% LongRecall accuracy at 64K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (Marrow, published in 2024, is a recurrent memory method. It mixes a sliding-window attention) Tj ET
+BT /F1 10.0 Tf 72.00 260.00 Td (with a recurrent summary through a learned scalar gate per channel. It reaches a WikiText) Tj ET
+BT /F1 10.0 Tf 72.00 247.00 Td (perplexity of 18.9 at 760M parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 227.00 Td (Nimbus \(2024\) belongs to the recurrent memory family. It routes each token either to a) Tj ET
+BT /F1 10.0 Tf 72.00 214.00 Td (memory write or to a skip path, chosen by a learned router. It halves the number of memory) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (writes with no loss in recall.) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (Within the recurrent memory line of work, Nettle \(2024\) is notable for one design choice. It) Tj ET
+BT /F1 10.0 Tf 72.00 168.00 Td (keeps a sparse set of memory slots addressed by learned keys and writes each token into its) Tj ET
+BT /F1 10.0 Tf 72.00 155.00 Td (two nearest slots. It reports 44.9% LongRecall accuracy at 64K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 135.00 Td (Osprey, published in 2025, is a recurrent memory method. It trains its memory with a) Tj ET
+BT /F1 10.0 Tf 72.00 122.00 Td (second-order optimiser at inference, using a diagonal estimate of the curvature. It reports) Tj ET
+BT /F1 10.0 Tf 72.00 109.00 Td (63.0% LongRecall accuracy at 64K tokens.) Tj ET
 BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
 BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
 endstream
@@ -169,7 +170,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 13 0 R >>
 endobj
 13 0 obj
-<< /Length 4871 >>
+<< /Length 4897 >>
 stream
 BT /F1 10.0 Tf 72.00 720.00 Td (Plover \(2025\) belongs to the recurrent memory family. It stores a compressed copy of every) Tj ET
 BT /F1 10.0 Tf 72.00 707.00 Td (thousandth token alongside a recurrent summary of the tokens in between. It keeps 85% recall) Tj ET
@@ -183,11 +184,11 @@ BT /F1 10.0 Tf 72.00 595.00 Td (cache. Quantization keeps every cached token but
 BT /F1 10.0 Tf 72.00 582.00 Td (keeps full precision but stores only a budget of tokens, chosen by recency, position or the) Tj ET
 BT /F1 10.0 Tf 72.00 569.00 Td (attention they receive.) Tj ET
 BT /F1 10.0 Tf 72.00 549.00 Td (Among quantization methods, SQUEEZE [15] stores the cache in two bits, quantizing keys per) Tj ET
-BT /F1 10.0 Tf 72.00 536.00 Td (channel because of their fixed outlier channels and values per token, and reports a 5.3) Tj ET
-BT /F1 10.0 Tf 72.00 523.00 Td (times memory reduction. Among eviction methods, HARBOR [16] keeps attention sinks, a recent) Tj ET
-BT /F1 10.0 Tf 72.00 510.00 Td (window and the tokens with the highest accumulated attention, and keeps 97.8% of full-cache) Tj ET
-BT /F1 10.0 Tf 72.00 497.00 Td (accuracy at a 20% budget. The two are complementary, and HARBOR's authors report a 12 times) Tj ET
-BT /F1 10.0 Tf 72.00 484.00 Td (reduction when they are applied together.) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (channel because of their fixed outlier channels and values per token, and reports a memory) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (reduction of more than five times. Among eviction methods, HARBOR [16] keeps the first) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (tokens, a recent window and the tokens that received the most attention, and keeps nearly) Tj ET
+BT /F1 10.0 Tf 72.00 497.00 Td (all of the full-cache accuracy with a fifth of the cache. The two are complementary, and) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (HARBOR's authors report a larger reduction when they are applied together.) Tj ET
 BT /F2 12.0 Tf 72.00 464.00 Td (5.1 Catalogue of cache quantization methods) Tj ET
 BT /F1 10.0 Tf 72.00 444.00 Td (The following methods reduce the number of bits per cached number. Most of them are) Tj ET
 BT /F1 10.0 Tf 72.00 431.00 Td (training-free and differ in how they group numbers for a shared scale and how they treat) Tj ET
@@ -322,7 +323,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 19 0 R >>
 endobj
 19 0 obj
-<< /Length 5457 >>
+<< /Length 5449 >>
 stream
 BT /F1 10.0 Tf 72.00 720.00 Td (Lotus \(2025\) belongs to the hybrid family. It places a sliding-window attention of 2K tokens) Tj ET
 BT /F1 10.0 Tf 72.00 707.00 Td (in every layer and a global memory in every eighth layer. It reaches a WikiText perplexity) Tj ET
@@ -337,27 +338,27 @@ BT /F1 10.0 Tf 72.00 582.00 Td (consistent. On language modelling, gated recurre
 BT /F1 10.0 Tf 72.00 569.00 Td (size. On recall at long contexts, learned memories and hybrids lead, while pure fixed-state) Tj ET
 BT /F1 10.0 Tf 72.00 556.00 Td (models fall behind beyond 16K tokens. Cache compression methods lose less than one point of) Tj ET
 BT /F1 10.0 Tf 72.00 543.00 Td (accuracy down to about two bits or a 20% budget, and degrade quickly below that.) Tj ET
-BT /F1 9.0 Tf 72.00 523.00 Td (Table 4: Headline results reported by the methods discussed in Sections 3 to 5.) Tj ET
+BT /F1 9.0 Tf 72.00 523.00 Td (Table 4: The methods discussed in Sections 3 to 5 and the benchmarks they report.) Tj ET
 BT /F2 9.0 Tf 72.00 509.00 Td (Method) Tj ET
 BT /F2 9.0 Tf 222.00 509.00 Td (Family) Tj ET
 BT /F2 9.0 Tf 322.00 509.00 Td (Benchmark) Tj ET
-BT /F2 9.0 Tf 422.00 509.00 Td (Result) Tj ET
+BT /F2 9.0 Tf 422.00 509.00 Td (Section) Tj ET
 BT /F1 9.0 Tf 72.00 496.00 Td (LUMEN) Tj ET
 BT /F1 9.0 Tf 222.00 496.00 Td (linear) Tj ET
 BT /F1 9.0 Tf 322.00 496.00 Td (WikiText ppl) Tj ET
-BT /F1 9.0 Tf 422.00 496.00 Td (16.42) Tj ET
+BT /F1 9.0 Tf 422.00 496.00 Td (3) Tj ET
 BT /F1 9.0 Tf 72.00 483.00 Td (TIDE) Tj ET
 BT /F1 9.0 Tf 222.00 483.00 Td (memory) Tj ET
-BT /F1 9.0 Tf 322.00 483.00 Td (LongRecall 16K) Tj ET
-BT /F1 9.0 Tf 422.00 483.00 Td (71.3%) Tj ET
+BT /F1 9.0 Tf 322.00 483.00 Td (LongRecall) Tj ET
+BT /F1 9.0 Tf 422.00 483.00 Td (4) Tj ET
 BT /F1 9.0 Tf 72.00 470.00 Td (SQUEEZE) Tj ET
 BT /F1 9.0 Tf 222.00 470.00 Td (quantization) Tj ET
-BT /F1 9.0 Tf 322.00 470.00 Td (Memory saved) Tj ET
-BT /F1 9.0 Tf 422.00 470.00 Td (5.3x) Tj ET
+BT /F1 9.0 Tf 322.00 470.00 Td (LongSuite) Tj ET
+BT /F1 9.0 Tf 422.00 470.00 Td (5) Tj ET
 BT /F1 9.0 Tf 72.00 457.00 Td (HARBOR) Tj ET
 BT /F1 9.0 Tf 222.00 457.00 Td (eviction) Tj ET
-BT /F1 9.0 Tf 322.00 457.00 Td (Accuracy kept) Tj ET
-BT /F1 9.0 Tf 422.00 457.00 Td (97.8%) Tj ET
+BT /F1 9.0 Tf 322.00 457.00 Td (LongSuite) Tj ET
+BT /F1 9.0 Tf 422.00 457.00 Td (5) Tj ET
 BT /F2 12.0 Tf 72.00 434.00 Td (8 Open Problems) Tj ET
 BT /F1 10.0 Tf 72.00 414.00 Td (We see four open problems. First, there is no shared long-context benchmark on which) Tj ET
 BT /F1 10.0 Tf 72.00 401.00 Td (architectures and cache compression methods are evaluated together. Second, the interaction) Tj ET
@@ -378,8 +379,8 @@ BT /F1 9.0 Tf 72.00 193.00 Td ([2] R. Castellan. The delta rule revisited for li
 BT /F1 9.0 Tf 72.00 180.00 Td ([3] A. Petrov and L. Huang. Decay gates for recurrent attention. In Proceedings of the Sequence) Tj ET
 BT /F1 9.0 Tf 86.00 169.00 Td (Modelling Workshop, 2023.) Tj ET
 BT /F1 9.0 Tf 72.00 156.00 Td ([4] D. Farrow and N. Iyer. Test-time training layers for sequence models. arXiv preprint, 2024.) Tj ET
-BT /F1 9.0 Tf 72.00 143.00 Td ([5] T. Okafor and R. Lind. Attention sinks in long sequences. In Proceedings of the Sequence) Tj ET
-BT /F1 9.0 Tf 86.00 132.00 Td (Modelling Workshop, 2023.) Tj ET
+BT /F1 9.0 Tf 72.00 143.00 Td ([5] T. Okafor and R. Lind. Where attention parks its mass in long sequences. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 132.00 Td (the Sequence Modelling Workshop, 2023.) Tj ET
 BT /F1 9.0 Tf 72.00 119.00 Td ([6] G. Alvarez and M. Stone. Outlier channels in transformer activations. Transactions on) Tj ET
 BT /F1 9.0 Tf 86.00 108.00 Td (Efficient Computing, 2022.) Tj ET
 BT /F1 9.0 Tf 72.00 95.00 Td ([12] M. Okonkwo, T. Vaidya and E. Lindqvist. LUMEN: Linear attention with a gated delta rule. In) Tj ET
@@ -418,20 +419,20 @@ xref
 0000000673 00000 n 
 0000005195 00000 n 
 0000005331 00000 n 
-0000010471 00000 n 
-0000010609 00000 n 
-0000015365 00000 n 
-0000015503 00000 n 
-0000020426 00000 n 
-0000020564 00000 n 
-0000025525 00000 n 
-0000025663 00000 n 
-0000030238 00000 n 
-0000030376 00000 n 
-0000035885 00000 n 
-0000036023 00000 n 
+0000010447 00000 n 
+0000010585 00000 n 
+0000015411 00000 n 
+0000015549 00000 n 
+0000020498 00000 n 
+0000020636 00000 n 
+0000025597 00000 n 
+0000025735 00000 n 
+0000030310 00000 n 
+0000030448 00000 n 
+0000035949 00000 n 
+0000036087 00000 n 
 trailer
 << /Size 22 /Root 1 0 R /Info 5 0 R >>
 startxref
-37021
+37085
 %%EOF

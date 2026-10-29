@@ -5017,7 +5017,10 @@ Language models trained on long documents reach lower perplexity.
     async fn the_search_beyond_crowded_files_stays_in_scope() {
         let dir = tempfile::tempdir().unwrap();
         let mut engine = test_engine(dir.path()).await;
-        assert_eq!(engine.config().search.pool_source_cap, 2);
+        let mut search = engine.config().search.clone();
+        search.pool_source_cap = 2;
+        let rerank = engine.config().features.enable_reranking;
+        engine.set_search_config(search, rerank).unwrap();
         let write = |name: &str, body: String| {
             let path = dir.path().join(name);
             std::fs::write(&path, body).unwrap();

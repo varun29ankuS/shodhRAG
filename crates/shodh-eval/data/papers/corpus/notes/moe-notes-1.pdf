@@ -1,0 +1,115 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Reading group notes) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4651 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Reading group notes: mixture-of-experts) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Reading group of the Ashbury machine learning lab) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (Earlier mixture-of-experts methods improved the router but left the top-k routing unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (Recent work has made the shared expert a central concern, because it decides how far) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (mixture-of-experts models can scale. We argue that the load balance deserves as much) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (attention as the token dropping. Most prior methods treat the gating network as fixed and) Tj ET
+BT /F1 10.0 Tf 72.00 592.00 Td (tune the token dropping around it.) Tj ET
+BT /F1 10.0 Tf 72.00 572.00 Td (Combining mixture-of-experts with methods that target the capacity factor is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 559.00 Td (direction. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 546.00 Td (differently. We expect the gating network to interact with the expert parallelism at larger) Tj ET
+BT /F1 10.0 Tf 72.00 533.00 Td (scales, which we leave to future work. The load balance also makes mixture-of-experts easier) Tj ET
+BT /F1 10.0 Tf 72.00 520.00 Td (to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 500.00 Td (Practitioners report that the auxiliary loss is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 487.00 Td (Despite steady progress, the interaction between the token dropping and the capacity factor) Tj ET
+BT /F1 10.0 Tf 72.00 474.00 Td (is still poorly understood. This work studies mixture-of-experts, a method that rethinks the) Tj ET
+BT /F1 10.0 Tf 72.00 461.00 Td (gating network. Earlier mixture-of-experts methods improved the capacity factor but left the) Tj ET
+BT /F1 10.0 Tf 72.00 448.00 Td (shared expert unchanged.) Tj ET
+BT /F2 12.0 Tf 72.00 428.00 Td (2 Methods we read) Tj ET
+BT /F1 10.0 Tf 72.00 408.00 Td (The shared expert is initialised so that mixture-of-experts starts training close to a dense) Tj ET
+BT /F1 10.0 Tf 72.00 395.00 Td (model. Mixture-of-experts computes the auxiliary loss once per layer and reuses it for every) Tj ET
+BT /F1 10.0 Tf 72.00 382.00 Td (head. Unlike a dense model, mixture-of-experts updates the expert only when the gating) Tj ET
+BT /F1 10.0 Tf 72.00 369.00 Td (network changes. A coefficient controls how strongly the top-k routing depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 356.00 Td (expert; we set it to 0.4 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 336.00 Td (Mixture-of-experts computes the expert once per layer and reuses it for every head. During) Tj ET
+BT /F1 10.0 Tf 72.00 323.00 Td (inference mixture-of-experts caches the shared expert, so each new token costs a constant) Tj ET
+BT /F1 10.0 Tf 72.00 310.00 Td (amount of work. We implement the router as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (results to memory. Unlike switch routing, mixture-of-experts updates the shared expert only) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (when the gating network changes.) Tj ET
+BT /F1 10.0 Tf 72.00 264.00 Td (The router in mixture-of-experts is parameterised by a small linear layer with 64 hidden) Tj ET
+BT /F1 10.0 Tf 72.00 251.00 Td (units. Each block of mixture-of-experts applies the load balance after a short convolution) Tj ET
+BT /F1 10.0 Tf 72.00 238.00 Td (of width 2. The capacity factor is initialised so that mixture-of-experts starts training) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (close to switch routing. A coefficient controls how strongly the top-k routing depends on) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (the capacity factor; we set it to 0.9 throughout.) Tj ET
+BT /F2 12.0 Tf 72.00 192.00 Td (3 Results we discussed) Tj ET
+BT /F1 10.0 Tf 72.00 172.00 Td (Variance across seeds stays below 0.4 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 159.00 Td (Mixture-of-experts scores 48.7% on WebMix perplexity, compared with 51.1% for a top-1) Tj ET
+BT /F1 10.0 Tf 72.00 146.00 Td (router. The gains of mixture-of-experts grow with the input length, as the top-k routing) Tj ET
+BT /F1 10.0 Tf 72.00 133.00 Td (becomes the bottleneck. With the expert parallelism frozen, mixture-of-experts still) Tj ET
+BT /F1 10.0 Tf 72.00 120.00 Td (recovers most of its improvement on a reasoning suite.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2539 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Mixture-of-experts scores 63.7% on a translation suite, compared with 42.0% for a dense) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (model. Variance across seeds stays below 0.9 points for every configuration we report. With) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (the expert parallelism frozen, mixture-of-experts still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (a reasoning suite. We train every model for 70B tokens with the same data order and report) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (the mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (On WebMix perplexity, mixture-of-experts improves over switch routing by 2.1 points. We) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (train every model for 40B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (seeds. Throughput is measured with a batch size of 256 on a single accelerator. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (expert lowers the WebMix perplexity score by 3.4 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (components.) Tj ET
+BT /F2 12.0 Tf 72.00 576.00 Td (4 Open questions) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (A limitation of mixture-of-experts is that the load balance must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (each model size. Our analysis covers models up to 1.3B parameters, and larger models may) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (behave differently. The load balance also makes mixture-of-experts easier to inspect, since) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (its behaviour can be read off per token. The results suggest that the token dropping is the) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (We expect the gating network to interact with the shared expert at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (leave to future work. A limitation of mixture-of-experts is that the auxiliary loss must be) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (tuned separately for each model size. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (larger models may behave differently. The results suggest that the auxiliary loss is the) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (main lever for quality at a fixed budget.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000416 00000 n 
+0000000552 00000 n 
+0000005254 00000 n 
+0000005390 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 5 0 R >>
+startxref
+7980
+%%EOF

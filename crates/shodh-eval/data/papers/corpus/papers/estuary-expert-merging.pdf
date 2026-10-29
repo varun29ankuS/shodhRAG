@@ -1,0 +1,154 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (ESTUARY: Merging Experts after Training) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4001 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (ESTUARY: Merging Experts after Training) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Freya Jonsson, Ibrahim Diallo \(Lakeside Machine Learning\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (ESTUARY merges experts whose weight vectors have a cosine similarity above 0.9 into a single) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (expert. Recent work has made the gating network a central concern, because it decides how) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (far mixture-of-experts models can scale. Despite steady progress, the interaction between) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (the gating network and the capacity factor is still poorly understood.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Most prior methods treat the router as fixed and tune the expert around it. Earlier) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (mixture-of-experts methods improved the expert parallelism but left the capacity factor) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (unchanged. A practical system has to balance the cost of the router against the quality of) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (the shared expert. Recent work has made the shared expert a central concern, because it) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (decides how far mixture-of-experts models can scale.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (This work studies ESTUARY, a method that rethinks the shared expert. Earlier) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (mixture-of-experts methods improved the load balance but left the token dropping unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (Practitioners report that the expert is the first component to fail on long inputs.) Tj ET
+BT /F2 12.0 Tf 72.00 447.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (Combining ESTUARY with methods that target the expert is a promising direction. The results) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (suggest that the auxiliary loss is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 394.00 Td (Each block of ESTUARY applies the auxiliary loss after a short convolution of width 5.) Tj ET
+BT /F1 10.0 Tf 72.00 381.00 Td (ESTUARY computes the expert parallelism once per layer and reuses it for every head. A) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (coefficient controls how strongly the capacity factor depends on the load balance; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (to 0.4 throughout.) Tj ET
+BT /F2 12.0 Tf 72.00 335.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 315.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 295.00 Td (Merged experts in ESTUARY take the average of their weights, weighted by how many tokens) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (each expert received. To keep training stable, ESTUARY normalises the expert before it is) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (combined with the token dropping. A coefficient controls how strongly the shared expert) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (depends on the capacity factor; we set it to 0.2 throughout. During inference ESTUARY caches) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (the token dropping, so each new token costs a constant amount of work.) Tj ET
+BT /F1 10.0 Tf 150.00 223.00 Td (W_merged = \(n_a W_a + n_b W_b\) / \(n_a + n_b\)                      \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (Each block of ESTUARY applies the router after a short convolution of width 7. ESTUARY) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (computes the router once per layer and reuses it for every head. Gradients through the load) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (balance are clipped at a norm of 6.0. The shared expert in ESTUARY is parameterised by a) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (small linear layer with 512 hidden units.) Tj ET
+BT /F2 12.0 Tf 72.00 142.00 Td (3.2 Implementation) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4582 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (We implement the token dropping as a fused kernel, which avoids writing intermediate results) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (to memory. Unlike a top-1 router, ESTUARY updates the expert parallelism only when the) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (capacity factor changes. ESTUARY computes the capacity factor once per layer and reuses it) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (for every head. A coefficient controls how strongly the router depends on the load balance;) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (we set it to 0.3 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (The shared expert in ESTUARY is parameterised by a small linear layer with 64 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (A coefficient controls how strongly the expert parallelism depends on the auxiliary loss; we) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (set it to 0.5 throughout. During inference ESTUARY caches the capacity factor, so each new) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (token costs a constant amount of work.) Tj ET
+BT /F2 12.0 Tf 72.00 589.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 569.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 549.00 Td (The gains of ESTUARY grow with the input length, as the shared expert becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (bottleneck. On a translation suite, ESTUARY improves over switch routing by 5.6 points.) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (Ablating the load balance lowers the a translation suite score by 6.3 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (drop among all components. With the top-k routing frozen, ESTUARY still recovers most of its) Tj ET
+BT /F1 10.0 Tf 72.00 497.00 Td (improvement on WebMix perplexity.) Tj ET
+BT /F2 12.0 Tf 72.00 477.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 457.00 Td (Merging reduces the number of experts from 64 to 41 with a perplexity increase of 0.12.) Tj ET
+BT /F1 10.0 Tf 72.00 444.00 Td (Throughput is measured with a batch size of 256 on a single accelerator. ESTUARY scores) Tj ET
+BT /F1 10.0 Tf 72.00 431.00 Td (67.7% on WebMix perplexity, compared with 77.3% for switch routing. With the expert) Tj ET
+BT /F1 10.0 Tf 72.00 418.00 Td (parallelism frozen, ESTUARY still recovers most of its improvement on WebMix perplexity.) Tj ET
+BT /F1 10.0 Tf 72.00 398.00 Td (Variance across seeds stays below 0.7 points for every configuration we report. With the) Tj ET
+BT /F1 10.0 Tf 72.00 385.00 Td (load balance frozen, ESTUARY still recovers most of its improvement on a translation suite.) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (Ablating the gating network lowers the a translation suite score by 6.0 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 359.00 Td (drop among all components.) Tj ET
+BT /F2 12.0 Tf 72.00 339.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (Variance across seeds stays below 0.6 points for every configuration we report. Throughput) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (is measured with a batch size of 32 on a single accelerator. With the router frozen, ESTUARY) Tj ET
+BT /F1 10.0 Tf 72.00 293.00 Td (still recovers most of its improvement on a translation suite. The gains of ESTUARY grow) Tj ET
+BT /F1 10.0 Tf 72.00 280.00 Td (with the input length, as the expert parallelism becomes the bottleneck.) Tj ET
+BT /F2 12.0 Tf 72.00 260.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 240.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 227.00 Td (We expect the token dropping to interact with the shared expert at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 214.00 Td (leave to future work. The results suggest that the gating network is the main lever for) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (quality at a fixed budget. A limitation of ESTUARY is that the load balance must be tuned) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (separately for each model size.) Tj ET
+BT /F2 12.0 Tf 72.00 168.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 148.00 Td (Combining ESTUARY with methods that target the load balance is a promising direction. The) Tj ET
+BT /F1 10.0 Tf 72.00 135.00 Td (capacity factor also makes ESTUARY easier to inspect, since its behaviour can be read off) Tj ET
+BT /F1 10.0 Tf 72.00 122.00 Td (per token. Our analysis covers models up to 1.3B parameters, and larger models may behave) Tj ET
+BT /F1 10.0 Tf 72.00 109.00 Td (differently.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1193 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] B. Bergstrom and O. Okoro. Shared expert for mixture-of-experts models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (the Sequence Modelling Workshop, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] P. Petrova and W. Whitfield. Capacity factor for mixture-of-experts models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 665.00 Td (Efficient Computing, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 652.00 Td ([3] A. Adeyemi and M. Moreau. Shared expert for mixture-of-experts models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 641.00 Td (Efficient Computing, 2023.) Tj ET
+BT /F1 9.0 Tf 72.00 628.00 Td ([4] Z. Zielinski and O. Okoro. Expert for mixture-of-experts models. Transactions on Efficient) Tj ET
+BT /F1 9.0 Tf 86.00 617.00 Td (Computing, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 604.00 Td ([5] P. Petrova and V. Varga. Expert parallelism for mixture-of-experts models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 593.00 Td (the Sequence Modelling Workshop, 2021.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000443 00000 n 
+0000000579 00000 n 
+0000004631 00000 n 
+0000004767 00000 n 
+0000009400 00000 n 
+0000009538 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10783
+%%EOF

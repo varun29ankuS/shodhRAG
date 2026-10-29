@@ -18,7 +18,7 @@ use crate::dataset::{Dataset, EvalCase};
 use crate::engine::{index_corpus_with, settings_with, IndexedCorpus, Tweaks};
 use crate::metrics::{rank_case, retrieval_metrics, unique_sources, RetrievedChunk};
 use crate::report::{combine_runs, summarize_latencies, CaseRecord, RunKind, RunReport, TopResult};
-use crate::text::contains_span;
+use crate::text::{contains_span, normalize_text};
 
 /// Results fetched per question (the top of the agent tool's range).
 pub const DEFAULT_K: usize = 10;
@@ -162,7 +162,10 @@ async fn search_all(
         .filter_map(|row| relative_key(&index.root_key, &row.source).map(|key| (key, row.source)))
         .collect();
     for case in cases {
-        let passage_indexed = passage_indexed(index, &sources, case).await?;
+        let PassageCheck {
+            indexed: passage_indexed,
+            nearest: passage_nearest,
+        } = passage_indexed(index, &sources, case).await?;
         let engine = index.rag.read().await;
         let started = Instant::now();
         let (results, trace) = engine
@@ -207,6 +210,7 @@ async fn search_all(
             unique_sources: spread,
             trace: Some(trace),
             passage_indexed,
+            passage_nearest,
             ..CaseRecord::default()
         });
     }
@@ -215,11 +219,42 @@ async fn search_all(
 
 /// Whether every expected passage of `case` is in a stored chunk of its
 /// document (`None` when the case gives no passage).
+/// What the index holds for a case's expected passages: whether every one
+/// is in a stored chunk of its document (`None` when the case gives no
+/// passage) and, for the first one that is not, the start of the stored
+/// chunk sharing the most words with it (to see how parsing changed it).
+struct PassageCheck {
+    indexed: Option<bool>,
+    nearest: Option<String>,
+}
+
+/// Characters of the nearest chunk kept in a report.
+const NEAREST_CHARS: usize = 400;
+
+/// The chunk text sharing the most normalised words with `passage`.
+fn nearest_chunk<'a>(texts: impl Iterator<Item = &'a str>, passage: &str) -> Option<&'a str> {
+    let wanted: std::collections::BTreeSet<String> = normalize_text(passage)
+        .split(' ')
+        .map(str::to_string)
+        .collect();
+    texts
+        .map(|text| {
+            let words: std::collections::BTreeSet<String> = normalize_text(text)
+                .split(' ')
+                .map(str::to_string)
+                .collect();
+            (wanted.intersection(&words).count(), text)
+        })
+        .filter(|(shared, _)| *shared > 0)
+        .max_by_key(|(shared, _)| *shared)
+        .map(|(_, text)| text)
+}
+
 async fn passage_indexed(
     index: &IndexedCorpus,
     sources: &BTreeMap<String, String>,
     case: &EvalCase,
-) -> Result<Option<bool>> {
+) -> Result<PassageCheck> {
     let mut any = false;
     for (key, (_, passage)) in expected_map(&index.root, case) {
         let Some(passage) = passage else {
@@ -227,7 +262,10 @@ async fn passage_indexed(
         };
         any = true;
         let Some(source) = sources.get(&key) else {
-            return Ok(Some(false));
+            return Ok(PassageCheck {
+                indexed: Some(false),
+                nearest: None,
+            });
         };
         let chunks = index
             .rag
@@ -237,10 +275,18 @@ async fn passage_indexed(
             .await
             .with_context(|| format!("listing the chunks of {key}"))?;
         if !chunks.iter().any(|c| contains_span(&c.text, &passage)) {
-            return Ok(Some(false));
+            let nearest = nearest_chunk(chunks.iter().map(|c| c.text.as_str()), &passage)
+                .map(|text| text.chars().take(NEAREST_CHARS).collect());
+            return Ok(PassageCheck {
+                indexed: Some(false),
+                nearest,
+            });
         }
     }
-    Ok(any.then_some(true))
+    Ok(PassageCheck {
+        indexed: any.then_some(true),
+        nearest: None,
+    })
 }
 
 /// The OCR choice as report settings.
@@ -362,6 +408,20 @@ mod tests {
             pages: None,
             text: String::new(),
         }
+    }
+
+    #[test]
+    fn the_nearest_chunk_shares_the_most_words() {
+        let texts = [
+            "| TIDE | as context | 93.0 |",
+            "Abstract about memory",
+            "nothing",
+        ];
+        assert_eq!(
+            nearest_chunk(texts.iter().copied(), "TIDE as context 93.0 71.3"),
+            Some("| TIDE | as context | 93.0 |")
+        );
+        assert_eq!(nearest_chunk(texts.iter().copied(), "zebra"), None);
     }
 
     #[test]

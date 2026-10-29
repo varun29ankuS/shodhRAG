@@ -1,0 +1,154 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (VESPER: Sparse Feature Maps for Linear Attention) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4101 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (VESPER: Sparse Feature Maps for Linear Attention) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Ana Lucia Reyes, Henrik Dahl \(Brightwater Institute\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (VESPER keeps only the 16 largest entries of each feature vector, so a state write touches a) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (small fraction of the state. Recent work has made the associative recall a central concern,) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (because it decides how far linear attention models can scale. This work studies VESPER, a) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (method that rethinks the feature map.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Earlier linear attention methods improved the causal mask but left the feature map) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (unchanged. This work studies VESPER, a method that rethinks the read-out projection. Recent) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (work has made the causal mask a central concern, because it decides how far linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (models can scale. Most prior methods treat the decay gate as fixed and tune the) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (outer-product write around it.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (This work studies VESPER, a method that rethinks the state size. Earlier linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (methods improved the key dimension but left the chunk-wise kernel unchanged. Practitioners) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (report that the key dimension is the first component to fail on long inputs.) Tj ET
+BT /F2 12.0 Tf 72.00 447.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (Combining VESPER with methods that target the feature map is a promising direction. The) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (results suggest that the chunk-wise kernel is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 394.00 Td (VESPER computes the chunk-wise kernel once per layer and reuses it for every head. The) Tj ET
+BT /F1 10.0 Tf 72.00 381.00 Td (chunk-wise kernel in VESPER is parameterised by a small linear layer with 256 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (Unlike a Transformer++ baseline, VESPER updates the feature map only when the decay gate) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (changes.) Tj ET
+BT /F2 12.0 Tf 72.00 335.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 315.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 295.00 Td (The sparsity pattern of VESPER is chosen by a top-k over the feature map and is recomputed) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (for every token. During inference VESPER caches the key dimension, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (constant amount of work. We implement the chunk-wise kernel as a fused kernel, which avoids) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (writing intermediate results to memory. A coefficient controls how strongly the recurrent) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (state depends on the state size; we set it to 0.3 throughout.) Tj ET
+BT /F1 10.0 Tf 150.00 223.00 Td (phi\(x\) = topk_16\(relu\(W x\)\),   S_t = S_{t-1} + v_t phi\(k_t\)^T     \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (A coefficient controls how strongly the key dimension depends on the read-out projection; we) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (set it to 0.7 throughout. The read-out projection in VESPER is parameterised by a small) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (linear layer with 64 hidden units. During inference VESPER caches the causal mask, so each) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (new token costs a constant amount of work. The outer-product write is initialised so that) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (VESPER starts training close to a Transformer++ baseline.) Tj ET
+BT /F2 12.0 Tf 72.00 129.00 Td (3.2 Implementation) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4465 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (We implement the recurrent state as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (results to memory. During inference VESPER caches the causal mask, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (constant amount of work. Each block of VESPER applies the associative recall after a short) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (convolution of width 3. Unlike a Transformer++ baseline, VESPER updates the chunk-wise) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (kernel only when the recurrent state changes.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (VESPER computes the recurrent state once per layer and reuses it for every head. The state) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (size in VESPER is parameterised by a small linear layer with 16 hidden units. The read-out) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (projection is initialised so that VESPER starts training close to gated linear attention.) Tj ET
+BT /F2 12.0 Tf 72.00 602.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 582.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 562.00 Td (The gains of VESPER grow with the input length, as the recurrent state becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 549.00 Td (bottleneck. Variance across seeds stays below 0.2 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (We train every model for 30B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (seeds. On LAMBADA, VESPER improves over gated linear attention by 1.7 points.) Tj ET
+BT /F2 12.0 Tf 72.00 503.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 483.00 Td (At 760M parameters VESPER reaches a WikiText perplexity of 18.35 while updating its state) Tj ET
+BT /F1 10.0 Tf 72.00 470.00 Td (3.4 times faster than dense linear attention. With the decay gate frozen, VESPER still) Tj ET
+BT /F1 10.0 Tf 72.00 457.00 Td (recovers most of its improvement on WikiText. Throughput is measured with a batch size of 32) Tj ET
+BT /F1 10.0 Tf 72.00 444.00 Td (on a single accelerator. Variance across seeds stays below 0.5 points for every) Tj ET
+BT /F1 10.0 Tf 72.00 431.00 Td (configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (Variance across seeds stays below 0.4 points for every configuration we report. On WikiText,) Tj ET
+BT /F1 10.0 Tf 72.00 398.00 Td (VESPER improves over a Transformer++ baseline by 6.5 points. With the outer-product write) Tj ET
+BT /F1 10.0 Tf 72.00 385.00 Td (frozen, VESPER still recovers most of its improvement on WikiText.) Tj ET
+BT /F2 12.0 Tf 72.00 365.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 345.00 Td (We train every model for 90B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 332.00 Td (seeds. Ablating the outer-product write lowers the WikiText score by 1.1 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (drop among all components. On WikiText, VESPER improves over softmax attention by 1.8) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (points. With the outer-product write frozen, VESPER still recovers most of its improvement) Tj ET
+BT /F1 10.0 Tf 72.00 293.00 Td (on WikiText.) Tj ET
+BT /F2 12.0 Tf 72.00 273.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 253.00 Td (Combining VESPER with methods that target the decay gate is a promising direction. We expect) Tj ET
+BT /F1 10.0 Tf 72.00 240.00 Td (the key dimension to interact with the causal mask at larger scales, which we leave to) Tj ET
+BT /F1 10.0 Tf 72.00 227.00 Td (future work. A limitation of VESPER is that the associative recall must be tuned separately) Tj ET
+BT /F1 10.0 Tf 72.00 214.00 Td (for each model size. Our analysis covers models up to 1.3B parameters, and larger models may) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 181.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 161.00 Td (The outer-product write also makes VESPER easier to inspect, since its behaviour can be read) Tj ET
+BT /F1 10.0 Tf 72.00 148.00 Td (off per token. The results suggest that the recurrent state is the main lever for quality at) Tj ET
+BT /F1 10.0 Tf 72.00 135.00 Td (a fixed budget. Combining VESPER with methods that target the causal mask is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 122.00 Td (direction.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1171 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] R. Rossi and M. Moreau. Associative recall for linear attention models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (2021.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] C. Castillo and C. Castillo. Recurrent state for linear attention models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 665.00 Td (Efficient Computing, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 652.00 Td ([3] K. Kowalski and F. Fujita. State size for linear attention models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 641.00 Td (Sequence Modelling Workshop, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 628.00 Td ([4] S. Sandoval and P. Petrova. Associative recall for linear attention models. In Proceedings) Tj ET
+BT /F1 9.0 Tf 86.00 617.00 Td (of the Sequence Modelling Workshop, 2016.) Tj ET
+BT /F1 9.0 Tf 72.00 604.00 Td ([5] A. Adeyemi and X. Xu. Chunk-wise kernel for linear attention models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 593.00 Td (Efficient Computing, 2023.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000452 00000 n 
+0000000588 00000 n 
+0000004740 00000 n 
+0000004876 00000 n 
+0000009392 00000 n 
+0000009530 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10753
+%%EOF

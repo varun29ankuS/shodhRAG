@@ -1,0 +1,319 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R 12 0 R 14 0 R 16 0 R] /Count 6 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (KV Cache Compression for Long-Context Inference: A Survey) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4532 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (KV Cache Compression for Long-Context Inference: A) Tj ET
+BT /F2 16.0 Tf 72.00 698.00 Td (Survey) Tj ET
+BT /F1 10.0 Tf 72.00 672.00 Td (Olga Mikhailova, Tunde Bakare, Ines Carvalho \(Institute for Serving Systems\)) Tj ET
+BT /F2 12.0 Tf 72.00 642.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (The key-value cache of a 70B model at 128K tokens exceeds 300 GB in half precision, which) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (makes it the main obstacle to long-context serving. We survey methods that shrink it and) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (divide KV cache compression into token-level, precision-level and dimension-level methods.) Tj ET
+BT /F2 12.0 Tf 72.00 576.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (We argue that the quantization group deserves as much attention as the cache page. Despite) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (steady progress, the interaction between the decoding step and the cache page is still) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (poorly understood. Most prior methods treat the prefill stage as fixed and tune the eviction) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (score around it. Recent work has made the decoding step a central concern, because it) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (decides how far KV cache compression models can scale.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (Earlier KV cache compression methods improved the outlier channel but left the head) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (dimension unchanged. Recent work has made the head dimension a central concern, because it) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (decides how far KV cache compression models can scale. We argue that the outlier channel) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (deserves as much attention as the eviction score. Practitioners report that the key-value) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (cache is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (A practical system has to balance the cost of the key-value cache against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (prefill stage. Recent work has made the key-value cache a central concern, because it) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (decides how far KV cache compression models can scale. Practitioners report that the prefill) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (stage is the first component to fail on long inputs. We argue that the cache budget deserves) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (as much attention as the prefill stage.) Tj ET
+BT /F1 10.0 Tf 72.00 340.00 Td (We argue that the cache budget deserves as much attention as the prefill stage. This work) Tj ET
+BT /F1 10.0 Tf 72.00 327.00 Td (studies KV cache compression, a method that rethinks the outlier channel. Recent work has) Tj ET
+BT /F1 10.0 Tf 72.00 314.00 Td (made the key-value cache a central concern, because it decides how far KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 301.00 Td (models can scale. A practical system has to balance the cost of the head dimension against) Tj ET
+BT /F1 10.0 Tf 72.00 288.00 Td (the quality of the cache budget.) Tj ET
+BT /F1 10.0 Tf 72.00 268.00 Td (Most prior methods treat the cache budget as fixed and tune the cache page around it. Recent) Tj ET
+BT /F1 10.0 Tf 72.00 255.00 Td (work has made the prefill stage a central concern, because it decides how far KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 242.00 Td (compression models can scale. Earlier KV cache compression methods improved the outlier) Tj ET
+BT /F1 10.0 Tf 72.00 229.00 Td (channel but left the key-value cache unchanged. Practitioners report that the quantization) Tj ET
+BT /F1 10.0 Tf 72.00 216.00 Td (group is the first component to fail on long inputs.) Tj ET
+BT /F2 12.0 Tf 72.00 196.00 Td (2 Token-Level Methods) Tj ET
+BT /F1 10.0 Tf 72.00 176.00 Td (Each block of KV cache compression applies the decoding step after a short convolution of) Tj ET
+BT /F1 10.0 Tf 72.00 163.00 Td (width 9. Gradients through the key-value cache are clipped at a norm of 4.0. During) Tj ET
+BT /F1 10.0 Tf 72.00 150.00 Td (inference KV cache compression caches the cache budget, so each new token costs a constant) Tj ET
+BT /F1 10.0 Tf 72.00 137.00 Td (amount of work. We implement the head dimension as a fused kernel, which avoids writing) Tj ET
+BT /F1 10.0 Tf 72.00 124.00 Td (intermediate results to memory.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4864 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (A limitation of KV cache compression is that the quantization group must be tuned separately) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (for each model size. We expect the cache page to interact with the key-value cache at larger) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (scales, which we leave to future work. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (larger models may behave differently. Combining KV cache compression with methods that) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (target the cache budget is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (During inference KV cache compression caches the prefill stage, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (constant amount of work. The outlier channel is initialised so that KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (starts training close to a recent-window policy. The quantization group in KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (compression is parameterised by a small linear layer with 32 hidden units. Each block of KV) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (cache compression applies the head dimension after a short convolution of width 4.) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (The results suggest that the attention sink is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (A limitation of KV cache compression is that the key-value cache must be tuned separately) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (for each model size. We expect the head dimension to interact with the key-value cache at) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (larger scales, which we leave to future work. Our analysis covers models up to 1.3B) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (A coefficient controls how strongly the quantization group depends on the attention sink; we) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (set it to 0.2 throughout. We implement the head dimension as a fused kernel, which avoids) Tj ET
+BT /F1 10.0 Tf 72.00 478.00 Td (writing intermediate results to memory. Gradients through the key-value cache are clipped at) Tj ET
+BT /F1 10.0 Tf 72.00 465.00 Td (a norm of 3.0. KV cache compression computes the cache budget once per layer and reuses it) Tj ET
+BT /F1 10.0 Tf 72.00 452.00 Td (for every head.) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (Reported result for Vetch \(2022\): It keeps 81% of full-cache accuracy at a 50% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (Reported result for Wren \(2023\): It keeps 72% of full-cache accuracy at a 20% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (Reported result for Xylem \(2023\): It keeps 93% of full-cache accuracy at a 20% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (Reported result for Yarrow \(2024\): It keeps 95% of full-cache accuracy at a 15% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 352.00 Td (Reported result for Zephyr \(2024\): It keeps 96% of full-cache accuracy at a 10% budget on) Tj ET
+BT /F1 10.0 Tf 72.00 339.00 Td (retrieval tasks.) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (Reported result for Aster \(2025\): It recovers 99% of full-cache accuracy at a 10% GPU) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (budget.) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (Reported result for Bracken \(2025\): It keeps 97% of full-cache accuracy at a 15% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 266.00 Td (Reported result for Cedar \(2025\): It keeps 94% of full-cache accuracy at a 20% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 246.00 Td (Reported result for Dahlia \(2025\): It keeps 96% of full-cache accuracy at a 15% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 226.00 Td (Reported result for Elm \(2025\): It keeps 95% of full-cache accuracy at an average budget of) Tj ET
+BT /F1 10.0 Tf 72.00 213.00 Td (12%.) Tj ET
+BT /F1 10.0 Tf 72.00 193.00 Td (Reported result for Fern \(2025\): It decodes 1.3 times faster than per-step scoring at equal) Tj ET
+BT /F1 10.0 Tf 72.00 180.00 Td (accuracy.) Tj ET
+BT /F2 12.0 Tf 72.00 160.00 Td (3 Precision-Level Methods) Tj ET
+BT /F1 10.0 Tf 72.00 140.00 Td (To keep training stable, KV cache compression normalises the head dimension before it is) Tj ET
+BT /F1 10.0 Tf 72.00 127.00 Td (combined with the eviction score. During inference KV cache compression caches the prefill) Tj ET
+BT /F1 10.0 Tf 72.00 114.00 Td (stage, so each new token costs a constant amount of work. Gradients through the attention) Tj ET
+BT /F1 10.0 Tf 72.00 101.00 Td (sink are clipped at a norm of 6.0. The cache budget is initialised so that KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 88.00 Td (compression starts training close to the full-precision cache.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 4837 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (The results suggest that the attention sink is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (We expect the cache budget to interact with the quantization group at larger scales, which) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (we leave to future work. A limitation of KV cache compression is that the eviction score) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (During inference KV cache compression caches the prefill stage, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (constant amount of work. We implement the eviction score as a fused kernel, which avoids) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (writing intermediate results to memory. To keep training stable, KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (normalises the outlier channel before it is combined with the eviction score. Each block of) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (KV cache compression applies the prefill stage after a short convolution of width 3.) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (A limitation of KV cache compression is that the outlier channel must be tuned separately) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (for each model size. We expect the quantization group to interact with the eviction score at) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (larger scales, which we leave to future work. Combining KV cache compression with methods) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (that target the head dimension is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (KV cache compression computes the attention sink once per layer and reuses it for every) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (head. The prefill stage is initialised so that KV cache compression starts training close to) Tj ET
+BT /F1 10.0 Tf 72.00 478.00 Td (per-token quantization. We implement the attention sink as a fused kernel, which avoids) Tj ET
+BT /F1 10.0 Tf 72.00 465.00 Td (writing intermediate results to memory. The cache budget in KV cache compression is) Tj ET
+BT /F1 10.0 Tf 72.00 452.00 Td (parameterised by a small linear layer with 64 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (Reported result for Opal \(2022\): It halves cache memory with no measurable accuracy loss.) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (Reported result for Pumice \(2023\): It reduces cache memory by 3.6 times.) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (Reported result for Quill \(2023\): It loses 1.1 points on LongSuite at three bits.) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (Reported result for Ripple \(2024\): It reduces cache memory by 4.4 times with a loss of 0.9) Tj ET
+BT /F1 10.0 Tf 72.00 359.00 Td (points on LongSuite.) Tj ET
+BT /F1 10.0 Tf 72.00 339.00 Td (Reported result for Sorrel \(2024\): It reduces cache memory by 6.0 times.) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (Reported result for Tamarind \(2024\): It reaches 1.5 bits per number with a loss of 2.3) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (points.) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (Reported result for Umber \(2025\): It loses 0.6 points on LongSuite at an average of 2.5) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (bits.) Tj ET
+BT /F1 10.0 Tf 72.00 253.00 Td (Reported result for Velvet \(2025\): It reduces cache memory by 4.8 times.) Tj ET
+BT /F1 10.0 Tf 72.00 233.00 Td (Reported result for Willow \(2025\): It loses 0.5 points on LongSuite.) Tj ET
+BT /F1 10.0 Tf 72.00 213.00 Td (Reported result for Yew \(2025\): It reduces cache memory by 7.1 times with a loss of 1.8) Tj ET
+BT /F1 10.0 Tf 72.00 200.00 Td (points.) Tj ET
+BT /F1 10.0 Tf 72.00 180.00 Td (Reported result for Zinnia \(2025\): It reaches an average of 2.2 bits per number.) Tj ET
+BT /F2 12.0 Tf 72.00 160.00 Td (4 Dimension-Level Methods) Tj ET
+BT /F1 10.0 Tf 72.00 140.00 Td (To keep training stable, KV cache compression normalises the eviction score before it is) Tj ET
+BT /F1 10.0 Tf 72.00 127.00 Td (combined with the quantization group. Gradients through the eviction score are clipped at a) Tj ET
+BT /F1 10.0 Tf 72.00 114.00 Td (norm of 4.0. During inference KV cache compression caches the cache page, so each new token) Tj ET
+BT /F1 10.0 Tf 72.00 101.00 Td (costs a constant amount of work. Unlike the full-precision cache, KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 88.00 Td (updates the decoding step only when the eviction score changes.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
+<< /Length 5021 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (On NeedleBench, KV cache compression improves over per-token quantization by 3.9 points. We) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (train every model for 90B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (seeds. Variance across seeds stays below 0.5 points for every configuration we report. The) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (gains of KV cache compression grow with the input length, as the quantization group becomes) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (We implement the key-value cache as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (results to memory. The cache page in KV cache compression is parameterised by a small linear) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (layer with 512 hidden units. The outlier channel is initialised so that KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (starts training close to per-token quantization. Unlike per-token quantization, KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (compression updates the attention sink only when the outlier channel changes.) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (We train every model for 90B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (seeds. With the eviction score frozen, KV cache compression still recovers most of its) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (improvement on NeedleBench. Ablating the decoding step lowers the LongSuite score by 1.8) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (points, the largest drop among all components. KV cache compression scores 69.7% on) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (NeedleBench, compared with 64.5% for per-token quantization.) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (To keep training stable, KV cache compression normalises the prefill stage before it is) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (combined with the head dimension. During inference KV cache compression caches the eviction) Tj ET
+BT /F1 10.0 Tf 72.00 478.00 Td (score, so each new token costs a constant amount of work. A coefficient controls how) Tj ET
+BT /F1 10.0 Tf 72.00 465.00 Td (strongly the key-value cache depends on the cache budget; we set it to 0.7 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 452.00 Td (Gradients through the outlier channel are clipped at a norm of 4.0.) Tj ET
+BT /F2 12.0 Tf 72.00 432.00 Td (5 Systems Support) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (We implement the head dimension as a fused kernel, which avoids writing intermediate results) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (to memory. A coefficient controls how strongly the attention sink depends on the decoding) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (step; we set it to 0.8 throughout. The key-value cache in KV cache compression is) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (parameterised by a small linear layer with 512 hidden units. Gradients through the) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (quantization group are clipped at a norm of 5.0.) Tj ET
+BT /F1 10.0 Tf 72.00 340.00 Td (Combining KV cache compression with methods that target the cache budget is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 327.00 Td (direction. The attention sink also makes KV cache compression easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 314.00 Td (behaviour can be read off per token. The results suggest that the key-value cache is the) Tj ET
+BT /F1 10.0 Tf 72.00 301.00 Td (main lever for quality at a fixed budget. A limitation of KV cache compression is that the) Tj ET
+BT /F1 10.0 Tf 72.00 288.00 Td (outlier channel must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 268.00 Td (We implement the outlier channel as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 255.00 Td (results to memory. Gradients through the head dimension are clipped at a norm of 2.0. The) Tj ET
+BT /F1 10.0 Tf 72.00 242.00 Td (key-value cache is initialised so that KV cache compression starts training close to the) Tj ET
+BT /F1 10.0 Tf 72.00 229.00 Td (full-precision cache. Each block of KV cache compression applies the quantization group) Tj ET
+BT /F1 10.0 Tf 72.00 216.00 Td (after a short convolution of width 5.) Tj ET
+BT /F1 10.0 Tf 72.00 196.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 183.00 Td (The results suggest that the head dimension is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 170.00 Td (A limitation of KV cache compression is that the attention sink must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 157.00 Td (each model size. We expect the cache page to interact with the key-value cache at larger) Tj ET
+BT /F1 10.0 Tf 72.00 144.00 Td (scales, which we leave to future work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (4) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 15 0 R >>
+endobj
+15 0 obj
+<< /Length 5031 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (During inference KV cache compression caches the decoding step, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (constant amount of work. Unlike per-token quantization, KV cache compression updates the) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (key-value cache only when the quantization group changes. KV cache compression computes the) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (decoding step once per layer and reuses it for every head. The quantization group is) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (initialised so that KV cache compression starts training close to the full-precision cache.) Tj ET
+BT /F2 12.0 Tf 72.00 648.00 Td (6 Evaluation Practice) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (KV cache compression scores 49.8% on RULER-Synth, compared with 54.3% for the full-precision) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (cache. With the decoding step frozen, KV cache compression still recovers most of its) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (improvement on NeedleBench. Throughput is measured with a batch size of 64 on a single) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (accelerator. We train every model for 30B tokens with the same data order and report the) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (Variance across seeds stays below 0.6 points for every configuration we report. We train) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (every model for 70B tokens with the same data order and report the mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (Throughput is measured with a batch size of 256 on a single accelerator. With the) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (quantization group frozen, KV cache compression still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (LongSuite.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (With the attention sink frozen, KV cache compression still recovers most of its improvement) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (on LongSuite. Throughput is measured with a batch size of 128 on a single accelerator. We) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (train every model for 40B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (seeds. On LongSuite, KV cache compression improves over the full-precision cache by 4.2) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (points.) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (Throughput is measured with a batch size of 32 on a single accelerator. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (attention sink lowers the NeedleBench score by 2.2 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (components. We train every model for 90B tokens with the same data order and report the mean) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (of three seeds. KV cache compression scores 51.2% on NeedleBench, compared with 80.9% for) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (the full-precision cache.) Tj ET
+BT /F1 10.0 Tf 72.00 340.00 Td (KV cache compression scores 54.8% on LongSuite, compared with 55.3% for a recent-window) Tj ET
+BT /F1 10.0 Tf 72.00 327.00 Td (policy. Throughput is measured with a batch size of 16 on a single accelerator. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 314.00 Td (decoding step lowers the RULER-Synth score by 1.8 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 301.00 Td (components. Variance across seeds stays below 0.2 points for every configuration we report.) Tj ET
+BT /F2 12.0 Tf 72.00 281.00 Td (7 Outlook) Tj ET
+BT /F1 10.0 Tf 72.00 261.00 Td (Token-level and precision-level methods are now mature, and the open questions concern how) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (to combine them with offloading and with models whose recurrent state already replaces part) Tj ET
+BT /F1 10.0 Tf 72.00 235.00 Td (of the cache.) Tj ET
+BT /F2 12.0 Tf 72.00 215.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 195.00 Td ([1] W. Whitfield and D. Dubois. Prefill stage for KV cache compression models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 184.00 Td (Efficient Computing, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 171.00 Td ([2] Y. Yilmaz and O. Okoro. Cache page for KV cache compression models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 160.00 Td (Sequence Modelling Workshop, 2022.) Tj ET
+BT /F1 9.0 Tf 72.00 147.00 Td ([3] E. Eriksen and V. Varga. Eviction score for KV cache compression models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 136.00 Td (2021.) Tj ET
+BT /F1 9.0 Tf 72.00 123.00 Td ([4] M. Moreau and V. Varga. Key-value cache for KV cache compression models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 112.00 Td (the Learning Systems Conference, 2019.) Tj ET
+BT /F1 9.0 Tf 72.00 99.00 Td ([5] A. Adeyemi and M. Moreau. Key-value cache for KV cache compression models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 88.00 Td (the Sequence Modelling Workshop, 2018.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (5) Tj ET
+endstream
+endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 17 0 R >>
+endobj
+17 0 obj
+<< /Length 1155 >>
+stream
+BT /F1 9.0 Tf 72.00 720.00 Td ([6] W. Whitfield and B. Bergstrom. Prefill stage for KV cache compression models. In Proceedings) Tj ET
+BT /F1 9.0 Tf 86.00 709.00 Td (of the Learning Systems Conference, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 696.00 Td ([7] N. Nakamura and Q. Quinn. Quantization group for KV cache compression models. Transactions) Tj ET
+BT /F1 9.0 Tf 86.00 685.00 Td (on Efficient Computing, 2020.) Tj ET
+BT /F1 9.0 Tf 72.00 672.00 Td ([8] I. Ivanova and H. Haddad. Eviction score for KV cache compression models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 661.00 Td (2022.) Tj ET
+BT /F1 9.0 Tf 72.00 648.00 Td ([9] E. Eriksen and Q. Quinn. Eviction score for KV cache compression models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 637.00 Td (the Learning Systems Conference, 2016.) Tj ET
+BT /F1 9.0 Tf 72.00 624.00 Td ([10] S. Sandoval and G. Gallagher. Cache page for KV cache compression models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 613.00 Td (the Learning Systems Conference, 2016.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (6) Tj ET
+endstream
+endobj
+xref
+0 18
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000155 00000 n 
+0000000252 00000 n 
+0000000354 00000 n 
+0000000482 00000 n 
+0000000618 00000 n 
+0000005201 00000 n 
+0000005337 00000 n 
+0000010252 00000 n 
+0000010390 00000 n 
+0000015279 00000 n 
+0000015417 00000 n 
+0000020490 00000 n 
+0000020628 00000 n 
+0000025711 00000 n 
+0000025849 00000 n 
+trailer
+<< /Size 18 /Root 1 0 R /Info 5 0 R >>
+startxref
+27056
+%%EOF

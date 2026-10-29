@@ -151,6 +151,10 @@ pub struct CaseRecord {
     /// of its document (`false`: lost before ranking, in parsing or chunking).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passage_indexed: Option<bool>,
+    /// Retrieval: when a passage is not indexed, the start of the stored chunk
+    /// of its document that shares the most words with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passage_nearest: Option<String>,
     /// Retrieval: what each stage of the search kept (results and files).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<shodh_rag::rag_engine::SearchTrace>,

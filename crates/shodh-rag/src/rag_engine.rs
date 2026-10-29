@@ -1053,6 +1053,36 @@ fn join_neighbors(
     (text, parts)
 }
 
+/// The sources holding at least `cap` of `hits`, in first-seen order.
+fn crowded_sources(hits: &[crate::storage::SearchHit], cap: usize) -> Vec<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for hit in hits {
+        match counts.iter_mut().find(|(source, _)| *source == hit.source) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((hit.source.as_str(), 1)),
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= cap)
+        .map(|(source, _)| source.to_string())
+        .collect()
+}
+
+/// A LanceDB predicate: `filter` (if any) and none of `sources`.
+fn excluding_sources(filter: Option<&str>, sources: &[String]) -> String {
+    let list = sources
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let exclusion = format!("source NOT IN ({list})");
+    match filter {
+        Some(f) if !f.trim().is_empty() => format!("({f}) AND {exclusion}"),
+        _ => exclusion,
+    }
+}
+
 /// Cuts score-ordered `results` to `pool` candidates holding at most `cap`
 /// of any one source file; when other files cannot fill the pool, the best
 /// of the remaining candidates do. Order is kept.
@@ -2541,10 +2571,29 @@ impl RAGEngine {
         let source_filter = filter.as_ref().and_then(|f| f.source_path.as_deref());
 
         // Vector search via LanceDB
-        let vector_hits = self
+        let mut vector_hits = self
             .store
             .vector_search(&query_embedding, candidate_count, lance_filter.as_deref())
             .await?;
+
+        // A few long files (surveys, theses, books) can hold every nearest chunk of a
+        // broad query, and then no other file reaches the reranker at all. With a
+        // per-file pool limit, the files that already fill it are excluded from one
+        // more vector search, so the pool can be filled from the next files.
+        let pool_source_cap = self.config.search.pool_source_cap;
+        if pool_source_cap > 0 {
+            let crowded = crowded_sources(&vector_hits, pool_source_cap);
+            if !crowded.is_empty() {
+                let predicate = excluding_sources(lance_filter.as_deref(), &crowded);
+                let more = self
+                    .store
+                    .vector_search(&query_embedding, candidate_count, Some(&predicate))
+                    .await?;
+                let known: std::collections::HashSet<String> =
+                    vector_hits.iter().map(|h| h.id.clone()).collect();
+                vector_hits.extend(more.into_iter().filter(|h| !known.contains(&h.id)));
+            }
+        }
 
         let vector_results: Vec<(String, f32)> = vector_hits
             .iter()
@@ -2614,7 +2663,6 @@ impl RAGEngine {
         // Score-aware Reciprocal Rank Fusion — preserves original quality signals.
         // With a per-file pool limit every fused candidate is kept, so the pool
         // can be filled from deeper candidates of other files.
-        let pool_source_cap = self.config.search.pool_source_cap;
         let fused_depth = if pool_source_cap > 0 {
             vector_results.len() + fts_results.len()
         } else {
@@ -4260,6 +4308,40 @@ mod page_metadata_tests {
             snippet: format!("{source} chunk {chunk_index}"),
             source_index: "hybrid".to_string(),
         }
+    }
+
+    #[test]
+    fn crowded_files_are_excluded_from_the_extra_candidate_search() {
+        let hit = |source: &str| crate::storage::SearchHit {
+            id: Uuid::new_v4().to_string(),
+            doc_id: source.to_string(),
+            chunk_index: 0,
+            text: String::new(),
+            title: String::new(),
+            source: source.to_string(),
+            heading: String::new(),
+            space_id: String::new(),
+            metadata_json: String::new(),
+            citation_json: String::new(),
+            score: 0.5,
+        };
+        let hits = [
+            hit("survey.pdf"),
+            hit("thesis.pdf"),
+            hit("survey.pdf"),
+            hit("o'brien.pdf"),
+        ];
+        assert_eq!(crowded_sources(&hits, 2), ["survey.pdf"]);
+        assert_eq!(crowded_sources(&hits, 1).len(), 3);
+        assert!(crowded_sources(&hits, 3).is_empty());
+        assert_eq!(
+            excluding_sources(None, &["survey.pdf".to_string(), "o'brien.pdf".to_string()]),
+            "source NOT IN ('survey.pdf', 'o''brien.pdf')"
+        );
+        assert_eq!(
+            excluding_sources(Some("space_id = 'a'"), &["x.pdf".to_string()]),
+            "(space_id = 'a') AND source NOT IN ('x.pdf')"
+        );
     }
 
     #[test]

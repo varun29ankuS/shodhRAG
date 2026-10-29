@@ -1,0 +1,152 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (MEANDER: Episodic Memory Replay for Long Documents) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4137 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (MEANDER: Episodic Memory Replay for Long Documents) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Ruth Abebe, Daniel Szabo \(Kingsmoor Research\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (MEANDER stores a summary vector at every paragraph boundary and replays the 8 most similar) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (summaries before answering a question. Recent work has made the replay buffer a central) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (concern, because it decides how far long-term memory models can scale. Earlier long-term) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (memory methods improved the associative loss but left the memory slot unchanged.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Recent work has made the test-time update a central concern, because it decides how far) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (long-term memory models can scale. Earlier long-term memory methods improved the memory slot) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (but left the forgetting rate unchanged. Practitioners report that the forgetting rate is the) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (first component to fail on long inputs. This work studies MEANDER, a method that rethinks) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (the write policy.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Earlier long-term memory methods improved the retrieval key but left the forgetting rate) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (unchanged. This work studies MEANDER, a method that rethinks the replay buffer. Despite) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (steady progress, the interaction between the read gate and the test-time update is still) Tj ET
+BT /F1 10.0 Tf 72.00 454.00 Td (poorly understood.) Tj ET
+BT /F2 12.0 Tf 72.00 434.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (The results suggest that the segment summary is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (budget. A limitation of MEANDER is that the retrieval key must be tuned separately for each) Tj ET
+BT /F1 10.0 Tf 72.00 388.00 Td (model size.) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (The test-time update in MEANDER is parameterised by a small linear layer with 512 hidden) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (units. To keep training stable, MEANDER normalises the read gate before it is combined with) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (the associative loss. Unlike a recurrent baseline, MEANDER updates the forgetting rate only) Tj ET
+BT /F1 10.0 Tf 72.00 329.00 Td (when the test-time update changes.) Tj ET
+BT /F2 12.0 Tf 72.00 309.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 289.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (Summaries in MEANDER are the mean of the hidden states of a paragraph, projected to 256) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (dimensions. The associative loss is initialised so that MEANDER starts training close to a) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (memory-free model. To keep training stable, MEANDER normalises the associative loss before) Tj ET
+BT /F1 10.0 Tf 72.00 230.00 Td (it is combined with the write policy. MEANDER computes the write policy once per layer and) Tj ET
+BT /F1 10.0 Tf 72.00 217.00 Td (reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 150.00 197.00 Td (r = sum over the top 8 i of softmax\(q^T s_i\) s_i                 \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (Unlike a sliding-window Transformer, MEANDER updates the associative loss only when the read) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (gate changes. The read gate in MEANDER is parameterised by a small linear layer with 32) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (hidden units. MEANDER computes the forgetting rate once per layer and reuses it for every) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (head. During inference MEANDER caches the segment summary, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 123.00 Td (constant amount of work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4415 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (3.2 Implementation) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (We implement the memory slot as a fused kernel, which avoids writing intermediate results to) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (memory. Each block of MEANDER applies the memory capacity after a short convolution of width) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (7. Gradients through the read gate are clipped at a norm of 3.0. The segment summary in) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (MEANDER is parameterised by a small linear layer with 16 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 641.00 Td (The forgetting rate in MEANDER is parameterised by a small linear layer with 16 hidden) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (units. The associative loss is initialised so that MEANDER starts training close to a) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (recurrent baseline. Gradients through the test-time update are clipped at a norm of 5.0.) Tj ET
+BT /F2 12.0 Tf 72.00 595.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 575.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 555.00 Td (Ablating the associative loss lowers the BookQA score by 2.3 points, the largest drop among) Tj ET
+BT /F1 10.0 Tf 72.00 542.00 Td (all components. MEANDER scores 78.9% on BookQA, compared with 93.6% for a memory-free model.) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (On BookQA, MEANDER improves over a memory-free model by 4.9 points. Variance across seeds) Tj ET
+BT /F1 10.0 Tf 72.00 516.00 Td (stays below 0.2 points for every configuration we report.) Tj ET
+BT /F2 12.0 Tf 72.00 496.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 476.00 Td (Replay improves accuracy on the synthetic BookQA benchmark from 39.2% to 57.8%. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 463.00 Td (memory slot lowers the BookQA score by 3.7 points, the largest drop among all components.) Tj ET
+BT /F1 10.0 Tf 72.00 450.00 Td (With the forgetting rate frozen, MEANDER still recovers most of its improvement on BookQA.) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (On PassKey-Synth, MEANDER improves over a memory-free model by 4.9 points.) Tj ET
+BT /F1 10.0 Tf 72.00 417.00 Td (Throughput is measured with a batch size of 32 on a single accelerator. We train every model) Tj ET
+BT /F1 10.0 Tf 72.00 404.00 Td (for 90B tokens with the same data order and report the mean of three seeds. With the memory) Tj ET
+BT /F1 10.0 Tf 72.00 391.00 Td (capacity frozen, MEANDER still recovers most of its improvement on LongRecall.) Tj ET
+BT /F2 12.0 Tf 72.00 371.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 351.00 Td (Ablating the memory capacity lowers the PassKey-Synth score by 1.7 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 338.00 Td (among all components. We train every model for 30B tokens with the same data order and) Tj ET
+BT /F1 10.0 Tf 72.00 325.00 Td (report the mean of three seeds. With the write policy frozen, MEANDER still recovers most of) Tj ET
+BT /F1 10.0 Tf 72.00 312.00 Td (its improvement on PassKey-Synth. The gains of MEANDER grow with the input length, as the) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (read gate becomes the bottleneck.) Tj ET
+BT /F2 12.0 Tf 72.00 279.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 259.00 Td (The results suggest that the memory capacity is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 246.00 Td (budget. A limitation of MEANDER is that the forgetting rate must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 233.00 Td (each model size. We expect the memory capacity to interact with the memory slot at larger) Tj ET
+BT /F1 10.0 Tf 72.00 220.00 Td (scales, which we leave to future work. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (larger models may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 187.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 167.00 Td (The associative loss also makes MEANDER easier to inspect, since its behaviour can be read) Tj ET
+BT /F1 10.0 Tf 72.00 154.00 Td (off per token. We expect the segment summary to interact with the replay buffer at larger) Tj ET
+BT /F1 10.0 Tf 72.00 141.00 Td (scales, which we leave to future work. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 128.00 Td (larger models may behave differently.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1066 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] J. Jansen and G. Gallagher. Replay buffer for long-term memory models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (Efficient Computing, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] F. Fujita and N. Nakamura. Read gate for long-term memory models. arXiv preprint, 2019.) Tj ET
+BT /F1 9.0 Tf 72.00 663.00 Td ([3] W. Whitfield and R. Rossi. Write policy for long-term memory models. arXiv preprint, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 650.00 Td ([4] N. Nakamura and L. Laurent. Forgetting rate for long-term memory models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 639.00 Td (the Sequence Modelling Workshop, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 626.00 Td ([5] M. Moreau and M. Moreau. Test-time update for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 615.00 Td (Sequence Modelling Workshop, 2018.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000454 00000 n 
+0000000590 00000 n 
+0000004778 00000 n 
+0000004914 00000 n 
+0000009380 00000 n 
+0000009518 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10636
+%%EOF

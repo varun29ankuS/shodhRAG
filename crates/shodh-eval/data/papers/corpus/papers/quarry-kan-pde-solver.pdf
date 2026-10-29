@@ -1,0 +1,156 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (QUARRY: Kolmogorov-Arnold Networks as PDE Solvers) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4208 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (QUARRY: Kolmogorov-Arnold Networks as PDE Solvers) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Matteo Ricci, Yasmin Haddad \(Eastfield Applied Mathematics\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (QUARRY trains a Kolmogorov-Arnold network with a physics-informed loss that adds the squared) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (PDE residual at 4,096 collocation points. Practitioners report that the spline grid is the) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (first component to fail on long inputs. This work studies QUARRY, a method that rethinks the) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (univariate function.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (A practical system has to balance the cost of the basis function against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (univariate function. Recent work has made the collocation point a central concern, because) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (it decides how far Kolmogorov-Arnold network models can scale. We argue that the edge) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (function deserves as much attention as the univariate function. Earlier Kolmogorov-Arnold) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (network methods improved the spline grid but left the pruning threshold unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Most prior methods treat the pruning threshold as fixed and tune the symbolic formula around) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (it. Earlier Kolmogorov-Arnold network methods improved the spline grid but left the layer) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (width unchanged. Practitioners report that the grid interval is the first component to fail) Tj ET
+BT /F1 10.0 Tf 72.00 454.00 Td (on long inputs.) Tj ET
+BT /F2 12.0 Tf 72.00 434.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (A limitation of QUARRY is that the spline grid must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (We expect the layer width to interact with the edge function at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 388.00 Td (leave to future work.) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (The basis function in QUARRY is parameterised by a small linear layer with 64 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (Gradients through the univariate function are clipped at a norm of 5.0. A coefficient) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (controls how strongly the symbolic formula depends on the pruning threshold; we set it to) Tj ET
+BT /F1 10.0 Tf 72.00 329.00 Td (0.2 throughout.) Tj ET
+BT /F2 12.0 Tf 72.00 309.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 289.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (Boundary conditions in QUARRY are imposed exactly by multiplying the network output with a) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (function that vanishes on the boundary. Each block of QUARRY applies the basis function) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (after a short convolution of width 7. Gradients through the univariate function are clipped) Tj ET
+BT /F1 10.0 Tf 72.00 230.00 Td (at a norm of 8.0. A coefficient controls how strongly the residual activation depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 217.00 Td (symbolic formula; we set it to 0.8 throughout.) Tj ET
+BT /F1 10.0 Tf 150.00 197.00 Td (loss = mean_i \(Laplace u\(x_i\) - f\(x_i\)\)^2                       \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (We implement the symbolic formula as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (results to memory. A coefficient controls how strongly the spline grid depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (pruning threshold; we set it to 0.4 throughout. During inference QUARRY caches the symbolic) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (formula, so each new token costs a constant amount of work. QUARRY computes the collocation) Tj ET
+BT /F1 10.0 Tf 72.00 123.00 Td (point once per layer and reuses it for every head.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4537 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (3.2 Implementation) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (We implement the pruning threshold as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (results to memory. QUARRY computes the basis function once per layer and reuses it for every) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (head. A coefficient controls how strongly the edge function depends on the symbolic formula;) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (we set it to 0.9 throughout. The layer width is initialised so that QUARRY starts training) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (close to a fixed-grid KAN.) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (Unlike a fixed-grid KAN, QUARRY updates the spline grid only when the edge function changes.) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (To keep training stable, QUARRY normalises the grid interval before it is combined with the) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (pruning threshold. During inference QUARRY caches the grid interval, so each new token costs) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (a constant amount of work.) Tj ET
+BT /F2 12.0 Tf 72.00 569.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 549.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (Throughput is measured with a batch size of 16 on a single accelerator. QUARRY scores 64.5%) Tj ET
+BT /F1 10.0 Tf 72.00 516.00 Td (on a tabular regression suite, compared with 93.4% for an MLP. Variance across seeds stays) Tj ET
+BT /F1 10.0 Tf 72.00 503.00 Td (below 0.3 points for every configuration we report. The gains of QUARRY grow with the input) Tj ET
+BT /F1 10.0 Tf 72.00 490.00 Td (length, as the basis function becomes the bottleneck.) Tj ET
+BT /F2 12.0 Tf 72.00 470.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 450.00 Td (QUARRY solves the Poisson equation on the unit square with a relative L2 error of 3.4e-4.) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (Throughput is measured with a batch size of 16 on a single accelerator. QUARRY scores 45.9%) Tj ET
+BT /F1 10.0 Tf 72.00 424.00 Td (on a PDE suite, compared with 64.7% for a fixed-grid KAN. The gains of QUARRY grow with the) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (input length, as the layer width becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 391.00 Td (Variance across seeds stays below 0.9 points for every configuration we report. With the) Tj ET
+BT /F1 10.0 Tf 72.00 378.00 Td (layer width frozen, QUARRY still recovers most of its improvement on the Feynman equations.) Tj ET
+BT /F1 10.0 Tf 72.00 365.00 Td (Throughput is measured with a batch size of 32 on a single accelerator.) Tj ET
+BT /F2 12.0 Tf 72.00 345.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 325.00 Td (Variance across seeds stays below 0.8 points for every configuration we report. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 312.00 Td (spline grid lowers the a tabular regression suite score by 6.5 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (among all components. We train every model for 20B tokens with the same data order and) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (report the mean of three seeds. Throughput is measured with a batch size of 256 on a single) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (accelerator.) Tj ET
+BT /F2 12.0 Tf 72.00 253.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 233.00 Td (We expect the layer width to interact with the univariate function at larger scales, which) Tj ET
+BT /F1 10.0 Tf 72.00 220.00 Td (we leave to future work. The grid interval also makes QUARRY easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (behaviour can be read off per token. Combining QUARRY with methods that target the pruning) Tj ET
+BT /F1 10.0 Tf 72.00 194.00 Td (threshold is a promising direction. A limitation of QUARRY is that the residual activation) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (must be tuned separately for each model size.) Tj ET
+BT /F2 12.0 Tf 72.00 161.00 Td (6 Limitations) Tj ET
+BT /F1 10.0 Tf 72.00 141.00 Td (A limitation of QUARRY is that the layer width must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 128.00 Td (The layer width also makes QUARRY easier to inspect, since its behaviour can be read off per) Tj ET
+BT /F1 10.0 Tf 72.00 115.00 Td (token. We expect the pruning threshold to interact with the grid interval at larger scales,) Tj ET
+BT /F1 10.0 Tf 72.00 102.00 Td (which we leave to future work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1269 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 700.00 Td ([1] X. Xu and G. Gallagher. Basis function for Kolmogorov-Arnold network models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 689.00 Td (Efficient Computing, 2022.) Tj ET
+BT /F1 9.0 Tf 72.00 676.00 Td ([2] Z. Zielinski and B. Bergstrom. Spline grid for Kolmogorov-Arnold network models. In) Tj ET
+BT /F1 9.0 Tf 86.00 665.00 Td (Proceedings of the Sequence Modelling Workshop, 2023.) Tj ET
+BT /F1 9.0 Tf 72.00 652.00 Td ([3] B. Bergstrom and B. Bergstrom. Pruning threshold for Kolmogorov-Arnold network models. In) Tj ET
+BT /F1 9.0 Tf 86.00 641.00 Td (Proceedings of the Sequence Modelling Workshop, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 628.00 Td ([4] K. Kowalski and U. Ueda. Pruning threshold for Kolmogorov-Arnold network models. In) Tj ET
+BT /F1 9.0 Tf 86.00 617.00 Td (Proceedings of the Sequence Modelling Workshop, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 604.00 Td ([5] R. Rossi and C. Castillo. Symbolic formula for Kolmogorov-Arnold network models. In) Tj ET
+BT /F1 9.0 Tf 86.00 593.00 Td (Proceedings of the Sequence Modelling Workshop, 2017.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000453 00000 n 
+0000000589 00000 n 
+0000004848 00000 n 
+0000004984 00000 n 
+0000009572 00000 n 
+0000009710 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+11031
+%%EOF

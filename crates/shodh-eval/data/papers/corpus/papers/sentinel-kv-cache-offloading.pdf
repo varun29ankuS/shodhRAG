@@ -1,0 +1,157 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (SENTINEL: Offloading the KV Cache to Host Memory) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4081 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (SENTINEL: Offloading the KV Cache to Host Memory) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Grace Owusu, Pavel Novak \(Riverbend Systems\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (SENTINEL keeps the cache in host memory and prefetches the pages that the previous layer's) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (queries attended to most. Most prior methods treat the key-value cache as fixed and tune the) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (eviction score around it. Earlier KV cache compression methods improved the outlier channel) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (but left the head dimension unchanged.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Practitioners report that the head dimension is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (We argue that the quantization group deserves as much attention as the prefill stage. Most) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (prior methods treat the attention sink as fixed and tune the cache budget around it. A) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (practical system has to balance the cost of the key-value cache against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (quantization group.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Recent work has made the cache budget a central concern, because it decides how far KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (compression models can scale. We argue that the head dimension deserves as much attention as) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (the decoding step. This work studies SENTINEL, a method that rethinks the head dimension.) Tj ET
+BT /F2 12.0 Tf 72.00 447.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 427.00 Td (Combining SENTINEL with methods that target the cache budget is a promising direction. A) Tj ET
+BT /F1 10.0 Tf 72.00 414.00 Td (limitation of SENTINEL is that the cache page must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 394.00 Td (The cache budget in SENTINEL is parameterised by a small linear layer with 64 hidden units.) Tj ET
+BT /F1 10.0 Tf 72.00 381.00 Td (A coefficient controls how strongly the decoding step depends on the quantization group; we) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (set it to 0.8 throughout. Gradients through the outlier channel are clipped at a norm of) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (2.0.) Tj ET
+BT /F2 12.0 Tf 72.00 335.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 315.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 295.00 Td (Prefetching in SENTINEL overlaps the transfer of layer l + 1 with the attention of layer l,) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (hiding most of the transfer time. To keep training stable, SENTINEL normalises the) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (quantization group before it is combined with the eviction score. Unlike the full-precision) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (cache, SENTINEL updates the outlier channel only when the cache page changes. We implement) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (the attention sink as a fused kernel, which avoids writing intermediate results to memory.) Tj ET
+BT /F1 10.0 Tf 150.00 223.00 Td (pages\(l + 1\) = top_32 pages by sum of attention in layer l        \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (The attention sink in SENTINEL is parameterised by a small linear layer with 32 hidden) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (units. Gradients through the cache budget are clipped at a norm of 7.0. The outlier channel) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (is initialised so that SENTINEL starts training close to a recent-window policy. During) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (inference SENTINEL caches the quantization group, so each new token costs a constant amount) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (of work.) Tj ET
+BT /F2 12.0 Tf 72.00 129.00 Td (3.2 Implementation) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4228 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Unlike per-token quantization, SENTINEL updates the cache budget only when the cache page) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (changes. We implement the outlier channel as a fused kernel, which avoids writing) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (intermediate results to memory. The prefill stage is initialised so that SENTINEL starts) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (training close to a recent-window policy. Gradients through the prefill stage are clipped at) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (a norm of 9.0.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (The prefill stage is initialised so that SENTINEL starts training close to the) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (full-precision cache. To keep training stable, SENTINEL normalises the decoding step before) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (it is combined with the cache budget. We implement the eviction score as a fused kernel,) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (which avoids writing intermediate results to memory.) Tj ET
+BT /F2 12.0 Tf 72.00 589.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 569.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 549.00 Td (We train every model for 70B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (seeds. SENTINEL scores 59.7% on NeedleBench, compared with 72.2% for a recent-window policy.) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (The gains of SENTINEL grow with the input length, as the key-value cache becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (bottleneck. Ablating the cache budget lowers the NeedleBench score by 6.8 points, the) Tj ET
+BT /F1 10.0 Tf 72.00 497.00 Td (largest drop among all components.) Tj ET
+BT /F2 12.0 Tf 72.00 477.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 457.00 Td (SENTINEL serves 1M-token contexts on a single 24 GB GPU at 9.6 tokens per second. Ablating) Tj ET
+BT /F1 10.0 Tf 72.00 444.00 Td (the quantization group lowers the LongSuite score by 1.7 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 431.00 Td (components. Variance across seeds stays below 0.8 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 418.00 Td (With the eviction score frozen, SENTINEL still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 405.00 Td (RULER-Synth.) Tj ET
+BT /F1 10.0 Tf 72.00 385.00 Td (The gains of SENTINEL grow with the input length, as the prefill stage becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (bottleneck. With the eviction score frozen, SENTINEL still recovers most of its improvement) Tj ET
+BT /F1 10.0 Tf 72.00 359.00 Td (on RULER-Synth. We train every model for 90B tokens with the same data order and report the) Tj ET
+BT /F1 10.0 Tf 72.00 346.00 Td (mean of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 326.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (Ablating the eviction score lowers the NeedleBench score by 6.1 points, the largest drop) Tj ET
+BT /F1 10.0 Tf 72.00 293.00 Td (among all components. The gains of SENTINEL grow with the input length, as the prefill stage) Tj ET
+BT /F1 10.0 Tf 72.00 280.00 Td (becomes the bottleneck. Variance across seeds stays below 0.9 points for every configuration) Tj ET
+BT /F1 10.0 Tf 72.00 267.00 Td (we report. We train every model for 40B tokens with the same data order and report the mean) Tj ET
+BT /F1 10.0 Tf 72.00 254.00 Td (of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 234.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 214.00 Td (A limitation of SENTINEL is that the outlier channel must be tuned separately for each model) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (size. Combining SENTINEL with methods that target the cache page is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (The cache budget also makes SENTINEL easier to inspect, since its behaviour can be read off) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (per token. The results suggest that the cache page is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (budget.) Tj ET
+BT /F2 12.0 Tf 72.00 142.00 Td (6 Limitations) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1584 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (A limitation of SENTINEL is that the outlier channel must be tuned separately for each model) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (size. The results suggest that the head dimension is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (budget.) Tj ET
+BT /F2 12.0 Tf 72.00 661.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 641.00 Td ([1] E. Eriksen and N. Nakamura. Cache page for KV cache compression models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 630.00 Td (2022.) Tj ET
+BT /F1 9.0 Tf 72.00 617.00 Td ([2] A. Adeyemi and F. Fujita. Attention sink for KV cache compression models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 606.00 Td (2020.) Tj ET
+BT /F1 9.0 Tf 72.00 593.00 Td ([3] C. Castillo and Z. Zielinski. Cache budget for KV cache compression models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 582.00 Td (Efficient Computing, 2021.) Tj ET
+BT /F1 9.0 Tf 72.00 569.00 Td ([4] J. Jansen and Q. Quinn. Cache budget for KV cache compression models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 558.00 Td (Efficient Computing, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 545.00 Td ([5] J. Jansen and L. Laurent. Attention sink for KV cache compression models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 534.00 Td (the Learning Systems Conference, 2016.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000452 00000 n 
+0000000588 00000 n 
+0000004720 00000 n 
+0000004856 00000 n 
+0000009135 00000 n 
+0000009273 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10909
+%%EOF

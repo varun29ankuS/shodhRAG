@@ -1,0 +1,773 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R 12 0 R 14 0 R 16 0 R 18 0 R 20 0 R 22 0 R 24 0 R 26 0 R 28 0 R 30 0 R 32 0 R] /Count 14 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (Remembering at Scale: Memory Mechanisms for Long-Context Language Models) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4252 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (Remembering at Scale: Memory Mechanisms for Long-Context) Tj ET
+BT /F2 16.0 Tf 72.00 698.00 Td (Language Models) Tj ET
+BT /F1 10.0 Tf 72.00 672.00 Td (Hana Kowalczyk. Doctoral thesis, Department of Computing, Ashbury University) Tj ET
+BT /F2 12.0 Tf 72.00 642.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (In this thesis, a memory mechanism is any component that carries information from one token) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (to a later one without recomputing it. We study four kinds: recurrent states, learned) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (memories, compressed key-value caches and retrieval from an external index. The central) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (claim of this thesis is that write policies matter more than memory size: what a model) Tj ET
+BT /F1 10.0 Tf 72.00 570.00 Td (decides to store predicts its long-context accuracy better than how much it can store.) Tj ET
+BT /F2 12.0 Tf 72.00 550.00 Td (1 Recurrent States) Tj ET
+BT /F2 12.0 Tf 72.00 530.00 Td (1.1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (Most prior methods treat the state size as fixed and tune the decay gate around it. This) Tj ET
+BT /F1 10.0 Tf 72.00 497.00 Td (work studies linear attention, a method that rethinks the recurrent state. Recent work has) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (made the read-out projection a central concern, because it decides how far linear attention) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (models can scale. Earlier linear attention methods improved the outer-product write but left) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (the causal mask unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (We expect the causal mask to interact with the state size at larger scales, which we leave) Tj ET
+BT /F1 10.0 Tf 72.00 425.00 Td (to future work. Combining linear attention with methods that target the recurrent state is a) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (promising direction. Our analysis covers models up to 1.3B parameters, and larger models may) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (behave differently. The outer-product write also makes linear attention easier to inspect,) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (This work studies linear attention, a method that rethinks the associative recall. Recent) Tj ET
+BT /F1 10.0 Tf 72.00 353.00 Td (work has made the associative recall a central concern, because it decides how far linear) Tj ET
+BT /F1 10.0 Tf 72.00 340.00 Td (attention models can scale. A practical system has to balance the cost of the recurrent) Tj ET
+BT /F1 10.0 Tf 72.00 327.00 Td (state against the quality of the chunk-wise kernel. We argue that the outer-product write) Tj ET
+BT /F1 10.0 Tf 72.00 314.00 Td (deserves as much attention as the causal mask.) Tj ET
+BT /F1 10.0 Tf 72.00 294.00 Td (We expect the chunk-wise kernel to interact with the read-out projection at larger scales,) Tj ET
+BT /F1 10.0 Tf 72.00 281.00 Td (which we leave to future work. The results suggest that the chunk-wise kernel is the main) Tj ET
+BT /F1 10.0 Tf 72.00 268.00 Td (lever for quality at a fixed budget. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 255.00 Td (larger models may behave differently. Combining linear attention with methods that target) Tj ET
+BT /F1 10.0 Tf 72.00 242.00 Td (the decay gate is a promising direction.) Tj ET
+BT /F2 12.0 Tf 72.00 222.00 Td (1.2 Mechanisms) Tj ET
+BT /F1 10.0 Tf 72.00 202.00 Td (The key dimension in linear attention is parameterised by a small linear layer with 16) Tj ET
+BT /F1 10.0 Tf 72.00 189.00 Td (hidden units. During inference linear attention caches the feature map, so each new token) Tj ET
+BT /F1 10.0 Tf 72.00 176.00 Td (costs a constant amount of work. Linear attention computes the decay gate once per layer and) Tj ET
+BT /F1 10.0 Tf 72.00 163.00 Td (reuses it for every head. We implement the read-out projection as a fused kernel, which) Tj ET
+BT /F1 10.0 Tf 72.00 150.00 Td (avoids writing intermediate results to memory.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4065 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (To keep training stable, linear attention normalises the key dimension before it is combined) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (with the decay gate. Linear attention computes the decay gate once per layer and reuses it) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (for every head. Gradients through the causal mask are clipped at a norm of 2.0. A) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (coefficient controls how strongly the state size depends on the causal mask; we set it to) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (0.4 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (We implement the recurrent state as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (results to memory. Each block of linear attention applies the associative recall after a) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (short convolution of width 4. Unlike gated linear attention, linear attention updates the) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (decay gate only when the key dimension changes. During inference linear attention caches the) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (read-out projection, so each new token costs a constant amount of work.) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (A coefficient controls how strongly the key dimension depends on the state size; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (to 0.4 throughout. Each block of linear attention applies the chunk-wise kernel after a) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (short convolution of width 7. Gradients through the decay gate are clipped at a norm of 6.0.) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (The state size is initialised so that linear attention starts training close to a) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (Transformer++ baseline.) Tj ET
+BT /F2 12.0 Tf 72.00 504.00 Td (1.3 Methods compared in this chapter) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (We reproduce the reported result of Alder \(2021\): It reports a WikiText perplexity of 21.4) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (at 350M parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 451.00 Td (We reproduce the reported result of Basalt \(2022\): It reports a WikiText perplexity of 19.8) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (at 350M parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 418.00 Td (We reproduce the reported result of Cobalt \(2022\): Its authors measure a 1.9 times speedup) Tj ET
+BT /F1 10.0 Tf 72.00 405.00 Td (over softmax attention at 8K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 385.00 Td (We reproduce the reported result of Drift \(2023\): It improves MQAR recall by 6 points over) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (Alder.) Tj ET
+BT /F1 10.0 Tf 72.00 352.00 Td (We reproduce the reported result of Ember \(2023\): It reports a LAMBADA accuracy of 45.0 at) Tj ET
+BT /F1 10.0 Tf 72.00 339.00 Td (760M parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (We reproduce the reported result of Fennel \(2024\): It reaches a WikiText perplexity of 18.1) Tj ET
+BT /F1 10.0 Tf 72.00 306.00 Td (at 760M parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (We reproduce the reported result of Garnet \(2024\): It reports a WikiText perplexity of 17.6) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (at 1.3B parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 253.00 Td (We reproduce the reported result of Jasper \(2024\): It improves MQAR recall by 9 points over) Tj ET
+BT /F1 10.0 Tf 72.00 240.00 Td (Basalt.) Tj ET
+BT /F1 10.0 Tf 72.00 220.00 Td (We reproduce the reported result of Kestrel \(2024\): It trains 1.6 times faster than Fennel) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (at equal perplexity.) Tj ET
+BT /F1 10.0 Tf 72.00 187.00 Td (We reproduce the reported result of Lichen \(2025\): It reports a WikiText perplexity of 17.1) Tj ET
+BT /F1 10.0 Tf 72.00 174.00 Td (at 1.3B parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 154.00 Td (We reproduce the reported result of Moss \(2025\): It keeps 80% MQAR recall at 512 key-value) Tj ET
+BT /F1 10.0 Tf 72.00 141.00 Td (pairs.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 4967 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (1.4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (The gains of linear attention grow with the input length, as the state size becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (bottleneck. We train every model for 20B tokens with the same data order and report the mean) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (of three seeds. Ablating the read-out projection lowers the MQAR score by 3.1 points, the) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (largest drop among all components. Throughput is measured with a batch size of 128 on a) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (single accelerator.) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (The gains of linear attention grow with the input length, as the outer-product write becomes) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (the bottleneck. We train every model for 50B tokens with the same data order and report the) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (mean of three seeds. Linear attention scores 44.5% on WikiText, compared with 80.6% for) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (gated linear attention. Variance across seeds stays below 0.4 points for every configuration) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (we report.) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (Ablating the chunk-wise kernel lowers the MQAR score by 4.9 points, the largest drop among) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (all components. Throughput is measured with a batch size of 128 on a single accelerator. We) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (train every model for 70B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (seeds. The gains of linear attention grow with the input length, as the state size becomes) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (Linear attention scores 57.1% on WikiText, compared with 90.9% for gated linear attention.) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (With the feature map frozen, linear attention still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (MQAR. We train every model for 30B tokens with the same data order and report the mean of) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (three seeds. Throughput is measured with a batch size of 128 on a single accelerator.) Tj ET
+BT /F2 12.0 Tf 72.00 425.00 Td (1.5 Summary) Tj ET
+BT /F1 10.0 Tf 72.00 405.00 Td (A limitation of linear attention is that the causal mask must be tuned separately for each) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (model size. Combining linear attention with methods that target the key dimension is a) Tj ET
+BT /F1 10.0 Tf 72.00 379.00 Td (promising direction. The results suggest that the chunk-wise kernel is the main lever for) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (quality at a fixed budget. Our analysis covers models up to 1.3B parameters, and larger) Tj ET
+BT /F1 10.0 Tf 72.00 353.00 Td (models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 333.00 Td (The results suggest that the key dimension is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 320.00 Td (The feature map also makes linear attention easier to inspect, since its behaviour can be) Tj ET
+BT /F1 10.0 Tf 72.00 307.00 Td (read off per token. Combining linear attention with methods that target the key dimension is) Tj ET
+BT /F1 10.0 Tf 72.00 294.00 Td (a promising direction. Our analysis covers models up to 1.3B parameters, and larger models) Tj ET
+BT /F1 10.0 Tf 72.00 281.00 Td (may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 261.00 Td (2 Learned Memories) Tj ET
+BT /F2 12.0 Tf 72.00 241.00 Td (2.1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 221.00 Td (Practitioners report that the forgetting rate is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 208.00 Td (A practical system has to balance the cost of the write policy against the quality of the) Tj ET
+BT /F1 10.0 Tf 72.00 195.00 Td (test-time update. Earlier long-term memory methods improved the memory slot but left the) Tj ET
+BT /F1 10.0 Tf 72.00 182.00 Td (associative loss unchanged. Despite steady progress, the interaction between the forgetting) Tj ET
+BT /F1 10.0 Tf 72.00 169.00 Td (rate and the write policy is still poorly understood.) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (We expect the read gate to interact with the segment summary at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 123.00 Td (leave to future work. Combining long-term memory with methods that target the associative) Tj ET
+BT /F1 10.0 Tf 72.00 110.00 Td (loss is a promising direction. A limitation of long-term memory is that the write policy) Tj ET
+BT /F1 10.0 Tf 72.00 97.00 Td (must be tuned separately for each model size.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
+<< /Length 4965 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Earlier long-term memory methods improved the write policy but left the segment summary) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (unchanged. Recent work has made the replay buffer a central concern, because it decides how) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (far long-term memory models can scale. This work studies long-term memory, a method that) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (rethinks the forgetting rate. Despite steady progress, the interaction between the test-time) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (update and the replay buffer is still poorly understood.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (The results suggest that the memory slot is the main lever for quality at a fixed budget. We) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (expect the associative loss to interact with the forgetting rate at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (leave to future work. A limitation of long-term memory is that the write policy must be) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (tuned separately for each model size. Combining long-term memory with methods that target) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (the replay buffer is a promising direction.) Tj ET
+BT /F2 12.0 Tf 72.00 576.00 Td (2.2 Mechanisms) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (Gradients through the replay buffer are clipped at a norm of 5.0. The replay buffer is) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (initialised so that long-term memory starts training close to a sliding-window Transformer.) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (To keep training stable, long-term memory normalises the write policy before it is combined) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (with the segment summary. Each block of long-term memory applies the test-time update after) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (a short convolution of width 6.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (To keep training stable, long-term memory normalises the test-time update before it is) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (combined with the memory capacity. We implement the memory slot as a fused kernel, which) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (avoids writing intermediate results to memory. Unlike a sliding-window Transformer,) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (long-term memory updates the retrieval key only when the segment summary changes. A) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (coefficient controls how strongly the retrieval key depends on the read gate; we set it to) Tj ET
+BT /F1 10.0 Tf 72.00 419.00 Td (0.6 throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (The segment summary in long-term memory is parameterised by a small linear layer with 256) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (hidden units. The test-time update is initialised so that long-term memory starts training) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (close to a sliding-window Transformer. During inference long-term memory caches the) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (forgetting rate, so each new token costs a constant amount of work. We implement the segment) Tj ET
+BT /F1 10.0 Tf 72.00 347.00 Td (summary as a fused kernel, which avoids writing intermediate results to memory.) Tj ET
+BT /F1 10.0 Tf 72.00 327.00 Td (A coefficient controls how strongly the segment summary depends on the test-time update; we) Tj ET
+BT /F1 10.0 Tf 72.00 314.00 Td (set it to 0.8 throughout. During inference long-term memory caches the replay buffer, so) Tj ET
+BT /F1 10.0 Tf 72.00 301.00 Td (each new token costs a constant amount of work. We implement the replay buffer as a fused) Tj ET
+BT /F1 10.0 Tf 72.00 288.00 Td (kernel, which avoids writing intermediate results to memory. To keep training stable,) Tj ET
+BT /F1 10.0 Tf 72.00 275.00 Td (long-term memory normalises the memory capacity before it is combined with the write policy.) Tj ET
+BT /F2 12.0 Tf 72.00 255.00 Td (2.3 Methods compared in this chapter) Tj ET
+BT /F1 10.0 Tf 72.00 235.00 Td (We reproduce the reported result of Heron \(2020\): It improves LongRecall accuracy at 64K) Tj ET
+BT /F1 10.0 Tf 72.00 222.00 Td (tokens to 35.0%.) Tj ET
+BT /F1 10.0 Tf 72.00 202.00 Td (We reproduce the reported result of Iris \(2021\): It reports 28.4% LongRecall accuracy at 64K) Tj ET
+BT /F1 10.0 Tf 72.00 189.00 Td (tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 169.00 Td (We reproduce the reported result of Juniper \(2022\): It is 1.2 times slower than a) Tj ET
+BT /F1 10.0 Tf 72.00 156.00 Td (Transformer at 4K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (We reproduce the reported result of Kelp \(2023\): It keeps 90% recall up to 128K tokens on) Tj ET
+BT /F1 10.0 Tf 72.00 123.00 Td (its own benchmark.) Tj ET
+BT /F1 10.0 Tf 72.00 103.00 Td (We reproduce the reported result of Larch \(2023\): It reports 41.7% LongRecall accuracy at) Tj ET
+BT /F1 10.0 Tf 72.00 90.00 Td (64K tokens.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (4) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 15 0 R >>
+endobj
+15 0 obj
+<< /Length 4248 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (We reproduce the reported result of Marrow \(2024\): It reaches a WikiText perplexity of 18.9) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (at 760M parameters.) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (We reproduce the reported result of Nimbus \(2024\): It halves the number of memory writes) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (with no loss in recall.) Tj ET
+BT /F1 10.0 Tf 72.00 654.00 Td (We reproduce the reported result of Nettle \(2024\): It reports 44.9% LongRecall accuracy at) Tj ET
+BT /F1 10.0 Tf 72.00 641.00 Td (64K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 621.00 Td (We reproduce the reported result of Osprey \(2025\): It reports 63.0% LongRecall accuracy at) Tj ET
+BT /F1 10.0 Tf 72.00 608.00 Td (64K tokens.) Tj ET
+BT /F1 10.0 Tf 72.00 588.00 Td (We reproduce the reported result of Plover \(2025\): It keeps 85% recall up to one million) Tj ET
+BT /F1 10.0 Tf 72.00 575.00 Td (tokens on its own benchmark.) Tj ET
+BT /F1 10.0 Tf 72.00 555.00 Td (We reproduce the reported result of Quartz \(2025\): It uses 30% fewer parameters than a) Tj ET
+BT /F1 10.0 Tf 72.00 542.00 Td (per-layer memory of equal recall.) Tj ET
+BT /F2 12.0 Tf 72.00 522.00 Td (2.4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 502.00 Td (We train every model for 30B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 489.00 Td (seeds. With the memory capacity frozen, long-term memory still recovers most of its) Tj ET
+BT /F1 10.0 Tf 72.00 476.00 Td (improvement on PassKey-Synth. Throughput is measured with a batch size of 128 on a single) Tj ET
+BT /F1 10.0 Tf 72.00 463.00 Td (accelerator. Variance across seeds stays below 0.5 points for every configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 443.00 Td (Ablating the write policy lowers the LongRecall score by 6.5 points, the largest drop among) Tj ET
+BT /F1 10.0 Tf 72.00 430.00 Td (all components. Variance across seeds stays below 0.5 points for every configuration we) Tj ET
+BT /F1 10.0 Tf 72.00 417.00 Td (report. Long-term memory scores 65.3% on PassKey-Synth, compared with 86.7% for a) Tj ET
+BT /F1 10.0 Tf 72.00 404.00 Td (sliding-window Transformer. With the segment summary frozen, long-term memory still recovers) Tj ET
+BT /F1 10.0 Tf 72.00 391.00 Td (most of its improvement on LongRecall.) Tj ET
+BT /F1 10.0 Tf 72.00 371.00 Td (Variance across seeds stays below 0.9 points for every configuration we report. With the) Tj ET
+BT /F1 10.0 Tf 72.00 358.00 Td (forgetting rate frozen, long-term memory still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 345.00 Td (PassKey-Synth. On PassKey-Synth, long-term memory improves over a sliding-window Transformer) Tj ET
+BT /F1 10.0 Tf 72.00 332.00 Td (by 6.2 points. We train every model for 20B tokens with the same data order and report the) Tj ET
+BT /F1 10.0 Tf 72.00 319.00 Td (mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (Long-term memory scores 94.5% on PassKey-Synth, compared with 86.3% for a sliding-window) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (Transformer. We train every model for 40B tokens with the same data order and report the) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (mean of three seeds. The gains of long-term memory grow with the input length, as the) Tj ET
+BT /F1 10.0 Tf 72.00 260.00 Td (associative loss becomes the bottleneck. Throughput is measured with a batch size of 512 on) Tj ET
+BT /F1 10.0 Tf 72.00 247.00 Td (a single accelerator.) Tj ET
+BT /F2 12.0 Tf 72.00 227.00 Td (2.5 Summary) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (We expect the test-time update to interact with the replay buffer at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 194.00 Td (leave to future work. The read gate also makes long-term memory easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (behaviour can be read off per token. Our analysis covers models up to 1.3B parameters, and) Tj ET
+BT /F1 10.0 Tf 72.00 168.00 Td (larger models may behave differently. The results suggest that the segment summary is the) Tj ET
+BT /F1 10.0 Tf 72.00 155.00 Td (main lever for quality at a fixed budget.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (5) Tj ET
+endstream
+endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 17 0 R >>
+endobj
+17 0 obj
+<< /Length 5233 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (The results suggest that the memory capacity is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (budget. A limitation of long-term memory is that the read gate must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (each model size. Combining long-term memory with methods that target the forgetting rate is) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (a promising direction. Our analysis covers models up to 1.3B parameters, and larger models) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 648.00 Td (3 Compressed Key-Value Caches) Tj ET
+BT /F2 12.0 Tf 72.00 628.00 Td (3.1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 608.00 Td (This work studies KV cache compression, a method that rethinks the quantization group. Most) Tj ET
+BT /F1 10.0 Tf 72.00 595.00 Td (prior methods treat the head dimension as fixed and tune the attention sink around it.) Tj ET
+BT /F1 10.0 Tf 72.00 582.00 Td (Recent work has made the decoding step a central concern, because it decides how far KV) Tj ET
+BT /F1 10.0 Tf 72.00 569.00 Td (cache compression models can scale. Despite steady progress, the interaction between the) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (cache budget and the prefill stage is still poorly understood.) Tj ET
+BT /F1 10.0 Tf 72.00 536.00 Td (The results suggest that the key-value cache is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (budget. A limitation of KV cache compression is that the eviction score must be tuned) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (separately for each model size. We expect the attention sink to interact with the key-value) Tj ET
+BT /F1 10.0 Tf 72.00 497.00 Td (cache at larger scales, which we leave to future work. The cache page also makes KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (compression easier to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 464.00 Td (Recent work has made the quantization group a central concern, because it decides how far KV) Tj ET
+BT /F1 10.0 Tf 72.00 451.00 Td (cache compression models can scale. Most prior methods treat the cache page as fixed and) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (tune the head dimension around it. Earlier KV cache compression methods improved the) Tj ET
+BT /F1 10.0 Tf 72.00 425.00 Td (decoding step but left the cache budget unchanged. Despite steady progress, the interaction) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (between the prefill stage and the head dimension is still poorly understood.) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (We expect the key-value cache to interact with the head dimension at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 379.00 Td (leave to future work. A limitation of KV cache compression is that the cache page must be) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (tuned separately for each model size. The results suggest that the cache budget is the main) Tj ET
+BT /F1 10.0 Tf 72.00 353.00 Td (lever for quality at a fixed budget. Combining KV cache compression with methods that target) Tj ET
+BT /F1 10.0 Tf 72.00 340.00 Td (the key-value cache is a promising direction.) Tj ET
+BT /F2 12.0 Tf 72.00 320.00 Td (3.2 Mechanisms) Tj ET
+BT /F1 10.0 Tf 72.00 300.00 Td (The head dimension is initialised so that KV cache compression starts training close to a) Tj ET
+BT /F1 10.0 Tf 72.00 287.00 Td (recent-window policy. During inference KV cache compression caches the cache page, so each) Tj ET
+BT /F1 10.0 Tf 72.00 274.00 Td (new token costs a constant amount of work. Gradients through the key-value cache are clipped) Tj ET
+BT /F1 10.0 Tf 72.00 261.00 Td (at a norm of 5.0. KV cache compression computes the outlier channel once per layer and) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 72.00 228.00 Td (We implement the key-value cache as a fused kernel, which avoids writing intermediate) Tj ET
+BT /F1 10.0 Tf 72.00 215.00 Td (results to memory. The key-value cache is initialised so that KV cache compression starts) Tj ET
+BT /F1 10.0 Tf 72.00 202.00 Td (training close to a recent-window policy. Unlike a recent-window policy, KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 189.00 Td (compression updates the cache budget only when the key-value cache changes. A coefficient) Tj ET
+BT /F1 10.0 Tf 72.00 176.00 Td (controls how strongly the prefill stage depends on the quantization group; we set it to 0.9) Tj ET
+BT /F1 10.0 Tf 72.00 163.00 Td (throughout.) Tj ET
+BT /F1 10.0 Tf 72.00 143.00 Td (The cache page is initialised so that KV cache compression starts training close to the) Tj ET
+BT /F1 10.0 Tf 72.00 130.00 Td (full-precision cache. KV cache compression computes the key-value cache once per layer and) Tj ET
+BT /F1 10.0 Tf 72.00 117.00 Td (reuses it for every head. A coefficient controls how strongly the key-value cache depends on) Tj ET
+BT /F1 10.0 Tf 72.00 104.00 Td (the head dimension; we set it to 0.7 throughout. Gradients through the quantization group) Tj ET
+BT /F1 10.0 Tf 72.00 91.00 Td (are clipped at a norm of 3.0.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (6) Tj ET
+endstream
+endobj
+18 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 19 0 R >>
+endobj
+19 0 obj
+<< /Length 4390 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (The attention sink is initialised so that KV cache compression starts training close to a) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (recent-window policy. The eviction score in KV cache compression is parameterised by a small) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (linear layer with 128 hidden units. We implement the cache page as a fused kernel, which) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (avoids writing intermediate results to memory. KV cache compression computes the eviction) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (score once per layer and reuses it for every head.) Tj ET
+BT /F2 12.0 Tf 72.00 648.00 Td (3.3 Methods compared in this chapter) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (We reproduce the reported result of Opal \(2022\): It halves cache memory with no measurable) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (accuracy loss.) Tj ET
+BT /F1 10.0 Tf 72.00 595.00 Td (We reproduce the reported result of Pumice \(2023\): It reduces cache memory by 3.6 times.) Tj ET
+BT /F1 10.0 Tf 72.00 575.00 Td (We reproduce the reported result of Quill \(2023\): It loses 1.1 points on LongSuite at three) Tj ET
+BT /F1 10.0 Tf 72.00 562.00 Td (bits.) Tj ET
+BT /F1 10.0 Tf 72.00 542.00 Td (We reproduce the reported result of Ripple \(2024\): It reduces cache memory by 4.4 times with) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (a loss of 0.9 points on LongSuite.) Tj ET
+BT /F1 10.0 Tf 72.00 509.00 Td (We reproduce the reported result of Sorrel \(2024\): It reduces cache memory by 6.0 times.) Tj ET
+BT /F1 10.0 Tf 72.00 489.00 Td (We reproduce the reported result of Tamarind \(2024\): It reaches 1.5 bits per number with a) Tj ET
+BT /F1 10.0 Tf 72.00 476.00 Td (loss of 2.3 points.) Tj ET
+BT /F1 10.0 Tf 72.00 456.00 Td (We reproduce the reported result of Umber \(2025\): It loses 0.6 points on LongSuite at an) Tj ET
+BT /F1 10.0 Tf 72.00 443.00 Td (average of 2.5 bits.) Tj ET
+BT /F1 10.0 Tf 72.00 423.00 Td (We reproduce the reported result of Velvet \(2025\): It reduces cache memory by 4.8 times.) Tj ET
+BT /F1 10.0 Tf 72.00 403.00 Td (We reproduce the reported result of Willow \(2025\): It loses 0.5 points on LongSuite.) Tj ET
+BT /F1 10.0 Tf 72.00 383.00 Td (We reproduce the reported result of Yew \(2025\): It reduces cache memory by 7.1 times with a) Tj ET
+BT /F1 10.0 Tf 72.00 370.00 Td (loss of 1.8 points.) Tj ET
+BT /F1 10.0 Tf 72.00 350.00 Td (We reproduce the reported result of Zinnia \(2025\): It reaches an average of 2.2 bits per) Tj ET
+BT /F1 10.0 Tf 72.00 337.00 Td (number.) Tj ET
+BT /F2 12.0 Tf 72.00 317.00 Td (3.4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 297.00 Td (KV cache compression scores 79.1% on LongSuite, compared with 86.5% for a recent-window) Tj ET
+BT /F1 10.0 Tf 72.00 284.00 Td (policy. Throughput is measured with a batch size of 512 on a single accelerator. With the) Tj ET
+BT /F1 10.0 Tf 72.00 271.00 Td (prefill stage frozen, KV cache compression still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 258.00 Td (RULER-Synth. The gains of KV cache compression grow with the input length, as the) Tj ET
+BT /F1 10.0 Tf 72.00 245.00 Td (quantization group becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 225.00 Td (Variance across seeds stays below 0.2 points for every configuration we report. KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 212.00 Td (compression scores 59.2% on NeedleBench, compared with 93.5% for per-token quantization. We) Tj ET
+BT /F1 10.0 Tf 72.00 199.00 Td (train every model for 30B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 186.00 Td (seeds. Throughput is measured with a batch size of 512 on a single accelerator.) Tj ET
+BT /F1 10.0 Tf 72.00 166.00 Td (With the cache page frozen, KV cache compression still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 153.00 Td (LongSuite. KV cache compression scores 84.6% on LongSuite, compared with 92.6% for per-token) Tj ET
+BT /F1 10.0 Tf 72.00 140.00 Td (quantization. Variance across seeds stays below 0.8 points for every configuration we) Tj ET
+BT /F1 10.0 Tf 72.00 127.00 Td (report. Ablating the outlier channel lowers the NeedleBench score by 4.4 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 114.00 Td (drop among all components.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (7) Tj ET
+endstream
+endobj
+20 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 21 0 R >>
+endobj
+21 0 obj
+<< /Length 4543 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (On NeedleBench, KV cache compression improves over a recent-window policy by 2.8 points.) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (Throughput is measured with a batch size of 16 on a single accelerator. The gains of KV) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (cache compression grow with the input length, as the head dimension becomes the bottleneck.) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (We train every model for 70B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 648.00 Td (3.5 Summary) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (The quantization group also makes KV cache compression easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (behaviour can be read off per token. A limitation of KV cache compression is that the) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (attention sink must be tuned separately for each model size. Combining KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (with methods that target the cache budget is a promising direction. Our analysis covers) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (We expect the head dimension to interact with the eviction score at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (leave to future work. The quantization group also makes KV cache compression easier to) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (inspect, since its behaviour can be read off per token. A limitation of KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (is that the attention sink must be tuned separately for each model size.) Tj ET
+BT /F2 12.0 Tf 72.00 484.00 Td (4 Evicting Cached Tokens) Tj ET
+BT /F2 12.0 Tf 72.00 464.00 Td (4.1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 444.00 Td (Most prior methods treat the outlier channel as fixed and tune the key-value cache around) Tj ET
+BT /F1 10.0 Tf 72.00 431.00 Td (it. This work studies KV cache compression, a method that rethinks the prefill stage. We) Tj ET
+BT /F1 10.0 Tf 72.00 418.00 Td (argue that the decoding step deserves as much attention as the head dimension. Despite) Tj ET
+BT /F1 10.0 Tf 72.00 405.00 Td (steady progress, the interaction between the decoding step and the head dimension is still) Tj ET
+BT /F1 10.0 Tf 72.00 392.00 Td (poorly understood.) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (The results suggest that the cache budget is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 359.00 Td (Combining KV cache compression with methods that target the head dimension is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 346.00 Td (direction. We expect the outlier channel to interact with the prefill stage at larger) Tj ET
+BT /F1 10.0 Tf 72.00 333.00 Td (scales, which we leave to future work. The head dimension also makes KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 320.00 Td (easier to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 300.00 Td (We argue that the cache page deserves as much attention as the prefill stage. Most prior) Tj ET
+BT /F1 10.0 Tf 72.00 287.00 Td (methods treat the key-value cache as fixed and tune the attention sink around it. Despite) Tj ET
+BT /F1 10.0 Tf 72.00 274.00 Td (steady progress, the interaction between the attention sink and the eviction score is still) Tj ET
+BT /F1 10.0 Tf 72.00 261.00 Td (poorly understood. Practitioners report that the quantization group is the first component) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 228.00 Td (The cache page also makes KV cache compression easier to inspect, since its behaviour can be) Tj ET
+BT /F1 10.0 Tf 72.00 215.00 Td (read off per token. Combining KV cache compression with methods that target the outlier) Tj ET
+BT /F1 10.0 Tf 72.00 202.00 Td (channel is a promising direction. The results suggest that the quantization group is the) Tj ET
+BT /F1 10.0 Tf 72.00 189.00 Td (main lever for quality at a fixed budget. Our analysis covers models up to 1.3B parameters,) Tj ET
+BT /F1 10.0 Tf 72.00 176.00 Td (and larger models may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 156.00 Td (4.2 Mechanisms) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (8) Tj ET
+endstream
+endobj
+22 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 23 0 R >>
+endobj
+23 0 obj
+<< /Length 4589 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (KV cache compression computes the decoding step once per layer and reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (The cache budget in KV cache compression is parameterised by a small linear layer with 16) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (hidden units. To keep training stable, KV cache compression normalises the head dimension) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (before it is combined with the quantization group. We implement the head dimension as a) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (fused kernel, which avoids writing intermediate results to memory.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (During inference KV cache compression caches the outlier channel, so each new token costs a) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (constant amount of work. Each block of KV cache compression applies the decoding step after) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (a short convolution of width 8. Unlike a recent-window policy, KV cache compression updates) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (the outlier channel only when the key-value cache changes. The cache page is initialised so) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (that KV cache compression starts training close to the full-precision cache.) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (To keep training stable, KV cache compression normalises the quantization group before it is) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (combined with the prefill stage. Each block of KV cache compression applies the cache budget) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (after a short convolution of width 6. KV cache compression computes the cache page once per) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (layer and reuses it for every head. The cache page is initialised so that KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (compression starts training close to per-token quantization.) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (A coefficient controls how strongly the decoding step depends on the cache page; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 491.00 Td (to 0.2 throughout. KV cache compression computes the cache page once per layer and reuses it) Tj ET
+BT /F1 10.0 Tf 72.00 478.00 Td (for every head. During inference KV cache compression caches the prefill stage, so each new) Tj ET
+BT /F1 10.0 Tf 72.00 465.00 Td (token costs a constant amount of work. The eviction score is initialised so that KV cache) Tj ET
+BT /F1 10.0 Tf 72.00 452.00 Td (compression starts training close to a recent-window policy.) Tj ET
+BT /F2 12.0 Tf 72.00 432.00 Td (4.3 Methods compared in this chapter) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (We reproduce the reported result of Vetch \(2022\): It keeps 81% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (50% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 379.00 Td (We reproduce the reported result of Wren \(2023\): It keeps 72% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 366.00 Td (20% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 346.00 Td (We reproduce the reported result of Xylem \(2023\): It keeps 93% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 333.00 Td (20% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 313.00 Td (We reproduce the reported result of Yarrow \(2024\): It keeps 95% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 300.00 Td (15% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 280.00 Td (We reproduce the reported result of Zephyr \(2024\): It keeps 96% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 267.00 Td (10% budget on retrieval tasks.) Tj ET
+BT /F1 10.0 Tf 72.00 247.00 Td (We reproduce the reported result of Aster \(2025\): It recovers 99% of full-cache accuracy at) Tj ET
+BT /F1 10.0 Tf 72.00 234.00 Td (a 10% GPU budget.) Tj ET
+BT /F1 10.0 Tf 72.00 214.00 Td (We reproduce the reported result of Bracken \(2025\): It keeps 97% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 201.00 Td (15% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (We reproduce the reported result of Cedar \(2025\): It keeps 94% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 168.00 Td (20% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 148.00 Td (We reproduce the reported result of Dahlia \(2025\): It keeps 96% of full-cache accuracy at a) Tj ET
+BT /F1 10.0 Tf 72.00 135.00 Td (15% budget.) Tj ET
+BT /F1 10.0 Tf 72.00 115.00 Td (We reproduce the reported result of Elm \(2025\): It keeps 95% of full-cache accuracy at an) Tj ET
+BT /F1 10.0 Tf 72.00 102.00 Td (average budget of 12%.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (9) Tj ET
+endstream
+endobj
+24 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 25 0 R >>
+endobj
+25 0 obj
+<< /Length 4669 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (We reproduce the reported result of Fern \(2025\): It decodes 1.3 times faster than per-step) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (scoring at equal accuracy.) Tj ET
+BT /F2 12.0 Tf 72.00 687.00 Td (4.4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 667.00 Td (Variance across seeds stays below 0.2 points for every configuration we report. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 654.00 Td (key-value cache lowers the LongSuite score by 5.6 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 641.00 Td (components. Throughput is measured with a batch size of 256 on a single accelerator. KV) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (cache compression scores 40.1% on RULER-Synth, compared with 89.8% for a recent-window) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (policy.) Tj ET
+BT /F1 10.0 Tf 72.00 595.00 Td (Throughput is measured with a batch size of 512 on a single accelerator. With the key-value) Tj ET
+BT /F1 10.0 Tf 72.00 582.00 Td (cache frozen, KV cache compression still recovers most of its improvement on LongSuite. The) Tj ET
+BT /F1 10.0 Tf 72.00 569.00 Td (gains of KV cache compression grow with the input length, as the eviction score becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (bottleneck. Ablating the outlier channel lowers the LongSuite score by 3.7 points, the) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (largest drop among all components.) Tj ET
+BT /F1 10.0 Tf 72.00 523.00 Td (KV cache compression scores 40.5% on NeedleBench, compared with 46.8% for per-token) Tj ET
+BT /F1 10.0 Tf 72.00 510.00 Td (quantization. Throughput is measured with a batch size of 16 on a single accelerator. We) Tj ET
+BT /F1 10.0 Tf 72.00 497.00 Td (train every model for 30B tokens with the same data order and report the mean of three) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (seeds. Ablating the key-value cache lowers the RULER-Synth score by 3.8 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (drop among all components.) Tj ET
+BT /F1 10.0 Tf 72.00 451.00 Td (On LongSuite, KV cache compression improves over per-token quantization by 4.8 points.) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (Throughput is measured with a batch size of 16 on a single accelerator. Variance across) Tj ET
+BT /F1 10.0 Tf 72.00 425.00 Td (seeds stays below 0.2 points for every configuration we report. We train every model for 20B) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (tokens with the same data order and report the mean of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 392.00 Td (4.5 Summary) Tj ET
+BT /F1 10.0 Tf 72.00 372.00 Td (Combining KV cache compression with methods that target the outlier channel is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 359.00 Td (direction. A limitation of KV cache compression is that the attention sink must be tuned) Tj ET
+BT /F1 10.0 Tf 72.00 346.00 Td (separately for each model size. The results suggest that the attention sink is the main) Tj ET
+BT /F1 10.0 Tf 72.00 333.00 Td (lever for quality at a fixed budget. The eviction score also makes KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 320.00 Td (easier to inspect, since its behaviour can be read off per token.) Tj ET
+BT /F1 10.0 Tf 72.00 300.00 Td (A limitation of KV cache compression is that the decoding step must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 287.00 Td (each model size. We expect the quantization group to interact with the cache page at larger) Tj ET
+BT /F1 10.0 Tf 72.00 274.00 Td (scales, which we leave to future work. The attention sink also makes KV cache compression) Tj ET
+BT /F1 10.0 Tf 72.00 261.00 Td (easier to inspect, since its behaviour can be read off per token. The results suggest that) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (the quantization group is the main lever for quality at a fixed budget.) Tj ET
+BT /F2 12.0 Tf 72.00 228.00 Td (5 Retrieval from an External Index) Tj ET
+BT /F2 12.0 Tf 72.00 208.00 Td (5.1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (Practitioners report that the context window is the first component to fail on long inputs.) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (Despite steady progress, the interaction between the dense embedding and the chunk size is) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (still poorly understood. Recent work has made the query rewrite a central concern, because) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (it decides how far retrieval-augmented generation models can scale. This work studies) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (retrieval-augmented generation, a method that rethinks the grounding check.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (10) Tj ET
+endstream
+endobj
+26 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 27 0 R >>
+endobj
+27 0 obj
+<< /Length 5302 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (Combining retrieval-augmented generation with methods that target the passage index is a) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (promising direction. A limitation of retrieval-augmented generation is that the passage) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (index must be tuned separately for each model size. The context window also makes) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (retrieval-augmented generation easier to inspect, since its behaviour can be read off per) Tj ET
+BT /F1 10.0 Tf 72.00 655.00 Td (token.) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (Earlier retrieval-augmented generation methods improved the citation but left the dense) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (embedding unchanged. A practical system has to balance the cost of the keyword index against) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (the quality of the grounding check. Despite steady progress, the interaction between the) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (keyword index and the retriever is still poorly understood. This work studies) Tj ET
+BT /F1 10.0 Tf 72.00 583.00 Td (retrieval-augmented generation, a method that rethinks the chunk size.) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (A limitation of retrieval-augmented generation is that the reranker must be tuned separately) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (for each model size. We expect the passage index to interact with the citation at larger) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (scales, which we leave to future work. The results suggest that the keyword index is the) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (main lever for quality at a fixed budget. Our analysis covers models up to 1.3B parameters,) Tj ET
+BT /F1 10.0 Tf 72.00 511.00 Td (and larger models may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 491.00 Td (5.2 Mechanisms) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (We implement the chunk size as a fused kernel, which avoids writing intermediate results to) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (memory. During inference retrieval-augmented generation caches the retriever, so each new) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (token costs a constant amount of work. To keep training stable, retrieval-augmented) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (generation normalises the grounding check before it is combined with the context window.) Tj ET
+BT /F1 10.0 Tf 72.00 419.00 Td (Gradients through the keyword index are clipped at a norm of 3.0.) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (Unlike a dense retriever, retrieval-augmented generation updates the query rewrite only when) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (the retriever changes. To keep training stable, retrieval-augmented generation normalises) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (the dense embedding before it is combined with the query rewrite. Each block of) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (retrieval-augmented generation applies the keyword index after a short convolution of width) Tj ET
+BT /F1 10.0 Tf 72.00 347.00 Td (9. The retriever is initialised so that retrieval-augmented generation starts training close) Tj ET
+BT /F1 10.0 Tf 72.00 334.00 Td (to a closed-book model.) Tj ET
+BT /F1 10.0 Tf 72.00 314.00 Td (The citation in retrieval-augmented generation is parameterised by a small linear layer with) Tj ET
+BT /F1 10.0 Tf 72.00 301.00 Td (16 hidden units. To keep training stable, retrieval-augmented generation normalises the) Tj ET
+BT /F1 10.0 Tf 72.00 288.00 Td (grounding check before it is combined with the citation. During inference) Tj ET
+BT /F1 10.0 Tf 72.00 275.00 Td (retrieval-augmented generation caches the citation, so each new token costs a constant) Tj ET
+BT /F1 10.0 Tf 72.00 262.00 Td (amount of work. We implement the keyword index as a fused kernel, which avoids writing) Tj ET
+BT /F1 10.0 Tf 72.00 249.00 Td (intermediate results to memory.) Tj ET
+BT /F1 10.0 Tf 72.00 229.00 Td (We implement the keyword index as a fused kernel, which avoids writing intermediate results) Tj ET
+BT /F1 10.0 Tf 72.00 216.00 Td (to memory. A coefficient controls how strongly the reranker depends on the dense embedding;) Tj ET
+BT /F1 10.0 Tf 72.00 203.00 Td (we set it to 0.7 throughout. Unlike BM25, retrieval-augmented generation updates the) Tj ET
+BT /F1 10.0 Tf 72.00 190.00 Td (grounding check only when the retriever changes. The query rewrite is initialised so that) Tj ET
+BT /F1 10.0 Tf 72.00 177.00 Td (retrieval-augmented generation starts training close to a dense retriever.) Tj ET
+BT /F2 12.0 Tf 72.00 157.00 Td (5.4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 137.00 Td (Throughput is measured with a batch size of 16 on a single accelerator. Variance across) Tj ET
+BT /F1 10.0 Tf 72.00 124.00 Td (seeds stays below 0.6 points for every configuration we report. On SciDocs-Lite,) Tj ET
+BT /F1 10.0 Tf 72.00 111.00 Td (retrieval-augmented generation improves over a closed-book model by 4.5 points. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 98.00 Td (chunk size lowers the CiteBench score by 6.4 points, the largest drop among all components.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (11) Tj ET
+endstream
+endobj
+28 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 29 0 R >>
+endobj
+29 0 obj
+<< /Length 5154 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Throughput is measured with a batch size of 512 on a single accelerator. The gains of) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (retrieval-augmented generation grow with the input length, as the keyword index becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (bottleneck. On OpenQA-Synth, retrieval-augmented generation improves over a closed-book) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (model by 5.9 points. With the keyword index frozen, retrieval-augmented generation still) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (recovers most of its improvement on OpenQA-Synth.) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (Variance across seeds stays below 0.5 points for every configuration we report. On) Tj ET
+BT /F1 10.0 Tf 72.00 635.00 Td (OpenQA-Synth, retrieval-augmented generation improves over a dense retriever by 5.4 points.) Tj ET
+BT /F1 10.0 Tf 72.00 622.00 Td (Ablating the retriever lowers the SciDocs-Lite score by 5.8 points, the largest drop among) Tj ET
+BT /F1 10.0 Tf 72.00 609.00 Td (all components. We train every model for 50B tokens with the same data order and report the) Tj ET
+BT /F1 10.0 Tf 72.00 596.00 Td (mean of three seeds.) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (Retrieval-augmented generation scores 92.3% on CiteBench, compared with 75.2% for BM25. On) Tj ET
+BT /F1 10.0 Tf 72.00 563.00 Td (CiteBench, retrieval-augmented generation improves over a closed-book model by 1.5 points.) Tj ET
+BT /F1 10.0 Tf 72.00 550.00 Td (With the query rewrite frozen, retrieval-augmented generation still recovers most of its) Tj ET
+BT /F1 10.0 Tf 72.00 537.00 Td (improvement on CiteBench. We train every model for 40B tokens with the same data order and) Tj ET
+BT /F1 10.0 Tf 72.00 524.00 Td (report the mean of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 504.00 Td (5.5 Summary) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (Combining retrieval-augmented generation with methods that target the retriever is a) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (promising direction. We expect the retriever to interact with the dense embedding at larger) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (scales, which we leave to future work. The results suggest that the chunk size is the main) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (lever for quality at a fixed budget. A limitation of retrieval-augmented generation is that) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (the grounding check must be tuned separately for each model size.) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (Combining retrieval-augmented generation with methods that target the citation is a) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (promising direction. A limitation of retrieval-augmented generation is that the chunk size) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (must be tuned separately for each model size. Our analysis covers models up to 1.3B) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (parameters, and larger models may behave differently. The retriever also makes) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (retrieval-augmented generation easier to inspect, since its behaviour can be read off per) Tj ET
+BT /F1 10.0 Tf 72.00 347.00 Td (token.) Tj ET
+BT /F2 12.0 Tf 72.00 327.00 Td (6 Sparse Experts as Memory) Tj ET
+BT /F2 12.0 Tf 72.00 307.00 Td (6.1 Background) Tj ET
+BT /F1 10.0 Tf 72.00 287.00 Td (Recent work has made the auxiliary loss a central concern, because it decides how far) Tj ET
+BT /F1 10.0 Tf 72.00 274.00 Td (mixture-of-experts models can scale. Earlier mixture-of-experts methods improved the) Tj ET
+BT /F1 10.0 Tf 72.00 261.00 Td (capacity factor but left the token dropping unchanged. A practical system has to balance the) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (cost of the capacity factor against the quality of the shared expert. We argue that the) Tj ET
+BT /F1 10.0 Tf 72.00 235.00 Td (router deserves as much attention as the shared expert.) Tj ET
+BT /F1 10.0 Tf 72.00 215.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 202.00 Td (Combining mixture-of-experts with methods that target the expert parallelism is a promising) Tj ET
+BT /F1 10.0 Tf 72.00 189.00 Td (direction. The results suggest that the expert is the main lever for quality at a fixed) Tj ET
+BT /F1 10.0 Tf 72.00 176.00 Td (budget. We expect the load balance to interact with the gating network at larger scales,) Tj ET
+BT /F1 10.0 Tf 72.00 163.00 Td (which we leave to future work.) Tj ET
+BT /F1 10.0 Tf 72.00 143.00 Td (Most prior methods treat the load balance as fixed and tune the router around it. Despite) Tj ET
+BT /F1 10.0 Tf 72.00 130.00 Td (steady progress, the interaction between the expert parallelism and the load balance is) Tj ET
+BT /F1 10.0 Tf 72.00 117.00 Td (still poorly understood. We argue that the expert parallelism deserves as much attention as) Tj ET
+BT /F1 10.0 Tf 72.00 104.00 Td (the top-k routing. Recent work has made the router a central concern, because it decides how) Tj ET
+BT /F1 10.0 Tf 72.00 91.00 Td (far mixture-of-experts models can scale.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (12) Tj ET
+endstream
+endobj
+30 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 31 0 R >>
+endobj
+31 0 obj
+<< /Length 4949 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (The top-k routing also makes mixture-of-experts easier to inspect, since its behaviour can) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (be read off per token. A limitation of mixture-of-experts is that the token dropping must be) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (tuned separately for each model size. The results suggest that the expert is the main lever) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (for quality at a fixed budget. Our analysis covers models up to 1.3B parameters, and larger) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (models may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 648.00 Td (6.2 Mechanisms) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (A coefficient controls how strongly the load balance depends on the top-k routing; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (to 0.4 throughout. Gradients through the capacity factor are clipped at a norm of 5.0. The) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (capacity factor in mixture-of-experts is parameterised by a small linear layer with 512) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (hidden units. To keep training stable, mixture-of-experts normalises the expert parallelism) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (before it is combined with the expert.) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (The auxiliary loss is initialised so that mixture-of-experts starts training close to a) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (dense model. Each block of mixture-of-experts applies the auxiliary loss after a short) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (convolution of width 5. A coefficient controls how strongly the router depends on the) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (auxiliary loss; we set it to 0.8 throughout. During inference mixture-of-experts caches the) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (expert, so each new token costs a constant amount of work.) Tj ET
+BT /F1 10.0 Tf 72.00 484.00 Td (To keep training stable, mixture-of-experts normalises the capacity factor before it is) Tj ET
+BT /F1 10.0 Tf 72.00 471.00 Td (combined with the expert. The shared expert is initialised so that mixture-of-experts starts) Tj ET
+BT /F1 10.0 Tf 72.00 458.00 Td (training close to a top-1 router. We implement the expert parallelism as a fused kernel,) Tj ET
+BT /F1 10.0 Tf 72.00 445.00 Td (which avoids writing intermediate results to memory. Gradients through the expert) Tj ET
+BT /F1 10.0 Tf 72.00 432.00 Td (parallelism are clipped at a norm of 7.0.) Tj ET
+BT /F1 10.0 Tf 72.00 412.00 Td (Gradients through the auxiliary loss are clipped at a norm of 8.0. We implement the expert) Tj ET
+BT /F1 10.0 Tf 72.00 399.00 Td (parallelism as a fused kernel, which avoids writing intermediate results to memory. The) Tj ET
+BT /F1 10.0 Tf 72.00 386.00 Td (token dropping in mixture-of-experts is parameterised by a small linear layer with 128) Tj ET
+BT /F1 10.0 Tf 72.00 373.00 Td (hidden units. To keep training stable, mixture-of-experts normalises the capacity factor) Tj ET
+BT /F1 10.0 Tf 72.00 360.00 Td (before it is combined with the auxiliary loss.) Tj ET
+BT /F2 12.0 Tf 72.00 340.00 Td (6.4 Experiments) Tj ET
+BT /F1 10.0 Tf 72.00 320.00 Td (On a translation suite, mixture-of-experts improves over switch routing by 6.9 points.) Tj ET
+BT /F1 10.0 Tf 72.00 307.00 Td (Variance across seeds stays below 0.5 points for every configuration we report. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 294.00 Td (expert lowers the a reasoning suite score by 2.7 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 281.00 Td (components. With the load balance frozen, mixture-of-experts still recovers most of its) Tj ET
+BT /F1 10.0 Tf 72.00 268.00 Td (improvement on WebMix perplexity.) Tj ET
+BT /F1 10.0 Tf 72.00 248.00 Td (Variance across seeds stays below 0.6 points for every configuration we report. Throughput) Tj ET
+BT /F1 10.0 Tf 72.00 235.00 Td (is measured with a batch size of 256 on a single accelerator. Mixture-of-experts scores) Tj ET
+BT /F1 10.0 Tf 72.00 222.00 Td (41.4% on a translation suite, compared with 86.7% for a top-1 router. Ablating the capacity) Tj ET
+BT /F1 10.0 Tf 72.00 209.00 Td (factor lowers the WebMix perplexity score by 1.1 points, the largest drop among all) Tj ET
+BT /F1 10.0 Tf 72.00 196.00 Td (components.) Tj ET
+BT /F1 10.0 Tf 72.00 176.00 Td (With the shared expert frozen, mixture-of-experts still recovers most of its improvement on) Tj ET
+BT /F1 10.0 Tf 72.00 163.00 Td (a translation suite. Variance across seeds stays below 0.2 points for every configuration we) Tj ET
+BT /F1 10.0 Tf 72.00 150.00 Td (report. Throughput is measured with a batch size of 16 on a single accelerator. The gains of) Tj ET
+BT /F1 10.0 Tf 72.00 137.00 Td (mixture-of-experts grow with the input length, as the expert parallelism becomes the) Tj ET
+BT /F1 10.0 Tf 72.00 124.00 Td (bottleneck.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (13) Tj ET
+endstream
+endobj
+32 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 33 0 R >>
+endobj
+33 0 obj
+<< /Length 4763 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (Ablating the token dropping lowers the WebMix perplexity score by 3.7 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (drop among all components. With the token dropping frozen, mixture-of-experts still recovers) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (most of its improvement on WebMix perplexity. On a translation suite, mixture-of-experts) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (improves over a dense model by 5.1 points. Variance across seeds stays below 0.9 points for) Tj ET
+BT /F1 10.0 Tf 72.00 668.00 Td (every configuration we report.) Tj ET
+BT /F2 12.0 Tf 72.00 648.00 Td (6.5 Summary) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (A limitation of mixture-of-experts is that the gating network must be tuned separately for) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (each model size. Our analysis covers models up to 1.3B parameters, and larger models may) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (behave differently. The capacity factor also makes mixture-of-experts easier to inspect,) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (since its behaviour can be read off per token. Combining mixture-of-experts with methods) Tj ET
+BT /F1 10.0 Tf 72.00 576.00 Td (that target the token dropping is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 556.00 Td (Our analysis covers models up to 1.3B parameters, and larger models may behave differently.) Tj ET
+BT /F1 10.0 Tf 72.00 543.00 Td (The auxiliary loss also makes mixture-of-experts easier to inspect, since its behaviour can) Tj ET
+BT /F1 10.0 Tf 72.00 530.00 Td (be read off per token. A limitation of mixture-of-experts is that the expert parallelism) Tj ET
+BT /F1 10.0 Tf 72.00 517.00 Td (must be tuned separately for each model size. The results suggest that the auxiliary loss is) Tj ET
+BT /F1 10.0 Tf 72.00 504.00 Td (the main lever for quality at a fixed budget.) Tj ET
+BT /F2 12.0 Tf 72.00 484.00 Td (7 Conclusion) Tj ET
+BT /F1 10.0 Tf 72.00 464.00 Td (Across six chapters the same pattern holds: models that choose what to write, through gates,) Tj ET
+BT /F1 10.0 Tf 72.00 451.00 Td (surprise, eviction scores or routing, beat larger memories that store everything. We) Tj ET
+BT /F1 10.0 Tf 72.00 438.00 Td (therefore recommend reporting the write policy of a memory mechanism alongside its size.) Tj ET
+BT /F2 12.0 Tf 72.00 418.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 398.00 Td ([1] C. Castillo and K. Kowalski. Replay buffer for long-term memory models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 387.00 Td (the Learning Systems Conference, 2023.) Tj ET
+BT /F1 9.0 Tf 72.00 374.00 Td ([2] P. Petrova and N. Nakamura. Retrieval key for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 363.00 Td (Learning Systems Conference, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 350.00 Td ([3] J. Jansen and V. Varga. Test-time update for long-term memory models. arXiv preprint, 2016.) Tj ET
+BT /F1 9.0 Tf 72.00 337.00 Td ([4] C. Castillo and J. Jansen. Memory capacity for long-term memory models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 326.00 Td (2023.) Tj ET
+BT /F1 9.0 Tf 72.00 313.00 Td ([5] K. Kowalski and V. Varga. Associative loss for long-term memory models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 302.00 Td (2021.) Tj ET
+BT /F1 9.0 Tf 72.00 289.00 Td ([6] I. Ivanova and O. Okoro. Associative loss for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 278.00 Td (Sequence Modelling Workshop, 2019.) Tj ET
+BT /F1 9.0 Tf 72.00 265.00 Td ([7] F. Fujita and U. Ueda. Test-time update for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 254.00 Td (Sequence Modelling Workshop, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 241.00 Td ([8] E. Eriksen and Q. Quinn. Segment summary for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 230.00 Td (Sequence Modelling Workshop, 2019.) Tj ET
+BT /F1 9.0 Tf 72.00 217.00 Td ([9] E. Eriksen and A. Adeyemi. Memory slot for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 206.00 Td (Sequence Modelling Workshop, 2017.) Tj ET
+BT /F1 9.0 Tf 72.00 193.00 Td ([10] F. Fujita and L. Laurent. Retrieval key for long-term memory models. arXiv preprint, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 180.00 Td ([11] Q. Quinn and C. Castillo. Replay buffer for long-term memory models. In Proceedings of the) Tj ET
+BT /F1 9.0 Tf 86.00 169.00 Td (Sequence Modelling Workshop, 2019.) Tj ET
+BT /F1 9.0 Tf 72.00 156.00 Td ([12] P. Petrova and L. Laurent. Test-time update for long-term memory models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 145.00 Td (the Sequence Modelling Workshop, 2021.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (14) Tj ET
+endstream
+endobj
+xref
+0 34
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000212 00000 n 
+0000000309 00000 n 
+0000000411 00000 n 
+0000000554 00000 n 
+0000000690 00000 n 
+0000004993 00000 n 
+0000005129 00000 n 
+0000009245 00000 n 
+0000009383 00000 n 
+0000014402 00000 n 
+0000014540 00000 n 
+0000019557 00000 n 
+0000019695 00000 n 
+0000023995 00000 n 
+0000024133 00000 n 
+0000029418 00000 n 
+0000029556 00000 n 
+0000033998 00000 n 
+0000034136 00000 n 
+0000038731 00000 n 
+0000038869 00000 n 
+0000043510 00000 n 
+0000043648 00000 n 
+0000048369 00000 n 
+0000048507 00000 n 
+0000053861 00000 n 
+0000053999 00000 n 
+0000059205 00000 n 
+0000059343 00000 n 
+0000064344 00000 n 
+0000064482 00000 n 
+trailer
+<< /Size 34 /Root 1 0 R /Info 5 0 R >>
+startxref
+69297
+%%EOF

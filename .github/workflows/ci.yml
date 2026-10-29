@@ -238,19 +238,19 @@ jobs:
           --baseline crates/shodh-eval/data/scanned/baseline.json
           --report eval-out-scanned/retrieval-report.json
 
-      - name: Generate the paper corpus
-        if: success() || failure()
-        run: cargo run --package shodh-eval -- synth-papers --out crates/shodh-eval/data/papers
-
       - name: Paper retrieval eval
-        if: success() || failure()
         run: >
           cargo run --package shodh-eval -- retrieval
           --corpus crates/shodh-eval/data/papers/corpus
           --dataset crates/shodh-eval/data/papers/dataset.json
           --models "${{ runner.temp }}/shodh-models"
-          --runs 3 --write-baseline eval-out-papers/baseline.json
           --out eval-out-papers
+
+      - name: Compare papers with baseline
+        run: >
+          cargo run --package shodh-eval -- compare
+          --baseline crates/shodh-eval/data/papers/baseline.json
+          --report eval-out-papers/retrieval-report.json
 
       - name: Upload eval report
         if: always()
@@ -260,14 +260,10 @@ jobs:
           path: |
             eval-out/retrieval-report.json
             eval-out/retrieval-summary.md
-            eval-out/baseline.json
             eval-out-scanned/retrieval-report.json
             eval-out-scanned/retrieval-summary.md
-            eval-out-scanned/baseline.json
             eval-out-papers/retrieval-report.json
             eval-out-papers/retrieval-summary.md
-            eval-out-papers/baseline.json
-            crates/shodh-eval/data/papers/
           if-no-files-found: ignore
 
   eval-sweep:
@@ -277,18 +273,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - group: decay-a
-            variants: "default=;decay-0.3=source_decay=0.3;decay-0.7=source_decay=0.7"
-          - group: decay-b
-            variants: "decay-0.85=source_decay=0.85;decay-1.0=source_decay=1.0;poolcap-2=pool_source_cap=2"
-          - group: poolcap
-            variants: "poolcap-3=pool_source_cap=3;poolcap-4=pool_source_cap=4;poolcap-8=pool_source_cap=8"
-          - group: fusion
-            variants: "rrf-20=rrf_k=20;threshold-0=min_score_threshold=0;rerank-off=reranking=off"
-          - group: small-pool
-            variants: "mult-1=candidate_multiplier=1;mult-1-poolcap-2=candidate_multiplier=1,pool_source_cap=2;mult-2=candidate_multiplier=2"
-          - group: other
-            variants: "mult-2-poolcap-4=candidate_multiplier=2,pool_source_cap=4;mult-10=candidate_multiplier=10;chunk-256=chunk_max_tokens=256"
+          - group: papers-cap-2-3
+            corpus: papers
+            variants: "poolcap-2=pool_source_cap=2;poolcap-3=pool_source_cap=3"
+          - group: papers-cap-4-6
+            corpus: papers
+            variants: "poolcap-4=pool_source_cap=4;poolcap-6=pool_source_cap=6"
+          - group: papers-cap-small-pool
+            corpus: papers
+            variants: "mult-1-poolcap-2=candidate_multiplier=1,pool_source_cap=2;mult-2-poolcap-3=candidate_multiplier=2,pool_source_cap=3"
+          - group: synthetic-cap
+            corpus: synthetic
+            variants: "poolcap-2=pool_source_cap=2;poolcap-3=pool_source_cap=3;poolcap-4=pool_source_cap=4"
+          - group: scanned-cap
+            corpus: scanned
+            variants: "poolcap-3=pool_source_cap=3"
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
@@ -315,20 +314,20 @@ jobs:
       - name: Install search and OCR models
         run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
 
-      - name: Generate the paper corpus
-        run: cargo run --package shodh-eval -- synth-papers --out eval-papers
-
       - name: Sweep search settings
         shell: pwsh
         env:
           VARIANTS: ${{ matrix.variants }}
+          CORPUS: ${{ matrix.corpus }}
         run: |
           $exe = "target/debug/shodh-eval.exe"
           $models = "${{ runner.temp }}/shodh-models"
+          $data = "crates/shodh-eval/data/$env:CORPUS"
           $failed = @()
           foreach ($item in $env:VARIANTS.Split(';')) {
             $name, $spec = $item.Split('=', 2)
-            $a = @("retrieval", "--corpus", "eval-papers/corpus", "--dataset", "eval-papers/dataset.json", "--models", $models, "--out", "eval-sweep/papers-$name")
+            $a = @("retrieval", "--corpus", "$data/corpus", "--dataset", "$data/dataset.json", "--models", $models, "--out", "eval-sweep/$env:CORPUS-$name")
+            if ($env:CORPUS -eq "scanned") { $a += @("--ocr", "ppocr") }
             if ($spec) { $a += @("--search", $spec) }
             & $exe @a | Out-Null
             if ($LASTEXITCODE -ne 0) { $failed += $name } else { Write-Output "done $name" }

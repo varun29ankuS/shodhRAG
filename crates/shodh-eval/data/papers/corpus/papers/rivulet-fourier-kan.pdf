@@ -1,0 +1,157 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [6 0 R 8 0 R 10 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Title (RIVULET: Fourier Kolmogorov-Arnold Networks) /Producer (shodh-eval synthetic corpus) >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 4122 >>
+stream
+BT /F2 16.0 Tf 72.00 720.00 Td (RIVULET: Fourier Kolmogorov-Arnold Networks) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (Sienna Marsh, Oleksandr Bondar \(Westgate Mathematics Lab\)) Tj ET
+BT /F2 12.0 Tf 72.00 664.00 Td (Abstract) Tj ET
+BT /F1 10.0 Tf 72.00 644.00 Td (RIVULET replaces the B-splines of a KAN with truncated Fourier series of 12 terms on every) Tj ET
+BT /F1 10.0 Tf 72.00 631.00 Td (edge. Practitioners report that the symbolic formula is the first component to fail on long) Tj ET
+BT /F1 10.0 Tf 72.00 618.00 Td (inputs. A practical system has to balance the cost of the grid interval against the quality) Tj ET
+BT /F1 10.0 Tf 72.00 605.00 Td (of the pruning threshold.) Tj ET
+BT /F2 12.0 Tf 72.00 585.00 Td (1 Introduction) Tj ET
+BT /F1 10.0 Tf 72.00 565.00 Td (Despite steady progress, the interaction between the edge function and the grid interval is) Tj ET
+BT /F1 10.0 Tf 72.00 552.00 Td (still poorly understood. Recent work has made the symbolic formula a central concern,) Tj ET
+BT /F1 10.0 Tf 72.00 539.00 Td (because it decides how far Kolmogorov-Arnold network models can scale. This work studies) Tj ET
+BT /F1 10.0 Tf 72.00 526.00 Td (RIVULET, a method that rethinks the layer width. Earlier Kolmogorov-Arnold network methods) Tj ET
+BT /F1 10.0 Tf 72.00 513.00 Td (improved the collocation point but left the basis function unchanged.) Tj ET
+BT /F1 10.0 Tf 72.00 493.00 Td (Earlier Kolmogorov-Arnold network methods improved the pruning threshold but left the) Tj ET
+BT /F1 10.0 Tf 72.00 480.00 Td (univariate function unchanged. Recent work has made the pruning threshold a central concern,) Tj ET
+BT /F1 10.0 Tf 72.00 467.00 Td (because it decides how far Kolmogorov-Arnold network models can scale. Despite steady) Tj ET
+BT /F1 10.0 Tf 72.00 454.00 Td (progress, the interaction between the residual activation and the spline grid is still) Tj ET
+BT /F1 10.0 Tf 72.00 441.00 Td (poorly understood.) Tj ET
+BT /F2 12.0 Tf 72.00 421.00 Td (2 Background) Tj ET
+BT /F1 10.0 Tf 72.00 401.00 Td (The results suggest that the edge function is the main lever for quality at a fixed budget.) Tj ET
+BT /F1 10.0 Tf 72.00 388.00 Td (Combining RIVULET with methods that target the edge function is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 368.00 Td (Each block of RIVULET applies the grid interval after a short convolution of width 7.) Tj ET
+BT /F1 10.0 Tf 72.00 355.00 Td (Gradients through the collocation point are clipped at a norm of 8.0. RIVULET computes the) Tj ET
+BT /F1 10.0 Tf 72.00 342.00 Td (edge function once per layer and reuses it for every head.) Tj ET
+BT /F2 12.0 Tf 72.00 322.00 Td (3 Method) Tj ET
+BT /F2 12.0 Tf 72.00 302.00 Td (3.1 Overview) Tj ET
+BT /F1 10.0 Tf 72.00 282.00 Td (The frequencies of RIVULET are fixed integers and only the coefficients of each edge are) Tj ET
+BT /F1 10.0 Tf 72.00 269.00 Td (trained. A coefficient controls how strongly the residual activation depends on the grid) Tj ET
+BT /F1 10.0 Tf 72.00 256.00 Td (interval; we set it to 0.9 throughout. RIVULET computes the spline grid once per layer and) Tj ET
+BT /F1 10.0 Tf 72.00 243.00 Td (reuses it for every head. To keep training stable, RIVULET normalises the basis function) Tj ET
+BT /F1 10.0 Tf 72.00 230.00 Td (before it is combined with the grid interval.) Tj ET
+BT /F1 10.0 Tf 150.00 210.00 Td (phi\(x\) = sum_{j=1..12} a_j cos\(j x\) + b_j sin\(j x\)                \(1\)) Tj ET
+BT /F1 10.0 Tf 72.00 188.00 Td (We implement the spline grid as a fused kernel, which avoids writing intermediate results to) Tj ET
+BT /F1 10.0 Tf 72.00 175.00 Td (memory. Each block of RIVULET applies the pruning threshold after a short convolution of) Tj ET
+BT /F1 10.0 Tf 72.00 162.00 Td (width 4. RIVULET computes the layer width once per layer and reuses it for every head.) Tj ET
+BT /F1 10.0 Tf 72.00 149.00 Td (During inference RIVULET caches the residual activation, so each new token costs a constant) Tj ET
+BT /F1 10.0 Tf 72.00 136.00 Td (amount of work.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (1) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 4207 >>
+stream
+BT /F2 12.0 Tf 72.00 720.00 Td (3.2 Implementation) Tj ET
+BT /F1 10.0 Tf 72.00 700.00 Td (A coefficient controls how strongly the spline grid depends on the grid interval; we set it) Tj ET
+BT /F1 10.0 Tf 72.00 687.00 Td (to 0.4 throughout. RIVULET computes the symbolic formula once per layer and reuses it for) Tj ET
+BT /F1 10.0 Tf 72.00 674.00 Td (every head. During inference RIVULET caches the univariate function, so each new token costs) Tj ET
+BT /F1 10.0 Tf 72.00 661.00 Td (a constant amount of work. Unlike a fixed-grid KAN, RIVULET updates the spline grid only) Tj ET
+BT /F1 10.0 Tf 72.00 648.00 Td (when the basis function changes.) Tj ET
+BT /F1 10.0 Tf 72.00 628.00 Td (During inference RIVULET caches the grid interval, so each new token costs a constant amount) Tj ET
+BT /F1 10.0 Tf 72.00 615.00 Td (of work. Unlike a Fourier feature network, RIVULET updates the edge function only when the) Tj ET
+BT /F1 10.0 Tf 72.00 602.00 Td (spline grid changes. The collocation point is initialised so that RIVULET starts training) Tj ET
+BT /F1 10.0 Tf 72.00 589.00 Td (close to an MLP.) Tj ET
+BT /F2 12.0 Tf 72.00 569.00 Td (4 Experiments) Tj ET
+BT /F2 12.0 Tf 72.00 549.00 Td (4.1 Setup) Tj ET
+BT /F1 10.0 Tf 72.00 529.00 Td (RIVULET scores 59.2% on a PDE suite, compared with 70.3% for a Fourier feature network. With) Tj ET
+BT /F1 10.0 Tf 72.00 516.00 Td (the pruning threshold frozen, RIVULET still recovers most of its improvement on a tabular) Tj ET
+BT /F1 10.0 Tf 72.00 503.00 Td (regression suite. Throughput is measured with a batch size of 16 on a single accelerator.) Tj ET
+BT /F1 10.0 Tf 72.00 490.00 Td (Ablating the spline grid lowers the the Feynman equations score by 2.9 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 477.00 Td (drop among all components.) Tj ET
+BT /F2 12.0 Tf 72.00 457.00 Td (4.2 Results) Tj ET
+BT /F1 10.0 Tf 72.00 437.00 Td (RIVULET trains 2.7 times faster per step than a spline KAN of the same width. Throughput is) Tj ET
+BT /F1 10.0 Tf 72.00 424.00 Td (measured with a batch size of 16 on a single accelerator. On a PDE suite, RIVULET improves) Tj ET
+BT /F1 10.0 Tf 72.00 411.00 Td (over an MLP by 6.1 points. Variance across seeds stays below 0.3 points for every) Tj ET
+BT /F1 10.0 Tf 72.00 398.00 Td (configuration we report.) Tj ET
+BT /F1 10.0 Tf 72.00 378.00 Td (Ablating the basis function lowers the a tabular regression suite score by 6.0 points, the) Tj ET
+BT /F1 10.0 Tf 72.00 365.00 Td (largest drop among all components. With the symbolic formula frozen, RIVULET still recovers) Tj ET
+BT /F1 10.0 Tf 72.00 352.00 Td (most of its improvement on a PDE suite. We train every model for 40B tokens with the same) Tj ET
+BT /F1 10.0 Tf 72.00 339.00 Td (data order and report the mean of three seeds.) Tj ET
+BT /F2 12.0 Tf 72.00 319.00 Td (4.3 Ablations) Tj ET
+BT /F1 10.0 Tf 72.00 299.00 Td (Variance across seeds stays below 0.3 points for every configuration we report. Ablating the) Tj ET
+BT /F1 10.0 Tf 72.00 286.00 Td (collocation point lowers the a tabular regression suite score by 5.3 points, the largest) Tj ET
+BT /F1 10.0 Tf 72.00 273.00 Td (drop among all components. Throughput is measured with a batch size of 512 on a single) Tj ET
+BT /F1 10.0 Tf 72.00 260.00 Td (accelerator. RIVULET scores 85.6% on a tabular regression suite, compared with 91.1% for an) Tj ET
+BT /F1 10.0 Tf 72.00 247.00 Td (MLP.) Tj ET
+BT /F2 12.0 Tf 72.00 227.00 Td (5 Discussion) Tj ET
+BT /F1 10.0 Tf 72.00 207.00 Td (Combining RIVULET with methods that target the pruning threshold is a promising direction.) Tj ET
+BT /F1 10.0 Tf 72.00 194.00 Td (We expect the collocation point to interact with the symbolic formula at larger scales,) Tj ET
+BT /F1 10.0 Tf 72.00 181.00 Td (which we leave to future work. The results suggest that the grid interval is the main lever) Tj ET
+BT /F1 10.0 Tf 72.00 168.00 Td (for quality at a fixed budget. Our analysis covers models up to 1.3B parameters, and larger) Tj ET
+BT /F1 10.0 Tf 72.00 155.00 Td (models may behave differently.) Tj ET
+BT /F2 12.0 Tf 72.00 135.00 Td (6 Limitations) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (2) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 1648 >>
+stream
+BT /F1 10.0 Tf 72.00 720.00 Td (The results suggest that the spline grid is the main lever for quality at a fixed budget. We) Tj ET
+BT /F1 10.0 Tf 72.00 707.00 Td (expect the pruning threshold to interact with the layer width at larger scales, which we) Tj ET
+BT /F1 10.0 Tf 72.00 694.00 Td (leave to future work. The grid interval also makes RIVULET easier to inspect, since its) Tj ET
+BT /F1 10.0 Tf 72.00 681.00 Td (behaviour can be read off per token.) Tj ET
+BT /F2 12.0 Tf 72.00 661.00 Td (References) Tj ET
+BT /F1 9.0 Tf 72.00 641.00 Td ([1] I. Ivanova and U. Ueda. Edge function for Kolmogorov-Arnold network models. arXiv preprint,) Tj ET
+BT /F1 9.0 Tf 86.00 630.00 Td (2018.) Tj ET
+BT /F1 9.0 Tf 72.00 617.00 Td ([2] U. Ueda and L. Laurent. Spline grid for Kolmogorov-Arnold network models. In Proceedings of) Tj ET
+BT /F1 9.0 Tf 86.00 606.00 Td (the Learning Systems Conference, 2018.) Tj ET
+BT /F1 9.0 Tf 72.00 593.00 Td ([3] Q. Quinn and U. Ueda. Grid interval for Kolmogorov-Arnold network models. Transactions on) Tj ET
+BT /F1 9.0 Tf 86.00 582.00 Td (Efficient Computing, 2024.) Tj ET
+BT /F1 9.0 Tf 72.00 569.00 Td ([4] Q. Quinn and W. Whitfield. Pruning threshold for Kolmogorov-Arnold network models. arXiv) Tj ET
+BT /F1 9.0 Tf 86.00 558.00 Td (preprint, 2022.) Tj ET
+BT /F1 9.0 Tf 72.00 545.00 Td ([5] Z. Zielinski and J. Jansen. Residual activation for Kolmogorov-Arnold network models. In) Tj ET
+BT /F1 9.0 Tf 86.00 534.00 Td (Proceedings of the Sequence Modelling Workshop, 2018.) Tj ET
+BT /F1 8.0 Tf 72.00 760.00 Td (Preprint. A synthetic paper written for the shodh-eval corpus.) Tj ET
+BT /F1 9.0 Tf 306.00 40.00 Td (3) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000447 00000 n 
+0000000583 00000 n 
+0000004756 00000 n 
+0000004892 00000 n 
+0000009150 00000 n 
+0000009288 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 5 0 R >>
+startxref
+10988
+%%EOF

@@ -193,6 +193,56 @@ fn check_relative(file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The PDF passages of a committed set (a folder with `corpus/` and
+/// `dataset.json`) that the layout parser, as indexing runs it, does not put on
+/// the pages their sources list: each passage must be a whole-token span of the
+/// parsed text of those pages, in order. Passages lost here can never be
+/// retrieved as written, whatever the ranking does.
+#[cfg(test)]
+pub(crate) fn pdf_passages_missing_from_layout(set: &Path) -> Vec<String> {
+    use shodh_rag::processing::document_model::StructuredDocument;
+    use shodh_rag::processing::pdf_layout::{parse_pdf_layout_with, TableMode};
+
+    let dataset = Dataset::load(&set.join("dataset.json")).unwrap();
+    let mut parsed: std::collections::BTreeMap<String, StructuredDocument> =
+        std::collections::BTreeMap::new();
+    let mut missing = Vec::new();
+    for case in dataset.active_cases() {
+        for source in &case.sources {
+            let Some(passage) = &source.passage else {
+                continue;
+            };
+            if source.pages.is_empty() || !source.file.to_ascii_lowercase().ends_with(".pdf") {
+                continue;
+            }
+            let doc = parsed.entry(source.file.clone()).or_insert_with(|| {
+                let path = source
+                    .file
+                    .split(['/', '\\'])
+                    .fold(set.join("corpus"), |p, s| p.join(s));
+                let bytes =
+                    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+                parse_pdf_layout_with(&bytes, TableMode::Candidates)
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                    .document
+            });
+            let text = source
+                .pages
+                .iter()
+                .map(|&page| doc.page_text(page))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if !crate::text::contains_span(&text, passage) {
+                missing.push(format!(
+                    "{} ({} p. {:?}): {passage}",
+                    case.id, source.file, source.pages
+                ));
+            }
+        }
+    }
+    missing
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

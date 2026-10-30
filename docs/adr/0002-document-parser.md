@@ -61,6 +61,8 @@ Block kinds the chosen parser produced on the corpus:
 
 PDFs are parsed by `processing::pdf_layout`. Positioned text runs come from pdf_oxide. The reading order is pdf_oxide's structure-tree order for trustworthy tagged PDFs, else column-aware XY-cut. The default top-to-bottom order interleaves the two columns of papers line by line; the Diffusing Blame paper showed this.
 
+XY-cut also cuts a borderless table along the whitespace between its columns, so row labels and numbers land in different blocks (on the paper eval, two tables the detector missed lost 3 passages this way). Where no table was detected, lines on one baseline are joined back into rows when they read as a table: every stretch of text is cell-sized (40 characters at most), at least three rows sit at row spacing, their cells fall into columns held by at least half the rows, and most cells beside the first column are numbers. Prose fails these tests (its lines are longer than a cell, and its short lines are sentences, not numbers), so the columns of a two-column page are not joined; a short line of the other column on a row's baseline falls in no supported column and stays where it was read. The rows of such a table form one block where its first line was read.
+
 Runs become lines, and lines become typed blocks by geometric and font statistics:
 
 - **Headings:** size relative to the body font, plus bold or numbering. Levels come from numbering depth, or from size ranks when a document has no numbering.

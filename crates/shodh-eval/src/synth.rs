@@ -679,6 +679,12 @@ mod tests {
     }
 
     #[test]
+    fn every_pdf_passage_is_on_its_page_as_the_parser_reads_it() {
+        let missing = crate::dataset::pdf_passages_missing_from_layout(&committed());
+        assert!(missing.is_empty(), "{}", missing.join("\n"));
+    }
+
+    #[test]
     fn generation_is_deterministic() {
         let (a, b) = (build(), build());
         assert_eq!(a.files.len(), b.files.len());

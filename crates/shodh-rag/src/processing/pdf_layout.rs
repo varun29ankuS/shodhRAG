@@ -1482,6 +1482,310 @@ impl RawBlock {
     }
 }
 
+// ── Rows of tables the detector missed ──────────────────────────────────────
+//
+// Column-aware reading order (XY-cut) cuts a borderless table along the
+// whitespace between its columns: the row labels are read as one block and the
+// numbers as another, sometimes after the paragraph that follows the table. A
+// question about one row then finds its label in one chunk and its numbers in
+// another. When no table was detected over such lines, the rows are put back
+// together from geometry: lines that share a baseline, short enough to be cells,
+// stacked in rows whose cells fall into the same columns, with numbers in most
+// cells beside the first column. Prose does not qualify (its lines are longer
+// than a cell, and its short lines are sentences, not numbers), so the columns
+// of a two-column page are left as they are read.
+
+/// Longest cell of an undetected table, in characters: a longer stretch of text
+/// between wide gaps is prose.
+const MAX_CELL_CHARS: usize = 40;
+
+/// A numeric cell as results tables print them: plain, grouped, signed and
+/// percent numbers ([`super::document_model::is_numeric_cell`]), scientific
+/// notation (`1.2e-4`), and numbers with a unit or factor suffix (`1.3B`, `16K`,
+/// `5.3x`). Equation numbers such as `(3)` are not numbers.
+static RE_NUMBER_CELL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[+\-−–]?\d+(?:\.\d+)?(?:[eE][+\-−–]?\d+)?(?:\s?[×xKMBkmb])?[*†‡]*$")
+        .expect("static regex")
+});
+
+fn is_number_cell(text: &str) -> bool {
+    let t = text.trim();
+    super::document_model::is_numeric_cell(t) || RE_NUMBER_CELL.is_match(t)
+}
+
+/// A line of a page in reading order: a line as extracted (an index into the
+/// page's lines), or a row of a table the detector missed, joined from the lines
+/// it was split into. `table` numbers the undetected tables of the page.
+enum PageItem {
+    Line(usize),
+    Row { table: usize, line: Line },
+}
+
+/// One row of a table, left to right: its parts joined with spaces, its pieces
+/// kept (so cells still split at their gaps), size, boldness and monospace from
+/// the majority of its characters. `parts` is not empty.
+fn join_row(parts: &[&Line]) -> Line {
+    let mut parts: Vec<&Line> = parts.to_vec();
+    parts.sort_by(|a, b| a.bbox.x0.total_cmp(&b.bbox.x0));
+    let chars: usize = parts.iter().map(|l| l.chars).sum();
+    let mut sizes: HashMap<i32, usize> = HashMap::new();
+    for part in &parts {
+        *sizes.entry((part.size * 2.0).round() as i32).or_default() += part.chars;
+    }
+    let size = sizes
+        .iter()
+        .max_by_key(|(size, count)| (**count, **size))
+        .map(|(size, _)| *size as f32 / 2.0)
+        .unwrap_or_else(|| parts.first().map_or(1.0, |l| l.size));
+    let bold_chars: usize = parts.iter().filter(|l| l.bold).map(|l| l.chars).sum();
+    let mono_chars: usize = parts.iter().filter(|l| l.mono).map(|l| l.chars).sum();
+    let bbox = parts
+        .iter()
+        .skip(1)
+        .fold(parts[0].bbox, |acc, l| acc.union(&l.bbox));
+    let text = parts
+        .iter()
+        .map(|l| l.text.trim())
+        .collect::<Vec<&str>>()
+        .join(" ");
+    let pieces: Vec<(String, BBox)> = parts.iter().flat_map(|l| l.pieces.clone()).collect();
+    Line {
+        text,
+        bbox,
+        size,
+        bold: bold_chars * 2 > chars,
+        mono: mono_chars * 2 > chars,
+        chars,
+        pieces,
+    }
+}
+
+/// The page's lines in reading order, with the rows of tables the detector missed
+/// put back together. Each such table is emitted, row by row from the top, where
+/// the first of its lines was read; lines that are not part of one keep their
+/// order. `excluded` lines (inside a detected table, or paired as form fields)
+/// are never part of a row. A page without such a table comes back unchanged.
+fn undetected_table_rows(lines: &[Line], excluded: &[bool]) -> Vec<PageItem> {
+    let in_order = || (0..lines.len()).map(PageItem::Line).collect::<Vec<_>>();
+
+    // Lines that can be table cells: every stretch between wide gaps is short.
+    let mut cells: Vec<(usize, Vec<Segment>)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !excluded.get(*i).copied().unwrap_or(false))
+        .filter_map(|(i, line)| {
+            let segments = line_segments(line);
+            let short = !segments.is_empty()
+                && segments
+                    .iter()
+                    .all(|s| s.text.chars().count() <= MAX_CELL_CHARS);
+            short.then_some((i, segments))
+        })
+        .collect();
+    // The fewest lines of a split table: its rows plus one part of a split row.
+    if cells.len() <= CLUSTER_LINES {
+        return in_order();
+    }
+    cells.sort_by(|a, b| {
+        lines[b.0]
+            .bbox
+            .center_y()
+            .total_cmp(&lines[a.0].bbox.center_y())
+    });
+
+    // Bands: cell lines on one baseline, top to bottom. A band whose lines overlap
+    // horizontally is not a table row.
+    struct Band {
+        members: Vec<usize>,
+        center: f32,
+        size: f32,
+        top: f32,
+        bottom: f32,
+        overlapping: bool,
+    }
+    let mut bands: Vec<Band> = Vec::new();
+    for (c, (index, _)) in cells.iter().enumerate() {
+        let line = &lines[*index];
+        let center = line.bbox.center_y();
+        let joins = bands.last().is_some_and(|band| {
+            (band.center - center).abs() < 0.5 * band.size.min(line.size).max(1.0)
+        });
+        match bands.last_mut() {
+            Some(band) if joins => {
+                band.overlapping |= band.members.iter().any(|&m| {
+                    let other = lines[cells[m].0].bbox;
+                    other.x0.max(line.bbox.x0) < other.x1.min(line.bbox.x1) - 0.5
+                });
+                band.members.push(c);
+                band.size = band.size.max(line.size);
+                band.top = band.top.max(line.bbox.y1);
+                band.bottom = band.bottom.min(line.bbox.y0);
+            }
+            _ => bands.push(Band {
+                members: vec![c],
+                center,
+                size: line.size,
+                top: line.bbox.y1,
+                bottom: line.bbox.y0,
+                overlapping: false,
+            }),
+        }
+    }
+    let segment_count =
+        |b: usize| -> usize { bands[b].members.iter().map(|&m| cells[m].1.len()).sum() };
+
+    // Runs of bands at row spacing. A band with a single cell (a wrapped label, a
+    // group label) may sit inside a run; two in a row end it, and a run neither
+    // starts nor ends with one.
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    let mut run: Vec<usize> = Vec::new();
+    let close = |run: &mut Vec<usize>, runs: &mut Vec<Vec<usize>>| {
+        while run.last().is_some_and(|&b| segment_count(b) < 2) {
+            run.pop();
+        }
+        if !run.is_empty() {
+            runs.push(std::mem::take(run));
+        }
+    };
+    for (b, band) in bands.iter().enumerate() {
+        let near = run
+            .last()
+            .is_some_and(|&p| bands[p].bottom - band.top <= 2.0 * bands[p].size.max(band.size));
+        if band.overlapping || !near {
+            close(&mut run, &mut runs);
+        }
+        if band.overlapping {
+            continue;
+        }
+        if segment_count(b) < 2 {
+            if run.is_empty() {
+                continue;
+            }
+            if run.last().is_some_and(|&p| segment_count(p) < 2) {
+                close(&mut run, &mut runs);
+                continue;
+            }
+        }
+        run.push(b);
+    }
+    close(&mut run, &mut runs);
+
+    let mut owner: Vec<Option<usize>> = vec![None; lines.len()];
+    let mut tables: Vec<Vec<Line>> = Vec::new();
+    for run in &runs {
+        // Columns: the x extents of the run's cells, merged where they overlap.
+        let mut extents: Vec<(f32, f32)> = run
+            .iter()
+            .flat_map(|&b| bands[b].members.iter())
+            .flat_map(|&m| cells[m].1.iter().map(|s| (s.bbox.x0, s.bbox.x1)))
+            .collect();
+        extents.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut columns: Vec<(f32, f32)> = Vec::new();
+        for (x0, x1) in extents {
+            match columns.last_mut() {
+                Some(column) if x0 <= column.1 + 1.0 => column.1 = column.1.max(x1),
+                _ => columns.push((x0, x1)),
+            }
+        }
+        let column_of = |s: &Segment| -> Option<usize> {
+            columns
+                .iter()
+                .position(|&(x0, x1)| s.bbox.x0 >= x0 - 0.01 && s.bbox.x0 <= x1 + 0.01)
+        };
+        // A column holds cells of at least half the rows; a line with a cell in no
+        // such column (prose of the other page column on the same baseline) is not
+        // part of the table.
+        let mut support = vec![0usize; columns.len()];
+        for &b in run {
+            let mut seen = vec![false; columns.len()];
+            for &m in &bands[b].members {
+                for s in &cells[m].1 {
+                    if let Some(c) = column_of(s) {
+                        seen[c] = true;
+                    }
+                }
+            }
+            for (c, hit) in seen.into_iter().enumerate() {
+                support[c] += usize::from(hit);
+            }
+        }
+        let min_support = run.len().div_ceil(2).max(2);
+        let supported = |c: Option<usize>| c.is_some_and(|c| support[c] >= min_support);
+        let first_column = (0..columns.len()).find(|&c| support[c] >= min_support);
+        let kept: Vec<Vec<usize>> = run
+            .iter()
+            .map(|&b| {
+                bands[b]
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|&m| cells[m].1.iter().all(|s| supported(column_of(s))))
+                    .collect()
+            })
+            .collect();
+
+        let supported_columns = support.iter().filter(|&&n| n >= min_support).count();
+        let mut rows = 0usize;
+        let mut number_rows = 0usize;
+        let mut value_cells = 0usize;
+        let mut number_cells = 0usize;
+        for members in &kept {
+            let segments: Vec<&Segment> = members.iter().flat_map(|&m| cells[m].1.iter()).collect();
+            if segments.len() >= 2 {
+                rows += 1;
+            }
+            let values: Vec<&Segment> = segments
+                .iter()
+                .copied()
+                .filter(|s| column_of(*s) != first_column)
+                .collect();
+            let numbers = values.iter().filter(|s| is_number_cell(&s.text)).count();
+            value_cells += values.len();
+            number_cells += numbers;
+            number_rows += usize::from(numbers > 0);
+        }
+        let split = kept.iter().any(|members| members.len() >= 2);
+        let tabular = supported_columns >= 2
+            && rows >= CLUSTER_LINES
+            && number_rows >= CLUSTER_LINES
+            && number_cells * 2 >= value_cells;
+        if !(split && tabular) {
+            continue;
+        }
+        let table = tables.len();
+        let mut joined = Vec::new();
+        for members in kept.iter().filter(|m| !m.is_empty()) {
+            let parts: Vec<&Line> = members.iter().map(|&m| &lines[cells[m].0]).collect();
+            for &m in members {
+                owner[cells[m].0] = Some(table);
+            }
+            joined.push(join_row(&parts));
+        }
+        tables.push(joined);
+    }
+    if tables.is_empty() {
+        return in_order();
+    }
+
+    let mut items = Vec::with_capacity(lines.len());
+    let mut emitted = vec![false; tables.len()];
+    for (index, table) in owner.iter().enumerate() {
+        match *table {
+            None => items.push(PageItem::Line(index)),
+            Some(t) if !emitted[t] => {
+                emitted[t] = true;
+                items.extend(
+                    std::mem::take(&mut tables[t])
+                        .into_iter()
+                        .map(|line| PageItem::Row { table: t, line }),
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    items
+}
+
 /// Left edges of the text columns on a page: x positions (2 pt buckets) at
 /// which at least three body lines start.
 fn column_lefts(lines: &[Line], body_size: f32) -> Vec<f32> {
@@ -1552,14 +1856,29 @@ fn segment_page(
         }
     }
 
+    // Rows of tables the detector missed, put back together; detected tables and
+    // form fields keep their lines.
+    let excluded: Vec<bool> = in_table
+        .iter()
+        .zip(&consumed)
+        .map(|(table, field)| *table || *field)
+        .collect();
+    let items = undetected_table_rows(&page.lines, &excluded);
+
     let flush = |current: &mut Option<RawBlock>, out: &mut Vec<RawBlock>| {
         if let Some(block) = current.take() {
             out.push(block);
         }
     };
 
-    for (index, line) in page.lines.iter().enumerate() {
-        if consumed[index] {
+    // The undetected table whose rows the current block holds.
+    let mut current_table: Option<usize> = None;
+    for item in &items {
+        let (index, line, table_row) = match item {
+            PageItem::Line(index) => (Some(*index), &page.lines[*index], None),
+            PageItem::Row { table, line } => (None, line, Some(*table)),
+        };
+        if let Some(index) = index.filter(|&i| consumed[i]) {
             for &r in anchored.get(&index).map(Vec::as_slice).unwrap_or(&[]) {
                 flush(&mut current, out);
                 let row = &rows[r];
@@ -1572,7 +1891,12 @@ fn segment_page(
         }
         // Lines inside a detected table are replaced by the table block,
         // emitted where the first of them appeared.
-        if let Some(t_index) = table_of(&page.tables, line) {
+        let detected = if table_row.is_none() {
+            table_of(&page.tables, line)
+        } else {
+            None
+        };
+        if let Some(t_index) = detected {
             if let Some(table) = pending_tables[t_index].take() {
                 flush(&mut current, out);
                 let region: Vec<&Line> = page
@@ -1613,14 +1937,21 @@ fn segment_page(
         }
 
         let text = line.text.trim();
-        let cue = heading_cue(line, stats);
+        // A table row is never a heading, list item, equation or footnote.
+        let cue = if table_row.is_none() {
+            heading_cue(line, stats)
+        } else {
+            None
+        };
         let col_left = column_left_of(line.bbox.x0, &lefts);
         let display_math = is_math_line(text)
             && (line.bbox.x0 > col_left + 1.5 * line.size || RE_EQUATION_NUMBER.is_match(text));
         let footnote_like = line.size <= body * 0.88
             && line.bbox.y1 < page.height * 0.3
             && text.starts_with(|c: char| c.is_ascii_digit() || "*†‡§¶".contains(c));
-        let line_kind = if let Some(cue) = cue {
+        let line_kind = if table_row.is_some() {
+            RawKind::Text
+        } else if let Some(cue) = cue {
             RawKind::Heading(cue)
         } else if line.mono && !*in_references && !RE_URL_OR_EMAIL.is_match(text) {
             RawKind::Code
@@ -1636,6 +1967,7 @@ fn segment_page(
 
         let Some(block) = current.as_mut() else {
             current = Some(RawBlock::new(line_kind, line.clone(), page.number));
+            current_table = table_row;
             continue;
         };
         let prev = block.lines.last().cloned().unwrap_or_else(|| line.clone());
@@ -1688,21 +2020,27 @@ fn segment_page(
                     && prev.text.trim_end().ends_with('.')
                     && (line.bbox.x0 - block_left).abs() < 0.5 * size));
 
-        if starts_new
-            || moved_up
-            || column_change
-            || size_change
-            || big_gap
-            || paragraph_indent
-            || previous_ended
-            || special_start
-            || reference_start
+        // The rows of one undetected table form one block, apart from the text
+        // around them.
+        let same_table = table_row.is_some() && table_row == current_table;
+        if !same_table
+            && (table_row != current_table
+                || starts_new
+                || moved_up
+                || column_change
+                || size_change
+                || big_gap
+                || paragraph_indent
+                || previous_ended
+                || special_start
+                || reference_start)
         {
             flush(&mut current, out);
             current = Some(RawBlock::new(line_kind, line.clone(), page.number));
         } else {
             block.push(line.clone());
         }
+        current_table = table_row;
 
         if let RawKind::Heading(_) = line_kind {
             *in_references = is_references_heading(text)
@@ -1908,6 +2246,315 @@ mod tests {
 
     fn row(a: &str, b: &str) -> Vec<String> {
         vec![a.to_string(), b.to_string()]
+    }
+
+    /// A line of 9 pt cells at `y0`: each cell is a piece starting at its x, about
+    /// half an em per character wide (Helvetica).
+    fn cells(y0: f32, cells: &[(f32, &str)]) -> Line {
+        let size = 9.0;
+        let pieces: Vec<(String, BBox)> = cells
+            .iter()
+            .map(|&(x, t)| {
+                let x1 = x + 0.5 * size * t.chars().count() as f32;
+                (t.to_string(), BBox::new(x, y0, x1, y0 + size))
+            })
+            .collect();
+        let bbox = pieces
+            .iter()
+            .skip(1)
+            .fold(pieces[0].1, |acc, (_, b)| acc.union(b));
+        let text = cells.iter().map(|&(_, t)| t).collect::<Vec<_>>().join(" ");
+        Line {
+            chars: text.chars().filter(|c| !c.is_whitespace()).count(),
+            text,
+            bbox,
+            size,
+            bold: false,
+            mono: false,
+            pieces,
+        }
+    }
+
+    /// A single-cell 9 pt line at `x`.
+    fn cell(x: f32, y0: f32, t: &str) -> Line {
+        cells(y0, &[(x, t)])
+    }
+
+    fn item_texts(lines: &[Line], items: &[PageItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match item {
+                PageItem::Line(i) => lines[*i].text.clone(),
+                PageItem::Row { line, .. } => line.text.clone(),
+            })
+            .collect()
+    }
+
+    const PROSE_AFTER: &str =
+        "Memory as context is the strongest variant, and removing momentum lowers accuracy.";
+
+    /// The TIDE results table as column-aware order read it from the paper corpus:
+    /// the caption, the row labels, then the numbers of every row, then the text
+    /// after the table.
+    fn split_results_table() -> Vec<Line> {
+        let caption = "Table 3: LongRecall accuracy (%) by context length.";
+        let rows: [[&str; 5]; 5] = [
+            ["Model", "4K", "16K", "64K", "256K"],
+            ["Transformer (window 4K)", "92.1", "24.0", "6.2", "1.5"],
+            ["Linear attention", "58.4", "31.7", "12.9", "4.1"],
+            ["TIDE as context", "93.0", "71.3", "60.8", "48.2"],
+            ["TIDE as layer", "90.6", "66.5", "55.1", "41.0"],
+        ];
+        let y = |r: usize| 690.0 - 13.0 * r as f32;
+        let mut lines = vec![line(caption, 72.0, 703.0, 300.0, 9.0, false)];
+        for (r, cols) in rows.iter().enumerate() {
+            lines.push(cell(72.0, y(r), cols[0]));
+        }
+        for (r, cols) in rows.iter().enumerate() {
+            lines.push(cells(
+                y(r),
+                &[
+                    (222.0, cols[1]),
+                    (297.0, cols[2]),
+                    (372.0, cols[3]),
+                    (447.0, cols[4]),
+                ],
+            ));
+        }
+        lines.push(line(PROSE_AFTER, 72.0, 615.0, 520.0, 10.0, false));
+        lines
+    }
+
+    #[test]
+    fn rows_split_into_a_label_block_and_a_number_block_are_put_back_together() {
+        let lines = split_results_table();
+        let items = undetected_table_rows(&lines, &vec![false; lines.len()]);
+        assert_eq!(
+            item_texts(&lines, &items),
+            vec![
+                "Table 3: LongRecall accuracy (%) by context length.",
+                "Model 4K 16K 64K 256K",
+                "Transformer (window 4K) 92.1 24.0 6.2 1.5",
+                "Linear attention 58.4 31.7 12.9 4.1",
+                "TIDE as context 93.0 71.3 60.8 48.2",
+                "TIDE as layer 90.6 66.5 55.1 41.0",
+                PROSE_AFTER,
+            ]
+        );
+        // A joined row keeps its cells: it still splits at the gaps between them.
+        let PageItem::Row { line: joined, .. } = &items[4] else {
+            panic!("a joined row");
+        };
+        let cells: Vec<String> = line_segments(joined).into_iter().map(|s| s.text).collect();
+        assert_eq!(cells, ["TIDE as context", "93.0", "71.3", "60.8", "48.2"]);
+        assert_eq!(joined.bbox.x0, 72.0);
+        assert!(joined.bbox.x1 > 447.0);
+
+        // Lines a detected table or a form field holds are left where they are.
+        let items = undetected_table_rows(&lines, &vec![true; lines.len()]);
+        let texts: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(item_texts(&lines, &items), texts);
+    }
+
+    /// The KANDLE table as column-aware order read it: label and parameter count
+    /// together, the RMSE column after the paragraph that follows the table.
+    fn table_with_a_late_column() -> Vec<Line> {
+        let rows: [[&str; 3]; 4] = [
+            ["Model", "Parameters", "RMSE"],
+            ["MLP (4 layers)", "12,400", "3.1e-4"],
+            ["KAN (fixed grid G = 5)", "1,180", "9.6e-4"],
+            ["KANDLE (G = 5 to 20)", "1,240", "1.2e-4"],
+        ];
+        let y = |r: usize| 668.0 - 13.0 * r as f32;
+        let mut lines = vec![line(
+            "Table 1: Median test RMSE on the Feynman equations benchmark.",
+            72.0,
+            681.0,
+            350.0,
+            9.0,
+            false,
+        )];
+        for (r, cols) in rows.iter().enumerate() {
+            let mut l = cells(y(r), &[(72.0, cols[0]), (222.0, cols[1])]);
+            l.bold = r == 0;
+            lines.push(l);
+        }
+        lines.push(line(
+            "Grid extension accounts for most of the improvement over a fixed-grid KAN.",
+            72.0,
+            600.0,
+            520.0,
+            10.0,
+            false,
+        ));
+        lines.push(line(
+            "Training is slower per step than for an MLP, by a factor of about six.",
+            72.0,
+            587.0,
+            500.0,
+            10.0,
+            false,
+        ));
+        for (r, cols) in rows.iter().enumerate() {
+            let mut l = cell(377.0, y(r), cols[2]);
+            l.bold = r == 0;
+            lines.push(l);
+        }
+        lines
+    }
+
+    #[test]
+    fn a_column_read_after_the_next_paragraph_rejoins_its_rows() {
+        let lines = table_with_a_late_column();
+        let items = undetected_table_rows(&lines, &vec![false; lines.len()]);
+        let texts = item_texts(&lines, &items);
+        assert_eq!(
+            texts[1..5],
+            [
+                "Model Parameters RMSE",
+                "MLP (4 layers) 12,400 3.1e-4",
+                "KAN (fixed grid G = 5) 1,180 9.6e-4",
+                "KANDLE (G = 5 to 20) 1,240 1.2e-4",
+            ]
+        );
+        assert_eq!(texts.len(), 7, "{texts:?}");
+        assert!(texts[5].starts_with("Grid extension"));
+        assert!(texts[6].starts_with("Training is slower"));
+
+        // As blocks: the rows form one block of their own, before the paragraph.
+        let page = PageLines {
+            number: 1,
+            width: 612.0,
+            height: 792.0,
+            lines,
+            tables: Vec::new(),
+        };
+        let mut blocks = Vec::new();
+        segment_page(&page, &stats(), &mut false, &mut blocks);
+        let doc: Vec<Block> = blocks.into_iter().map(RawBlock::into_block).collect();
+        let at = doc
+            .iter()
+            .position(|b| b.text.contains("KANDLE (G = 5 to 20) 1,240 1.2e-4"))
+            .expect("the KANDLE row in one block");
+        assert_eq!(doc[at].kind, BlockKind::Paragraph);
+        assert!(
+            doc[at]
+                .text
+                .starts_with("Model Parameters RMSE MLP (4 layers) 12,400 3.1e-4"),
+            "{}",
+            doc[at].text
+        );
+        assert!(!doc[at].text.contains("Grid extension"));
+        assert!(doc[at + 1].text.starts_with("Grid extension"));
+        assert!(doc
+            .iter()
+            .all(|b| !matches!(b.kind, BlockKind::Heading { .. })));
+    }
+
+    #[test]
+    fn two_column_prose_with_short_lines_and_numbers_keeps_its_order() {
+        // Short lines (cell-sized) on the same baselines in both columns, with
+        // numbers inside the sentences: prose, not a table.
+        let left = [
+            "Recall rises to 41.2 at 16K.",
+            "The gap closes by 12.5 points.",
+            "We use 8 heads and 64 slots.",
+            "Training takes 3 days on 8 GPUs.",
+            "Table 2 lists 4 more runs.",
+        ];
+        let right = [
+            "Eviction keeps 97.8% of it.",
+            "Budgets of 20% suffice here.",
+            "The sink holds 4 tokens.",
+            "It runs 1.4 times faster.",
+            "Section 5 covers 2 limits.",
+        ];
+        let mut lines = Vec::new();
+        for (column, x) in [(left, 72.0), (right, 320.0)] {
+            for (i, t) in column.iter().enumerate() {
+                let y = 700.0 - 12.0 * i as f32;
+                lines.push(line(t, x, y, x + 5.0 * t.len() as f32, 10.0, false));
+            }
+        }
+        let items = undetected_table_rows(&lines, &vec![false; lines.len()]);
+        assert!(items.iter().all(|i| matches!(i, PageItem::Line(_))));
+        let order: Vec<usize> = items
+            .iter()
+            .filter_map(|i| match i {
+                PageItem::Line(n) => Some(*n),
+                PageItem::Row { .. } => None,
+            })
+            .collect();
+        assert_eq!(order, (0..lines.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_table_in_one_column_leaves_the_other_column_alone() {
+        let prose = |tag: &str, x: f32, y: f32| {
+            let t = format!("{tag} prose of the column, long enough to be text.");
+            line(&t, x, y, x + 220.0, 10.0, false)
+        };
+        let rows: [[&str; 3]; 5] = [
+            ["Index", "R@10", "R@100"],
+            ["HNSW", "95.3", "96.1"],
+            ["IVF-PQ", "88.0", "91.4"],
+            ["Flat", "99.9", "99.9"],
+            ["LSH", "71.2", "75.0"],
+        ];
+        let y = |r: usize| 660.0 - 13.0 * r as f32;
+        let mut lines = vec![prose("LEFT", 72.0, 700.0), prose("LEFT", 72.0, 688.0)];
+        for (r, cols) in rows.iter().enumerate() {
+            lines.push(cell(72.0, y(r), cols[0]));
+        }
+        for (r, cols) in rows.iter().enumerate() {
+            lines.push(cells(y(r), &[(170.0, cols[1]), (230.0, cols[2])]));
+        }
+        lines.push(prose("LEFT", 72.0, 580.0));
+        // The other column: prose on the rows' baselines, and one short line (the
+        // end of a paragraph) on the second row's baseline.
+        let right_first = lines.len();
+        lines.push(prose("RIGHT", 320.0, 660.0));
+        lines.push(cell(320.0, y(1), "RIGHT ends here."));
+        lines.push(prose("RIGHT", 320.0, 634.0));
+        lines.push(prose("RIGHT", 320.0, 621.0));
+        let items = undetected_table_rows(&lines, &vec![false; lines.len()]);
+        let texts = item_texts(&lines, &items);
+        assert_eq!(
+            texts[2..7],
+            [
+                "Index R@10 R@100",
+                "HNSW 95.3 96.1",
+                "IVF-PQ 88.0 91.4",
+                "Flat 99.9 99.9",
+                "LSH 71.2 75.0"
+            ]
+        );
+        // The other column is read as it was, after the table's column.
+        assert_eq!(texts.len(), 12, "{texts:?}");
+        let rest: Vec<String> = lines[right_first - 1..]
+            .iter()
+            .map(|l| l.text.clone())
+            .collect();
+        assert_eq!(texts[7..], rest[..]);
+    }
+
+    #[test]
+    fn number_cells_of_results_tables() {
+        for number in [
+            "1.2e-4",
+            "16K",
+            "1.3B",
+            "5.3x",
+            "57.8%",
+            "1,240",
+            "−0.4",
+            "41.2 ± 0.3",
+        ] {
+            assert!(is_number_cell(number), "{number}");
+        }
+        for text in ["(3)", "Model", "4 layers", "e-4", "x", "TIDE as layer"] {
+            assert!(!is_number_cell(text), "{text}");
+        }
     }
 
     #[test]
@@ -2442,6 +3089,267 @@ mod generated_pdf_tests {
         )
         .expect("layout");
         assert!(plain.tables.candidates.is_empty());
+    }
+
+    // ── Tables the detector misses ──────────────────────────────────────────
+    //
+    // The detector scans only pages with a `Table N` caption when a document has
+    // one, so each layout below sits on page 2 after a page that holds the
+    // document's only caption: its table is certain to be missed, as the
+    // detector missed tables of the paper corpus.
+
+    fn after_a_captioned_page(page: Vec<Text>) -> Vec<Vec<Text>> {
+        let mut first = column(72.0, 700.0, "intro", 6);
+        first.push(text(
+            72.0,
+            600.0,
+            9.0,
+            "Table 1: Results of the main experiment.",
+        ));
+        vec![first, page]
+    }
+
+    /// A borderless table drawn column by column (every label, then every number
+    /// of the second column, ...), 9 pt cells 13 pt apart, header in bold.
+    fn table_by_columns(xs: &[f32], top: f32, rows: &[&[&str]]) -> Vec<Text> {
+        let mut out = Vec::new();
+        for (c, &x) in xs.iter().enumerate() {
+            for (r, row) in rows.iter().enumerate() {
+                let y = top - 13.0 * r as f32;
+                out.push(if r == 0 {
+                    bold(x, y, 9.0, row[c])
+                } else {
+                    text(x, y, 9.0, row[c])
+                });
+            }
+        }
+        out
+    }
+
+    /// Text with the Markdown table separators of rendered tables removed and
+    /// whitespace collapsed, so a row reads the same as a paragraph or a table.
+    fn words(text: &str) -> String {
+        text.replace('|', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Each row appears whole, in order, after `before` and before `after`.
+    fn assert_rows_in_order(page_text: &str, before: &str, rows: &[&str], after: &str) {
+        let all = words(page_text);
+        let mut at = all
+            .find(before)
+            .unwrap_or_else(|| panic!("{before:?} missing: {all}"));
+        for row in rows {
+            let found = all[at..]
+                .find(row)
+                .unwrap_or_else(|| panic!("row {row:?} not whole or out of order: {all}"));
+            at += found + row.len();
+        }
+        assert!(
+            all[at..].contains(after),
+            "{after:?} not after the table: {all}"
+        );
+    }
+
+    #[test]
+    fn borderless_results_table_rows_stay_whole() {
+        let rows: &[&[&str]] = &[
+            &["Model", "4K", "16K", "64K", "256K"],
+            &["Transformer (window 4K)", "92.1", "24.0", "6.2", "1.5"],
+            &["Linear attention", "58.4", "31.7", "12.9", "4.1"],
+            &["TIDE as context", "93.0", "71.3", "60.8", "48.2"],
+            &["TIDE as layer", "90.6", "66.5", "55.1", "41.0"],
+        ];
+        let mut page = column(72.0, 720.0, "before", 3);
+        page.extend(table_by_columns(
+            &[72.0, 222.0, 297.0, 372.0, 447.0],
+            670.0,
+            rows,
+        ));
+        page.extend(column(72.0, 590.0, "after", 3));
+        let doc = parse(&after_a_captioned_page(page));
+        assert_rows_in_order(
+            &doc.page_text(2),
+            "before line 2",
+            &[
+                "Model 4K 16K 64K 256K",
+                "Transformer (window 4K) 92.1 24.0 6.2 1.5",
+                "Linear attention 58.4 31.7 12.9 4.1",
+                "TIDE as context 93.0 71.3 60.8 48.2",
+                "TIDE as layer 90.6 66.5 55.1 41.0",
+            ],
+            "after line 0",
+        );
+        // The rows are not a heading, and do not run into the prose around them.
+        assert!(doc
+            .blocks
+            .iter()
+            .all(|b| !(b.text.contains("TIDE as layer") && b.text.contains("body text"))));
+        assert!(texts_of(&doc, "heading").is_empty(), "{:?}", doc.blocks);
+    }
+
+    #[test]
+    fn label_column_and_several_numeric_columns_stay_together() {
+        let rows: &[&[&str]] = &[
+            &["Model", "Parameters", "RMSE"],
+            &["MLP (4 layers)", "12,400", "3.1e-4"],
+            &["KAN (fixed grid G = 5)", "1,180", "9.6e-4"],
+            &["KANDLE (G = 5 to 20)", "1,240", "1.2e-4"],
+        ];
+        let mut page = column(72.0, 720.0, "before", 3);
+        page.extend(table_by_columns(&[72.0, 222.0, 377.0], 670.0, rows));
+        page.push(text(
+            72.0,
+            600.0,
+            10.0,
+            "Grid extension accounts for most of the improvement over a fixed-grid KAN.",
+        ));
+        page.push(text(
+            72.0,
+            588.0,
+            10.0,
+            "Training is slower per step than for an MLP, by a factor of about six.",
+        ));
+        let doc = parse(&after_a_captioned_page(page));
+        assert_rows_in_order(
+            &doc.page_text(2),
+            "before line 2",
+            &[
+                "Model Parameters RMSE",
+                "MLP (4 layers) 12,400 3.1e-4",
+                "KAN (fixed grid G = 5) 1,180 9.6e-4",
+                "KANDLE (G = 5 to 20) 1,240 1.2e-4",
+            ],
+            "Grid extension accounts",
+        );
+    }
+
+    #[test]
+    fn a_table_inside_one_column_of_a_two_column_page_stays_whole() {
+        let rows: &[&[&str]] = &[
+            &["Index", "R@10", "R@100"],
+            &["HNSW", "95.3", "96.1"],
+            &["IVF-PQ", "88.0", "91.4"],
+            &["Flat", "99.9", "99.9"],
+            &["LSH", "71.2", "75.0"],
+        ];
+        let mut page = column(72.0, 720.0, "LEFT", 4);
+        page.extend(table_by_columns(&[72.0, 170.0, 230.0], 660.0, rows));
+        page.extend(column(72.0, 580.0, "LEFTB", 4));
+        // The right column runs beside the table, with a short paragraph end on
+        // the baseline of a table row.
+        page.extend(column(320.0, 720.0, "RIGHT", 5));
+        page.push(text(320.0, 647.0, 10.0, "RIGHT ends here."));
+        page.extend(column(320.0, 620.0, "RIGHTB", 6));
+        let doc = parse(&after_a_captioned_page(page));
+        let page_text = doc.page_text(2);
+        assert_rows_in_order(
+            &page_text,
+            "LEFT line 3",
+            &[
+                "Index R@10 R@100",
+                "HNSW 95.3 96.1",
+                "IVF-PQ 88.0 91.4",
+                "Flat 99.9 99.9",
+                "LSH 71.2 75.0",
+            ],
+            "LEFTB line 0",
+        );
+        let all = words(&page_text);
+        let last_left = all.rfind("LEFTB line 3").expect("left column");
+        let first_right = all.find("RIGHT line 0").expect("right column");
+        assert!(last_left < first_right, "columns interleaved: {all}");
+        assert!(
+            doc.blocks
+                .iter()
+                .all(|b| !(b.text.contains("LEFT") && b.text.contains("RIGHT"))),
+            "a block mixes both columns: {all}"
+        );
+        assert!(
+            doc.blocks
+                .iter()
+                .all(|b| !(b.text.contains("HNSW") && b.text.contains("RIGHT"))),
+            "a table row took text of the other column: {all}"
+        );
+    }
+
+    #[test]
+    fn two_column_prose_with_numbers_keeps_its_columns() {
+        // Short lines with numbers on the same baselines in both columns, drawn
+        // interleaved: prose, not a table.
+        let mut page = Vec::new();
+        for i in 0..10 {
+            let y = 700.0 - 12.0 * i as f32;
+            page.push(text(
+                72.0,
+                y,
+                10.0,
+                &format!("LEFT {i} recall rises by {i}.5 points."),
+            ));
+            page.push(text(
+                320.0,
+                y,
+                10.0,
+                &format!("RIGHT {i} keeps {i}0% of the cache."),
+            ));
+        }
+        let doc = parse(&after_a_captioned_page(page));
+        let all = words(&doc.page_text(2));
+        let last_left = all.rfind("LEFT 9").expect("left column");
+        let first_right = all.find("RIGHT 0").expect("right column");
+        assert!(last_left < first_right, "columns interleaved: {all}");
+        assert!(
+            doc.blocks
+                .iter()
+                .all(|b| !(b.text.contains("LEFT") && b.text.contains("RIGHT"))),
+            "a block mixes both columns: {all}"
+        );
+    }
+
+    #[test]
+    fn a_table_spanning_both_columns_stays_whole_between_them() {
+        let rows: &[&[&str]] = &[
+            &["Method", "Bits", "Memory", "Throughput", "LongSuite"],
+            &["Full precision", "16", "1.0x", "1.0x", "47.6"],
+            &["Per-token 2-bit", "2", "5.3x", "3.1x", "31.2"],
+            &["SQUEEZE", "2", "5.3x", "3.1x", "47.2"],
+        ];
+        let mut page = column(72.0, 720.0, "LEFT", 4);
+        page.extend(column(320.0, 720.0, "RIGHT", 4));
+        page.extend(table_by_columns(
+            &[72.0, 250.0, 330.0, 410.0, 490.0],
+            650.0,
+            rows,
+        ));
+        page.extend(column(72.0, 580.0, "LEFTB", 4));
+        page.extend(column(320.0, 580.0, "RIGHTB", 4));
+        let doc = parse(&after_a_captioned_page(page));
+        let page_text = doc.page_text(2);
+        let all = words(&page_text);
+        for row in [
+            "Method Bits Memory Throughput LongSuite",
+            "Full precision 16 1.0x 1.0x 47.6",
+            "Per-token 2-bit 2 5.3x 3.1x 31.2",
+            "SQUEEZE 2 5.3x 3.1x 47.2",
+        ] {
+            assert!(all.contains(row), "row {row:?} not whole: {all}");
+        }
+        let header = all.find("Method Bits").expect("header");
+        let last = all.find("SQUEEZE 2 5.3x").expect("last row");
+        assert!(header < last, "{all}");
+        assert!(
+            doc.blocks
+                .iter()
+                .all(|b| !(b.text.contains("LEFT") && b.text.contains("RIGHT"))),
+            "a block mixes both columns: {all}"
+        );
+        assert!(
+            doc.blocks.iter().all(|b| !(b.text.contains("SQUEEZE")
+                && (b.text.contains("LEFT") || b.text.contains("RIGHT")))),
+            "a table row took column text: {all}"
+        );
     }
 
     #[test]

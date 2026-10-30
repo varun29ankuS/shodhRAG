@@ -136,8 +136,10 @@ questions. A case names its files and passages; the page is found by laying
 out the paper. Every method, author, benchmark and number is invented, and
 unit tests check that the committed files are the generator's output, that
 every passage is on exactly one page of its paper and in no file the case
-does not list, that every fact is in its sources, and that no other file
-holds a key fact (a number, or a phrase of several words). Regenerate after changing the generator:
+does not list, that every fact is in its sources, that no other file
+holds a key fact (a number, or a phrase of several words), and that the
+layout parser puts every PDF passage on its page (the synthetic set is checked
+the same way). Regenerate after changing the generator:
 
 ```
 shodh-eval synth-papers --out crates/shodh-eval/data/papers

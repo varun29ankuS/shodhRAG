@@ -710,6 +710,12 @@ mod tests {
     }
 
     #[test]
+    fn every_pdf_passage_is_on_its_page_as_the_parser_reads_it() {
+        let missing = crate::dataset::pdf_passages_missing_from_layout(&committed());
+        assert!(missing.is_empty(), "{}", missing.join("\n"));
+    }
+
+    #[test]
     fn lines_wrap_at_word_boundaries() {
         assert_eq!(wrap("aa bb cc", 5), ["aa bb", "cc"]);
         assert_eq!(wrap("  ", 5), Vec::<String>::new());

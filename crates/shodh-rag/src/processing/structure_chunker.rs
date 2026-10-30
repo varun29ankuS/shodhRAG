@@ -696,7 +696,15 @@ pub fn split_text(text: &str, budget: usize, count_tokens: &dyn Fn(&str) -> usiz
                 current.clear();
                 used = 0;
             }
-            pieces.extend(pack_by_cost(sentence.split_whitespace(), " ", room, &cost));
+            // Text set in lines (the rows of a table) is cut between lines when
+            // every line fits, so that no row is split.
+            let line_cost = |s: &str| cost(s) + 1;
+            let lines: Vec<&str> = sentence.lines().filter(|l| !l.trim().is_empty()).collect();
+            if lines.len() > 1 && lines.iter().all(|l| line_cost(l) <= room) {
+                pieces.extend(pack_by_cost(lines.into_iter(), "\n", room, &line_cost));
+            } else {
+                pieces.extend(pack_by_cost(sentence.split_whitespace(), " ", room, &cost));
+            }
             continue;
         }
         if used + tokens > room && !current.is_empty() {
@@ -914,6 +922,25 @@ mod tests {
         };
         d.finalize();
         d
+    }
+
+    #[test]
+    fn text_set_in_lines_is_split_between_lines() {
+        // The rows of a table rebuilt by the layout parser: one row per line, no
+        // sentence break, far over the budget.
+        let rows: Vec<String> = (0..60)
+            .map(|i| format!("Method{i} 41.{i} 57.{i} 12.{i} 9.{i}"))
+            .collect();
+        let text = rows.join("\n");
+        let pieces = split_text(&text, 50, &|t: &str| words(t) + 5);
+        assert!(pieces.len() > 1);
+        for piece in &pieces {
+            assert!(words(piece) + 5 <= 50, "piece over budget: {piece}");
+            for line in piece.lines() {
+                assert!(rows.iter().any(|r| r == line), "row cut: {line:?}");
+            }
+        }
+        assert_eq!(pieces.join("\n"), text);
     }
 
     /// A capitalised sentence of `n` words ending in `tag.`.

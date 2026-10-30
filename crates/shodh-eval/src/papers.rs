@@ -710,6 +710,27 @@ mod tests {
     }
 
     #[test]
+    fn every_pdf_passage_is_on_its_page_as_the_parser_reads_it() {
+        // A passage that is a table row must also stay in one block.
+        let rows: BTreeSet<String> = crate::papers_text::pdf_papers()
+            .into_iter()
+            .chain(crate::papers_gen::pdf_papers())
+            .flat_map(|paper| paper.blocks)
+            .flat_map(|block| match block {
+                Block::Table { header, rows, .. } => {
+                    std::iter::once(header).chain(rows).collect::<Vec<_>>()
+                }
+                _ => Vec::new(),
+            })
+            .map(|row| crate::text::normalize_text(&row.join(" ")))
+            .collect();
+        assert!(rows.len() > 20, "{} table rows", rows.len());
+        let one_block = |passage: &str| rows.contains(&crate::text::normalize_text(passage));
+        let missing = crate::dataset::pdf_passages_missing_from_layout(&committed(), &one_block);
+        assert!(missing.is_empty(), "{}", missing.join("\n"));
+    }
+
+    #[test]
     fn lines_wrap_at_word_boundaries() {
         assert_eq!(wrap("aa bb cc", 5), ["aa bb", "cc"]);
         assert_eq!(wrap("  ", 5), Vec::<String>::new());

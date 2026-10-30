@@ -66,7 +66,7 @@ test('a failed refresh drops the kept data, so it is not shown as current next t
   assert.equal(result.ok, false);
   assert.equal(readViewCache(VIEW_CACHE_KEYS.slackStatus), null);
   const ok = await refreshViewCache(VIEW_CACHE_KEYS.slackStatus, async () => ({ state: 'paused' }));
-  assert.deepEqual(ok, { ok: true, value: { state: 'paused' } });
+  assert.deepEqual(ok, { ok: true, value: { state: 'paused' }, error: null });
   assert.deepEqual(readViewCache(VIEW_CACHE_KEYS.slackStatus), { state: 'paused' });
 });
 
@@ -77,7 +77,7 @@ test('a refresh that started before a drop does not write its older result back'
   dropViewCache(VIEW_CACHE_KEYS.auditStats); // the data changed while the read was in flight
   read.resolve({ version: 1 });
   const result = await refreshing;
-  assert.deepEqual(result, { ok: true, value: { version: 1 } }, 'the view still gets what it read');
+  assert.deepEqual(result, { ok: true, value: { version: 1 }, error: null }, 'the view still gets what it read');
   assert.equal(readViewCache(VIEW_CACHE_KEYS.auditStats), null, 'but it is not kept as the last data');
 
   const ticket = viewCacheTicket(VIEW_CACHE_KEYS.auditStats);

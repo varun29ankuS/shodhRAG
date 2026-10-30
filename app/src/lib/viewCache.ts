@@ -84,7 +84,8 @@ export function writeViewCacheIfCurrent<T>(ticket: CacheTicket, value: T | null 
   return true;
 }
 
-export type RefreshResult<T> = { ok: true; value: T } | { ok: false; error: unknown };
+/** Both shapes carry every field, so callers read them without narrowing (the app is not compiled with strict null checks). */
+export type RefreshResult<T> = { ok: true; value: T; error: null } | { ok: false; value: null; error: unknown };
 
 /**
  * Load a view's data and keep it: on success unless it was dropped while
@@ -96,10 +97,10 @@ export async function refreshViewCache<T>(key: ViewCacheKey, load: () => Promise
   try {
     const value = await load();
     writeViewCacheIfCurrent(ticket, value);
-    return { ok: true, value };
+    return { ok: true, value, error: null };
   } catch (error) {
     dropViewCache(key);
-    return { ok: false, error };
+    return { ok: false, value: null, error };
   }
 }
 

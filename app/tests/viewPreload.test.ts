@@ -139,10 +139,14 @@ test('stopping while a view is loading requests no further idle period', async (
   const { idle, runIdle, queuedCount } = manualIdle();
   const stop = preloader.preloadWhenIdle(['library', 'tasks'], idle);
   runIdle();
+  await flush(); // the library load has started and is waiting
   stop();
   finish();
   await flush();
-  assert.equal(queuedCount(), 0);
+  assert.equal(preloader.isLoaded('library'), true, 'the load in progress still completes');
+  assert.equal(queuedCount(), 0, 'no idle period is requested after stopping');
+  runIdle();
+  await flush();
   assert.equal(preloader.isLoaded('tasks'), false);
 });
 

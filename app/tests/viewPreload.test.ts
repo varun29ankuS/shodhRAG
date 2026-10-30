@@ -241,3 +241,10 @@ test('only the likely views are fetched while idle, and an idle period is never 
   assert.match(views, /IDLE_PRELOAD_VIEWS: readonly LazyTab\[\] = \['library', 'workspaces'\];/);
   assert.doesNotMatch(views, /requestIdleCallback\([^)]*timeout/, 'no timeout: a busy app is never interrupted');
 });
+
+test('the shell runs the idle gate and tells it when an answer streams', () => {
+  const app = readFileSync(new URL('../src/App-SplitView.tsx', import.meta.url), 'utf8');
+  assert.match(app, /createIdlePreloadGate\(\)/);
+  assert.match(app, /\.setStreaming\(answerStreaming\)/);
+  assert.match(app, /answerStreaming = streamingConversationId !== null/);
+});

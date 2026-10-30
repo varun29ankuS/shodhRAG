@@ -107,7 +107,7 @@ import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
-import { ActivityView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
+import { ActivityView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
 import { clearViewCache } from './lib/viewCache';
 import { shownView } from './lib/viewSwitch';
@@ -179,6 +179,7 @@ function AppSplitView() {
     appendMessageTo,
     updateMessage,
     navigation,
+    streamingConversationId,
   } = useChatSession();
 
   // Workspaces: the sidebar groups chats by them, new chats start in the current one.
@@ -1051,6 +1052,22 @@ function AppSplitView() {
   useEffect(() => {
     initializeApp();
   }, []); // Empty dependency array - run only once on mount
+
+  // Fetch the likely views' code while idle, once the first answer has
+  // finished or a while after launch, and never while an answer streams.
+  const preloadGate = useRef<ReturnType<typeof createIdlePreloadGate> | null>(null);
+  useEffect(() => {
+    const gate = createIdlePreloadGate();
+    preloadGate.current = gate;
+    return () => {
+      gate.dispose();
+      preloadGate.current = null;
+    };
+  }, []);
+  const answerStreaming = streamingConversationId !== null;
+  useEffect(() => {
+    preloadGate.current?.setStreaming(answerStreaming);
+  }, [answerStreaming]);
 
   // The command palette reaches every view in a keystroke: fetch their code as it opens.
   useEffect(() => {

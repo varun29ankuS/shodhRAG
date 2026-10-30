@@ -104,7 +104,7 @@ function FigureCard({ figure, parts, paperTitle }: { figure: PaperFigure; parts:
             <button
               type="button"
               className={BUTTON}
-              onClick={() => insertIntoComposer(`Explain ${figure.label} of "${paperTitle}" (${parts.filePath}): `)}
+              onClick={() => insertIntoComposer(`Explain ${figure.label} of "${paperTitle}": `, { path: parts.filePath, name: paperTitle })}
             >
               <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
               Ask about it

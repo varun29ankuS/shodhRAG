@@ -98,6 +98,8 @@ import { failureNotice, imageNotice, readImageText } from './features/ask/imageN
 import type { ImageOrigin } from './features/ask/imageNotice';
 import { insideOtherDialog, instructionsEscape } from './lib/escapeScope';
 import { composerAttachments } from './features/ask/imageAttachments';
+import { fileQuestionDraft } from './features/ask/fileQuestion';
+import type { AskDraftRequest } from './features/ask/fileQuestion';
 import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
 import type { IndexingProgressPayload } from './features/library/indexingProgress';
 import { isIndexableDocument, isIndexableFile, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
@@ -229,7 +231,7 @@ function AppSplitView() {
   const indexSourceRef = useRef<((source: Source, kind: 'folder' | 'file', adopt?: boolean) => Promise<void>) | null>(null);
   const indexingBusyRef = useRef<(() => boolean) | null>(null);
   // Text placed in the Ask composer by another view ("Ask about this file").
-  const [askDraft, setAskDraft] = useState<{ text: string; seq: number } | null>(null);
+  const [askDraft, setAskDraft] = useState<AskDraftRequest | null>(null);
   const clearAskDraft = useCallback(() => setAskDraft(null), []);
 
   // The sources are kept on disk by the backend, so a force-quit cannot lose
@@ -1427,11 +1429,18 @@ function AppSplitView() {
     await indexSource(source, await sourceKind(source));
   };
 
-  /** Start a chat about a Library file: a new conversation with the file named in the composer. */
+  /**
+   * Start a chat about a Library file: a new conversation with the file named in the
+   * composer by its name only; its path goes with the question as its search limit.
+   */
   const handleAskAboutFile = (file: FileNode, _source: LibrarySource) => {
     // Outside workspaces: a workspace may not contain this file.
     createConversation({ workspaceId: null });
-    setAskDraft(prev => ({ text: `About ${file.name} (${file.path}): `, seq: (prev?.seq ?? 0) + 1 }));
+    setAskDraft(prev => ({
+      text: fileQuestionDraft(file.name),
+      file: { path: file.path, name: file.name },
+      seq: (prev?.seq ?? 0) + 1,
+    }));
     setActiveTab('ask');
   };
 

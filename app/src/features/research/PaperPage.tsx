@@ -224,7 +224,7 @@ export function PaperPage({
               Open PDF
             </button>
           )}
-          <button type="button" className={BUTTON} onClick={() => insertIntoComposer(`About "${paperTitle(p)}"${p.filePath ? ` (${p.filePath})` : ''}: `)}>
+          <button type="button" className={BUTTON} onClick={() => insertIntoComposer(`About "${paperTitle(p)}": `, p.filePath ? { path: p.filePath, name: paperTitle(p) } : undefined)}>
             <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
             Ask about this paper
           </button>

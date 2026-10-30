@@ -333,3 +333,22 @@ test('a transcript stored live without a checkpoint keeps the existing interrupt
   assert.ok(restored);
   assert.equal(restored.error, 'The app closed before this answer finished.');
 });
+
+test('an answer saved from its start restores as interrupted, so its question is never left without an answer', () => {
+  // The chat provider publishes a new answer with its stored start form as its checkpoint.
+  const { effect, saves } = store();
+  let v = loaded('c1');
+  v = publishMessage(v, 'c1', user, 'debounced');
+  const start = initialTranscript('run-3', 2_000);
+  v = publishMessage(v, 'c1', { id: 'a1', text: '', live: true }, 'debounced', { id: 'a1', text: '', checkpoint: true });
+  effect(v);
+  assert.deepEqual(saves.at(-1)?.messages, [{ id: 'u1', text: user.text }, { id: 'a1', text: '', checkpoint: true }]);
+  // Streamed frames are display only and keep the start checkpoint.
+  v = publishMessage(v, 'c1', { id: 'a1', text: 'partial', live: true }, 'none');
+  assert.deepEqual(messagesToSave(v, m => !m.live, m => ({ id: m.id, text: m.text })).at(-1), { id: 'a1', text: '', checkpoint: true });
+  // Restored after the app closed: an interrupted answer (Retry), not a bare question.
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(start))));
+  assert.ok(restored);
+  assert.equal(restored.status, 'aborted');
+  assert.equal(restored.error, 'The app closed before this answer finished.');
+});

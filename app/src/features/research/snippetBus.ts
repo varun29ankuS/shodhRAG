@@ -7,6 +7,7 @@
  */
 
 import type { ResultRegion, Snippet, SnippetRect } from './types';
+import type { FileRef } from '../ask/fileQuestion';
 
 export const OPEN_SNIPPET_EVENT = 'shodh:open-snippet';
 export const SHOW_SOURCE_EVENT = 'shodh:show-source-box';
@@ -38,21 +39,32 @@ export function showSourceBox(request: SourceBoxRequest): void {
   window.dispatchEvent(new CustomEvent<SourceBoxRequest>(SHOW_SOURCE_EVENT, { detail: request }));
 }
 
+/**
+ * Text for the composer, and the file the next question is about when the
+ * text asks about one: the file goes with the question as its search limit,
+ * never in its text (`features/ask/fileQuestion`).
+ */
+export interface ComposerInsert {
+  text: string;
+  file?: FileRef;
+}
+
 /** Inserts not yet taken by a composer (Ask may mount after the request). */
-let pendingInserts: string[] = [];
+let pendingInserts: ComposerInsert[] = [];
 
 /**
  * Append `text` to the Ask composer's draft and show Ask. Kept until the
  * composer takes it, so it is not lost while Ask mounts.
  */
-export function insertIntoComposer(text: string): void {
-  pendingInserts.push(text);
-  window.dispatchEvent(new CustomEvent<string>(COMPOSER_INSERT_EVENT, { detail: text }));
+export function insertIntoComposer(text: string, file?: FileRef): void {
+  const insert: ComposerInsert = file ? { text, file } : { text };
+  pendingInserts.push(insert);
+  window.dispatchEvent(new CustomEvent<ComposerInsert>(COMPOSER_INSERT_EVENT, { detail: insert }));
   window.dispatchEvent(new CustomEvent('switchTab', { detail: 'ask' }));
 }
 
 /** The pending inserts, oldest first, now owned by the caller. */
-export function takePendingInserts(): string[] {
+export function takePendingInserts(): ComposerInsert[] {
   const taken = pendingInserts;
   pendingInserts = [];
   return taken;

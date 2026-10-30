@@ -28,6 +28,7 @@ import { replayedContent } from './chatHistory';
 import { isConnectorConversation, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';
 import { metadataWithAttachedContext, readAttachedContext } from './imageAttachments';
 import type { AttachedContext } from './imageAttachments';
+import { cleanFiles, limitedToFiles, metadataWithAboutFiles, readAboutFiles } from './fileQuestion';
 import type { SideSummaryRef } from '../focus/summary';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type {
@@ -245,10 +246,14 @@ function readRun(value: unknown): RunRecord | undefined {
 }
 
 function fromStored(m: ConversationMessage): ChatMessage {
-  const metadata = metadataWithAttachedContext(metadataWithSummary(metadataWithoutThreads(m.metadata), null), []);
+  const metadata = metadataWithAboutFiles(
+    metadataWithAttachedContext(metadataWithSummary(metadataWithoutThreads(m.metadata), null), []),
+    [],
+  );
   const threads = threadsFromMetadata(m.metadata);
   const sideSummary = m.role === 'user' ? readSideSummary(m.metadata) : null;
   const attachedContext = m.role === 'user' ? readAttachedContext(m.metadata) : [];
+  const aboutFiles = m.role === 'user' ? readAboutFiles(m.metadata) : [];
   return {
     id: m.id,
     role: m.role,
@@ -262,6 +267,7 @@ function fromStored(m: ConversationMessage): ChatMessage {
     threads: threads.length > 0 ? threads : undefined,
     sideSummary: sideSummary ?? undefined,
     attachedContext: attachedContext.length > 0 ? attachedContext : undefined,
+    aboutFiles: aboutFiles.length > 0 ? aboutFiles : undefined,
   };
 }
 
@@ -274,9 +280,12 @@ function toStored(m: ChatMessage): ConversationMessage {
   };
   if (m.artifacts && m.artifacts.length > 0) stored.artifacts = m.artifacts;
   if (m.searchResults && m.searchResults.length > 0) stored.searchResults = m.searchResults;
-  const metadata = metadataWithAttachedContext(
-    metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []),
-    m.attachedContext ?? [],
+  const metadata = metadataWithAboutFiles(
+    metadataWithAttachedContext(
+      metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []),
+      m.attachedContext ?? [],
+    ),
+    m.aboutFiles ?? [],
   );
   if (metadata) stored.metadata = metadata;
   if (m.run) {
@@ -591,7 +600,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       abortTimer: null,
     };
     liveRef.current = live;
-    publish(conversationId, message, 'none');
+    // Saved from its start: an app closed (or reloaded) before the answer ends shows it
+    // as interrupted, with Retry, instead of leaving a question with no answer and no
+    // way to ask it again but retyping it.
+    publish(conversationId, message, 'debounced', toStored(message));
     setLiveRun({ conversationId, messageId: message.id, transcript });
 
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
@@ -642,6 +654,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       ? [{ origin: 'connector' as const, text: seed.text }]
       : [];
     const attachedContext = [...carried, ...(extra?.attachedContext ?? [])].filter(a => a.text.trim().length > 0);
+    // The files a question is about stay with it, so a retry asks about them again.
+    const aboutFiles = cleanFiles(options.sourceFiles);
     const userMessage: ChatMessage = {
       id: newId('msg'),
       role: 'user',
@@ -649,6 +663,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       timestamp: new Date().toISOString(),
       ...(sideSummary ? { sideSummary } : {}),
       ...(attachedContext.length > 0 ? { attachedContext } : {}),
+      ...(aboutFiles.length > 0 ? { aboutFiles } : {}),
     };
     const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
     publish(conversationId, userMessage, 'debounced');
@@ -674,6 +689,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (userIndex < 0) return;
     const asked = messages[userIndex];
     const prompt = asked.sideSummary ? summaryPrompt(asked.sideSummary, asked.content) : asked.content;
+    // A question about a file is asked about that file again.
+    const askedOptions = limitedToFiles(options, asked.aboutFiles);
 
     if (index === messages.length - 1) {
       // Latest answer: replace it in place and re-run the same prompt. The replaced
@@ -682,9 +699,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const replaced = messages[index].transcript;
       const priorRunIds = replaced ? [...(replaced.priorRunIds ?? []), replaced.runId] : [];
       setView(v => changeMessages(v, conversationId, ms => ms.filter(m => m.id !== assistantMessageId), 'debounced'));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), options, asked.sideSummary ? 'composed' : 'typed', fallback, asked.attachedContext ?? [], priorRunIds);
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), askedOptions, asked.sideSummary ? 'composed' : 'typed', fallback, asked.attachedContext ?? [], priorRunIds);
     } else {
-      send(asked.content, options, {
+      send(asked.content, askedOptions, {
         ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}),
         ...(asked.attachedContext ? { attachedContext: asked.attachedContext } : {}),
         fallback,
@@ -723,7 +740,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         if (liveRef.current && !liveRef.current.settled) return;
         liveRef.current = adopted;
         publish(conversationId, { id: newId('msg'), role: 'user', content: message, timestamp: new Date().toISOString() }, 'debounced');
-        publish(conversationId, adopted.message, 'none');
+        publish(conversationId, adopted.message, 'debounced', toStored(adopted.message));
       })
       .catch(error => notify.error('Could not steer the answer', { description: toAgentError(error).message }));
   }, [api, enqueue, publish]);

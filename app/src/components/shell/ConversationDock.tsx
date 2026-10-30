@@ -28,8 +28,9 @@ import { Transcript } from '../../features/agent/Transcript';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { useSendOptions } from '../../features/ask/useSendOptions';
-import { AttachmentChips, useImageAttachments } from '../../features/ask/AttachmentChips';
+import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from '../../features/ask/AttachmentChips';
 import { attachedContextOf, composerAttachments } from '../../features/ask/imageAttachments';
+import { composerFiles, limitedToFiles } from '../../features/ask/fileQuestion';
 import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
 
@@ -123,6 +124,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const sendOptions = useSendOptions(sources);
   // Image text attached in Ask goes out with a reply sent from here too.
   const attachments = useImageAttachments(session.activeConversationId);
+  const aboutFile = useComposerFile(session.activeConversationId);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -320,9 +322,12 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     // cleared only once the question is accepted.
     const conversationId = session.activeConversationId;
     const attached = composerAttachments.get(conversationId);
-    if (!send(text, sendOptions, { attachedContext: attachedContextOf(attached) })) return;
+    // The file the question is about ("Ask about this file") goes with it as its search limit.
+    const file = composerFiles.get(conversationId);
+    if (!send(text, limitedToFiles(sendOptions, file ? [file.path] : []), { attachedContext: attachedContextOf(attached) })) return;
     setDraft('');
     composerAttachments.consume(conversationId, attached);
+    composerFiles.consume(conversationId, file);
   };
   const submitSteer = () => {
     const text = draft.trim();
@@ -451,7 +456,12 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
               ? `This conversation happened in ${connectorName(readOnlySource.connector)}. Open it in Ask and choose Continue in Ask to reply.`
               : sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
             placeholder="Reply…"
-            attachments={<AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />}
+            attachments={(
+              <>
+                {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact />}
+                <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />
+              </>
+            )}
             compact
           />
         </SnippetDropZone>

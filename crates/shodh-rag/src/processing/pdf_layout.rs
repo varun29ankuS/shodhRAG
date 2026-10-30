@@ -1375,6 +1375,8 @@ struct RawBlock {
     field: Option<(String, String)>,
     /// Share of the region's text-layer tokens a [`RawKind::Table`] block's cells hold.
     coverage: Option<f32>,
+    /// The rows of a table the detector missed: one row per line of text.
+    table_rows: bool,
 }
 
 impl RawBlock {
@@ -1390,6 +1392,7 @@ impl RawBlock {
             table: None,
             field: None,
             coverage: None,
+            table_rows: false,
         }
     }
 
@@ -1413,10 +1416,11 @@ impl RawBlock {
     }
 
     fn joined_text(&self) -> String {
-        let separator_newline = matches!(
-            self.kind,
-            RawKind::Code | RawKind::Equation | RawKind::TableText
-        );
+        let separator_newline = self.table_rows
+            || matches!(
+                self.kind,
+                RawKind::Code | RawKind::Equation | RawKind::TableText
+            );
         let mut out = String::new();
         for line in &self.lines {
             let text = line.text.trim();
@@ -1491,26 +1495,83 @@ impl RawBlock {
 // another. When no table was detected over such lines, the rows are put back
 // together from geometry: lines that share a baseline, short enough to be cells,
 // stacked in rows whose cells fall into the same columns, with numbers in most
-// cells beside the first column. Prose does not qualify (its lines are longer
-// than a cell, and its short lines are sentences, not numbers), so the columns
-// of a two-column page are left as they are read.
+// cells beside the first column.
+//
+// What is not a table, and why it is left as read:
+// - prose: its lines are longer than a cell, and its short lines are sentences,
+//   not numbers;
+// - the other column of a two-column page: a column that prose of that page
+//   column overlaps at the table's height is cut off, and so is a column of text
+//   to the right of the numbers (a label beside the table, or the label column of
+//   a second table side by side, which is then a table of its own);
+// - line numbers in the margins of a draft: text between two cells on their
+//   baseline separates them;
+// - the tick labels of plots side by side: numbers only, each column an even
+//   progression.
 
 /// Longest cell of an undetected table, in characters: a longer stretch of text
 /// between wide gaps is prose.
 const MAX_CELL_CHARS: usize = 40;
+/// Longest row label, in characters and words, when the rest of its row starts
+/// with a number; a longer line, or one that ends a clause, is prose.
+const MAX_LABEL_CHARS: usize = 80;
+const MAX_LABEL_WORDS: usize = 12;
+/// Fewest rows with a number in a table of three or more columns at even row
+/// spacing (a header and two rows: an ablation).
+const SMALL_TABLE_NUMBER_ROWS: usize = 2;
 
-/// A numeric cell as results tables print them: plain, grouped, signed and
-/// percent numbers ([`super::document_model::is_numeric_cell`]), scientific
-/// notation (`1.2e-4`), and numbers with a unit or factor suffix (`1.3B`, `16K`,
-/// `5.3x`). Equation numbers such as `(3)` are not numbers.
+/// A number as results tables print it: signed, grouped by commas or (thin)
+/// spaces, decimal, scientific (`1.2e-4`), percent, with a unit or factor suffix
+/// (`16K`, `1.3B`, `5.3x`).
+const NUMBER: &str = "[+\\-−–]?(?:\\d{1,3}(?:[,\u{2009}\u{202F}\u{A0} ]\\d{3})+|\\d+)(?:\\.\\d+)?(?:[eE][+\\-−–]?\\d+)?%?(?:\\s?[×xKMBkmb])?";
+
+/// A numeric cell: a number; `±0.3`; a pair or range (`41.2 ± 0.3`,
+/// `92.1/88.0`, `1.2–3.4`); a mean and its spread (`41.2 (0.3)`); a spread on its
+/// own (`(0.3)`, decimal only, so that the equation number `(3)` is not a number).
 static RE_NUMBER_CELL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[+\-−–]?\d+(?:\.\d+)?(?:[eE][+\-−–]?\d+)?(?:\s?[×xKMBkmb])?[*†‡]*$")
-        .expect("static regex")
+    let n = NUMBER;
+    Regex::new(&format!(
+        "^(?:{n}|(?:±|\\+/-)\\s*{n}|{n}\\s*(?:±|\\+/-|/|–|—|-|~)\\s*{n}|{n}\\s*\\(\\s*(?:±\\s*)?{n}\\s*\\)|\\(\\s*(?:±\\s*)?\\d*\\.\\d+%?\\s*\\))$"
+    ))
+    .expect("static regex")
 });
 
 fn is_number_cell(text: &str) -> bool {
-    let t = text.trim();
+    let t = text.trim().trim_end_matches(['*', '†', '‡']).trim_end();
     super::document_model::is_numeric_cell(t) || RE_NUMBER_CELL.is_match(t)
+}
+
+/// A cell that marks a missing value (`—`, `-`, `n/a`): neither a number nor text.
+fn is_placeholder_cell(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "-" | "–" | "—" | "−" | "--" | "n/a" | "N/A" | "NA" | "n.a." | "…" | "..."
+    )
+}
+
+/// The value of a plain number cell (`1,240`, `57.8%`), for the tick test.
+fn plain_number(text: &str) -> Option<f64> {
+    let t: String = text
+        .trim()
+        .trim_end_matches(['%', '*', '†', '‡'])
+        .chars()
+        .filter(|c| !matches!(c, ',' | '\u{2009}' | '\u{202F}'))
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect();
+    t.parse::<f64>().ok()
+}
+
+/// Whether numbers (three or more) step evenly, as plot tick labels do.
+fn is_even_progression(values: &[f64]) -> bool {
+    if values.len() < 3 {
+        return false;
+    }
+    let step = values[1] - values[0];
+    let scale = values.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-12);
+    step.abs() > 1e-12 * scale
+        && values
+            .windows(2)
+            .all(|w| ((w[1] - w[0]) - step).abs() <= 1e-6 * scale)
 }
 
 /// A line of a page in reading order: a line as extracted (an index into the
@@ -1560,6 +1621,25 @@ fn join_row(parts: &[&Line]) -> Line {
     }
 }
 
+/// A line that can be part of a table row, with its cells.
+struct CellLine {
+    index: usize,
+    segments: Vec<Segment>,
+    /// A long single-cell line, kept only as the label at the start of a row whose
+    /// next cell is a number.
+    label: bool,
+}
+
+/// Cell lines on one baseline (indices into the cell lines), left to right.
+struct Band {
+    members: Vec<usize>,
+    center: f32,
+    size: f32,
+    top: f32,
+    bottom: f32,
+    overlapping: bool,
+}
+
 /// The page's lines in reading order, with the rows of tables the detector missed
 /// put back together. Each such table is emitted, row by row from the top, where
 /// the first of its lines was read; lines that are not part of one keep their
@@ -1567,72 +1647,114 @@ fn join_row(parts: &[&Line]) -> Line {
 /// are never part of a row. A page without such a table comes back unchanged.
 fn undetected_table_rows(lines: &[Line], excluded: &[bool]) -> Vec<PageItem> {
     let in_order = || (0..lines.len()).map(PageItem::Line).collect::<Vec<_>>();
+    let is_excluded = |i: usize| excluded.get(i).copied().unwrap_or(false);
 
-    // Lines that can be table cells: every stretch between wide gaps is short.
-    let mut cells: Vec<(usize, Vec<Segment>)> = lines
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !excluded.get(*i).copied().unwrap_or(false))
-        .filter_map(|(i, line)| {
-            let segments = line_segments(line);
-            let short = !segments.is_empty()
-                && segments
-                    .iter()
-                    .all(|s| s.text.chars().count() <= MAX_CELL_CHARS);
-            short.then_some((i, segments))
-        })
-        .collect();
-    // The fewest lines of a split table: its rows plus one part of a split row.
+    // Lines that can be table cells: every stretch between wide gaps is short, or
+    // the whole line is a row label.
+    let mut cells: Vec<CellLine> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if is_excluded(index) {
+            continue;
+        }
+        let segments = line_segments(line);
+        if segments.is_empty() {
+            continue;
+        }
+        let short = segments
+            .iter()
+            .all(|s| s.text.chars().count() <= MAX_CELL_CHARS);
+        let label = !short
+            && segments.len() == 1
+            && segments[0].text.chars().count() <= MAX_LABEL_CHARS
+            && segments[0].text.split_whitespace().count() <= MAX_LABEL_WORDS
+            && !segments[0].text.ends_with(['.', ',', ';', ':']);
+        if short || label {
+            cells.push(CellLine {
+                index,
+                segments,
+                label,
+            });
+        }
+    }
     if cells.len() <= CLUSTER_LINES {
         return in_order();
     }
     cells.sort_by(|a, b| {
-        lines[b.0]
+        lines[b.index]
             .bbox
             .center_y()
-            .total_cmp(&lines[a.0].bbox.center_y())
+            .total_cmp(&lines[a.index].bbox.center_y())
     });
 
-    // Bands: cell lines on one baseline, top to bottom. A band whose lines overlap
-    // horizontally is not a table row.
-    struct Band {
-        members: Vec<usize>,
-        center: f32,
-        size: f32,
-        top: f32,
-        bottom: f32,
-        overlapping: bool,
-    }
-    let mut bands: Vec<Band> = Vec::new();
-    for (c, (index, _)) in cells.iter().enumerate() {
-        let line = &lines[*index];
+    // Bands: cell lines on one baseline, top to bottom.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut group_center = 0.0f32;
+    let mut group_size = 0.0f32;
+    for (c, cell) in cells.iter().enumerate() {
+        let line = &lines[cell.index];
         let center = line.bbox.center_y();
-        let joins = bands.last().is_some_and(|band| {
-            (band.center - center).abs() < 0.5 * band.size.min(line.size).max(1.0)
-        });
-        match bands.last_mut() {
-            Some(band) if joins => {
-                band.overlapping |= band.members.iter().any(|&m| {
-                    let other = lines[cells[m].0].bbox;
-                    other.x0.max(line.bbox.x0) < other.x1.min(line.bbox.x1) - 0.5
-                });
-                band.members.push(c);
-                band.size = band.size.max(line.size);
-                band.top = band.top.max(line.bbox.y1);
-                band.bottom = band.bottom.min(line.bbox.y0);
+        match groups.last_mut() {
+            Some(group)
+                if (group_center - center).abs() < 0.5 * group_size.min(line.size).max(1.0) =>
+            {
+                group.push(c);
+                group_size = group_size.max(line.size);
             }
-            _ => bands.push(Band {
-                members: vec![c],
-                center,
-                size: line.size,
-                top: line.bbox.y1,
-                bottom: line.bbox.y0,
-                overlapping: false,
-            }),
+            _ => {
+                groups.push(vec![c]);
+                group_center = center;
+                group_size = line.size;
+            }
         }
     }
-    let segment_count =
-        |b: usize| -> usize { bands[b].members.iter().map(|&m| cells[m].1.len()).sum() };
+    let mut bands: Vec<Band> = Vec::new();
+    for mut members in groups {
+        members.sort_by(|&a, &b| {
+            lines[cells[a].index]
+                .bbox
+                .x0
+                .total_cmp(&lines[cells[b].index].bbox.x0)
+        });
+        // A label stays only at the start of its row, followed by a number.
+        let keep: Vec<usize> = members
+            .iter()
+            .enumerate()
+            .filter(|&(k, &m)| {
+                !cells[m].label
+                    || (k == 0
+                        && members.get(1).is_some_and(|&next| {
+                            cells[next]
+                                .segments
+                                .first()
+                                .is_some_and(|s| is_number_cell(&s.text))
+                        }))
+            })
+            .map(|(_, &m)| m)
+            .collect();
+        if keep.is_empty() {
+            continue;
+        }
+        let boxes: Vec<BBox> = keep.iter().map(|&m| lines[cells[m].index].bbox).collect();
+        let overlapping = boxes.windows(2).any(|w| w[1].x0 < w[0].x1 - 0.5);
+        bands.push(Band {
+            center: boxes.iter().map(BBox::center_y).fold(f32::MIN, f32::max),
+            size: keep
+                .iter()
+                .map(|&m| lines[cells[m].index].size)
+                .fold(1.0f32, f32::max),
+            top: boxes.iter().map(|b| b.y1).fold(f32::MIN, f32::max),
+            bottom: boxes.iter().map(|b| b.y0).fold(f32::MAX, f32::min),
+            overlapping,
+            members: keep,
+        });
+    }
+    let segment_count = |b: usize| -> usize {
+        bands[b]
+            .members
+            .iter()
+            .map(|&m| cells[m].segments.len())
+            .sum()
+    };
 
     // Runs of bands at row spacing. A band with a single cell (a wrapped label, a
     // group label) may sit inside a run; two in a row end it, and a run neither
@@ -1671,97 +1793,24 @@ fn undetected_table_rows(lines: &[Line], excluded: &[bool]) -> Vec<PageItem> {
     close(&mut run, &mut runs);
 
     let mut owner: Vec<Option<usize>> = vec![None; lines.len()];
-    let mut tables: Vec<Vec<Line>> = Vec::new();
+    let mut tables: Vec<Vec<(f32, Line)>> = Vec::new();
     for run in &runs {
-        // Columns: the x extents of the run's cells, merged where they overlap.
-        let mut extents: Vec<(f32, f32)> = run
-            .iter()
-            .flat_map(|&b| bands[b].members.iter())
-            .flat_map(|&m| cells[m].1.iter().map(|s| (s.bbox.x0, s.bbox.x1)))
-            .collect();
-        extents.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut columns: Vec<(f32, f32)> = Vec::new();
-        for (x0, x1) in extents {
-            match columns.last_mut() {
-                Some(column) if x0 <= column.1 + 1.0 => column.1 = column.1.max(x1),
-                _ => columns.push((x0, x1)),
-            }
-        }
-        let column_of = |s: &Segment| -> Option<usize> {
-            columns
-                .iter()
-                .position(|&(x0, x1)| s.bbox.x0 >= x0 - 0.01 && s.bbox.x0 <= x1 + 0.01)
-        };
-        // A column holds cells of at least half the rows; a line with a cell in no
-        // such column (prose of the other page column on the same baseline) is not
-        // part of the table.
-        let mut support = vec![0usize; columns.len()];
-        for &b in run {
-            let mut seen = vec![false; columns.len()];
-            for &m in &bands[b].members {
-                for s in &cells[m].1 {
-                    if let Some(c) = column_of(s) {
-                        seen[c] = true;
-                    }
+        for rows in run_tables(lines, &cells, &bands, run, &owner, excluded) {
+            let table = tables.len();
+            for (_, parts) in &rows {
+                for &i in parts {
+                    owner[i] = Some(table);
                 }
             }
-            for (c, hit) in seen.into_iter().enumerate() {
-                support[c] += usize::from(hit);
-            }
+            tables.push(
+                rows.into_iter()
+                    .map(|(center, parts)| {
+                        let parts: Vec<&Line> = parts.iter().map(|&i| &lines[i]).collect();
+                        (center, join_row(&parts))
+                    })
+                    .collect(),
+            );
         }
-        let min_support = run.len().div_ceil(2).max(2);
-        let supported = |c: Option<usize>| c.is_some_and(|c| support[c] >= min_support);
-        let first_column = (0..columns.len()).find(|&c| support[c] >= min_support);
-        let kept: Vec<Vec<usize>> = run
-            .iter()
-            .map(|&b| {
-                bands[b]
-                    .members
-                    .iter()
-                    .copied()
-                    .filter(|&m| cells[m].1.iter().all(|s| supported(column_of(s))))
-                    .collect()
-            })
-            .collect();
-
-        let supported_columns = support.iter().filter(|&&n| n >= min_support).count();
-        let mut rows = 0usize;
-        let mut number_rows = 0usize;
-        let mut value_cells = 0usize;
-        let mut number_cells = 0usize;
-        for members in &kept {
-            let segments: Vec<&Segment> = members.iter().flat_map(|&m| cells[m].1.iter()).collect();
-            if segments.len() >= 2 {
-                rows += 1;
-            }
-            let values: Vec<&Segment> = segments
-                .iter()
-                .copied()
-                .filter(|s| column_of(*s) != first_column)
-                .collect();
-            let numbers = values.iter().filter(|s| is_number_cell(&s.text)).count();
-            value_cells += values.len();
-            number_cells += numbers;
-            number_rows += usize::from(numbers > 0);
-        }
-        let split = kept.iter().any(|members| members.len() >= 2);
-        let tabular = supported_columns >= 2
-            && rows >= CLUSTER_LINES
-            && number_rows >= CLUSTER_LINES
-            && number_cells * 2 >= value_cells;
-        if !(split && tabular) {
-            continue;
-        }
-        let table = tables.len();
-        let mut joined = Vec::new();
-        for members in kept.iter().filter(|m| !m.is_empty()) {
-            let parts: Vec<&Line> = members.iter().map(|&m| &lines[cells[m].0]).collect();
-            for &m in members {
-                owner[cells[m].0] = Some(table);
-            }
-            joined.push(join_row(&parts));
-        }
-        tables.push(joined);
     }
     if tables.is_empty() {
         return in_order();
@@ -1777,13 +1826,294 @@ fn undetected_table_rows(lines: &[Line], excluded: &[bool]) -> Vec<PageItem> {
                 items.extend(
                     std::mem::take(&mut tables[t])
                         .into_iter()
-                        .map(|line| PageItem::Row { table: t, line }),
+                        .map(|(_, line)| PageItem::Row { table: t, line }),
                 );
             }
             Some(_) => {}
         }
     }
     items
+}
+
+/// The tables in one run of bands: each is its rows from the top, a row being
+/// its center and the indices of the page lines it joins. Lines that `owner`
+/// already gives to a table are not taken again.
+fn run_tables(
+    lines: &[Line],
+    cells: &[CellLine],
+    bands: &[Band],
+    run: &[usize],
+    owner: &[Option<usize>],
+    excluded: &[bool],
+) -> Vec<Vec<(f32, Vec<usize>)>> {
+    // Columns: the x extents of the cells of the run's rows (bands of two or more
+    // cells), merged where they overlap. A row label counts by its left edge only,
+    // so a long label does not swallow the columns beside it.
+    let row_band = |b: usize| -> bool {
+        bands[b]
+            .members
+            .iter()
+            .map(|&m| cells[m].segments.len())
+            .sum::<usize>()
+            >= 2
+    };
+    let mut extents: Vec<(f32, f32)> = Vec::new();
+    for &b in run.iter().filter(|&&b| row_band(b)) {
+        for &m in &bands[b].members {
+            for s in &cells[m].segments {
+                let x1 = if cells[m].label { s.bbox.x0 } else { s.bbox.x1 };
+                extents.push((s.bbox.x0, x1));
+            }
+        }
+    }
+    extents.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut columns: Vec<(f32, f32)> = Vec::new();
+    for (x0, x1) in extents {
+        match columns.last_mut() {
+            Some(column) if x0 <= column.1 + 1.0 => column.1 = column.1.max(x1),
+            _ => columns.push((x0, x1)),
+        }
+    }
+    if columns.len() < 2 {
+        return Vec::new();
+    }
+    let column_of = |s: &Segment| -> Option<usize> {
+        columns
+            .iter()
+            .position(|&(x0, x1)| s.bbox.x0 >= x0 - 0.01 && s.bbox.x0 <= x1 + 0.01)
+    };
+
+    // Support: rows with a cell in the column. Kind: whether its cells hold a
+    // number, and text that is neither a number nor a placeholder.
+    let mut support = vec![0usize; columns.len()];
+    let mut numeric = vec![false; columns.len()];
+    let mut text = vec![false; columns.len()];
+    for &b in run.iter().filter(|&&b| row_band(b)) {
+        let mut seen = vec![false; columns.len()];
+        for &m in &bands[b].members {
+            for s in &cells[m].segments {
+                if let Some(c) = column_of(s) {
+                    seen[c] = true;
+                    if is_number_cell(&s.text) {
+                        numeric[c] = true;
+                    } else if !is_placeholder_cell(&s.text) {
+                        text[c] = true;
+                    }
+                }
+            }
+        }
+        for (c, hit) in seen.into_iter().enumerate() {
+            support[c] += usize::from(hit);
+        }
+    }
+    let row_count = run.iter().filter(|&&b| row_band(b)).count();
+    let min_support = row_count.div_ceil(2).max(2);
+
+    // Where the run's columns separate into tables.
+    let mut cut = vec![false; columns.len()];
+    let members: Vec<usize> = run
+        .iter()
+        .flat_map(|&b| bands[b].members.iter().map(|&m| cells[m].index))
+        .collect();
+    let top = run.iter().map(|&b| bands[b].top).fold(f32::MIN, f32::max);
+    let bottom = run
+        .iter()
+        .map(|&b| bands[b].bottom)
+        .fold(f32::MAX, f32::min);
+    let overlaps = |line: &Line, c: usize| {
+        line.bbox.x0 < columns[c].1 - 0.5 && line.bbox.x1 > columns[c].0 + 0.5
+    };
+    let last = columns.len() - 1;
+    let mut beside = vec![0usize; columns.len()];
+    for (index, line) in lines.iter().enumerate() {
+        if members.contains(&index) {
+            continue;
+        }
+        let center = line.bbox.center_y();
+        if center < bottom || center > top {
+            continue;
+        }
+        // Text of the other page column at the table's height overlaps the
+        // columns on its side: they are that column's, not the table's.
+        // One line there can be a group heading of the table; a column of text
+        // has several.
+        let hit: Vec<usize> = (0..columns.len()).filter(|&c| overlaps(line, c)).collect();
+        match (hit.first(), hit.last()) {
+            (Some(&first), Some(&end)) if first > 0 && end == last => beside[first] += 1,
+            (Some(&0), Some(&end)) if end < last => beside[end + 1] += 1,
+            _ => {}
+        }
+        // Text between two cells of one row (the prose between the line numbers
+        // in the margins of a draft) separates them.
+        for &b in run {
+            let band = &bands[b];
+            if (band.center - center).abs() >= 0.5 * band.size.min(line.size).max(1.0) {
+                continue;
+            }
+            for k in 1..columns.len() {
+                let (gap0, gap1) = (columns[k - 1].1, columns[k].0);
+                let between = line.bbox.x0 < gap1 - 0.5 && line.bbox.x1 > gap0 + 0.5;
+                let sides = |left: bool| {
+                    band.members.iter().any(|&m| {
+                        cells[m].segments.iter().any(|s| {
+                            column_of(s).is_some_and(|c| if left { c < k } else { c >= k })
+                        })
+                    })
+                };
+                if between && sides(true) && sides(false) {
+                    cut[k] = true;
+                }
+            }
+        }
+    }
+    for (c, votes) in beside.into_iter().enumerate() {
+        cut[c] |= votes >= 2;
+    }
+    // A column of text to the right of numbers starts another table (or is a
+    // label beside this one).
+    let mut seen_number = false;
+    for c in 0..columns.len() {
+        if cut[c] {
+            seen_number = false;
+        }
+        if text[c] && !numeric[c] && seen_number {
+            cut[c] = true;
+            seen_number = false;
+        }
+        seen_number |= numeric[c];
+    }
+
+    let mut out = Vec::new();
+    let mut start = 0;
+    for end in 1..=columns.len() {
+        if end < columns.len() && !cut[end] {
+            continue;
+        }
+        let range = start..end;
+        start = end;
+        let supported: Vec<usize> = range.filter(|&c| support[c] >= min_support).collect();
+        let (Some(&first), Some(&final_column)) = (supported.first(), supported.last()) else {
+            continue;
+        };
+        // Sparse columns between supported ones are the table's too.
+        let in_table = |c: Option<usize>| c.is_some_and(|c| c >= first && c <= final_column);
+        let kept: Vec<Vec<usize>> = run
+            .iter()
+            .map(|&b| {
+                bands[b]
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|&m| {
+                        owner[cells[m].index].is_none()
+                            && cells[m].segments.iter().all(|s| in_table(column_of(s)))
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let mut rows = 0usize;
+        let mut number_rows = 0usize;
+        let mut value_cells = 0usize;
+        let mut number_cells = 0usize;
+        let mut letters = false;
+        let mut column_values: Vec<Vec<f64>> = vec![Vec::new(); columns.len()];
+        let mut plain = vec![true; columns.len()];
+        for members in &kept {
+            let segments: Vec<&Segment> = members
+                .iter()
+                .flat_map(|&m| cells[m].segments.iter())
+                .collect();
+            if segments.len() >= 2 {
+                rows += 1;
+            }
+            let mut numbers = 0usize;
+            for s in &segments {
+                letters |= s.text.chars().any(char::is_alphabetic);
+                let column = column_of(*s);
+                if column == Some(first) || is_placeholder_cell(&s.text) {
+                    continue;
+                }
+                value_cells += 1;
+                if is_number_cell(&s.text) {
+                    numbers += 1;
+                    if let Some(c) = column {
+                        match plain_number(&s.text) {
+                            Some(v) => column_values[c].push(v),
+                            None => plain[c] = false,
+                        }
+                    }
+                }
+            }
+            if let Some(c) = segments.first().and_then(|s| column_of(*s)) {
+                if c == first && is_number_cell(&segments[0].text) {
+                    match plain_number(&segments[0].text) {
+                        Some(v) => column_values[c].push(v),
+                        None => plain[c] = false,
+                    }
+                }
+            }
+            number_cells += numbers;
+            number_rows += usize::from(numbers > 0);
+        }
+        let row_centers: Vec<f32> = run
+            .iter()
+            .zip(&kept)
+            .filter(|(_, m)| !m.is_empty())
+            .map(|(&b, _)| bands[b].center)
+            .collect();
+        let gaps: Vec<f32> = row_centers.windows(2).map(|w| w[0] - w[1]).collect();
+        let even = gaps.iter().copied().fold(f32::MIN, f32::max)
+            <= 1.6 * gaps.iter().copied().fold(f32::MAX, f32::min);
+        let enough_numbers = number_rows >= CLUSTER_LINES
+            || (number_rows >= SMALL_TABLE_NUMBER_ROWS && supported.len() >= 3 && even);
+        // Plot tick labels: numbers only, every numeric column an even progression.
+        let ticks = !letters
+            && (first..=final_column)
+                .filter(|&c| numeric[c])
+                .all(|c| plain[c] && is_even_progression(&column_values[c]));
+        let split = kept.iter().any(|m| m.len() >= 2);
+        let tabular = supported.len() >= 2
+            && rows >= CLUSTER_LINES
+            && enough_numbers
+            && number_cells * 2 >= value_cells
+            && !ticks;
+        if !(split && tabular) {
+            continue;
+        }
+
+        let mut table: Vec<(f32, Vec<usize>)> = run
+            .iter()
+            .zip(&kept)
+            .filter(|(_, m)| !m.is_empty())
+            .map(|(&b, m)| (bands[b].center, m.iter().map(|&m| cells[m].index).collect()))
+            .collect();
+        // Other lines between the rows and inside the table's width (a group
+        // heading, a wrapped label) are emitted among them.
+        let (x0, x1) = (columns[first].0, columns[final_column].1);
+        let (upper, lower) = (
+            row_centers.first().copied().unwrap_or(0.0),
+            row_centers.last().copied().unwrap_or(0.0),
+        );
+        let taken: Vec<usize> = table.iter().flat_map(|(_, p)| p.iter().copied()).collect();
+        for (index, line) in lines.iter().enumerate() {
+            let center = line.bbox.center_y();
+            let inside = center < upper
+                && center > lower
+                && line.bbox.x0 >= x0 - 2.0
+                && line.bbox.x1 <= x1.max(x0 + 1.0) + 2.0;
+            if inside
+                && !excluded.get(index).copied().unwrap_or(false)
+                && owner[index].is_none()
+                && !taken.contains(&index)
+            {
+                table.push((center, vec![index]));
+            }
+        }
+        table.sort_by(|a, b| b.0.total_cmp(&a.0));
+        out.push(table);
+    }
+    out
 }
 
 /// Left edges of the text columns on a page: x positions (2 pt buckets) at
@@ -1966,7 +2296,9 @@ fn segment_page(
         };
 
         let Some(block) = current.as_mut() else {
-            current = Some(RawBlock::new(line_kind, line.clone(), page.number));
+            let mut block = RawBlock::new(line_kind, line.clone(), page.number);
+            block.table_rows = table_row.is_some();
+            current = Some(block);
             current_table = table_row;
             continue;
         };
@@ -2036,7 +2368,9 @@ fn segment_page(
                 || reference_start)
         {
             flush(&mut current, out);
-            current = Some(RawBlock::new(line_kind, line.clone(), page.number));
+            let mut block = RawBlock::new(line_kind, line.clone(), page.number);
+            block.table_rows = table_row.is_some();
+            current = Some(block);
         } else {
             block.push(line.clone());
         }
@@ -2440,7 +2774,7 @@ mod tests {
         assert!(
             doc[at]
                 .text
-                .starts_with("Model Parameters RMSE MLP (4 layers) 12,400 3.1e-4"),
+                .starts_with("Model Parameters RMSE\nMLP (4 layers) 12,400 3.1e-4\n"),
             "{}",
             doc[at].text
         );
@@ -2549,12 +2883,485 @@ mod tests {
             "1,240",
             "−0.4",
             "41.2 ± 0.3",
+            "41.2±0.3",
+            "±0.3",
+            "41.2 (0.3)",
+            "41.2 (±0.3)",
+            "(0.3)",
+            "92.1/88.0",
+            "12 400",
+            "12\u{2009}400",
+            "1.2–3.4",
+            "93.0*",
+            "71.3†",
         ] {
             assert!(is_number_cell(number), "{number}");
         }
-        for text in ["(3)", "Model", "4 layers", "e-4", "x", "TIDE as layer"] {
+        for text in [
+            "(3)",
+            "(12)",
+            "Model",
+            "4 layers",
+            "2-bit",
+            "e-4",
+            "x",
+            "TIDE as layer",
+            "R@10",
+        ] {
             assert!(!is_number_cell(text), "{text}");
         }
+        for placeholder in ["—", "–", "-", "n/a", "N/A"] {
+            assert!(is_placeholder_cell(placeholder), "{placeholder}");
+            assert!(!is_number_cell(placeholder), "{placeholder}");
+        }
+        assert!(!is_placeholder_cell("0.0"));
+        assert!(is_even_progression(&[0.2, 0.4, 0.6, 0.8]));
+        assert!(!is_even_progression(&[92.1, 58.4, 93.0, 90.6]));
+        assert!(!is_even_progression(&[1.0, 2.0]));
+        assert_eq!(plain_number("1,240"), Some(1240.0));
+        assert_eq!(plain_number("57.8%"), Some(57.8));
+        assert_eq!(plain_number("16K"), None);
+    }
+
+    /// A table as XY-cut reads a borderless table: the cells of the first column,
+    /// then the cells of each other column, each cell a line of its own. `rows`
+    /// holds `(x, text)` cells; rows are 13 pt apart from `top`.
+    fn read_by_columns(top: f32, rows: &[&[(f32, &str)]]) -> Vec<Line> {
+        let width = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let mut out = Vec::new();
+        for c in 0..width {
+            for (r, cols) in rows.iter().enumerate() {
+                if let Some(&(x, t)) = cols.get(c) {
+                    out.push(cell(x, top - 13.0 * r as f32, t));
+                }
+            }
+        }
+        out
+    }
+
+    /// The rebuilt rows, in order.
+    fn rows_of(items: &[PageItem]) -> Vec<String> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                PageItem::Row { line, .. } => Some(line.text.clone()),
+                PageItem::Line(_) => None,
+            })
+            .collect()
+    }
+
+    fn rebuild(lines: &[Line]) -> Vec<PageItem> {
+        undetected_table_rows(lines, &vec![false; lines.len()])
+    }
+
+    #[test]
+    fn short_lines_of_the_next_column_are_not_welded_into_the_rows() {
+        // The table in the left column; on two of its four baselines the right
+        // column holds short labels.
+        let mut lines = read_by_columns(
+            660.0,
+            &[
+                &[(72.0, "HNSW"), (170.0, "95.3"), (230.0, "96.1")],
+                &[(72.0, "IVF-PQ"), (170.0, "88.0"), (230.0, "91.4")],
+                &[(72.0, "Flat"), (170.0, "99.9"), (230.0, "99.9")],
+                &[(72.0, "LSH"), (170.0, "71.2"), (230.0, "75.0")],
+            ],
+        );
+        lines.push(cell(320.0, 660.0, "(a) Recall"));
+        lines.push(cell(320.0, 634.0, "(b) QPS"));
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "HNSW 95.3 96.1",
+                "IVF-PQ 88.0 91.4",
+                "Flat 99.9 99.9",
+                "LSH 71.2 75.0"
+            ]
+        );
+        let texts = item_texts(&lines, &items);
+        assert!(texts.iter().any(|t| t == "(a) Recall"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "(b) QPS"), "{texts:?}");
+    }
+
+    #[test]
+    fn two_tables_side_by_side_stay_two_tables() {
+        let left: &[&[(f32, &str)]] = &[
+            &[(72.0, "Index"), (150.0, "R@10"), (200.0, "R@100")],
+            &[(72.0, "HNSW"), (150.0, "95.3"), (200.0, "96.1")],
+            &[(72.0, "IVF-PQ"), (150.0, "88.0"), (200.0, "91.4")],
+            &[(72.0, "Flat"), (150.0, "99.9"), (200.0, "99.9")],
+        ];
+        let right: &[&[(f32, &str)]] = &[
+            &[(320.0, "Set"), (400.0, "Dim"), (450.0, "Size")],
+            &[(320.0, "SIFT"), (400.0, "128"), (450.0, "1.0")],
+            &[(320.0, "GIST"), (400.0, "960"), (450.0, "1.0")],
+            &[(320.0, "Deep"), (400.0, "96"), (450.0, "10.0")],
+        ];
+        let mut lines = read_by_columns(660.0, left);
+        lines.extend(read_by_columns(660.0, right));
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Index R@10 R@100",
+                "HNSW 95.3 96.1",
+                "IVF-PQ 88.0 91.4",
+                "Flat 99.9 99.9",
+                "Set Dim Size",
+                "SIFT 128 1.0",
+                "GIST 960 1.0",
+                "Deep 96 10.0"
+            ]
+        );
+        let tables: std::collections::BTreeSet<usize> = items
+            .iter()
+            .filter_map(|i| match i {
+                PageItem::Row { table, .. } => Some(*table),
+                PageItem::Line(_) => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 2);
+    }
+
+    #[test]
+    fn prose_of_the_next_column_keeps_its_short_lines() {
+        // Right column at the table's height: prose, and short numeric lines on
+        // three of the five baselines.
+        let mut lines = read_by_columns(
+            660.0,
+            &[
+                &[(72.0, "Index"), (170.0, "R@10"), (230.0, "R@100")],
+                &[(72.0, "HNSW"), (170.0, "95.3"), (230.0, "96.1")],
+                &[(72.0, "IVF-PQ"), (170.0, "88.0"), (230.0, "91.4")],
+                &[(72.0, "Flat"), (170.0, "99.9"), (230.0, "99.9")],
+                &[(72.0, "LSH"), (170.0, "71.2"), (230.0, "75.0")],
+            ],
+        );
+        let prose = "the prose of the right column runs on past the table.";
+        let right_first = lines.len();
+        for (y, t) in [(660.0, "17"), (634.0, "18"), (608.0, "19")] {
+            lines.push(cell(320.0, y, t));
+        }
+        for y in [647.0, 621.0] {
+            lines.push(line(prose, 320.0, y, 540.0, 10.0, false));
+        }
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Index R@10 R@100",
+                "HNSW 95.3 96.1",
+                "IVF-PQ 88.0 91.4",
+                "Flat 99.9 99.9",
+                "LSH 71.2 75.0"
+            ]
+        );
+        let kept: Vec<usize> = items
+            .iter()
+            .filter_map(|i| match i {
+                PageItem::Line(n) => Some(*n),
+                PageItem::Row { .. } => None,
+            })
+            .collect();
+        assert_eq!(kept, (right_first..lines.len()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn line_numbers_in_the_margins_of_a_draft_are_not_rows() {
+        // Two-column draft: numbers in both margins, prose between them on the
+        // same baselines. Once as evenly numbered lines, once as numbers that are
+        // not a progression (only the prose between them separates those).
+        let numberings: [([&str; 6], [&str; 6]); 2] = [
+            (
+                ["000", "001", "002", "003", "004", "005"],
+                ["054", "055", "056", "057", "058", "059"],
+            ),
+            (
+                ["3", "8", "15", "16", "23", "42"],
+                ["4", "9", "15", "20", "31", "40"],
+            ),
+        ];
+        for (left_numbers, right_numbers) in numberings {
+            let y = |i: usize| 700.0 - 12.0 * i as f32;
+            let mut lines = Vec::new();
+            for (i, n) in left_numbers.iter().enumerate() {
+                lines.push(cell(40.0, y(i), n));
+            }
+            for i in 0..6 {
+                lines.push(line(
+                    "left column prose that fills the column to its edge",
+                    72.0,
+                    y(i),
+                    292.0,
+                    10.0,
+                    false,
+                ));
+            }
+            for i in 0..6 {
+                lines.push(line(
+                    "right column prose that fills the column to its edge",
+                    320.0,
+                    y(i),
+                    540.0,
+                    10.0,
+                    false,
+                ));
+            }
+            for (i, n) in right_numbers.iter().enumerate() {
+                lines.push(cell(560.0, y(i), n));
+            }
+            let items = rebuild(&lines);
+            assert!(
+                items.iter().all(|i| matches!(i, PageItem::Line(_))),
+                "{:?}",
+                rows_of(&items)
+            );
+        }
+    }
+
+    #[test]
+    fn tick_labels_of_plots_side_by_side_are_not_a_table() {
+        let mut lines = Vec::new();
+        for x in [50.0, 320.0] {
+            for (i, t) in ["1.0", "0.8", "0.6", "0.4", "0.2", "0.0"]
+                .iter()
+                .enumerate()
+            {
+                lines.push(cell(x, 700.0 - 20.0 * i as f32, t));
+            }
+        }
+        let items = rebuild(&lines);
+        assert!(
+            items.iter().all(|i| matches!(i, PageItem::Line(_))),
+            "{:?}",
+            rows_of(&items)
+        );
+    }
+
+    #[test]
+    fn table_of_contents_entries_keep_their_page_numbers() {
+        let lines = read_by_columns(
+            700.0,
+            &[
+                &[(72.0, "1 Introduction"), (500.0, "1")],
+                &[(72.0, "2 Related work"), (500.0, "3")],
+                &[(72.0, "3 Method"), (500.0, "7")],
+                &[(72.0, "4 Experiments"), (500.0, "12")],
+            ],
+        );
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "1 Introduction 1",
+                "2 Related work 3",
+                "3 Method 7",
+                "4 Experiments 12"
+            ]
+        );
+    }
+
+    #[test]
+    fn mean_and_spread_cells_and_placeholders_are_table_cells() {
+        let lines = read_by_columns(
+            660.0,
+            &[
+                &[
+                    (72.0, "Method"),
+                    (200.0, "Acc"),
+                    (280.0, "F1"),
+                    (360.0, "Time"),
+                ],
+                &[
+                    (72.0, "Base"),
+                    (200.0, "41.2 (0.3)"),
+                    (280.0, "38.0 (0.5)"),
+                    (360.0, "—"),
+                ],
+                &[
+                    (72.0, "Ours"),
+                    (200.0, "44.9 (0.2)"),
+                    (280.0, "40.1 (0.4)"),
+                    (360.0, "—"),
+                ],
+                &[
+                    (72.0, "Ours+"),
+                    (200.0, "45.3 (0.2)"),
+                    (280.0, "—"),
+                    (360.0, "1.2"),
+                ],
+            ],
+        );
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Method Acc F1 Time",
+                "Base 41.2 (0.3) 38.0 (0.5) —",
+                "Ours 44.9 (0.2) 40.1 (0.4) —",
+                "Ours+ 45.3 (0.2) — 1.2"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_ablation_of_two_rows_is_a_table() {
+        let lines = read_by_columns(
+            660.0,
+            &[
+                &[
+                    (72.0, "Variant"),
+                    (200.0, "Acc"),
+                    (260.0, "F1"),
+                    (320.0, "Speed"),
+                ],
+                &[
+                    (72.0, "full model"),
+                    (200.0, "71.3"),
+                    (260.0, "66.0"),
+                    (320.0, "1.0x"),
+                ],
+                &[
+                    (72.0, "no gate"),
+                    (200.0, "52.9"),
+                    (260.0, "48.1"),
+                    (320.0, "1.1x"),
+                ],
+            ],
+        );
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Variant Acc F1 Speed",
+                "full model 71.3 66.0 1.0x",
+                "no gate 52.9 48.1 1.1x"
+            ]
+        );
+        // Two rows in two columns are not enough: a label and a value per line is
+        // too close to prose and forms.
+        let lines = read_by_columns(
+            660.0,
+            &[
+                &[(72.0, "Variant"), (200.0, "Acc")],
+                &[(72.0, "full model"), (200.0, "71.3")],
+                &[(72.0, "no gate"), (200.0, "52.9")],
+            ],
+        );
+        assert!(rebuild(&lines)
+            .iter()
+            .all(|i| matches!(i, PageItem::Line(_))));
+    }
+
+    #[test]
+    fn a_long_row_label_stays_with_its_numbers() {
+        let long = "Transformer++ with sliding window attention (4K)";
+        assert!(long.chars().count() > MAX_CELL_CHARS);
+        let lines = read_by_columns(
+            690.0,
+            &[
+                &[
+                    (72.0, "Model"),
+                    (300.0, "4K"),
+                    (360.0, "16K"),
+                    (420.0, "64K"),
+                ],
+                &[
+                    (72.0, long),
+                    (300.0, "92.1"),
+                    (360.0, "24.0"),
+                    (420.0, "6.2"),
+                ],
+                &[
+                    (72.0, "Linear attention"),
+                    (300.0, "58.4"),
+                    (360.0, "31.7"),
+                    (420.0, "12.9"),
+                ],
+                &[
+                    (72.0, "TIDE as context"),
+                    (300.0, "93.0"),
+                    (360.0, "71.3"),
+                    (420.0, "60.8"),
+                ],
+            ],
+        );
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Model 4K 16K 64K",
+                "Transformer++ with sliding window attention (4K) 92.1 24.0 6.2",
+                "Linear attention 58.4 31.7 12.9",
+                "TIDE as context 93.0 71.3 60.8"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sparse_column_inside_the_table_comes_with_it() {
+        // A delta printed for one row only, between two full columns.
+        let lines = read_by_columns(
+            660.0,
+            &[
+                &[(72.0, "Index"), (170.0, "R@10"), (320.0, "R@100")],
+                &[(72.0, "HNSW"), (170.0, "95.3"), (320.0, "96.1")],
+                &[
+                    (72.0, "IVF-PQ"),
+                    (170.0, "88.0"),
+                    (320.0, "91.4"),
+                    (250.0, "+2.1"),
+                ],
+                &[(72.0, "Flat"), (170.0, "99.9"), (320.0, "99.9")],
+                &[(72.0, "LSH"), (170.0, "71.2"), (320.0, "75.0")],
+            ],
+        );
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Index R@10 R@100",
+                "HNSW 95.3 96.1",
+                "IVF-PQ 88.0 +2.1 91.4",
+                "Flat 99.9 99.9",
+                "LSH 71.2 75.0"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_group_heading_between_rows_stays_between_them() {
+        let mut lines = split_results_table();
+        // Move the last two rows down a line and put a heading in the gap.
+        for l in lines.iter_mut() {
+            if l.bbox.y0 < 660.0 && l.bbox.y0 > 630.0 {
+                l.bbox.y0 -= 13.0;
+                l.bbox.y1 -= 13.0;
+                for (_, b) in l.pieces.iter_mut() {
+                    b.y0 -= 13.0;
+                    b.y1 -= 13.0;
+                }
+            }
+        }
+        let heading = "With the larger model of 1.3B parameters and longer contexts";
+        let at = lines
+            .iter()
+            .position(|l| l.text == "TIDE as context")
+            .expect("label");
+        lines.insert(at, line(heading, 72.0, 651.0, 342.0, 9.0, false));
+        let items = rebuild(&lines);
+        assert_eq!(
+            rows_of(&items),
+            [
+                "Model 4K 16K 64K 256K",
+                "Transformer (window 4K) 92.1 24.0 6.2 1.5",
+                "Linear attention 58.4 31.7 12.9 4.1",
+                heading,
+                "TIDE as context 93.0 71.3 60.8 48.2",
+                "TIDE as layer 90.6 66.5 55.1 41.0",
+            ]
+        );
     }
 
     #[test]
@@ -3135,6 +3942,25 @@ mod generated_pdf_tests {
             .join(" ")
     }
 
+    /// Asserts that page 2 of `pages`, read the way it was before rows were
+    /// rebuilt (column-aware order, runs joined into lines, lines in order), does
+    /// not hold `row` whole: the layout does split its table, so the test that
+    /// uses it checks the fix and not a layout the reading order already gets
+    /// right.
+    fn assert_split_as_read(pages: &[Vec<Text>], row: &str) {
+        let pdf = pdf_oxide::PdfDocument::from_bytes(build_pdf(pages, None)).expect("open");
+        let page = page_text_in_reading_order(&pdf, 1).expect("page text");
+        let runs: Vec<Run> = page.spans.iter().filter_map(Run::from_span).collect();
+        let read: Vec<String> = build_lines(runs).into_iter().map(|l| l.text).collect();
+        let read = words(&read.join(" "));
+        let label = row.split_whitespace().next().unwrap_or(row);
+        assert!(read.contains(label), "{label:?} not read at all: {read}");
+        assert!(
+            !read.contains(row),
+            "the reading order already keeps {row:?} whole: {read}"
+        );
+    }
+
     /// Each row appears whole, in order, after `before` and before `after`.
     fn assert_rows_in_order(page_text: &str, before: &str, rows: &[&str], after: &str) {
         let all = words(page_text);
@@ -3169,7 +3995,9 @@ mod generated_pdf_tests {
             rows,
         ));
         page.extend(column(72.0, 590.0, "after", 3));
-        let doc = parse(&after_a_captioned_page(page));
+        let pages = after_a_captioned_page(page);
+        assert_split_as_read(&pages, "TIDE as context 93.0 71.3 60.8 48.2");
+        let doc = parse(&pages);
         assert_rows_in_order(
             &doc.page_text(2),
             "before line 2",
@@ -3212,7 +4040,9 @@ mod generated_pdf_tests {
             10.0,
             "Training is slower per step than for an MLP, by a factor of about six.",
         ));
-        let doc = parse(&after_a_captioned_page(page));
+        let pages = after_a_captioned_page(page);
+        assert_split_as_read(&pages, "KANDLE (G = 5 to 20) 1,240 1.2e-4");
+        let doc = parse(&pages);
         assert_rows_in_order(
             &doc.page_text(2),
             "before line 2",
@@ -3243,7 +4073,9 @@ mod generated_pdf_tests {
         page.extend(column(320.0, 720.0, "RIGHT", 5));
         page.push(text(320.0, 647.0, 10.0, "RIGHT ends here."));
         page.extend(column(320.0, 620.0, "RIGHTB", 6));
-        let doc = parse(&after_a_captioned_page(page));
+        let pages = after_a_captioned_page(page);
+        assert_split_as_read(&pages, "HNSW 95.3 96.1");
+        let doc = parse(&pages);
         let page_text = doc.page_text(2);
         assert_rows_in_order(
             &page_text,
@@ -3325,7 +4157,9 @@ mod generated_pdf_tests {
         ));
         page.extend(column(72.0, 580.0, "LEFTB", 4));
         page.extend(column(320.0, 580.0, "RIGHTB", 4));
-        let doc = parse(&after_a_captioned_page(page));
+        let pages = after_a_captioned_page(page);
+        assert_split_as_read(&pages, "Full precision 16 1.0x 1.0x 47.6");
+        let doc = parse(&pages);
         let page_text = doc.page_text(2);
         let all = words(&page_text);
         for row in [

@@ -196,10 +196,14 @@ fn check_relative(file: &str) -> Result<(), String> {
 /// The PDF passages of a committed set (a folder with `corpus/` and
 /// `dataset.json`) that the layout parser, as indexing runs it, does not put on
 /// the pages their sources list: each passage must be a whole-token span of the
-/// parsed text of those pages, in order. Passages lost here can never be
-/// retrieved as written, whatever the ranking does.
+/// parsed text of those pages, in order, and a passage for which `one_block`
+/// holds (a table row) must be inside one block. Passages lost here can never
+/// be retrieved as written, whatever the ranking does.
 #[cfg(test)]
-pub(crate) fn pdf_passages_missing_from_layout(set: &Path) -> Vec<String> {
+pub(crate) fn pdf_passages_missing_from_layout(
+    set: &Path,
+    one_block: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
     use shodh_rag::processing::document_model::StructuredDocument;
     use shodh_rag::processing::pdf_layout::{parse_pdf_layout_with, TableMode};
 
@@ -235,6 +239,16 @@ pub(crate) fn pdf_passages_missing_from_layout(set: &Path) -> Vec<String> {
             if !crate::text::contains_span(&text, passage) {
                 missing.push(format!(
                     "{} ({} p. {:?}): {passage}",
+                    case.id, source.file, source.pages
+                ));
+            } else if one_block(passage)
+                && !doc.blocks.iter().any(|b| {
+                    b.page.is_some_and(|p| source.pages.contains(&p))
+                        && crate::text::contains_span(&b.render(), passage)
+                })
+            {
+                missing.push(format!(
+                    "{} ({} p. {:?}): not in one block: {passage}",
                     case.id, source.file, source.pages
                 ));
             }

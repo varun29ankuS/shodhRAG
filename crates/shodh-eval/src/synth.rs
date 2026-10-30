@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn every_pdf_passage_is_on_its_page_as_the_parser_reads_it() {
-        let missing = crate::dataset::pdf_passages_missing_from_layout(&committed());
+        let missing = crate::dataset::pdf_passages_missing_from_layout(&committed(), &|_| false);
         assert!(missing.is_empty(), "{}", missing.join("\n"));
     }
 

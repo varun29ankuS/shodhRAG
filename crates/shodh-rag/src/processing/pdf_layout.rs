@@ -3961,6 +3961,20 @@ mod generated_pdf_tests {
         );
     }
 
+    /// The opposite of [`assert_split_as_read`], for layouts the reading order
+    /// already gets right: if it stops doing so, the test names the change.
+    fn assert_read_whole(pages: &[Vec<Text>], row: &str) {
+        let pdf = pdf_oxide::PdfDocument::from_bytes(build_pdf(pages, None)).expect("open");
+        let page = page_text_in_reading_order(&pdf, 1).expect("page text");
+        let runs: Vec<Run> = page.spans.iter().filter_map(Run::from_span).collect();
+        let read: Vec<String> = build_lines(runs).into_iter().map(|l| l.text).collect();
+        let read = words(&read.join(" "));
+        assert!(
+            read.contains(row),
+            "the reading order now splits {row:?}: {read}"
+        );
+    }
+
     /// Each row appears whole, in order, after `before` and before `after`.
     fn assert_rows_in_order(page_text: &str, before: &str, rows: &[&str], after: &str) {
         let all = words(page_text);
@@ -4041,7 +4055,11 @@ mod generated_pdf_tests {
             "Training is slower per step than for an MLP, by a factor of about six.",
         ));
         let pages = after_a_captioned_page(page);
-        assert_split_as_read(&pages, "KANDLE (G = 5 to 20) 1,240 1.2e-4");
+        // pdf_oxide reads this page's rows whole (checked in CI), so this guards
+        // the rebuilt order; the split KANDLE read is reproduced line by line in
+        // `a_column_read_after_the_next_paragraph_rejoins_its_rows` and on the
+        // paper corpus by shodh-eval.
+        assert_read_whole(&pages, "KANDLE (G = 5 to 20) 1,240 1.2e-4");
         let doc = parse(&pages);
         assert_rows_in_order(
             &doc.page_text(2),
@@ -4074,7 +4092,10 @@ mod generated_pdf_tests {
         page.push(text(320.0, 647.0, 10.0, "RIGHT ends here."));
         page.extend(column(320.0, 620.0, "RIGHTB", 6));
         let pages = after_a_captioned_page(page);
-        assert_split_as_read(&pages, "HNSW 95.3 96.1");
+        // pdf_oxide reads this page's rows whole (checked in CI): this guards
+        // against joining the other column into them; the split read is in
+        // `a_table_in_one_column_leaves_the_other_column_alone`.
+        assert_read_whole(&pages, "HNSW 95.3 96.1");
         let doc = parse(&pages);
         let page_text = doc.page_text(2);
         assert_rows_in_order(

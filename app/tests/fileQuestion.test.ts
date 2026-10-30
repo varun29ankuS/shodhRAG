@@ -6,17 +6,21 @@
  *   node --experimental-strip-types --test app/tests/fileQuestion.test.ts
  */
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   ABOUT_FILES_METADATA_KEY,
   FileRefStore,
   cleanFiles,
+  figureQuestion,
   fileNameOfPath,
   fileQuestionDraft,
   limitedToFiles,
   metadataWithAboutFiles,
+  missingFileNotice,
+  missingFiles,
+  paperQuestion,
   readAboutFiles,
+  replaceFilePrefix,
 } from '../src/features/ask/fileQuestion.ts';
 
 const PATH = 'c:/users/someone/documents/research papers/2605.04308 - memory as a markov matrix.pdf';
@@ -41,7 +45,7 @@ test('the file name of a path, with either separator', () => {
 
 test('the file goes with the question as its search limit', () => {
   const options = { spaceId: null, spaceName: null, searchAll: false };
-  assert.deepEqual(limitedToFiles(options, [PATH]), { ...options, sourceFiles: [PATH] });
+  assert.deepEqual(limitedToFiles(options, [PATH]), { ...options, sourceIds: [], sourceFiles: [PATH] });
   // No file: the options are the caller's, unchanged.
   assert.equal(limitedToFiles(options, []), options);
   assert.equal(limitedToFiles(options, undefined), options);
@@ -107,19 +111,77 @@ test('a blank path is no file; a blank name falls back to the file name', () => 
   assert.equal(store.get('c1'), null);
 });
 
-test('every "ask about" entry point names the document and sends the path beside the text', () => {
-  const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8');
-  const app = read('../src/App-SplitView.tsx');
-  assert.match(app, /text: fileQuestionDraft\(file\.name\)/);
-  assert.match(app, /file: \{ path: file\.path, name: file\.name \}/);
-  assert.doesNotMatch(app, /\(\$\{file\.path\}\)/);
-  for (const file of ['../src/features/research/PaperPage.tsx', '../src/features/research/PaperFigures.tsx']) {
-    const source = read(file);
-    // No path interpolated into a composer text: `(${p.filePath})`, `(${parts.filePath})`.
-    assert.doesNotMatch(source, /insertIntoComposer\(`[^`]*\$\{[^}]*filePath[^}]*\}/, file);
-  }
-  // Ask and the dock send the chosen file as the question's search limit.
-  for (const file of ['../src/features/ask/AskView.tsx', '../src/components/shell/ConversationDock.tsx']) {
-    assert.match(read(file), /limitedToFiles\(/, file);
-  }
+test('a question about a file searches only that file, whatever sources are included', () => {
+  // The backend searches the union of sources and files: included sources would widen it.
+  const options = { spaceId: 'a', spaceName: 'Folder a', sourceIds: ['a', 'c'], searchAll: false };
+  const limited = limitedToFiles(options, [PATH]);
+  assert.deepEqual(limited.sourceIds, []);
+  assert.deepEqual(limited.sourceFiles, [PATH]);
+  // Without a file the included sources stay.
+  assert.deepEqual(limitedToFiles(options, []).sourceIds, ['a', 'c']);
+});
+
+test('a paper or figure question names the paper; its PDF goes beside the text', () => {
+  const paper = paperQuestion('Memory as a  Markov matrix', PATH);
+  assert.equal(paper.text, 'About "Memory as a Markov matrix": ');
+  assert.deepEqual(paper.file, { path: PATH, name: 'Memory as a Markov matrix' });
+  assert.ok(!paper.text.includes('someone'));
+  // A paper not in the library has no file to limit to.
+  assert.deepEqual(paperQuestion('Elsewhere', null), { text: 'About "Elsewhere": ' });
+  const figure = figureQuestion('Figure 3', 'Memory as a Markov matrix', PATH);
+  assert.equal(figure.text, 'Explain Figure 3 of "Memory as a Markov matrix": ');
+  assert.equal(figure.file?.path, PATH);
+  assert.ok(!figure.text.includes('someone'));
+});
+
+test('asking about another file replaces the question about the previous one', () => {
+  const previous = { path: 'a.pdf', name: 'A', prefix: 'About "A": ' };
+  // The user went on typing after the prefix: their words stay.
+  assert.equal(replaceFilePrefix('About "A": what is eq 3?', previous, 'About "B": '), 'About "B": what is eq 3?');
+  // The draft no longer starts with the old question, or there was no file: append instead.
+  assert.equal(replaceFilePrefix('My own question', previous, 'About "B": '), null);
+  assert.equal(replaceFilePrefix('About "A": ', null, 'About "B": '), null);
+  assert.equal(replaceFilePrefix('About "A": ', { path: 'a.pdf', name: 'A' }, 'About "B": '), null);
+});
+
+test('a file chosen before any conversation is open goes to the first one shown', () => {
+  const store = new FileRefStore();
+  store.set(null, { path: PATH, name: NAME });
+  store.adoptUnassigned('c1');
+  assert.deepEqual(store.get('c1'), { path: PATH, name: NAME });
+  assert.equal(store.get(null), null);
+  // A conversation that already has a file keeps it.
+  store.set(null, { path: 'b.pdf', name: 'B' });
+  store.adoptUnassigned('c1');
+  assert.equal(store.get('c1')?.path, PATH);
+  assert.equal(store.get(null), null);
+});
+
+test('the store keeps the text a file was asked about with', () => {
+  const store = new FileRefStore();
+  store.set('c1', { path: PATH, name: NAME, prefix: `About ${NAME}: ` });
+  assert.equal(store.get('c1')?.prefix, `About ${NAME}: `);
+  // The same file with another question text is a change.
+  const first = store.get('c1');
+  store.set('c1', { path: PATH, name: NAME, prefix: 'Explain Figure 1 of "X": ' });
+  assert.notEqual(store.get('c1'), first);
+});
+
+test('files no longer indexed are found before the question is sent', async () => {
+  const indexed = new Set(['kept.pdf']);
+  const check = async (path: string) => indexed.has(path);
+  assert.deepEqual(await missingFiles(['kept.pdf', 'gone.pdf'], check), ['gone.pdf']);
+  assert.deepEqual(await missingFiles(['kept.pdf'], check), []);
+  // A check that fails counts the file as present: search then says what it could not find.
+  assert.deepEqual(await missingFiles(['x.pdf'], async () => { throw new Error('index busy'); }), []);
+});
+
+test('a missing file is said by name, never by path', () => {
+  const notice = missingFileNotice([PATH], false);
+  assert.equal(notice.title, 'This file is no longer in your library');
+  assert.ok(notice.description.startsWith(`${NAME} was removed or renamed.`), notice.description);
+  assert.ok(!notice.description.includes('someone'));
+  const retry = missingFileNotice(['a/x.pdf', 'b/y.pdf'], true);
+  assert.equal(retry.title, 'These files are no longer in your library');
+  assert.ok(retry.description.startsWith('x.pdf, y.pdf were removed or renamed, so this question cannot be asked about them again.'), retry.description);
 });

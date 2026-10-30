@@ -39,7 +39,10 @@ import { useDraft } from './useDraft';
 import { useSendOptions } from './useSendOptions';
 import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from './AttachmentChips';
 import { attachedContextOf, attachmentLabel, composerAttachments } from './imageAttachments';
-import { composerFiles, fileNameOfPath, limitedToFiles } from './fileQuestion';
+import { composerFiles, fileNameOfPath, limitedToFiles, replaceFilePrefix } from './fileQuestion';
+import { missingIndexedFiles, reportMissingFiles } from './fileQuestionApi';
+import { questionIndexBefore } from './messageStore';
+import { composerDrafts } from './draftStore';
 import type { AskDraftRequest } from './fileQuestion';
 import type { FallbackRun } from './ChatSessionContext';
 import type { ProviderErrorActions } from '../modelPicker/ProviderErrorCard';
@@ -874,26 +877,48 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isStreaming, cancel, approve, waitingStepId]);
 
+  // The conversation shown now, read after the file check (a switch meanwhile cancels the send).
+  const shownConversationRef = useRef(session.activeConversationId);
+  shownConversationRef.current = session.activeConversationId;
+  const checkingFileRef = useRef(false);
   const submit = useCallback(() => {
     const text = draft.trim();
-    if (!text || isStreaming || busyElsewhere) return;
+    if (!text || isStreaming || busyElsewhere || checkingFileRef.current) return;
     // The typed words and the attached image text go out separately; both are kept
     // until the question is accepted.
     const conversationId = session.activeConversationId;
-    const attached = composerAttachments.get(conversationId);
     // A question about a file goes with the file as its search limit, not in its text.
     const file = composerFiles.get(conversationId);
-    const accepted = send(
-      text,
-      limitedToFiles({ ...sendOptions, searchAll: workspace !== null && searchAll }, file ? [file.path] : []),
-      { attachedContext: attachedContextOf(attached) },
-    );
-    if (!accepted) return;
-    setDraft('');
-    composerAttachments.consume(conversationId, attached);
-    composerFiles.consume(conversationId, file);
-    setSearchAll(false);
-    composerRef.current?.focus();
+    const go = () => {
+      const attached = composerAttachments.get(conversationId);
+      const accepted = send(
+        text,
+        limitedToFiles({ ...sendOptions, searchAll: workspace !== null && searchAll }, file ? [file.path] : []),
+        { attachedContext: attachedContextOf(attached) },
+      );
+      if (!accepted) return;
+      setDraft('');
+      composerAttachments.consume(conversationId, attached);
+      composerFiles.consume(conversationId, file);
+      setSearchAll(false);
+      composerRef.current?.focus();
+    };
+    if (!file) {
+      go();
+      return;
+    }
+    // A file removed or renamed since it was chosen is said plainly, before the question
+    // is sent to search nothing.
+    checkingFileRef.current = true;
+    void missingIndexedFiles([file.path])
+      .then(missing => {
+        if (shownConversationRef.current !== conversationId) return;
+        if (missing.length === 0) go();
+        else reportMissingFiles(missing, false, () => composerFiles.set(conversationId, null));
+      })
+      .finally(() => {
+        checkingFileRef.current = false;
+      });
   }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId]);
 
   const submitSteer = useCallback(() => {
@@ -988,16 +1013,30 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   }, [setDraft]);
   useEffect(() => {
     const drain = () => {
-      const pending = takePendingInserts();
-      if (pending.length === 0) return;
-      insertContext(pending.map(p => p.text).join(''));
-      // The latest file asked about is what the next question is about.
-      const file = [...pending].reverse().find(p => p.file)?.file;
-      if (file) composerFiles.set(conversationId, file);
+      for (const insert of takePendingInserts()) {
+        const file = insert.file;
+        if (!file) {
+          insertContext(insert.text);
+          continue;
+        }
+        // Asking about another file replaces the question about the previous one, so the
+        // text and the chip name the same file.
+        const previous = composerFiles.get(conversationId);
+        setDraft(current => replaceFilePrefix(current, previous, insert.text) ?? appendToDraft(current, insert.text));
+        composerFiles.set(conversationId, { ...file, prefix: insert.text });
+        requestAnimationFrame(() => composerRef.current?.focus());
+      }
     };
     drain();
     return onWindowEvent<unknown>(COMPOSER_INSERT_EVENT, drain);
-  }, [insertContext, conversationId]);
+  }, [insertContext, setDraft, conversationId]);
+
+  // A draft or file chosen before the conversations loaded belongs to the first one shown.
+  useEffect(() => {
+    if (!conversationId) return;
+    composerDrafts.adoptUnassigned(conversationId);
+    composerFiles.adoptUnassigned(conversationId);
+  }, [conversationId]);
 
   // e.g. "Ask about this file" from the Library: prefill, then let the user finish the question.
   const appliedDraftSeq = useRef(0);
@@ -1005,7 +1044,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     if (!draftRequest || draftRequest.seq === appliedDraftSeq.current) return;
     appliedDraftSeq.current = draftRequest.seq;
     applyStarter(draftRequest.text);
-    composerFiles.set(conversationId, draftRequest.file ?? null);
+    composerFiles.set(conversationId, draftRequest.file ? { ...draftRequest.file, prefix: draftRequest.text } : null);
     onDraftApplied?.();
   }, [draftRequest, applyStarter, onDraftApplied, conversationId]);
 
@@ -1066,7 +1105,18 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   }, []);
 
   const handleRetry = useCallback((message: ChatMessage, fallback: FallbackRun | null = null) => {
-    retry(message.id, sendOptions, fallback);
+    // A question about a file is retried only while the file is still indexed.
+    const index = messagesRef.current.findIndex(m => m.id === message.id);
+    const asked = index >= 0 ? messagesRef.current[questionIndexBefore(messagesRef.current, index)] : undefined;
+    const files = asked?.aboutFiles ?? [];
+    if (files.length === 0) {
+      retry(message.id, sendOptions, fallback);
+      return;
+    }
+    void missingIndexedFiles(files).then(missing => {
+      if (missing.length === 0) retry(message.id, sendOptions, fallback);
+      else reportMissingFiles(missing, true);
+    });
   }, [retry, sendOptions]);
 
   const previewSiblings = useMemo(() => {

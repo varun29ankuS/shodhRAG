@@ -9,6 +9,7 @@ import { figureRegion } from './paperObjects';
 import type { PaperFigure, PaperParts } from './paperObjects';
 import { figureError, paperParts } from './paperObjectsApi';
 import { insertIntoComposer, showSourceBox } from './snippetBus';
+import { figureQuestion } from '../ask/fileQuestion';
 import { BUTTON } from './ui';
 
 type Load = { status: 'loading' } | { status: 'ready'; parts: PaperParts } | { status: 'error'; message: string };
@@ -104,7 +105,7 @@ function FigureCard({ figure, parts, paperTitle }: { figure: PaperFigure; parts:
             <button
               type="button"
               className={BUTTON}
-              onClick={() => insertIntoComposer(`Explain ${figure.label} of "${paperTitle}": `, { path: parts.filePath, name: paperTitle })}
+              onClick={() => { const q = figureQuestion(figure.label, paperTitle, parts.filePath); insertIntoComposer(q.text, q.file); }}
             >
               <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
               Ask about it

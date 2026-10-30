@@ -17,6 +17,11 @@ export interface FileRef {
   path: string;
   /** What the user sees: the file's or the paper's title. */
   name: string;
+  /**
+   * The text the composer was given with this file ("About <title>: "), so asking about
+   * another file replaces it instead of leaving the old question in front of the new file.
+   */
+  prefix?: string;
 }
 
 /**
@@ -38,6 +43,33 @@ const MAX_ABOUT_FILES = 50;
 /** The draft the composer starts with: the document's title, never its path. */
 export function fileQuestionDraft(name: string): string {
   return `About ${displayName(name)}: `;
+}
+
+/** "Ask about this paper": the paper's title in the text, its PDF as the reference. */
+export function paperQuestion(title: string, filePath: string | null | undefined): { text: string; file?: FileRef } {
+  const name = displayName(title);
+  const text = `About "${name}": `;
+  const path = filePath?.trim();
+  return path ? { text, file: { path, name } } : { text };
+}
+
+/** "Ask about it" on a figure: the figure and the paper's title in the text, the PDF as the reference. */
+export function figureQuestion(figure: string, paperTitle: string, filePath: string): { text: string; file?: FileRef } {
+  const name = displayName(paperTitle);
+  const text = `Explain ${displayName(figure)} of "${name}": `;
+  const path = filePath.trim();
+  return path ? { text, file: { path, name } } : { text };
+}
+
+/**
+ * The draft after asking about another file: when it still starts with the text the
+ * previous file was asked about with, that text is replaced, so the question and the chip
+ * name the same file. Null when the draft does not (the caller appends instead).
+ */
+export function replaceFilePrefix(draft: string, previous: FileRef | null, text: string): string | null {
+  const prefix = previous?.prefix;
+  if (!prefix || !draft.startsWith(prefix)) return null;
+  return text + draft.slice(prefix.length);
 }
 
 /** A title fit for the question: one line, no surrounding space. */
@@ -87,11 +119,46 @@ export function metadataWithAboutFiles(metadata: unknown, files: readonly string
 
 /**
  * Send options limited to `files` when there are any (a question about a file, or its
- * retry); unchanged otherwise. Generic so the caller's options type is kept.
+ * retry): only those files are searched, so the Library's included sources are dropped
+ * (the backend searches the union of sources and files). Unchanged without files.
+ * Generic so the caller's options type is kept.
  */
-export function limitedToFiles<T extends { sourceFiles?: string[] }>(options: T, files: readonly string[] | null | undefined): T {
+export function limitedToFiles<T extends { sourceIds?: string[]; sourceFiles?: string[] }>(
+  options: T,
+  files: readonly string[] | null | undefined,
+): T {
   const clean = cleanFiles(files);
-  return clean.length > 0 ? { ...options, sourceFiles: clean } : options;
+  return clean.length > 0 ? { ...options, sourceIds: [], sourceFiles: clean } : options;
+}
+
+/**
+ * The files of `paths` the index no longer holds (removed, or renamed since the question
+ * was asked about them), checked with `isIndexed`. A check that fails counts the file as
+ * present: the answer's search then says plainly what it could not find.
+ */
+export async function missingFiles(
+  paths: readonly string[],
+  isIndexed: (path: string) => Promise<boolean>,
+): Promise<string[]> {
+  const clean = cleanFiles(paths);
+  const indexed = await Promise.all(clean.map(path => isIndexed(path).catch(() => true)));
+  return clean.filter((_, i) => !indexed[i]);
+}
+
+/** What the user is told when a file a question is about is gone; names only, never paths. */
+export function missingFileNotice(paths: readonly string[], retry: boolean): { title: string; description: string } {
+  const names = cleanFiles(paths).map(fileNameOfPath);
+  const one = names.length === 1;
+  const title = one ? 'This file is no longer in your library' : 'These files are no longer in your library';
+  const which = names.join(', ');
+  const was = one ? 'was' : 'were';
+  const it = one ? 'it' : 'them';
+  return {
+    title,
+    description: retry
+      ? `${which} ${was} removed or renamed, so this question cannot be asked about ${it} again. Ask a new question instead.`
+      : `${which} ${was} removed or renamed. Ask without ${it}, or add ${it} to the Library again.`,
+  };
 }
 
 type Listener = () => void;
@@ -112,10 +179,12 @@ export class FileRefStore {
   set(conversationId: string | null, ref: FileRef | null): void {
     const key = conversationId ?? NO_CONVERSATION;
     const path = ref?.path.trim() ?? '';
-    const next = ref && path ? { path, name: displayName(ref.name) || fileNameOfPath(path) } : null;
+    const next: FileRef | null = ref && path
+      ? { path, name: displayName(ref.name) || fileNameOfPath(path), ...(ref.prefix ? { prefix: ref.prefix } : {}) }
+      : null;
     const current = this.refs.get(key) ?? null;
     if (current === null && next === null) return;
-    if (current && next && current.path === next.path && current.name === next.name) return;
+    if (current && next && current.path === next.path && current.name === next.name && current.prefix === next.prefix) return;
     if (next) this.refs.set(key, next);
     else this.refs.delete(key);
     for (const listener of [...this.listeners]) listener();
@@ -127,6 +196,18 @@ export class FileRefStore {
    */
   consume(conversationId: string | null, sent: FileRef | null): void {
     if (sent && this.get(conversationId) === sent) this.set(conversationId, null);
+  }
+
+  /**
+   * Give a file chosen while no conversation was open (at startup, before the
+   * conversations load) to `conversationId`, unless it already has one.
+   */
+  adoptUnassigned(conversationId: string): void {
+    const waiting = this.refs.get(NO_CONVERSATION);
+    if (!waiting || conversationId === NO_CONVERSATION) return;
+    this.refs.delete(NO_CONVERSATION);
+    if (!this.refs.has(conversationId)) this.refs.set(conversationId, waiting);
+    for (const listener of [...this.listeners]) listener();
   }
 
   subscribe(listener: Listener): () => void {

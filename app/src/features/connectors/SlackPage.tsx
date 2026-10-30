@@ -4,7 +4,8 @@ import { cn } from '../../lib/utils';
 import { slackApi, slackError } from './api';
 import { notify } from '../../lib/notify';
 import { SLACK_TABS, SLACK_TAB_LABELS, moveTab } from './navigation';
-import { slackPill, slackTabBadges, type SlackStatus, type SlackTabId } from './slackModel';
+import { slackPill, slackTabBadges, stalePill, type SlackStatus, type SlackTabId } from './slackModel';
+import { StaleNotice } from '../../components/ui/StaleNotice';
 import { SlackMark } from './SlackLogo';
 import { SlackSetup, type WizardState } from './SlackSetup';
 import { AnsweringTab, IndexingTab, MemoriesTab, OverviewTab, SettingsTab, useWorkspaceListings } from './SlackTabs';
@@ -208,7 +209,8 @@ export function SlackPage({
     );
   }
 
-  const pill = slackPill(status);
+  // A refresh failed: the status shown is the last known one, not current.
+  const pill = loadError ? stalePill(slackPill(status)) : slackPill(status);
   const connected = status.installation !== null;
   const badges = slackTabBadges(status, now);
   const tabProps = { status, onStatus: setStatus, busy, setBusy, now };
@@ -216,6 +218,7 @@ export function SlackPage({
   return (
     <div className="flex flex-col gap-5">
       <Breadcrumb onBack={onBack} />
+      {loadError && <StaleNotice error={loadError} onRetry={retry} />}
 
       <header className="flex items-start gap-3.5">
         <SlackMark size="lg" />

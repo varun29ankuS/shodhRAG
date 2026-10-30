@@ -6,10 +6,12 @@ import {
   escapeGoesBack,
   lastConnectorPage,
   rememberConnectorPage,
+  peekRequestedConnectorPage,
   takeRequestedConnectorPage,
   type ConnectorPage,
 } from './navigation';
-import { slackPill, tileAction, type Pill, type SlackTabId } from './slackModel';
+import { slackPill, stalePill, tileAction, type Pill, type SlackTabId } from './slackModel';
+import { STALE_TITLE, freshness } from '../../lib/freshness';
 import { SlackMark } from './SlackLogo';
 import { SlackPage } from './SlackPage';
 import { EMPTY_WIZARD, type WizardState } from './SlackSetup';
@@ -37,7 +39,16 @@ function ConnectorTile({
   loadError: string | null;
   onOpen: () => void;
 }) {
-  const state = pill ? `${pill.label}${pill.reason ? `, ${pill.reason}` : ''}` : loadError ? 'could not be loaded' : 'loading';
+  // A status kept from an earlier read is not shown as current once a refresh failed.
+  const fresh = freshness(pill !== null, loadError);
+  const state =
+    fresh === 'fresh'
+      ? `${pill.label}${pill.reason ? `, ${pill.reason}` : ''}`
+      : fresh === 'stale'
+        ? `${STALE_TITLE.toLowerCase()}, last known ${pill.label}`
+        : fresh === 'failed'
+          ? 'could not be loaded'
+          : 'loading';
   return (
     <li>
       <button
@@ -61,8 +72,10 @@ function ConnectorTile({
             the same place on every tile. */}
         <span className="mt-auto flex flex-col gap-2.5 min-w-0">
           <span className="flex min-w-0">
-            {pill ? (
+            {fresh === 'fresh' ? (
               <StatusPill pill={pill} wrap />
+            ) : fresh === 'stale' ? (
+              <StatusPill pill={stalePill(pill)} wrap />
             ) : loadError ? (
               <span className="text-[12px] text-shodh-error">Could not be loaded</span>
             ) : (
@@ -97,7 +110,8 @@ export default function ConnectorsView() {
   const slack = useSlackStatus();
   const telegram = useTelegramStatus();
   const [telegramWizard, setTelegramWizard] = useState<TelegramWizardState>(EMPTY_TELEGRAM_WIZARD);
-  const [page, setPage] = useState<ConnectorPage | null>(() => takeRequestedConnectorPage() ?? lastConnectorPage());
+  // Read, not taken, during render: the first render may run again before it shows.
+  const [page, setPage] = useState<ConnectorPage | null>(() => peekRequestedConnectorPage() ?? lastConnectorPage());
   const [wizard, setWizard] = useState<WizardState>(EMPTY_WIZARD);
   const rootRef = useRef<HTMLDivElement>(null);
   const tilesRef = useRef<HTMLUListElement>(null);
@@ -115,6 +129,8 @@ export default function ConnectorsView() {
         rootRef.current?.scrollTo({ top: 0 });
       }
     };
+    // The page asked for before the view mounted (shown by the first render) is taken here.
+    onOpen();
     window.addEventListener(OPEN_CONNECTOR_PAGE, onOpen);
     return () => window.removeEventListener(OPEN_CONNECTOR_PAGE, onOpen);
   }, [show]);

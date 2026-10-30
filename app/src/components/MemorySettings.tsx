@@ -32,7 +32,7 @@ import {
   setMemoryPinned,
   updateMemory,
 } from '../features/memory/api';
-import { OPEN_MEMORY_EDIT, takeRequestedMemoryEdit } from '../features/memory/navigation';
+import { OPEN_MEMORY_EDIT, peekRequestedMemoryEdit, takeRequestedMemoryEdit } from '../features/memory/navigation';
 import { coreHeading, shortScope } from '../features/memory/usedMemories';
 
 const FOCUS_RING =
@@ -358,7 +358,8 @@ export default function MemorySettings(props: MemorySettingsProps) {
   const [savingPrefs, setSavingPrefs] = useState(false);
   const [exporting, setExporting] = useState(false);
   // The memory whose editor "Outdated" under an answer asked for (Settings → Memory only).
-  const [editId, setEditId] = useState<string | null>(() => (props.scope ? null : takeRequestedMemoryEdit()));
+  // Read, not taken, during render: the first render may run again before it shows.
+  const [editId, setEditId] = useState<string | null>(() => (props.scope ? null : peekRequestedMemoryEdit()));
   const searchId = useId();
 
   // Settings, Memory shows the core of chats outside workspaces (global memories).
@@ -426,6 +427,11 @@ export default function MemorySettings(props: MemorySettingsProps) {
       setExporting(false);
     }
   };
+
+  // The editor asked for before Settings → Memory mounted (opened by the first render) is taken here.
+  useEffect(() => {
+    if (!props.scope) takeRequestedMemoryEdit();
+  }, [props.scope]);
 
   // Asked for while Settings → Memory is open: read the memories again (the one asked
   // for may be newer than the list) and clear the search so it is shown.

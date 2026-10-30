@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { OPEN_SETTINGS_SECTION, takeRequestedSection } from '../../features/memory/navigation';
+import { OPEN_SETTINGS_SECTION, peekRequestedSection, takeRequestedSection } from '../../features/memory/navigation';
 import { ModelSettingsSection } from '../../features/modelPicker/ModelSettingsSection';
 import SearchSettings from '../SearchSettings';
 import DataManagement from '../DataManagement';
@@ -95,13 +95,16 @@ export default function SettingsView({
   onOpenConversation,
 }: SettingsViewProps) {
   const { byId: workspaceById } = useWorkspaces();
-  const [section, setSection] = useState<SettingsSection>(() => takeRequestedSection() ?? 'models');
-  // Another view (the suggested-memories badge) asks for a section.
+  // Read, not taken, during render: the first render may run again before it shows.
+  const [section, setSection] = useState<SettingsSection>(() => peekRequestedSection() ?? 'models');
+  // Another view (the suggested-memories badge) asks for a section; the one
+  // asked for before Settings mounted is taken here.
   useEffect(() => {
     const open = () => {
       const requested = takeRequestedSection();
       if (requested) setSection(requested);
     };
+    open();
     window.addEventListener(OPEN_SETTINGS_SECTION, open);
     return () => window.removeEventListener(OPEN_SETTINGS_SECTION, open);
   }, []);

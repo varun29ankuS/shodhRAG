@@ -328,10 +328,18 @@
 /*
  * Shell motion: view content entering, popovers, and loading skeletons.
  * Opacity plus a small rise only, so switching views never shifts layout.
+ * A view enters from most of its opacity, never from 0: the previous view
+ * stays on screen until the next one has rendered, and the next one is
+ * visible from its first frame, so a switch never shows an empty pane.
  */
 @layer utilities {
   .shell-view-enter {
-    animation: ask-rise var(--dur-panel) var(--ease-enter) both;
+    animation: shell-view-in var(--dur-panel) var(--ease-enter) both;
+  }
+
+  /* "opened by Shodh" next to the title after the assistant changed the view. */
+  .shell-cue {
+    animation: shell-cue 2800ms var(--ease-standard) both;
   }
 
   .shell-pop {
@@ -346,6 +354,18 @@
   }
 }
 
+@keyframes shell-view-in {
+  from { opacity: 0.72; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes shell-cue {
+  0% { opacity: 0; }
+  6% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 @keyframes shell-pop {
   from { opacity: 0; transform: scale(0.96) translateY(-2px); }
   to { opacity: 1; transform: none; }
@@ -358,6 +378,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .shell-view-enter,
+  .shell-cue,
   .shell-pop,
   .shell-skeleton,
   .ask-rise,

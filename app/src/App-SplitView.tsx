@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { Suspense, lazy, useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -18,13 +18,6 @@ import {
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 const IS_WINDOWS = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform);
 
-// Views opened less often load on first use, keeping them out of the startup bundle.
-const TasksView = lazy(() => import('./features/tasks/TasksView'));
-const ActivityView = lazy(() => import('./features/activity/ActivityView'));
-const SettingsView = lazy(() => import('./components/shell/SettingsView'));
-const WorkspacesView = lazy(() => import('./features/workspaces/WorkspacesView'));
-const LibraryView = lazy(() => import('./features/library/LibraryView').then(m => ({ default: m.LibraryView })));
-const ConnectorsView = lazy(() => import('./features/connectors/ConnectorsView'));
 // The New task / New event dialog brings the Tasks store with it: loaded when first opened.
 const QuickCreateDialog = lazy(() => import('./features/tasks/QuickCreateDialog').then(m => ({ default: m.QuickCreateDialog })));
 
@@ -114,6 +107,10 @@ import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
+import { ActivityView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
+import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
+import { clearViewCache } from './lib/viewCache';
+import { shownView } from './lib/viewSwitch';
 import { useSearchConfig } from './components/SearchSettings';
 import { FirstRunFlow } from './features/setup/FirstRunFlow';
 import { firstRunStart, hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
@@ -181,6 +178,8 @@ function AppSplitView() {
     appendMessage,
     appendMessageTo,
     updateMessage,
+    navigation,
+    streamingConversationId,
   } = useChatSession();
 
   // Workspaces: the sidebar groups chats by them, new chats start in the current one.
@@ -205,7 +204,13 @@ function AppSplitView() {
   // True until `initialize_rag` answers; the shell renders immediately regardless.
   const [isLoading, setIsLoading] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
+  // The view asked for: the sidebar, the palette and new chats follow it at once.
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
+  // The view shown (lib/viewSwitch): at once when its code has loaded, else
+  // the current view stays until it can render.
+  const deferredTab = useDeferredValue(activeTab);
+  const viewTab = shownView(activeTab, deferredTab, isViewReady);
+  const viewCue = useAssistantViewCue(navigation?.seq ?? 0, navigation?.view ?? null, activeTab, viewTab);
   // Restored synchronously so the Library and sidebar render with the first frame.
   const [sources, setSources] = useState<Source[]>(() => {
     try {
@@ -1048,11 +1053,34 @@ function AppSplitView() {
     initializeApp();
   }, []); // Empty dependency array - run only once on mount
 
+  // Fetch the likely views' code while idle, once the first answer has
+  // finished or a while after launch, and never while an answer streams.
+  const preloadGate = useRef<ReturnType<typeof createIdlePreloadGate> | null>(null);
+  useEffect(() => {
+    const gate = createIdlePreloadGate();
+    preloadGate.current = gate;
+    return () => {
+      gate.dispose();
+      preloadGate.current = null;
+    };
+  }, []);
+  const answerStreaming = streamingConversationId !== null;
+  useEffect(() => {
+    preloadGate.current?.setStreaming(answerStreaming);
+  }, [answerStreaming]);
+
+  // The command palette reaches every view in a keystroke: fetch their code as it opens.
+  useEffect(() => {
+    if (cmdPaletteOpen) preloadAllViews();
+  }, [cmdPaletteOpen]);
+
   // Tab switches asked for by child components.
   useEffect(() => {
     const handleSwitchTab = (event: Event) => {
       const tab = normalizeViewTab((event as CustomEvent<unknown>).detail);
       if (tab) {
+        // The assistant's navigations come this way: start the view's code now.
+        preloadView(tab);
         setActiveTab(tab);
       }
     };
@@ -1505,10 +1533,13 @@ function AppSplitView() {
           style={{ borderColor: colors.border, backgroundColor: colors.bg }}
         >
           <div className="flex items-center gap-3">
-            <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
-              {VIEW_TAB_LABELS[activeTab]}
+            <span className="inline-flex items-center">
+              <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
+                {VIEW_TAB_LABELS[viewTab]}
+              </span>
+              <AssistantViewCue cue={viewCue} />
             </span>
-            {activeTab === 'ask' && (() => {
+            {viewTab === 'ask' && (() => {
               const workspace = workspaceById(activeConversation?.workspaceId);
               if (!workspace) return null;
               return (
@@ -1529,7 +1560,7 @@ function AppSplitView() {
               onNavigate={setActiveTab}
               onOpenConversation={id => { switchConversation(id); setActiveTab('ask'); }}
             />
-            {activeTab === 'ask' && activeConversationId && (
+            {viewTab === 'ask' && activeConversationId && (
               <ChatActionsMenu
                 conversationId={activeConversationId}
                 conversationTitle={activeConversation?.title ?? ''}
@@ -1537,7 +1568,7 @@ function AppSplitView() {
                 onExport={messages.length > 0 ? () => void exportChat() : null}
               />
             )}
-            {activeTab === 'ask' && activeConversationId && (
+            {viewTab === 'ask' && activeConversationId && (
               <div className="relative">
                 <button
                   ref={instructionsButtonRef}
@@ -1763,17 +1794,23 @@ function AppSplitView() {
           </div>
         )}
 
-        {/* Content: each view enters with the shared motion tokens (opacity and a small rise, no layout shift). */}
+        {/*
+          Content. <main> and its Suspense boundary stay mounted across switches:
+          the deferred `viewTab` keeps the current view until the next one has
+          rendered (a mounted boundary never falls back during a deferred
+          update), and only the inner keyed frame changes, entering from most of
+          its opacity with the shared motion tokens (no layout shift).
+        */}
         <main
           id="main-content"
           tabIndex={-1}
-          aria-label={VIEW_TAB_LABELS[activeTab]}
-          key={activeTab}
-          className="shell-view-enter flex-1 min-h-0 overflow-hidden focus:outline-none"
+          aria-label={VIEW_TAB_LABELS[viewTab]}
+          className="flex-1 min-h-0 overflow-hidden focus:outline-none"
         >
-          <Suspense fallback={<ViewSkeleton view={activeTab} />}>
+          <Suspense fallback={<ViewSkeleton view={viewTab} />}>
+          <div key={viewTab} data-view={viewTab} className="shell-view-enter h-full">
           {/* Ask Tab */}
-          {activeTab === 'ask' && (
+          {viewTab === 'ask' && (
             <AskView
               sources={sources}
               searched={searched}
@@ -1794,7 +1831,7 @@ function AppSplitView() {
           )}
 
           {/* Workspaces: sources, instructions, chats and memory of one piece of work */}
-          {activeTab === 'workspaces' && (
+          {viewTab === 'workspaces' && (
             <WorkspacesView
               library={sources.map(s => ({ id: s.id, name: s.name, path: s.path }))}
               onNewChat={id => startChat(id)}
@@ -1803,13 +1840,13 @@ function AppSplitView() {
           )}
 
           {/* Tasks: list first, calendar as a view */}
-          {activeTab === 'tasks' && <TasksView />}
+          {viewTab === 'tasks' && <TasksView />}
 
           {/* Activity: usage and the audit log */}
-          {activeTab === 'activity' && <ActivityView />}
+          {viewTab === 'activity' && <ActivityView />}
 
           {/* Settings Tab */}
-          {activeTab === 'settings' && (
+          {viewTab === 'settings' && (
             <SettingsView
               searchConfig={searchConfig}
               onUpdateSearchConfig={updateSearchConfig}
@@ -1817,6 +1854,7 @@ function AppSplitView() {
               sources={sources}
               onRemoveSource={removeSource}
               onSourcesCleared={() => {
+                clearViewCache();
                 setSources([]);
                 void refreshIndexedFiles();
               }}
@@ -1826,7 +1864,7 @@ function AppSplitView() {
           )}
 
           {/* Library: folders, indexing progress and the file browser */}
-          {activeTab === 'library' && (
+          {viewTab === 'library' && (
             <LibraryView
               sources={sources}
               totalDocs={stats.totalDocs}
@@ -1846,8 +1884,8 @@ function AppSplitView() {
           )}
 
           {/* Connectors: Slack and other tools Shodh answers in */}
-          {activeTab === 'connectors' && <ConnectorsView />}
-
+          {viewTab === 'connectors' && <ConnectorsView />}
+          </div>
           </Suspense>
         </main>
       </div>
@@ -1909,7 +1947,7 @@ function AppSplitView() {
       <TableModelPrompt />
 
       {/* Active conversation while another view is open */}
-      <ConversationDock activeTab={activeTab} sources={sources} onExpand={() => setActiveTab('ask')} />
+      <ConversationDock activeTab={viewTab} sources={sources} onExpand={() => setActiveTab('ask')} />
 
     </div>
   );

@@ -6,6 +6,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { APP_SETTINGS_CHANGED } from '../../lib/appSettings';
+import { VIEW_CACHE_KEYS, dropViewCache } from '../../lib/viewCache';
+import { useCachedState } from '../../hooks/useCachedState';
 import type { FallbackOffer, FallbackQuery, ModelPrefs, ModelRef, PickId, PickerError, PickerView, ProviderId } from './modelTypes';
 import type { FallbackChain } from './fallbackChain';
 import { readFallbackChain } from './fallbackChain';
@@ -129,7 +131,9 @@ export interface ModelPickerHandle {
  * in place.
  */
 export function useModelPicker(active = true): ModelPickerHandle {
-  const [view, setView] = useState<PickerView | null>(null);
+  // The last view read this session shows at once (Settings → Model opened
+  // again); the load on mount refreshes it.
+  const [view, setView] = useCachedState<PickerView>(VIEW_CACHE_KEYS.modelPicker);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -139,6 +143,8 @@ export function useModelPicker(active = true): ModelPickerHandle {
       setView(await modelApi.view(refresh));
       setLoadError(null);
     } catch (error) {
+      // The view shown (kept from earlier) is not current: the error is shown with it, the next mount reads afresh.
+      dropViewCache(VIEW_CACHE_KEYS.modelPicker);
       setLoadError(toPickerError(error).message);
     } finally {
       setLoading(false);

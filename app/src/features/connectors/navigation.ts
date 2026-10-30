@@ -11,6 +11,7 @@
 import type { ConnectorId } from './registry.ts';
 import type { SlackTabId } from './slackModel.ts';
 import type { TelegramTabId } from './telegramModel.ts';
+import { OneShot } from '../../lib/oneShot.ts';
 
 /** The tabs of the Slack page, in order. */
 export const SLACK_TABS: readonly SlackTabId[] = ['overview', 'answering', 'indexing', 'memories', 'settings'];
@@ -83,20 +84,28 @@ export function moveTab<T extends string>(tab: T, key: string, tabs: readonly T[
 /** Dispatched when a page is requested ([`requestConnectorPage`]). */
 export const OPEN_CONNECTOR_PAGE = 'shodh:open-connector-page';
 
-let requested: ConnectorPage | null = null;
+/** Expires if the view never shows (lib/oneShot). */
+const requested = new OneShot<ConnectorPage>();
 let last: ConnectorPage | null = null;
 
 /** Ask the Connectors view to show `page` (it takes it when it mounts, or at once). */
 export function requestConnectorPage(page: ConnectorPage): void {
-  requested = page;
+  requested.set(page);
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OPEN_CONNECTOR_PAGE));
+}
+
+/**
+ * The requested page, without taking it: for the view's first render, which
+ * may be rendered again before it shows (a deferred view switch). The view
+ * takes it once mounted.
+ */
+export function peekRequestedConnectorPage(): ConnectorPage | null {
+  return requested.peek();
 }
 
 /** The requested page, once. */
 export function takeRequestedConnectorPage(): ConnectorPage | null {
-  const page = requested;
-  requested = null;
-  return page;
+  return requested.take();
 }
 
 /** The page the view showed last in this session (`null`: the gallery). */

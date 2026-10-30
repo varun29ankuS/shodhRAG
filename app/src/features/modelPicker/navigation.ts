@@ -7,13 +7,15 @@
  */
 import type { ProviderId } from './modelTypes';
 import { requestSettingsSection } from '../memory/navigation';
+import { OneShot } from '../../lib/oneShot.ts';
 
 /** Window event: a provider's connect UI was requested (see takeFixKeyRequest). */
 export const FIX_KEY_EVENT = 'shodh:fix-provider-key';
 /** Window event: the Ask composer's model picker was requested. */
 export const OPEN_PICKER_REQUEST_EVENT = 'shodh:open-model-picker-request';
 
-let fixKeyFor: ProviderId | null = null;
+/** Expires if the connect UI never shows (lib/oneShot). */
+const fixKeyFor = new OneShot<ProviderId>();
 let pickerRequested = false;
 
 function showView(view: 'settings' | 'ask'): void {
@@ -22,17 +24,24 @@ function showView(view: 'settings' | 'ask'): void {
 
 /** Show Settings → Model with `provider`'s connect UI (its key, sign-in or local server). */
 export function requestFixKey(provider: ProviderId): void {
-  fixKeyFor = provider;
+  fixKeyFor.set(provider);
   requestSettingsSection('models');
   showView('settings');
   window.dispatchEvent(new CustomEvent(FIX_KEY_EVENT));
 }
 
+/**
+ * The provider whose connect UI was requested, without taking it: for the
+ * panel's first render, which may be rendered again before it shows (a
+ * deferred view switch). The panel takes it once mounted.
+ */
+export function peekFixKeyRequest(): ProviderId | null {
+  return fixKeyFor.peek();
+}
+
 /** The provider whose connect UI was requested, once. */
 export function takeFixKeyRequest(): ProviderId | null {
-  const provider = fixKeyFor;
-  fixKeyFor = null;
-  return provider;
+  return fixKeyFor.take();
 }
 
 /** Show Ask with its model picker open. */

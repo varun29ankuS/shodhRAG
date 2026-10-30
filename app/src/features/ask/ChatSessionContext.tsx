@@ -18,6 +18,7 @@ import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
 import type { HistoryTurn } from '../agent/useAgentSession';
 import type { FocusThread } from '../focus/focusTypes';
+import { metadataWithThreads, threadsFromMetadata } from '../focus/threadStore';
 import { summaryPrompt } from '../focus/summary';
 import { replayedContent } from './chatHistory';
 import { isConnectorConversation, readSeed, seedGoesWithNextQuestion } from '../connectors/conversations';

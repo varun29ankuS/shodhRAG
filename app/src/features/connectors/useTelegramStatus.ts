@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useCachedState } from '../../hooks/useCachedState';
-import { VIEW_CACHE_KEYS, writeViewCache } from '../../lib/viewCache';
+import { VIEW_CACHE_KEYS, refreshViewCache, writeViewCache } from '../../lib/viewCache';
 import { slackError } from './api';
 import { onTelegramStatus, telegramApi } from './telegramApi';
 import type { TelegramStatus } from './telegramModel';
@@ -32,11 +32,18 @@ export function useTelegramStatus(): TelegramStatusState {
   const [now, setNow] = useState(() => Date.now());
 
   const retry = useCallback(() => {
-    setLoadError(null);
-    telegramApi
-      .status()
-      .then(next => { setStatus(next); setLoadError(null); })
-      .catch(err => setLoadError(slackError(err)));
+    // The error stays until the read answers: clearing it first would show a
+    // status kept from earlier as current while it is being read again.
+    // A failed read drops the kept status, so the next visit reads afresh; the
+    // status on screen stays, and the page says it could not refresh (lib/freshness).
+    void refreshViewCache(VIEW_CACHE_KEYS.telegramStatus, () => telegramApi.status()).then(result => {
+      if (result.ok) {
+        setStatus(result.value);
+        setLoadError(null);
+      } else {
+        setLoadError(slackError(result.error));
+      }
+    });
   }, []);
 
   useEffect(() => {

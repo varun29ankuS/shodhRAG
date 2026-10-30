@@ -107,9 +107,10 @@ import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
-import { ActivityView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, isViewReady, preloadViewsWhenIdle } from './components/shell/views';
+import { ActivityView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
 import { clearViewCache } from './lib/viewCache';
+import { shownView } from './lib/viewSwitch';
 import { useSearchConfig } from './components/SearchSettings';
 import { FirstRunFlow } from './features/setup/FirstRunFlow';
 import { firstRunStart, hasSavedFirstRun, readFirstRun, resumeStep, writeFirstRun } from './features/setup/firstRun';
@@ -204,16 +205,11 @@ function AppSplitView() {
   const [initError, setInitError] = useState<string | null>(null);
   // The view asked for: the sidebar, the palette and new chats follow it at once.
   const [activeTab, setActiveTab] = useState<ViewTab>('ask');
-  // The view shown. A view whose code has loaded (preloaded while idle, or on
-  // hover) is shown in the same commit as the click; one whose code is still
-  // loading is shown through the deferred value, so the current view stays on
-  // screen until it can render and a switch never shows an empty pane or a
-  // loading placeholder. (Not always deferred: an answer streaming into the
-  // chat re-renders the shell every frame and would keep restarting a
-  // deferred render of a heavy view.)
+  // The view shown (lib/viewSwitch): at once when its code has loaded, else
+  // the current view stays until it can render.
   const deferredTab = useDeferredValue(activeTab);
-  const viewTab = isViewReady(activeTab) ? activeTab : deferredTab;
-  const viewCue = useAssistantViewCue(navigation?.seq ?? 0, navigation?.view ?? null, activeTab);
+  const viewTab = shownView(activeTab, deferredTab, isViewReady);
+  const viewCue = useAssistantViewCue(navigation?.seq ?? 0, navigation?.view ?? null, activeTab, viewTab);
   // Restored synchronously so the Library and sidebar render with the first frame.
   const [sources, setSources] = useState<Source[]>(() => {
     try {
@@ -1056,14 +1052,18 @@ function AppSplitView() {
     initializeApp();
   }, []); // Empty dependency array - run only once on mount
 
-  // Fetch the other views' code while the app is idle, so their first visit renders at once.
-  useEffect(() => preloadViewsWhenIdle(), []);
+  // The command palette reaches every view in a keystroke: fetch their code as it opens.
+  useEffect(() => {
+    if (cmdPaletteOpen) preloadAllViews();
+  }, [cmdPaletteOpen]);
 
   // Tab switches asked for by child components.
   useEffect(() => {
     const handleSwitchTab = (event: Event) => {
       const tab = normalizeViewTab((event as CustomEvent<unknown>).detail);
       if (tab) {
+        // The assistant's navigations come this way: start the view's code now.
+        preloadView(tab);
         setActiveTab(tab);
       }
     };
@@ -1520,8 +1520,7 @@ function AppSplitView() {
               <span className="text-xs font-semibold tracking-wide" style={{ color: colors.text }}>
                 {VIEW_TAB_LABELS[viewTab]}
               </span>
-              {/* Shown with the view it names (a view still loading is shown a moment later). */}
-              <AssistantViewCue cue={viewCue?.view === viewTab ? viewCue : null} />
+              <AssistantViewCue cue={viewCue} />
             </span>
             {viewTab === 'ask' && (() => {
               const workspace = workspaceById(activeConversation?.workspaceId);

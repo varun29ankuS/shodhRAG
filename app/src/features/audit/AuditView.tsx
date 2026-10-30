@@ -8,7 +8,7 @@ import { AuditTable } from './AuditTable';
 import { dayBoundary, localDate } from './summary';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { peekTarget } from '../agent/navigation';
-import { VIEW_CACHE_KEYS, readViewCache, writeViewCache } from '../../lib/viewCache';
+import { VIEW_CACHE_KEYS, dropViewCache, readViewCache, writeViewCache } from '../../lib/viewCache';
 import { UsageCards } from './UsageCards';
 import { EVENT_TYPES, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './types';
 import type { AuditEventType, AuditQuery, AuditRow, AuditStats, VerifyReport } from './types';
@@ -134,6 +134,8 @@ export default function AuditView() {
       setUnavailable(null);
       setRetentionInput(current => (current === '' ? String(next.retentionDays) : current));
     } catch (err) {
+      // The usage shown (kept from earlier) is not current: the banner says so, the next visit reads afresh.
+      dropViewCache(VIEW_CACHE_KEYS.auditStats);
       setUnavailable(errorText(err));
     }
   }, []);
@@ -167,6 +169,7 @@ export default function AuditView() {
         if (generation !== generationRef.current) return;
         setRows([]);
         setTotal(0);
+        if (isUnfiltered(filters)) dropViewCache(VIEW_CACHE_KEYS.auditFirstPage);
         setUnavailable(errorText(err));
       })
       .finally(() => {

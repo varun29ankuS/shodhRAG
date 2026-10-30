@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useCachedState } from '../../hooks/useCachedState';
-import { VIEW_CACHE_KEYS, writeViewCache } from '../../lib/viewCache';
+import { VIEW_CACHE_KEYS, refreshViewCache, writeViewCache } from '../../lib/viewCache';
 import { onSlackStatus, slackApi, slackError } from './api';
 import type { SlackStatus } from './slackModel';
 
@@ -17,7 +17,7 @@ let statusFeed: (() => void) | null = null;
 export interface SlackStatusState {
   /** `null` until the first status arrives. */
   status: SlackStatus | null;
-  /** Why the status could not be read (shown while there is none). */
+  /** Why the latest read failed; with a status kept from earlier, that status may be out of date. */
   loadError: string | null;
   setStatus: (status: SlackStatus) => void;
   retry: () => void;
@@ -33,11 +33,18 @@ export function useSlackStatus(): SlackStatusState {
   const [now, setNow] = useState(() => Date.now());
 
   const retry = useCallback(() => {
-    setLoadError(null);
-    slackApi
-      .status()
-      .then(next => { setStatus(next); setLoadError(null); })
-      .catch(err => setLoadError(slackError(err)));
+    // The error stays until the read answers: clearing it first would show a
+    // status kept from earlier as current while it is being read again.
+    // A failed read drops the kept status, so the next visit reads afresh; the
+    // status on screen stays, and the page says it could not refresh (lib/freshness).
+    void refreshViewCache(VIEW_CACHE_KEYS.slackStatus, () => slackApi.status()).then(result => {
+      if (result.ok) {
+        setStatus(result.value);
+        setLoadError(null);
+      } else {
+        setLoadError(slackError(result.error));
+      }
+    });
   }, []);
 
   useEffect(() => {

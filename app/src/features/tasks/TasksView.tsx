@@ -3,6 +3,8 @@ import { CalendarDays, List } from 'lucide-react';
 import CalendarTodoPanel from '../../components/CalendarTodoPanel';
 import { cn } from '../../lib/utils';
 import { useChatSession } from '../ask/ChatSessionContext';
+import { StaleNotice } from '../../components/ui/StaleNotice';
+import { freshness } from '../../lib/freshness';
 import TasksCalendar from './TasksCalendar';
 import { TasksStoreProvider, useTasksStore } from './TasksStore';
 import TaskDetailSheet from './TaskDetailSheet';
@@ -71,6 +73,11 @@ export default function TasksView() {
 function TasksLayouts() {
   const [mode, setMode] = useState<TasksMode>(readMode);
   const { navigation } = useChatSession();
+  const { tasks, events, error, refresh } = useTasksStore();
+  // Each layout shows its own error when it has nothing to show; over a list
+  // kept from an earlier read, a failed refresh is said here (lib/freshness).
+  const shown = mode === 'list' ? tasks.length > 0 : tasks.length > 0 || events.length > 0;
+  const stale = freshness(shown, error) === 'stale';
 
   // The agent opened a specific task: show the list, where it is focused.
   useEffect(() => {
@@ -129,6 +136,7 @@ function TasksLayouts() {
           })}
         </div>
       </div>
+      {stale && <StaleNotice error={error} onRetry={() => void refresh()} className="mx-6 mt-3 shrink-0" />}
       <div key={mode} className="shell-view-enter flex-1 min-h-0">
         {mode === 'list' ? <CalendarTodoPanel /> : (
           <div className="h-full flex flex-col min-h-0">

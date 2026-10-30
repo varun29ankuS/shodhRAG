@@ -6,9 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { ViewPreloader, settledThenable } from '../src/lib/viewPreload.ts';
-import type { IdleScheduler } from '../src/lib/viewPreload.ts';
-import { VIEW_TABS } from '../src/lib/viewTabs.ts';
+import { PreloadGate, ViewPreloader, settledThenable } from '../src/lib/viewPreload.ts';
+import type { GateTimers, IdleScheduler } from '../src/lib/viewPreload.ts';
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
@@ -150,18 +149,95 @@ test('stopping while a view is loading requests no further idle period', async (
   assert.equal(preloader.isLoaded('tasks'), false);
 });
 
-test('every lazily loaded view is preloaded, and the shell renders them from the preloaded module', () => {
+/** Timers that fire only when the test advances the clock. */
+function manualTimers() {
+  let now = 0;
+  let nextId = 1;
+  const pending = new Map<number, { due: number; fn: () => void }>();
+  const timers: GateTimers = {
+    setTimeout(fn, ms) {
+      const id = nextId++;
+      pending.set(id, { due: now + ms, fn });
+      return id;
+    },
+    clearTimeout(handle) {
+      pending.delete(handle as number);
+    },
+  };
+  const advance = (ms: number) => {
+    now += ms;
+    for (const [id, t] of [...pending]) {
+      if (t.due <= now) {
+        pending.delete(id);
+        t.fn();
+      }
+    }
+  };
+  return { timers, advance, pendingCount: () => pending.size };
+}
+
+/** Counts starts and stops of the idle fetching. */
+function fetching() {
+  const log: string[] = [];
+  const start = () => {
+    log.push('start');
+    return () => log.push('stop');
+  };
+  return { log, start };
+}
+
+test('nothing is fetched at launch; the fetching starts after the delay', () => {
+  const { timers, advance } = manualTimers();
+  const { log, start } = fetching();
+  new PreloadGate(start, timers, 25_000);
+  advance(24_999);
+  assert.deepEqual(log, []);
+  advance(1);
+  assert.deepEqual(log, ['start']);
+});
+
+test('the first finished answer starts it early, once', () => {
+  const { timers, advance, pendingCount } = manualTimers();
+  const { log, start } = fetching();
+  const gate = new PreloadGate(start, timers, 25_000);
+  gate.setStreaming(true);
+  assert.deepEqual(log, [], 'not while the first answer streams');
+  gate.setStreaming(false);
+  assert.deepEqual(log, ['start']);
+  assert.equal(pendingCount(), 0, 'the delay is no longer needed');
+  advance(30_000);
+  assert.deepEqual(log, ['start']);
+});
+
+test('never while an answer streams: due during one, it waits; it stops when one starts and resumes after', () => {
+  const { timers, advance } = manualTimers();
+  const { log, start } = fetching();
+  const gate = new PreloadGate(start, timers, 25_000);
+  gate.setStreaming(true);
+  advance(25_000);
+  assert.deepEqual(log, [], 'due mid-answer: not started');
+  gate.setStreaming(false);
+  assert.deepEqual(log, ['start']);
+  gate.setStreaming(true);
+  assert.deepEqual(log, ['start', 'stop']);
+  gate.setStreaming(false);
+  assert.deepEqual(log, ['start', 'stop', 'start']);
+});
+
+test('disposing stops everything', () => {
+  const { timers, advance, pendingCount } = manualTimers();
+  const { log, start } = fetching();
+  const gate = new PreloadGate(start, timers, 25_000);
+  gate.dispose();
+  assert.equal(pendingCount(), 0);
+  advance(25_000);
+  gate.setStreaming(true);
+  gate.setStreaming(false);
+  assert.deepEqual(log, []);
+});
+
+test('only the likely views are fetched while idle, and an idle period is never forced', () => {
   const views = readFileSync(new URL('../src/components/shell/views.ts', import.meta.url), 'utf8');
-  const loaders = views.slice(views.indexOf('const loaders = {'), views.indexOf('} satisfies'));
-  for (const tab of VIEW_TABS.filter(t => t !== 'ask')) {
-    assert.match(loaders, new RegExp(String.raw`\n  ${tab}: \(\) => import\(`), `${tab} has a loader`);
-    assert.match(views, new RegExp(String.raw`'${tab}'`), `${tab} is in the idle order`);
-  }
-  const app = readFileSync(new URL('../src/App-SplitView.tsx', import.meta.url), 'utf8');
-  assert.doesNotMatch(app, /lazy\(\(\) => import\('\.\/features\/(tasks\/TasksView|activity|workspaces|library|connectors)/);
-  assert.doesNotMatch(app, /lazy\(\(\) => import\('\.\/components\/shell\/SettingsView'\)/);
-  assert.match(app, /useEffect\(\(\) => preloadViewsWhenIdle\(\), \[\]\);/);
-  const sidebar = readFileSync(new URL('../src/components/shell/Sidebar.tsx', import.meta.url), 'utf8');
-  assert.match(sidebar, /onPointerEnter=\{\(\) => preloadView\(view\)\}/);
-  assert.match(sidebar, /onFocus=\{\(\) => preloadView\(view\)\}/);
+  assert.match(views, /IDLE_PRELOAD_VIEWS: readonly LazyTab\[\] = \['library', 'workspaces'\];/);
+  assert.doesNotMatch(views, /requestIdleCallback\([^)]*timeout/, 'no timeout: a busy app is never interrupted');
 });

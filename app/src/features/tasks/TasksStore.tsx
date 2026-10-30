@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { notify } from '../../lib/notify';
-import { VIEW_CACHE_KEYS, dropViewCache, readViewCache, writeViewCache } from '../../lib/viewCache';
+import { VIEW_CACHE_KEYS, dropViewCacheOn, readViewCache, refreshViewCache } from '../../lib/viewCache';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { sameMoment, storedDayKey } from './dueDate';
 import { sameTags } from './tags';
@@ -113,16 +113,18 @@ interface TasksSnapshot {
  * view is mounted (the agent, a reminder, a delete carried out on leaving
  * Tasks): the cached snapshot is then dropped, so the next visit loads it
  * fresh instead of showing records that changed. A mounted store refreshes
- * on the same event and caches the new snapshot. Registered once, for the
- * app's life.
+ * on the same event and caches the new snapshot; a read that started
+ * before the event never writes its older result back. Registered once for
+ * the app's life; nothing is cached until the listener is registered, and a
+ * failed registration is tried again by the next store that mounts.
  */
-let snapshotInvalidation: Promise<unknown> | null = null;
-
-function invalidateSnapshotOnChange(): void {
-  snapshotInvalidation ??= listen('calendar-changed', () => dropViewCache(VIEW_CACHE_KEYS.tasksSnapshot)).catch(err => {
-    snapshotInvalidation = null;
-    console.error('Failed to listen for calendar changes:', err);
-  });
+function watchSnapshot(): void {
+  dropViewCacheOn(VIEW_CACHE_KEYS.tasksSnapshot, onChange =>
+    listen('calendar-changed', onChange).catch(err => {
+      console.error('Failed to listen for calendar changes:', err);
+      throw err;
+    }),
+  );
 }
 
 function cachedStore(): StoreState {
@@ -177,23 +179,26 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
   latest.current = { tasks, events };
 
   const refresh = useCallback(async () => {
-    try {
+    // Kept only if no change was announced while reading; dropped on failure,
+    // so the next visit does not show this list as current.
+    const result = await refreshViewCache<TasksSnapshot>(VIEW_CACHE_KEYS.tasksSnapshot, async () => {
       const [t, e] = await Promise.all([
         invoke<TodoItem[]>('load_tasks'),
         invoke<CalendarEvent[]>('load_events'),
       ]);
-      dispatch({ type: 'snapshot', tasks: t, events: e });
-      writeViewCache<TasksSnapshot>(VIEW_CACHE_KEYS.tasksSnapshot, { tasks: t, events: e });
+      return { tasks: t, events: e };
+    });
+    if (result.ok) {
+      dispatch({ type: 'snapshot', tasks: result.value.tasks, events: result.value.events });
       setError(null);
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setLoading(false);
+    } else {
+      setError(errorText(result.error));
     }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
-    invalidateSnapshotOnChange();
+    watchSnapshot();
     void refresh();
   }, [refresh]);
 

@@ -7,7 +7,8 @@ import { SwitchRow } from '../../components/PrivacySettings';
 import type { WorkspaceListing } from '../workspaces/types';
 import { slackError } from './api';
 import { TELEGRAM_TABS, TELEGRAM_TAB_LABELS, moveTab } from './navigation';
-import { capShare, validCap } from './slackModel';
+import { capShare, stalePill, validCap } from './slackModel';
+import { StaleNotice } from '../../components/ui/StaleNotice';
 import { telegramApi } from './telegramApi';
 import {
   TELEGRAM_MODEL_NOTE,
@@ -665,13 +666,15 @@ export function TelegramPage({
     );
   }
 
-  const pill = telegramPill(status);
+  // A refresh failed: the status shown is the last known one, not current.
+  const pill = loadError ? stalePill(telegramPill(status)) : telegramPill(status);
   const badges = telegramTabBadges(status);
   const tabProps = { status, onStatus: setStatus, busy, setBusy, now };
 
   return (
     <div className="flex flex-col gap-5">
       <Breadcrumb onBack={onBack} />
+      {loadError && <StaleNotice error={loadError} onRetry={retry} />}
 
       <header className="flex items-start gap-3.5">
         <TelegramMark size="lg" />

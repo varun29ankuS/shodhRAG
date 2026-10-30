@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Clock, Flag, ListTodo, Loader2, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { freshness } from '../../lib/freshness';
+import { StaleNotice } from '../../components/ui/StaleNotice';
 import { adjacentStatus, boardColumns, columnOf } from './board';
 import type { BoardColumn } from './board';
 import { dueLabel, isOverdue } from './dueDate';
@@ -341,6 +343,8 @@ function TaskBoard({ workspaceId, workspaceName }: { workspaceId: string; worksp
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Over tasks kept from an earlier read, a failed refresh is said (lib/freshness). */}
+      {freshness(tasks.length > 0, error) === 'stale' && <StaleNotice error={error} onRetry={() => void refresh()} />}
       <AddTask workspaceId={workspaceId} workspaceName={workspaceName} />
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-start">
         {columns.map(column => (

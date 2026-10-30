@@ -1,13 +1,15 @@
 import { lazy } from 'react';
-import { ViewPreloader, settledThenable } from '../../lib/viewPreload';
+import { PreloadGate, ViewPreloader, settledThenable } from '../../lib/viewPreload';
 import type { IdleScheduler } from '../../lib/viewPreload';
 import type { ViewTab } from '../../lib/viewTabs';
 
 /**
  * The views opened less often load on first use, keeping them out of the
- * startup bundle. Their code is fetched while the app is idle after startup
- * (and on hover or focus of their sidebar item), so a first visit renders in
- * the same commit as the click instead of waiting on the chunk.
+ * startup bundle. The likely ones (Library, Workspaces) are fetched while the
+ * app is idle once the first answer has finished or a while after launch;
+ * any view is fetched on hover or focus of its sidebar item, when the command
+ * palette opens and when the assistant navigates to it, so a first visit
+ * usually renders in the same commit as the click.
  */
 type LazyTab = Exclude<ViewTab, 'ask'>;
 
@@ -50,18 +52,19 @@ export function isViewReady(view: ViewTab): boolean {
   return view === 'ask' || preloader.isLoaded(view);
 }
 
-/** Idle order after startup: the sidebar's order. */
-const IDLE_ORDER: readonly LazyTab[] = ['workspaces', 'library', 'connectors', 'tasks', 'activity', 'settings'];
+/** Fetched while idle: the views opened most after Ask. The rest load on intent. */
+export const IDLE_PRELOAD_VIEWS: readonly LazyTab[] = ['library', 'workspaces'];
 
-/** Longest wait for an idle period before a view's code is fetched anyway. */
-const IDLE_TIMEOUT_MS = 4000;
+const ALL_LAZY_VIEWS: readonly LazyTab[] = ['workspaces', 'library', 'connectors', 'tasks', 'activity', 'settings'];
+
 /** Pause between views where the webview has no requestIdleCallback (WKWebView). */
 const IDLE_FALLBACK_MS = 250;
 
 function idleScheduler(): IdleScheduler {
   if (typeof window.requestIdleCallback === 'function') {
+    // No timeout: a busy app (an answer rendering) is never interrupted for this.
     return {
-      request: callback => window.requestIdleCallback(() => callback(), { timeout: IDLE_TIMEOUT_MS }),
+      request: callback => window.requestIdleCallback(() => callback()),
       cancel: handle => window.cancelIdleCallback(handle as number),
     };
   }
@@ -71,13 +74,21 @@ function idleScheduler(): IdleScheduler {
   };
 }
 
-/** Fetch `view`'s code now (hover or focus of its sidebar item). */
+/** Fetch `view`'s code now (hover or focus of its sidebar item, the assistant navigating to it). */
 export function preloadView(view: ViewTab): void {
   if (view === 'ask') return;
   void preloader.preload(view);
 }
 
-/** Fetch every view's code while the app is idle; returns the function that stops it. */
-export function preloadViewsWhenIdle(): () => void {
-  return preloader.preloadWhenIdle(IDLE_ORDER, idleScheduler());
+/** Fetch every view's code now (the command palette opened: any view is one keystroke away). */
+export function preloadAllViews(): void {
+  for (const view of ALL_LAZY_VIEWS) void preloader.preload(view);
+}
+
+/** The gate for fetching the likely views while idle (lib/viewPreload `PreloadGate`). */
+export function createIdlePreloadGate(): PreloadGate {
+  return new PreloadGate(
+    () => preloader.preloadWhenIdle(IDLE_PRELOAD_VIEWS, idleScheduler()),
+    { setTimeout: (callback, ms) => window.setTimeout(callback, ms), clearTimeout: handle => window.clearTimeout(handle as number) },
+  );
 }

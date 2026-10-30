@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { VIEW_TAB_LABELS } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
-import { VIEW_CUE_MS, cueAnnouncement, initialCueTracker, nextCue } from '../../lib/viewCue';
+import { VIEW_CUE_MS, cueAnnouncement, initialCueTracker, nextCue, visibleCue } from '../../lib/viewCue';
 
 interface Cue {
   id: number;
@@ -10,11 +10,14 @@ interface Cue {
 }
 
 /**
- * Which view the assistant just opened, for a moment after it did (see
- * lib/viewCue). `seq` and `requested` come from the chat session's latest
- * navigation; `tab` is the view open now.
+ * Which view the assistant just opened (see lib/viewCue), while it is the
+ * view on screen. `seq` and `requested` come from the chat session's latest
+ * navigation; `tab` is the view asked for now and `shown` the one rendered
+ * (a view whose code is still loading is shown a moment after it is asked
+ * for). The cue's time starts when its view is on screen, so it is seen for
+ * its full length either way.
  */
-export function useAssistantViewCue(seq: number, requested: ViewTab | null, tab: ViewTab): Cue | null {
+export function useAssistantViewCue(seq: number, requested: ViewTab | null, tab: ViewTab, shown: ViewTab): Cue | null {
   const tracker = useRef(initialCueTracker({ seq, view: requested, tab }));
   const [cue, setCue] = useState<Cue | null>(null);
 
@@ -29,13 +32,15 @@ export function useAssistantViewCue(seq: number, requested: ViewTab | null, tab:
     }
   }, [seq, requested, tab]);
 
+  const visible = visibleCue(cue, shown);
+  const visibleId = visible?.id ?? null;
   useEffect(() => {
-    if (!cue) return undefined;
-    const timer = window.setTimeout(() => setCue(null), VIEW_CUE_MS);
+    if (visibleId === null) return undefined;
+    const timer = window.setTimeout(() => setCue(current => (current?.id === visibleId ? null : current)), VIEW_CUE_MS);
     return () => window.clearTimeout(timer);
-  }, [cue]);
+  }, [visibleId]);
 
-  return cue;
+  return visible;
 }
 
 /**

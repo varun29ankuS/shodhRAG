@@ -7,6 +7,7 @@
  */
 
 import { localTime, type TimeOptions } from '../tables/format.ts';
+import { STALE_TITLE } from '../../lib/freshness.ts';
 
 /** Emitted with the full {@link SlackStatus} whenever it changes (`connectors/slack.rs`). */
 export const SLACK_STATUS_EVENT = 'connectors-slack-status';
@@ -484,6 +485,15 @@ export interface Pill {
   reason: string | null;
   /** The Slack workspace, when connected. */
   team: string | null;
+}
+
+/**
+ * The pill over a status kept from an earlier read when the latest read
+ * failed (lib/freshness "stale"): the status may have changed, so it is not
+ * shown as current. The last known state is kept as the reason.
+ */
+export function stalePill(pill: Pill): Pill {
+  return { kind: 'attention', tone: 'warning', label: STALE_TITLE, reason: `last known: ${pill.label.toLowerCase()}`, team: pill.team };
 }
 
 /** The pill of the Slack connector, from its status. */

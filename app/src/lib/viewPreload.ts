@@ -1,8 +1,10 @@
 /**
  * Loading the code of the lazily loaded views ahead of their first visit, so
- * opening a view never waits on its chunk: every view is fetched one at a
- * time while the app is idle after startup, and a view is fetched at once
- * when its sidebar item is hovered or focused.
+ * opening a view never waits on its chunk. The likely views are fetched one
+ * at a time while the app is idle, once the gate below lets them (never at
+ * launch, never while an answer streams); any view is fetched at once when
+ * its sidebar item is hovered or focused, when the command palette opens,
+ * and when the assistant navigates to it.
  *
  * No imports: unit-tested under Node with injected loaders and an injected
  * idle scheduler (`app/tests/viewPreload.test.ts`).
@@ -94,6 +96,75 @@ export class ViewPreloader<K extends string> {
       if (handle !== null) idle.cancel(handle);
       handle = null;
     };
+  }
+}
+
+/** Timers for the gate (injected in tests). */
+export interface GateTimers {
+  setTimeout(callback: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+/** Fetching the likely views' code starts this long after launch, unless an answer finished first. */
+export const PRELOAD_DELAY_MS = 25_000;
+
+/**
+ * When the idle fetching of the likely views' code runs: after the first
+ * answer has finished or `PRELOAD_DELAY_MS` after launch, whichever comes
+ * first, and never while an answer streams (it stops when one starts and
+ * resumes, skipping what loaded, when it ends). `start` begins the fetching
+ * and returns the function that stops it.
+ */
+export class PreloadGate {
+  private readonly start: () => () => void;
+  private readonly timers: GateTimers;
+  private due = false;
+  private streaming = false;
+  private stop: (() => void) | null = null;
+  private timer: unknown = null;
+  private disposed = false;
+
+  constructor(start: () => () => void, timers: GateTimers, delayMs: number = PRELOAD_DELAY_MS) {
+    this.start = start;
+    this.timers = timers;
+    this.timer = timers.setTimeout(() => {
+      this.timer = null;
+      this.becomeDue();
+    }, delayMs);
+  }
+
+  /** Whether an answer is streaming now. The end of one makes the fetching due. */
+  setStreaming(streaming: boolean): void {
+    if (this.disposed || streaming === this.streaming) return;
+    this.streaming = streaming;
+    if (streaming) {
+      this.stop?.();
+      this.stop = null;
+    } else {
+      this.becomeDue();
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    if (this.timer !== null) this.timers.clearTimeout(this.timer);
+    this.timer = null;
+    this.stop?.();
+    this.stop = null;
+  }
+
+  private becomeDue(): void {
+    this.due = true;
+    if (this.timer !== null) {
+      this.timers.clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.run();
+  }
+
+  private run(): void {
+    if (this.disposed || !this.due || this.streaming || this.stop) return;
+    this.stop = this.start();
   }
 }
 

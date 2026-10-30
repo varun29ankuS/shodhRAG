@@ -726,9 +726,9 @@ fn plan_search(scope: &RunScope, model: &SourceResolution) -> SearchPlan {
                 .into_iter()
                 .partition(|f| scope.allows_source(&f.source_id) || scope.allows_path(&f.path));
             if !outside.is_empty() {
-                let paths: Vec<&str> = outside.iter().map(|f| f.path.as_str()).collect();
+                let paths: Vec<String> = outside.iter().map(|f| f.path.clone()).collect();
                 plan.notes
-                    .push(scope.outside_message(&format!("File {}", paths.join(", "))));
+                    .push(scope.outside_message(&format!("File {}", file_names(&paths))));
             }
             plan.model_files = inside.into_iter().map(|f| f.path.clone()).collect();
         }
@@ -768,6 +768,19 @@ fn describe_sources(ids: &[String]) -> String {
     named.join(", ")
 }
 
+/// File names of `paths`, for notes to the model: the user's folder layout (and the
+/// user name in it) never goes into a note, and from there into an answer.
+fn file_names(paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|p| {
+            let trimmed = p.trim_end_matches(['/', '\\']);
+            trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// What the model is told about the limit the results were searched under.
 fn limit_note(
     scope: &RunScope,
@@ -781,7 +794,7 @@ fn limit_note(
         notes.push(format!(
             "The user limited this answer to {} of {}.",
             pages_text(pages),
-            scoped_files.join(", ")
+            file_names(scoped_files)
         ));
     } else if scope.restricted && plan.model_sources.is_empty() && plan.model_files.is_empty() {
         if has_no_sources(set) && scope.snippets.is_empty() {
@@ -800,13 +813,13 @@ fn limit_note(
         } else if !scoped_files.is_empty() {
             notes.push(format!(
                 "The user limited this answer to {}.",
-                scoped_files.join(", ")
+                file_names(scoped_files)
             ));
         }
     } else if !scoped_files.is_empty() {
         notes.push(format!(
             "The user limited this answer to {}.",
-            scoped_files.join(", ")
+            file_names(scoped_files)
         ));
     } else if plan.use_scope_files && !scope.source_ids.is_empty() {
         notes.push(format!(
@@ -815,8 +828,9 @@ fn limit_note(
         ));
     } else if plan.use_scope_files && !scope.files.is_empty() {
         notes.push(format!(
-            "The files this answer is limited to are not indexed: {}.",
-            scope.files.join(", ")
+            "The files this answer is limited to are not indexed (removed or renamed since): {}. \
+             Tell the user so.",
+            file_names(&scope.files)
         ));
     }
     (!notes.is_empty()).then(|| notes.join(" "))
@@ -1435,6 +1449,51 @@ mod tests {
             folders: vec!["C:/docs/thesis".into()],
             ..RunScope::default()
         }
+    }
+
+    #[test]
+    fn notes_to_the_model_name_files_never_their_paths() {
+        let path = "c:/users/someone/documents/research papers/markov memory.pdf";
+        // "Ask about this file": the user's file limit.
+        let scope = RunScope {
+            files: vec![path.into()],
+            ..RunScope::default()
+        };
+        let plan = plan_search(&scope, &ids(&[]));
+        let set = SourceSet {
+            space_ids: Vec::new(),
+            source_paths: vec![path.into()],
+        };
+        let scoped = vec![path.to_string()];
+        let note = limit_note(&scope, &plan, &set, &scoped, &[]).unwrap();
+        assert_eq!(note, "The user limited this answer to markov memory.pdf.");
+        let note = limit_note(&scope, &plan, &set, &scoped, &[4]).unwrap();
+        assert!(note.ends_with("of markov memory.pdf."), "{note}");
+        assert!(!note.contains("someone"), "{note}");
+        // The file is gone from the index: said plainly, by name.
+        let empty = SourceSet::default();
+        let note = limit_note(&scope, &plan, &empty, &[], &[]).unwrap();
+        assert!(
+            note.starts_with("The files this answer is limited to are not indexed (removed or renamed since): markov memory.pdf."),
+            "{note}"
+        );
+        assert!(!note.contains("someone"), "{note}");
+        // A file the model asked for outside a workspace: named, not located.
+        let ws = workspace_scope(&["space-a"], &[]);
+        let model = SourceResolution {
+            files: vec![super::super::sources::ResolvedFile {
+                source_id: "space-b".into(),
+                path: r"C:\Users\someone\notes\other.pdf".into(),
+            }],
+            ..SourceResolution::default()
+        };
+        let plan = plan_search(&ws, &model);
+        assert!(
+            plan.notes[0].starts_with("File other.pdf is outside"),
+            "{:?}",
+            plan.notes
+        );
+        assert!(!plan.notes[0].contains("someone"), "{:?}", plan.notes);
     }
 
     #[test]

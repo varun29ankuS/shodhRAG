@@ -35,6 +35,7 @@
     "get_database_stats": { "tool": "list_sources" },
     "list_indexed_sources": { "tool": "list_sources" },
     "get_source_files": { "tools": ["list_sources", "list_directory"] },
+    "indexed_file_exists": { "tool": "search_documents" },
     "link_folder_enhanced": { "tool": "add_folder" },
     "delete_folder_source": { "tool": "remove_source" },
 

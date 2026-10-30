@@ -29,6 +29,19 @@ test('appending a snippet builds on the current text; clearing forgets it', () =
   assert.equal(drafts.get('c1'), '');
 });
 
+test('a draft typed before any conversation is open goes to the first one shown', () => {
+  const drafts = new DraftStore();
+  drafts.set(null, 'About "A": ');
+  drafts.adoptUnassigned('c1');
+  assert.equal(drafts.get('c1'), 'About "A": ');
+  assert.equal(drafts.get(null), '');
+  // A conversation with its own draft keeps it; the unassigned one is dropped.
+  drafts.set(null, 'other');
+  drafts.adoptUnassigned('c1');
+  assert.equal(drafts.get('c1'), 'About "A": ');
+  assert.equal(drafts.get(null), '');
+});
+
 test('subscribers hear real changes only, and stop hearing once unsubscribed', () => {
   const drafts = new DraftStore();
   let calls = 0;

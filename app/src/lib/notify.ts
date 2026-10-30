@@ -14,7 +14,7 @@ export const notify = {
   success(title: string, opts?: { description?: string; action?: NotifyAction }) {
     toast.success(title, opts);
   },
-  error(title: string, opts?: { description?: string }) {
+  error(title: string, opts?: { description?: string; action?: NotifyAction }) {
     toast.error(title, opts);
   },
   info(title: string, opts?: { description?: string }) {

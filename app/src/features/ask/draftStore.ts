@@ -34,6 +34,18 @@ export class DraftStore {
     this.set(conversationId, change(this.get(conversationId)));
   }
 
+  /**
+   * Give a draft written while no conversation was open (at startup, before the
+   * conversations load) to `conversationId`, unless it already has one.
+   */
+  adoptUnassigned(conversationId: string): void {
+    const waiting = this.drafts.get(NO_CONVERSATION);
+    if (waiting === undefined || conversationId === NO_CONVERSATION) return;
+    this.drafts.delete(NO_CONVERSATION);
+    if (!this.drafts.has(conversationId)) this.drafts.set(conversationId, waiting);
+    for (const listener of [...this.listeners]) listener();
+  }
+
   /** Called after every change; returns the unsubscribe function. */
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);

@@ -150,6 +150,12 @@ export interface ChatMessage {
    * words (`features/ask/imageAttachments`). Persisted in `metadata` under `imageText`.
    */
   attachedContext?: AttachedContext[];
+  /**
+   * Indexed paths of the files this question was about ("Ask about this file"): the
+   * answer's search limit, sent beside the text, never in it (`features/ask/fileQuestion`).
+   * Persisted in `metadata` under `aboutFiles`.
+   */
+  aboutFiles?: string[];
 }
 
 /** Options that scope a request; supplied by the caller at send time. */

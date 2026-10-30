@@ -28,8 +28,10 @@ import { Transcript } from '../../features/agent/Transcript';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { useSendOptions } from '../../features/ask/useSendOptions';
-import { AttachmentChips, useImageAttachments } from '../../features/ask/AttachmentChips';
+import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from '../../features/ask/AttachmentChips';
 import { attachedContextOf, composerAttachments } from '../../features/ask/imageAttachments';
+import { composerFiles, limitedToFiles } from '../../features/ask/fileQuestion';
+import { missingIndexedFiles, reportMissingFiles } from '../../features/ask/fileQuestionApi';
 import type { OptionSource } from '../../features/ask/sendOptions';
 import type { ChatMessage } from '../../features/ask/types';
 
@@ -123,6 +125,11 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const sendOptions = useSendOptions(sources);
   // Image text attached in Ask goes out with a reply sent from here too.
   const attachments = useImageAttachments(session.activeConversationId);
+  const aboutFile = useComposerFile(session.activeConversationId);
+  // Read after the file check: a conversation switch meanwhile cancels the send.
+  const shownConversationRef = useRef(session.activeConversationId);
+  shownConversationRef.current = session.activeConversationId;
+  const checkingFileRef = useRef(false);
   const [unreadBase, setUnreadBase] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -315,14 +322,34 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
 
   const submit = () => {
     const text = draft.trim();
-    if (!text || isStreaming || busyElsewhere) return;
+    if (!text || isStreaming || busyElsewhere || checkingFileRef.current) return;
     // As in Ask: the attached image text goes beside the typed words, and both are
     // cleared only once the question is accepted.
     const conversationId = session.activeConversationId;
-    const attached = composerAttachments.get(conversationId);
-    if (!send(text, sendOptions, { attachedContext: attachedContextOf(attached) })) return;
-    setDraft('');
-    composerAttachments.consume(conversationId, attached);
+    // The file the question is about ("Ask about this file") goes with it as its search limit.
+    const file = composerFiles.get(conversationId);
+    const go = () => {
+      const attached = composerAttachments.get(conversationId);
+      if (!send(text, limitedToFiles(sendOptions, file ? [file.path] : []), { attachedContext: attachedContextOf(attached) })) return;
+      setDraft('');
+      composerAttachments.consume(conversationId, attached);
+      composerFiles.consume(conversationId, file);
+    };
+    if (!file) {
+      go();
+      return;
+    }
+    // As in Ask: a file removed or renamed since it was chosen is said plainly.
+    checkingFileRef.current = true;
+    void missingIndexedFiles([file.path])
+      .then(missing => {
+        if (shownConversationRef.current !== conversationId) return;
+        if (missing.length === 0) go();
+        else reportMissingFiles(missing, false, () => composerFiles.set(conversationId, null));
+      })
+      .finally(() => {
+        checkingFileRef.current = false;
+      });
   };
   const submitSteer = () => {
     const text = draft.trim();
@@ -451,7 +478,12 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
               ? `This conversation happened in ${connectorName(readOnlySource.connector)}. Open it in Ask and choose Continue in Ask to reply.`
               : sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
             placeholder="Reply…"
-            attachments={<AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />}
+            attachments={(
+              <>
+                {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact />}
+                <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />
+              </>
+            )}
             compact
           />
         </SnippetDropZone>

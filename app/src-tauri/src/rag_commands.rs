@@ -486,6 +486,19 @@ pub async fn get_source_files(
     Ok(files)
 }
 
+/// Whether the index holds `path` ("Ask about this file" checks its file before the
+/// question is sent, so a file removed or renamed since is said plainly instead of the
+/// answer finding nothing). A full path must match a stored source exactly (normalised
+/// like the indexer does); a bare file name matches any indexed file with that name.
+#[tauri::command]
+pub async fn indexed_file_exists(path: String, state: State<'_, RagState>) -> Result<bool, String> {
+    let rag = state.rag.read().await;
+    rag.find_indexed_sources(&path)
+        .await
+        .map(|matches| !matches.is_empty())
+        .map_err(|e| format!("The index could not be read: {e}"))
+}
+
 // Helper function to detect code files
 pub(crate) fn is_code_file(path: &str) -> bool {
     let code_extensions = [

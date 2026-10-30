@@ -17,6 +17,8 @@ export function UpdateNotification() {
   } = useUpdater();
 
   if (!updateAvailable || !updateInfo) return null;
+  // The download is complete: the update is being verified and installed, and the app restarts.
+  const installing = downloading && downloadProgress === 100;
 
   return (
     <AnimatePresence>
@@ -42,7 +44,7 @@ export function UpdateNotification() {
               <Sparkles className="w-6 h-6" style={{ color: colors.primary }} />
               <div>
                 <h3 className="font-bold text-sm" style={{ color: colors.text }}>
-                  Update Available
+                  Update available
                 </h3>
                 <p className="text-xs" style={{ color: colors.textMuted }}>
                   Version {updateInfo.version}
@@ -50,7 +52,10 @@ export function UpdateNotification() {
               </div>
             </div>
             <button
+              type="button"
               onClick={dismissUpdate}
+              aria-label="Later"
+              title="Later"
               className="p-1 rounded hover:opacity-70 transition-all"
               disabled={downloading}
             >
@@ -86,7 +91,7 @@ export function UpdateNotification() {
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs" style={{ color: colors.textMuted }}>
-                    Downloading...
+                    {installing ? 'Installing… Shodh closes and opens again by itself.' : 'Downloading…'}
                   </span>
                   {downloadProgress !== null && (
                     <span className="text-xs font-medium" style={{ color: colors.primary }}>
@@ -130,12 +135,12 @@ export function UpdateNotification() {
                 {downloading ? (
                   <>
                     <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                    Downloading...
+                    {installing ? 'Installing…' : 'Downloading…'}
                   </>
                 ) : (
                   <>
                     <Download className="w-4 h-4 mr-2" />
-                    Update Now
+                    Update now
                   </>
                 )}
               </Button>
@@ -146,6 +151,11 @@ export function UpdateNotification() {
               <p className="text-xs text-center" style={{ color: colors.textMuted }}>
                 Current: {updateInfo.currentVersion} → New: {updateInfo.version}
               </p>
+              {!downloading && (
+                <p className="text-xs text-center mt-1" style={{ color: colors.textMuted }}>
+                  Your chats are saved first. Shodh closes while the update installs and opens again when it is done.
+                </p>
+              )}
             </div>
           </div>
         </div>

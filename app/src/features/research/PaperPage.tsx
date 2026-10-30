@@ -10,6 +10,7 @@ import { SnippetCard } from './SnippetCard';
 import { PaperFigures } from './PaperFigures';
 import { readSnippet } from './snippetModel';
 import { insertIntoComposer, showSourceBox } from './snippetBus';
+import { paperQuestion } from '../ask/fileQuestion';
 import { valueLabel } from './comparison';
 import type { Snippet } from './types';
 import { BUTTON, FOCUS_RING, ICON_BUTTON, SECTION_TITLE } from './ui';
@@ -224,7 +225,7 @@ export function PaperPage({
               Open PDF
             </button>
           )}
-          <button type="button" className={BUTTON} onClick={() => insertIntoComposer(`About "${paperTitle(p)}"${p.filePath ? ` (${p.filePath})` : ''}: `)}>
+          <button type="button" className={BUTTON} onClick={() => { const q = paperQuestion(paperTitle(p), p.filePath); insertIntoComposer(q.text, q.file); }}>
             <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
             Ask about this paper
           </button>

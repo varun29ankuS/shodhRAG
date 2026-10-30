@@ -92,6 +92,15 @@ export function requestConnectorPage(page: ConnectorPage): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(OPEN_CONNECTOR_PAGE));
 }
 
+/**
+ * The requested page, without taking it: for the view's first render, which
+ * may be rendered again before it shows (a deferred view switch). The view
+ * takes it once mounted.
+ */
+export function peekRequestedConnectorPage(): ConnectorPage | null {
+  return requested;
+}
+
 /** The requested page, once. */
 export function takeRequestedConnectorPage(): ConnectorPage | null {
   const page = requested;

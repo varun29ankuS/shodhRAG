@@ -8,7 +8,7 @@ import { CreateWorkspaceDialog } from './CreateWorkspaceDialog';
 import { orderTemplates, sortWorkspaces, sourceSummary, WORKSPACE_TABS } from './model';
 import type { WorkspaceListing, WorkspaceTab, WorkspaceTemplate } from './types';
 import { useWorkspaces } from './WorkspaceContext';
-import { SHOW_ARCHIVED_WORKSPACES, takeArchivedRequest } from './archivedRequest';
+import { SHOW_ARCHIVED_WORKSPACES, peekArchivedRequest, takeArchivedRequest } from './archivedRequest';
 import { WorkspaceIcon } from './WorkspaceIcon';
 import { WorkspacePage } from './WorkspacePage';
 import { lastWorkspacePlace, rememberWorkspacePlace } from './place';
@@ -93,8 +93,11 @@ export default function WorkspacesView({
   const [creating, setCreating] = useState(false);
   const [createTemplate, setCreateTemplate] = useState<string | null>(null);
   // Also opened from the sidebar when every chat is in an archived workspace.
-  const [showArchived, setShowArchived] = useState(() => takeArchivedRequest());
+  // Read, not taken, during render: the first render may run again before it shows.
+  const [showArchived, setShowArchived] = useState(() => peekArchivedRequest());
   useEffect(() => {
+    // The request made before the view mounted (shown by the first render) is taken here.
+    takeArchivedRequest();
     const show = () => {
       if (!takeArchivedRequest()) return;
       setSelected(null);

@@ -9,7 +9,7 @@ import type { ModelPickerHandle, SignInEvent } from './modelApi';
 import { SIGN_IN_EVENT, connectApi, toConnectError } from './modelApi';
 import type { PickerView, ProviderId, SubscriptionStatus } from './modelTypes';
 import { KEY_PROVIDERS, PROVIDER_LABELS } from './modelTypes';
-import { FIX_KEY_EVENT, takeFixKeyRequest } from './navigation';
+import { FIX_KEY_EVENT, peekFixKeyRequest, takeFixKeyRequest } from './navigation';
 
 export const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -70,7 +70,8 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
   const [starting, setStarting] = useState<ProviderId | null>(null);
   const [signInError, setSignInError] = useState<string | null>(null);
   // "Fix key" elsewhere (the top bar, an answer's error card) asked for one provider's row.
-  const [fixFor, setFixFor] = useState<ProviderId | null>(() => takeFixKeyRequest());
+  // Read, not taken, during render: the first render may run again before it shows.
+  const [fixFor, setFixFor] = useState<ProviderId | null>(() => peekFixKeyRequest());
   const containerRef = useRef<HTMLDivElement>(null);
   const ready = view !== null;
   const fixTarget = fixFor ? fixTargetOf(fixFor, view) : null;
@@ -80,6 +81,8 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
       const provider = takeFixKeyRequest();
       if (provider) setFixFor(provider);
     };
+    // The request made before the panel mounted (shown by the first render) is taken here.
+    onRequest();
     window.addEventListener(FIX_KEY_EVENT, onRequest);
     return () => window.removeEventListener(FIX_KEY_EVENT, onRequest);
   }, []);

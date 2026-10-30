@@ -28,6 +28,15 @@ export function requestFixKey(provider: ProviderId): void {
   window.dispatchEvent(new CustomEvent(FIX_KEY_EVENT));
 }
 
+/**
+ * The provider whose connect UI was requested, without taking it: for the
+ * panel's first render, which may be rendered again before it shows (a
+ * deferred view switch). The panel takes it once mounted.
+ */
+export function peekFixKeyRequest(): ProviderId | null {
+  return fixKeyFor;
+}
+
 /** The provider whose connect UI was requested, once. */
 export function takeFixKeyRequest(): ProviderId | null {
   const provider = fixKeyFor;

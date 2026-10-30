@@ -21,6 +21,7 @@ import {
   Sun,
 } from 'lucide-react';
 import { useSidebar } from '../../contexts/SidebarContext';
+import { preloadView } from './views';
 import { useTheme } from '../../contexts/ThemeContext';
 import { cn } from '../../lib/utils';
 import { VIEW_TABS, VIEW_TAB_LABELS } from '../../lib/viewTabs';
@@ -464,6 +465,9 @@ function NavButton({
       type="button"
       data-nav-item=""
       onClick={() => onNavigate(view)}
+      // About to open: fetch the view's code now, so it renders on the click.
+      onPointerEnter={() => preloadView(view)}
+      onFocus={() => preloadView(view)}
       aria-current={active ? 'page' : undefined}
       aria-label={collapsed ? label : undefined}
       title={collapsed ? label : undefined}

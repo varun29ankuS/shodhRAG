@@ -7,6 +7,8 @@ import { auditStats, errorText, exportAudit, queryAudit, setRetentionDays, verif
 import { AuditTable } from './AuditTable';
 import { dayBoundary, localDate } from './summary';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
+import { peekTarget } from '../agent/navigation';
+import { VIEW_CACHE_KEYS, readViewCache, writeViewCache } from '../../lib/viewCache';
 import { UsageCards } from './UsageCards';
 import { EVENT_TYPES, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS } from './types';
 import type { AuditEventType, AuditQuery, AuditRow, AuditStats, VerifyReport } from './types';
@@ -38,6 +40,25 @@ interface Filters {
 }
 
 const NO_FILTERS: Filters = { types: [], fromDate: '', toDate: '', conversationId: '', tool: '', text: '' };
+
+function isUnfiltered(f: Filters): boolean {
+  return f.types.length === 0 && !f.fromDate && !f.toDate && !f.conversationId && !f.tool && !f.text;
+}
+
+/** The unfiltered first page as last read (lib/viewCache). */
+interface FirstPage {
+  rows: AuditRow[];
+  total: number;
+}
+
+/**
+ * The last unfiltered first page, shown at once when Activity is opened again
+ * while it refreshes. Not when the agent opened the log with filters: the
+ * unfiltered rows would show before the filtered ones replace them.
+ */
+function cachedFirstPage(): FirstPage | null {
+  return peekTarget('audit') ? null : readViewCache<FirstPage>(VIEW_CACHE_KEYS.auditFirstPage);
+}
 
 /** Local YYYY-MM-DD of an RFC 3339 timestamp, or '' when it is not one. */
 function dateOf(timestamp: string | null): string {
@@ -83,18 +104,19 @@ function VerifyResult({ report, error }: { report: VerifyReport | null; error: s
 /** Settings → Usage & Audit. */
 export default function AuditView() {
   const ids = useId();
-  const [stats, setStats] = useState<AuditStats | null>(null);
+  const [stats, setStats] = useState<AuditStats | null>(() => readViewCache<AuditStats>(VIEW_CACHE_KEYS.auditStats));
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [searchText, setSearchText] = useState('');
-  const [rows, setRows] = useState<AuditRow[]>([]);
-  const [total, setTotal] = useState(0);
+  const [firstPage] = useState(cachedFirstPage);
+  const [rows, setRows] = useState<AuditRow[]>(() => firstPage?.rows ?? []);
+  const [total, setTotal] = useState(() => firstPage?.total ?? 0);
   const [loading, setLoading] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verifyReport, setVerifyReport] = useState<VerifyReport | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [retentionInput, setRetentionInput] = useState('');
+  const [retentionInput, setRetentionInput] = useState(() => (stats ? String(stats.retentionDays) : ''));
   const [savingRetention, setSavingRetention] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -108,6 +130,7 @@ export default function AuditView() {
     try {
       const next = await auditStats();
       setStats(next);
+      writeViewCache(VIEW_CACHE_KEYS.auditStats, next);
       setUnavailable(null);
       setRetentionInput(current => (current === '' ? String(next.retentionDays) : current));
     } catch (err) {
@@ -138,6 +161,7 @@ export default function AuditView() {
         if (generation !== generationRef.current) return;
         setRows(page.rows);
         setTotal(page.total);
+        if (isUnfiltered(filters)) writeViewCache<FirstPage>(VIEW_CACHE_KEYS.auditFirstPage, { rows: page.rows, total: page.total });
       })
       .catch(err => {
         if (generation !== generationRef.current) return;

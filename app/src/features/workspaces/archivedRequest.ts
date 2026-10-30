@@ -16,6 +16,15 @@ export function requestArchivedWorkspaces(target: Pick<EventTarget, 'dispatchEve
   target.dispatchEvent(new Event(SHOW_ARCHIVED_WORKSPACES));
 }
 
+/**
+ * Whether the archived list was asked for, without taking it: for the view's
+ * first render, which may be rendered again before it shows (a deferred view
+ * switch). The view takes it once mounted.
+ */
+export function peekArchivedRequest(): boolean {
+  return requested;
+}
+
 /** Whether the archived list was asked for, once. */
 export function takeArchivedRequest(): boolean {
   const was = requested;

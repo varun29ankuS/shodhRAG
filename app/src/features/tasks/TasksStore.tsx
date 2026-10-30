@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { notify } from '../../lib/notify';
+import { VIEW_CACHE_KEYS, dropViewCache, readViewCache, writeViewCache } from '../../lib/viewCache';
 import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { sameMoment, storedDayKey } from './dueDate';
 import { sameTags } from './tags';
@@ -18,7 +19,7 @@ import {
   visibleEvents,
   visibleTasks,
 } from './taskStore';
-import type { EventPatch, PendingOp, TaskPatch } from './taskStore';
+import type { EventPatch, PendingOp, StoreState, TaskPatch } from './taskStore';
 import type { CalendarEvent, TodoItem } from './types';
 
 export type { EventPatch, TaskPatch } from './taskStore';
@@ -101,6 +102,34 @@ interface TasksStoreValue {
 
 const TasksStoreContext = createContext<TasksStoreValue | null>(null);
 
+/** The server's records as last read (lib/viewCache), without any edit in flight. */
+interface TasksSnapshot {
+  tasks: TodoItem[];
+  events: CalendarEvent[];
+}
+
+/**
+ * Every task or event write emits `calendar-changed`, also while no Tasks
+ * view is mounted (the agent, a reminder, a delete carried out on leaving
+ * Tasks): the cached snapshot is then dropped, so the next visit loads it
+ * fresh instead of showing records that changed. A mounted store refreshes
+ * on the same event and caches the new snapshot. Registered once, for the
+ * app's life.
+ */
+let snapshotInvalidation: Promise<unknown> | null = null;
+
+function invalidateSnapshotOnChange(): void {
+  snapshotInvalidation ??= listen('calendar-changed', () => dropViewCache(VIEW_CACHE_KEYS.tasksSnapshot)).catch(err => {
+    snapshotInvalidation = null;
+    console.error('Failed to listen for calendar changes:', err);
+  });
+}
+
+function cachedStore(): StoreState {
+  const snapshot = readViewCache<TasksSnapshot>(VIEW_CACHE_KEYS.tasksSnapshot);
+  return snapshot ? storeReducer(initialStore, { type: 'snapshot', ...snapshot }) : initialStore;
+}
+
 export function useTasksStore(): TasksStoreValue {
   const value = useContext(TasksStoreContext);
   if (!value) throw new Error('useTasksStore must be used inside <TasksStoreProvider>');
@@ -129,8 +158,10 @@ interface PendingDelete {
  * never takes one meant for it.
  */
 export function TasksStoreProvider({ children, followAgent = true }: { children: React.ReactNode; followAgent?: boolean }) {
-  const [state, dispatch] = useReducer(storeReducer, initialStore);
-  const [loading, setLoading] = useState(true);
+  // The last tasks and events read this session render at once when the view
+  // is opened again; the read on mount refreshes them in the background.
+  const [state, dispatch] = useReducer(storeReducer, null, cachedStore);
+  const [loading, setLoading] = useState(() => readViewCache<TasksSnapshot>(VIEW_CACHE_KEYS.tasksSnapshot) === null);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail>(null);
   const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
@@ -152,6 +183,7 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
         invoke<CalendarEvent[]>('load_events'),
       ]);
       dispatch({ type: 'snapshot', tasks: t, events: e });
+      writeViewCache<TasksSnapshot>(VIEW_CACHE_KEYS.tasksSnapshot, { tasks: t, events: e });
       setError(null);
     } catch (err) {
       setError(errorText(err));
@@ -161,6 +193,7 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
   }, []);
 
   useEffect(() => {
+    invalidateSnapshotOnChange();
     void refresh();
   }, [refresh]);
 

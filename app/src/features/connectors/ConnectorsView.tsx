@@ -6,6 +6,7 @@ import {
   escapeGoesBack,
   lastConnectorPage,
   rememberConnectorPage,
+  peekRequestedConnectorPage,
   takeRequestedConnectorPage,
   type ConnectorPage,
 } from './navigation';
@@ -97,7 +98,8 @@ export default function ConnectorsView() {
   const slack = useSlackStatus();
   const telegram = useTelegramStatus();
   const [telegramWizard, setTelegramWizard] = useState<TelegramWizardState>(EMPTY_TELEGRAM_WIZARD);
-  const [page, setPage] = useState<ConnectorPage | null>(() => takeRequestedConnectorPage() ?? lastConnectorPage());
+  // Read, not taken, during render: the first render may run again before it shows.
+  const [page, setPage] = useState<ConnectorPage | null>(() => peekRequestedConnectorPage() ?? lastConnectorPage());
   const [wizard, setWizard] = useState<WizardState>(EMPTY_WIZARD);
   const rootRef = useRef<HTMLDivElement>(null);
   const tilesRef = useRef<HTMLUListElement>(null);
@@ -115,6 +117,8 @@ export default function ConnectorsView() {
         rootRef.current?.scrollTo({ top: 0 });
       }
     };
+    // The page asked for before the view mounted (shown by the first render) is taken here.
+    onOpen();
     window.addEventListener(OPEN_CONNECTOR_PAGE, onOpen);
     return () => window.removeEventListener(OPEN_CONNECTOR_PAGE, onOpen);
   }, [show]);

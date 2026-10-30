@@ -48,7 +48,7 @@ test('the shown view follows the requested one once it can render, and every vie
   const main = mainElement();
   assert.doesNotMatch(main, /activeTab ===/, 'the content follows the shown view only');
   for (const tab of VIEW_TABS) {
-    assert.match(main, new RegExp(`\{viewTab === '${tab}' && `), `${tab} renders when shown`);
+    assert.match(main, new RegExp(String.raw`\{viewTab === '${tab}' && `), `${tab} renders when shown`);
   }
   // The sidebar follows the click at once; the title and the dock follow the shown view.
   assert.match(app, /activeView=\{activeTab\}/);

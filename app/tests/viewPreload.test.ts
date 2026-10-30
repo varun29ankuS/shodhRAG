@@ -154,8 +154,8 @@ test('every lazily loaded view is preloaded, and the shell renders them from the
   const views = readFileSync(new URL('../src/components/shell/views.ts', import.meta.url), 'utf8');
   const loaders = views.slice(views.indexOf('const loaders = {'), views.indexOf('} satisfies'));
   for (const tab of VIEW_TABS.filter(t => t !== 'ask')) {
-    assert.match(loaders, new RegExp(`\n  ${tab}: \(\) => import\(`), `${tab} has a loader`);
-    assert.match(views, new RegExp(`'${tab}'`), `${tab} is in the idle order`);
+    assert.match(loaders, new RegExp(String.raw`\n  ${tab}: \(\) => import\(`), `${tab} has a loader`);
+    assert.match(views, new RegExp(String.raw`'${tab}'`), `${tab} is in the idle order`);
   }
   const app = readFileSync(new URL('../src/App-SplitView.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(app, /lazy\(\(\) => import\('\.\/features\/(tasks\/TasksView|activity|workspaces|library|connectors)/);

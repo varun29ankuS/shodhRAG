@@ -61,7 +61,7 @@ test('views that load on mount start from their last data', () => {
     ['features/connectors/useTelegramStatus.ts', 'telegramStatus'],
     ['features/modelPicker/modelApi.ts', 'modelPicker'],
   ] as const) {
-    assert.match(source(path), new RegExp(`useCachedState<\w+>\(VIEW_CACHE_KEYS\.${key}\)`), path);
+    assert.match(source(path), new RegExp(String.raw`useCachedState<\w+>\(VIEW_CACHE_KEYS\.${key}\)`), path);
   }
   // Statuses keep arriving while Connectors is closed; the cache follows them.
   assert.match(source('features/connectors/useSlackStatus.ts'), /statusFeed \?\?= onSlackStatus\(next => writeViewCache\(VIEW_CACHE_KEYS\.slackStatus, next\)\)/);

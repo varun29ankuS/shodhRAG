@@ -1,24 +1,20 @@
-import React, { useCallback, useState } from 'react';
-import { CheckCircle2, Download, Loader2, ShieldCheck, TriangleAlert } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { CheckCircle2, Download, Loader2, RotateCcw, TriangleAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { agentApi, toAgentError, useRuntimeProgress } from './useAgentSession';
-import type { RuntimeInstall, RuntimeProgress } from './useAgentSession';
+import { useRuntimeSetup } from '../setup/RuntimeSetupContext';
+import { checksumRow, unverifiedSentence, verificationPromise, verifiedSentence } from '../setup/verification';
+import { TechnicalDetails } from '../setup/TechnicalDetails';
+import { approxMegabytes } from '../setup/readiness';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
-
-type InstallState =
-  | { status: 'idle' }
-  | { status: 'installing'; progress: RuntimeProgress | null }
-  | { status: 'done'; result: RuntimeInstall }
-  | { status: 'failed'; message: string };
 
 function megabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 interface RuntimeCardProps {
-  /** `invalid`: present but failed its checksum. */
+  /** `invalid`: present but does not match the official copy. */
   reason: 'missing' | 'invalid';
   /** Detail from the failed start, if any. */
   message?: string | null;
@@ -27,30 +23,38 @@ interface RuntimeCardProps {
 }
 
 /**
- * Shown instead of an answer when the agent runtime is not installed (or
- * failed verification): downloads the pinned release, shows progress and the
- * checksum it matched.
+ * Shown instead of an answer when the answer engine (the pinned agent runtime)
+ * is not installed or does not match the official copy: downloads it through the
+ * shared setup (one install with first-run setup and the setup card) and says
+ * what its verification means, with the checksum behind "Technical details".
  */
 export function RuntimeCard({ reason, message, onInstalled, compact = false }: RuntimeCardProps) {
-  const [state, setState] = useState<InstallState>({ status: 'idle' });
-
-  useRuntimeProgress(progress => {
-    setState(s => (s.status === 'installing' ? { status: 'installing', progress } : s));
-  });
+  const runtime = useRuntimeSetup();
+  const [done, setDone] = useState(false);
+  const source = runtime.status?.source ?? 'GitHub';
+  const size = runtime.status?.downloadBytes ?? null;
 
   const install = useCallback(async () => {
-    setState({ status: 'installing', progress: null });
-    try {
-      const result = await agentApi.installRuntime();
-      setState({ status: 'done', result });
+    if (await runtime.install()) {
+      setDone(true);
       onInstalled();
-    } catch (error) {
-      setState({ status: 'failed', message: toAgentError(error).message });
     }
-  }, [onInstalled]);
+  }, [runtime, onInstalled]);
 
-  const progress = state.status === 'installing' ? state.progress : null;
-  const fraction = progress && progress.total ? Math.min(1, progress.downloaded / progress.total) : null;
+  // Installed elsewhere (setup, another card) while this one was shown.
+  useEffect(() => {
+    if (!done && reason === 'missing' && runtime.justInstalled) {
+      setDone(true);
+      onInstalled();
+    }
+  }, [done, reason, runtime.justInstalled, onInstalled]);
+
+  const installing = runtime.installing;
+  const failedMessage = !installing && !done ? runtime.installError : null;
+  const progress = installing ? runtime.progress : null;
+  const total = progress?.total ?? size;
+  const fraction = progress && total ? Math.min(1, progress.downloaded / total) : null;
+  const result = done ? runtime.justInstalled : null;
 
   return (
     <section
@@ -58,31 +62,31 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
       className={cn('ask-rise rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-3', compact ? 'p-3' : 'p-4')}
     >
       <div className="flex items-start gap-2.5">
-        {state.status === 'done' ? (
+        {done ? (
           <CheckCircle2 className="w-[18px] h-[18px] mt-px shrink-0 text-shodh-success" aria-hidden="true" />
         ) : (
           <TriangleAlert className="w-[18px] h-[18px] mt-px shrink-0 text-shodh-warning" aria-hidden="true" />
         )}
         <div className="min-w-0 flex flex-col gap-1">
           <p className="text-[13.5px] font-semibold text-shodh-text">
-            {state.status === 'done'
-              ? 'Agent runtime installed'
+            {done
+              ? 'Answer engine installed'
               : reason === 'invalid'
-                ? 'The agent runtime failed its integrity check'
-                : 'The agent runtime is not installed'}
+                ? "The answer engine couldn't be verified"
+                : 'The answer engine is not installed yet'}
           </p>
-          <p className="text-[12.5px] leading-relaxed text-shodh-text-muted">
-            {state.status === 'done'
-              ? 'Ask your question again.'
-              : 'Answers are produced by a pinned agent runtime that runs on this computer. Shodh downloads the pinned release once from GitHub and checks its SHA-256 before every launch.'}
+          <p className="text-[13px] leading-relaxed text-shodh-text-muted">
+            {done
+              ? `${verifiedSentence(source)} Ask your question again.`
+              : reason === 'invalid'
+                ? `${unverifiedSentence()} ${verificationPromise(source)}`
+                : `Answers are written by an answer engine that runs on this computer${size ? ` (${approxMegabytes(size)}, downloaded once)` : ''}. ${verificationPromise(source)}`}
           </p>
-          {message && state.status === 'idle' && (
-            <p className="text-[12px] text-shodh-text-faint break-words">{message}</p>
-          )}
+
         </div>
       </div>
 
-      {state.status === 'installing' && (
+      {installing && (
         <div className="flex flex-col gap-1.5" aria-live="polite">
           <div
             role="progressbar"
@@ -97,44 +101,48 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
               style={{ transform: `scaleX(${fraction ?? 0.15})` }}
             />
           </div>
-          <p className="text-[11.5px] font-mono text-shodh-text-muted">
+          <p className="text-[12px] text-shodh-text-muted tabular-nums">
             {progress
-              ? progress.total
-                ? `${megabytes(progress.downloaded)} of ${megabytes(progress.total)}`
+              ? total
+                ? `${megabytes(progress.downloaded)} of ${megabytes(total)}`
                 : megabytes(progress.downloaded)
               : 'Connecting…'}
           </p>
         </div>
       )}
 
-      {state.status === 'done' && (
-        <p className="flex items-center gap-1.5 text-[11.5px] font-mono text-shodh-text-muted break-all">
-          <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-shodh-success" aria-hidden="true" />
-          {`Verified omp ${state.result.version} · sha256 ${state.result.sha256.slice(0, 16)}…`}
-        </p>
+      {failedMessage && (
+        <p role="alert" className="text-[13px] text-shodh-error break-words">{failedMessage}</p>
       )}
 
-      {state.status === 'failed' && (
-        <p role="alert" className="text-[12.5px] text-shodh-error break-words">{state.message}</p>
+      {(result || (message && !installing && !done)) && (
+        <TechnicalDetails
+          rows={[
+            ...(result ? [checksumRow(`Answer engine (omp ${result.version})`, result.sha256)] : []),
+            ...(message && !done ? [{ label: 'What the check reported', value: message }] : []),
+          ]}
+        />
       )}
 
-      {state.status !== 'done' && (
+      {!done && (
         <div>
           <button
             type="button"
-            onClick={install}
-            disabled={state.status === 'installing'}
+            onClick={() => void install()}
+            disabled={installing}
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-micro',
+              'inline-flex items-center gap-2 h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
-            {state.status === 'installing' ? (
+            {installing ? (
               <Loader2 className="w-3.5 h-3.5 agent-spin" aria-hidden="true" />
+            ) : failedMessage ? (
+              <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
             ) : (
               <Download className="w-3.5 h-3.5" aria-hidden="true" />
             )}
-            {state.status === 'installing' ? 'Installing…' : state.status === 'failed' ? 'Try again' : 'Install agent runtime'}
+            {installing ? 'Installing…' : failedMessage ? 'Try again' : reason === 'invalid' ? 'Download it again' : 'Install the answer engine'}
           </button>
         </div>
       )}

@@ -29,6 +29,13 @@ pub const OMP_VERSION: &str = "18.4.10";
 pub const OMP_WINDOWS_X64_SHA256: &str =
     "7232c209641f0cad7e20bdb3a074cdb2fb31ae2aa73d42c491c705d28e0d3895";
 
+/// Size in bytes of `omp-windows-x64.exe` from the v18.4.10 release (the
+/// release asset's size), so setup can say how much it downloads before it starts.
+pub const OMP_WINDOWS_X64_BYTES: u64 = 245_669_888;
+
+/// Where the runtime is downloaded from, as setup names it.
+pub const RUNTIME_SOURCE: &str = "GitHub";
+
 /// Overrides the binary location (still hash-verified).
 pub const OMP_PATH_ENV: &str = "SHODH_OMP_PATH";
 
@@ -218,6 +225,23 @@ pub fn pinned_hash() -> Option<&'static str> {
     }
 }
 
+/// The pinned release's download size on this platform, when it is pinned.
+pub fn pinned_size() -> Option<u64> {
+    pinned_hash().map(|_| OMP_WINDOWS_X64_BYTES)
+}
+
+/// A request that failed before any answer came back: no connection (offline,
+/// DNS, a firewall) or no reply in time. Anything else (an HTTP error status, a
+/// broken body) is a download failure.
+fn send_failure(url: &str, error: reqwest::Error) -> HarnessError {
+    if error.is_connect() || error.is_timeout() {
+        tracing::warn!(target: "shodh::harness", %url, error = %error, "the agent runtime download could not connect");
+        HarnessError::Unreachable(RUNTIME_SOURCE)
+    } else {
+        HarnessError::Download(format!("{url}: {error}"))
+    }
+}
+
 /// `omp-<version>[.exe]`.
 pub fn binary_file_name() -> String {
     if cfg!(windows) {
@@ -297,6 +321,9 @@ pub async fn verify_binary(binary: &Path) -> Result<(), HarnessError> {
     if actual.eq_ignore_ascii_case(&expected) {
         Ok(())
     } else {
+        // The checksums are for diagnostics: the log keeps them, the message
+        // the user reads says what the mismatch means.
+        tracing::warn!(target: "shodh::harness", path = %binary.display(), %expected, %actual, "the agent runtime failed its integrity check");
         Err(HarnessError::HashMismatch {
             path: binary.to_path_buf(),
             expected,
@@ -882,7 +909,8 @@ pub async fn fetch_omp(
                 .get(&url)
                 .send()
                 .await
-                .and_then(reqwest::Response::error_for_status)
+                .map_err(|e| send_failure(&url, e))?
+                .error_for_status()
                 .map_err(|e| HarnessError::Download(format!("{url}: {e}")))?
                 .text()
                 .await
@@ -900,7 +928,8 @@ pub async fn fetch_omp(
         .get(&url)
         .send()
         .await
-        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| send_failure(&url, e))?
+        .error_for_status()
         .map_err(|e| HarnessError::Download(format!("{url}: {e}")))?;
     let total = response.content_length();
     if total.unwrap_or(0) > MAX_DOWNLOAD_BYTES {
@@ -938,6 +967,7 @@ pub async fn fetch_omp(
         drop(file);
         let actual = hex::encode(hasher.finalize());
         if !actual.eq_ignore_ascii_case(&expected) {
+            tracing::warn!(target: "shodh::harness", %url, %expected, %actual, "the downloaded agent runtime failed its integrity check");
             return Err(HarnessError::HashMismatch {
                 path: PathBuf::from(&url),
                 expected: expected.clone(),

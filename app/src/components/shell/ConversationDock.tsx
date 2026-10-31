@@ -25,6 +25,8 @@ import { passageHits } from '../../features/agent/citations';
 import { currentStep, isLive, pendingApproval } from '../../features/agent/reducer';
 import { StatusLine } from '../../features/agent/StatusLine';
 import { Transcript } from '../../features/agent/Transcript';
+import { SetupCard } from '../../features/setup/SetupCard';
+import { useQueuedQuestion } from '../../features/setup/useQueuedQuestion';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { useSendOptions } from '../../features/ask/useSendOptions';
@@ -320,9 +322,14 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   // A connector's conversation is read-only here too.
   const readOnlySource = session.activeConversation?.source ?? null;
 
+  // As in Ask: a question asked before Shodh is ready waits for setup.
+  const submitRef = useRef<() => void>(() => {});
+  const queued = useQueuedQuestion(session.activeConversationId, submitRef);
+
   const submit = () => {
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere || checkingFileRef.current) return;
+    if (queued.hold()) return;
     // As in Ask: the attached image text goes beside the typed words, and both are
     // cleared only once the question is accepted.
     const conversationId = session.activeConversationId;
@@ -351,6 +358,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
         checkingFileRef.current = false;
       });
   };
+  submitRef.current = submit;
   const submitSteer = () => {
     const text = draft.trim();
     if (!text || !isStreaming) return;
@@ -456,6 +464,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       </div>
 
       <div className="shrink-0 border-t border-shodh-border bg-shodh-surface px-2.5 pt-2 pb-2.5 flex flex-col gap-1.5">
+        <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />
         {transcript && (
           <div className="px-1">
             <StatusLine transcript={transcript} fallbackModel={null} compact />
@@ -476,6 +485,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
             approvalPending={waiting !== null}
             blockedReason={readOnlySource
               ? `This conversation happened in ${connectorName(readOnlySource.connector)}. Open it in Ask and choose Continue in Ask to reply.`
+              : queued.waiting ? 'Your question is sent as soon as Shodh is ready.'
               : sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
             placeholder="Reply…"
             attachments={(

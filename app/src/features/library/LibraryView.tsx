@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
-import { SearchSetupCard } from '../setup/SearchSetupCard';
+import { SetupCard } from '../setup/SetupCard';
 import { VisualGallery } from '../visuals/VisualGallery';
 import { SnippetShelf } from '../research/SnippetShelf';
 import { CompareResults } from '../research/CompareResults';
@@ -201,7 +201,7 @@ export function LibraryView({
           )}
         </header>
 
-        <SearchSetupCard />
+        <SetupCard />
 
         {unlistedCard}
 

@@ -29,6 +29,7 @@ export interface AgentError {
 
 const CODES: readonly FailureCode[] = [
   'runtime_missing',
+  'offline',
   'runtime_invalid',
   'model_config',
   'model_cooling',
@@ -155,6 +156,10 @@ export interface RuntimeStatus {
   installed: boolean;
   path: string;
   version: string;
+  /** Size of the pinned download on this platform, when it is pinned. */
+  downloadBytes: number | null;
+  /** Where it is downloaded from ("GitHub"). */
+  source: string;
 }
 
 export interface RuntimeInstall {

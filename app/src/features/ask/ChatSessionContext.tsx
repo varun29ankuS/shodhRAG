@@ -16,6 +16,7 @@ import {
 } from '../agent/reducer';
 import type { TranscriptAction, TranscriptState } from '../agent/reducer';
 import { toAgentError, useAgentSession } from '../agent/useAgentSession';
+import { useRuntimeSetup } from '../setup/RuntimeSetupContext';
 import type { HistoryTurn } from '../agent/useAgentSession';
 import type { FocusThread } from '../focus/focusTypes';
 import { metadataWithThreads, threadsFromMetadata } from '../focus/threadStore';
@@ -239,7 +240,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [view, setView] = useState<ViewState>(() => emptyView<ChatMessage, ConversationMessage>());
   const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
   const [navigation, setNavigation] = useState<AgentNavigation | null>(null);
-  const [runtimeInstalled, setRuntimeInstalled] = useState<boolean | null>(null);
+  // Shared with first-run setup and the setup card (one status, one install).
+  const { installed: runtimeInstalled, setInstalled: setRuntimeInstalled } = useRuntimeSetup();
   const [sideRun, setSideRun] = useState<SideRunInfo | null>(null);
 
   const liveRef = useRef<LiveRun | null>(null);
@@ -422,15 +424,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (live && live.abortTimer !== null) window.clearTimeout(live.abortTimer);
   }, []);
 
-  // Learn whether the runtime is installed.
-  useEffect(() => {
-    let cancelled = false;
-    api.runtimeStatus()
-      .then(status => { if (!cancelled) setRuntimeInstalled(status.installed); })
-      .catch(error => console.error('Agent runtime status:', toAgentError(error).message));
-    return () => { cancelled = true; };
-  }, [api]);
-
   // The agent runtime is not started with the app or when a conversation
   // opens: it holds hundreds of megabytes. `prewarm` starts the active
   // conversation's session once the user begins typing a question, so it is
@@ -524,7 +517,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         providerError: failure.cooling?.providerError ?? null,
       }, true);
     }
-  }, [api, enqueue, publish]);
+  }, [api, enqueue, publish, setRuntimeInstalled]);
 
   const send = useCallback((text: string, options: SendOptions, extra?: SendExtra): boolean => {
     const content = text.trim();

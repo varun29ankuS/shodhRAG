@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
-import { getAppSettings, onAppSettingsChanged, setPolicy } from '../lib/appSettings';
+import { getAppSettings, onAppSettingsChanged, setCodeMode, setPolicy } from '../lib/appSettings';
 import type { Policy } from '../lib/appSettings';
 import { checkForUpdate, getUpdateStatus, setUpdateChecks } from '../lib/updates';
 import type { UpdateStatus } from '../lib/updates';
@@ -112,7 +112,78 @@ export default function PrivacySettings() {
         disabled={saving || policy.localOnly}
         onChange={webAccess => void change({ ...policy, webAccess })}
       />
+      <CodeModeSettings />
       <UpdateSettings />
+    </div>
+  );
+}
+
+/**
+ * Code mode: off on a new install. Turning it on first says plainly what it
+ * lets answers do, and asks once more; turning it off takes effect at once.
+ */
+function CodeModeSettings() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const explainId = useId();
+
+  useEffect(() => {
+    let cancelled = false;
+    getAppSettings()
+      .then(settings => {
+        if (!cancelled && settings) setEnabled(settings.code.enabled);
+      })
+      .catch(err => notify.error('The Code mode setting could not be loaded', { description: String(err) }));
+    const unsubscribe = onAppSettingsChanged(settings => setEnabled(settings.code.enabled));
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const save = async (next: boolean) => {
+    setSaving(true);
+    try {
+      const saved = await setCodeMode(next);
+      if (saved) setEnabled(saved.code.enabled);
+      setConfirming(false);
+    } catch (err) {
+      notify.error('The Code mode setting was not saved', { description: String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (enabled === null) return null;
+  return (
+    <div className="flex flex-col gap-3 pt-5 border-t border-shodh-border">
+      <SwitchRow
+        label="Code mode"
+        description="Off: answers only read your files. On: a conversation in a workspace with one code folder can switch to Code, where the assistant edits files and runs commands in that folder."
+        checked={enabled}
+        disabled={saving || confirming}
+        onChange={next => (next ? setConfirming(true) : void save(false))}
+      />
+      {confirming && (
+        <div role="group" aria-labelledby={explainId} className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
+          <p id={explainId} className="m-0 text-[13px] font-semibold text-shodh-text">Turn on Code mode?</p>
+          <p className="m-0 text-[13px] text-shodh-text-secondary">
+            In Code mode the assistant can change files in the workspace&apos;s code folder and run commands on this
+            computer, such as builds and tests. Each change and command asks you first unless you allow it in the
+            workspace&apos;s Overview, and the work goes on a separate branch you can discard. Only turn it on for code
+            you are happy to have changed.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className={BUTTON} onClick={() => void save(true)} disabled={saving}>
+              Turn on Code mode
+            </button>
+            <button type="button" className={BUTTON} onClick={() => setConfirming(false)} disabled={saving}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

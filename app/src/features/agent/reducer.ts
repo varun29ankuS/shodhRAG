@@ -133,6 +133,8 @@ export type FailureCode =
   | 'busy'
   | 'invalid_request'
   | 'session_closed'
+  /** A download could not connect (offline, DNS, a firewall). */
+  | 'offline'
   | 'runtime_error';
 
 export interface TranscriptState {

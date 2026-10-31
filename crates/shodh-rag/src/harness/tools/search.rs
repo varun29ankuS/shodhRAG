@@ -14,6 +14,7 @@ use super::{
     is_unset_marker, req_str, CitedPassage, HostTool, RunScope, ScopedSnippet, ToolContext,
     ToolError, ToolOutput, MAX_MODEL_OUTPUT_CHARS, UNTRUSTED_NOTICE,
 };
+use crate::embeddings::{SearchModelsMissing, SEARCH_MODELS_MISSING_CODE};
 use crate::harness::events::RiskTier;
 use crate::harness::protocol::ToolLoadMode;
 use crate::harness::truncate_chars;
@@ -141,6 +142,25 @@ struct Passage {
     /// the step detail, never in the text the model reads.
     #[serde(skip)]
     url: Option<String>,
+}
+
+/// What the model is told when search may not run yet: the search models are not
+/// installed (the first run, before or while setup downloads them). It is told
+/// what to say, so the answer is a clear message, never an empty reply or an
+/// answer from memory that reads as if it came from the user's files.
+pub const SEARCH_NOT_READY: &str = "Search is not ready yet: Shodh is still setting up the search      models on this computer (a one-time download). Tell the user that their files can be      searched once setup finishes, which Ask shows with its progress, and do not answer from      memory as if you had searched their files.";
+
+/// A failed search as the model reads it.
+fn search_failure(error: anyhow::Error) -> ToolError {
+    let models_missing = error
+        .chain()
+        .any(|cause| cause.downcast_ref::<SearchModelsMissing>().is_some())
+        || format!("{error:#}").contains(SEARCH_MODELS_MISSING_CODE);
+    if models_missing {
+        ToolError::Unavailable(SEARCH_NOT_READY.to_string())
+    } else {
+        ToolError::Failed(format!("Search failed: {error}"))
+    }
 }
 
 impl Passage {
@@ -985,7 +1005,7 @@ impl HostTool for SearchDocumentsTool {
         let mut results = if !plan.limited {
             rag.search_comprehensive(query, k, None)
                 .await
-                .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?
+                .map_err(search_failure)?
         } else if set.is_empty() {
             // A limit that resolves to nothing finds nothing, never everything.
             Vec::new()
@@ -1002,7 +1022,7 @@ impl HostTool for SearchDocumentsTool {
             let mut hits = rag
                 .search_comprehensive(query, fetch, Some(filter))
                 .await
-                .map_err(|e| ToolError::Failed(format!("Search failed: {e}")))?;
+                .map_err(search_failure)?;
             if !pages.is_empty() {
                 // The page limit applies to the user's files; passages of the
                 // scope's sources are kept whatever their page.
@@ -1113,6 +1133,27 @@ mod tests {
         let runtime = jsonschema::validator_for(&nullable_optionals(search_schema())).unwrap();
         let host = jsonschema::validator_for(&search_schema()).unwrap();
         runtime.is_valid(&args) && host.is_valid(&without_unaccepted_nulls(args, &search_schema()))
+    }
+
+    #[test]
+    fn a_search_before_the_models_are_installed_tells_the_model_what_to_say() {
+        for error in [
+            anyhow::Error::from(SearchModelsMissing),
+            anyhow::Error::from(SearchModelsMissing).context("embedding the query"),
+            anyhow::anyhow!("{}", SearchModelsMissing),
+        ] {
+            match search_failure(error) {
+                ToolError::Unavailable(message) => {
+                    assert_eq!(message, SEARCH_NOT_READY);
+                    assert!(!message.contains(SEARCH_MODELS_MISSING_CODE));
+                }
+                other => panic!("expected Unavailable, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            search_failure(anyhow::anyhow!("disk full")),
+            ToolError::Failed("Search failed: disk full".to_string())
+        );
     }
 
     #[test]

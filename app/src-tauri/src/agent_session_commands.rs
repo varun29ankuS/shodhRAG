@@ -34,9 +34,9 @@ use shodh_rag::harness::tools::{
     carried_passages_block, CitedPassage, HostTool, RunScope, ToolRegistry,
 };
 use shodh_rag::harness::{
-    fetch_omp, resolve_binary_path, select_model_with, stealth_allowed_by_env, AgentEvent,
-    AgentHarness, AgentProfile, CodeSession, HarnessError, LaunchSpec, OmpLayout, OmpModel,
-    OmpSession, SessionConfig, Thinking, OMP_VERSION,
+    fetch_omp, pinned_size, resolve_binary_path, select_model_with, stealth_allowed_by_env,
+    verify_binary, AgentEvent, AgentHarness, AgentProfile, CodeSession, HarnessError, LaunchSpec,
+    OmpLayout, OmpModel, OmpSession, SessionConfig, Thinking, OMP_VERSION, RUNTIME_SOURCE,
 };
 use shodh_rag::llm::{ApiProvider, LLMMode};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -123,7 +123,8 @@ pub struct AgentEventEnvelope {
 #[serde(rename_all = "camelCase")]
 pub struct AgentCommandError {
     /// `runtime_missing`, `runtime_invalid`, `model_config`, `model_cooling`, `busy`,
-    /// `invalid_request`, `session_closed` or `runtime_error`.
+    /// `invalid_request`, `session_closed`, `offline` (a download could not connect)
+    /// or `runtime_error`.
     pub code: &'static str,
     pub message: String,
     /// For `model_cooling`: the model that failed moments ago (as runs name it) and how,
@@ -173,6 +174,7 @@ impl From<HarnessError> for AgentCommandError {
             | HarnessError::NoPendingApproval(_)
             | HarnessError::CodeFolder(_) => "invalid_request",
             HarnessError::SessionClosed | HarnessError::UnknownSession(_) => "session_closed",
+            HarnessError::Unreachable(_) => "offline",
             _ => "runtime_error",
         };
         Self {
@@ -1481,11 +1483,19 @@ async fn start_attempt(
         .map(|i| truncate(&i, MAX_INSTRUCTIONS_CHARS));
     // Side threads always answer in Research mode.
     let code_folder = match (mode.unwrap_or_default(), &parent_conversation_id) {
-        (ConversationMode::Code, None) => Some(
+        (ConversationMode::Code, None) => Some({
+            // Opt-in: an answer may change files and run commands only once the user
+            // turned Code mode on in Settings.
+            if !crate::app_settings::code_mode_enabled(&app_data_dir(&app)?) {
+                return Err(AgentCommandError::invalid(
+                    crate::app_settings::CODE_MODE_OFF,
+                ));
+            }
+
             workspace_code_folder(&workspaces, workspace_id.as_deref())
                 .await
-                .map_err(HarnessError::CodeFolder)?,
-        ),
+                .map_err(HarnessError::CodeFolder)?
+        }),
         _ => None,
     };
     let code_key = code_folder.as_ref().map(CodeFolder::display);
@@ -2896,6 +2906,11 @@ pub struct RuntimeStatus {
     pub installed: bool,
     pub path: String,
     pub version: &'static str,
+    /// Size of the pinned download on this platform, when it is pinned (setup
+    /// says how much it downloads before it starts).
+    pub download_bytes: Option<u64>,
+    /// Where it is downloaded from, as setup names it.
+    pub source: &'static str,
 }
 
 #[tauri::command]
@@ -2905,6 +2920,8 @@ pub async fn agent_runtime_status(app: AppHandle) -> CommandResult<RuntimeStatus
         installed: binary.is_file(),
         path: binary.display().to_string(),
         version: OMP_VERSION,
+        download_bytes: pinned_size(),
+        source: RUNTIME_SOURCE,
     })
 }
 
@@ -2927,6 +2944,10 @@ struct RuntimeProgress {
 
 /// Download and verify the pinned agent runtime. Emits
 /// `agent_runtime_progress` while downloading.
+///
+/// Setup, the model connect panel and the runtime card can each ask for it; an
+/// install that waited for another one (or finds a verified copy already in
+/// place) returns that copy instead of downloading it again.
 #[tauri::command]
 pub async fn agent_install_runtime(
     app: AppHandle,
@@ -2935,6 +2956,14 @@ pub async fn agent_install_runtime(
 ) -> CommandResult<RuntimeInstall> {
     let _guard = sessions.install_lock.lock().await;
     let dir = app_data_dir(&app)?;
+    let binary = resolve_binary_path(&dir);
+    if binary.is_file() && verify_binary(&binary).await.is_ok() {
+        return Ok(RuntimeInstall {
+            path: binary.display().to_string(),
+            version: OMP_VERSION,
+            sha256: shodh_rag::harness::sidecar::expected_hash(&binary)?,
+        });
+    }
     let emitter = app.clone();
     let last_emit: Mutex<Option<Instant>> = Mutex::new(None);
     let progress = move |downloaded: u64, total: Option<u64>| {

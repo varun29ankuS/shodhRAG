@@ -8,6 +8,7 @@ import {
   SEARCH_MODELS_READY_EVENT,
   errorMessage,
   isInstallProgress,
+  isOfflineError,
   isSearchModelsStatus,
 } from './searchModels';
 import type { InstallProgress, SearchModelsStatus } from './searchModels';
@@ -20,6 +21,8 @@ interface SearchModelsContextValue {
   installing: boolean;
   progress: InstallProgress | null;
   installError: string | null;
+  /** The last install could not connect (likely offline). */
+  installOffline: boolean;
   /** Status returned by an install that finished in this session. */
   installed: SearchModelsStatus | null;
   install: () => Promise<void>;
@@ -39,6 +42,7 @@ export function SearchModelsProvider({ children }: { children: React.ReactNode }
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<InstallProgress | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [installOffline, setInstallOffline] = useState(false);
   const [installed, setInstalled] = useState<SearchModelsStatus | null>(null);
   const installingRef = useRef(false);
 
@@ -94,6 +98,7 @@ export function SearchModelsProvider({ children }: { children: React.ReactNode }
     installingRef.current = true;
     setInstalling(true);
     setInstallError(null);
+    setInstallOffline(false);
     setProgress(null);
     try {
       const result = await invoke<unknown>('install_search_models');
@@ -102,7 +107,10 @@ export function SearchModelsProvider({ children }: { children: React.ReactNode }
       setInstalled(result);
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
-      if (!raw.startsWith(INSTALL_IN_PROGRESS_CODE)) setInstallError(errorMessage(error));
+      if (!raw.startsWith(INSTALL_IN_PROGRESS_CODE)) {
+        setInstallError(errorMessage(error));
+        setInstallOffline(isOfflineError(error));
+      }
       await refresh();
     } finally {
       installingRef.current = false;
@@ -113,8 +121,8 @@ export function SearchModelsProvider({ children }: { children: React.ReactNode }
   const dismissInstalled = useCallback(() => setInstalled(null), []);
 
   const value = useMemo<SearchModelsContextValue>(
-    () => ({ status, statusError, installing, progress, installError, installed, install, refresh, dismissInstalled }),
-    [status, statusError, installing, progress, installError, installed, install, refresh, dismissInstalled],
+    () => ({ status, statusError, installing, progress, installError, installOffline, installed, install, refresh, dismissInstalled }),
+    [status, statusError, installing, progress, installError, installOffline, installed, install, refresh, dismissInstalled],
   );
 
   return <SearchModelsContext.Provider value={value}>{children}</SearchModelsContext.Provider>;

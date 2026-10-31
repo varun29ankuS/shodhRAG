@@ -260,6 +260,10 @@ pub enum ModelStoreError {
     },
     #[error("downloading {artifact} failed: {message}")]
     Download { artifact: String, message: String },
+    /// The download could not connect (offline, DNS, a firewall) or got no reply in
+    /// time; the interrupted file is kept, so trying again resumes it.
+    #[error("couldn't reach Hugging Face to download {artifact}. Check the internet connection and try again")]
+    Unreachable { artifact: String },
     #[error("downloading {artifact} stalled: no data for {seconds} s")]
     Stalled { artifact: String, seconds: u64 },
     #[error("{artifact} is {actual} bytes, expected {expected}")]
@@ -268,7 +272,9 @@ pub enum ModelStoreError {
         expected: u64,
         actual: u64,
     },
-    #[error("{artifact} failed its checksum: expected sha256 {expected}, got {actual}")]
+    /// The checksums stay in the fields (and the log) for diagnostics; the message says
+    /// what the mismatch means.
+    #[error("{artifact} doesn't match the official copy (it may be damaged or changed), so Shodh won't use it. Try again to download it again")]
     ChecksumMismatch {
         artifact: String,
         expected: String,
@@ -278,7 +284,32 @@ pub enum ModelStoreError {
     Task(String),
 }
 
+/// Start of a [`ByteSource`] error that means the request never got an answer
+/// (no connection, or no reply in time), as opposed to an HTTP error or a broken body.
+pub const UNREACHABLE_PREFIX: &str = "unreachable: ";
+
 impl ModelStoreError {
+    /// The download could not connect: the user is likely offline.
+    pub fn is_unreachable(&self) -> bool {
+        matches!(self, Self::Unreachable { .. })
+    }
+
+    /// A download error from a source's message ([`UNREACHABLE_PREFIX`] marks a
+    /// request that never got an answer).
+    fn download(artifact: &str, message: String) -> Self {
+        if message.starts_with(UNREACHABLE_PREFIX) {
+            tracing::warn!(artifact, %message, "a search model download could not connect");
+            Self::Unreachable {
+                artifact: artifact.to_string(),
+            }
+        } else {
+            Self::Download {
+                artifact: artifact.to_string(),
+                message,
+            }
+        }
+    }
+
     fn io(path: &Path, source: std::io::Error) -> Self {
         Self::Io {
             path: path.to_path_buf(),
@@ -332,7 +363,13 @@ impl ByteSource for HttpByteSource {
         if offset > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }
-        let response = request.send().await.map_err(|e| e.to_string())?;
+        let response = request.send().await.map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                format!("{UNREACHABLE_PREFIX}{e}")
+            } else {
+                e.to_string()
+            }
+        })?;
         let status = response.status();
         let start = if status == reqwest::StatusCode::PARTIAL_CONTENT {
             offset
@@ -648,10 +685,7 @@ impl ModelStore {
             let opened = source
                 .open(&artifact.url, offset)
                 .await
-                .map_err(|message| ModelStoreError::Download {
-                    artifact: artifact.name.clone(),
-                    message,
-                })?;
+                .map_err(|message| ModelStoreError::download(&artifact.name, message))?;
             let mut file = if opened.start == offset && offset > 0 {
                 tokio::fs::OpenOptions::new()
                     .append(true)
@@ -725,6 +759,7 @@ impl ModelStore {
         let actual = hex::encode(hasher.finalize());
         if !actual.eq_ignore_ascii_case(&artifact.sha256) {
             remove_if_exists(&part)?;
+            tracing::warn!(artifact = %artifact.name, expected = %artifact.sha256, %actual, "a search model file failed its checksum");
             return Err(ModelStoreError::ChecksumMismatch {
                 artifact: artifact.name.clone(),
                 expected: artifact.sha256.clone(),
@@ -1258,6 +1293,50 @@ mod tests {
         let source = MemorySource::new(&[("mem://a", BODY_A)]);
         store.install(&source, &no_progress()).await.unwrap();
         assert_eq!(std::fs::read(dir.join("a.bin")).unwrap(), BODY_A);
+    }
+
+    #[tokio::test]
+    async fn a_download_that_cannot_connect_is_reported_as_unreachable() {
+        struct Offline;
+        #[async_trait]
+        impl ByteSource for Offline {
+            async fn open(&self, _url: &str, _offset: u64) -> Result<OpenedStream, String> {
+                Err(format!("{UNREACHABLE_PREFIX}error sending request"))
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ModelStore::with_artifacts(tmp.path(), vec![artifact("a", BODY_A)]);
+        let err = store.install(&Offline, &no_progress()).await.unwrap_err();
+        assert!(err.is_unreachable(), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("couldn't reach Hugging Face"), "{message}");
+        assert!(!message.contains("unreachable: "), "{message}");
+
+        // Any other failure (an HTTP status) stays a download failure.
+        let err = store
+            .install(&MemorySource::new(&[]), &no_progress())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ModelStoreError::Download { .. }), "{err}");
+        assert!(!err.is_unreachable());
+    }
+
+    #[test]
+    fn a_checksum_mismatch_says_what_it_means_without_the_hashes() {
+        let err = ModelStoreError::ChecksumMismatch {
+            artifact: "model.onnx".to_string(),
+            expected: "a".repeat(64),
+            actual: "b".repeat(64),
+        };
+        let message = err.to_string();
+        assert!(
+            message.contains("doesn't match the official copy"),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&"a".repeat(64)) && !message.contains("sha256"),
+            "{message}"
+        );
     }
 
     #[tokio::test]

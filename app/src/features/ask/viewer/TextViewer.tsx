@@ -162,7 +162,7 @@ export function TextViewer({ filePath, passage, code, onLocate, onError, remembe
 
   if (!source) {
     return (
-      <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-shodh-text-muted">
+      <div className="flex-1 flex items-center justify-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Loading document…
       </div>
@@ -207,9 +207,9 @@ export function TextViewer({ filePath, passage, code, onLocate, onError, remembe
       className={cn('flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-6 py-5', VIEWER_FOCUS_RING)}
     >
       {text.trim().length === 0 ? (
-        <p className="text-[13.5px] text-shodh-text-muted">No text could be extracted from this document.</p>
+        <p className="text-body text-shodh-text-muted">No text could be extracted from this document.</p>
       ) : code ? (
-        <div className="font-mono text-[12.5px] leading-[1.6] text-shodh-text-secondary">
+        <div className="font-mono text-small leading-[1.6] text-shodh-text-secondary">
           {blocks.map(block => (
             <pre key={block.start} className="m-0 whitespace-pre-wrap break-words [content-visibility:auto] [contain-intrinsic-size:auto_320px]">
               {renderBlock(block)}
@@ -217,7 +217,7 @@ export function TextViewer({ filePath, passage, code, onLocate, onError, remembe
           ))}
         </div>
       ) : (
-        <article className="max-w-[72ch] mx-auto flex flex-col gap-3.5 text-[14px] leading-[1.7] text-shodh-text-secondary">
+        <article className="max-w-[72ch] mx-auto flex flex-col gap-3.5 text-body leading-[1.7] text-shodh-text-secondary">
           {blocks.map(block => (
             <p key={block.start} className="m-0 whitespace-pre-wrap break-words [content-visibility:auto] [contain-intrinsic-size:auto_4em]">
               {renderBlock(block)}
@@ -226,7 +226,7 @@ export function TextViewer({ filePath, passage, code, onLocate, onError, remembe
         </article>
       )}
       {source.truncated && (
-        <p className="mt-6 text-[12.5px] text-shodh-text-muted">
+        <p className="mt-6 text-small text-shodh-text-muted">
           This document has {source.totalChars.toLocaleString()} characters; only the beginning is shown here. Open it in its default app to read the rest.
         </p>
       )}

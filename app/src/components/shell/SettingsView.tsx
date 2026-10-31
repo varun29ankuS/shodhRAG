@@ -12,10 +12,11 @@ import TableModelSettings from '../TableModelSettings';
 import EvidenceTableSettings from '../EvidenceTableSettings';
 import ScanReaderSettings from '../ScanReaderSettings';
 import ToolsSettings from '../ToolsSettings';
+import AppearanceSettings from '../AppearanceSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 
-export type SettingsSection = 'models' | 'search' | 'tools' | 'tables' | 'general' | 'notifications' | 'privacy' | 'memory' | 'data';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'tables' | 'general' | 'appearance' | 'notifications' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -42,6 +43,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'general',
     label: 'General',
     description: 'How Shodh runs when its window is closed, so task reminders keep ringing.',
+  },
+  {
+    id: 'appearance',
+    label: 'Appearance',
+    description: 'How large text and controls are drawn, for large or high-resolution screens.',
   },
   {
     id: 'notifications',
@@ -127,7 +133,7 @@ export default function SettingsView({
                   onClick={() => setSection(s.id)}
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(
-                    'w-full h-9 px-3 rounded-lg text-left text-[13.5px] transition-colors duration-micro',
+                    'w-full h-9 px-3 rounded-lg text-left text-body transition-colors duration-micro',
                     isActive
                       ? 'bg-shodh-raised-2 text-shodh-text font-semibold'
                       : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
@@ -182,6 +188,8 @@ export default function SettingsView({
                 <EvidenceTableSettings />
               ) : section === 'general' ? (
                 <BackgroundSettings />
+              ) : section === 'appearance' ? (
+                <AppearanceSettings />
               ) : section === 'notifications' ? (
                 <NotificationSettings />
               ) : section === 'privacy' ? (

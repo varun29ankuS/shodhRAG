@@ -50,7 +50,7 @@ function useNearViewport(ref: React.RefObject<HTMLElement | null>): boolean {
 
 function ThumbProblem({ text }: { text: string }) {
   return (
-    <div className="h-full flex items-center justify-center gap-1.5 px-3 text-[12px] text-shodh-text-muted">
+    <div className="h-full flex items-center justify-center gap-1.5 px-3 text-caption text-shodh-text-muted">
       <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-shodh-warning" aria-hidden="true" />
       {text}
     </div>
@@ -147,7 +147,7 @@ function SimulationThumb({ source, record }: { source: string; record: Pick<Visu
 
 function EquationThumb({ tex }: { tex: string }) {
   return (
-    <div className="h-full flex items-center justify-center px-3 overflow-hidden text-[13px] text-shodh-text [&_.katex-display]:m-0">
+    <div className="h-full flex items-center justify-center px-3 overflow-hidden text-small text-shodh-text [&_.katex-display]:m-0">
       <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{`$$\n${tex}\n$$`}</ReactMarkdown>
     </div>
   );
@@ -159,7 +159,7 @@ function TableThumb({ source }: { source: string }) {
   const [header, ...body] = rows;
   return (
     <div className="h-full overflow-hidden p-2">
-      <table className="w-full text-[11px] border-collapse">
+      <table className="w-full text-caption border-collapse">
         <thead>
           <tr>{header.map((c, i) => <th key={i} className="px-1.5 py-1 text-left font-semibold text-shodh-text border-b border-shodh-border truncate max-w-[120px]">{c}</th>)}</tr>
         </thead>

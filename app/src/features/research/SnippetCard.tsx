@@ -23,7 +23,7 @@ export function SnippetThumb({ snippet, className }: { snippet: Snippet; classNa
       ) : image.status === 'loading' ? (
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none text-zinc-500" aria-hidden="true" />
       ) : (
-        <span className="flex items-center gap-1.5 px-3 text-[11.5px] text-zinc-600" title={image.message}>
+        <span className="flex items-center gap-1.5 px-3 text-caption text-zinc-600" title={image.message}>
           <AlertTriangle className="w-3.5 h-3.5 text-shodh-warning" aria-hidden="true" />
           Not drawn
         </span>
@@ -80,17 +80,17 @@ export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: S
         >
           <SnippetThumb snippet={snippet} className="border-b border-shodh-border-subtle" />
           <div className="px-3 pt-2.5 pb-2.5 flex flex-col gap-0.5 min-w-0">
-            <h3 id={titleId} className="text-[13px] font-semibold text-shodh-text truncate" title={label}>
+            <h3 id={titleId} className="text-small font-semibold text-shodh-text truncate" title={label}>
               <Scissors className="inline w-3 h-3 mr-1 -mt-0.5 text-shodh-text-muted" aria-hidden="true" />
               {label}
             </h3>
-            <p className="text-[11.5px] text-shodh-text-muted truncate">
+            <p className="text-caption text-shodh-text-muted truncate">
               <span>{KIND_LABEL[snippet.kind]}</span>
               <span>{showFile ? ` · ${snippet.fileName} p.${snippet.page}` : ` · page ${snippet.page}`}</span>
               <span>{' · '}</span>
               <time dateTime={snippet.createdAt} title={relativeTime(snippet.updatedAt)}>{dateLabel(snippet.createdAt)}</time>
             </p>
-            {snippet.note && <p className="text-[11.5px] text-shodh-text-secondary line-clamp-2">{snippet.note}</p>}
+            {snippet.note && <p className="text-caption text-shodh-text-secondary line-clamp-2">{snippet.note}</p>}
           </div>
         </button>
         <span

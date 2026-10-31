@@ -64,7 +64,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
   return (
     <div className="flex flex-col gap-1">
       {transcript.warning && (
-        <p role="note" className="flex items-center gap-1.5 text-[11.5px] text-shodh-warning">
+        <p role="note" className="flex items-center gap-1.5 text-caption text-shodh-warning">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
           <span className="min-w-0 truncate" title={transcript.warning}>{transcript.warning}</span>
         </p>
@@ -73,7 +73,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
         title={summary.title}
         className={cn(
           'flex items-center gap-2 min-w-0 font-mono text-shodh-text-muted',
-          compact ? 'text-[10.5px]' : 'text-[11.5px]',
+          compact ? 'text-caption' : 'text-small',
         )}
       >
         <span

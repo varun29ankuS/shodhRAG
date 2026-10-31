@@ -27,7 +27,10 @@ import type { DiagramSpec, FeedbackLoop } from './diagramSpec.ts';
 export const PAD = 24;
 const CHAR_W = 7;
 const LINE_H = 16;
-const SUB_H = 14;
+/** Height of a box sub-label (12px monospace). */
+const SUB_H = 16;
+/** Width of a character of the 12px monospace labels (sub-labels, wire labels, captions). */
+const MONO_CHAR_W = 7.3;
 const WRAP = 22;
 const MIN_BOX_W = 96;
 const MAX_BOX_W = 200;
@@ -140,7 +143,7 @@ function makeBox(spec: DiagramSpec, node: number, minW = MIN_BOX_W): Box {
   const n = spec.nodes[node];
   const lines = wrapLabel(n.label);
   const sub = n.kind;
-  const widest = Math.max(...lines.map(l => textWidth(l)), sub ? textWidth(sub, 6.6) : 0);
+  const widest = Math.max(...lines.map(l => textWidth(l)), sub ? textWidth(sub, MONO_CHAR_W) : 0);
   const w = snap(Math.min(MAX_BOX_W, Math.max(minW, widest + 28)));
   const h = snap(20 + lines.length * LINE_H + (sub ? SUB_H : 0));
   return { node, x: 0, y: 0, w, h, lines, sub, dot: false };
@@ -173,7 +176,7 @@ export function roundedPath(points: readonly [number, number][], radius = CORNER
 
 function edgeLabel(text: string | null, x: number, y: number): Label | null {
   if (!text) return null;
-  return { x: round(x), y: round(y), w: snap(textWidth(text, 6.4) + LABEL_PAD * 2), text };
+  return { x: round(x), y: round(y), w: snap(textWidth(text, MONO_CHAR_W) + LABEL_PAD * 2), text };
 }
 
 /** Spread `count` attach points along a side of `length` starting at `start`. */
@@ -404,7 +407,7 @@ function layered(spec: DiagramSpec, horizontal: boolean): DiagramDrawing {
 
 function sequence(spec: DiagramSpec): DiagramDrawing {
   const boxes = spec.nodes.map((_, i) => makeBox(spec, i));
-  const col = Math.max(...boxes.map(b => b.w), ...spec.edges.map(e => (e.label ? textWidth(e.label, 6.4) : 0))) + 48;
+  const col = Math.max(...boxes.map(b => b.w), ...spec.edges.map(e => (e.label ? textWidth(e.label, MONO_CHAR_W) : 0))) + 48;
   const headH = Math.max(...boxes.map(b => b.h));
   boxes.forEach((b, i) => {
     b.x = PAD + i * col + snap((col - b.w) / 2);
@@ -422,7 +425,7 @@ function sequence(spec: DiagramSpec): DiagramDrawing {
     if (a === b) {
       const x = lifeX(a);
       const pts: [number, number][] = [[x, y], [x + 32, y], [x + 32, y + 16], [x, y + 16]];
-      return { edge: e, d: roundedPath(pts, 6), dashed, arrow: true, label: edgeLabel(edge.label, x + 40 + (edge.label ? textWidth(edge.label, 6.4) / 2 + LABEL_PAD : 0), y + 8), sign: null };
+      return { edge: e, d: roundedPath(pts, 6), dashed, arrow: true, label: edgeLabel(edge.label, x + 40 + (edge.label ? textWidth(edge.label, MONO_CHAR_W) / 2 + LABEL_PAD : 0), y + 8), sign: null };
     }
     const x1 = lifeX(a);
     const x2 = lifeX(b);
@@ -591,7 +594,7 @@ function loop(spec: DiagramSpec): DiagramDrawing {
   if (loops.length === 1) {
     captions.push({ x: cx, y: cy + 6, text: loops[0].polarity, anchor: 'middle', mono: false });
   }
-  const widestCaption = Math.max(0, ...captions.map(c => textWidth(c.text, 6.6)));
+  const widestCaption = Math.max(0, ...captions.map(c => textWidth(c.text, MONO_CHAR_W)));
   return {
     width: snap(Math.max(cx + radius + widest / 2 + PAD + 24, PAD * 2 + widestCaption)),
     height: snap(listTop + loops.length * 18 + PAD),

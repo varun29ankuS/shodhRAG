@@ -16,17 +16,17 @@ export const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 export const BUTTON = cn(
-  'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg border border-shodh-border bg-shodh-raised text-[12.5px] font-medium text-shodh-text whitespace-nowrap hover:bg-shodh-raised-2 active:scale-[0.98] transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
+  'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg border border-shodh-border bg-shodh-raised text-small font-medium text-shodh-text whitespace-nowrap hover:bg-shodh-raised-2 active:scale-[0.98] transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
   FOCUS_RING,
 );
 
 export const PRIMARY_BUTTON = cn(
-  'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg bg-shodh-accent text-[12.5px] font-semibold text-shodh-on-accent whitespace-nowrap hover:bg-shodh-accent-hover active:scale-[0.98] transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
+  'inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg bg-shodh-accent text-small font-semibold text-shodh-on-accent whitespace-nowrap hover:bg-shodh-accent-hover active:scale-[0.98] transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
   FOCUS_RING,
 );
 
 export const INPUT = cn(
-  'h-9 px-2.5 rounded-lg border border-shodh-border bg-shodh-ground text-[13px] text-shodh-text placeholder:text-shodh-text-faint',
+  'h-9 px-2.5 rounded-lg border border-shodh-border bg-shodh-ground text-small text-shodh-text placeholder:text-shodh-text-faint',
   FOCUS_RING,
 );
 
@@ -158,7 +158,7 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
 
   if (!view) {
     return (
-      <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+      <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Checking your connections…
       </p>
@@ -194,8 +194,8 @@ function RowHeading({ icon: Icon, title, children }: { icon: typeof KeyRound; ti
     <div className="flex items-start gap-3">
       <Icon className="w-4 h-4 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
       <div className="min-w-0">
-        <h4 className="m-0 text-[13.5px] font-semibold text-shodh-text">{title}</h4>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted max-w-[65ch]">{children}</p>
+        <h4 className="m-0 text-body font-semibold text-shodh-text">{title}</h4>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted max-w-[65ch]">{children}</p>
       </div>
     </div>
   );
@@ -231,9 +231,9 @@ function SubscriptionsRow({
           return (
             <li key={s.provider} data-connect-target={s.provider} className="flex flex-col gap-1">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="min-w-[10rem] text-[13px] font-medium text-shodh-text">{s.label}</span>
+                <span className="min-w-[10rem] text-small font-medium text-shodh-text">{s.label}</span>
                 {status && (
-                  <span className={cn('inline-flex items-center gap-1 text-[12px]', s.state === 'connected' ? 'text-shodh-success' : 'text-shodh-warning')}>
+                  <span className={cn('inline-flex items-center gap-1 text-caption', s.state === 'connected' ? 'text-shodh-success' : 'text-shodh-warning')}>
                     {s.state === 'connected' && <Check className="w-3.5 h-3.5" aria-hidden="true" />}
                     {status}
                   </span>
@@ -251,14 +251,14 @@ function SubscriptionsRow({
                   </button>
                 )}
               </div>
-              {s.note && <p className="m-0 text-[12px] text-shodh-text-muted max-w-[65ch]">{s.note}</p>}
+              {s.note && <p className="m-0 text-caption text-shodh-text-muted max-w-[65ch]">{s.note}</p>}
             </li>
           );
         })}
       </ul>
-      {localOnly && <p className="m-0 pl-7 text-[12px] text-shodh-text-muted">Local-only mode is on, so cloud sign-ins are off.</p>}
+      {localOnly && <p className="m-0 pl-7 text-caption text-shodh-text-muted">Local-only mode is on, so cloud sign-ins are off.</p>}
       {signIn && (
-        <div role="status" className="ml-7 p-3 rounded-lg bg-shodh-raised flex flex-col gap-2 text-[12.5px] text-shodh-text-secondary">
+        <div role="status" className="ml-7 p-3 rounded-lg bg-shodh-raised flex flex-col gap-2 text-small text-shodh-text-secondary">
           <p className="m-0 flex items-center gap-2">
             <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             Finish signing in to {PROVIDER_LABELS[signIn.provider]} in your browser.
@@ -266,7 +266,7 @@ function SubscriptionsRow({
           {signIn.code && (
             <div className="flex flex-wrap items-center gap-2">
               <span>Enter this code on the page:</span>
-              <code className="px-2 py-0.5 rounded-md bg-shodh-ground font-mono text-[14px] tracking-wider text-shodh-text">{signIn.code}</code>
+              <code className="px-2 py-0.5 rounded-md bg-shodh-ground font-mono text-body tracking-wider text-shodh-text">{signIn.code}</code>
               <button
                 type="button"
                 className={BUTTON}
@@ -279,7 +279,7 @@ function SubscriptionsRow({
               </button>
             </div>
           )}
-          {signIn.message && <p className="m-0 text-[12px] text-shodh-text-muted">{signIn.message}</p>}
+          {signIn.message && <p className="m-0 text-caption text-shodh-text-muted">{signIn.message}</p>}
           <div className="flex gap-2">
             {signIn.page && (
               <button type="button" className={BUTTON} onClick={() => void openUrl(signIn.page ?? '')}>
@@ -293,7 +293,7 @@ function SubscriptionsRow({
         </div>
       )}
       {error && (
-        <p role="alert" className="m-0 pl-7 text-[12.5px] text-shodh-error">
+        <p role="alert" className="m-0 pl-7 text-small text-shodh-error">
           {error}
         </p>
       )}
@@ -352,11 +352,11 @@ function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fix
           void save();
         }}
       >
-        <label htmlFor={keyId} className="text-[12.5px] font-medium text-shodh-text-secondary">
+        <label htmlFor={keyId} className="text-small font-medium text-shodh-text-secondary">
           {fixFor ? `New ${PROVIDER_LABELS[fixFor]} API key` : 'API key'}
         </label>
         {fixFor && (
-          <p className="m-0 text-[12px] text-shodh-text-muted max-w-[65ch]">
+          <p className="m-0 text-caption text-shodh-text-muted max-w-[65ch]">
             {`Paste a new ${PROVIDER_LABELS[fixFor]} key. It is checked once with ${PROVIDER_LABELS[fixFor]}, saved in the system keychain and used from the next answer.`}
           </p>
         )}
@@ -388,7 +388,7 @@ function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fix
         </div>
         {candidates.length > 0 && (
           <div className="flex flex-col gap-1">
-            <label htmlFor={providerId} className="text-[12.5px] font-medium text-shodh-text-secondary">
+            <label htmlFor={providerId} className="text-small font-medium text-shodh-text-secondary">
               Provider
             </label>
             <select
@@ -405,13 +405,13 @@ function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fix
             </select>
           </div>
         )}
-        <p id={helpId} className="m-0 text-[12px] text-shodh-text-muted">
+        <p id={helpId} className="m-0 text-caption text-shodh-text-muted">
           {view && view.keys.length > 0
             ? `Keys: ${view.keys.map(k => (k.source === 'environment' ? `${k.label} (from the environment)` : k.label)).join(', ')}. Whether each one works shows in the top bar.`
             : 'OpenRouter, Anthropic, OpenAI, Google and xAI keys work.'}
         </p>
         {error && (
-          <p id={errorId} role="alert" className={cn('m-0 text-[12.5px]', candidates.length > 0 ? 'text-shodh-text-secondary' : 'text-shodh-error')}>
+          <p id={errorId} role="alert" className={cn('m-0 text-small', candidates.length > 0 ? 'text-shodh-text-secondary' : 'text-shodh-error')}>
             {error}
           </p>
         )}
@@ -497,7 +497,7 @@ function LmStudioRow({ picker }: { picker: ModelPickerHandle }) {
             void run(() => modelApi.setBaseUrl('lmstudio', address.trim() || null)).then(ok => { if (ok) setAddress(null); });
           }}
         >
-          <label htmlFor={addressId} className="text-[12.5px] text-shodh-text-secondary">LM Studio server address</label>
+          <label htmlFor={addressId} className="text-small text-shodh-text-secondary">LM Studio server address</label>
           <input
             id={addressId}
             spellCheck={false}
@@ -521,7 +521,7 @@ function LmStudioRow({ picker }: { picker: ModelPickerHandle }) {
           </button>
         </div>
       )}
-      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+      {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
     </div>
   );
 }
@@ -535,7 +535,7 @@ function LocalRow({ picker }: { picker: ModelPickerHandle }) {
       <RowHeading icon={Monitor} title="Run locally">
         Models on this computer answer without anything leaving it.
       </RowHeading>
-      <div className="pl-7 flex flex-col gap-3 text-[12.5px]">
+      <div className="pl-7 flex flex-col gap-3 text-small">
         <LmStudioRow picker={picker} />
         <div className="flex flex-col gap-1">
           <span className="font-medium text-shodh-text">Ollama</span>

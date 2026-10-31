@@ -3,6 +3,7 @@ import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
 import { pasteDecision } from '../ask/imageNotice';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
 const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
@@ -163,7 +164,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     FOCUS_RING,
   );
   const chip = cn(
-    'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-[12.5px] text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
+    'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
     FOCUS_RING,
   );
   const roundButton = cn(
@@ -196,7 +197,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         aria-describedby={blockedReason ? blockedId : undefined}
         className={cn(
           'block w-full resize-none [field-sizing:content] border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
-          compact ? 'px-3 pt-2.5 pb-0.5 text-[13.5px] leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-[15px] leading-[1.5]',
+          compact ? 'px-3 pt-2.5 pb-0.5 text-body leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-body-lg leading-[1.5]',
         )}
         style={NATIVE_FIELD_SIZING ? { maxHeight, minHeight: compact ? MIN_COMPACT_HEIGHT : MIN_TEXTAREA_HEIGHT } : { maxHeight }}
       />
@@ -244,26 +245,26 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
               type="button"
               onClick={onSteer}
               disabled={!canSteerNow}
-              aria-label="Steer the answer (Enter)"
-              title="Steer (Enter)"
+              aria-label={withShortcut('Steer the answer', 'steer', IS_MAC_PLATFORM)}
+              title={withShortcut('Steer', 'steer', IS_MAC_PLATFORM)}
               className={roundButton}
             >
               <CornerDownRight className="w-4 h-4" strokeWidth={2.4} aria-hidden="true" />
             </button>
           )}
           {running ? (
-            <button type="button" onClick={onStop} aria-label="Interrupt the answer (Esc)" title="Interrupt (Esc)" className={roundButton}>
+            <button type="button" onClick={onStop} aria-label={withShortcut('Interrupt the answer', 'interrupt', IS_MAC_PLATFORM)} title={withShortcut('Interrupt', 'interrupt', IS_MAC_PLATFORM)} className={roundButton}>
               <Square className="w-3.5 h-3.5" fill="currentColor" aria-hidden="true" />
             </button>
           ) : (
-            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title="Send (Enter)" className={roundButton}>
+            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title={withShortcut('Send', 'send', IS_MAC_PLATFORM)} className={roundButton}>
               <ArrowUp className="w-4 h-4" strokeWidth={2.6} aria-hidden="true" />
             </button>
           )}
         </div>
       </div>
       {blockedReason && (
-        <p id={blockedId} className={cn('-mt-1 text-[12px] text-shodh-text-muted', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
+        <p id={blockedId} className={cn('-mt-1 text-caption text-shodh-text-muted', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
           {blockedReason}
         </p>
       )}

@@ -253,27 +253,63 @@ export function checksForMessage(report: GroundingReport | null, messageId: stri
   return report ? report.claims.filter(c => c.messageId === messageId) : [];
 }
 
-/** "Grounded 14/16": supported and weak claims of the checkable ones. */
-export function summaryLabel(summary: GroundingSummary): string {
-  const checkable = summary.checked - summary.unchecked;
-  return `Grounded ${summary.supported + summary.weak}/${checkable}`;
+/** "3 statements", "1 statement". */
+function statements(n: number): string {
+  return `${n} ${n === 1 ? 'statement' : 'statements'}`;
 }
 
-/** Spoken summary for the chip. */
+/**
+ * The chip's text. "Grounded 14/16": supported and weak claims of the checkable ones. When
+ * the only problem is statements without a citation (often rows of a table), it says that
+ * instead ("4 statements have no citation"): they were not contradicted by a source, they
+ * name none, which is not the warning an unsupported statement is.
+ */
+export function summaryLabel(summary: GroundingSummary): string {
+  const tone = summaryTone(summary);
+  if (tone === 'uncited') {
+    return `${statements(summary.uncited)} ${summary.uncited === 1 ? 'has' : 'have'} no citation`;
+  }
+  const checkable = summary.checked - summary.unchecked;
+  const grounded = `Grounded ${summary.supported + summary.weak}/${checkable}`;
+  // Partly supported statements keep the ratio; statements without a citation are added.
+  return tone === 'partial' && summary.uncited > 0 ? `${grounded} · ${summary.uncited} without a citation` : grounded;
+}
+
+/**
+ * Spoken summary for the chip. Statements the cited source does not back (or that cite
+ * a source that does not exist) are counted apart from statements that cite nothing.
+ */
 export function summaryDescription(summary: GroundingSummary): string {
-  const flagged = summary.unsupported + summary.uncited + summary.invalid;
   const parts = [`${summary.supported} of ${summary.checked - summary.unchecked} checked statements supported by their sources`];
   if (summary.weak > 0) parts.push(`${summary.weak} partly supported`);
-  if (flagged > 0) parts.push(`${flagged} flagged`);
+  // Counts statements the cited source does not back and claims of absence nothing looked
+  // up (`unverified_absence`, which cites nothing): neither is backed by a source.
+  if (summary.unsupported > 0) parts.push(`${summary.unsupported} not backed by a source`);
+  if (summary.invalid > 0) parts.push(`${summary.invalid} citing a source that does not exist`);
+  if (summary.uncited > 0) parts.push(`${statements(summary.uncited)} without a citation`);
   if (summary.unchecked > 0) parts.push(`${summary.unchecked} could not be checked`);
   return parts.join(', ');
 }
 
-/** Tone of the chip: all supported, some partly, or some flagged. */
-export function summaryTone(summary: GroundingSummary): 'ok' | 'partial' | 'flagged' {
-  if (summary.unsupported + summary.uncited + summary.invalid > 0) return 'flagged';
+/**
+ * Tone of the chip: all supported, some partly (it keeps its ratio, even when other
+ * statements also lack a citation), some only without a citation (neutral), or some not
+ * backed by a source (the warning).
+ */
+export function summaryTone(summary: GroundingSummary): 'ok' | 'partial' | 'uncited' | 'flagged' {
+  if (summary.unsupported + summary.invalid > 0) return 'flagged';
   if (summary.weak > 0) return 'partial';
+  if (summary.uncited > 0) return 'uncited';
   return 'ok';
+}
+
+/**
+ * Whether a flagged statement is the warning kind: its source does not back it, it cites a
+ * source that does not exist, or it claims an absence nothing looked up. A statement that
+ * only lacks a citation is listed apart and raises no warning.
+ */
+export function isNotBacked(outcome: ClaimCheck['outcome']): boolean {
+  return isFlagged(outcome) && outcome !== 'uncited_factual';
 }
 
 /** Needs the report found no passage for. */

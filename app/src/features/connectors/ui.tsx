@@ -7,7 +7,7 @@ import type { Pill, Tone } from './slackModel';
 export { FOCUS_RING, INPUT, LABEL, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON } from '../workspaces/ui';
 
 export const DANGER_BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-[12.5px] text-shodh-error hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small text-shodh-error hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -44,7 +44,7 @@ export function StatusPill({ pill, className, wrap = false }: { pill: Pill; clas
   return (
     <span
       className={cn(
-        'inline-flex gap-1.5 max-w-full px-2 text-[11.5px] font-medium',
+        'inline-flex gap-1.5 max-w-full px-2 text-caption font-medium',
         wrap ? 'items-start min-h-6 py-[5px] leading-[14px] rounded-xl' : 'items-center h-6 rounded-full',
         PILL_SURFACE[pill.tone],
         className,
@@ -71,7 +71,7 @@ export const TABLIST = 'flex gap-1 overflow-x-auto overflow-y-hidden scrollbar-t
 /** One tab of {@link TABLIST}. */
 export function tabClass(selected: boolean): string {
   return cn(
-    'shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-[13px] border-b-2 transition-colors duration-micro',
+    'shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-small border-b-2 transition-colors duration-micro',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
     selected ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
   );
@@ -83,7 +83,7 @@ export function LearnMore({ summary, children, label = 'Learn more' }: { summary
   const id = useId();
   return (
     <div className="flex flex-col gap-1">
-      <p className="m-0 text-[12.5px] text-shodh-text-muted">
+      <p className="m-0 text-small text-shodh-text-muted">
         {summary}
         {summary ? ' ' : null}
         <button
@@ -97,7 +97,7 @@ export function LearnMore({ summary, children, label = 'Learn more' }: { summary
           <ChevronDown className={cn('w-3 h-3 transition-transform duration-micro motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
         </button>
       </p>
-      <div id={id} hidden={!open} className="text-[12.5px] leading-[1.55] text-shodh-text-secondary max-w-[68ch]">
+      <div id={id} hidden={!open} className="text-small leading-[1.55] text-shodh-text-secondary max-w-[68ch]">
         {children}
       </div>
     </div>
@@ -126,8 +126,8 @@ export function Section({
     <section aria-labelledby={id} className="flex flex-col gap-3">
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
-          <h3 id={id} className="m-0 text-[14px] font-semibold text-shodh-text">{title}</h3>
-          {description && <div className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted max-w-[68ch]">{description}</div>}
+          <h3 id={id} className="m-0 text-body font-semibold text-shodh-text">{title}</h3>
+          {description && <div className="m-0 mt-0.5 text-small text-shodh-text-muted max-w-[68ch]">{description}</div>}
         </div>
         {actions && <div className="shrink-0 flex items-center gap-2">{actions}</div>}
       </div>
@@ -142,7 +142,7 @@ export function Callout({ tone, children, role }: { tone: Tone; children: React.
     <div
       role={role}
       className={cn(
-        'flex items-start gap-2.5 rounded-lg border px-3.5 py-3 text-[12.5px]',
+        'flex items-start gap-2.5 rounded-lg border px-3.5 py-3 text-small',
         tone === 'error'
           ? 'border-shodh-error/40 bg-shodh-surface-2 text-shodh-text-secondary'
           : tone === 'warning'

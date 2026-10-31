@@ -64,8 +64,8 @@ function ConnectorTile({
         <span className="flex items-start gap-3.5">
           {mark}
           <span className="min-w-0 flex-1 flex flex-col gap-1">
-            <span className="text-[15px] font-semibold text-shodh-text">{info.name}</span>
-            <span className="text-[12.5px] leading-[1.5] text-shodh-text-secondary">{info.summary}</span>
+            <span className="text-body-lg font-semibold text-shodh-text">{info.name}</span>
+            <span className="text-small leading-[1.5] text-shodh-text-secondary">{info.summary}</span>
           </span>
         </span>
         {/* The status has a line of its own, so its reason is never cut; the action keeps
@@ -77,17 +77,17 @@ function ConnectorTile({
             ) : fresh === 'stale' ? (
               <StatusPill pill={stalePill(pill)} wrap />
             ) : loadError ? (
-              <span className="text-[12px] text-shodh-error">Could not be loaded</span>
+              <span className="text-caption text-shodh-error">Could not be loaded</span>
             ) : (
               <Skeleton className="h-6 w-28 rounded-full" />
             )}
           </span>
           <span className="flex items-center gap-3 min-w-0">
-            <span className="min-w-0 flex-1 text-[12px] text-shodh-text-muted truncate">{pill?.team ?? ''}</span>
+            <span className="min-w-0 flex-1 text-caption text-shodh-text-muted truncate">{pill?.team ?? ''}</span>
             <span
               aria-hidden="true"
               className={cn(
-                'shrink-0 h-8 px-3 inline-flex items-center rounded-lg text-[12.5px] font-semibold transition-colors duration-micro',
+                'shrink-0 h-8 px-3 inline-flex items-center rounded-lg text-small font-semibold transition-colors duration-micro',
                 action === 'Connect'
                   ? 'bg-shodh-accent text-shodh-on-accent group-hover:bg-shodh-accent-hover'
                   : 'border border-shodh-border text-shodh-text-secondary group-hover:text-shodh-text',
@@ -182,7 +182,7 @@ export default function ConnectorsView() {
           <>
             <header className="flex flex-col gap-1">
               <h2 className="m-0 text-[20px] font-semibold text-shodh-text">Connectors</h2>
-              <p className="m-0 text-[13px] text-shodh-text-secondary max-w-[640px]">
+              <p className="m-0 text-small text-shodh-text-secondary max-w-[640px]">
                 Tools Shodh works in. Nothing connects until you set it up, and each one says what it can reach.
               </p>
             </header>

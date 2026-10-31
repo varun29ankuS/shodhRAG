@@ -56,6 +56,11 @@ export interface Conversation {
   source?: ConversationSource;
   /** What a chat started with "Continue in Ask" carries into its first question. */
   seed?: ConversationSeed;
+  /**
+   * The file an "About <file>" chat is limited to, for the rest of the chat until the
+   * user removes its chip (`features/ask/fileQuestion` reads it). Opaque here.
+   */
+  aboutFile?: unknown;
 }
 
 /** Emitted by the backend when the agent renames or pins a conversation. */
@@ -496,7 +501,7 @@ export function useConversations() {
     return id;
   }, [saves, setList]);
 
-  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode' | 'seed'>>) => {
+  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode' | 'seed' | 'aboutFile'>>) => {
     const { list, updated } = updateRecord(listRef.current, id, c => ({ ...c, ...meta, updatedAt: new Date().toISOString() }));
     if (!updated) return;
     setList(list);

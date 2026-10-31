@@ -83,17 +83,17 @@ export function ExplorationMap({ threads, currentThreadId, onOpen, onClose }: Ex
       className="ask-fade-in absolute right-3 top-full mt-1.5 z-30 w-[min(380px,calc(100%-24px))] max-h-[min(420px,60vh)] flex flex-col rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
     >
       <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-shodh-border-subtle">
-        <h3 id={headingId} className="text-[12.5px] font-semibold text-shodh-text mr-auto">Exploration map</h3>
+        <h3 id={headingId} className="text-small font-semibold text-shodh-text mr-auto">Exploration map</h3>
         <button
           type="button"
           onClick={onClose}
-          className={cn('h-6 px-2 rounded-md text-[11.5px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+          className={cn('h-6 px-2 rounded-md text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
         >
           Close
         </button>
       </div>
       {rows.length === 0 ? (
-        <p className="px-3 py-3 text-[12.5px] leading-relaxed text-shodh-text-muted">
+        <p className="px-3 py-3 text-small leading-relaxed text-shodh-text-muted">
           Side discussions appear here once you ask about something.
         </p>
       ) : (
@@ -118,7 +118,7 @@ export function ExplorationMap({ threads, currentThreadId, onOpen, onClose }: Ex
                 onFocus={() => setActive(row.id)}
                 onClick={() => onOpen(row.id)}
                 className={cn(
-                  'flex items-center gap-1 min-w-0 h-8 pr-2 cursor-pointer text-[12.5px] transition-colors duration-micro',
+                  'flex items-center gap-1 min-w-0 h-8 pr-2 cursor-pointer text-small transition-colors duration-micro',
                   current ? 'bg-shodh-accent-soft text-shodh-text font-medium' : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
                   FOCUS_RING,
                 )}

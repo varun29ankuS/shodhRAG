@@ -110,7 +110,7 @@ function CodeCopyButton({ text }: { text: string }) {
       data-answer-ui=""
       aria-label={copied ? 'Code copied' : 'Copy code'}
       className={cn(
-        'inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[11px] text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
+        'inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-caption text-shodh-text-muted hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
         FOCUS_RING,
       )}
     >
@@ -343,7 +343,7 @@ function MessageContent({
             aria-pressed={isActive}
             title={isWeb && hit.url ? `${sourceLabel(hit)} — ${webHost(hit.url)} (opens in your browser)` : sourceLabel(hit)}
             className={cn(
-              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-[10.5px] font-bold leading-none tabular-nums transition-colors duration-micro',
+              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
                 ? 'bg-shodh-accent text-shodh-on-accent'
                 : isWeb
@@ -403,7 +403,7 @@ function MessageContent({
         return (
           <div>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
-              <span className="font-mono text-[11px] uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
+              <span className="font-mono text-caption uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
               <CodeCopyButton text={codeString} />
             </div>
             <CodeHighlight
@@ -439,9 +439,9 @@ function MessageContent({
       h1: ({ children }) => <h2 className="text-[20px] font-semibold leading-snug text-shodh-text mt-6 mb-2 first:mt-0">{processChildren(children)}</h2>,
       h2: ({ children }) => <h3 className="text-[17px] font-semibold leading-snug text-shodh-text mt-5 mb-1.5 first:mt-0">{processChildren(children)}</h3>,
       h3: ({ children }) => <h4 className="text-[16px] font-semibold text-shodh-text mt-4 mb-1 first:mt-0">{processChildren(children)}</h4>,
-      h4: ({ children }) => <h5 className="text-[15px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
-      h5: ({ children }) => <h6 className="text-[14px] font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
-      h6: ({ children }) => <h6 className="text-[13.5px] font-semibold text-shodh-text-muted mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
+      h4: ({ children }) => <h5 className="text-body-lg font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h5>,
+      h5: ({ children }) => <h6 className="text-body font-semibold text-shodh-text-secondary mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
+      h6: ({ children }) => <h6 className="text-body font-semibold text-shodh-text-muted mt-3 mb-1 first:mt-0">{processChildren(children)}</h6>,
       p: ({ children }) => <p className="my-3 first:mt-0 last:mb-0">{processChildren(children)}</p>,
       ul: ({ children }) => <ul className="my-3 pl-6 list-disc space-y-1 marker:text-shodh-text-faint">{children}</ul>,
       ol: ({ children }) => <ol className="my-3 pl-6 list-decimal space-y-1 marker:text-shodh-text-faint">{children}</ol>,
@@ -465,7 +465,7 @@ function MessageContent({
       table: ({ children }) => (
         <FocusFrame noun="table" getTarget={tableFromElement} doubleClick={false} className="my-4">
           <div className="overflow-x-auto rounded-xl border border-shodh-border">
-            <table className="w-full text-[14px] border-collapse">{children}</table>
+            <table className="w-full text-body border-collapse">{children}</table>
           </div>
         </FocusFrame>
       ),
@@ -532,7 +532,7 @@ function MessageContent({
   return (
     <div className="flex flex-col gap-4">
       {preprocessed.trim().length > 0 && (
-        <div ref={proseRef} className={cn('relative text-shodh-text-secondary break-words', compact ? 'text-[13.5px] leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
+        <div ref={proseRef} className={cn('relative text-shodh-text-secondary break-words', compact ? 'text-body leading-[1.6]' : 'text-[16px] leading-[1.75]')}>
           <AnswerBlocksContext.Provider value={answerBlocks}>
             <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={rehypePlugins as never} components={markdownComponents}>
               {preprocessed}

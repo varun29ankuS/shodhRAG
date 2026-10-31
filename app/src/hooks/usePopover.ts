@@ -5,7 +5,7 @@ import { cn } from '../lib/utils';
 export const POPOVER = 'fixed z-50 min-w-[180px] rounded-xl border border-shodh-border-strong bg-shodh-surface p-1 shadow-[0_12px_36px_rgba(0,0,0,0.32)] shell-pop';
 
 export const MENU_ITEM = cn(
-  'w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-[12.5px] text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none',
+  'w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none',
 );
 
 /**

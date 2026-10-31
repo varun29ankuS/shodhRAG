@@ -14,14 +14,14 @@ export function FailureDetails({ detail, className }: { detail: string; classNam
     <details className={cn('group/detail min-w-0', className)}>
       <summary
         className={cn(
-          'list-none [&::-webkit-details-marker]:hidden w-fit cursor-pointer select-none rounded text-[11px] text-shodh-text-muted hover:text-shodh-text underline-offset-2 hover:underline',
+          'list-none [&::-webkit-details-marker]:hidden w-fit cursor-pointer select-none rounded text-caption text-shodh-text-muted hover:text-shodh-text underline-offset-2 hover:underline',
           FOCUS_RING,
         )}
       >
         <span className="group-open/detail:hidden">Details</span>
         <span className="hidden group-open/detail:inline">Hide details</span>
       </summary>
-      <code className="mt-1 block whitespace-pre-wrap break-words rounded bg-shodh-raised-2 px-1.5 py-1 font-mono text-[10.5px] leading-snug text-shodh-text-faint">
+      <code className="mt-1 block whitespace-pre-wrap break-words rounded bg-shodh-raised-2 px-1.5 py-1 font-mono text-caption leading-snug text-shodh-text-faint">
         {detail}
       </code>
     </details>

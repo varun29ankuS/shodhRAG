@@ -48,15 +48,15 @@ function WorkspaceCard({
       >
         <span className="flex items-center gap-2 min-w-0">
           <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-4 h-4" />
-          <span className="text-[14px] font-semibold text-shodh-text truncate">{workspace.name}</span>
+          <span className="text-body font-semibold text-shodh-text truncate">{workspace.name}</span>
           <SlackAnswersBadge source={slack} workspaceId={workspace.id} />
           {workspace.pinned && <Pin className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Pinned" />}
           {workspace.archived && <Archive className="w-3 h-3 ml-auto shrink-0 text-shodh-text-faint" aria-label="Archived" />}
         </span>
-        <span className="text-[12.5px] text-shodh-text-secondary line-clamp-2 min-h-[2.6em]">
+        <span className="text-small text-shodh-text-secondary line-clamp-2 min-h-[2.6em]">
           {workspace.description || 'No description'}
         </span>
-        <span className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-shodh-text-muted">
+        <span className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-shodh-text-muted">
           <span>{sourceSummary(workspace.sourceCounts)}</span>
           <span className="inline-flex items-center gap-1">
             <MessageSquare className="w-3 h-3" aria-hidden="true" />
@@ -164,7 +164,7 @@ export default function WorkspacesView({
             <header className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <h2 className="m-0 text-[20px] font-semibold text-shodh-text">Workspaces</h2>
-                <p className="m-0 mt-1 text-[13px] text-shodh-text-secondary max-w-[640px]">
+                <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[640px]">
                   A workspace keeps one piece of work together: the sources its chats search (and nothing else), the
                   instructions every answer follows, what Shodh remembers about it, and its chats.
                 </p>
@@ -175,14 +175,14 @@ export default function WorkspacesView({
             </header>
 
             {status === 'error' ? (
-              <p role="alert" className="m-0 text-[13px] text-shodh-error">Workspaces could not be loaded: {error}</p>
+              <p role="alert" className="m-0 text-small text-shodh-error">Workspaces could not be loaded: {error}</p>
             ) : status === 'loading' ? (
-              <p role="status" className="m-0 text-[13px] text-shodh-text-muted">Loading workspaces…</p>
+              <p role="status" className="m-0 text-small text-shodh-text-muted">Loading workspaces…</p>
             ) : sorted.length === 0 ? (
               <section aria-labelledby="ws-empty" className="flex flex-col gap-3 rounded-xl border border-dashed border-shodh-border p-6">
                 <Layers className="w-6 h-6 text-shodh-text-muted" aria-hidden="true" />
-                <h3 id="ws-empty" className="m-0 text-[15px] font-semibold text-shodh-text">No workspaces yet</h3>
-                <p className="m-0 text-[13px] text-shodh-text-secondary max-w-[600px]">
+                <h3 id="ws-empty" className="m-0 text-body-lg font-semibold text-shodh-text">No workspaces yet</h3>
+                <p className="m-0 text-small text-shodh-text-secondary max-w-[600px]">
                   Start one for a literature review, a grant, a paper or a client. Add its folders, files, snippets and
                   papers; chats in it answer only from them, following the workspace’s instructions.
                 </p>
@@ -196,8 +196,8 @@ export default function WorkspacesView({
                       >
                         <WorkspaceIcon icon={t.icon} color={t.color} className="w-4 h-4 mt-0.5" />
                         <span className="min-w-0">
-                          <span className="block text-[13px] font-semibold text-shodh-text">{t.id === 'blank' ? 'Blank workspace' : t.name}</span>
-                          <span className="block text-[12px] text-shodh-text-muted">{t.description}</span>
+                          <span className="block text-small font-semibold text-shodh-text">{t.id === 'blank' ? 'Blank workspace' : t.name}</span>
+                          <span className="block text-caption text-shodh-text-muted">{t.description}</span>
                         </span>
                       </button>
                     </li>
@@ -224,7 +224,7 @@ export default function WorkspacesView({
               </button>
               {showArchived && (
                 archived.length === 0 ? (
-                  <p className="m-0 text-[12.5px] text-shodh-text-muted">No archived workspaces.</p>
+                  <p className="m-0 text-small text-shodh-text-muted">No archived workspaces.</p>
                 ) : (
                   <ul aria-label="Archived workspaces" className="m-0 p-0 list-none grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                     {archived.map(w => (

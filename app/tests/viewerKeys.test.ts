@@ -8,7 +8,7 @@ import { findInText, viewerCommand } from '../src/features/ask/viewer/viewerKeys
 import type { KeyInput } from '../src/features/ask/viewer/viewerKeys.ts';
 
 const press = (key: string, opts: Partial<KeyInput> = {}) =>
-  viewerCommand({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, editable: false, ...opts });
+  viewerCommand({ key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, editable: false, mac: false, ...opts });
 
 test('page navigation keys', () => {
   assert.equal(press('PageDown'), 'nextPage');
@@ -29,15 +29,19 @@ test('zoom keys: + arrives as = with or without Shift', () => {
 test('Ctrl/Cmd zoom chords zoom the document instead of the window', () => {
   assert.equal(press('=', { ctrlKey: true }), 'zoomIn');
   assert.equal(press('+', { ctrlKey: true, shiftKey: true }), 'zoomIn');
-  assert.equal(press('-', { metaKey: true }), 'zoomOut');
+  assert.equal(press('-', { metaKey: true, mac: true }), 'zoomOut');
   assert.equal(press('0', { ctrlKey: true }), 'fitWidth');
+  // ⌘ on a Mac, Ctrl elsewhere: the other modifier is left alone.
+  assert.equal(press('=', { ctrlKey: true, mac: true }), null);
+  assert.equal(press('=', { metaKey: true, mac: false }), null);
 });
 
 test('focus mode and find', () => {
   assert.equal(press('f'), 'toggleFocus');
   assert.equal(press('F', { shiftKey: true }), 'toggleFocus');
   assert.equal(press('f', { ctrlKey: true }), 'find');
-  assert.equal(press('F', { metaKey: true }), 'find');
+  assert.equal(press('F', { metaKey: true, mac: true }), 'find');
+  assert.equal(press('f', { ctrlKey: true, mac: true }), null, "a Mac's Ctrl+F stays the text field's");
   assert.equal(press('F3'), 'findNext');
   assert.equal(press('F3', { shiftKey: true }), 'findPrev');
   assert.equal(press('g', { ctrlKey: true }), 'findNext');

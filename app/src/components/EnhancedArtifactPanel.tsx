@@ -465,7 +465,7 @@ export function EnhancedArtifactPanel({
                       {selectedKind === 'code' && <CodeArtifact artifact={selectedArtifact} theme={theme} />}
                       {selectedKind === 'markdown' && <MarkdownArtifact artifact={selectedArtifact} />}
                       {selectedKind === 'mermaid' && (
-                        <Suspense fallback={<p role="status" className="p-4 text-[12.5px] text-shodh-text-muted">Loading diagram…</p>}>
+                        <Suspense fallback={<p role="status" className="p-4 text-small text-shodh-text-muted">Loading diagram…</p>}>
                           <MermaidArtifact artifact={selectedArtifact} />
                         </Suspense>
                       )}

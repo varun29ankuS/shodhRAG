@@ -33,6 +33,7 @@ import {
   suggestedPassage,
   summariseClaims,
   summaryTone,
+  isNotBacked,
   supersededMessages,
   withoutFlaggedCitations,
 } from '../src/features/agent/grounding.ts';
@@ -130,8 +131,36 @@ test('the summary chip counts supported claims of the checkable ones', () => {
   assert.equal(summaryTone(summary({ unsupported: 0, uncited: 0 })), 'ok');
   assert.equal(
     summaryDescription(summary({})),
-    '14 of 16 checked statements supported by their sources, 2 flagged',
+    '14 of 16 checked statements supported by their sources, 1 not backed by a source, 1 statement without a citation',
   );
+});
+
+test('statements without a citation read apart from statements their source does not back', () => {
+  // Only uncited statements (e.g. table rows): a neutral chip that says so.
+  const uncited = summary({ supported: 2, unsupported: 0, uncited: 4, checked: 6 });
+  assert.equal(summaryTone(uncited), 'uncited');
+  assert.equal(summaryLabel(uncited), '4 statements have no citation');
+  assert.equal(summaryLabel(summary({ supported: 5, unsupported: 0, uncited: 1, checked: 6 })), '1 statement has no citation');
+  assert.equal(
+    summaryDescription(uncited),
+    '2 of 6 checked statements supported by their sources, 4 statements without a citation',
+  );
+  // Any statement the cited source does not back, or a citation of no source, is the warning.
+  assert.equal(summaryTone(summary({ unsupported: 1, uncited: 4 })), 'flagged');
+  assert.equal(summaryTone(summary({ unsupported: 0, invalid: 1, uncited: 0 })), 'flagged');
+  assert.equal(summaryLabel(summary({ unsupported: 1, uncited: 4 })), 'Grounded 14/16');
+  // Partly supported statements keep the ratio; the missing citations are added to it.
+  const mixed = summary({ checked: 6, supported: 2, weak: 3, unsupported: 0, uncited: 1 });
+  assert.equal(summaryTone(mixed), 'partial');
+  assert.equal(summaryLabel(mixed), 'Grounded 5/6 · 1 without a citation');
+  // Nothing checked is loosened: an uncited statement is still flagged inline and counted,
+  // but listed apart from the warning kinds.
+  assert.ok(isFlagged('uncited_factual'));
+  assert.ok(!isNotBacked('uncited_factual'));
+  assert.ok(isNotBacked('unsupported') && isNotBacked('invalid_citation') && isNotBacked('unverified_absence'));
+  assert.ok(!isNotBacked('weak') && !isNotBacked('supported'));
+  assert.equal(summariseClaims([check({ outcome: 'uncited_factual' })]).uncited, 1);
+  assert.equal(summariseClaims([check({ outcome: 'unverified_absence' })]).unsupported, 1);
 });
 
 function report(partial: Partial<GroundingReport>): GroundingReport {

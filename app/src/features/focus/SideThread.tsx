@@ -72,18 +72,18 @@ function UserTurn({ turn, onOpenThread }: { turn: ThreadTurn; onOpenThread: (thr
     const from = turn.summaryOf;
     return (
       <div className="ask-rise self-stretch rounded-[14px] border border-shodh-border bg-shodh-surface-2 px-3 py-2.5 flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5 min-w-0 text-[11.5px] text-shodh-text-muted">
+        <div className="flex items-center gap-1.5 min-w-0 text-caption text-shodh-text-muted">
           <CornerLeftUp className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
           <span className="truncate">{`Brought back from “${from.label}”`}</span>
           <button
             type="button"
             onClick={() => onOpenThread(from.threadId)}
-            className={cn('ml-auto shrink-0 h-6 px-2 rounded-md text-[11.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+            className={cn('ml-auto shrink-0 h-6 px-2 rounded-md text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
           >
             Open
           </button>
         </div>
-        <div className="text-[13.5px] leading-[1.5] text-shodh-text">
+        <div className="text-body leading-[1.5] text-shodh-text">
           <UserText text={turn.content} compact markdown />
         </div>
       </div>
@@ -91,11 +91,11 @@ function UserTurn({ turn, onOpenThread }: { turn: ThreadTurn; onOpenThread: (thr
   }
   return (
     <div className="ask-rise self-end max-w-[92%] flex flex-col items-end gap-1">
-      <div className="px-3 py-2 rounded-[14px] bg-shodh-raised-2 text-[13.5px] leading-[1.5] text-shodh-text">
+      <div className="px-3 py-2 rounded-[14px] bg-shodh-raised-2 text-body leading-[1.5] text-shodh-text">
         <UserText text={turn.content} compact />
       </div>
       {(turn.selection || typeof turn.page === 'number') && (
-        <span className="text-[11px] text-shodh-text-faint">
+        <span className="text-caption text-shodh-text-faint">
           {[turn.selection ? 'with selected text' : null, typeof turn.page === 'number' ? `page ${turn.page}` : null].filter(Boolean).join(' · ')}
         </span>
       )}
@@ -428,7 +428,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
   return (
     <section aria-labelledby={headingId} className="h-full min-h-0 flex flex-col bg-shodh-surface">
       <header className="shrink-0 flex items-center gap-2 px-4 pt-3 pb-2 border-b border-shodh-border-subtle">
-        <h3 id={headingId} className="text-[13px] font-semibold text-shodh-text mr-auto">
+        <h3 id={headingId} className="text-small font-semibold text-shodh-text mr-auto">
           Ask about this
         </h3>
         <button
@@ -437,7 +437,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
           disabled={!canPost || summary !== null}
           title={postBlocked ?? `Post a summary of this side discussion to ${destination}`}
           className={cn(
-            'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
+            'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
             FOCUS_RING,
           )}
         >
@@ -449,25 +449,25 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
       {summary !== null && (
         <div className="shrink-0 max-h-[65%] overflow-y-auto scrollbar-thin px-4 py-3 border-b border-shodh-border-subtle bg-shodh-surface-2 flex flex-col gap-2">
           {summary.status === 'writing' ? (
-            <div className="flex items-center gap-2 text-[12.5px] text-shodh-text-secondary" role="status">
+            <div className="flex items-center gap-2 text-small text-shodh-text-secondary" role="status">
               <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
               <span className="mr-auto">Writing a summary that keeps the key equations and terms…</span>
               <button
                 type="button"
                 onClick={cancelSummary}
-                className={cn('h-7 px-2.5 rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised', FOCUS_RING)}
+                className={cn('h-7 px-2.5 rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised', FOCUS_RING)}
               >
                 Stop
               </button>
             </div>
           ) : (
             <>
-              <label htmlFor={`${headingId}-summary`} className="text-[12px] font-medium text-shodh-text-secondary">
+              <label htmlFor={`${headingId}-summary`} className="text-caption font-medium text-shodh-text-secondary">
                 {nested
                   ? `Added to ${destination} as a note; it goes with your next question there. Edit it first if you like.`
                   : 'Posted to the conversation as a side-discussion card; the agent replies there. Edit it first if you like.'}
               </label>
-              {summary.note && <p className="text-[12px] text-shodh-warning">{summary.note}</p>}
+              {summary.note && <p className="text-caption text-shodh-warning">{summary.note}</p>}
               <textarea
                 id={`${headingId}-summary`}
                 ref={summaryRef}
@@ -481,12 +481,12 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                   }
                 }}
                 rows={6}
-                className="w-full resize-y rounded-lg border border-shodh-border-strong bg-shodh-surface px-3 py-2 font-mono text-[12.5px] leading-[1.5] text-shodh-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="w-full resize-y rounded-lg border border-shodh-border-strong bg-shodh-surface px-3 py-2 font-mono text-small leading-[1.5] text-shodh-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               {summary.text.trim() && (
                 <div className="rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2">
-                  <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-shodh-text-faint">Preview</p>
-                  <div className="text-[13px] text-shodh-text">
+                  <p className="mb-1 text-caption font-medium uppercase tracking-wider text-shodh-text-faint">Preview</p>
+                  <div className="text-small text-shodh-text">
                     <MessageContentRenderer compact content={summary.text} hits={[]} onOpenCitation={noCitation} citations={false} />
                   </div>
                 </div>
@@ -501,7 +501,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                   }))}
                   disabled={!summary.text.trim()}
                   aria-label="Export this summary as PDF"
-                  className={cn('mr-auto h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro', FOCUS_RING)}
+                  className={cn('mr-auto h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro', FOCUS_RING)}
                 >
                   <FileDown className="w-3.5 h-3.5" aria-hidden="true" />
                   Export PDF
@@ -509,7 +509,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                 <button
                   type="button"
                   onClick={cancelSummary}
-                  className={cn('h-8 px-3 rounded-lg text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+                  className={cn('h-8 px-3 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
                 >
                   Cancel
                 </button>
@@ -518,7 +518,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                   onClick={() => void post()}
                   disabled={!summary.text.trim() || !canPost || posting}
                   className={cn(
-                    'h-8 px-3 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
+                    'h-8 px-3 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
@@ -533,7 +533,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
       <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-4 py-3 flex flex-col gap-3" role="log" aria-label={`Side discussion about ${label}`}>
         {turns.length === 0 && !live && (
           <div className="flex flex-col gap-3 py-2">
-            <p className="text-[13px] leading-relaxed text-shodh-text-muted">
+            <p className="text-small leading-relaxed text-shodh-text-muted">
               Ask a question about <span className="text-shodh-text-secondary">{label}</span>. Each question includes the {contextNote}
               {nested ? ' and how you got here' : ''}, and the discussion stays attached to it.
             </p>
@@ -547,7 +547,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                       composerRef.current?.focus();
                     }}
                     className={cn(
-                      'w-full text-left px-3 py-2 rounded-[10px] border border-shodh-border bg-shodh-surface-2 text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+                      'w-full text-left px-3 py-2 rounded-[10px] border border-shodh-border bg-shodh-surface-2 text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                       FOCUS_RING,
                     )}
                   >
@@ -627,7 +627,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
                   onClick={() => void askSuggested(q)}
                   title={blockedReason ? 'Put this question in the composer' : 'Ask this'}
                   className={cn(
-                    'max-w-full inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-[10px] border border-shodh-border bg-shodh-surface text-left text-[12.5px] leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+                    'max-w-full inline-flex items-start gap-1.5 px-2.5 py-1.5 rounded-[10px] border border-shodh-border bg-shodh-surface text-left text-small leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
@@ -641,7 +641,7 @@ export function SideThread({ open, depth, parentLabel, thread, extras, onClearSe
       </div>
 
       <div className="shrink-0 border-t border-shodh-border px-3 pt-2 pb-3 flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5 min-w-0 px-1 text-[11.5px] text-shodh-text-muted">
+        <div className="flex items-center gap-1.5 min-w-0 px-1 text-caption text-shodh-text-muted">
           {selection ? (
             <span className="inline-flex items-center gap-1 min-w-0 max-w-full h-6 pl-2 pr-0.5 rounded-full bg-shodh-accent-soft text-shodh-text-secondary">
               <TextSelect className="w-3 h-3 shrink-0" aria-hidden="true" />

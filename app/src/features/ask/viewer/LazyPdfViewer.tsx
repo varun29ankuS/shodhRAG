@@ -10,7 +10,7 @@ type PdfViewerProps = React.ComponentProps<typeof PdfViewerImpl>;
 /** The viewer's area, empty, while its code loads. */
 function PdfViewerLoading() {
   return (
-    <div className="flex-1 min-h-0 flex items-center justify-center text-[13px] text-shodh-text-muted" role="status" aria-busy="true">
+    <div className="flex-1 min-h-0 flex items-center justify-center text-small text-shodh-text-muted" role="status" aria-busy="true">
       Opening…
     </div>
   );

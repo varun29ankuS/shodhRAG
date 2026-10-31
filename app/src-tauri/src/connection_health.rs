@@ -606,21 +606,27 @@ pub fn notify(app: &AppHandle) {
 
 /// Check one provider without spending a chat request. Skipped when a
 /// check of it is already running, and for cloud providers in local-only
-/// mode.
-async fn check_provider(app: &AppHandle, provider: ProviderId) {
+/// mode. Returns whether this call checked it (a result learned now, not one
+/// left from an earlier check).
+async fn check_provider(app: &AppHandle, provider: ProviderId) -> bool {
     let health = app.state::<ConnectionHealthState>();
     if !health.begin_check(provider) {
-        return;
+        return false;
     }
+    let mut checked = true;
     notify(app);
     let now = now_ms();
     match provider.kind() {
         ProviderKind::ApiKey if !local_only(app) => {
             let key = key_in_use(&app.state::<LLMState>(), provider);
+            // Only a result learned now counts as checked (never an earlier one kept
+            // when there is no key or the check itself could not run).
+            checked = false;
             if let Some((key, _)) = key {
                 if let Ok(result) = check_key(provider, &key).await {
                     let fp = fingerprint(&key);
                     health.update(provider, |r| r.apply_check(result, Some(fp), now_ms()));
+                    checked = true;
                 }
             }
         }
@@ -659,10 +665,11 @@ async fn check_provider(app: &AppHandle, provider: ProviderId) {
             health.update(provider, |r| r.apply_check(result, None, now));
         }
         // Cloud providers in local-only mode are not contacted.
-        _ => {}
+        _ => checked = false,
     }
     health.end_check(provider);
     notify(app);
+    checked
 }
 
 /// LM Studio's health from its detection, in the same plain sentences as the model
@@ -698,8 +705,9 @@ fn lmstudio_health(server: &crate::connect_commands::LocalServer) -> KeyHealth {
     }
 }
 
-/// Check `only`, or every listed provider, at once.
-pub async fn check(app: &AppHandle, only: Option<ProviderId>) {
+/// Check `only`, or every listed provider, at once. Returns the providers this call
+/// actually checked.
+pub async fn check(app: &AppHandle, only: Option<ProviderId>) -> Vec<ProviderId> {
     let providers = match only {
         Some(provider) => vec![provider],
         None => {
@@ -709,7 +717,16 @@ pub async fn check(app: &AppHandle, only: Option<ProviderId>) {
             listed_providers(active.map(|a| a.model.provider), &llm, &connect)
         }
     };
-    futures::future::join_all(providers.into_iter().map(|p| check_provider(app, p))).await;
+    let ran = futures::future::join_all(
+        providers
+            .iter()
+            .map(|p| async move { (*p, check_provider(app, *p).await) }),
+    )
+    .await;
+    ran.into_iter()
+        .filter(|(_, checked)| *checked)
+        .map(|(p, _)| p)
+        .collect()
 }
 
 /// At startup, once keys are loaded: learn which local servers and
@@ -805,8 +822,26 @@ pub fn connection_status(app: AppHandle) -> ConnectionSnapshot {
 /// request, and return the result.
 #[tauri::command]
 pub async fn connection_check(app: AppHandle, provider: Option<ProviderId>) -> ConnectionSnapshot {
-    check(&app, provider).await;
-    snapshot(&app)
+    let checked = check(&app, provider).await;
+    let snapshot = snapshot(&app);
+    // The user acted on the check: a provider this call found working no longer has
+    // "failing" notices waiting in the Inbox (a provider whose check was already running
+    // elsewhere is left alone: its result is not this call's).
+    for working in providers_cleared(&snapshot, &checked) {
+        crate::model_fallback::clear_failure_notices(&app, working).await;
+    }
+    snapshot
+}
+
+/// The providers this call checked (`checked`) and found working.
+fn providers_cleared(snapshot: &ConnectionSnapshot, checked: &[ProviderId]) -> Vec<ProviderId> {
+    snapshot
+        .providers
+        .iter()
+        .filter(|p| checked.contains(&p.provider))
+        .filter(|p| p.health == Health::Works)
+        .map(|p| p.provider)
+        .collect()
 }
 
 #[cfg(test)]
@@ -814,6 +849,58 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_759_750_000_000;
+
+    fn status_of(provider: ProviderId, health: Health) -> ProviderStatus {
+        ProviderStatus {
+            provider,
+            label: provider.label(),
+            source: None,
+            health,
+            message: None,
+            http_status: None,
+            quota: false,
+            reset_at_ms: None,
+            checked_at_ms: None,
+            learned_from: None,
+            key_hint: None,
+            env_var: None,
+            checking: false,
+        }
+    }
+
+    #[test]
+    fn a_check_clears_the_notices_of_the_providers_it_found_working() {
+        let snapshot = ConnectionSnapshot {
+            active: None,
+            providers: vec![
+                status_of(ProviderId::OpenRouter, Health::Works),
+                status_of(ProviderId::Anthropic, Health::Rejected),
+                status_of(ProviderId::LmStudio, Health::Works),
+            ],
+            local_only: false,
+        };
+        let all = [
+            ProviderId::OpenRouter,
+            ProviderId::Anthropic,
+            ProviderId::LmStudio,
+        ];
+        assert_eq!(
+            providers_cleared(&snapshot, &all),
+            vec![ProviderId::OpenRouter, ProviderId::LmStudio]
+        );
+        assert_eq!(
+            providers_cleared(&snapshot, &[ProviderId::OpenRouter]),
+            vec![ProviderId::OpenRouter]
+        );
+        assert!(providers_cleared(&snapshot, &[ProviderId::Anthropic]).is_empty());
+        // A provider whose check this call did not run (one was already running) is left
+        // alone, even though an earlier result says it works.
+        assert!(providers_cleared(&snapshot, &[]).is_empty());
+        assert_eq!(
+            providers_cleared(&snapshot, &[ProviderId::Anthropic, ProviderId::LmStudio]),
+            vec![ProviderId::LmStudio]
+        );
+    }
 
     #[test]
     fn lm_studio_health_says_what_detection_found() {

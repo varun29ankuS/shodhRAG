@@ -50,7 +50,7 @@ export default function DetailSheet({
           )}
         >
           <header className="flex items-center gap-2 pl-5 pr-3 pt-3 pb-2 shrink-0">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mr-auto" aria-hidden="true">
+            <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mr-auto" aria-hidden="true">
               {kindLabel}
             </span>
             <Dialog.Title className="sr-only">{title}</Dialog.Title>

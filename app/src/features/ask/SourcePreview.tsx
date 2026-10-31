@@ -141,23 +141,23 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
     >
       <header className="flex items-center gap-2.5 pl-[18px] pr-3.5 pt-3.5 pb-3 border-b border-shodh-border-subtle">
         <span
-          className="w-[22px] h-[22px] shrink-0 rounded-md bg-shodh-accent text-shodh-on-accent inline-flex items-center justify-center text-[11px] font-bold tabular-nums"
+          className="w-[22px] h-[22px] shrink-0 rounded-md bg-shodh-accent text-shodh-on-accent inline-flex items-center justify-center text-caption font-bold tabular-nums"
           aria-label={`Source ${hit.number}`}
         >
           {hit.number}
         </span>
         <div className="flex flex-col min-w-0 flex-1">
-          <h2 id={titleId} className="text-[13.5px] font-semibold text-shodh-text truncate" title={record ? fileName : info?.path ?? shownPath(hit)}>
+          <h2 id={titleId} className="text-body font-semibold text-shodh-text truncate" title={record ? fileName : info?.path ?? shownPath(hit)}>
             {fileName}
           </h2>
-          {subtitle && <span className="text-[11.5px] text-shodh-text-muted truncate">{subtitle}</span>}
+          {subtitle && <span className="text-caption text-shodh-text-muted truncate">{subtitle}</span>}
         </div>
         <button
           type="button"
           onClick={openSource}
           disabled={opening || fileMissing || record === 'note' || (record !== null && !onOpenView)}
           className={cn(
-            'h-[30px] px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-[12px] text-shodh-text hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
+            'h-[30px] px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-caption text-shodh-text hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
             FOCUS_RING,
           )}
         >
@@ -169,7 +169,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
             type="button"
             onClick={e => onFocus(e.currentTarget)}
             className={cn(
-              'h-[30px] px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-[12px] text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+              'h-[30px] px-2.5 shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-caption text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
               FOCUS_RING,
             )}
             title="Open in the focus view to zoom and ask about this source"
@@ -206,7 +206,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
 
       {otherPassages.length > 0 && (
         <nav aria-label="Other passages from this file" className="flex items-center gap-1.5 px-4 py-2 border-b border-shodh-border-subtle overflow-x-auto scrollbar-thin">
-          <span className="shrink-0 text-[11.5px] text-shodh-text-faint">Also cited:</span>
+          <span className="shrink-0 text-caption text-shodh-text-faint">Also cited:</span>
           {otherPassages.map(s => {
             const where = formatLocation(s);
             return (
@@ -216,7 +216,7 @@ export function SourcePreview({ hit, siblings, onSelectHit, onClose, onOpenView,
                 onClick={() => onSelectHit(s)}
                 aria-label={`Show passage ${s.number}${where ? `, ${where}` : ''}`}
                 className={cn(
-                  'shrink-0 h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-[12px] text-shodh-text-secondary hover:bg-shodh-raised transition-colors duration-micro',
+                  'shrink-0 h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-caption text-shodh-text-secondary hover:bg-shodh-raised transition-colors duration-micro',
                   FOCUS_RING,
                 )}
               >

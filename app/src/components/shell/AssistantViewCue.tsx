@@ -52,7 +52,7 @@ export function AssistantViewCue({ cue }: { cue: Cue | null }) {
   return (
     <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex items-center">
       {cue && (
-        <span key={cue.id} className="shell-cue ml-2 inline-flex items-center gap-1 text-[11px] font-medium text-shodh-text-muted">
+        <span key={cue.id} className="shell-cue ml-2 inline-flex items-center gap-1 text-caption font-medium text-shodh-text-muted">
           <Sparkles className="w-3 h-3 text-shodh-accent-text" aria-hidden="true" />
           <span aria-hidden="true">opened by Shodh</span>
           <span className="sr-only">{cueAnnouncement(VIEW_TAB_LABELS[cue.view])}</span>

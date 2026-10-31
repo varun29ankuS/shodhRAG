@@ -28,7 +28,7 @@ export function AdvancedModelSettings({ picker }: { picker: ModelPickerHandle })
           aria-expanded={open}
           aria-controls={panelId}
           onClick={() => setOpen(o => !o)}
-          className={cn('w-full flex items-center gap-2 px-5 py-4 text-left text-[15px] font-semibold text-shodh-text rounded-[14px]', FOCUS_RING)}
+          className={cn('w-full flex items-center gap-2 px-5 py-4 text-left text-body-lg font-semibold text-shodh-text rounded-[14px]', FOCUS_RING)}
         >
           <ChevronRight className={cn('w-4 h-4 text-shodh-text-muted transition-transform duration-micro', open && 'rotate-90')} aria-hidden="true" />
           Advanced
@@ -49,8 +49,8 @@ export function AdvancedModelSettings({ picker }: { picker: ModelPickerHandle })
 function SubHeading({ children, hint }: { children: string; hint: string }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <h4 className="m-0 text-[13.5px] font-semibold text-shodh-text">{children}</h4>
-      <p className="m-0 text-[12px] text-shodh-text-muted max-w-[65ch]">{hint}</p>
+      <h4 className="m-0 text-body font-semibold text-shodh-text">{children}</h4>
+      <p className="m-0 text-caption text-shodh-text-muted max-w-[65ch]">{hint}</p>
     </div>
   );
 }
@@ -87,7 +87,7 @@ function CustomModel({ picker }: { picker: ModelPickerHandle }) {
     <div className="flex flex-col gap-2">
       <SubHeading hint="Any model id your connected provider offers. It replaces the pick above.">Model by id</SubHeading>
       {usable.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">Connect a provider first.</p>
+        <p className="m-0 text-small text-shodh-text-muted">Connect a provider first.</p>
       ) : (
         <form
           className="flex flex-wrap items-end gap-2"
@@ -97,7 +97,7 @@ function CustomModel({ picker }: { picker: ModelPickerHandle }) {
           }}
         >
           <div className="flex flex-col gap-1">
-            <label htmlFor={providerId} className="text-[12px] font-medium text-shodh-text-secondary">
+            <label htmlFor={providerId} className="text-caption font-medium text-shodh-text-secondary">
               Provider
             </label>
             <select id={providerId} value={provider} onChange={e => setProvider(e.target.value as ProviderId)} className={INPUT}>
@@ -109,7 +109,7 @@ function CustomModel({ picker }: { picker: ModelPickerHandle }) {
             </select>
           </div>
           <div className="flex flex-col gap-1 flex-1 min-w-[14rem]">
-            <label htmlFor={modelId} className="text-[12px] font-medium text-shodh-text-secondary">
+            <label htmlFor={modelId} className="text-caption font-medium text-shodh-text-secondary">
               Model id
             </label>
             <input
@@ -128,7 +128,7 @@ function CustomModel({ picker }: { picker: ModelPickerHandle }) {
         </form>
       )}
       {refusal && (
-        <div id={errorId} role="alert" className="flex flex-wrap items-center gap-2 text-[12.5px] text-shodh-text-secondary">
+        <div id={errorId} role="alert" className="flex flex-wrap items-center gap-2 text-small text-shodh-text-secondary">
           <span className="flex-1 min-w-[14rem]">{refusal.message}</span>
           {refusal.code === 'environment_set' && (
             <button type="button" className={BUTTON} onClick={() => void use(true)}>
@@ -165,11 +165,11 @@ function FallbackOrder({ picker }: { picker: ModelPickerHandle }) {
     <div className="flex flex-col gap-2">
       <SubHeading hint="Each pick tries your connected providers in this order.">Fallback order</SubHeading>
       {connected.length < 2 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">Connect two or more providers to change the order.</p>
+        <p className="m-0 text-small text-shodh-text-muted">Connect two or more providers to change the order.</p>
       ) : (
         <ol className="m-0 p-0 list-none flex flex-col gap-1 max-w-[26rem]">
           {connected.map((p, i) => (
-            <li key={p} className="flex items-center gap-2 px-3 h-9 rounded-lg bg-shodh-ground text-[13px] text-shodh-text">
+            <li key={p} className="flex items-center gap-2 px-3 h-9 rounded-lg bg-shodh-ground text-small text-shodh-text">
               <span className="w-5 text-shodh-text-muted tabular-nums">{i + 1}.</span>
               <span className="flex-1">{PROVIDER_LABELS[p]}</span>
               <button
@@ -215,7 +215,7 @@ function BaseUrlRow({ provider, saved, onSaved }: { provider: ProviderId; saved:
   };
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={inputId} className="text-[12px] font-medium text-shodh-text-secondary">
+      <label htmlFor={inputId} className="text-caption font-medium text-shodh-text-secondary">
         {PROVIDER_LABELS[provider]}
       </label>
       <div className="flex gap-2">
@@ -234,7 +234,7 @@ function BaseUrlRow({ provider, saved, onSaved }: { provider: ProviderId; saved:
         </button>
       </div>
       {error && (
-        <p id={errorId} role="alert" className="m-0 text-[12px] text-shodh-error">
+        <p id={errorId} role="alert" className="m-0 text-caption text-shodh-error">
           {error}
         </p>
       )}
@@ -291,14 +291,14 @@ function Connections({ picker }: { picker: ModelPickerHandle }) {
         Remove a connection
       </SubHeading>
       {rows.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">Nothing is connected.</p>
+        <p className="m-0 text-small text-shodh-text-muted">Nothing is connected.</p>
       ) : (
         <ul className="m-0 p-0 list-none flex flex-col gap-1 max-w-[26rem]">
           {rows.map(r => (
-            <li key={r.provider} className="flex items-center gap-2 px-3 h-9 rounded-lg bg-shodh-ground text-[13px] text-shodh-text">
+            <li key={r.provider} className="flex items-center gap-2 px-3 h-9 rounded-lg bg-shodh-ground text-small text-shodh-text">
               <span className="flex-1">{PROVIDER_LABELS[r.provider]}</span>
               {r.fixed ? (
-                <span className="text-[12px] text-shodh-text-muted">Set by environment</span>
+                <span className="text-caption text-shodh-text-muted">Set by environment</span>
               ) : (
                 <button type="button" className={BUTTON} disabled={busy !== null} onClick={() => void remove(r.provider, r.subscription)}>
                   {r.subscription ? 'Sign out' : 'Remove key'}

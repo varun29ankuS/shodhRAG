@@ -194,6 +194,7 @@ pub fn add_exchange(
                 focus_threads: None,
                 source: None,
                 seed: None,
+                about_file: None,
             });
             conversations.len() - 1
         }

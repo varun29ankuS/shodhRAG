@@ -9,13 +9,13 @@ import type { DiffLine } from './model';
  */
 export function DiffView({ lines, label, className }: { lines: DiffLine[]; label: string; className?: string }) {
   if (lines.length === 0) {
-    return <p className={cn('text-[12.5px] text-shodh-text-muted', className)}>Both versions are empty.</p>;
+    return <p className={cn('text-small text-shodh-text-muted', className)}>Both versions are empty.</p>;
   }
   const changed = lines.filter(l => l.op !== 'same').length;
   return (
     <div className={cn('rounded-lg border border-shodh-border-subtle bg-shodh-raised overflow-hidden', className)}>
       <p className="sr-only">{`${label}: ${changed} ${changed === 1 ? 'line changes' : 'lines change'}.`}</p>
-      <ol aria-label={label} className="m-0 p-0 list-none font-mono text-[12px] leading-[1.55] max-h-[320px] overflow-y-auto scrollbar-thin">
+      <ol aria-label={label} className="m-0 p-0 list-none font-mono text-caption leading-[1.55] max-h-[320px] overflow-y-auto scrollbar-thin">
         {lines.map((line, i) => (
           <li
             key={i}

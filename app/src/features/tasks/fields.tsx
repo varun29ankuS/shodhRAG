@@ -14,7 +14,7 @@ export const INLINE_INPUT = cn(
   'transition-colors duration-micro',
 );
 
-export const FIELD_LABEL = 'text-[11.5px] font-medium text-shodh-text-muted';
+export const FIELD_LABEL = 'text-caption font-medium text-shodh-text-muted';
 
 /**
  * After Esc cancels a field edit, park focus on the enclosing dialog so the
@@ -132,7 +132,7 @@ export function InlineText({
           ref={ref}
           {...common}
           rows={3}
-          className={cn(INLINE_INPUT, 'py-2 text-[13px] leading-relaxed resize-none min-h-[72px]', className)}
+          className={cn(INLINE_INPUT, 'py-2 text-small leading-relaxed resize-none min-h-[72px]', className)}
         />
       ) : (
         <input
@@ -140,10 +140,10 @@ export function InlineText({
           {...common}
           type="text"
           list={list}
-          className={cn(INLINE_INPUT, 'h-8 text-[13px]', className)}
+          className={cn(INLINE_INPUT, 'h-8 text-small', className)}
         />
       )}
-      {hint && <p id={hintId} className="px-2.5 text-[11px] text-shodh-text-faint">{hint}</p>}
+      {hint && <p id={hintId} className="px-2.5 text-caption text-shodh-text-faint">{hint}</p>}
     </div>
   );
 }
@@ -203,7 +203,7 @@ export function Segmented({
               data-value={o.value}
               onClick={() => { if (!checked) onChange(o.value); }}
               className={cn(
-                'h-7 px-3 rounded-md text-[12.5px] transition-colors duration-micro',
+                'h-7 px-3 rounded-md text-small transition-colors duration-micro',
                 checked
                   ? cn('bg-shodh-surface font-semibold shadow-sm', o.selectedClass ?? 'text-shodh-text')
                   : 'text-shodh-text-muted hover:text-shodh-text',
@@ -220,7 +220,7 @@ export function Segmented({
 }
 
 export const DATE_INPUT = cn(
-  'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text tabular-nums',
+  'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text tabular-nums',
   'hover:border-shodh-border-strong focus:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
   'disabled:opacity-50',
 );
@@ -375,7 +375,7 @@ export function DateTimeField({
                   if (date) commit(date, '');
                   timeRef.current?.focus();
                 }}
-                className={cn('h-8 px-2 rounded-lg text-[12px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
+                className={cn('h-8 px-2 rounded-lg text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
               >
                 No time
               </button>
@@ -391,14 +391,14 @@ export function DateTimeField({
               setNote(null);
               onClear();
             }}
-            className={cn('h-8 px-2 rounded-lg text-[12px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
+            className={cn('h-8 px-2 rounded-lg text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
           >
             Remove
           </button>
         )}
       </div>
       {(note || (!value && emptyHint)) && (
-        <p id={noteId} role={note ? 'status' : undefined} className="text-[11px] text-shodh-text-faint">
+        <p id={noteId} role={note ? 'status' : undefined} className="text-caption text-shodh-text-faint">
           {note ?? emptyHint}
         </p>
       )}
@@ -438,7 +438,7 @@ export function ChipInput({
       >
         <ul className="contents" aria-label={`${label}: ${tags.length === 0 ? 'none' : tags.join(', ')}`}>
           {tags.map(tag => (
-            <li key={tag} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md bg-shodh-raised-2 text-[12px] text-shodh-text-secondary">
+            <li key={tag} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md bg-shodh-raised-2 text-caption text-shodh-text-secondary">
               {tag}
               <button
                 type="button"
@@ -483,7 +483,7 @@ export function ChipInput({
             discard.current = false;
             setDraft('');
           }}
-          className="flex-1 min-w-[8rem] h-6 bg-transparent px-1 text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
+          className="flex-1 min-w-[8rem] h-6 bg-transparent px-1 text-small text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
         />
       </div>
     </div>

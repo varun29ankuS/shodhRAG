@@ -7,6 +7,7 @@ import { getAppInfo } from '../lib/version';
 import { captureError, addBreadcrumb } from '../lib/errorReporting';
 import { FEEDBACK_KIND_LABEL, ISSUES_URL, feedbackIssueLink, issueBody } from '../lib/feedbackIssue';
 import type { FeedbackKind, FeedbackReport } from '../lib/feedbackIssue';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../lib/shortcuts';
 
 interface FeedbackDialogProps {
   isOpen: boolean;
@@ -191,7 +192,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
               className={`p-2 rounded-lg transition-all hover:opacity-70 ${focusRing}`}
               style={{ background: colors.bgTertiary }}
               aria-label="Close"
-              title="Close (Esc)"
+              title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
             >
               <X className="w-5 h-5" style={{ color: colors.text }} aria-hidden="true" />
             </button>
@@ -199,7 +200,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
 
           {opened ? (
             <div className="p-6 space-y-4">
-              <p id={noteId} role="status" className="m-0 text-[15px]" style={{ color: colors.text }}>
+              <p id={noteId} role="status" className="m-0 text-body-lg" style={{ color: colors.text }}>
                 Your browser should open a new GitHub issue with your report. Submit it there to send it.
               </p>
               {opened.shortened && (

@@ -23,6 +23,14 @@ module.exports = {
       },
     },
     extend: {
+      // The type scale (src/lib/typeScale.ts; app/tests/typeScale.test.ts keeps the two
+      // equal). Nothing is set below 12px: secondary text uses colour and weight.
+      fontSize: {
+        caption: '12px',
+        small: '13px',
+        body: '14px',
+        'body-lg': '15px',
+      },
       colors: {
         // Every semantic colour resolves to a --c-* token in src/index.css.
         // color-mix keeps Tailwind opacity modifiers (bg-primary/90) working

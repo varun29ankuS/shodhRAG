@@ -16,7 +16,7 @@ interface TechnicalDetailsProps {
 export function TechnicalDetails({ rows, className }: TechnicalDetailsProps) {
   if (rows.length === 0) return null;
   return (
-    <details className={cn('group text-[12px] text-shodh-text-muted', className)}>
+    <details className={cn('group text-caption text-shodh-text-muted', className)}>
       <summary
         className="inline-flex items-center gap-1 cursor-pointer select-none rounded-md list-none text-shodh-text-muted hover:text-shodh-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden"
       >

@@ -21,7 +21,7 @@ type Load<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status:
 const FOLDED = 12;
 
 const TAB = cn(
-  'h-8 px-3 -mb-px border-b-2 border-transparent text-[13px] text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro',
+  'h-8 px-3 -mb-px border-b-2 border-transparent text-small text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro',
   'data-[state=active]:border-shodh-accent data-[state=active]:text-shodh-text data-[state=active]:font-semibold',
   FOCUS_RING,
 );
@@ -36,7 +36,7 @@ function paperTitle(p: PaperNode): string {
 
 function Meta({ paper }: { paper: PaperNode }) {
   const parts = [paper.authors, paper.venue, paper.year?.toString()].filter(Boolean);
-  return <span className="block text-[11.5px] text-shodh-text-muted truncate">{parts.join(' · ')}</span>;
+  return <span className="block text-caption text-shodh-text-muted truncate">{parts.join(' · ')}</span>;
 }
 
 function CitationList({
@@ -57,13 +57,13 @@ function CitationList({
     <section aria-labelledby={id} className="flex flex-col gap-2">
       <h3 id={id} className={SECTION_TITLE}>{`${title} (${items.length})`}</h3>
       {items.length === 0 ? (
-        <p className="text-[12.5px] text-shodh-text-muted">{emptyText}</p>
+        <p className="text-small text-shodh-text-muted">{emptyText}</p>
       ) : (
         <ul className="flex flex-col divide-y divide-shodh-border-subtle rounded-xl border border-shodh-border">
           {shown.map(item => (
             <li key={item.paper.id} className="flex items-start gap-2 px-3 py-2">
               <button type="button" onClick={() => onOpenPaper(item.paper.id)} className={cn('flex-1 min-w-0 text-left rounded', FOCUS_RING)}>
-                <span className={cn('block text-[13px] truncate', item.paper.inLibrary ? 'text-shodh-text font-medium' : 'text-shodh-text-secondary')}>{paperTitle(item.paper)}</span>
+                <span className={cn('block text-small truncate', item.paper.inLibrary ? 'text-shodh-text font-medium' : 'text-shodh-text-secondary')}>{paperTitle(item.paper)}</span>
                 <Meta paper={item.paper} />
               </button>
               {item.evidence && item.citingFile && (
@@ -102,9 +102,9 @@ function Concepts({ title, items, kind, onOpenConcept }: { title: string; items:
   if (items.length === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      <span className="text-[12px] font-medium text-shodh-text-secondary mr-1">{title}</span>
+      <span className="text-caption font-medium text-shodh-text-secondary mr-1">{title}</span>
       {items.map(c => (
-        <button key={c.id} type="button" onClick={() => onOpenConcept(kind, c.id)} className={cn('h-7 px-2.5 rounded-full text-[12px] border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised', FOCUS_RING)}>
+        <button key={c.id} type="button" onClick={() => onOpenConcept(kind, c.id)} className={cn('h-7 px-2.5 rounded-full text-caption border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised', FOCUS_RING)}>
           {c.label}
         </button>
       ))}
@@ -173,7 +173,7 @@ export function PaperPage({
     return (
       <div className="flex flex-col gap-3">
         {back}
-        <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Loading the paper…
         </p>
@@ -184,7 +184,7 @@ export function PaperPage({
     return (
       <div className="flex flex-col gap-3">
         {back}
-        <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+        <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           {detail.message}
         </p>
@@ -204,8 +204,8 @@ export function PaperPage({
       {back}
       <header className="flex flex-col gap-1.5">
         <h2 id={headingId} className="m-0 text-[19px] font-semibold text-shodh-text leading-snug">{paperTitle(p)}</h2>
-        {d.authors.length > 0 && <p className="text-[13px] text-shodh-text-secondary">{d.authors.map(a => a.name).join(', ')}{p.authors?.endsWith('et al.') ? ' et al.' : ''}</p>}
-        <p className="text-[12.5px] text-shodh-text-muted">
+        {d.authors.length > 0 && <p className="text-small text-shodh-text-secondary">{d.authors.map(a => a.name).join(', ')}{p.authors?.endsWith('et al.') ? ' et al.' : ''}</p>}
+        <p className="text-small text-shodh-text-muted">
           {[p.venue, p.year, p.inLibrary ? 'In your library' : 'Not in your library', p.citedByCount !== null ? `cited by ${p.citedByCount.toLocaleString()} works (OpenAlex)` : null].filter(Boolean).join(' · ')}
         </p>
         <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -259,10 +259,10 @@ export function PaperPage({
             <section aria-labelledby={`${headingId}-results`} className="flex flex-col gap-2">
               <h3 id={`${headingId}-results`} className={SECTION_TITLE}>{`Results (${d.results.length})`}</h3>
               {d.results.length === 0 ? (
-                <p className="text-[12.5px] text-shodh-text-muted">No accepted results. Extract them from the paper’s tables in its Results view.</p>
+                <p className="text-small text-shodh-text-muted">No accepted results. Extract them from the paper’s tables in its Results view.</p>
               ) : (
                 <div className="overflow-x-auto rounded-xl border border-shodh-border">
-                  <table className="min-w-full border-collapse text-[12.5px]">
+                  <table className="min-w-full border-collapse text-small">
                     <caption className="sr-only">Results read from the paper’s tables; each value opens its cell.</caption>
                     <thead className="bg-shodh-raised">
                       <tr>
@@ -286,7 +286,7 @@ export function PaperPage({
                             >
                               {valueLabel(r)}
                             </button>
-                            {r.setting && <span className="ml-1.5 text-[11px] text-shodh-text-muted">{r.setting}</span>}
+                            {r.setting && <span className="ml-1.5 text-caption text-shodh-text-muted">{r.setting}</span>}
                           </td>
                         </tr>
                       ))}
@@ -317,8 +317,8 @@ export function PaperPage({
                 {d.related.map(r => (
                   <li key={r.paper.id}>
                     <button type="button" onClick={() => onOpenPaper(r.paper.id)} className={cn('w-full text-left px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
-                      <span className="block text-[13px] text-shodh-text truncate">{paperTitle(r.paper)}</span>
-                      <span className="block text-[11.5px] text-shodh-text-muted">{`${r.count} shared ${r.count === 1 ? 'reference' : 'references'}`}</span>
+                      <span className="block text-small text-shodh-text truncate">{paperTitle(r.paper)}</span>
+                      <span className="block text-caption text-shodh-text-muted">{`${r.count} shared ${r.count === 1 ? 'reference' : 'references'}`}</span>
                     </button>
                   </li>
                 ))}

@@ -13,6 +13,7 @@ import { workspaceChoices, workspaceName } from './board';
 import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from './types';
 import type { TodoItem } from './types';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 const PRIORITY_SELECTED: Record<string, string> = {
   high: 'text-shodh-error',
@@ -36,9 +37,9 @@ export function Provenance({ source, sourceRef }: { source: string; sourceRef?: 
     <div className="mx-2.5 flex items-start gap-2 rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2">
       <Icon className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
       <div className="min-w-0 flex flex-col">
-        <span className="text-[12.5px] font-medium text-shodh-text">{label}</span>
+        <span className="text-small font-medium text-shodh-text">{label}</span>
         {sourceRef && (
-          <span className="text-[11.5px] text-shodh-text-muted break-all font-mono" title={sourceRef}>
+          <span className="text-caption text-shodh-text-muted break-all font-mono" title={sourceRef}>
             {sourceRef}
           </span>
         )}
@@ -91,7 +92,7 @@ function SubtaskTitle({ title, completed, disabled, onRename }: {
       }}
       className={cn(
         INLINE_INPUT,
-        'flex-1 min-w-0 h-7 px-1.5 text-[13px] truncate',
+        'flex-1 min-w-0 h-7 px-1.5 text-small truncate',
         completed ? 'line-through text-shodh-text-faint' : 'text-shodh-text-secondary',
       )}
     />
@@ -183,7 +184,7 @@ function SubtaskList({ task }: { task: TodoItem }) {
               e.currentTarget.closest<HTMLElement>('[role="dialog"]')?.focus();
             }
           }}
-          className={cn(INLINE_INPUT, 'h-8 text-[13px] px-1.5')}
+          className={cn(INLINE_INPUT, 'h-8 text-small px-1.5')}
         />
       </form>
     </section>
@@ -208,7 +209,7 @@ function WorkspaceField({ task }: { task: TodoItem }) {
         value={task.workspaceId ?? ''}
         onChange={e => void updateTask(task.id, { workspaceId: e.target.value || null })}
         className={cn(
-          'h-8 w-full max-w-[20rem] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[13px] text-shodh-text hover:border-shodh-border-strong',
+          'h-8 w-full max-w-[20rem] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text hover:border-shodh-border-strong',
           FOCUS_RING,
         )}
       >
@@ -262,7 +263,7 @@ function AskAboutTask({ task }: { task: TodoItem }) {
         onClick={e => open(e.currentTarget)}
         title={`Ask about this task in a side discussion of “${conversation}”`}
         className={cn(
-          'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-[12.5px] text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+          'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong text-small text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -293,7 +294,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
       kindLabel="Task"
       footer={
         <>
-          <span className="mr-auto text-[11px] text-shodh-text-faint">
+          <span className="mr-auto text-caption text-shodh-text-faint">
             Created {formatStamp(shown.createdAt)}
             {shown.updatedAt !== shown.createdAt && <> · Edited {formatStamp(shown.updatedAt)}</>}
           </span>
@@ -301,7 +302,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
             type="button"
             onClick={() => deleteTask(shown.id)}
             className={cn(
-              'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12.5px] text-shodh-error hover:bg-shodh-raised transition-colors duration-micro',
+              'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-error hover:bg-shodh-raised transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
@@ -355,7 +356,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         multiline
         value={shown.description}
         placeholder="Add notes"
-        hint="Saves when you leave the field, or press Ctrl+Enter."
+        hint={`Saves when you leave the field, or press ${shortcutText('saveField', IS_MAC_PLATFORM)}.`}
         onCommit={description => void updateTask(shown.id, { description })}
       />
       <div className="flex flex-col gap-1">

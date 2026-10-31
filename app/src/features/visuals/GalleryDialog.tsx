@@ -87,8 +87,8 @@ export function VisualsDialog({ open, onOpenChange, conversationId, conversation
           <header className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-shodh-border-subtle">
             <Images className="w-4 h-4 text-shodh-text-muted" aria-hidden="true" />
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[14px] font-semibold truncate">{`Visuals in “${conversationTitle || 'this conversation'}”`}</Dialog.Title>
-              <Dialog.Description id={descriptionId} className="text-[12px] text-shodh-text-muted">
+              <Dialog.Title className="text-body font-semibold truncate">{`Visuals in “${conversationTitle || 'this conversation'}”`}</Dialog.Title>
+              <Dialog.Description id={descriptionId} className="text-caption text-shodh-text-muted">
                 Open one to explore, ask about or refine it. All conversations’ visuals are in Library.
               </Dialog.Description>
             </div>
@@ -101,7 +101,7 @@ export function VisualsDialog({ open, onOpenChange, conversationId, conversation
           </header>
           <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-5 py-4">
             {open && (
-              <Suspense fallback={<p className="m-0 text-[13px] text-shodh-text-muted" role="status">Loading visuals…</p>}>
+              <Suspense fallback={<p className="m-0 text-small text-shodh-text-muted" role="status">Loading visuals…</p>}>
                 <VisualGallery conversationId={conversationId} autoFocusSearch emptyText="No visuals in this conversation yet. Diagrams, charts, sketches, plots, simulations, equations and tables in its answers appear here." />
               </Suspense>
             )}

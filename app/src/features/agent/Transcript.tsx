@@ -48,7 +48,7 @@ interface TranscriptProps {
 /** A live "what is happening now" row with a spinner. */
 function ActivityRow({ text, compact }: { text: string; compact: boolean }) {
   return (
-    <div className={cn('ask-rise flex items-center gap-2 text-shodh-text-muted', compact ? 'text-[12.5px]' : 'text-[13.5px]')}>
+    <div className={cn('ask-rise flex items-center gap-2 text-shodh-text-muted', compact ? 'text-small' : 'text-body')}>
       <Spinner />
       <span className="ask-breathe-soft">{text}</span>
     </div>
@@ -59,7 +59,7 @@ function ActivityRow({ text, compact }: { text: string; compact: boolean }) {
 function RevisionRow({ block, compact, live }: { block: Extract<TranscriptBlock, { kind: 'revision' }>; compact: boolean; live: boolean }) {
   const Icon = live ? RefreshCw : ListChecks;
   return (
-    <p className={cn('ask-rise flex items-start gap-2 text-shodh-text-muted', compact ? 'text-[12px]' : 'text-[12.5px]')}>
+    <p className={cn('ask-rise flex items-start gap-2 text-shodh-text-muted', compact ? 'text-caption' : 'text-small')}>
       <Icon className={cn('w-3.5 h-3.5 mt-[3px] shrink-0', live ? 'text-shodh-accent-text' : 'text-shodh-text-muted')} aria-hidden="true" />
       <span className="min-w-0 break-words">{revisionText(block.reason, block.flagged, block.missingNeeds, live)}</span>
     </p>
@@ -135,7 +135,7 @@ export function Transcript({
           <summary
             className={cn(
               'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro',
-              compact ? 'text-[12px]' : 'text-[12.5px]',
+              compact ? 'text-caption' : 'text-small',
               FOCUS_RING,
             )}
           >
@@ -150,7 +150,7 @@ export function Transcript({
               }
               if (block.kind === 'steer') {
                 return (
-                  <p key={block.id} className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+                  <p key={block.id} className="flex items-start gap-2 text-small text-shodh-text-secondary">
                     <CornerDownRight className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
                     <span className="min-w-0 break-words">
                       <span className="sr-only">You steered: </span>
@@ -194,7 +194,7 @@ export function Transcript({
         }
         if (block.kind === 'steer') {
           return (
-            <p key={block.id} className={cn('ask-rise flex items-start gap-2 text-shodh-text-secondary', compact ? 'text-[12.5px]' : 'text-[13.5px]')}>
+            <p key={block.id} className={cn('ask-rise flex items-start gap-2 text-shodh-text-secondary', compact ? 'text-small' : 'text-body')}>
               <CornerDownRight className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text" aria-hidden="true" />
               <span className="min-w-0 break-words">
                 <span className="sr-only">You steered: </span>
@@ -234,7 +234,7 @@ export function Transcript({
       {showsGroundingChip(transcript) && answer && <GroundingChip report={answer} hits={hits} onOpenCitation={onOpenCitation} onCiteInstead={citeInstead} compact={compact} />}
 
       {transcript.status === 'aborted' && (
-        <p className="text-[12.5px] text-shodh-text-muted">
+        <p className="text-small text-shodh-text-muted">
           {transcript.error ?? (transcript.blocks.length === 0 ? 'You interrupted this before it started.' : 'Interrupted.')}
         </p>
       )}
@@ -249,13 +249,13 @@ export function Transcript({
       )}
 
       {transcript.fallback && transcript.status !== 'error' && (
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           {`${answeredByLine(transcript.fallback, transcript.model)}${transcript.fallback.automatic ? ' (switched automatically)' : ''}.`}
         </p>
       )}
 
       {answerIncomplete(transcript) && (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           Incomplete: the answer above stopped when the model failed.
         </p>
       )}
@@ -276,7 +276,7 @@ export function Transcript({
 
       {transcript.status === 'error' && !transcript.providerError && transcript.errorCode !== 'runtime_missing' && transcript.errorCode !== 'runtime_invalid' && (
         <div role="alert" className="flex flex-col gap-2">
-          <p className="text-[13px] leading-relaxed text-shodh-error break-words">
+          <p className="text-small leading-relaxed text-shodh-error break-words">
             {`The answer could not be completed: ${transcript.error ?? 'unknown error'}`}
           </p>
           {transcript.errorCode === 'model_config' && (
@@ -285,7 +285,7 @@ export function Transcript({
                 type="button"
                 onClick={onOpenSettings}
                 className={cn(
-                  'inline-flex items-center gap-2 h-8 px-3 rounded-lg bg-shodh-raised-2 text-[12.5px] text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro',
+                  'inline-flex items-center gap-2 h-8 px-3 rounded-lg bg-shodh-raised-2 text-small text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro',
                   FOCUS_RING,
                 )}
               >
@@ -361,7 +361,7 @@ function TextBlock({
     <details className="group/draft">
       <summary
         className={cn(
-          'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro text-[12px]',
+          'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 rounded-md cursor-pointer select-none text-shodh-text-muted hover:text-shodh-text transition-colors duration-micro text-caption',
           FOCUS_RING,
         )}
       >

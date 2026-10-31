@@ -39,6 +39,7 @@ import type { SourceBoxRequest } from '../research/snippetBus';
 import { browserTimers, requestPdfMeta, usePdfMeta } from './pdfListMeta';
 import { Prefetcher } from './prefetch';
 import type { LibrarySource } from './sources';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -46,7 +47,7 @@ const FOCUS_RING =
 const ROW_FOCUS = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring';
 
 const BUTTON = cn(
-  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text-secondary',
+  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text-secondary',
   'hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-50',
   FOCUS_RING,
 );
@@ -352,6 +353,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
     if (e.isDefaultPrevented() || !previewFile) return;
     const command = viewerCommand({
       key: e.key,
+      code: e.code,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
       altKey: e.altKey,
@@ -462,7 +464,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
       {/* Breadcrumbs and totals */}
       <div className={cn('shrink-0 px-6 pt-5 pb-3 flex items-center gap-3 min-w-0', !showList && 'hidden')}>
         <nav aria-label="Breadcrumb" className="min-w-0 flex-1">
-          <ol className="flex items-center gap-1 min-w-0 text-[13px]">
+          <ol className="flex items-center gap-1 min-w-0 text-small">
             <li className="shrink-0">
               <button type="button" onClick={onExit} className={cn('px-1.5 py-0.5 rounded-md text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised', FOCUS_RING)}>
                 Library
@@ -474,7 +476,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
                 <li key={`${i}-${crumb}`} className={cn('flex items-center gap-1 min-w-0', last ? 'shrink' : 'shrink-[2]')}>
                   <ChevronRight className="w-3.5 h-3.5 shrink-0 text-shodh-text-faint" aria-hidden="true" />
                   {last ? (
-                    <h1 id={headingId} aria-current="page" className="px-1.5 text-[15px] font-semibold text-shodh-text truncate">
+                    <h1 id={headingId} aria-current="page" className="px-1.5 text-body-lg font-semibold text-shodh-text truncate">
                       {crumb}
                     </h1>
                   ) : (
@@ -492,7 +494,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
           </ol>
         </nav>
         {totals && (
-          <p className="shrink-0 text-[12px] text-shodh-text-faint tabular-nums">
+          <p className="shrink-0 text-caption text-shodh-text-faint tabular-nums">
             {`${totals.indexed.toLocaleString()} indexed`}
             {totals.failed > 0 && <span className="text-shodh-error">{` · ${totals.failed.toLocaleString()} failed`}</span>}
           </p>
@@ -517,17 +519,17 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
             }}
             placeholder={segments.length > 0 ? `Filter in ${segments[segments.length - 1]}` : `Filter in ${source.name}`}
             className={cn(
-              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />
         </label>
-        <label className="flex items-center gap-1.5 text-[12px] text-shodh-text-muted">
+        <label className="flex items-center gap-1.5 text-caption text-shodh-text-muted">
           Sort
           <select
             value={sortKey}
             onChange={e => setSortKey(e.target.value as SortKey)}
-            className={cn('h-8 px-2 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text', FOCUS_RING)}
+            className={cn('h-8 px-2 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text', FOCUS_RING)}
           >
             {(Object.keys(SORT_LABELS) as SortKey[]).map(k => (
               <option key={k} value={k}>{SORT_LABELS[k]}</option>
@@ -560,8 +562,8 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
           {load.status === 'loading' && <ListSkeleton />}
           {load.status === 'error' && (
             <div role="alert" className="m-6 p-4 rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-2 items-start">
-              <p className="text-[13px] text-shodh-text">Could not list the files of {source.name}.</p>
-              <p className="text-[12px] text-shodh-text-faint break-words">{load.message}</p>
+              <p className="text-small text-shodh-text">Could not list the files of {source.name}.</p>
+              <p className="text-caption text-shodh-text-faint break-words">{load.message}</p>
               <button type="button" onClick={() => void fetchFiles()} className={BUTTON}>
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                 Try again
@@ -599,7 +601,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
                 ))}
               </ul>
               {entries.length > shown.length && (
-                <p className="shrink-0 px-6 py-2 text-[12px] text-shodh-text-faint border-t border-shodh-border-subtle">
+                <p className="shrink-0 px-6 py-2 text-caption text-shodh-text-faint border-t border-shodh-border-subtle">
                   {`Showing ${shown.length.toLocaleString()} of ${entries.length.toLocaleString()}. Type in the filter to narrow the list.`}
                 </p>
               )}
@@ -722,14 +724,14 @@ function ResizeHandle({ width, min, max, controls, onResize, onCommit, onReset }
 function StatusChip({ file }: { file: FileNode }) {
   if (file.status === 'failed') {
     return (
-      <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-1.5 h-5 rounded-full bg-shodh-error/10 text-shodh-error" title={file.reason ? explainFailure(file.reason, file.path).reason : undefined}>
+      <span className="shrink-0 inline-flex items-center gap-1 text-caption px-1.5 h-5 rounded-full bg-shodh-error/10 text-shodh-error" title={file.reason ? explainFailure(file.reason, file.path).reason : undefined}>
         <AlertTriangle className="w-3 h-3" aria-hidden="true" />
         Failed
       </span>
     );
   }
   return (
-    <span className="shrink-0 inline-flex items-center gap-1 text-[11px] px-1.5 h-5 rounded-full bg-shodh-success-soft text-shodh-success">
+    <span className="shrink-0 inline-flex items-center gap-1 text-caption px-1.5 h-5 rounded-full bg-shodh-success-soft text-shodh-success">
       <span className="w-1.5 h-1.5 rounded-full bg-shodh-success" aria-hidden="true" />
       Indexed
     </span>
@@ -739,7 +741,7 @@ function StatusChip({ file }: { file: FileNode }) {
 function TypeBadge({ extension }: { extension: string }) {
   return (
     <span
-      className={cn('shrink-0 w-11 h-5 inline-flex items-center justify-center rounded text-[10px] font-bold tracking-wide', FAMILY_CLASS[typeFamily(extension)])}
+      className={cn('shrink-0 w-11 h-5 inline-flex items-center justify-center rounded text-caption font-bold tracking-wide', FAMILY_CLASS[typeFamily(extension)])}
       aria-hidden="true"
     >
       {typeBadge(extension)}
@@ -813,18 +815,18 @@ function EntryRow({ entry, rowKey, tabbable, selected, showFolder, folderPath, f
           <TypeBadge extension={entry.extension} />
         )}
         <span className="flex-1 min-w-0 flex flex-col">
-          <span className="text-[13px] text-shodh-text truncate">{title ?? entry.name}</span>
-          {secondary && <span className="text-[11px] text-shodh-text-faint truncate">{secondary}</span>}
+          <span className="text-small text-shodh-text truncate">{title ?? entry.name}</span>
+          {secondary && <span className="text-caption text-shodh-text-faint truncate">{secondary}</span>}
         </span>
         {isDir ? (
-          <span className="shrink-0 text-[11.5px] text-shodh-text-faint tabular-nums">
+          <span className="shrink-0 text-caption text-shodh-text-faint tabular-nums">
             {counts!.files.toLocaleString()} file{counts!.files === 1 ? '' : 's'}
             {counts!.failed > 0 && <span className="text-shodh-error">{` · ${counts!.failed} failed`}</span>}
           </span>
         ) : (
           <>
             {meta && (
-              <span className="shrink-0 text-[11.5px] text-shodh-text-faint tabular-nums" aria-hidden="true">
+              <span className="shrink-0 text-caption text-shodh-text-faint tabular-nums" aria-hidden="true">
                 {`${meta.pages.toLocaleString()} p`}
               </span>
             )}
@@ -939,7 +941,7 @@ function RowMenu({ name, items, tabbable }: { name: string; items: MenuItemSpec[
                 type="button"
                 role="menuitem"
                 onClick={() => { close(false); item.run(); }}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
               >
                 <Icon className="w-3.5 h-3.5" aria-hidden="true" />
                 {item.label}
@@ -1012,8 +1014,8 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
         <div className="flex items-start gap-2 min-w-0">
           <TypeBadge extension={file.extension} />
           <div className="flex-1 min-w-0">
-            <h2 id={titleId} className="text-[14px] font-semibold text-shodh-text truncate" title={title ?? file.name}>{title ?? file.name}</h2>
-            <p className="text-[11.5px] text-shodh-text-faint truncate" title={shownPath}>
+            <h2 id={titleId} className="text-body font-semibold text-shodh-text truncate" title={title ?? file.name}>{title ?? file.name}</h2>
+            <p className="text-caption text-shodh-text-faint truncate" title={shownPath}>
               {title ? `${file.name}${meta ? ` · ${meta.pages.toLocaleString()} ${meta.pages === 1 ? 'page' : 'pages'}` : ''}` : shownPath}
             </p>
           </div>
@@ -1031,7 +1033,7 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
             type="button"
             onClick={onClose}
             aria-label="Close file"
-            title="Close (Esc)"
+            title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
             className={cn('w-8 h-8 shrink-0 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
           >
             <X className="w-4 h-4" aria-hidden="true" />
@@ -1076,7 +1078,7 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
                   document.getElementById(`${tabsId}-${next.id}`)?.focus();
                 }}
                 className={cn(
-                  'h-7 px-2.5 rounded-lg text-[12.5px] transition-colors duration-micro',
+                  'h-7 px-2.5 rounded-lg text-small transition-colors duration-micro',
                   tab === t.id ? 'bg-shodh-raised text-shodh-text font-medium' : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
                   FOCUS_RING,
                 )}
@@ -1087,7 +1089,7 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
           </div>
         )}
         {file.status === 'failed' && (
-          <p role="note" className="text-[12px] text-shodh-error flex items-start gap-1.5">
+          <p role="note" className="text-caption text-shodh-error flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
             <span className="min-w-0">
               {file.reason ? `Not indexed: ${failure.reason}` : 'This file could not be indexed.'}
@@ -1140,7 +1142,7 @@ function EmptyFolder({ filtering, filter, indexing, rootEmpty }: { filtering: bo
   else message = 'This folder is empty.';
   return (
     <div className="flex-1 flex items-center justify-center p-8">
-      <p role="status" className="max-w-sm text-center text-[13px] text-shodh-text-muted">{message}</p>
+      <p role="status" className="max-w-sm text-center text-small text-shodh-text-muted">{message}</p>
     </div>
   );
 }

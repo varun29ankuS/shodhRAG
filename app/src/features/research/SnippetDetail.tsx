@@ -40,7 +40,7 @@ function renderLatex(latex: string): { html: string } | { error: string } {
 function TableBlock({ table }: { table: SnippetTable }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-shodh-border">
-      <table className="min-w-full border-collapse text-[12.5px]">
+      <table className="min-w-full border-collapse text-small">
         {table.caption && <caption className="caption-top px-3 py-2 text-left text-shodh-text-muted">{table.caption}</caption>}
         {table.header.length > 0 && (
           <thead className="bg-shodh-raised">
@@ -181,15 +181,15 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
   return (
     <article className="w-full max-w-[860px] flex flex-col gap-4" aria-label={`Snippet: ${label}`}>
       <header className="flex flex-col gap-1">
-        <p className="text-[11.5px] font-medium uppercase tracking-wider text-shodh-text-faint">
+        <p className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">
           {`${KIND_LABEL[snippet.kind]} · ${snippetSource(snippet)}`}
         </p>
         <h3 className="text-[17px] font-semibold text-shodh-text break-words">{snippet.title.trim() || label}</h3>
-        {snippet.note.trim() && <p className="text-[13px] text-shodh-text-secondary whitespace-pre-wrap break-words">{snippet.note}</p>}
+        {snippet.note.trim() && <p className="text-small text-shodh-text-secondary whitespace-pre-wrap break-words">{snippet.note}</p>}
         {snippet.tags.length > 0 && (
           <ul className="flex flex-wrap gap-1.5" aria-label="Tags">
             {snippet.tags.map(tag => (
-              <li key={tag} className="h-6 px-2 inline-flex items-center rounded-full bg-shodh-raised text-[11.5px] text-shodh-text-secondary">{tag}</li>
+              <li key={tag} className="h-6 px-2 inline-flex items-center rounded-full bg-shodh-raised text-caption text-shodh-text-secondary">{tag}</li>
             ))}
           </ul>
         )}
@@ -204,12 +204,12 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
             draggable={false}
           />
         ) : image.status === 'loading' ? (
-          <span role="status" className="flex items-center gap-2 py-10 text-[12.5px] text-zinc-600">
+          <span role="status" className="flex items-center gap-2 py-10 text-small text-zinc-600">
             <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             Drawing the region…
           </span>
         ) : (
-          <span role="alert" className="flex items-start gap-2 p-4 text-[12.5px] text-zinc-700">
+          <span role="alert" className="flex items-start gap-2 p-4 text-small text-zinc-700">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
             {`The image could not be drawn: ${image.message}`}
           </span>
@@ -265,7 +265,7 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
         </button>
       </div>
       {visionReason && (
-        <p id={visionReasonId} className="-mt-2 text-[12px] text-shodh-text-muted">
+        <p id={visionReasonId} className="-mt-2 text-caption text-shodh-text-muted">
           {`Transcribe to LaTeX is unavailable: ${visionReason}`}
         </p>
       )}
@@ -281,11 +281,11 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
         >
           <div className="grid gap-3 sm:grid-cols-[1fr_160px]">
             <div className="flex flex-col gap-1">
-              <label htmlFor={titleId} className="text-[12px] font-medium text-shodh-text-secondary">Title</label>
+              <label htmlFor={titleId} className="text-caption font-medium text-shodh-text-secondary">Title</label>
               <input id={titleId} className={INPUT} value={title} maxLength={120} onChange={e => setTitle(e.target.value)} placeholder={label} />
             </div>
             <div className="flex flex-col gap-1">
-              <label htmlFor={kindId} className="text-[12px] font-medium text-shodh-text-secondary">Kind</label>
+              <label htmlFor={kindId} className="text-caption font-medium text-shodh-text-secondary">Kind</label>
               <select id={kindId} className={INPUT} value={kind} onChange={e => setKind(e.target.value as SnippetKind)}>
                 {SNIPPET_KINDS.map(k => (
                   <option key={k} value={k}>{KIND_LABEL[k]}</option>
@@ -294,11 +294,11 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
             </div>
           </div>
           <div className="flex flex-col gap-1">
-            <label htmlFor={noteId} className="text-[12px] font-medium text-shodh-text-secondary">Note</label>
+            <label htmlFor={noteId} className="text-caption font-medium text-shodh-text-secondary">Note</label>
             <textarea id={noteId} className={cn(INPUT, 'h-auto min-h-[72px] py-2')} value={note} maxLength={2000} onChange={e => setNote(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1">
-            <label htmlFor={tagsId} className="text-[12px] font-medium text-shodh-text-secondary">Tags (comma separated)</label>
+            <label htmlFor={tagsId} className="text-caption font-medium text-shodh-text-secondary">Tags (comma separated)</label>
             <input id={tagsId} className={INPUT} value={tags} onChange={e => setTags(e.target.value)} />
           </div>
           <div className="flex items-center gap-2">
@@ -321,14 +321,14 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
             <div className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 overflow-x-auto text-shodh-text" dangerouslySetInnerHTML={{ __html: latex.html }} />
           ) : (
             <div role="alert" className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 flex flex-col gap-2">
-              <p className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+              <p className="flex items-start gap-2 text-small text-shodh-text-secondary">
                 <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
                 {`The transcription is not valid LaTeX (${latex.error}); shown as written.`}
               </p>
-              <pre className="text-[12.5px] whitespace-pre-wrap break-words text-shodh-text font-mono">{snippet.latex}</pre>
+              <pre className="text-small whitespace-pre-wrap break-words text-shodh-text font-mono">{snippet.latex}</pre>
             </div>
           )}
-          <p className="text-[11.5px] text-shodh-text-faint">Machine transcription; check it against the image.</p>
+          <p className="text-caption text-shodh-text-faint">Machine transcription; check it against the image.</p>
         </section>
       )}
 
@@ -343,7 +343,7 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
             )}
           </div>
           {table === 'none' ? (
-            <p className="text-[12.5px] text-shodh-text-muted">
+            <p className="text-small text-shodh-text-muted">
               The parsed document has no table overlapping this region. The parser may not have recognised it as a table; its text is below.
             </p>
           ) : (
@@ -355,9 +355,9 @@ export function SnippetDetail({ snippet, mode, onChanged, onOpenTable }: Snippet
       <section aria-label="Text of the region" className="flex flex-col gap-2">
         <h4 className={SECTION_TITLE}>Text in the region</h4>
         {snippet.text.trim() ? (
-          <p className="text-[13.5px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">{snippet.text}</p>
+          <p className="text-body leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">{snippet.text}</p>
         ) : (
-          <p className="text-[12.5px] text-shodh-text-muted">This region has no text layer (a figure or a scanned page).</p>
+          <p className="text-small text-shodh-text-muted">This region has no text layer (a figure or a scanned page).</p>
         )}
       </section>
     </article>

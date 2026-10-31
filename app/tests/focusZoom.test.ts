@@ -92,7 +92,7 @@ test('font scaling for equations and tables', () => {
 });
 
 const key = (k: string, opts: Partial<FocusKeyInput> = {}) =>
-  focusCommand({ key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, editable: false, pannable: false, ...opts });
+  focusCommand({ key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, editable: false, pannable: false, mac: false, ...opts });
 
 test('keys: zoom, fit, actual size, maximise', () => {
   assert.equal(key('+'), 'zoomIn');
@@ -103,7 +103,8 @@ test('keys: zoom, fit, actual size, maximise', () => {
   assert.equal(key('1'), 'actualSize');
   assert.equal(key('m'), 'toggleMaximize');
   assert.equal(key('=', { ctrlKey: true }), 'zoomIn');
-  assert.equal(key('-', { metaKey: true }), 'zoomOut');
+  assert.equal(key('-', { metaKey: true, mac: true }), 'zoomOut');
+  assert.equal(key('-', { ctrlKey: true, mac: true }), null);
   assert.equal(key('0', { ctrlKey: true }), 'fit');
   assert.equal(key('1', { ctrlKey: true }), null);
   assert.equal(key('+', { altKey: true }), null);

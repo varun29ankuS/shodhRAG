@@ -19,6 +19,7 @@ import {
   summaryDescription,
   summaryLabel,
   summaryTone,
+  isNotBacked,
 } from './grounding';
 
 const FOCUS_RING =
@@ -81,7 +82,7 @@ export function CorrectionNote({ check }: { check: ClaimCheck }) {
       data-corrected={correctionKey(check.messageId, check.anchor)}
       title={label}
       className={cn(
-        'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-[10.5px] font-medium leading-none border border-shodh-border-strong text-shodh-text-muted',
+        'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-caption font-medium leading-none border border-shodh-border-strong text-shodh-text-muted',
         FOCUS_RING,
       )}
     >
@@ -151,7 +152,7 @@ export function ClaimFlag({ check, closest, onOpenCitation, onCiteInstead }: Cla
         check={check}
         onCiteInstead={onCiteInstead}
         className={cn(
-          'inline-flex items-center ml-1 px-1.5 h-[18px] rounded-[5px] align-[2px] text-[10.5px] font-semibold leading-none border border-shodh-border-strong text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
+          'inline-flex items-center ml-1 px-1.5 h-[18px] rounded-[5px] align-[2px] text-caption font-semibold leading-none border border-shodh-border-strong text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
           FOCUS_RING,
         )}
       />
@@ -163,7 +164,7 @@ function ClaimFlagBody({ check, closest, onOpenCitation }: Omit<ClaimFlagProps, 
   const label = flagLabel(check);
   const description = flagDescription(check, closest ? hitLabel(closest) : null);
   const className = cn(
-    'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-[10.5px] font-medium leading-none border border-dashed',
+    'inline-flex items-center gap-0.5 ml-1 px-1 h-[18px] rounded-[5px] align-[2px] text-caption font-medium leading-none border border-dashed',
     check.outcome === 'uncited_factual'
       ? 'border-shodh-warning/60 text-shodh-warning'
       : 'border-shodh-error/60 text-shodh-error',
@@ -203,7 +204,7 @@ export function InvalidCitation({ number }: { number: number }) {
       role="note"
       title={description}
       data-answer-ui=""
-      className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-[10.5px] font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
+      className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums border border-dashed border-shodh-error/60 text-shodh-error line-through decoration-shodh-error/70"
     >
       <span aria-hidden="true">{number}</span>
       <span className="sr-only">{description}</span>
@@ -244,21 +245,23 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
   const missing = missingNeeds(report);
   if (checkable <= 0 && missing.length === 0) return null;
   const tone = summaryTone(summary);
-  const flagged = report.claims.filter(c => isFlagged(c.outcome));
+  // The warning list (not backed by a source) apart from statements that only lack a citation.
+  const flagged = report.claims.filter(c => isNotBacked(c.outcome));
+  const uncited = report.claims.filter(c => isFlagged(c.outcome) && !isNotBacked(c.outcome));
   const weak = report.claims.filter(c => c.outcome === 'weak');
   const corrected = report.claims.filter(isCorrected);
-  const Icon = tone === 'ok' ? ShieldCheck : tone === 'partial' ? CircleHelp : AlertTriangle;
+  const Icon = tone === 'ok' ? ShieldCheck : tone === 'flagged' ? AlertTriangle : CircleHelp;
   // One-time hints: what to do about flagged statements, else what the chip is.
   const hint = flagged.length > 0 && explainFlags ? 'flags' : explainChip ? 'chip' : null;
   const hintButton = cn(
-    'h-6 px-2 rounded-md text-[11.5px] font-medium transition-colors duration-micro',
+    'h-6 px-2 rounded-md text-caption font-medium transition-colors duration-micro',
     FOCUS_RING,
   );
 
   return (
     <div className="flex flex-col gap-1.5">
       {hint && (
-        <p role="note" className={cn('m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-shodh-text-secondary', compact ? 'text-[11.5px]' : 'text-[12px]')}>
+        <p role="note" className={cn('m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-shodh-text-secondary', compact ? 'text-caption' : 'text-small')}>
           <span className="min-w-0">
             {hint === 'flags'
               ? 'Flagged statements are not clearly backed by the passage they cite. Check them in the source before relying on them.'
@@ -294,9 +297,9 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
           aria-controls={listId}
           className={cn(
             'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border cursor-pointer select-none tabular-nums transition-colors duration-micro',
-            compact ? 'text-[11.5px]' : 'text-[12px]',
+            compact ? 'text-caption' : 'text-small',
             tone === 'ok' && 'border-shodh-success/40 bg-shodh-success-soft text-shodh-success',
-            tone === 'partial' && 'border-shodh-border bg-shodh-raised text-shodh-text-secondary',
+            (tone === 'partial' || tone === 'uncited') && 'border-shodh-border bg-shodh-raised text-shodh-text-secondary',
             tone === 'flagged' && 'border-shodh-warning/50 bg-shodh-warning-soft text-shodh-warning',
             FOCUS_RING,
           )}
@@ -309,7 +312,7 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
             aria-hidden="true"
           />
         </summary>
-        <div id={listId} className={cn('mt-2 flex flex-col gap-2 rounded-xl border border-shodh-border bg-shodh-surface p-3', compact ? 'text-[12px]' : 'text-[12.5px]')}>
+        <div id={listId} className={cn('mt-2 flex flex-col gap-2 rounded-xl border border-shodh-border bg-shodh-surface p-3', compact ? 'text-caption' : 'text-small')}>
           <p className="text-shodh-text-muted">{`${summaryDescription(summary)}; ${methodLabel(report.method)}.`}</p>
           {corrected.length > 0 && (
             <div className="flex flex-col gap-1">
@@ -324,14 +327,17 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
               </ul>
             </div>
           )}
-          {flagged.length === 0 && weak.length === 0 && missing.length === 0 && corrected.length === 0 && (
+          {flagged.length === 0 && uncited.length === 0 && weak.length === 0 && missing.length === 0 && corrected.length === 0 && (
             <p className="flex items-center gap-1.5 text-shodh-success">
               <CircleCheck className="w-3.5 h-3.5" aria-hidden="true" />
               Every checked statement is supported by the passage it cites.
             </p>
           )}
           {flagged.length > 0 && (
-            <ClaimList title="Flagged" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
+            <ClaimList title="Not backed by the cited source" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
+          )}
+          {uncited.length > 0 && (
+            <ClaimList title="Without a citation" checks={uncited} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
           )}
           {weak.length > 0 && (
             <ClaimList title="Partly supported" checks={weak} byNumber={byNumber} onOpenCitation={onOpenCitation} />
@@ -388,7 +394,7 @@ function ClaimList({
                 <CiteInsteadButton
                   check={check}
                   onCiteInstead={onCiteInstead}
-                  className={cn('h-6 px-2 rounded-md text-[11.5px] font-medium bg-shodh-raised-2 text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
+                  className={cn('h-6 px-2 rounded-md text-caption font-medium bg-shodh-raised-2 text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
                 />
               </span>
             </li>

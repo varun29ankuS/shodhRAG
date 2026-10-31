@@ -4,9 +4,9 @@ import type { AuditStats } from './types';
 function Card({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div className="flex flex-col gap-1 rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 min-w-0">
-      <dt className="text-[11.5px] text-shodh-text-muted">{label}</dt>
+      <dt className="text-caption text-shodh-text-muted">{label}</dt>
       <dd className="m-0 text-[20px] font-semibold tabular-nums text-shodh-text leading-tight">{value}</dd>
-      {detail && <dd className="m-0 text-[11.5px] text-shodh-text-faint tabular-nums truncate">{detail}</dd>}
+      {detail && <dd className="m-0 text-caption text-shodh-text-faint tabular-nums truncate">{detail}</dd>}
     </div>
   );
 }

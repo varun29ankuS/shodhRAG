@@ -77,6 +77,11 @@ pub struct ConversationRecord {
     /// it to the first question as quoted, untrusted text).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<serde_json::Value>,
+    /// The file an "About <file>" chat is limited to (`{path, name}`), kept for the rest
+    /// of the chat until the user removes it. Opaque here; written and read by the Ask
+    /// view, which sends the path as each answer's search limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about_file: Option<serde_json::Value>,
 }
 
 /// Where a connector conversation happened.

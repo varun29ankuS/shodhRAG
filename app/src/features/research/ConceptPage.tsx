@@ -56,12 +56,12 @@ export function ConceptPage({
       <div className="flex flex-col gap-3">
         {back}
         {view.status === 'loading' ? (
-          <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+          <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
             <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             Loading…
           </p>
         ) : (
-          <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+          <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
             {view.message}
           </p>
@@ -77,7 +77,7 @@ export function ConceptPage({
         <p className={SECTION_TITLE}>{kind === 'method' ? 'Method' : 'Dataset'}</p>
         <h2 id={headingId} className="m-0 text-[19px] font-semibold text-shodh-text">{v.concept.label}</h2>
         {v.proposedIn && (
-          <p className="text-[12.5px] text-shodh-text-secondary">
+          <p className="text-small text-shodh-text-secondary">
             First proposed in{' '}
             <button type="button" onClick={() => v.proposedIn && onOpenPaper(v.proposedIn.id)} className={cn('underline underline-offset-2 text-shodh-text rounded', FOCUS_RING)}>
               {title(v.proposedIn)}
@@ -92,8 +92,8 @@ export function ConceptPage({
           {v.papers.map(p => (
             <li key={p.id}>
               <button type="button" onClick={() => onOpenPaper(p.id)} className={cn('w-full text-left px-3 py-2 hover:bg-shodh-raised', FOCUS_RING)}>
-                <span className="block text-[13px] text-shodh-text truncate">{title(p)}</span>
-                <span className="block text-[11.5px] text-shodh-text-muted">{[p.year, p.inLibrary ? 'in your library' : null].filter(Boolean).join(' · ')}</span>
+                <span className="block text-small text-shodh-text truncate">{title(p)}</span>
+                <span className="block text-caption text-shodh-text-muted">{[p.year, p.inLibrary ? 'in your library' : null].filter(Boolean).join(' · ')}</span>
               </button>
             </li>
           ))}

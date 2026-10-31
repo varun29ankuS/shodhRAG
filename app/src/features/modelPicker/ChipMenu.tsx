@@ -39,7 +39,7 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
 
   if (!view) {
     return (
-      <p role="status" className="flex items-center gap-2 p-4 text-[12.5px] text-shodh-text-muted">
+      <p role="status" className="flex items-center gap-2 p-4 text-small text-shodh-text-muted">
         {loadError ? (
           <>
             <AlertTriangle className="w-4 h-4 shrink-0 text-shodh-warning" aria-hidden="true" />
@@ -100,10 +100,10 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
   return (
     <div ref={listRef} role="menu" aria-label="Models" onKeyDown={onKeyDown} className="flex flex-col p-1.5 max-h-[420px] overflow-y-auto scrollbar-thin">
       {answerRunning && (
-        <p className="px-2.5 pt-1 pb-2 m-0 text-[11.5px] text-shodh-text-muted">The answer in progress finishes with its model.</p>
+        <p className="px-2.5 pt-1 pb-2 m-0 text-caption text-shodh-text-muted">The answer in progress finishes with its model.</p>
       )}
       {entries.length === 0 && (
-        <p className="px-2.5 py-3 m-0 text-[12.5px] text-shodh-text-muted">Nothing is connected yet. Connect a subscription, an API key or a local model.</p>
+        <p className="px-2.5 py-3 m-0 text-small text-shodh-text-muted">Nothing is connected yet. Connect a subscription, an API key or a local model.</p>
       )}
       {entries.map(entry => {
         const active =
@@ -120,8 +120,8 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
           >
             <Check className={cn('w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text', !active && 'invisible')} aria-hidden="true" />
             <span className="min-w-0 flex flex-col">
-              <span className="text-[13px] font-medium text-shodh-text">{entry.kind === 'pick' ? entry.label : entry.name}</span>
-              <span className="text-[11.5px] text-shodh-text-muted truncate">
+              <span className="text-small font-medium text-shodh-text">{entry.kind === 'pick' ? entry.label : entry.name}</span>
+              <span className="text-caption text-shodh-text-muted truncate">
                 {entry.kind === 'pick' ? `${entry.name} · ${PROVIDER_LABELS[entry.model.provider]}` : `Recent · ${PROVIDER_LABELS[entry.model.provider]}`}
               </span>
             </span>
@@ -129,7 +129,7 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
         );
       })}
       {pending && (
-        <div role="alertdialog" aria-label="Override the environment's model" className="mx-1 my-1.5 p-2.5 rounded-lg bg-shodh-raised flex flex-col gap-2 text-[12px] text-shodh-text-secondary">
+        <div role="alertdialog" aria-label="Override the environment's model" className="mx-1 my-1.5 p-2.5 rounded-lg bg-shodh-raised flex flex-col gap-2 text-caption text-shodh-text-secondary">
           <p className="m-0">The environment sets the model for this computer. Use {pending.name} for this session only?</p>
           <div className="flex gap-2">
             <button type="button" autoFocus className={cn(ITEM, 'w-auto px-2.5 py-1 border border-shodh-border')} onClick={() => void run(pending, true)}>
@@ -142,14 +142,14 @@ export function ChipMenu({ picker, answerRunning, onManage, onSelected }: ChipMe
         </div>
       )}
       {refusal && (
-        <p role="alert" className="mx-1 my-1.5 px-2.5 py-2 rounded-lg bg-shodh-raised m-0 text-[12px] text-shodh-text-secondary">
+        <p role="alert" className="mx-1 my-1.5 px-2.5 py-2 rounded-lg bg-shodh-raised m-0 text-caption text-shodh-text-secondary">
           {refusal.message}
         </p>
       )}
       <div className="my-1 border-t border-shodh-border-subtle" />
       <button type="button" role="menuitem" onClick={onManage} className={ITEM}>
         <Settings2 className="w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-text-muted" aria-hidden="true" />
-        <span className="text-[13px] text-shodh-text">Manage…</span>
+        <span className="text-small text-shodh-text">Manage…</span>
       </button>
     </div>
   );

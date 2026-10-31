@@ -13,6 +13,7 @@ import {
 import type { FindCursor } from './conversationWindow';
 import type { ChatMessage } from './types';
 import { countOf } from '../../lib/plural';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 /** CSS custom highlight names (styled in index.css). */
 const HIGHLIGHT_ALL = 'conversation-find';
@@ -208,9 +209,9 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         placeholder="Find in conversation"
         aria-label="Find in conversation"
         spellCheck={false}
-        className="w-48 min-w-0 bg-transparent text-[13px] text-shodh-text placeholder:text-shodh-text-faint outline-none"
+        className="w-48 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none"
       />
-      <span className="min-w-[72px] text-right text-[12px] tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
+      <span className="min-w-[72px] text-right text-caption tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
         {status}
       </span>
       <button
@@ -218,7 +219,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         onClick={() => step(-1)}
         disabled={total === 0}
         aria-label="Previous match"
-        title="Previous match (Shift+Enter)"
+        title={withShortcut('Previous match', 'prevMatch', IS_MAC_PLATFORM)}
         className={cn('w-7 h-7 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 transition-colors duration-micro', FOCUS_RING)}
       >
         <ChevronUp className="w-4 h-4" aria-hidden="true" />
@@ -228,7 +229,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         onClick={() => step(1)}
         disabled={total === 0}
         aria-label="Next match"
-        title="Next match (Enter)"
+        title={withShortcut('Next match', 'nextMatch', IS_MAC_PLATFORM)}
         className={cn('w-7 h-7 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 transition-colors duration-micro', FOCUS_RING)}
       >
         <ChevronDown className="w-4 h-4" aria-hidden="true" />
@@ -237,7 +238,7 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         type="button"
         onClick={onClose}
         aria-label="Close find"
-        title="Close (Esc)"
+        title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
         className={cn('w-7 h-7 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
       >
         <X className="w-4 h-4" aria-hidden="true" />

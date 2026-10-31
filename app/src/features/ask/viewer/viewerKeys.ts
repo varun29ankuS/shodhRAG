@@ -2,9 +2,11 @@
  * Keyboard map of the document viewer and file browser, and plain-text
  * find over PDF page text.
  *
- * Pure module (no runtime imports) so it is unit-tested directly with Node
- * (`app/tests/viewerKeys.test.ts`).
+ * Pure module (its one import has its extension) so it is unit-tested directly with
+ * Node (`app/tests/viewerKeys.test.ts`). The chords come from the shortcut registry.
  */
+
+import { IS_MAC_PLATFORM, matchesShortcut } from '../../../lib/shortcuts.ts';
 
 export type ViewerCommand =
   | 'nextPage'
@@ -27,6 +29,10 @@ export interface KeyInput {
   shiftKey: boolean;
   /** Focus is in a text field, select or contenteditable element. */
   editable: boolean;
+  /** The physical key, for letter chords on layouts that type no Latin letters. */
+  code?: string;
+  /** A Mac (⌘ chords); defaults to this computer. */
+  mac?: boolean;
 }
 
 /**
@@ -44,12 +50,15 @@ export function viewerCommand(input: KeyInput): ViewerCommand | null {
   if (altKey) return null;
 
   if (mod) {
-    const lower = key.length === 1 ? key.toLowerCase() : key;
-    if (lower === 'f' && !shiftKey) return 'find';
-    if (lower === 'g') return shiftKey ? 'findPrev' : 'findNext';
-    if (key === '=' || key === '+') return 'zoomIn';
-    if (key === '-' || key === '_') return 'zoomOut';
-    if (key === '0') return 'fitWidth';
+    // The registry's chords (⌘ alone on a Mac, Ctrl alone elsewhere).
+    const chord = { key, code: input.code ?? '', ctrlKey: input.ctrlKey, metaKey: input.metaKey, shiftKey, altKey };
+    const mac = input.mac ?? IS_MAC_PLATFORM;
+    if (matchesShortcut(chord, 'findInChat', mac)) return 'find';
+    if (matchesShortcut(chord, 'findPrev', mac)) return 'findPrev';
+    if (matchesShortcut(chord, 'findNext', mac)) return 'findNext';
+    if (matchesShortcut(chord, 'textLarger', mac)) return 'zoomIn';
+    if (matchesShortcut(chord, 'textSmaller', mac)) return 'zoomOut';
+    if (matchesShortcut(chord, 'textReset', mac)) return 'fitWidth';
     return null;
   }
 

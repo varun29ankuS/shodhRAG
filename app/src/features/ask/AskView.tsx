@@ -20,6 +20,7 @@ import type { TranscriptState } from '../agent/reducer';
 import { SetupCard } from '../setup/SetupCard';
 import { useQueuedQuestion } from '../setup/useQueuedQuestion';
 import { useCodeModeEnabled } from '../../hooks/useCodeModeEnabled';
+import { matchesShortcut } from '../../lib/shortcuts';
 import { StatusLine } from '../agent/StatusLine';
 import { SuggestionsBadge } from '../memory/SuggestionsBadge';
 import { requestSettingsSection } from '../memory/navigation';
@@ -38,7 +39,8 @@ import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
 import { useDraft } from './useDraft';
 import { useSendOptions } from './useSendOptions';
-import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from './AttachmentChips';
+import { AttachmentChips, FileRefChip, useChatFileScope, useImageAttachments } from './AttachmentChips';
+import type { ConversationFile } from './fileQuestion';
 import { attachedContextOf, attachmentLabel, composerAttachments } from './imageAttachments';
 import { composerFiles, fileNameOfPath, limitedToFiles, replaceFilePrefix } from './fileQuestion';
 import { missingIndexedFiles, reportMissingFiles } from './fileQuestionApi';
@@ -167,7 +169,7 @@ function FileBadge({ path }: { path: string }) {
   return (
     <span
       className={cn(
-        'px-1 py-0.5 rounded text-[9.5px] font-bold uppercase leading-none tracking-wide',
+        'px-1 py-0.5 rounded text-caption font-bold uppercase leading-none tracking-wide',
         FILE_BADGE_CLASS[ext] ?? 'bg-shodh-raised-2 text-shodh-text-muted',
       )}
       aria-hidden="true"
@@ -216,16 +218,16 @@ function SourceChips({
               ) : (
                 <FileBadge path={group.sourceFile} />
               )}
-              <span className="text-[12.5px] truncate">{sourceLabel(group.primary)}</span>
+              <span className="text-small truncate">{sourceLabel(group.primary)}</span>
               {group.primary.url && (
-                <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap inline-flex items-center gap-0.5">
+                <span className="text-caption text-shodh-text-faint whitespace-nowrap inline-flex items-center gap-0.5">
                   {webHost(group.primary.url)}
                   <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
                 </span>
               )}
-              {where && <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap">{where}</span>}
+              {where && <span className="text-caption text-shodh-text-faint whitespace-nowrap">{where}</span>}
               {group.hits.length > 1 && (
-                <span className="text-[11.5px] text-shodh-text-faint whitespace-nowrap">{`· ${group.hits.length} passages`}</span>
+                <span className="text-caption text-shodh-text-faint whitespace-nowrap">{`· ${group.hits.length} passages`}</span>
               )}
             </button>
           </li>
@@ -237,7 +239,7 @@ function SourceChips({
             type="button"
             onClick={() => setExpanded(true)}
             className={cn(
-              'h-8 px-3 rounded-[10px] text-[12.5px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+              'h-8 px-3 rounded-[10px] text-small text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
@@ -330,7 +332,7 @@ function ThreadChips({ threads, onOpen }: { threads: readonly FocusThread[]; onO
             onClick={e => onOpen(thread, e.currentTarget)}
             title="Reopen this side discussion"
             className={cn(
-              'inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-shodh-border bg-shodh-surface text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+              'inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-shodh-border bg-shodh-surface text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
@@ -495,13 +497,13 @@ function AssistantMessageView({
           )}
 
           {message.run?.status === 'failed' && (
-            <p role="alert" className="text-[13.5px] leading-relaxed text-shodh-error">
+            <p role="alert" className="text-body leading-relaxed text-shodh-error">
               {`The answer could not be completed: ${message.run.error ?? 'unknown error'}`}
             </p>
           )}
 
           {message.run?.status === 'cancelled' && message.content.length === 0 && (
-            <p className="text-[13.5px] text-shodh-text-muted">You stopped this answer before any text arrived.</p>
+            <p className="text-body text-shodh-text-muted">You stopped this answer before any text arrived.</p>
           )}
         </>
       )}
@@ -578,7 +580,7 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
         aria-label={`From a side discussion about ${summary.label}`}
         className="w-full max-w-[560px] min-w-0 rounded-[18px] border border-shodh-border bg-shodh-surface px-4 py-3 flex flex-col gap-2"
       >
-        <header className="flex items-center gap-2 min-w-0 text-[12px] text-shodh-text-muted">
+        <header className="flex items-center gap-2 min-w-0 text-caption text-shodh-text-muted">
           <CornerLeftUp className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
           <span className="truncate">
             From a side discussion about <span className="text-shodh-text-secondary">{summary.label}</span>
@@ -589,7 +591,7 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
             disabled={!canOpen}
             title={canOpen ? 'Reopen the side discussion' : 'This side discussion is no longer available'}
             className={cn(
-              'ml-auto shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border text-[11.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
+              'ml-auto shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-45 disabled:cursor-not-allowed transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
@@ -597,7 +599,7 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
             Open discussion
           </button>
         </header>
-        <div className="text-[14.5px] leading-[1.55] text-shodh-text">
+        <div className="text-body-lg leading-[1.55] text-shodh-text">
           <UserText text={content} markdown />
         </div>
       </section>
@@ -607,7 +609,7 @@ const SideSummaryCard = React.memo(function SideSummaryCard({
 
 function SystemNotice({ message }: { message: ChatMessage }) {
   return (
-    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-[13.5px] flex flex-col gap-3">
+    <div className="mx-auto max-w-[560px] w-full rounded-xl border border-shodh-border-subtle bg-shodh-surface px-4 py-3 text-body flex flex-col gap-3">
       {message.image && (
         <img
           src={message.image}
@@ -637,7 +639,13 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // Text read from images, sent with the next question as the user's own context.
   const attachments = useImageAttachments(session.activeConversationId);
   // The file the next question is about ("Ask about this file"): its search limit.
-  const aboutFile = useComposerFile(session.activeConversationId);
+  // "About <file>": the file stays the chat's search limit until its chip is removed.
+  const saveAboutFile = useCallback((file: ConversationFile | null) => {
+    const id = session.activeConversationId;
+    if (id) session.updateConversationMeta(id, { aboutFile: file ?? undefined });
+  }, [session.activeConversationId, session.updateConversationMeta]);
+  const fileScope = useChatFileScope(session.activeConversationId, session.activeConversation?.aboutFile, saveAboutFile);
+  const aboutFile = fileScope.file;
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const previewTriggerRef = useRef<HTMLElement | null>(null);
@@ -789,7 +797,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   useEffect(() => {
     if (messages.length === 0) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f') return;
+      if (!matchesShortcut(e, 'findInChat')) return;
       const target = e.target instanceof Element ? e.target : null;
       if (target?.closest(`[role="dialog"], [aria-modal="true"], ${FOCUS_OVERLAY_SELECTOR}`)) return;
       e.preventDefault();
@@ -914,7 +922,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       if (!accepted) return false;
       composerDrafts.set(conversationId, '');
       composerAttachments.consume(conversationId, attached);
-      composerFiles.consume(conversationId, queuedFile);
+      // The chat stays about the file (its chip and the conversation keep it).
+      if (queuedFile) fileScope.keep(queuedFile);
       return true;
     };
     // Before Shodh is ready the question waits for setup, and is sent from wherever the
@@ -938,12 +947,12 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       .then(missing => {
         if (shownConversationRef.current !== conversationId) return;
         if (missing.length === 0) go();
-        else reportMissingFiles(missing, false, () => composerFiles.set(conversationId, null));
+        else reportMissingFiles(missing, false, fileScope.remove);
       })
       .finally(() => {
         checkingFileRef.current = false;
       });
-  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold]);
+  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold, fileScope]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -1203,7 +1212,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             onClick={() => setSearchAll(on => !on)}
             title="For the next question only: search your whole library instead of this workspace's sources"
             className={cn(
-              'h-7 px-2.5 shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded-full text-[11.5px] font-medium border transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              'h-7 px-2.5 shrink-0 whitespace-nowrap inline-flex items-center gap-1 rounded-full text-caption font-medium border transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
               searchAll
                 ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text'
                 : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
@@ -1217,7 +1226,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onPasteImage={onPasteImage}
         attachments={(
           <>
-            {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} />}
+            {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} onRemove={fileScope.remove} />}
             <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} />
           </>
         )}
@@ -1233,7 +1242,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     >
       <div className="text-center">
         <p className="text-[16px] font-semibold text-shodh-text">Drop to index</p>
-        <p className="mt-1 text-[13px] text-shodh-text-muted">PDF, Word, Excel, PowerPoint, text, Markdown or images</p>
+        <p className="mt-1 text-small text-shodh-text-muted">PDF, Word, Excel, PowerPoint, text, Markdown or images</p>
       </div>
     </div>
   );
@@ -1258,14 +1267,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       const asked = next?.role === 'assistant' ? linesOfRuns(turnMemories, runIdsOf(next.transcript), 'asked') : undefined;
       const bubble = (
         <div className="flex justify-end">
-          <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-[15px] leading-[1.55] text-shodh-text">
+          <div className="max-w-[520px] min-w-0 px-4 py-[11px] rounded-[18px] bg-shodh-raised-2 text-body-lg leading-[1.55] text-shodh-text">
             <UserText text={message.content} />
             {message.aboutFiles && message.aboutFiles.length > 0 && (
               <ul aria-label="Answer limited to" className="m-0 mt-2 p-0 list-none flex flex-wrap gap-1.5">
                 {message.aboutFiles.map(path => (
                   <li
                     key={path}
-                    className="inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full bg-shodh-surface text-[11.5px] text-shodh-text-secondary"
+                    className="inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full bg-shodh-surface text-caption text-shodh-text-secondary"
                   >
                     <FileText className="w-3 h-3 shrink-0 text-shodh-accent-text" aria-hidden="true" />
                     <span className="truncate">{fileNameOfPath(path)}</span>
@@ -1279,7 +1288,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
                   <li
                     key={i}
                     title={item.text.slice(0, 400)}
-                    className="inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full bg-shodh-surface text-[11.5px] text-shodh-text-secondary"
+                    className="inline-flex items-center gap-1.5 h-6 max-w-full px-2 rounded-full bg-shodh-surface text-caption text-shodh-text-secondary"
                   >
                     <FileText className="w-3 h-3 shrink-0 text-shodh-accent-text" aria-hidden="true" />
                     <span className="truncate">{attachmentLabel(item)}</span>
@@ -1368,14 +1377,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             {composer(true)}
             {!hasSources ? (
               <div className="flex flex-col items-center gap-3 text-center">
-                <p className="text-[13.5px] text-shodh-text-muted">
+                <p className="text-body text-shodh-text-muted">
                   Shodh answers from the files you add. Add a folder to start asking about it.
                 </p>
                 <button
                   type="button"
                   onClick={() => onNavigate('library')}
                   className={cn(
-                    'inline-flex items-center gap-2 h-9 px-4 rounded-[9px] bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
+                    'inline-flex items-center gap-2 h-9 px-4 rounded-[9px] bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
@@ -1391,7 +1400,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
                       type="button"
                       onClick={() => applyStarter(prompt)}
                       className={cn(
-                        'w-full h-full text-left px-4 py-3 rounded-[14px] border border-shodh-border bg-shodh-surface text-[13.5px] leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+                        'w-full h-full text-left px-4 py-3 rounded-[14px] border border-shodh-border bg-shodh-surface text-body leading-snug text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                         FOCUS_RING,
                       )}
                     >

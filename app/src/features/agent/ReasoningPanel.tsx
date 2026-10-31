@@ -38,7 +38,7 @@ export function ReasoningPanel({ transcript, compact = false }: { transcript: Tr
           aria-controls={open ? panelId : undefined}
           className={cn(
             'inline-flex items-center gap-1 h-6 px-2 rounded-md text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
-            compact ? 'text-[11.5px]' : 'text-[12px]',
+            compact ? 'text-caption' : 'text-small',
             FOCUS_RING,
           )}
         >
@@ -55,22 +55,22 @@ export function ReasoningPanel({ transcript, compact = false }: { transcript: Tr
           aria-label="The model's reasoning"
           className={cn(
             'max-h-80 overflow-y-auto rounded-lg border border-shodh-border-subtle bg-shodh-raised px-3 py-2.5 flex flex-col gap-2.5 text-shodh-text-secondary',
-            compact ? 'text-[12px]' : 'text-[12.5px]',
+            compact ? 'text-caption' : 'text-small',
           )}
         >
-          <p className="m-0 text-[11.5px] text-shodh-text-faint">
+          <p className="m-0 text-caption text-shodh-text-faint">
             The model&apos;s own reasoning as its provider sent it. It is not checked against your sources.
           </p>
           {sections.map((section, index) => (
             <div key={index} className="flex flex-col gap-1">
-              <p className="m-0 text-[11.5px] font-medium text-shodh-text-muted">
+              <p className="m-0 text-caption font-medium text-shodh-text-muted">
                 {section.afterStep ? `After: ${section.afterStep}` : 'Before any tool call'}
               </p>
               <p className="m-0 whitespace-pre-wrap break-words leading-relaxed">{section.text.trim()}</p>
             </div>
           ))}
           {truncated && (
-            <p className="m-0 text-[11.5px] text-shodh-text-faint">Longer reasoning was cut here (about 32 KB is kept per answer).</p>
+            <p className="m-0 text-caption text-shodh-text-faint">Longer reasoning was cut here (about 32 KB is kept per answer).</p>
           )}
         </section>
       )}

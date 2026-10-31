@@ -20,13 +20,13 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background';
 
 const BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
   'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const INPUT = cn(
-  'h-8 px-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint',
+  'h-8 px-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
   FOCUS_RING,
 );
 
@@ -309,7 +309,7 @@ export default function AuditView() {
   return (
     <div className="flex flex-col gap-6">
       {unavailable && (
-        <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-[13px] text-shodh-error">
+        <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-small text-shodh-error">
           {unavailable}
         </p>
       )}
@@ -318,7 +318,7 @@ export default function AuditView() {
 
       <section aria-labelledby={`${ids}-integrity`} className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 id={`${ids}-integrity`} className="m-0 mr-auto text-[14px] font-semibold">
+          <h3 id={`${ids}-integrity`} className="m-0 mr-auto text-body font-semibold">
             Event log
           </h3>
           <button type="button" className={BUTTON} onClick={runVerify} disabled={verifying}>
@@ -337,10 +337,10 @@ export default function AuditView() {
             <RefreshCw aria-hidden="true" className={cn('w-3.5 h-3.5', loading && 'agent-spin')} />
           </button>
         </div>
-        <p aria-live="polite" className="m-0 min-h-[18px] text-[12.5px]">
+        <p aria-live="polite" className="m-0 min-h-[18px] text-small">
           <VerifyResult report={verifyReport} error={verifyError} />
         </p>
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           Every question, tool call, approval, retrieval, answer and settings or source change is recorded in{' '}
           <span className="font-mono">shodh.db</span> as a hash chain; editing, deleting or reordering an event breaks it.{' '}
           {stats
@@ -350,7 +350,7 @@ export default function AuditView() {
             : null}
         </p>
         {stats?.unrecorded && (
-          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+          <p role="alert" className="m-0 text-small text-shodh-error">
             {stats.unrecorded.count.toLocaleString()}{' '}
             {stats.unrecorded.count === 1 ? 'event' : 'events'} could not be recorded since Shodh started. Latest
             error: {stats.unrecorded.lastError}
@@ -370,7 +370,7 @@ export default function AuditView() {
                 aria-pressed={active}
                 onClick={() => toggleType(t.id)}
                 className={cn(
-                  'h-7 px-2.5 rounded-full border text-[12px] transition-colors duration-micro',
+                  'h-7 px-2.5 rounded-full border text-caption transition-colors duration-micro',
                   active
                     ? 'border-shodh-accent bg-shodh-accent-soft text-shodh-accent-text'
                     : 'border-shodh-border-subtle text-shodh-text-secondary hover:bg-shodh-raised',
@@ -384,7 +384,7 @@ export default function AuditView() {
           })}
         </div>
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted">
+          <label className="flex flex-col gap-1 text-caption text-shodh-text-muted">
             From
             <input
               type="date"
@@ -394,7 +394,7 @@ export default function AuditView() {
               onChange={e => setFilters(f => ({ ...f, fromDate: e.target.value }))}
             />
           </label>
-          <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted">
+          <label className="flex flex-col gap-1 text-caption text-shodh-text-muted">
             To
             <input
               type="date"
@@ -404,7 +404,7 @@ export default function AuditView() {
               onChange={e => setFilters(f => ({ ...f, toDate: e.target.value }))}
             />
           </label>
-          <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted">
+          <label className="flex flex-col gap-1 text-caption text-shodh-text-muted">
             Conversation
             <input
               type="text"
@@ -414,7 +414,7 @@ export default function AuditView() {
               onChange={e => setFilters(f => ({ ...f, conversationId: e.target.value }))}
             />
           </label>
-          <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted">
+          <label className="flex flex-col gap-1 text-caption text-shodh-text-muted">
             Tool
             <input
               type="text"
@@ -424,7 +424,7 @@ export default function AuditView() {
               onChange={e => setFilters(f => ({ ...f, tool: e.target.value }))}
             />
           </label>
-          <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted flex-1 min-w-[180px]">
+          <label className="flex flex-col gap-1 text-caption text-shodh-text-muted flex-1 min-w-[180px]">
             Search
             <input
               type="search"
@@ -452,15 +452,15 @@ export default function AuditView() {
 
       <form onSubmit={saveRetention} className="flex flex-wrap items-end gap-2" aria-labelledby={`${ids}-retention`}>
         <div className="flex flex-col gap-1 mr-auto">
-          <h3 id={`${ids}-retention`} className="m-0 text-[14px] font-semibold">
+          <h3 id={`${ids}-retention`} className="m-0 text-body font-semibold">
             Retention
           </h3>
-          <p id={`${ids}-retention-help`} className="m-0 text-[12px] text-shodh-text-muted">
+          <p id={`${ids}-retention-help`} className="m-0 text-caption text-shodh-text-muted">
             Events older than this are deleted at startup and when you save. A checkpoint records each trim.
             {stats?.oldest ? ` Oldest event: ${new Date(stats.oldest).toLocaleDateString()}.` : ''}
           </p>
         </div>
-        <label className="flex flex-col gap-1 text-[11.5px] text-shodh-text-muted">
+        <label className="flex flex-col gap-1 text-caption text-shodh-text-muted">
           Keep events for (days)
           <input
             type="number"

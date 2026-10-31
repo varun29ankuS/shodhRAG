@@ -30,7 +30,7 @@ const CHIP_FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
 
 const SMALL_BUTTON = cn(
-  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-shodh-border bg-shodh-raised text-[12px] text-shodh-text hover:bg-shodh-raised-2 transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
+  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-shodh-border bg-shodh-raised text-caption text-shodh-text hover:bg-shodh-raised-2 transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
   FOCUS_RING,
 );
 
@@ -84,25 +84,25 @@ function ProviderRow({
     <li className="px-3.5 py-3 flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <Dot status={status} />
-        <span className="text-[13px] font-semibold text-shodh-text">{status.label}</span>
+        <span className="text-small font-semibold text-shodh-text">{status.label}</span>
         {inUse && (
-          <span className="text-[10.5px] px-1.5 py-px rounded-full bg-shodh-accent-soft text-shodh-accent-text font-medium">
+          <span className="text-caption px-1.5 py-px rounded-full bg-shodh-accent-soft text-shodh-accent-text font-medium">
             In use
           </span>
         )}
         {status.keyHint && (
-          <span className="ml-auto font-mono text-[11.5px] text-shodh-text-muted" title="The last characters of the key in use">
+          <span className="ml-auto font-mono text-caption text-shodh-text-muted" title="The last characters of the key in use">
             {status.keyHint}
           </span>
         )}
       </div>
-      <p className={cn('m-0 text-[12.5px] break-words', status.health === 'rejected' ? 'text-shodh-error' : 'text-shodh-text-secondary')}>
+      <p className={cn('m-0 text-small break-words', status.health === 'rejected' ? 'text-shodh-error' : 'text-shodh-text-secondary')}>
         {healthText(status)}
       </p>
-      <p className="m-0 text-[12px] text-shodh-text-muted">
+      <p className="m-0 text-caption text-shodh-text-muted">
         {sourceText(status)} · {checkedText(status, nowMs)}
       </p>
-      {note && <p className="m-0 text-[12px] text-shodh-text-muted">{note}</p>}
+      {note && <p className="m-0 text-caption text-shodh-text-muted">{note}</p>}
       <div className="flex flex-wrap gap-1.5 pt-0.5">
         <button type="button" className={SMALL_BUTTON} disabled={status.checking} onClick={() => onCheck(status.provider)}>
           {status.checking ? (
@@ -255,7 +255,7 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
           className={cn('inline-block w-2 h-2 rounded-full shrink-0', DOT_CLASS[pill.dot], anyChecking && 'animate-pulse motion-reduce:animate-none')}
         />
         {!collapsed && (
-          <span className="text-[12px] font-medium text-shodh-text-secondary truncate">
+          <span className="text-caption font-medium text-shodh-text-secondary truncate">
             {pill.model}
           </span>
         )}
@@ -276,7 +276,7 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
           className="fixed z-50 w-[360px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden"
         >
           <header className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-shodh-border-subtle">
-            <h2 id={headingId} className="m-0 text-[13px] font-semibold text-shodh-text">Connections</h2>
+            <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">Connections</h2>
             <div className="flex gap-1.5">
               <button
                 type="button"
@@ -292,12 +292,12 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
             </div>
           </header>
           {snapshot?.active && (
-            <p className="m-0 px-3.5 pt-2.5 text-[12px] text-shodh-text-muted break-words">
+            <p className="m-0 px-3.5 pt-2.5 text-caption text-shodh-text-muted break-words">
               Answers use <span className="font-mono text-shodh-text-secondary">{snapshot.active.model.model}</span>
             </p>
           )}
           {loadError && (
-            <p role="alert" className="m-0 px-3.5 pt-2.5 text-[12.5px] text-shodh-error break-words">
+            <p role="alert" className="m-0 px-3.5 pt-2.5 text-small text-shodh-error break-words">
               {loadError}
             </p>
           )}
@@ -319,7 +319,7 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
             </ul>
           ) : snapshot ? (
             <div className="px-3.5 py-4 flex flex-col items-start gap-2">
-              <p className="m-0 text-[12.5px] text-shodh-text-muted">No provider is connected. Connect one in Settings → Model.</p>
+              <p className="m-0 text-small text-shodh-text-muted">No provider is connected. Connect one in Settings → Model.</p>
               <button
                 type="button"
                 className={SMALL_BUTTON}
@@ -334,14 +334,14 @@ export function ConnectionStatusChip({ collapsed }: { collapsed: boolean }) {
               </button>
             </div>
           ) : (
-            <p className="m-0 px-3.5 py-5 text-[12.5px] text-shodh-text-muted">Loading the connection status…</p>
+            <p className="m-0 px-3.5 py-5 text-small text-shodh-text-muted">Loading the connection status…</p>
           )}
           {snapshot?.localOnly && (
-            <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[12px] text-shodh-text-muted">
+            <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-muted">
               Local-only mode is on: cloud providers are not used or checked.
             </p>
           )}
-          <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-faint">
+          <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-faint">
             Checks never send a chat request.
           </p>
         </section>,

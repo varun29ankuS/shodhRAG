@@ -30,7 +30,7 @@ import type { InboxItem, PrimaryAction } from './model';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 const ACTION =
-  'h-7 px-2 inline-flex items-center gap-1 rounded-md text-[12px] font-medium transition-colors duration-micro disabled:opacity-50';
+  'h-7 px-2 inline-flex items-center gap-1 rounded-md text-caption font-medium transition-colors duration-micro disabled:opacity-50';
 
 const PRIMARY_LABEL: Record<PrimaryAction, string> = { approve: 'Approve', accept: 'Accept', install: 'Install' };
 
@@ -266,7 +266,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
         {waiting > 0 && (
           <span
             aria-hidden="true"
-            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-[9px] font-bold leading-[14px] text-center"
+            className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-caption font-bold leading-[18px] text-center tabular-nums"
           >
             {waiting > 9 ? '9+' : waiting}
           </span>
@@ -281,18 +281,18 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
           className="absolute right-0 top-9 z-50 w-[380px] max-w-[calc(100vw-24px)] rounded-xl border border-shodh-border bg-shodh-surface shadow-lg overflow-hidden"
         >
           <header className="flex items-baseline justify-between gap-2 px-3.5 py-2.5 border-b border-shodh-border-subtle">
-            <h2 id={headingId} className="m-0 text-[13px] font-semibold text-shodh-text">Inbox</h2>
-            <p className="m-0 text-[11px] text-shodh-text-muted">
+            <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">Inbox</h2>
+            <p className="m-0 text-caption text-shodh-text-muted">
               <kbd>J</kbd>/<kbd>K</kbd> move · <kbd>A</kbd> approve · <kbd>D</kbd> deny or dismiss · <kbd>U</kbd> undo
             </p>
           </header>
           {loadError ? (
-            <p role="alert" className="m-0 px-3.5 py-6 text-[12.5px] text-shodh-error">{loadError}</p>
+            <p role="alert" className="m-0 px-3.5 py-6 text-small text-shodh-error">{loadError}</p>
           ) : visible.length === 0 ? (
             <div className="px-3.5 py-8 flex flex-col items-center gap-1.5 text-center">
               <InboxIcon className="w-5 h-5 text-shodh-text-faint" aria-hidden="true" />
-              <p className="m-0 text-[12.5px] text-shodh-text-secondary">Nothing is waiting for you.</p>
-              <p className="m-0 text-[11.5px] text-shodh-text-muted">Approvals, suggestions and finished work show up here.</p>
+              <p className="m-0 text-small text-shodh-text-secondary">Nothing is waiting for you.</p>
+              <p className="m-0 text-caption text-shodh-text-muted">Approvals, suggestions and finished work show up here.</p>
             </div>
           ) : (
             <ul className="m-0 p-1 list-none max-h-[420px] overflow-y-auto" aria-label="Inbox items">
@@ -321,8 +321,8 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
                     >
                       <span className={cn('mt-[5px] w-2 h-2 rounded-full shrink-0', tone.dot)} aria-hidden="true" />
                       <span className="min-w-0 flex-1 flex flex-col gap-0.5">
-                        <span className="text-[12.5px] font-medium text-shodh-text break-words">{item.title}</span>
-                        <span className="text-[11.5px] text-shodh-text-muted break-words">
+                        <span className="text-small font-medium text-shodh-text break-words">{item.title}</span>
+                        <span className="text-caption text-shodh-text-muted break-words">
                           <span className={tone.text}>{STATUS_LABEL[item.status]}</span>
                           {item.detail ? ` · ${item.detail}` : ''}
                           {item.updatedAt ? ` · ${relativeTime(item.updatedAt)}` : ''}

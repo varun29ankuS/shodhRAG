@@ -118,7 +118,7 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
         aria-controls={open ? panelId : undefined}
         title="The memories Shodh gave the model with your question"
         className={cn(
-          'self-start inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-shodh-border bg-shodh-surface text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+          'self-start inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-shodh-border bg-shodh-surface text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -144,13 +144,13 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
           }}
           className="self-start w-[420px] max-w-full rounded-xl border border-shodh-border bg-shodh-surface shadow-lg"
         >
-          <h2 id={headingId} className="m-0 px-3.5 pt-2.5 text-[12.5px] font-semibold text-shodh-text">
+          <h2 id={headingId} className="m-0 px-3.5 pt-2.5 text-small font-semibold text-shodh-text">
             Memories given with your question
           </h2>
           {loaded.state === 'loading' ? (
-            <p className="m-0 px-3.5 py-3 text-[12.5px] text-shodh-text-muted">Loading…</p>
+            <p className="m-0 px-3.5 py-3 text-small text-shodh-text-muted">Loading…</p>
           ) : loaded.state === 'failed' ? (
-            <p role="alert" className="m-0 px-3.5 py-3 text-[12.5px] text-shodh-error break-words">
+            <p role="alert" className="m-0 px-3.5 py-3 text-small text-shodh-error break-words">
               The memories could not be read: {loaded.error}
             </p>
           ) : (
@@ -161,14 +161,14 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
                   part => part.length > 0,
                 );
                 return (
-                  <li key={row.id} className="px-3.5 py-2.5 flex flex-col gap-1 text-[12.5px]">
+                  <li key={row.id} className="px-3.5 py-2.5 flex flex-col gap-1 text-small">
                     {row.text === null ? (
                       <p className="m-0 text-shodh-text-muted italic">{FORGOTTEN_MEMORY.charAt(0).toUpperCase() + FORGOTTEN_MEMORY.slice(1)}</p>
                     ) : (
                       <p className="m-0 text-shodh-text break-words">“{row.text}”</p>
                     )}
                     {(meta.length > 0 || row.replaced) && (
-                      <p className="m-0 text-[11.5px] text-shodh-text-muted">
+                      <p className="m-0 text-caption text-shodh-text-muted">
                         {meta.join(' · ')}
                         {row.replaced && ' · replaced by a newer version since'}
                       </p>
@@ -206,7 +206,7 @@ export function UsedMemoriesChip({ runId, ids, workspaceName, onOpenSettings }: 
               })}
             </ul>
           )}
-          <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-faint">
+          <p className="m-0 px-3.5 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-faint">
             Memories the answer drew on grow stronger; “Not relevant” makes one weigh less in later answers without deleting it.
             “Always included” ones go with every question: who you are, your projects, preferences and the notes you asked Shodh to keep.
           </p>

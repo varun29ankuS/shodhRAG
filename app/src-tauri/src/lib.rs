@@ -187,6 +187,12 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(background::on_window_event)
+        // Each page load (the first, and any reload) is drawn at the saved text size.
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                app_settings::on_page_loaded(webview);
+            }
+        })
         .manage(shutdown::ShutdownState::default())
         .setup(|app| {
             // Installed builds have no console: from here on the log is also kept in
@@ -210,6 +216,8 @@ pub fn run() {
                 .build()?;
             }
             tracing::info!("Main window created");
+            // Drawn at the user's text size from the start.
+            app_settings::apply_saved_text_size(app.handle());
             // Notices about damaged data files reach the window from here on;
             // earlier ones are listed by `store_notices`.
             store_notices::attach(app.handle());

@@ -13,10 +13,10 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const PRIMARY_BUTTON =
-  'inline-flex items-center gap-2 h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-micro';
+  'inline-flex items-center gap-2 h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-micro';
 
 const QUIET_BUTTON =
-  'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[13px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro';
+  'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro';
 
 interface SetupCardProps {
   compact?: boolean;
@@ -52,8 +52,8 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
         <div className="flex items-start gap-2.5">
           <TriangleAlert className="w-[18px] h-[18px] mt-px shrink-0 text-shodh-warning" aria-hidden="true" />
           <div className="min-w-0 flex flex-col gap-1">
-            <p className="text-[14px] font-semibold text-shodh-text">Could not check whether Shodh is set up</p>
-            <p role="alert" className="text-[13px] text-shodh-error break-words">{search.statusError}</p>
+            <p className="text-body font-semibold text-shodh-text">Could not check whether Shodh is set up</p>
+            <p role="alert" className="text-small text-shodh-error break-words">{search.statusError}</p>
           </div>
         </div>
         <div>
@@ -84,8 +84,8 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
         <div className="flex items-start gap-2.5">
           <CheckCircle2 className="w-[18px] h-[18px] mt-px shrink-0 text-shodh-success" aria-hidden="true" />
           <div className="min-w-0 flex-1 flex flex-col gap-1">
-            <p className="text-[14px] font-semibold text-shodh-text">Shodh is ready</p>
-            <p className="text-[13px] leading-relaxed text-shodh-text-muted">
+            <p className="text-body font-semibold text-shodh-text">Shodh is ready</p>
+            <p className="text-small leading-relaxed text-shodh-text-muted">
               {`${searchDone && runtimeDone ? 'Search models and answer engine downloaded.' : searchDone ? 'Search models downloaded.' : 'Answer engine downloaded.'} ${checks}`}
             </p>
           </div>
@@ -121,12 +121,12 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
           <Download className="w-[18px] h-[18px] mt-px shrink-0 text-shodh-accent" aria-hidden="true" />
         )}
         <div className="min-w-0 flex flex-col gap-1">
-          <p className="text-[14px] font-semibold text-shodh-text">{setupHeading(state)}</p>
+          <p className="text-body font-semibold text-shodh-text">{setupHeading(state)}</p>
           {state.phase === 'needed' && (
-            <p className="text-[13px] leading-relaxed text-shodh-text-muted">{setupDisclosure(state, state.runtimeSource)}</p>
+            <p className="text-small leading-relaxed text-shodh-text-muted">{setupDisclosure(state, state.runtimeSource)}</p>
           )}
           {waiting && (
-            <p className="text-[13px] leading-relaxed text-shodh-text" aria-live="polite">{waitingLine(state)}</p>
+            <p className="text-small leading-relaxed text-shodh-text" aria-live="polite">{waitingLine(state)}</p>
           )}
         </div>
       </div>
@@ -140,7 +140,7 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
       {failed && errors.length > 0 && (
         <div role="alert" className="flex flex-col gap-1">
           {errors.map(error => (
-            <p key={error} className="text-[13px] text-shodh-error break-words">{error}</p>
+            <p key={error} className="text-small text-shodh-error break-words">{error}</p>
           ))}
         </div>
       )}
@@ -165,7 +165,7 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
           </button>
         )}
         {installing && !compact && (
-          <span className="text-[12px] text-shodh-text-muted">The download continues if you move on.</span>
+          <span className="text-caption text-shodh-text-muted">The download continues if you move on.</span>
         )}
       </div>
     </section>
@@ -182,12 +182,12 @@ function PartRow({ part }: { part: PartView }) {
         : null;
   return (
     <li className="flex flex-col gap-1">
-      <div className="flex items-center justify-between gap-3 text-[13px]">
+      <div className="flex items-center justify-between gap-3 text-small">
         <span className="inline-flex items-center gap-1.5 font-medium text-shodh-text">
           {icon}
           {part.label}
         </span>
-        <span className="text-[12px] text-shodh-text-muted tabular-nums text-right">{part.detail}</span>
+        <span className="text-caption text-shodh-text-muted tabular-nums text-right">{part.detail}</span>
       </div>
       {part.state === 'installing' && (
         <div

@@ -673,6 +673,7 @@ pub fn run() {
             connect_commands::connect_sign_in_cancel,
             connect_commands::connect_sign_out,
             connect_commands::connect_save_key,
+            connect_commands::connect_set_lmstudio_token,
             connect_commands::connect_remove_key,
             connection_health::connection_status,
             connection_health::connection_check,

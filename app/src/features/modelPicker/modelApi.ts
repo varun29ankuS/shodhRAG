@@ -103,6 +103,8 @@ export const connectApi = {
   saveKey: (key: string, provider: ProviderId | null) =>
     connectCall<{ provider: ProviderId; label: string }>('connect_save_key', { key, provider }),
   removeKey: (provider: ProviderId) => connectCall<void>('connect_remove_key', { provider }),
+  /** Save LM Studio's API token (an empty token removes it). */
+  setLmStudioToken: (token: string) => connectCall<void>('connect_set_lmstudio_token', { token }),
   /** Download the agent runtime (needed before signing in). */
   installRuntime: () => connectCall<unknown>('agent_install_runtime'),
 };
@@ -130,6 +132,9 @@ export interface ModelPickerHandle {
  * anywhere in the app); settings changes update favourites and recent models
  * in place.
  */
+/** Shortest time between two detections started by the window regaining focus. */
+const FOCUS_RELOAD_MS = 5000;
+
 export function useModelPicker(active = true): ModelPickerHandle {
   // The last view read this session shows at once (Settings → Model opened
   // again); the load on mount refreshes it.
@@ -156,7 +161,19 @@ export function useModelPicker(active = true): ModelPickerHandle {
     void reload(false);
     const onChanged = () => void reload(false);
     window.addEventListener(MODEL_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(MODEL_CHANGED_EVENT, onChanged);
+    // Back from starting LM Studio (or its server) in another window: detect again,
+    // at most every few seconds.
+    let lastFocusReload = Date.now();
+    const onFocus = () => {
+      if (Date.now() - lastFocusReload < FOCUS_RELOAD_MS) return;
+      lastFocusReload = Date.now();
+      void reload(false);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener(MODEL_CHANGED_EVENT, onChanged);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [active, reload]);
 
   useEffect(() => {

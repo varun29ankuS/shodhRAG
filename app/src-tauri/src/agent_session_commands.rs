@@ -1602,6 +1602,32 @@ async fn start_attempt(
             }
         }
     }
+    // LM Studio: the address detection found (its own server settings' port when no
+    // address is set in Advanced), and its API token when its server requires one.
+    if matches!(
+        &mode,
+        LLMMode::External {
+            provider: ApiProvider::LmStudio,
+            ..
+        }
+    ) {
+        if settings.models.base_url(ProviderId::LmStudio).is_none() {
+            let var = shodh_rag::harness::model::LM_STUDIO_URL_VAR;
+            model.env.retain(|(name, _)| name != var);
+            model.env.push((
+                var.to_string(),
+                EnvValue::Plain(crate::connect_commands::lmstudio_url(&app)),
+            ));
+        }
+        if let Some(token) = crate::connect_commands::lmstudio_token().await {
+            let var = shodh_rag::harness::lmstudio::LM_STUDIO_API_KEY_VAR;
+            model.env.retain(|(name, _)| name != var);
+            model.env.push((
+                var.to_string(),
+                EnvValue::Secret(shodh_rag::harness::model::Secret::new(token)),
+            ));
+        }
+    }
     // Local-only mode: refuse any model whose provider is off this computer.
     let local_only = settings.policy.local_only;
     if local_only && is_cloud(&model.model_arg) {

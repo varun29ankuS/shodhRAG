@@ -145,9 +145,18 @@ export interface KeyStatus {
   source: 'vault' | 'environment';
 }
 
+/** What LM Studio detection found (`LmStudioState`). */
+export type LmStudioState = 'running' | 'noChatModel' | 'needsToken' | 'serverOff' | 'notRunning';
+
 export interface LocalServer {
   running: boolean;
   models: string[];
+  /** LM Studio only: what detection found. */
+  state?: LmStudioState;
+  /** LM Studio only: the address asked. */
+  address?: string;
+  /** LM Studio only: an API token is saved for it. */
+  hasToken?: boolean;
 }
 
 export type CatalogStatus = 'fresh' | 'cached' | 'unavailable' | 'local_only';

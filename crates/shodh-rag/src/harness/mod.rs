@@ -14,6 +14,7 @@ pub mod code_mode;
 pub mod error;
 pub mod events;
 pub mod grounding;
+pub mod lmstudio;
 pub mod mcp;
 pub mod model;
 pub mod model_catalog;

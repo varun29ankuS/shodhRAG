@@ -862,7 +862,9 @@ mod tests {
             };
             assert!(message.contains(&format!("No indexed source matches \"{wanted}\"")));
             assert!(message.contains("s1 (\"papers\", 3 files)"), "{message}");
-            assert!(!message.contains("c:/docs"), "{message}");
+            // No path but the value the model itself sent, which the message quotes back.
+            let without_echo = message.replace(&format!("\"{wanted}\""), "");
+            assert!(!without_echo.contains("c:/docs"), "{message}");
             assert!(message.contains("s2 (\"contracts\""));
             assert!(message.contains("notes (\"Notes\")"));
             assert!(message.contains("Nothing was searched"));
@@ -902,7 +904,13 @@ mod tests {
         assert_eq!(shown_path("c:/elsewhere/x.pdf", &summaries), "x.pdf");
         let notes = resolve(&["c:/docs/papers/ann"]).unwrap().notes.join(" ");
         assert!(notes.contains("is the folder papers/ann"), "{notes}");
-        assert!(!notes.contains("c:/docs"), "{notes}");
+        // The value the model sent is quoted back; nothing else holds a path.
+        assert!(
+            !notes
+                .replace("\"c:/docs/papers/ann\"", "")
+                .contains("c:/docs"),
+            "{notes}"
+        );
         let file = resolve(&["hnsw.pdf"]).unwrap().notes.join(" ");
         assert!(
             file.contains("is the indexed file papers/ann/hnsw.pdf"),

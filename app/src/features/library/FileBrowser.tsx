@@ -39,6 +39,7 @@ import type { SourceBoxRequest } from '../research/snippetBus';
 import { browserTimers, requestPdfMeta, usePdfMeta } from './pdfListMeta';
 import { Prefetcher } from './prefetch';
 import type { LibrarySource } from './sources';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -352,6 +353,7 @@ export function FileBrowser({ source, onExit, onAskAboutFile, onFileCount }: Fil
     if (e.isDefaultPrevented() || !previewFile) return;
     const command = viewerCommand({
       key: e.key,
+      code: e.code,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
       altKey: e.altKey,
@@ -1031,7 +1033,7 @@ function OpenFilePane({ paneRef, file, shownPath, focusMode, onToggleFocus, onCl
             type="button"
             onClick={onClose}
             aria-label="Close file"
-            title="Close (Esc)"
+            title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}
             className={cn('w-8 h-8 shrink-0 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
           >
             <X className="w-4 h-4" aria-hidden="true" />

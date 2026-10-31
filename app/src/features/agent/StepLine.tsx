@@ -176,7 +176,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
         <p
           className={cn(
             'ml-[3px] flex gap-1.5 min-w-0 font-mono',
-            compact ? 'text-caption' : 'text-caption',
+            compact ? 'text-caption' : 'text-small',
             failed ? 'text-shodh-error' : 'text-shodh-text-muted',
           )}
         >

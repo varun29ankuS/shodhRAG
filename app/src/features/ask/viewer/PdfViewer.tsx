@@ -24,6 +24,7 @@ import type { SnippetRect } from '../../research/types';
 import { countOf } from '../../../lib/plural';
 import { useDevicePixelRatio } from './useDevicePixelRatio';
 import { leavesSnippetMode } from '../../../lib/escapeScope';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../../lib/shortcuts';
 
 type TextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
 type TextLayerInstance = InstanceType<Awaited<ReturnType<typeof loadPdfJs>>['TextLayer']>;
@@ -1318,6 +1319,7 @@ export function PdfViewer({
     }
     const command = viewerCommand({
       key: e.key,
+      code: e.code,
       ctrlKey: e.ctrlKey,
       metaKey: e.metaKey,
       altKey: e.altKey,
@@ -1424,7 +1426,7 @@ export function PdfViewer({
           disabled={!doc}
           aria-label="Find in document"
           aria-expanded={findOpen}
-          title="Find (Ctrl+F)"
+          title={withShortcut('Find', 'findInChat', IS_MAC_PLATFORM)}
         >
           <Search className="w-4 h-4" aria-hidden="true" />
         </button>
@@ -1492,13 +1494,13 @@ export function PdfViewer({
           <span className="min-w-[76px] text-right tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
             {findSummary}
           </span>
-          <button type="button" className={toolButton} onClick={() => stepFind(-1)} disabled={findHits.length === 0} aria-label="Previous match" title="Previous match (Shift+Enter)">
+          <button type="button" className={toolButton} onClick={() => stepFind(-1)} disabled={findHits.length === 0} aria-label="Previous match" title={withShortcut('Previous match', 'prevMatch', IS_MAC_PLATFORM)}>
             <ChevronUp className="w-4 h-4" aria-hidden="true" />
           </button>
-          <button type="button" className={toolButton} onClick={() => stepFind(1)} disabled={findHits.length === 0} aria-label="Next match" title="Next match (Enter)">
+          <button type="button" className={toolButton} onClick={() => stepFind(1)} disabled={findHits.length === 0} aria-label="Next match" title={withShortcut('Next match', 'nextMatch', IS_MAC_PLATFORM)}>
             <ChevronDown className="w-4 h-4" aria-hidden="true" />
           </button>
-          <button type="button" className={toolButton} onClick={closeFind} aria-label="Close find" title="Close (Esc)">
+          <button type="button" className={toolButton} onClick={closeFind} aria-label="Close find" title={withShortcut('Close', 'close', IS_MAC_PLATFORM)}>
             <X className="w-4 h-4" aria-hidden="true" />
           </button>
         </div>

@@ -4,8 +4,12 @@
  * display scaling; `TextSize` in app_settings.rs has the same table). Ctrl + /
  * Ctrl − step through the sizes and Ctrl 0 goes back to Default.
  *
- * Pure (no imports) so it is unit-tested directly with Node (`app/tests/textSize.test.ts`).
+ * Pure (its one import has its extension) so it is unit-tested directly with Node
+ * (`app/tests/textSize.test.ts`).
  */
+
+import { IS_MAC_PLATFORM, matchesShortcut } from './shortcuts.ts';
+import type { KeyChord } from './shortcuts.ts';
 
 export const TEXT_SIZES = ['small', 'default', 'large', 'larger'] as const;
 
@@ -46,4 +50,44 @@ export function stepTextSize(current: TextSize, step: 'larger' | 'smaller' | 're
   const i = TEXT_SIZES.indexOf(current);
   const next = step === 'larger' ? Math.min(TEXT_SIZES.length - 1, i + 1) : Math.max(0, i - 1);
   return TEXT_SIZES[next];
+}
+
+/** The parts of a key event the text-size shortcuts read. */
+export interface TextSizeKey extends KeyChord {
+  /** Something already handled it (the PDF viewer and the pop-out zoom their own content). */
+  defaultPrevented: boolean;
+  /** Held down: auto-repeat would race through the sizes. */
+  repeat: boolean;
+}
+
+/**
+ * The step a key press asks for, or null when it is not a text-size shortcut, or when
+ * it is but belongs to something else: a press already handled (Ctrl + in the PDF
+ * viewer zooms the page, not the app) or an auto-repeat.
+ */
+export function textSizeStepFor(e: TextSizeKey, mac: boolean = IS_MAC_PLATFORM): 'larger' | 'smaller' | 'reset' | null {
+  if (e.defaultPrevented || e.repeat) return null;
+  if (matchesShortcut(e, 'textLarger', mac)) return 'larger';
+  if (matchesShortcut(e, 'textSmaller', mac)) return 'smaller';
+  if (matchesShortcut(e, 'textReset', mac)) return 'reset';
+  return null;
+}
+
+/**
+ * Orders text-size saves: only the answer to the latest request may set the size, so
+ * an older answer arriving after a newer step never puts the size back.
+ */
+export class LatestRequest {
+  private latest = 0;
+
+  /** A new request; its number. */
+  next(): number {
+    this.latest += 1;
+    return this.latest;
+  }
+
+  /** Whether the answer to request `id` is still the one that counts. */
+  isLatest(id: number): boolean {
+    return id === this.latest;
+  }
 }

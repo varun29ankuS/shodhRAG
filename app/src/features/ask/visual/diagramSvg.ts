@@ -100,7 +100,7 @@ export function diagramSvg(spec: DiagramSpec, drawing: DiagramDrawing, o: SvgOpt
 
   for (const f of drawing.frames) {
     out.push(`<rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}" rx="8" stroke-dasharray="4 4" ${paint(PAINT.frame, o)}/>`);
-    out.push(`<text x="${f.x + 10}" y="${f.y + 16}" font-size="10.5" letter-spacing="0.06em" ${MONO} ${paint(PAINT.frameLabel, o)}>${escapeXml(f.label.toUpperCase())}</text>`);
+    out.push(`<text x="${f.x + 10}" y="${f.y + 16}" font-size="12" letter-spacing="0.06em" ${MONO} ${paint(PAINT.frameLabel, o)}>${escapeXml(f.label.toUpperCase())}</text>`);
   }
   for (const r of drawing.rules) {
     out.push(`<line x1="${r.x1}" y1="${r.y1}" x2="${r.x2}" y2="${r.y2}"${r.dashed ? ' stroke-dasharray="4 4"' : ''} ${paint(PAINT.rule, o)}/>`);
@@ -117,8 +117,8 @@ export function diagramSvg(spec: DiagramSpec, drawing: DiagramDrawing, o: SvgOpt
   for (const w of drawing.wires) {
     if (w.label) {
       const l = w.label;
-      out.push(`<rect x="${l.x - l.w / 2}" y="${l.y - 9}" width="${l.w}" height="16" rx="3" ${paint(PAINT.mask, o)}/>`);
-      out.push(`<text x="${l.x}" y="${l.y + 3}" text-anchor="middle" font-size="10.5" ${MONO} ${paint(PAINT.wireLabel, o)}>${escapeXml(l.text)}</text>`);
+      out.push(`<rect x="${l.x - l.w / 2}" y="${l.y - 10}" width="${l.w}" height="18" rx="3" ${paint(PAINT.mask, o)}/>`);
+      out.push(`<text x="${l.x}" y="${l.y + 3}" text-anchor="middle" font-size="12" ${MONO} ${paint(PAINT.wireLabel, o)}>${escapeXml(l.text)}</text>`);
     }
     if (w.sign) {
       out.push(`<text x="${w.sign.x}" y="${w.sign.y + 5}" text-anchor="middle" font-size="15" font-weight="700" ${SANS} ${paint(PAINT.sign, o)}>${escapeXml(w.sign.text)}</text>`);
@@ -156,7 +156,7 @@ export function diagramSvg(spec: DiagramSpec, drawing: DiagramDrawing, o: SvgOpt
       out.push(`<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="6" stroke-width="${strokeWidth}"${removedDash} ${paint(part, o)}/>`);
       const textPart = node.change === 'removed' ? PAINT.labelRemoved : PAINT.label;
       const cx = b.x + b.w / 2;
-      const block = b.lines.length * 16 + (b.sub ? 14 : 0);
+      const block = b.lines.length * 16 + (b.sub ? 16 : 0);
       let y = b.y + (b.h - block) / 2 + 12;
       for (const line of b.lines) {
         const strike = node.change === 'removed' ? ' text-decoration="line-through"' : '';
@@ -164,7 +164,7 @@ export function diagramSvg(spec: DiagramSpec, drawing: DiagramDrawing, o: SvgOpt
         y += 16;
       }
       if (b.sub) {
-        out.push(`<text x="${cx}" y="${y - 2}" text-anchor="middle" font-size="10.5" ${MONO} ${paint(PAINT.sub, o)}>${escapeXml(b.sub)}</text>`);
+        out.push(`<text x="${cx}" y="${y - 2}" text-anchor="middle" font-size="12" ${MONO} ${paint(PAINT.sub, o)}>${escapeXml(b.sub)}</text>`);
       }
       const marks: string[] = [];
       if (node.change) marks.push(BADGES[node.change]);
@@ -173,15 +173,15 @@ export function diagramSvg(spec: DiagramSpec, drawing: DiagramDrawing, o: SvgOpt
       marks.forEach((mark, i) => {
         const bx = b.x + b.w - 8 - i * 20;
         const by = b.y;
-        out.push(`<rect x="${bx - 8}" y="${by - 8}" width="16" height="16" rx="3" ${paint(PAINT.badge, o)}/>`);
-        out.push(`<text x="${bx}" y="${by + 4}" text-anchor="middle" font-size="10.5" font-weight="600" ${MONO} ${paint(PAINT.badgeText, o)}>${escapeXml(mark)}</text>`);
+        out.push(`<rect x="${bx - 9}" y="${by - 9}" width="18" height="18" rx="3" ${paint(PAINT.badge, o)}/>`);
+        out.push(`<text x="${bx}" y="${by + 4}" text-anchor="middle" font-size="12" font-weight="600" ${MONO} ${paint(PAINT.badgeText, o)}>${escapeXml(mark)}</text>`);
       });
     }
     out.push('</g>');
   });
 
   for (const c of drawing.captions) {
-    out.push(`<text x="${c.x}" y="${c.y}" text-anchor="${c.anchor}" font-size="${c.mono ? 11 : 22}"${c.mono ? '' : ' font-weight="700"'} ${c.mono ? MONO : SANS} ${paint(PAINT.caption, o)}>${escapeXml(c.text)}</text>`);
+    out.push(`<text x="${c.x}" y="${c.y}" text-anchor="${c.anchor}" font-size="${c.mono ? 12 : 22}"${c.mono ? '' : ' font-weight="700"'} ${c.mono ? MONO : SANS} ${paint(PAINT.caption, o)}>${escapeXml(c.text)}</text>`);
   }
   out.push('</svg>');
   return out.join('');

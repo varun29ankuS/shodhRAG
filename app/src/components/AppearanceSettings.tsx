@@ -13,7 +13,7 @@ const FOCUS_RING =
  * and Ctrl + / Ctrl − / Ctrl 0 change it from anywhere.
  */
 export default function AppearanceSettings() {
-  const { size, setSize, saving, error } = useTextSize();
+  const { size, setSize, error } = useTextSize();
   const labelId = useId();
   const hintId = useId();
   return (
@@ -29,6 +29,16 @@ export default function AppearanceSettings() {
         aria-labelledby={labelId}
         aria-describedby={hintId}
         className="inline-flex w-fit flex-wrap gap-1 p-1 rounded-xl bg-shodh-raised-2"
+        onKeyDown={e => {
+          // A radio group: the arrows move the choice (and the focus with it).
+          const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+          if (step === 0) return;
+          e.preventDefault();
+          const i = TEXT_SIZES.indexOf(size);
+          const next = TEXT_SIZES[(i + step + TEXT_SIZES.length) % TEXT_SIZES.length];
+          setSize(next);
+          e.currentTarget.querySelector<HTMLButtonElement>(`[data-size="${next}"]`)?.focus();
+        }}
       >
         {TEXT_SIZES.map(option => {
           const selected = option === size;
@@ -38,10 +48,11 @@ export default function AppearanceSettings() {
               type="button"
               role="radio"
               aria-checked={selected}
-              disabled={saving}
+              data-size={option}
+              tabIndex={selected ? 0 : -1}
               onClick={() => { if (!selected) setSize(option); }}
               className={cn(
-                'h-8 px-3.5 rounded-lg text-small font-medium transition-colors duration-micro disabled:opacity-60',
+                'h-8 px-3.5 rounded-lg text-small font-medium transition-colors duration-micro',
                 selected ? 'bg-shodh-surface text-shodh-text shadow-sm' : 'text-shodh-text-muted hover:text-shodh-text',
                 FOCUS_RING,
               )}

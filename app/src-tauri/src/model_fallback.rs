@@ -606,9 +606,15 @@ fn long_failure_prefix(provider: ProviderId) -> String {
 
 /// The user checked `provider` (the connection panel's Check now) and it works:
 /// its models' long-failure notices are answered, so they leave the Inbox and its
-/// badge. A model that fails again later is noticed again only after another hour
-/// of failing.
+/// badge. A working key does not mean a failing model works again (a retired model,
+/// an upstream outage), so each of its failing models starts its clock again: one
+/// that keeps failing is noticed again after another hour of failing.
 pub(crate) async fn clear_failure_notices(app: &AppHandle, provider: ProviderId) {
+    if let Some(state) = app.try_state::<FallbackState>() {
+        state
+            .health
+            .restart_long_failure_notices(provider, now_ms());
+    }
     crate::inbox_commands::resolve_prefixed(app, InboxKind::Model, long_failure_prefix(provider))
         .await;
 }

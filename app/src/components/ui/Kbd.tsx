@@ -1,10 +1,10 @@
 import React from 'react';
 import { cn } from '../../lib/utils';
-import { isMacPlatform, shortcutText } from '../../lib/shortcuts';
+import { IS_MAC_PLATFORM, shortcutText } from '../../lib/shortcuts';
 import type { ShortcutId } from '../../lib/shortcuts';
 
 /** Whether this computer is a Mac, read once. */
-export const IS_MAC = typeof navigator !== 'undefined' && isMacPlatform(navigator.platform);
+export const IS_MAC = IS_MAC_PLATFORM;
 
 interface KbdProps {
   shortcut: ShortcutId;

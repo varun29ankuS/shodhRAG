@@ -26,6 +26,8 @@ export interface FocusKeyInput {
   editable: boolean;
   /** The content is larger than the stage, so arrows pan it. */
   pannable: boolean;
+  /** A Mac (⌘ chords); defaults to this computer. */
+  mac?: boolean;
 }
 
 /**
@@ -38,9 +40,12 @@ export function focusCommand(input: FocusKeyInput): FocusCommand | null {
   const mod = input.ctrlKey || input.metaKey;
   if (altKey) return null;
   if (mod) {
-    if (key === '=' || key === '+') return 'zoomIn';
-    if (key === '-' || key === '_') return 'zoomOut';
-    if (key === '0') return 'fit';
+    // The registry's zoom chords (⌘ alone on a Mac, Ctrl alone elsewhere).
+    const chord = { key, code: '', ctrlKey: input.ctrlKey, metaKey: input.metaKey, shiftKey: input.shiftKey, altKey };
+    const mac = input.mac ?? IS_MAC_PLATFORM;
+    if (matchesShortcut(chord, 'textLarger', mac)) return 'zoomIn';
+    if (matchesShortcut(chord, 'textSmaller', mac)) return 'zoomOut';
+    if (matchesShortcut(chord, 'textReset', mac)) return 'fit';
     return null;
   }
   if (editable) return null;

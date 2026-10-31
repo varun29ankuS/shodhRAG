@@ -13,6 +13,7 @@ import { workspaceChoices, workspaceName } from './board';
 import { useWorkspaces } from '../workspaces/WorkspaceContext';
 import { PRIORITIES, PRIORITY_LABELS, STATUSES, STATUS_LABELS } from './types';
 import type { TodoItem } from './types';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 const PRIORITY_SELECTED: Record<string, string> = {
   high: 'text-shodh-error',
@@ -355,7 +356,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
         multiline
         value={shown.description}
         placeholder="Add notes"
-        hint="Saves when you leave the field, or press Ctrl+Enter."
+        hint={`Saves when you leave the field, or press ${shortcutText('saveField', IS_MAC_PLATFORM)}.`}
         onCommit={description => void updateTask(shown.id, { description })}
       />
       <div className="flex flex-col gap-1">

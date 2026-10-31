@@ -3,6 +3,7 @@ import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
 import { pasteDecision } from '../ask/imageNotice';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
 const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
@@ -244,19 +245,19 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
               type="button"
               onClick={onSteer}
               disabled={!canSteerNow}
-              aria-label="Steer the answer (Enter)"
-              title="Steer (Enter)"
+              aria-label={withShortcut('Steer the answer', 'steer', IS_MAC_PLATFORM)}
+              title={withShortcut('Steer', 'steer', IS_MAC_PLATFORM)}
               className={roundButton}
             >
               <CornerDownRight className="w-4 h-4" strokeWidth={2.4} aria-hidden="true" />
             </button>
           )}
           {running ? (
-            <button type="button" onClick={onStop} aria-label="Interrupt the answer (Esc)" title="Interrupt (Esc)" className={roundButton}>
+            <button type="button" onClick={onStop} aria-label={withShortcut('Interrupt the answer', 'interrupt', IS_MAC_PLATFORM)} title={withShortcut('Interrupt', 'interrupt', IS_MAC_PLATFORM)} className={roundButton}>
               <Square className="w-3.5 h-3.5" fill="currentColor" aria-hidden="true" />
             </button>
           ) : (
-            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title="Send (Enter)" className={roundButton}>
+            <button type="button" onClick={onSubmit} disabled={!canSend} aria-label="Send" title={withShortcut('Send', 'send', IS_MAC_PLATFORM)} className={roundButton}>
               <ArrowUp className="w-4 h-4" strokeWidth={2.6} aria-hidden="true" />
             </button>
           )}

@@ -73,7 +73,7 @@ export function StatusLine({ transcript, fallbackModel, compact = false }: Statu
         title={summary.title}
         className={cn(
           'flex items-center gap-2 min-w-0 font-mono text-shodh-text-muted',
-          compact ? 'text-caption' : 'text-caption',
+          compact ? 'text-caption' : 'text-small',
         )}
       >
         <span

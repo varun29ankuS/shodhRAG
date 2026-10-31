@@ -9,12 +9,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_TEXT_SIZE,
+  LatestRequest,
+  textSizeStepFor,
   TEXT_SIZES,
   TEXT_SIZE_ZOOM,
   parseTextSize,
   stepTextSize,
 } from '../src/lib/textSize.ts';
 import { parseAppSettings } from '../src/lib/appSettings.ts';
+import { viewerCommand } from '../src/features/ask/viewer/viewerKeys.ts';
+import { focusCommand } from '../src/features/focus/focusKeys.ts';
 
 const base = {
   preferences: { theme: 'dark', searchMaxResults: 8 },
@@ -52,4 +56,37 @@ test('the backend draws the same zoom for each size', () => {
     const written = Number.isInteger(zoom) ? zoom.toFixed(1) : String(zoom);
     assert.ok(rust.includes(`TextSize::${variant} => ${written},`), `${variant} => ${written}`);
   }
+});
+
+const chord = (key: string, code: string, extra: Record<string, boolean> = {}) => ({
+  key, code, ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, defaultPrevented: false, repeat: false, ...extra,
+});
+
+test('the PDF viewer and the pop-out keep their own zoom chords: the app size does not change', () => {
+  for (const [key, code, step] of [['=', 'Equal', 'larger'], ['-', 'Minus', 'smaller'], ['0', 'Digit0', 'reset']] as const) {
+    const e = chord(key, code);
+    // Unhandled, the chord changes the app's text size...
+    assert.equal(textSizeStepFor(e, false), step);
+    // ...but the viewer and the pop-out take it (and prevent it): then it is theirs.
+    const base = { key, ctrlKey: true, metaKey: false, altKey: false, shiftKey: false, editable: false, mac: false };
+    assert.notEqual(viewerCommand(base), null, `the viewer handles Ctrl ${key}`);
+    assert.notEqual(focusCommand({ ...base, pannable: false }), null, `the pop-out handles Ctrl ${key}`);
+    assert.equal(textSizeStepFor({ ...e, defaultPrevented: true }, false), null);
+  }
+});
+
+test('auto-repeat never races through the sizes, and a Mac uses Cmd only', () => {
+  assert.equal(textSizeStepFor(chord('=', 'Equal', { repeat: true }), false), null);
+  assert.equal(textSizeStepFor(chord('=', 'Equal'), true), null, "a Mac's Ctrl+= is not the shortcut");
+  assert.equal(textSizeStepFor(chord('=', 'Equal', { ctrlKey: false, metaKey: true }), true), 'larger');
+  assert.equal(textSizeStepFor(chord('_', 'Minus', { shiftKey: true }), false), 'smaller', 'Ctrl+Shift+− works like Ctrl+Shift+=');
+  assert.equal(textSizeStepFor(chord('a', 'KeyA'), false), null);
+});
+
+test('only the answer to the latest save sets the size', () => {
+  const requests = new LatestRequest();
+  const first = requests.next();
+  const second = requests.next();
+  assert.equal(requests.isLatest(first), false, 'an older answer arriving late is dropped');
+  assert.equal(requests.isLatest(second), true);
 });

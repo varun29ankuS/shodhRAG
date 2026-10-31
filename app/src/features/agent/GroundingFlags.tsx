@@ -19,6 +19,7 @@ import {
   summaryDescription,
   summaryLabel,
   summaryTone,
+  isNotBacked,
 } from './grounding';
 
 const FOCUS_RING =
@@ -244,7 +245,9 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
   const missing = missingNeeds(report);
   if (checkable <= 0 && missing.length === 0) return null;
   const tone = summaryTone(summary);
-  const flagged = report.claims.filter(c => isFlagged(c.outcome));
+  // The warning list (not backed by a source) apart from statements that only lack a citation.
+  const flagged = report.claims.filter(c => isNotBacked(c.outcome));
+  const uncited = report.claims.filter(c => isFlagged(c.outcome) && !isNotBacked(c.outcome));
   const weak = report.claims.filter(c => c.outcome === 'weak');
   const corrected = report.claims.filter(isCorrected);
   const Icon = tone === 'ok' ? ShieldCheck : tone === 'flagged' ? AlertTriangle : CircleHelp;
@@ -258,7 +261,7 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
   return (
     <div className="flex flex-col gap-1.5">
       {hint && (
-        <p role="note" className={cn('m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-shodh-text-secondary', compact ? 'text-caption' : 'text-caption')}>
+        <p role="note" className={cn('m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-shodh-text-secondary', compact ? 'text-caption' : 'text-small')}>
           <span className="min-w-0">
             {hint === 'flags'
               ? 'Flagged statements are not clearly backed by the passage they cite. Check them in the source before relying on them.'
@@ -294,7 +297,7 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
           aria-controls={listId}
           className={cn(
             'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border cursor-pointer select-none tabular-nums transition-colors duration-micro',
-            compact ? 'text-caption' : 'text-caption',
+            compact ? 'text-caption' : 'text-small',
             tone === 'ok' && 'border-shodh-success/40 bg-shodh-success-soft text-shodh-success',
             (tone === 'partial' || tone === 'uncited') && 'border-shodh-border bg-shodh-raised text-shodh-text-secondary',
             tone === 'flagged' && 'border-shodh-warning/50 bg-shodh-warning-soft text-shodh-warning',
@@ -324,14 +327,17 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
               </ul>
             </div>
           )}
-          {flagged.length === 0 && weak.length === 0 && missing.length === 0 && corrected.length === 0 && (
+          {flagged.length === 0 && uncited.length === 0 && weak.length === 0 && missing.length === 0 && corrected.length === 0 && (
             <p className="flex items-center gap-1.5 text-shodh-success">
               <CircleCheck className="w-3.5 h-3.5" aria-hidden="true" />
               Every checked statement is supported by the passage it cites.
             </p>
           )}
           {flagged.length > 0 && (
-            <ClaimList title="Flagged" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
+            <ClaimList title="Not backed by the cited source" checks={flagged} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
+          )}
+          {uncited.length > 0 && (
+            <ClaimList title="Without a citation" checks={uncited} byNumber={byNumber} onOpenCitation={onOpenCitation} onCiteInstead={onCiteInstead} />
           )}
           {weak.length > 0 && (
             <ClaimList title="Partly supported" checks={weak} byNumber={byNumber} onOpenCitation={onOpenCitation} />

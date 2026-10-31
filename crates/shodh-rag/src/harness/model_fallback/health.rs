@@ -20,7 +20,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 
-use crate::harness::model_catalog::ModelRef;
+use crate::harness::model_catalog::{ModelRef, ProviderId};
 use crate::harness::provider_error::ProviderErrorKind;
 
 /// The first wait after a model failed.
@@ -280,6 +280,23 @@ impl HealthBook {
         }
     }
 
+    /// The user acted on the long-failure notices of `provider`'s models (they checked
+    /// the provider): each of its failing models starts its long-failure clock again at
+    /// `now_ms`, so one that keeps failing is noticed again after [`LONG_FAILURE_MS`]
+    /// more. Returns how many models it applied to.
+    pub fn restart_long_failure_notices(&self, provider: ProviderId, now_ms: u64) -> usize {
+        let mut book = self.lock();
+        let mut restarted = 0;
+        for (model, entry) in book.entries.iter_mut() {
+            if model.provider == provider {
+                entry.failing_since_ms = now_ms;
+                entry.long_failure_noticed = false;
+                restarted += 1;
+            }
+        }
+        restarted
+    }
+
     /// `true` once after a model that earned the long-failure notice answered again
     /// (its notice can be taken back).
     pub fn take_recovered(&self, model: &ModelRef) -> bool {
@@ -362,5 +379,62 @@ impl Drop for Admission<'_> {
         if let (false, Some(started)) = (self.settled, self.probe) {
             self.book.release_probe(&self.model, started);
         }
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    const MINUTE: u64 = 60 * 1_000;
+
+    /// Fails `model` every ten minutes from `from` to `to` (one streak: the gaps are
+    /// shorter than [`STREAK_GAP_MS`]).
+    fn keep_failing(book: &HealthBook, model: &ModelRef, from: u64, to: u64) {
+        let mut at = from;
+        while at <= to {
+            book.record_failure(model, ProviderErrorKind::ModelUnavailable, at);
+            at += 10 * MINUTE;
+        }
+    }
+
+    #[test]
+    fn a_cleared_notice_comes_back_when_the_model_keeps_failing() {
+        let book = HealthBook::new();
+        let model = ModelRef::new(ProviderId::OpenRouter, "vendor/retired-model:free");
+        let other = ModelRef::new(ProviderId::Anthropic, "claude-haiku-4-5");
+        keep_failing(&book, &model, 0, LONG_FAILURE_MS);
+        keep_failing(&book, &other, 0, LONG_FAILURE_MS);
+        let first = LONG_FAILURE_MS;
+        assert!(
+            book.take_long_failure(&model, first),
+            "noticed after an hour of failing"
+        );
+        assert!(!book.take_long_failure(&model, first), "once per streak");
+        assert!(book.take_long_failure(&other, first));
+
+        // The user checks OpenRouter (its key works): the notice is cleared and its clock restarts.
+        assert_eq!(
+            book.restart_long_failure_notices(ProviderId::OpenRouter, first),
+            1
+        );
+        // It keeps failing: not noticed again before another hour...
+        keep_failing(
+            &book,
+            &model,
+            first + 10 * MINUTE,
+            first + LONG_FAILURE_MS - MINUTE,
+        );
+        assert!(!book.take_long_failure(&model, first + LONG_FAILURE_MS - MINUTE));
+        // ...and noticed again once it has.
+        keep_failing(
+            &book,
+            &model,
+            first + LONG_FAILURE_MS,
+            first + LONG_FAILURE_MS,
+        );
+        assert!(book.take_long_failure(&model, first + LONG_FAILURE_MS));
+        // Another provider's model was not touched: its notice stays taken.
+        assert!(!book.take_long_failure(&other, first + LONG_FAILURE_MS));
     }
 }

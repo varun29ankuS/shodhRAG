@@ -125,7 +125,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
         <Activity className="w-4 h-4" aria-hidden="true" />
         {count > 0 && (
           <span
-            className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-[3px] rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[15px] text-center tabular-nums"
+            className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[18px] text-center tabular-nums"
             aria-hidden="true"
           >
             {count}

@@ -114,7 +114,7 @@ export function CommandPanel({ run, compact = false }: { run: CommandRun; compac
       });
   }, [run.commandId]);
 
-  const textSize = compact ? 'text-caption' : 'text-caption';
+  const textSize = compact ? 'text-caption' : 'text-small';
   const stateLabel = running && stopping ? 'Stopping' : commandStateLabel(run);
 
   return (

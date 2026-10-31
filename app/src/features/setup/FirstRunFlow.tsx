@@ -13,6 +13,7 @@ import { AnswerCheckModelRow } from '../../components/AnswerCheckSettings';
 import { FIRST_RUN_STEPS, FIRST_RUN_STEP_LABELS, folderStepDone, nextStep, previousStep, stepIndex } from './firstRun';
 import type { FirstRunStep } from './firstRun';
 import { countOf } from '../../lib/plural';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -422,8 +423,8 @@ function DoneStep({ llmReady, hasFolder, ...props }: StepProps & { llmReady: boo
       </div>
       <p className="text-small text-shodh-text-muted">
         {missing.length === 0
-          ? 'Ask anything about your files. Press Ctrl+K at any time to jump to a view, a chat or a folder.'
-          : `To get answers from your files, ${missing.join(' and ')}. You can reopen this setup from the command palette (Ctrl+K).`}
+          ? `Ask anything about your files. Press ${shortcutText('commandPalette', IS_MAC_PLATFORM)} at any time to jump to a view, a chat or a folder.`
+          : `To get answers from your files, ${missing.join(' and ')}. You can reopen this setup from the command palette (${shortcutText('commandPalette', IS_MAC_PLATFORM)}).`}
       </p>
     </div>
   );

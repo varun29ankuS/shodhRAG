@@ -266,7 +266,7 @@ export function InboxButton({ onNavigate, onOpenConversation }: InboxButtonProps
         {waiting > 0 && (
           <span
             aria-hidden="true"
-            className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-caption font-bold leading-[14px] text-center"
+            className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-warning-soft text-shodh-text ring-1 ring-shodh-warning text-caption font-bold leading-[18px] text-center tabular-nums"
           >
             {waiting > 9 ? '9+' : waiting}
           </span>

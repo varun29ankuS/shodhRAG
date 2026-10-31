@@ -38,7 +38,7 @@ export function ReasoningPanel({ transcript, compact = false }: { transcript: Tr
           aria-controls={open ? panelId : undefined}
           className={cn(
             'inline-flex items-center gap-1 h-6 px-2 rounded-md text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
-            compact ? 'text-caption' : 'text-caption',
+            compact ? 'text-caption' : 'text-small',
             FOCUS_RING,
           )}
         >

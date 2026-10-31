@@ -265,11 +265,14 @@ function statements(n: number): string {
  * name none, which is not the warning an unsupported statement is.
  */
 export function summaryLabel(summary: GroundingSummary): string {
-  if (summaryTone(summary) === 'uncited') {
+  const tone = summaryTone(summary);
+  if (tone === 'uncited') {
     return `${statements(summary.uncited)} ${summary.uncited === 1 ? 'has' : 'have'} no citation`;
   }
   const checkable = summary.checked - summary.unchecked;
-  return `Grounded ${summary.supported + summary.weak}/${checkable}`;
+  const grounded = `Grounded ${summary.supported + summary.weak}/${checkable}`;
+  // Partly supported statements keep the ratio; statements without a citation are added.
+  return tone === 'partial' && summary.uncited > 0 ? `${grounded} · ${summary.uncited} without a citation` : grounded;
 }
 
 /**
@@ -279,7 +282,9 @@ export function summaryLabel(summary: GroundingSummary): string {
 export function summaryDescription(summary: GroundingSummary): string {
   const parts = [`${summary.supported} of ${summary.checked - summary.unchecked} checked statements supported by their sources`];
   if (summary.weak > 0) parts.push(`${summary.weak} partly supported`);
-  if (summary.unsupported > 0) parts.push(`${summary.unsupported} not supported by the source they cite`);
+  // Counts statements the cited source does not back and claims of absence nothing looked
+  // up (`unverified_absence`, which cites nothing): neither is backed by a source.
+  if (summary.unsupported > 0) parts.push(`${summary.unsupported} not backed by a source`);
   if (summary.invalid > 0) parts.push(`${summary.invalid} citing a source that does not exist`);
   if (summary.uncited > 0) parts.push(`${statements(summary.uncited)} without a citation`);
   if (summary.unchecked > 0) parts.push(`${summary.unchecked} could not be checked`);
@@ -287,14 +292,24 @@ export function summaryDescription(summary: GroundingSummary): string {
 }
 
 /**
- * Tone of the chip: all supported, some partly, some only without a citation (neutral),
- * or some not backed by what they cite (the warning).
+ * Tone of the chip: all supported, some partly (it keeps its ratio, even when other
+ * statements also lack a citation), some only without a citation (neutral), or some not
+ * backed by a source (the warning).
  */
 export function summaryTone(summary: GroundingSummary): 'ok' | 'partial' | 'uncited' | 'flagged' {
   if (summary.unsupported + summary.invalid > 0) return 'flagged';
-  if (summary.uncited > 0) return 'uncited';
   if (summary.weak > 0) return 'partial';
+  if (summary.uncited > 0) return 'uncited';
   return 'ok';
+}
+
+/**
+ * Whether a flagged statement is the warning kind: its source does not back it, it cites a
+ * source that does not exist, or it claims an absence nothing looked up. A statement that
+ * only lacks a citation is listed apart and raises no warning.
+ */
+export function isNotBacked(outcome: ClaimCheck['outcome']): boolean {
+  return isFlagged(outcome) && outcome !== 'uncited_factual';
 }
 
 /** Needs the report found no passage for. */

@@ -98,8 +98,17 @@ pub struct Preferences {
     pub theme: Theme,
     /// Passages each document search returns by default.
     pub search_max_results: u32,
-    /// How large the interface is drawn.
+    /// How large the interface is drawn. A value this version does not know (written
+    /// by a later one) reads as Default, never as a damaged settings file.
+    #[serde(deserialize_with = "known_text_size")]
     pub text_size: TextSize,
+}
+
+fn known_text_size<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<TextSize, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 impl Default for Preferences {
@@ -116,9 +125,35 @@ impl Default for Preferences {
 pub fn apply_text_size(app: &AppHandle, prefs: &Preferences) {
     let zoom = prefs.text_size.zoom();
     for (label, window) in app.webview_windows() {
+        // A PDF export's offscreen page is printed as laid out, never zoomed.
+        if is_print_window(&label) {
+            continue;
+        }
         if let Err(e) = window.set_zoom(zoom) {
             tracing::warn!(window = %label, error = %e, "the text size could not be applied");
         }
+    }
+}
+
+/// The offscreen windows a PDF export prints from.
+fn is_print_window(label: &str) -> bool {
+    label.starts_with(crate::pdf_export::PRINT_WINDOW_PREFIX)
+}
+
+/// A page finished loading (the first load, or a reload): draw it at the saved text
+/// size again, since a navigation may reset the zoom.
+pub fn on_page_loaded(webview: &tauri::Webview) {
+    if is_print_window(webview.label()) {
+        return;
+    }
+    let app = webview.app_handle();
+    match store(app).and_then(|s| s.load().map_err(|e| e.to_string())) {
+        Ok(settings) => {
+            if let Err(e) = webview.set_zoom(settings.preferences.text_size.zoom()) {
+                tracing::warn!(window = %webview.label(), error = %e, "the text size could not be applied");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "settings unreadable; the default text size is used"),
     }
 }
 
@@ -1242,6 +1277,17 @@ mod tests {
         let set: AppSettings =
             serde_json::from_str(r#"{"preferences": {"textSize": "larger"}}"#).unwrap();
         assert_eq!(set.preferences.text_size, TextSize::Larger);
+        // A size a later version added (or any other value) is Default, and the rest of
+        // the file still reads.
+        for unknown in [r#""largest""#, "3", "null", r#"{"a": 1}"#] {
+            let read: AppSettings = serde_json::from_str(&format!(
+                r#"{{"preferences": {{"textSize": {unknown}, "theme": "light"}}, "policy": {{"localOnly": true, "webAccess": false}}}}"#
+            ))
+            .unwrap();
+            assert_eq!(read.preferences.text_size, TextSize::Default, "{unknown}");
+            assert_eq!(read.preferences.theme, Theme::Light);
+            assert!(read.policy.local_only);
+        }
         let mut prefs = Preferences::default();
         PreferencesPatch {
             text_size: Some(TextSize::Large),

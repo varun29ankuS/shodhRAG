@@ -8,6 +8,7 @@ import { Provenance } from './TaskDetailSheet';
 import { useTasksStore } from './TasksStore';
 import type { EventPatch } from './TasksStore';
 import type { CalendarEvent } from './types';
+import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 /** Start/end after switching all-day on or off. Timed events default to 09:00–10:00. */
 export function allDayPatch(event: CalendarEvent, allDay: boolean): EventPatch {
@@ -121,7 +122,7 @@ export default function EventDetailSheet({ event, onClose }: { event: CalendarEv
         multiline
         value={shown.description}
         placeholder="Add notes"
-        hint="Saves when you leave the field, or press Ctrl+Enter."
+        hint={`Saves when you leave the field, or press ${shortcutText('saveField', IS_MAC_PLATFORM)}.`}
         onCommit={description => void updateEvent(shown.id, { description })}
       />
     </DetailSheet>

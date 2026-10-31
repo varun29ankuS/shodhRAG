@@ -25,7 +25,7 @@ const key = (patch: Partial<Parameters<typeof opensNewMenu>[0]> = {}) => ({
   repeat: false,
   ...patch,
 });
-const free = { modalOpen: false };
+const free = { modalOpen: false, mac: false };
 
 test('the menu lists the five ways to start something, in order', () => {
   assert.deepEqual(newMenuItems(false).map(i => [i.id, i.label]), [
@@ -58,7 +58,9 @@ test('the shortcut that opens the menu is named per platform', () => {
 test('Ctrl+Shift+N and Cmd+Shift+N open the menu', () => {
   assert.equal(opensNewMenu(key(), free), true);
   assert.equal(opensNewMenu(key({ key: 'n' }), free), true);
-  assert.equal(opensNewMenu(key({ ctrlKey: false, metaKey: true }), free), true);
+  assert.equal(opensNewMenu(key({ ctrlKey: false, metaKey: true }), { ...free, mac: true }), true);
+  assert.equal(opensNewMenu(key({ ctrlKey: false, metaKey: true }), { ...free, mac: false }), false);
+  assert.equal(opensNewMenu(key(), { ...free, mac: true }), false, "a Mac's Ctrl chords are not the menu's");
 });
 
 test('N is the letter on Latin layouts and the physical key otherwise', () => {
@@ -83,7 +85,8 @@ test('both shortcuts use the N rule', () => {
 
 test('Ctrl+N and Cmd+N, without Shift or Alt, are New chat', () => {
   assert.equal(isNewChatChord(key({ shiftKey: false })), true);
-  assert.equal(isNewChatChord(key({ shiftKey: false, ctrlKey: false, metaKey: true })), true);
+  assert.equal(isNewChatChord(key({ shiftKey: false, ctrlKey: false, metaKey: true }), true), true);
+  assert.equal(isNewChatChord(key({ shiftKey: false }), true), false, "a Mac's Ctrl+N stays the text field's");
   assert.equal(isNewChatChord(key()), false, 'Ctrl+Shift+N opens the menu');
   assert.equal(isNewChatChord(key({ shiftKey: false, altKey: true })), false);
   assert.equal(isNewChatChord(key({ shiftKey: false, ctrlKey: false })), false);

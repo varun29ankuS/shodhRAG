@@ -1,6 +1,7 @@
 /**
  * Legible text: the type scale has nothing below 12px, Tailwind is configured
- * with the same scale, and no source file sets a smaller pixel size. Run with Node 22.6+:
+ * with the same scale, and no source file sets a smaller size in any form
+ * (classes, CSS, SVG attributes, inline styles, px, em or rem). Run with Node 22.6+:
  *   node --experimental-strip-types --test app/tests/typeScale.test.ts
  */
 import { test } from 'node:test';
@@ -24,6 +25,42 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
+/** A size in CSS pixels: px (or a bare SVG number) as written, em and rem against a 16px base. */
+function px(value: string, unit: string | undefined): number {
+  const n = parseFloat(value);
+  return unit === 'em' || unit === 'rem' ? n * 16 : n;
+}
+
+/**
+ * Every way a font size is written in the app: classes (`text-[11px]`, `text-[0.6rem]`),
+ * CSS (`font-size: 11px`), SVG attributes (`font-size="10.5"`) and inline styles
+ * (`fontSize: 11`, `fontSize: '11px'`, `fontSize={11}`). Group 1 is the number, group 2
+ * its unit (none: pixels).
+ */
+const SIZE_PATTERNS: readonly RegExp[] = [
+  /text-\[(\d+(?:\.\d+)?)(px|em|rem)\]/g,
+  /font-size:\s*(\d+(?:\.\d+)?)(px|em|rem)/g,
+  /font-size="(\d+(?:\.\d+)?)(px|em|rem)?"/g,
+  /fontSize(?::|=\{)\s*['"]?(\d+(?:\.\d+)?)(px|em|rem)?/g,
+];
+
+/** The sizes below 12px written in `text`. */
+function smallSizes(text: string): string[] {
+  const found: string[] = [];
+  for (const pattern of SIZE_PATTERNS) {
+    for (const m of text.matchAll(pattern)) {
+      if (px(m[1], m[2]) < MIN_FONT_PX) found.push(m[0]);
+    }
+  }
+  // An SVG size from a template: `font-size="${mono ? 11 : 22}"`.
+  for (const m of text.matchAll(/font-size="\$\{([^}]*)\}"/g)) {
+    for (const n of m[1].matchAll(/(\d+(?:\.\d+)?)/g)) {
+      if (parseFloat(n[1]) < MIN_FONT_PX) found.push(m[0]);
+    }
+  }
+  return found;
+}
+
 test('the type scale starts at 12px and grows', () => {
   const sizes = TYPE_SCALE_NAMES.map(name => parseFloat(TYPE_SCALE[name]));
   assert.equal(Math.min(...sizes), MIN_FONT_PX);
@@ -40,20 +77,31 @@ test('Tailwind is configured with the same scale', () => {
   assert.deepEqual(configured, { ...TYPE_SCALE });
 });
 
+test('the check sees every way a size is written', () => {
+  for (const sample of [
+    'text-[11px]',
+    'text-[0.6rem]',
+    'text-[0.7em]',
+    'font-size: 10px',
+    'font-size: 0.65rem',
+    'font-size="10.5"',
+    'font-size="${mono ? 11 : 22}"',
+    'fontSize: 11',
+    "fontSize: '11px'",
+    'fontSize={10}',
+  ]) {
+    assert.ok(smallSizes(sample).length > 0, sample);
+  }
+  for (const fine of ['text-[12px]', 'text-[0.875em]', 'font-size="12"', 'font-size="${mono ? 12 : 22}"', 'fontSize: 14']) {
+    assert.deepEqual(smallSizes(fine), [], fine);
+  }
+});
+
 test('no source file sets a font size below 12px', () => {
   const tooSmall: string[] = [];
   for (const file of sourceFiles(srcDir)) {
-    const text = readFileSync(file, 'utf8');
     const where = relative(appDir, file);
-    for (const m of text.matchAll(/text-\[(\d+(?:\.\d+)?)px\]/g)) {
-      if (parseFloat(m[1]) < MIN_FONT_PX) tooSmall.push(`${where}: ${m[0]}`);
-    }
-    for (const m of text.matchAll(/font-size:\s*(\d+(?:\.\d+)?)px/g)) {
-      if (parseFloat(m[1]) < MIN_FONT_PX) tooSmall.push(`${where}: ${m[0]}`);
-    }
-    for (const m of text.matchAll(/fontSize(?::|=\{)\s*(\d+(?:\.\d+)?)\b/g)) {
-      if (parseFloat(m[1]) < MIN_FONT_PX) tooSmall.push(`${where}: ${m[0]}`);
-    }
+    for (const size of smallSizes(readFileSync(file, 'utf8'))) tooSmall.push(`${where}: ${size}`);
   }
   assert.deepEqual(tooSmall, []);
 });

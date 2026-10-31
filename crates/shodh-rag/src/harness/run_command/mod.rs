@@ -111,8 +111,9 @@ pub const RUN_ID_ENV: &str = "SHODH_RUN_COMMAND_ID";
 #[cfg(target_os = "macos")]
 const SANDBOX_FOR_MODEL: &str = "Commands run in macOS's sandbox: they have no network \
      access (no downloads, package installs or connections, localhost included), can change \
-     only the code folder and the scratch folder, and cannot read the rest of the user's home \
-     folder, the keychain or Shodh's data.";
+     only the code folder (its .git folder included) and the scratch folder, and cannot read \
+     the rest of the user's home folder, the keychain or Shodh's data; files outside the home \
+     folder stay readable.";
 #[cfg(not(target_os = "macos"))]
 const SANDBOX_FOR_MODEL: &str = "Network access is not guaranteed.";
 
@@ -394,9 +395,10 @@ impl CommandLimits {
 
 /// What the approval prompt and the live panel of a macOS command say about
 /// its sandbox: what `seatbelt.rs` enforces.
-pub const SANDBOX_MAC: &str = "Sandboxed: no network, only this project folder (and this \
-     conversation's scratch folder) can change. It cannot read the rest of your home folder, \
-     your keychain or Shodh's data.";
+pub const SANDBOX_MAC: &str = "Sandboxed: no network, only this project folder (with its .git \
+     folder and hooks) and this conversation's scratch folder can change. It cannot read the \
+     rest of your home folder, your keychain or Shodh's data. It can still read files outside \
+     your home folder, such as other drives.";
 
 /// What they say on Windows, which has no sandbox yet.
 pub const SANDBOX_WINDOWS: &str = "Not sandboxed on Windows yet — runs with your account's \
@@ -449,9 +451,9 @@ pub fn failure_hint(output: &str) -> Option<&'static str> {
     }
     if FILES.iter().any(|needle| lowered.contains(needle)) {
         return Some(
-            "Commands can change only the project folder and this conversation's scratch \
-             folder, and cannot read the rest of your home folder, your keychain or Shodh's \
-             data.",
+            "This may be Shodh's sandbox: commands can change only the project folder and this \
+             conversation's scratch folder, and cannot read the rest of your home folder, your \
+             keychain or Shodh's data.",
         );
     }
     None
@@ -1298,11 +1300,33 @@ pub async fn run_bounded(
         |name| std::env::var(name).ok(),
         home.as_deref(),
     );
-    let (mut child, mut contained) =
-        match platform::spawn_contained(&shell, &spec, &env, &control.command_id, &boundary) {
-            Ok(spawned) => spawned,
-            Err(reason) => return CommandOutcome::refused(reason),
-        };
+    // The sandbox's profile reads the file system and runs `sandbox-exec`
+    // once: off the async workers.
+    let prepared = {
+        let (shell, spec, env, boundary) =
+            (shell.clone(), spec.clone(), env.clone(), boundary.clone());
+        tokio::task::spawn_blocking(move || platform::prepare(&shell, &spec, &env, &boundary)).await
+    };
+    let prepared = match prepared {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(reason)) => return CommandOutcome::refused(reason),
+        Err(e) => {
+            return CommandOutcome::refused(format!(
+                "Shodh could not prepare the command's sandbox ({e}), so the command was not run."
+            ))
+        }
+    };
+    let (mut child, mut contained) = match platform::spawn_contained(
+        &shell,
+        &spec,
+        &env,
+        &control.command_id,
+        &boundary,
+        &prepared,
+    ) {
+        Ok(spawned) => spawned,
+        Err(reason) => return CommandOutcome::refused(reason),
+    };
     registration.set_killer(contained.killer());
     (control.on_started)();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
@@ -1421,13 +1445,23 @@ pub async fn run_bounded(
         ));
     }
     let output = output.text();
-    // A failure the sandbox may explain is explained in words.
+    // A command whose sandbox could not start never ran; a failure the
+    // sandbox may explain is explained in words.
     #[cfg(target_os = "macos")]
-    if state == CommandState::Done && exit_code != Some(0) {
-        if let Some(hint) = failure_hint(&output) {
-            notes.push(hint.to_string());
+    let (state, exit_code) = match (state, platform::sandbox_start_failure(exit_code, &output)) {
+        (CommandState::Done, Some(reason)) => {
+            notes.insert(0, reason);
+            (CommandState::Refused, None)
         }
-    }
+        (state, _) => {
+            if state == CommandState::Done && exit_code != Some(0) {
+                if let Some(hint) = failure_hint(&output) {
+                    notes.push(hint.to_string());
+                }
+            }
+            (state, exit_code)
+        }
+    };
     CommandOutcome {
         state,
         exit_code,

@@ -445,7 +445,9 @@ pub enum AgentEvent {
         command_id: String,
         text: String,
     },
-    /// The command ended; `refused` ones never started (no `CommandStarted`).
+    /// The command ended. `refused` ones did not run: no `CommandStarted`
+    /// came before, except for a macOS command whose sandbox could not start
+    /// it after its process was created.
     CommandFinished {
         run_id: String,
         step_id: String,

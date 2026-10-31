@@ -355,7 +355,7 @@ export interface CommandOutputEvent {
   text: string;
 }
 
-/** The command ended (`refused`: it never started; no command_started came before). */
+/** The command ended (`refused`: it did not run; no command_started came before, except on macOS when the sandbox could not start it after its process was created). */
 export interface CommandFinishedEvent {
   type: "command_finished";
   runId: string;

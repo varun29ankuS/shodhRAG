@@ -15,6 +15,8 @@ function spec(key: CommandLimitKey): CommandLimitSpec {
 
 test('the command sandbox is described as each system enforces it', () => {
   assert.match(commandSandboxText('macos'), /^Active: commands have no network, can change only the project folder/);
+  assert.match(commandSandboxText('macos'), /\.git folder and hooks included/);
+  assert.match(commandSandboxText('macos'), /can still read files outside your home folder, such as other drives\.$/);
   assert.match(commandSandboxText('windows'), /^Not available on Windows yet: commands run with your account's access/);
   assert.doesNotMatch(commandSandboxText('windows'), /no network/);
   assert.match(commandSandboxText('linux'), /^Not available/);

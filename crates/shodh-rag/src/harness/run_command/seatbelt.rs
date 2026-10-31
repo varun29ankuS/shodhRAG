@@ -23,6 +23,11 @@
 //!   home (as in Anthropic's sandbox-runtime);
 //! - writes: only the code folder and the scratch folder, which themselves
 //!   cannot be moved or removed;
+//! - a deny-list folder inside the code folder (a project such as
+//!   `~/.config` holds `~/.config/gh`) is closed again after the writable
+//!   folders are opened, for reads and changes, and the folders between it
+//!   and the code folder cannot be moved, so it cannot be carried out from
+//!   under its rule;
 //! - no keychain: the security services are denied by name, after every
 //!   allow;
 //! - no network, in either direction, loopback included.
@@ -142,6 +147,34 @@ pub fn render(policy: &SandboxPolicy) -> Profile {
         "; The code folder and the scratch folder: read and changed.\n\
          (allow file-read* file-write*{writable})\n"
     ));
+    let inside = policy.deny_inside_writable();
+    if !inside.is_empty() {
+        let owned: Vec<PathBuf> = inside.iter().map(|deny| deny.to_path_buf()).collect();
+        let filters = params.subpaths("INSIDE", &owned);
+        text.push_str(&format!(
+            "; Deny-list folders inside them stay closed.\n(deny file-read* file-write*{filters})\n"
+        ));
+        let mut between: Vec<PathBuf> = Vec::new();
+        for deny in &owned {
+            let Some(root) = policy.writable.iter().find(|root| within(deny, root)) else {
+                continue;
+            };
+            for dir in deny.ancestors().skip(1) {
+                if dir == root.as_path() || !within(dir, root) {
+                    break;
+                }
+                if !between.iter().any(|known| known == dir) {
+                    between.push(dir.to_path_buf());
+                }
+            }
+        }
+        for dir in between {
+            let key = params.add("BETWEEN", &dir);
+            text.push_str(&format!(
+                "(deny file-write-unlink (require-all (vnode-type DIRECTORY) (literal (param \"{key}\"))))\n"
+            ));
+        }
+    }
     let above = ancestors(policy);
     if !above.is_empty() {
         let filters: String = above
@@ -238,4 +271,89 @@ pub fn check(sandbox_exec: &Path, profile: &Profile) -> Result<(), String> {
         "macOS's sandbox rejected the command's sandbox profile ({said}), so the command was \
          not run."
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy() -> SandboxPolicy {
+        SandboxPolicy {
+            writable: vec![
+                PathBuf::from("/Users/me/.config"),
+                PathBuf::from("/Users/me/Library/Shodh/code-scratch/abc"),
+            ],
+            readable: vec![PathBuf::from("/Users/me/.cargo")],
+            private: Some(PathBuf::from("/Users/me")),
+            deny_read: vec![
+                PathBuf::from("/Users/me/.ssh"),
+                PathBuf::from("/Users/me/.config/git/credentials"),
+                PathBuf::from("/Users/me/Library/Shodh"),
+            ],
+            network: false,
+        }
+    }
+
+    /// The value of the parameter a filter names, by path.
+    fn key_of(profile: &Profile, path: &str) -> Vec<String> {
+        profile
+            .params
+            .iter()
+            .filter(|(_, value)| value == Path::new(path))
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_keychain_services_are_denied_by_name_after_every_allow() {
+        // Belt and braces: deny-default already closes them; the explicit
+        // rule keeps them closed if an allow above ever opened mach lookups.
+        let profile = render(&policy());
+        let rule = profile
+            .text
+            .find("(deny mach-lookup (global-name")
+            .expect("the keychain rule");
+        for service in KEYCHAIN_SERVICES {
+            let named = format!("(global-name \"{service}\")");
+            let at = profile.text.rfind(&named).expect(service);
+            assert!(at > rule, "{service}");
+        }
+        assert!(profile.text.contains("\"com.apple.SecurityServer\""));
+        assert!(profile.text.contains("\"com.apple.securityd.xpc\""));
+        // Nothing after the rule allows a lookup again.
+        assert!(!profile.text[rule..].contains("(allow mach-lookup"));
+        assert!(profile.text.trim_end().ends_with("(deny network*)"));
+    }
+
+    #[test]
+    fn a_deny_list_folder_inside_the_project_is_closed_again_after_it_is_opened() {
+        let profile = render(&policy());
+        let writable = profile
+            .text
+            .find("(allow file-read* file-write*")
+            .expect("the writable rule");
+        let inside = key_of(&profile, "/Users/me/.config/git/credentials");
+        let inside = inside
+            .iter()
+            .find(|key| key.starts_with("INSIDE_"))
+            .expect("the folder inside the project is closed again");
+        let closed = profile
+            .text
+            .find(&format!(
+                "(deny file-read* file-write* (subpath (param \"{inside}\"))"
+            ))
+            .expect("the closing rule");
+        assert!(closed > writable);
+        // The folder between it and the project cannot be moved away.
+        let between = key_of(&profile, "/Users/me/.config/git");
+        assert!(
+            between.iter().any(|key| key.starts_with("BETWEEN_")),
+            "{between:?}"
+        );
+        // Folders that contain a writable one (Shodh's data) are not closed
+        // again: the scratch folder stays open.
+        assert!(key_of(&profile, "/Users/me/Library/Shodh")
+            .iter()
+            .all(|key| !key.starts_with("INSIDE_")));
+    }
 }

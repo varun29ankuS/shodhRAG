@@ -47,7 +47,7 @@ pub fn signal_exit(_signal: i32) -> Option<&'static str> {
 
 /// Commands' sandbox on this system: none yet, so the approval prompt says
 /// commands are not sandboxed ([`super::sandbox_text`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Boundary;
 
 impl Boundary {
@@ -57,6 +57,20 @@ impl Boundary {
     }
 }
 
+/// What a command needs before its process starts: nothing here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prepared;
+
+/// Nothing to prepare without a sandbox.
+pub fn prepare(
+    _shell: &Path,
+    _spec: &CommandSpec,
+    _env: &[(String, String)],
+    _boundary: &Boundary,
+) -> Result<Prepared, String> {
+    Ok(Prepared)
+}
+
 /// Commands are refused on this system.
 pub fn spawn_contained(
     _shell: &Path,
@@ -64,6 +78,7 @@ pub fn spawn_contained(
     _env: &[(String, String)],
     _command_id: &str,
     _boundary: &Boundary,
+    _prepared: &Prepared,
 ) -> Result<(Child, Contained), String> {
     Err(UNSUPPORTED.to_string())
 }

@@ -13,11 +13,13 @@
 //!   account read (its programs and libraries).
 //! - **Private**: the user's home. Nothing in it is readable unless it is one
 //!   of the readable folders above.
-//! - **Never readable**: the sensitive folders of the home (keys, cloud and
-//!   registry credentials, the keychains), the system keychains, and Shodh's
-//!   own data folder, even inside a readable folder. The scratch folder lives
-//!   in Shodh's data folder and stays writable: the writable folders win over
-//!   this list.
+//! - **Never readable or changed**: the sensitive folders of the home (keys,
+//!   cloud and registry credentials, the keychains), where they point when
+//!   they are links, the system keychains, and Shodh's own data folder, even
+//!   inside a readable folder and even inside the code folder (a project
+//!   folder such as `~/.config` keeps `~/.config/gh` closed). The one
+//!   exception is a writable folder inside one of them: the scratch folder
+//!   lives in Shodh's data folder and stays writable.
 //! - **No network**, in either direction, loopback included.
 //!
 //! A code folder the policy cannot bound is refused, never widened: a drive
@@ -74,8 +76,9 @@ pub struct SandboxPolicy {
     pub readable: Vec<PathBuf>,
     /// The user's home: readable only through `readable` and `writable`.
     pub private: Option<PathBuf>,
-    /// Never readable, even inside `readable`; `writable` wins over it.
-    /// Shodh's data folder is among them.
+    /// Never readable or changed, even inside `readable` or `writable`; only
+    /// a writable folder that lies inside one of them is open (the scratch
+    /// folder in Shodh's data folder, which is among them).
     pub deny_read: Vec<PathBuf>,
     /// Network access. Always `false`: commands have no network.
     pub network: bool,
@@ -247,15 +250,38 @@ impl SandboxPolicy {
         })
     }
 
+    /// The never-readable folders that lie inside a writable folder (a
+    /// credentials folder inside the code folder): closed again after the
+    /// writable folders are opened.
+    pub fn deny_inside_writable(&self) -> Vec<&PathBuf> {
+        self.deny_read
+            .iter()
+            .filter(|deny| self.writable.iter().any(|root| within(deny, root)))
+            .collect()
+    }
+
+    /// Whether `path` is closed by the deny list: inside one of its folders,
+    /// and not inside a writable folder that itself lies in that one.
+    #[cfg(test)]
+    fn denied(&self, path: &Path) -> bool {
+        self.deny_read.iter().any(|deny| {
+            within(path, deny)
+                && !self
+                    .writable
+                    .iter()
+                    .any(|root| within(root, deny) && within(path, root))
+        })
+    }
+
     /// Whether the command may read `path` under this policy (the model the
     /// rendering implements; tests check it against it).
     #[cfg(test)]
     pub fn may_read(&self, path: &Path) -> bool {
+        if self.denied(path) {
+            return false;
+        }
         if self.writable.iter().any(|root| within(path, root)) {
             return true;
-        }
-        if self.deny_read.iter().any(|deny| within(path, deny)) {
-            return false;
         }
         match &self.private {
             Some(home) if within(path, home) => self.readable.iter().any(|root| within(path, root)),
@@ -266,7 +292,22 @@ impl SandboxPolicy {
     /// Whether the command may change `path` under this policy.
     #[cfg(test)]
     pub fn may_write(&self, path: &Path) -> bool {
-        self.writable.iter().any(|root| within(path, root))
+        !self.denied(path) && self.writable.iter().any(|root| within(path, root))
+    }
+}
+
+/// Add `path` to `deny`, and the folder or file it points to when it is (or
+/// lies under) a link: the system checks the real path, so a credentials
+/// folder linked from elsewhere stays closed.
+fn push_deny(deny: &mut Vec<PathBuf>, path: PathBuf) {
+    let target = std::fs::canonicalize(&path).ok().map(plain);
+    if !deny.contains(&path) {
+        deny.push(path.clone());
+    }
+    if let Some(target) = target {
+        if target != path && !deny.contains(&target) {
+            deny.push(target);
+        }
     }
 }
 
@@ -276,16 +317,16 @@ fn deny_list(home: Option<&Path>, data_dir: &Path, env: &[(String, String)]) -> 
     let mut deny: Vec<PathBuf> = Vec::new();
     if let Some(home) = home {
         for relative in SENSITIVE_IN_HOME {
-            deny.push(home.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR)));
+            push_deny(
+                &mut deny,
+                home.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR)),
+            );
         }
     }
     if let Some((_, cargo)) = env.iter().find(|(name, _)| name == "CARGO_HOME") {
         let cargo = resolved(Path::new(cargo));
         for name in ["credentials", "credentials.toml"] {
-            let file = cargo.join(name);
-            if !deny.contains(&file) {
-                deny.push(file);
-            }
+            push_deny(&mut deny, cargo.join(name));
         }
     }
     // The system's keychains, outside the home and otherwise readable.
@@ -412,6 +453,47 @@ mod tests {
         assert!(policy(&tree, &missing, &[])
             .unwrap_err()
             .contains("not found"));
+    }
+
+    #[test]
+    fn a_credentials_folder_inside_the_project_stays_closed() {
+        let tree = tree();
+        // Opening ~/.config as the project must not open ~/.config/gh.
+        let config = tree.home.join(".config");
+        let gh = config.join("gh");
+        std::fs::create_dir_all(&gh).unwrap();
+        let policy = policy(&tree, &config, &[]).unwrap();
+        let inside = policy.deny_inside_writable();
+        assert!(inside.contains(&&gh), "{inside:?}");
+        assert!(
+            inside.iter().all(|deny| deny.starts_with(&config)),
+            "{inside:?}"
+        );
+        assert!(!policy.may_read(&gh.join("hosts.yml")));
+        assert!(!policy.may_write(&gh.join("hosts.yml")));
+        assert!(policy.may_read(&config.join("other").join("settings.json")));
+        assert!(policy.may_write(&config.join("other").join("settings.json")));
+        // The scratch folder, inside Shodh's data, stays open.
+        assert!(policy.may_write(&tree.scratch.join("tmp.txt")));
+        assert!(!policy.may_read(&tree.data.join("audit.db")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_credentials_folder_that_is_a_link_stays_closed_where_it_points() {
+        let tree = tree();
+        let elsewhere = tree.root.join("elsewhere").join("aws");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, tree.home.join(".aws")).unwrap();
+        let policy = policy(&tree, &tree.project, &[]).unwrap();
+        assert!(policy.deny_read.contains(&tree.home.join(".aws")));
+        assert!(
+            policy.deny_read.contains(&elsewhere),
+            "{:?}",
+            policy.deny_read
+        );
+        // Outside the home, the target would otherwise be readable.
+        assert!(!policy.may_read(&elsewhere.join("credentials")));
     }
 
     #[test]

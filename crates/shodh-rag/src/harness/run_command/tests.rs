@@ -251,8 +251,190 @@ fn the_sandbox_is_described_as_this_system_enforces_it() {
     {
         assert_eq!(sandbox_text(), SANDBOX_MAC);
         assert!(description().contains("no network"));
+        assert!(description().contains("files outside the home folder stay readable"));
+        assert!(description().contains(".git folder included"));
     }
     assert!(SANDBOX_MAC.starts_with("Sandboxed: no network, only this project folder"));
+    // What it does not cover is said too: the project's .git folder changes,
+    // and files outside the home stay readable.
+    assert!(SANDBOX_MAC.contains("(with its .git folder and hooks)"));
+    assert!(SANDBOX_MAC
+        .ends_with("It can still read files outside your home folder, such as other drives."));
+    for text in [SANDBOX_MAC, SANDBOX_WINDOWS, SANDBOX_NONE] {
+        assert!(!text.contains("  "), "{text}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_sandbox_keeps_commands_out_of_the_accounts_own_home() {
+    use super::mac::{account_home, sandbox_home};
+    let account = account_home().expect("the account database names a home folder");
+    assert!(account.is_dir(), "{}", account.display());
+    // CI's HOME is the account's home.
+    assert_eq!(
+        sandbox_home(Some(account.clone()), dirs::home_dir()),
+        Ok(account.clone())
+    );
+    assert_eq!(
+        sandbox_home(Some(account.clone()), None),
+        Ok(account.clone())
+    );
+    // A HOME elsewhere could leave the real home open: refused.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let refused =
+        sandbox_home(Some(account.clone()), Some(elsewhere.path().to_path_buf())).unwrap_err();
+    assert!(
+        refused.contains("not your account's home folder"),
+        "{refused}"
+    );
+    let unknown = sandbox_home(None, Some(account)).unwrap_err();
+    assert!(unknown.contains("was not run"), "{unknown}");
+    // Written in one piece, without a run of spaces from a lost line break.
+    assert!(
+        !unknown.contains("  ") && !refused.contains("  "),
+        "{unknown} / {refused}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sandbox_that_could_not_start_the_command_is_told_from_the_commands_own_failure() {
+    use super::mac::sandbox_start_failure;
+    let failed = sandbox_start_failure(
+        Some(71),
+        "sandbox-exec: sandbox_apply: Operation not permitted\n",
+    )
+    .expect("sandbox-exec's own failure");
+    assert!(failed.contains("did not run"), "{failed}");
+    assert!(failed.contains("sandbox_apply"), "{failed}");
+    assert!(sandbox_start_failure(Some(65), "sandbox-exec: unbound variable\n").is_some());
+    // The command's own exit codes and output are its own.
+    assert_eq!(sandbox_start_failure(Some(71), "error: disk full\n"), None);
+    assert_eq!(sandbox_start_failure(Some(1), "sandbox-exec: x\n"), None);
+    assert_eq!(sandbox_start_failure(Some(0), ""), None);
+}
+
+/// The real profile, rendered from a policy over a home of the test's own,
+/// with credentials in every place the policy names: the sensitive folders,
+/// the keychains, a toolchain's credentials, a sensitive folder that is a
+/// link to elsewhere, and sensitive folders inside the project folder
+/// (`~/.config` opened as the project).
+#[cfg(target_os = "macos")]
+#[test]
+fn the_real_profile_keeps_credentials_closed_wherever_they_are() {
+    use super::policy::{resolved, PolicyInputs, SandboxPolicy};
+    use super::seatbelt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = resolved(dir.path());
+    let home = root.join("home");
+    let data = home
+        .join("Library")
+        .join("Application Support")
+        .join("shodh-test");
+    let scratch = scratch_dir(&data, "conv");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let cargo = home.join(".cargo");
+    let project = home.join(".config");
+    let secret = format!("canary{}", uuid::Uuid::new_v4().simple());
+    let elsewhere = root.join("elsewhere").join("aws");
+    let closed = [
+        home.join(".ssh").join("id_ed25519"),
+        home.join("Library")
+            .join("Keychains")
+            .join("login.keychain-db"),
+        cargo.join("credentials.toml"),
+        project.join("gh").join("hosts.yml"),
+        project.join("git").join("credentials"),
+        data.join("audit.db"),
+        elsewhere.join("credentials"),
+    ];
+    for file in &closed {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, &secret).unwrap();
+    }
+    std::os::unix::fs::symlink(&elsewhere, home.join(".aws")).unwrap();
+    let tool = cargo.join("bin").join("tool");
+    std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    std::fs::write(&tool, "tool-ok").unwrap();
+    std::fs::write(project.join("settings.json"), "before").unwrap();
+
+    let path = format!("{}:/usr/bin:/bin", cargo.join("bin").display());
+    let env = vec![
+        ("CARGO_HOME".to_string(), cargo.display().to_string()),
+        ("PATH".to_string(), path),
+    ];
+    let policy = SandboxPolicy::for_command(PolicyInputs {
+        folder: &project,
+        scratch: &scratch,
+        data_dir: &data,
+        home: Some(&home),
+        env: &env,
+        tools: &[],
+    })
+    .unwrap();
+    let profile = seatbelt::render(&policy);
+    let q = |path: &Path| format!("'{}'", path.display());
+    let files: Vec<String> = closed.iter().map(|file| q(file)).collect();
+    let reads = format!(
+        "for f in {}; do if cat \"$f\" >/dev/null 2>&1; then echo \"read $f\"; else echo \"denied $f\"; fi; done",
+        files.join(" ")
+    );
+    // Control: outside the sandbox, every file is read.
+    let direct = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&reads)
+        .output()
+        .unwrap();
+    let direct = String::from_utf8_lossy(&direct.stdout).into_owned();
+    for file in &closed {
+        assert!(
+            direct.contains(&format!("read {}", file.display())),
+            "control: {direct}"
+        );
+    }
+
+    let script = format!(
+        "{reads}; cat {tool}; echo; \
+         echo after > {settings} && echo 'project changed'; \
+         echo x > {hosts} && echo 'gh changed'; \
+         mv {gh} {moved_gh} && echo 'gh moved'; \
+         mv {git} {moved_git} && echo 'git moved'; true",
+        tool = q(&tool),
+        settings = q(&project.join("settings.json")),
+        hosts = q(&project.join("gh").join("hosts.yml")),
+        gh = q(&project.join("gh")),
+        moved_gh = q(&project.join("moved-gh")),
+        git = q(&project.join("git")),
+        moved_git = q(&project.join("moved-git")),
+    );
+    let ran = std::process::Command::new(seatbelt::SANDBOX_EXEC)
+        .args(seatbelt::arguments(&profile))
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(&project)
+        .env_clear()
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&ran.stdout).into_owned();
+    assert!(ran.status.success(), "{ran:?}");
+    for file in &closed {
+        assert!(out.contains(&format!("denied {}", file.display())), "{out}");
+    }
+    // The toolchain stays readable, and the rest of the project changes.
+    assert!(out.contains("tool-ok"), "{out}");
+    assert!(out.contains("project changed"), "{out}");
+    // The credentials inside the project neither change nor move away.
+    for refused in ["gh changed", "gh moved", "git moved"] {
+        assert!(!out.contains(refused), "{refused}: {out}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.join("gh").join("hosts.yml")).unwrap(),
+        secret
+    );
+    assert!(project.join("git").join("credentials").is_file());
 }
 
 #[test]
@@ -268,6 +450,8 @@ fn sandbox_failures_are_explained_in_plain_words() {
     );
     let files = failure_hint("cat: /Users/me/notes.txt: Operation not permitted").unwrap();
     assert!(files.contains("change only the project folder"), "{files}");
+    // Such errors have other causes too: the hint says it may be the sandbox.
+    assert!(files.starts_with("This may be Shodh's sandbox"), "{files}");
     assert_eq!(
         failure_hint("touch: /Users/me/a: Permission denied"),
         Some(files)

@@ -21,6 +21,8 @@ export interface CommandRun {
   startedAtMs: number;
   /** Wall-clock limit in seconds; null when unknown (it never started). */
   timeLimitSecs: number | null;
+  /** The sandbox it ran in, in words, as the backend said when it started; null when unknown. */
+  sandbox: string | null;
   exitCode: number | null;
   /** What acted on it, in words (a limit, why it was refused, stopped background processes). */
   note: string | null;
@@ -61,6 +63,7 @@ export function startCommandRun(start: {
   command: string;
   atMs: number;
   timeLimitSecs: number | null;
+  sandbox?: string | null;
 }): CommandRun {
   return {
     commandId: start.commandId,
@@ -68,6 +71,7 @@ export function startCommandRun(start: {
     state: 'running',
     startedAtMs: start.atMs,
     timeLimitSecs: start.timeLimitSecs,
+    sandbox: start.sandbox ?? null,
     exitCode: null,
     note: null,
     durationMs: null,
@@ -201,6 +205,7 @@ export function readCommandRun(value: unknown): CommandRun | null {
     state: value.state as CommandRunState,
     startedAtMs: value.startedAtMs,
     timeLimitSecs: finiteOrNull(value.timeLimitSecs),
+    sandbox: textOrNull(value.sandbox),
     exitCode: finiteOrNull(value.exitCode),
     note: textOrNull(value.note),
     durationMs: finiteOrNull(value.durationMs),

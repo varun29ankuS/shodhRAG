@@ -1,6 +1,14 @@
-//! macOS: `/bin/bash` in a new session and process group, with a CPU-time
-//! limit and a memory watchdog.
+//! macOS: `/bin/bash` in macOS's sandbox (Seatbelt, through
+//! `/usr/bin/sandbox-exec`), in a new session and process group, with a
+//! CPU-time limit and a memory watchdog.
 //!
+//! - The sandbox profile is rendered for each command from its
+//!   [`SandboxPolicy`] ([`super::seatbelt`]): no network, changes only in the
+//!   code folder and the scratch folder, nothing of the rest of the home,
+//!   the keychains or Shodh's data read. It is checked before the command
+//!   runs, and a missing `sandbox-exec` or a rejected profile refuses the
+//!   command: it never runs outside the sandbox. Every process the command
+//!   starts inherits the sandbox.
 //! - `setsid` before `exec` makes the command the leader of its own session
 //!   and process group; everything it starts stays in that group unless it
 //!   leaves it.
@@ -31,8 +39,8 @@
 //!   until a pass finds none.
 //!
 //! A process that left the group and also dropped the marker (re-executed
-//! with an empty environment) is not found; step 1b's Seatbelt profile
-//! bounds what it can do.
+//! with an empty environment) is not found; the sandbox it inherited bounds
+//! what it can do.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
@@ -46,7 +54,8 @@ use std::time::Duration;
 use libc::{c_int, pid_t, uid_t};
 use tokio::process::Child;
 
-use super::{CommandSpec, Killer, RUN_ID_ENV};
+use super::policy::{resolved, PolicyInputs, SandboxPolicy};
+use super::{seatbelt, CommandSpec, Killer, RUN_ID_ENV};
 
 /// The shell commands run in.
 const BASH: &str = "/bin/bash";
@@ -145,13 +154,138 @@ pub fn signal_exit(signal: i32) -> Option<&'static str> {
     (signal == libc::SIGXCPU).then_some("the CPU time limit")
 }
 
-/// Start `spec`'s command in `shell`, in its own session and process group
+/// Where commands' sandbox comes from: [`seatbelt::SANDBOX_EXEC`], never a
+/// `sandbox-exec` found on `PATH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Boundary {
+    pub(super) sandbox_exec: PathBuf,
+}
+
+impl Boundary {
+    /// The system's own `sandbox-exec`.
+    pub fn system() -> Self {
+        Boundary {
+            sandbox_exec: PathBuf::from(seatbelt::SANDBOX_EXEC),
+        }
+    }
+}
+
+/// The home folder of the account Shodh runs as, from the account database
+/// (`getpwuid_r`), not from `HOME`.
+pub fn account_home() -> Option<PathBuf> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let mut buffer: Vec<libc::c_char> = vec![0; 16 * 1024];
+    // SAFETY: all zero is a valid passwd.
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: `entry` and `buffer` outlive the call; `found` is set to
+    // `&mut entry` or null.
+    let read = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if read != 0 || found.is_null() || entry.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: on success `pw_dir` points at a NUL-terminated string in
+    // `buffer`.
+    let dir = unsafe { CStr::from_ptr(entry.pw_dir) };
+    let dir = PathBuf::from(OsStr::from_bytes(dir.to_bytes()));
+    (dir.is_absolute() && dir.as_os_str().len() > 1).then_some(dir)
+}
+
+/// The home the sandbox keeps commands out of: the account's own
+/// (`account`), and only when `HOME` (`env_home`) names the same folder; a
+/// different `HOME` could leave the real one open, so the command is
+/// refused.
+pub fn sandbox_home(
+    account: Option<PathBuf>,
+    env_home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let Some(account) = account else {
+        return Err(
+            "Shodh could not find your account's home folder, so it cannot keep the \
+                    command out of it; the command was not run."
+                .to_string(),
+        );
+    };
+    if let Some(env_home) = env_home {
+        if resolved(&env_home) != resolved(&account) {
+            return Err(format!(
+                "HOME is set to {}, not your account's home folder {}, so Shodh cannot be sure \
+                 which folder to keep the command out of; the command was not run.",
+                env_home.display(),
+                account.display()
+            ));
+        }
+    }
+    Ok(account)
+}
+
+/// Why a command that ended this way never ran: `sandbox-exec` could not
+/// apply its profile or start bash (it exits with 65 or 71 and says so
+/// before the command could print anything).
+pub fn sandbox_start_failure(exit_code: Option<i32>, output: &str) -> Option<String> {
+    if !matches!(exit_code, Some(65) | Some(71)) {
+        return None;
+    }
+    let first = output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    first.starts_with("sandbox-exec:").then(|| {
+        format!("macOS's sandbox could not start the command ({first}), so it did not run.")
+    })
+}
+
+/// What a command needs before its process starts: the Seatbelt profile.
+pub type Prepared = seatbelt::Profile;
+
+/// The Seatbelt profile `spec`'s command runs under, checked with
+/// `boundary`'s `sandbox-exec`, or why the command is refused. It reads the
+/// file system and runs `sandbox-exec` once: call it off the async workers.
+pub fn prepare(
+    shell: &Path,
+    spec: &CommandSpec,
+    env: &[(String, String)],
+    boundary: &Boundary,
+) -> Result<Prepared, String> {
+    // Without the real home, the sandbox could not keep commands out of it.
+    let home = sandbox_home(account_home(), std::env::var_os("HOME").map(PathBuf::from))?;
+    let tools: Vec<PathBuf> = shell.parent().map(Path::to_path_buf).into_iter().collect();
+    let policy = SandboxPolicy::for_command(PolicyInputs {
+        folder: &spec.folder,
+        scratch: &spec.scratch,
+        data_dir: &spec.data_dir,
+        home: Some(&home),
+        env,
+        tools: &tools,
+    })
+    .map_err(|reason| format!("Shodh's sandbox cannot run this command: {reason}."))?;
+    let profile = seatbelt::render(&policy);
+    seatbelt::check(&boundary.sandbox_exec, &profile)?;
+    Ok(profile)
+}
+
+/// Start `spec`'s command in `shell`, in macOS's sandbox (`boundary`, with
+/// the `profile` [`prepare`] checked), in its own session and process group
 /// with its CPU-time limit.
 pub fn spawn_contained(
     shell: &Path,
     spec: &CommandSpec,
     env: &[(String, String)],
     command_id: &str,
+    boundary: &Boundary,
+    profile: &Prepared,
 ) -> Result<(Child, Contained), String> {
     let cores = std::thread::available_parallelism()
         .map(|n| u64::try_from(n.get()).unwrap_or(u64::MAX))
@@ -175,8 +309,10 @@ pub fn spawn_contained(
     }
     let processes_soft = process_limit(processes_of(uid), FORK_BACKSTOP, nproc.rlim_max);
     let processes_hard = nproc.rlim_max;
-    let mut command = tokio::process::Command::new(shell);
+    let mut command = tokio::process::Command::new(&boundary.sandbox_exec);
     command
+        .args(seatbelt::arguments(profile))
+        .arg(shell)
         .arg("-c")
         .arg(&spec.command)
         .current_dir(&spec.folder)
@@ -191,6 +327,8 @@ pub fn spawn_contained(
         .kill_on_drop(true);
     // SAFETY: the closure runs in the child between fork and exec and calls
     // only async-signal-safe functions (setsid, setrlimit, setpriority).
+    // `sandbox-exec` keeps the process (its pid, group and limits) when it
+    // applies the profile and executes bash.
     unsafe {
         command.pre_exec(move || {
             if libc::setsid() == -1 {

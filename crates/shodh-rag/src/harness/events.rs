@@ -432,6 +432,9 @@ pub enum AgentEvent {
         command: String,
         /// Wall-clock limit in seconds.
         time_limit_secs: u64,
+        /// The sandbox it runs in, in words
+        /// ([`super::run_command::sandbox_text`]).
+        sandbox: String,
         at_ms: u64,
     },
     /// Output of a running command: stdout and stderr interleaved as they
@@ -442,7 +445,9 @@ pub enum AgentEvent {
         command_id: String,
         text: String,
     },
-    /// The command ended; `refused` ones never started (no `CommandStarted`).
+    /// The command ended. `refused` ones did not run: no `CommandStarted`
+    /// came before, except for a macOS command whose sandbox could not start
+    /// it after its process was created.
     CommandFinished {
         run_id: String,
         step_id: String,
@@ -695,6 +700,7 @@ mod tests {
                     command_id: "c".into(),
                     command: "cargo test".into(),
                     time_limit_secs: 600,
+                    sandbox: "Sandboxed".into(),
                     at_ms: 3,
                 },
                 "command_started",
@@ -704,6 +710,7 @@ mod tests {
                     "commandId",
                     "command",
                     "timeLimitSecs",
+                    "sandbox",
                     "atMs",
                 ],
             ),

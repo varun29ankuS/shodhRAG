@@ -1737,6 +1737,7 @@ async fn start_attempt(
                 .as_deref()
                 .unwrap_or(&conversation_id),
         ),
+        data_dir: app_data_dir.clone(),
     });
     let launch = LaunchSpec {
         binary: resolve_binary_path(&app_data_dir),

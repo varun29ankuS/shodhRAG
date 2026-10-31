@@ -36,6 +36,7 @@ test('a started command is running with no output', () => {
   assert.equal(run.output, '');
   assert.equal(run.outputCut, false);
   assert.equal(run.timeLimitSecs, 600);
+  assert.equal(run.sandbox, null);
   assert.equal(commandStateLabel(run), 'Running');
 });
 

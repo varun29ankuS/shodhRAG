@@ -317,8 +317,8 @@ Run one instance per folder. WebView storage is separated on Windows, Linux and 
 - **Unencrypted storage:** released builds do not encrypt the local index (LanceDB, Tantivy) or the app database (`shodh.db`). Use OS full-disk encryption (BitLocker or FileVault).
 - **Audit chain without a key:** the hash chain shows edited, deleted or reordered events. Someone who can write to `shodh.db` could still rebuild the whole chain.
 - **Agent runtime egress:** the pinned runtime's catalog fetch cannot be turned off yet (see [ADR 0001](docs/adr/0001-agent-harness-omp.md)).
-- **Code mode commands run as you:** approved shell commands run with your user account's permissions, without a sandbox.
-- **Provider keys in Code mode:** a command run in Code mode can read the model provider's API key from its environment. A local key proxy that keeps the key out of commands is planned for the next release.
+- **Code mode commands on Windows run as you:** on Windows, approved shell commands run with your user account's permissions, without a sandbox (with time and memory limits, and without Shodh's API keys in their environment). On macOS they run in macOS's sandbox: no network, changes only in the project folder (its `.git` folder included) and the conversation's scratch folder, and nothing of the rest of your home folder, your keychain or Shodh's data is read. Files outside your home folder, such as other drives, stay readable there.
+- **Provider keys in Code mode:** Shodh does not pass API keys or tokens to commands. On Windows a command runs as you, so it could still reach a key through your account (for example the credential store); on macOS the sandbox closes the keychain and Shodh's data. A local key proxy that keeps keys out of reach of commands is planned.
 - **No messaging channels or Google Drive sync:** the old WhatsApp, Telegram and Discord bot backends and the Google Drive connector have been removed. They ran unauthenticated local HTTP servers.
 
 ## Architecture

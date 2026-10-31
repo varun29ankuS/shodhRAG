@@ -115,6 +115,9 @@ pub struct CodeSession {
     /// The conversation's scratch folder: its commands' home and temporary
     /// folder ([`run_command::scratch_dir`]).
     pub scratch: std::path::PathBuf,
+    /// Shodh's data folder, which holds the scratch folder: commands never
+    /// read the rest of it.
+    pub data_dir: std::path::PathBuf,
 }
 
 /// A command allowed to run whose end the session waits for: the folder as
@@ -204,6 +207,7 @@ struct CodeRuntime {
     compares: tokio::sync::watch::Sender<usize>,
     executor: Arc<dyn CommandExecutor>,
     scratch: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
 }
 
 impl CodeRuntime {
@@ -214,6 +218,7 @@ impl CodeRuntime {
             settings_dir,
             executor,
             scratch,
+            data_dir,
         } = session;
         CodeRuntime {
             folder,
@@ -223,6 +228,7 @@ impl CodeRuntime {
             settings_dir,
             executor,
             scratch,
+            data_dir,
             turn: tokio::sync::Mutex::new(()),
             guard_loaded: tokio::sync::watch::channel(false).0,
             dialogs: Mutex::new(HashMap::new()),
@@ -1379,6 +1385,7 @@ impl Inner {
             command: args.command.clone(),
             folder: code.folder.root().to_path_buf(),
             scratch: code.scratch.clone(),
+            data_dir: code.data_dir.clone(),
             limits,
         };
         // Registered before the process exists, so Stop, a cancel or the end
@@ -1399,6 +1406,7 @@ impl Inner {
                         command_id: command_id.clone(),
                         command: command.clone(),
                         time_limit_secs: limits.time.as_secs(),
+                        sandbox: run_command::sandbox_text().to_string(),
                         at_ms: now_ms(),
                     };
                     if events.send(started).is_err() {
@@ -4072,6 +4080,7 @@ mod tests {
                 settings_dir: Some(data.to_path_buf()),
                 executor,
                 scratch: data.join("scratch"),
+                data_dir: data.to_path_buf(),
             },
         ))
     }

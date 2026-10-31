@@ -380,7 +380,7 @@ test('a run_command step shows its command starting, streaming and finishing', (
   let state = reduceAll(initialTranscript(RUN, 1000), [
     { type: 'run_started', runId: RUN, sessionId: 's1', model: 'm', atMs: 1000, warning: null },
     commandStep(),
-    { type: 'command_started', runId: RUN, stepId: 'cmd-step', commandId: 'c1', command: 'cargo test', timeLimitSecs: 120, atMs: 1020 },
+    { type: 'command_started', runId: RUN, stepId: 'cmd-step', commandId: 'c1', command: 'cargo test', timeLimitSecs: 120, sandbox: 'Sandboxed: no network', atMs: 1020 },
     { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'c1', text: 'Compiling x\n' },
     { type: 'command_output', runId: RUN, stepId: 'cmd-step', commandId: 'c1', text: 'error[E0308]: mismatched types\n' },
     // Output of another command is not this step's.
@@ -393,6 +393,8 @@ test('a run_command step shows its command starting, streaming and finishing', (
   assert.equal(running.command, 'cargo test');
   assert.equal(running.startedAtMs, 1020);
   assert.equal(running.timeLimitSecs, 120);
+  // The live panel says what sandbox the command runs in, as the backend said.
+  assert.equal(running.sandbox, 'Sandboxed: no network');
   assert.equal(running.output, 'Compiling x\nerror[E0308]: mismatched types\n');
   state = reduceAll(state, [
     { type: 'command_finished', runId: RUN, stepId: 'cmd-step', commandId: 'c1', state: 'done', exitCode: 101, note: null, durationMs: 2300 },

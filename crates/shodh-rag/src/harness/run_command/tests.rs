@@ -209,6 +209,18 @@ fn a_call_may_ask_for_less_time_never_more() {
         );
         assert!(!limits.contains("80%"), "macOS enforces no CPU cap");
     }
+    // The sandbox, exactly as this system enforces it: none on Windows yet.
+    assert_eq!(rows[2], ("sandbox", sandbox_text().to_string()));
+    #[cfg(windows)]
+    {
+        assert_eq!(rows[2].1, SANDBOX_WINDOWS);
+        assert!(rows[2].1.starts_with("Not sandboxed on Windows yet"));
+        assert!(!rows[2].1.contains("no network"));
+    }
+    #[cfg(target_os = "macos")]
+    assert!(rows[2]
+        .1
+        .starts_with("Sandboxed: no network, only this project folder"));
     assert_eq!(
         shorter.prompt_rows()[0].1,
         "90 seconds (asked by the assistant)"
@@ -220,6 +232,231 @@ fn a_call_may_ask_for_less_time_never_more() {
         CommandLimits::for_call(&settings(60, 1024, 10), None).time_text(),
         "1 minute"
     );
+}
+
+#[test]
+fn the_sandbox_is_described_as_this_system_enforces_it() {
+    #[cfg(windows)]
+    {
+        assert_eq!(sandbox_text(), SANDBOX_WINDOWS);
+        assert_eq!(
+            SANDBOX_WINDOWS,
+            "Not sandboxed on Windows yet \u{2014} runs with your account's access, after your \
+             approval, with time/memory limits and without your API keys."
+        );
+        // The model is not told of a sandbox either.
+        assert!(!description().contains("sandbox"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(sandbox_text(), SANDBOX_MAC);
+        assert!(description().contains("no network"));
+        assert!(description().contains("files outside the home folder stay readable"));
+        assert!(description().contains(".git folder included"));
+    }
+    assert!(SANDBOX_MAC.starts_with("Sandboxed: no network, only this project folder"));
+    // What it does not cover is said too: the project's .git folder changes,
+    // and files outside the home stay readable.
+    assert!(SANDBOX_MAC.contains("(with its .git folder and hooks)"));
+    assert!(SANDBOX_MAC
+        .ends_with("It can still read files outside your home folder, such as other drives."));
+    for text in [SANDBOX_MAC, SANDBOX_WINDOWS, SANDBOX_NONE] {
+        assert!(!text.contains("  "), "{text}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_sandbox_keeps_commands_out_of_the_accounts_own_home() {
+    use super::mac::{account_home, sandbox_home};
+    let account = account_home().expect("the account database names a home folder");
+    assert!(account.is_dir(), "{}", account.display());
+    // CI's HOME is the account's home.
+    assert_eq!(
+        sandbox_home(Some(account.clone()), dirs::home_dir()),
+        Ok(account.clone())
+    );
+    assert_eq!(
+        sandbox_home(Some(account.clone()), None),
+        Ok(account.clone())
+    );
+    // A HOME elsewhere could leave the real home open: refused.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let refused =
+        sandbox_home(Some(account.clone()), Some(elsewhere.path().to_path_buf())).unwrap_err();
+    assert!(
+        refused.contains("not your account's home folder"),
+        "{refused}"
+    );
+    let unknown = sandbox_home(None, Some(account)).unwrap_err();
+    assert!(unknown.contains("was not run"), "{unknown}");
+    // Written in one piece, without a run of spaces from a lost line break.
+    assert!(
+        !unknown.contains("  ") && !refused.contains("  "),
+        "{unknown} / {refused}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sandbox_that_could_not_start_the_command_is_told_from_the_commands_own_failure() {
+    use super::mac::sandbox_start_failure;
+    let failed = sandbox_start_failure(
+        Some(71),
+        "sandbox-exec: sandbox_apply: Operation not permitted\n",
+    )
+    .expect("sandbox-exec's own failure");
+    assert!(failed.contains("did not run"), "{failed}");
+    assert!(failed.contains("sandbox_apply"), "{failed}");
+    assert!(sandbox_start_failure(Some(65), "sandbox-exec: unbound variable\n").is_some());
+    // The command's own exit codes and output are its own.
+    assert_eq!(sandbox_start_failure(Some(71), "error: disk full\n"), None);
+    assert_eq!(sandbox_start_failure(Some(1), "sandbox-exec: x\n"), None);
+    assert_eq!(sandbox_start_failure(Some(0), ""), None);
+}
+
+/// The real profile, rendered from a policy over a home of the test's own,
+/// with credentials in every place the policy names: the sensitive folders,
+/// the keychains, a toolchain's credentials, a sensitive folder that is a
+/// link to elsewhere, and sensitive folders inside the project folder
+/// (`~/.config` opened as the project).
+#[cfg(target_os = "macos")]
+#[test]
+fn the_real_profile_keeps_credentials_closed_wherever_they_are() {
+    use super::policy::{resolved, PolicyInputs, SandboxPolicy};
+    use super::seatbelt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = resolved(dir.path());
+    let home = root.join("home");
+    let data = home
+        .join("Library")
+        .join("Application Support")
+        .join("shodh-test");
+    let scratch = scratch_dir(&data, "conv");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let cargo = home.join(".cargo");
+    let project = home.join(".config");
+    let secret = format!("canary{}", uuid::Uuid::new_v4().simple());
+    let elsewhere = root.join("elsewhere").join("aws");
+    let closed = [
+        home.join(".ssh").join("id_ed25519"),
+        home.join("Library")
+            .join("Keychains")
+            .join("login.keychain-db"),
+        cargo.join("credentials.toml"),
+        project.join("gh").join("hosts.yml"),
+        project.join("git").join("credentials"),
+        data.join("audit.db"),
+        elsewhere.join("credentials"),
+    ];
+    for file in &closed {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, &secret).unwrap();
+    }
+    std::os::unix::fs::symlink(&elsewhere, home.join(".aws")).unwrap();
+    let tool = cargo.join("bin").join("tool");
+    std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+    std::fs::write(&tool, "tool-ok").unwrap();
+    std::fs::write(project.join("settings.json"), "before").unwrap();
+
+    let path = format!("{}:/usr/bin:/bin", cargo.join("bin").display());
+    let env = vec![
+        ("CARGO_HOME".to_string(), cargo.display().to_string()),
+        ("PATH".to_string(), path),
+    ];
+    let policy = SandboxPolicy::for_command(PolicyInputs {
+        folder: &project,
+        scratch: &scratch,
+        data_dir: &data,
+        home: Some(&home),
+        env: &env,
+        tools: &[],
+    })
+    .unwrap();
+    let profile = seatbelt::render(&policy);
+    let q = |path: &Path| format!("'{}'", path.display());
+    let files: Vec<String> = closed.iter().map(|file| q(file)).collect();
+    let reads = format!(
+        "for f in {}; do if cat \"$f\" >/dev/null 2>&1; then echo \"read $f\"; else echo \"denied $f\"; fi; done",
+        files.join(" ")
+    );
+    // Control: outside the sandbox, every file is read.
+    let direct = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&reads)
+        .output()
+        .unwrap();
+    let direct = String::from_utf8_lossy(&direct.stdout).into_owned();
+    for file in &closed {
+        assert!(
+            direct.contains(&format!("read {}", file.display())),
+            "control: {direct}"
+        );
+    }
+
+    let script = format!(
+        "{reads}; cat {tool}; echo; \
+         echo after > {settings} && echo 'project changed'; \
+         echo x > {hosts} && echo 'gh changed'; \
+         mv {gh} {moved_gh} && echo 'gh moved'; \
+         mv {git} {moved_git} && echo 'git moved'; true",
+        tool = q(&tool),
+        settings = q(&project.join("settings.json")),
+        hosts = q(&project.join("gh").join("hosts.yml")),
+        gh = q(&project.join("gh")),
+        moved_gh = q(&project.join("moved-gh")),
+        git = q(&project.join("git")),
+        moved_git = q(&project.join("moved-git")),
+    );
+    let ran = std::process::Command::new(seatbelt::SANDBOX_EXEC)
+        .args(seatbelt::arguments(&profile))
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(&script)
+        .current_dir(&project)
+        .env_clear()
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&ran.stdout).into_owned();
+    assert!(ran.status.success(), "{ran:?}");
+    for file in &closed {
+        assert!(out.contains(&format!("denied {}", file.display())), "{out}");
+    }
+    // The toolchain stays readable, and the rest of the project changes.
+    assert!(out.contains("tool-ok"), "{out}");
+    assert!(out.contains("project changed"), "{out}");
+    // The credentials inside the project neither change nor move away.
+    for refused in ["gh changed", "gh moved", "git moved"] {
+        assert!(!out.contains(refused), "{refused}: {out}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(project.join("gh").join("hosts.yml")).unwrap(),
+        secret
+    );
+    assert!(project.join("git").join("credentials").is_file());
+}
+
+#[test]
+fn sandbox_failures_are_explained_in_plain_words() {
+    let network = failure_hint("curl: (6) Could not resolve host: example.com").unwrap();
+    assert!(
+        network.starts_with("Network is blocked for commands"),
+        "{network}"
+    );
+    assert_eq!(
+        failure_hint("bash: connect: Operation not permitted\nbash: /dev/tcp/127.0.0.1/80: Operation not permitted"),
+        Some(network)
+    );
+    let files = failure_hint("cat: /Users/me/notes.txt: Operation not permitted").unwrap();
+    assert!(files.contains("change only the project folder"), "{files}");
+    // Such errors have other causes too: the hint says it may be the sandbox.
+    assert!(files.starts_with("This may be Shodh's sandbox"), "{files}");
+    assert_eq!(
+        failure_hint("touch: /Users/me/a: Permission denied"),
+        Some(files)
+    );
+    assert_eq!(failure_hint("error[E0308]: mismatched types"), None);
 }
 
 #[test]
@@ -665,11 +902,20 @@ fn run_control(
     )
 }
 
+/// `scratch` is a scratch folder of a data folder ([`scratch_dir`]), as in
+/// the app.
 fn spec_in(folder: &Path, scratch: &Path, command: &str, secs: u64, memory_mb: u64) -> CommandSpec {
+    assert_eq!(
+        scratch.parent().and_then(Path::file_name),
+        Some(std::ffi::OsStr::new(SCRATCH_DIR)),
+        "{} is not a scratch folder of a data folder",
+        scratch.display()
+    );
     CommandSpec {
         command: command.to_string(),
         folder: folder.to_path_buf(),
         scratch: scratch.to_path_buf(),
+        data_dir: scratch.ancestors().nth(2).unwrap().to_path_buf(),
         limits: CommandLimits::for_call(&settings(secs.max(10), memory_mb, 100), Some(secs)),
     }
 }
@@ -677,7 +923,7 @@ fn spec_in(folder: &Path, scratch: &Path, command: &str, secs: u64, memory_mb: u
 #[tokio::test]
 async fn without_a_shell_the_command_is_refused_and_nothing_runs() {
     let folder = tempfile::tempdir().unwrap();
-    let scratch = folder.path().join("scratch");
+    let scratch = scratch_dir(&folder.path().join("data"), "conv");
     let (control, started, _output) = run_control("refused");
     let outcome = run_contained(
         spec_in(folder.path(), &scratch, "echo ran > ran.txt", 10, 1024),
@@ -708,8 +954,8 @@ mod processes {
 
     static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-    /// The probe, next to this test binary (`target/debug/deps/..`).
-    fn probe() -> PathBuf {
+    /// The probe as built, next to this test binary (`target/debug/deps/..`).
+    fn built_probe() -> PathBuf {
         let exe = std::env::current_exe().unwrap();
         let name = format!("sandbox-probe{}", std::env::consts::EXE_SUFFIX);
         let found = exe
@@ -724,6 +970,35 @@ mod processes {
                 exe.display()
             )
         })
+    }
+
+    /// The probe commands run.
+    #[cfg(windows)]
+    fn probe() -> PathBuf {
+        built_probe()
+    }
+
+    /// The probe commands run: macOS's sandbox keeps commands out of the
+    /// home, where CI checks the code out and builds it, so it is copied once
+    /// to a temporary folder outside the home.
+    #[cfg(target_os = "macos")]
+    fn probe() -> PathBuf {
+        static COPY: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+        COPY.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let copy = dir.path().join("sandbox-probe");
+            std::fs::copy(built_probe(), &copy).unwrap();
+            if let Some(home) = dirs::home_dir() {
+                assert!(
+                    !copy.starts_with(&home),
+                    "the probe's copy {} is in the home folder",
+                    copy.display()
+                );
+            }
+            (dir, copy)
+        })
+        .1
+        .clone()
     }
 
     /// `path` as bash reads it, quoted.
@@ -815,20 +1090,30 @@ mod processes {
     }
 
     struct Folders {
-        _dir: tempfile::TempDir,
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        dir: tempfile::TempDir,
         folder: PathBuf,
+        /// Shodh's data folder of the run, which holds `scratch`.
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        data: PathBuf,
         scratch: PathBuf,
     }
 
     fn folders() -> Folders {
-        let dir = tempfile::tempdir().unwrap();
+        folders_in(tempfile::tempdir().unwrap())
+    }
+
+    /// A code folder and a data folder with its scratch folder, in `dir`.
+    fn folders_in(dir: tempfile::TempDir) -> Folders {
         let folder = dir.path().join("code");
         std::fs::create_dir_all(&folder).unwrap();
-        let scratch = dir.path().join("scratch");
+        let data = dir.path().join("data");
+        let scratch = scratch_dir(&data, "conv");
         Folders {
             folder,
+            data,
             scratch,
-            _dir: dir,
+            dir,
         }
     }
 
@@ -1292,5 +1577,354 @@ mod processes {
         )
         .await;
         assert!(outcome.output.contains("after"), "{outcome:?}");
+    }
+
+    // ── macOS's sandbox ────────────────────────────────────────────────────
+
+    #[cfg(target_os = "macos")]
+    use std::ffi::OsStr;
+
+    /// A folder in the user's real home, removed afterwards: what the
+    /// sandbox keeps commands out of.
+    #[cfg(target_os = "macos")]
+    fn in_home() -> tempfile::TempDir {
+        let home = dirs::home_dir().expect("the test needs a home folder");
+        tempfile::Builder::new()
+            .prefix(".shodh-sandbox-test-")
+            .tempdir_in(home)
+            .unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn canary() -> String {
+        format!("canary{}", uuid::Uuid::new_v4().simple())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_sandbox_keeps_reads_and_changes_to_the_project_and_scratch_folders() {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let dirs = folders();
+        let private = in_home();
+        let secret = canary();
+        // A file of the user's home, one of Shodh's data and one of another
+        // conversation's scratch folder.
+        let home_file = private.path().join("notes.txt");
+        let data_file = dirs.data.join("audit.db");
+        let other_scratch = scratch_dir(&dirs.data, "another-conversation").join("notes.txt");
+        for file in [&home_file, &data_file, &other_scratch] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, &secret).unwrap();
+        }
+        let reads = format!(
+            "for f in {} {} {}; do if cat \"$f\"; then echo; echo \"read $f\"; else echo \"denied $f\"; fi; done",
+            sh(&home_file),
+            sh(&data_file),
+            sh(&other_scratch)
+        );
+        // Control: outside the sandbox, the same reads succeed.
+        let direct = std::process::Command::new("/bin/bash")
+            .arg("-c")
+            .arg(&reads)
+            .output()
+            .unwrap();
+        let direct = String::from_utf8_lossy(&direct.stdout).into_owned();
+        for file in [&home_file, &data_file, &other_scratch] {
+            assert!(
+                direct.contains(&format!("read {}", file.display())),
+                "control: {direct}"
+            );
+        }
+
+        let outside = dirs.dir.path().join("outside.txt");
+        let home_write = private.path().join("written.txt");
+        let command = format!(
+            "{reads}; echo p > project.txt && echo s > \"$HOME/scratch.txt\" && echo 'changes ok'; \
+             touch {} && echo 'changed outside'; touch {} && echo 'changed the home'; true",
+            sh(&outside),
+            sh(&home_write)
+        );
+        let (control, _started, _output) = run_control("sandbox-files-run");
+        let outcome = run_contained(
+            spec_in(&dirs.folder, &dirs.scratch, &command, 60, 1024),
+            shell(),
+            control,
+        )
+        .await;
+        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
+        assert_eq!(outcome.exit_code, Some(0), "{outcome:?}");
+        assert!(!outcome.output.contains(&secret), "{}", outcome.output);
+        for file in [&home_file, &data_file, &other_scratch] {
+            assert!(
+                outcome
+                    .output
+                    .contains(&format!("denied {}", file.display())),
+                "{}",
+                outcome.output
+            );
+        }
+        // The project and the scratch folder change; nothing else does.
+        assert!(outcome.output.contains("changes ok"), "{}", outcome.output);
+        assert!(dirs.folder.join("project.txt").is_file());
+        assert!(dirs.scratch.join("scratch.txt").is_file());
+        assert!(
+            !outcome.output.contains("changed outside"),
+            "{}",
+            outcome.output
+        );
+        assert!(
+            !outcome.output.contains("changed the home"),
+            "{}",
+            outcome.output
+        );
+        assert!(!outside.exists());
+        assert!(!home_write.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_sandbox_blocks_outbound_connections() {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let dirs = folders();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connect = format!("exec 3<>/dev/tcp/127.0.0.1/{port} && echo connected");
+        let accepted = |within: Duration| {
+            let until = Instant::now() + within;
+            loop {
+                match listener.accept() {
+                    Ok(_) => return true,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= until {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => panic!("accept failed: {e}"),
+                }
+            }
+        };
+        // Control: outside the sandbox, the same command connects.
+        let direct = std::process::Command::new("/bin/bash")
+            .arg("-c")
+            .arg(&connect)
+            .output()
+            .unwrap();
+        assert!(direct.status.success(), "{direct:?}");
+        assert!(String::from_utf8_lossy(&direct.stdout).contains("connected"));
+        assert!(accepted(Duration::from_secs(5)), "the control's connection");
+
+        let (control, _started, _output) = run_control("sandbox-network-run");
+        let outcome = run_contained(
+            spec_in(&dirs.folder, &dirs.scratch, &connect, 30, 1024),
+            shell(),
+            control,
+        )
+        .await;
+        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
+        assert_ne!(outcome.exit_code, Some(0), "{outcome:?}");
+        assert!(!outcome.output.contains("connected"), "{}", outcome.output);
+        assert!(
+            !accepted(Duration::from_millis(500)),
+            "a connection arrived"
+        );
+        // The result says why, in plain words.
+        let note = outcome.note.clone().unwrap_or_default();
+        assert!(note.contains("Network is blocked for commands"), "{note}");
+    }
+
+    /// Runs `/usr/bin/security` outside the sandbox.
+    #[cfg(target_os = "macos")]
+    fn security(args: &[&OsStr]) -> std::process::Output {
+        std::process::Command::new("/usr/bin/security")
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// A test keychain, deleted when dropped.
+    #[cfg(target_os = "macos")]
+    struct TestKeychain(PathBuf);
+
+    #[cfg(target_os = "macos")]
+    impl Drop for TestKeychain {
+        fn drop(&mut self) {
+            let _ = security(&[OsStr::new("delete-keychain"), self.0.as_os_str()]);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_sandbox_cannot_read_a_keychain_item() {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let dirs = folders();
+        // In the project folder, whose files the command may read: what
+        // keeps the item from it is the denied security services.
+        let path = dirs.folder.join("shodh-test.keychain-db");
+        let service = format!("shodh-sandbox-test-{}", uuid::Uuid::new_v4().simple());
+        let secret = canary();
+        // Creating a keychain adds it to the user's search list: the list is
+        // put back as it was at once.
+        let listed = security(&[
+            OsStr::new("list-keychains"),
+            OsStr::new("-d"),
+            OsStr::new("user"),
+        ]);
+        assert!(listed.status.success(), "{listed:?}");
+        let search: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .map(|line| line.trim().trim_matches('"').to_string())
+            .filter(|line| !line.is_empty())
+            .collect();
+        let created = security(&[
+            OsStr::new("create-keychain"),
+            OsStr::new("-p"),
+            OsStr::new("shodh-test"),
+            path.as_os_str(),
+        ]);
+        let keychain = TestKeychain(path.clone());
+        assert!(created.status.success(), "{created:?}");
+        let mut restore: Vec<&OsStr> = vec![
+            OsStr::new("list-keychains"),
+            OsStr::new("-d"),
+            OsStr::new("user"),
+            OsStr::new("-s"),
+        ];
+        restore.extend(search.iter().map(|entry| OsStr::new(entry.as_str())));
+        let restored = security(&restore);
+        assert!(restored.status.success(), "{restored:?}");
+        let added = security(&[
+            OsStr::new("add-generic-password"),
+            OsStr::new("-a"),
+            OsStr::new("shodh"),
+            OsStr::new("-s"),
+            OsStr::new(&service),
+            OsStr::new("-w"),
+            OsStr::new(&secret),
+            path.as_os_str(),
+        ]);
+        assert!(added.status.success(), "{added:?}");
+        // Control: outside the sandbox, the item is read.
+        let direct = security(&[
+            OsStr::new("find-generic-password"),
+            OsStr::new("-s"),
+            OsStr::new(&service),
+            OsStr::new("-w"),
+            path.as_os_str(),
+        ]);
+        assert!(direct.status.success(), "{direct:?}");
+        assert_eq!(String::from_utf8_lossy(&direct.stdout).trim(), secret);
+
+        let command = format!(
+            "/usr/bin/security find-generic-password -s {service} -w {}",
+            sh(&path)
+        );
+        let (control, _started, _output) = run_control("sandbox-keychain-run");
+        let outcome = run_contained(
+            spec_in(&dirs.folder, &dirs.scratch, &command, 60, 1024),
+            shell(),
+            control,
+        )
+        .await;
+        drop(keychain);
+        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
+        assert_ne!(outcome.exit_code, Some(0), "{outcome:?}");
+        assert!(!outcome.output.contains(&secret), "{}", outcome.output);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn without_the_sandbox_the_command_is_refused_and_nothing_runs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use super::super::mac::Boundary;
+        use super::super::seatbelt;
+
+        let _one = ONE_AT_A_TIME.lock().await;
+        let dirs = folders();
+        let ran = dirs.folder.join("ran.txt");
+        let spec = || spec_in(&dirs.folder, &dirs.scratch, "echo ran > ran.txt", 30, 1024);
+
+        // No sandbox-exec.
+        let missing = Boundary {
+            sandbox_exec: dirs.dir.path().join("no-sandbox-exec"),
+        };
+        let (control, started, _output) = run_control("sandbox-missing-run");
+        let outcome = run_bounded(spec(), shell(), missing, control).await;
+        assert_eq!(outcome.state, CommandState::Refused, "{outcome:?}");
+        let note = outcome.note.clone().unwrap_or_default();
+        assert!(note.contains("was not found"), "{note}");
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        assert!(!ran.exists());
+
+        // A sandbox-exec that rejects the profile.
+        let rejecting = dirs.dir.path().join("sandbox-exec");
+        std::fs::write(
+            &rejecting,
+            "#!/bin/sh\necho 'sandbox-exec: profile rejected' >&2\nexit 65\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&rejecting, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (control, started, _output) = run_control("sandbox-rejected-run");
+        let outcome = run_bounded(
+            spec(),
+            shell(),
+            Boundary {
+                sandbox_exec: rejecting,
+            },
+            control,
+        )
+        .await;
+        assert_eq!(outcome.state, CommandState::Refused, "{outcome:?}");
+        let note = outcome.note.clone().unwrap_or_default();
+        assert!(note.contains("rejected"), "{note}");
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        assert!(!ran.exists());
+
+        // The system's sandbox-exec rejects a profile it cannot read.
+        let broken = seatbelt::Profile {
+            text: "(version 1)\n(allow no-such-operation)\n".to_string(),
+            params: Vec::new(),
+        };
+        let refused = seatbelt::check(Path::new(seatbelt::SANDBOX_EXEC), &broken).unwrap_err();
+        assert!(refused.contains("rejected"), "{refused}");
+
+        // Control: with the system's sandbox, the same command runs.
+        let (control, started, _output) = run_control("sandbox-control-run");
+        let outcome = run_bounded(spec(), shell(), Boundary::system(), control).await;
+        assert_eq!(outcome.exit_code, Some(0), "{outcome:?}");
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert!(ran.is_file());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn everyday_commands_work_in_the_sandbox_in_a_project_in_the_home() {
+        let _one = ONE_AT_A_TIME.lock().await;
+        // In the home, as most projects are: the folders above the project
+        // are hidden but for their metadata.
+        let dirs = folders_in(in_home());
+        for command in [
+            "printf 'alpha\\nbeta\\n' > a.txt && cat a.txt | grep beta | wc -l | grep -q 1",
+            "mkdir -p sub && echo needle > sub/b.txt && grep -r needle . | grep -q sub/b.txt",
+            "sed -i.bak 's/alpha/gamma/' a.txt && rm a.txt.bak && grep -q gamma a.txt",
+            "find . -name '*.txt' -print0 | xargs -0 cat | grep -q needle",
+            "git init -q && git add a.txt && git -c user.name=Shodh -c user.email=shodh@example.invalid \
+             commit -q -m first && echo more >> a.txt && git status --short | grep -q a.txt && \
+             git diff | grep -q more",
+            "python3 -c 'import sys; print(sys.version_info[0])'",
+            "cargo --version",
+        ] {
+            let (control, _started, _output) = run_control("sandbox-everyday-run");
+            let outcome = run_contained(
+                spec_in(&dirs.folder, &dirs.scratch, command, 120, 4096),
+                shell(),
+                control,
+            )
+            .await;
+            assert_eq!(outcome.state, CommandState::Done, "{command}: {outcome:?}");
+            assert_eq!(outcome.exit_code, Some(0), "{command}: {outcome:?}");
+        }
     }
 }

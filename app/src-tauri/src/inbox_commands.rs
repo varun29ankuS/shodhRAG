@@ -123,6 +123,20 @@ pub async fn resolve(app: &AppHandle, id: String) {
     }
 }
 
+/// Removes the items of `kind` whose id starts with `prefix`, and tells the Inbox
+/// when any went.
+pub async fn resolve_prefixed(app: &AppHandle, kind: InboxKind, prefix: String) {
+    let state = app.state::<InboxState>().inner().clone();
+    match state
+        .run(move |store| store.remove_prefixed(kind, &prefix))
+        .await
+    {
+        Ok(0) => {}
+        Ok(_) => broadcast(app),
+        Err(e) => tracing::warn!(target: "shodh::inbox", error = %e, "inbox items not removed"),
+    }
+}
+
 /// Removes the approvals of a session (its run ended or it closed).
 pub async fn resolve_session_approvals(app: &AppHandle, session_id: &str) {
     let state = app.state::<InboxState>().inner().clone();

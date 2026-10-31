@@ -41,7 +41,7 @@ export function ValueButton({ result, className }: { result: ResultRecord; class
 
 function ReportSummary({ report }: { report: ExtractionReport }) {
   return (
-    <div className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 flex flex-col gap-2 text-[12.5px] text-shodh-text-secondary">
+    <div className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 flex flex-col gap-2 text-small text-shodh-text-secondary">
       <p>
         {`${report.tables} ${report.tables === 1 ? 'table' : 'tables'} read · ${report.added} added · ${report.unchanged} unchanged · ${report.review} to review`}
         {report.conflicts > 0 ? ` · ${report.conflicts} differ from results you confirmed (kept yours)` : ''}
@@ -76,7 +76,7 @@ function ReportSummary({ report }: { report: ExtractionReport }) {
 function ResultTable({ results, review, onReview, busyId }: { results: ResultRecord[]; review: boolean; onReview?: (r: ResultRecord, accept: boolean) => void; busyId: string | null }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-shodh-border">
-      <table className="min-w-full border-collapse text-[12.5px]">
+      <table className="min-w-full border-collapse text-small">
         <thead className="bg-shodh-raised">
           <tr>
             {['Method', 'Dataset', 'Metric', 'Value', 'Setting', 'Source'].map(h => (
@@ -200,19 +200,19 @@ export function ResultsView({ filePath, workspace = null }: { filePath: string; 
           {extracting ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : data?.report ? <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" /> : <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />}
           {data?.report ? 'Extract again' : 'Extract results'}
         </button>
-        <label htmlFor={useModelId} className="inline-flex items-center gap-2 text-[12.5px] text-shodh-text-secondary">
+        <label htmlFor={useModelId} className="inline-flex items-center gap-2 text-small text-shodh-text-secondary">
           <input id={useModelId} type="checkbox" checked={useModel} onChange={e => setUseModel(e.target.checked)} className="accent-shodh-accent" />
           Let the configured model interpret unclear table headers (it never supplies values)
         </label>
       </div>
 
       {state.status === 'loading' ? (
-        <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Loading results…
         </p>
       ) : state.status === 'error' ? (
-        <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+        <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           {`Results could not be loaded: ${state.message}`}
         </p>
@@ -221,7 +221,7 @@ export function ResultsView({ filePath, workspace = null }: { filePath: string; 
           {data?.report ? (
             <ReportSummary report={data.report} />
           ) : (
-            <p className="text-[12.5px] text-shodh-text-muted">
+            <p className="text-small text-shodh-text-muted">
               No results have been extracted from this paper yet. Extraction reads the parser’s table blocks: numbers under metric headers, row labels as methods, datasets from headers and captions. Every value is taken verbatim from its cell.
             </p>
           )}
@@ -238,7 +238,7 @@ export function ResultsView({ filePath, workspace = null }: { filePath: string; 
             </section>
           ))}
           {data?.report && data.results.length === 0 && data.review.length === 0 && (
-            <p className="text-[12.5px] text-shodh-text-muted">No results were found in this paper’s tables (see the report above for why).</p>
+            <p className="text-small text-shodh-text-muted">No results were found in this paper’s tables (see the report above for why).</p>
           )}
         </>
       )}

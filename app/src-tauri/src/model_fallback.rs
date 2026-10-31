@@ -596,7 +596,21 @@ fn long_failure_item(model: &ModelRef, name: &str) -> NewInboxItem {
 }
 
 fn long_failure_id(model: &ModelRef) -> String {
-    format!("model:failing:{}:{}", model.provider.as_str(), model.model)
+    format!("{}{}", long_failure_prefix(model.provider), model.model)
+}
+
+/// The start of the long-failure items of `provider`'s models.
+fn long_failure_prefix(provider: ProviderId) -> String {
+    format!("model:failing:{}:", provider.as_str())
+}
+
+/// The user checked `provider` (the connection panel's Check now) and it works:
+/// its models' long-failure notices are answered, so they leave the Inbox and its
+/// badge. A model that fails again later is noticed again only after another hour
+/// of failing.
+pub(crate) async fn clear_failure_notices(app: &AppHandle, provider: ProviderId) {
+    crate::inbox_commands::resolve_prefixed(app, InboxKind::Model, long_failure_prefix(provider))
+        .await;
 }
 
 /// The model answered again after its long-failure notice: the Inbox item goes.
@@ -708,6 +722,17 @@ fn chain_view(app: &AppHandle) -> Result<ChainView, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_working_check_of_a_provider_clears_exactly_its_models_notices() {
+        let model = ModelRef::new(ProviderId::OpenRouter, "qwen/qwen3-235b:free");
+        let id = long_failure_id(&model);
+        assert!(id.starts_with(&long_failure_prefix(ProviderId::OpenRouter)));
+        assert!(!id.starts_with(&long_failure_prefix(ProviderId::Anthropic)));
+        // The prefix ends at the provider: "openai" never clears "openai-like" ids.
+        assert!(long_failure_prefix(ProviderId::OpenAI).ends_with(':'));
+        assert_eq!(long_failure_item(&model, "Qwen3").id, id);
+    }
 
     #[test]
     fn the_long_failure_item_opens_model_settings_and_names_the_model() {

@@ -19,7 +19,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
   'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
@@ -82,12 +82,12 @@ export default function NotificationSettings() {
   };
 
   if (!prefs) {
-    return <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
   }
 
   return (
     <div className="flex flex-col gap-5">
-      <p className="m-0 text-[12.5px] text-shodh-text-muted">
+      <p className="m-0 text-small text-shodh-text-muted">
         Shodh shows a desktop notification only while its window is minimised, in the tray or behind another window;
         while you look at it, the Inbox and the messages in the window say the same. Notifications name a task, a folder,
         a paper or a conversation, never what your documents or answers say.
@@ -118,9 +118,9 @@ export default function NotificationSettings() {
             Open system notification settings
           </button>
         </div>
-        <p id={helpId} className="m-0 text-[12.5px] text-shodh-text-muted">{TEST_HELP}</p>
+        <p id={helpId} className="m-0 text-small text-shodh-text-muted">{TEST_HELP}</p>
         {/* Always present, so screen readers hear each new message. */}
-        <p className="m-0 text-[12.5px] text-shodh-text-secondary" role="status" aria-live="polite">
+        <p className="m-0 text-small text-shodh-text-secondary" role="status" aria-live="polite">
           {result ?? ''}
         </p>
       </div>

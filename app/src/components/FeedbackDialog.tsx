@@ -199,7 +199,7 @@ export function FeedbackDialog({ isOpen, onClose, type = 'feedback' }: FeedbackD
 
           {opened ? (
             <div className="p-6 space-y-4">
-              <p id={noteId} role="status" className="m-0 text-[15px]" style={{ color: colors.text }}>
+              <p id={noteId} role="status" className="m-0 text-body-lg" style={{ color: colors.text }}>
                 Your browser should open a new GitHub issue with your report. Submit it there to send it.
               </p>
               {opened.shortened && (

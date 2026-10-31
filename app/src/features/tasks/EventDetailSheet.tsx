@@ -64,7 +64,7 @@ export default function EventDetailSheet({ event, onClose }: { event: CalendarEv
           type="button"
           onClick={() => deleteEvent(shown.id)}
           className={cn(
-            'ml-auto h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-[12.5px] text-shodh-error hover:bg-shodh-raised transition-colors duration-micro',
+            'ml-auto h-8 px-3 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-error hover:bg-shodh-raised transition-colors duration-micro',
             FOCUS_RING,
           )}
         >

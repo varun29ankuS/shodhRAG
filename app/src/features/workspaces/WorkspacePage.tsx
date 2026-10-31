@@ -56,7 +56,7 @@ function ChatsTab({ workspace, onNewChat, onOpenChat }: { workspace: WorkspaceDe
         </button>
       </div>
       {chats.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           No chats yet. A chat started here searches only this workspace’s sources and follows its instructions. Move
           an existing chat here from its menu in the sidebar.
         </p>
@@ -70,8 +70,8 @@ function ChatsTab({ workspace, onNewChat, onOpenChat }: { workspace: WorkspaceDe
                 className={cn('w-full flex items-center gap-3 py-2 px-1 text-left rounded-md hover:bg-shodh-raised/60', FOCUS_RING)}
               >
                 {c.pinned && <Pin className="w-3 h-3 text-shodh-text-faint shrink-0" aria-label="Pinned" />}
-                <span className="flex-1 min-w-0 text-[13px] text-shodh-text truncate">{c.title}</span>
-                <span className="text-[11.5px] text-shodh-text-muted shrink-0">{relativeTime(c.updatedAt)}</span>
+                <span className="flex-1 min-w-0 text-small text-shodh-text truncate">{c.title}</span>
+                <span className="text-caption text-shodh-text-muted shrink-0">{relativeTime(c.updatedAt)}</span>
               </button>
             </li>
           ))}
@@ -108,7 +108,7 @@ function ResultsTab({ workspace }: { workspace: WorkspaceDetail }) {
       </section>
       <section aria-labelledby="ws-graph" className="flex flex-col gap-2">
         <h3 id="ws-graph" className={SECTION_TITLE}>Citation graph of this workspace’s papers</h3>
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           Its library papers and the works they cite. Library papers outside the workspace are left out.
         </p>
         <PaperGraphView onOpenPaper={openPaper} restrict={restrict} />
@@ -187,12 +187,12 @@ export function WorkspacePage({
         <button type="button" className={cn(QUIET_BUTTON, 'self-start')} onClick={onBack}>
           <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> All workspaces
         </button>
-        <p role="alert" className="m-0 text-[13px] text-shodh-error">This workspace could not be opened: {error}</p>
+        <p role="alert" className="m-0 text-small text-shodh-error">This workspace could not be opened: {error}</p>
       </div>
     );
   }
   if (!detail) {
-    return <p role="status" className="m-0 text-[13px] text-shodh-text-muted">Opening the workspace…</p>;
+    return <p role="status" className="m-0 text-small text-shodh-text-muted">Opening the workspace…</p>;
   }
 
   const setPinned = async () => {
@@ -248,7 +248,7 @@ export function WorkspacePage({
     tabRefs.current[next]?.focus();
   };
 
-  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
 
   return (
     <div className="flex flex-col gap-5">
@@ -260,11 +260,11 @@ export function WorkspacePage({
         <div className="flex-1 min-w-0">
           <h2 className="m-0 text-[20px] font-semibold text-shodh-text truncate">
             {detail.name}
-            {detail.archived && <span className="ml-2 align-middle text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
+            {detail.archived && <span className="ml-2 align-middle text-caption font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-text-muted">Archived</span>}
             <span className="ml-2 align-middle"><SlackAnswersBadge source={slack} workspaceId={detail.id} /></span>
           </h2>
-          {detail.description && <p className="m-0 mt-0.5 text-[13px] text-shodh-text-secondary">{detail.description}</p>}
-          <p className="m-0 mt-1 text-[12px] text-shodh-text-muted">
+          {detail.description && <p className="m-0 mt-0.5 text-small text-shodh-text-secondary">{detail.description}</p>}
+          <p className="m-0 mt-1 text-caption text-shodh-text-muted">
             {sourceSummary(detail.sourceCounts)} · {chatIds.length} {chatIds.length === 1 ? 'chat' : 'chats'}
             {detail.instructionsVersion > 0 ? ' · has instructions' : ' · no instructions'}
           </p>
@@ -338,7 +338,7 @@ export function WorkspacePage({
             onClick={() => onTab(t)}
             onKeyDown={e => moveTab(e, t)}
             className={cn(
-              '-mb-px h-9 px-3 text-[13px] border-b-2 transition-colors duration-micro',
+              '-mb-px h-9 px-3 text-small border-b-2 transition-colors duration-micro',
               tab === t ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
               FOCUS_RING,
             )}
@@ -372,7 +372,7 @@ export function WorkspacePage({
         )}
         {tab === 'results' && <ResultsTab workspace={detail} />}
         {tab === 'tables' && (
-          <Suspense fallback={<p role="status" className="m-0 text-[13px] text-shodh-text-muted">Opening tables…</p>}>
+          <Suspense fallback={<p role="status" className="m-0 text-small text-shodh-text-muted">Opening tables…</p>}>
             <TablesTab workspace={detail} />
           </Suspense>
         )}

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { matchesShortcut } from '../lib/shortcuts';
 
 interface SidebarContextType {
   collapsed: boolean;
@@ -41,7 +42,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Ctrl+B / Cmd+B to toggle sidebar
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'b') {
+      if (matchesShortcut(e, 'toggleSidebar')) {
         e.preventDefault();
         toggleSidebar();
       }

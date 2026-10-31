@@ -44,7 +44,7 @@ export function FigureImage({ filePath, page, bbox, alt, size = 'full', classNam
 
   if (state.status === 'error') {
     return (
-      <p role="alert" className={cn('flex items-start gap-2 p-3 text-[12.5px] text-shodh-text-secondary', className)}>
+      <p role="alert" className={cn('flex items-start gap-2 p-3 text-small text-shodh-text-secondary', className)}>
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
         {`The figure could not be drawn: ${state.message}`}
       </p>

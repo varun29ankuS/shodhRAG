@@ -73,12 +73,12 @@ function AddTask({ workspaceId, workspaceName }: { workspaceId: string; workspac
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
         placeholder="Add a task to this workspace"
-        className="flex-1 min-w-0 h-8 bg-transparent text-[13px] text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
+        className="flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
       />
       <button
         type="submit"
         disabled={!title.trim() || busy}
-        className={cn('h-8 px-3 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center gap-1.5', FOCUS_RING)}
+        className={cn('h-8 px-3 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center gap-1.5', FOCUS_RING)}
       >
         {busy && <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
         Add
@@ -135,7 +135,7 @@ function Card({
         aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
         aria-label={`${task.title}. ${STATUS_LABELS[status] ?? status}${overdue ? ', overdue' : ''}. Open the task; Alt+Arrow keys move it between columns.`}
         className={cn(
-          'text-left text-[13px] font-medium rounded-md -mx-1 px-1 break-words',
+          'text-left text-small font-medium rounded-md -mx-1 px-1 break-words',
           done ? 'line-through text-shodh-text-faint' : 'text-shodh-text hover:underline',
           FOCUS_RING,
         )}
@@ -150,7 +150,7 @@ function Card({
           onChange={next => onMove(task, next)}
         />
         {task.dueDate && (
-          <span className={cn('h-6 px-1.5 inline-flex items-center gap-1 text-[11.5px]', overdue ? 'text-shodh-error' : 'text-shodh-text-muted')}>
+          <span className={cn('h-6 px-1.5 inline-flex items-center gap-1 text-caption', overdue ? 'text-shodh-error' : 'text-shodh-text-muted')}>
             <Clock className="w-3 h-3" aria-hidden="true" />
             {dueLabel(task.dueDate)}
           </span>
@@ -163,7 +163,7 @@ function Card({
           <span className="sr-only">{PRIORITY_LABELS[task.priority] ?? task.priority} priority</span>
         </span>
         {task.subtasks.length > 0 && (
-          <span className="h-6 px-1.5 inline-flex items-center gap-1 text-[11.5px] text-shodh-text-muted tabular-nums" aria-label={`${subDone} of ${task.subtasks.length} subtasks done`}>
+          <span className="h-6 px-1.5 inline-flex items-center gap-1 text-caption text-shodh-text-muted tabular-nums" aria-label={`${subDone} of ${task.subtasks.length} subtasks done`}>
             <ListTodo className="w-3 h-3" aria-hidden="true" />
             {subDone}/{task.subtasks.length}
           </span>
@@ -193,11 +193,11 @@ function Column({
         target ? 'border-shodh-accent bg-shodh-raised' : 'border-shodh-border-subtle bg-shodh-raised/40',
       )}
     >
-      <h3 id={headingId} className="m-0 px-1 pt-0.5 text-[12px] font-semibold text-shodh-text-secondary">
+      <h3 id={headingId} className="m-0 px-1 pt-0.5 text-caption font-semibold text-shodh-text-secondary">
         {column.label} <span className="font-normal text-shodh-text-muted tabular-nums">({column.tasks.length})</span>
       </h3>
       {column.tasks.length === 0 ? (
-        <p className="m-0 px-1 py-4 text-center text-[12px] text-shodh-text-faint rounded-lg border border-dashed border-shodh-border-subtle">
+        <p className="m-0 px-1 py-4 text-center text-caption text-shodh-text-faint rounded-lg border border-dashed border-shodh-border-subtle">
           No tasks
         </p>
       ) : (
@@ -329,11 +329,11 @@ function TaskBoard({ workspaceId, workspaceName }: { workspaceId: string; worksp
       <div role="alert" className="py-8 flex flex-col items-center gap-3 text-center">
         <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
         <p className="m-0 text-sm text-shodh-text-secondary">Could not load tasks.</p>
-        <p className="m-0 text-[12px] text-shodh-text-faint break-words">{error}</p>
+        <p className="m-0 text-caption text-shodh-text-faint break-words">{error}</p>
         <button
           type="button"
           onClick={() => void refresh()}
-          className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-[12.5px] hover:bg-shodh-raised', FOCUS_RING)}
+          className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small hover:bg-shodh-raised', FOCUS_RING)}
         >
           Try again
         </button>

@@ -80,12 +80,12 @@ export function ChartArtifactView({ artifact, theme, height = 320 }: ChartArtifa
     border: `1px solid ${tooltipBorder}`,
   };
 
-  const axisTick = { fill: textColor, fontSize: 11, fontFamily: FONT };
-  const axisTickSmall = { fill: textColor, fontSize: 10, fontFamily: FONT };
+  const axisTick = { fill: textColor, fontSize: 12, fontFamily: FONT };
+  const axisTickSmall = { fill: textColor, fontSize: 12, fontFamily: FONT };
   const margin = { top: 12, right: 16, left: 4, bottom: 4 };
 
   const legendStyle: React.CSSProperties = {
-    fontSize: 11,
+    fontSize: 12,
     fontFamily: FONT,
     color: textColor,
     paddingTop: 4,

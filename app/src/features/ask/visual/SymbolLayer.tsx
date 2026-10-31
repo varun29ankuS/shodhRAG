@@ -127,10 +127,10 @@ export function SymbolLayer({ containerRef, symbols, watch }: SymbolLayerProps) 
       {shown && shownNote && (
         <div
           role="tooltip"
-          className="absolute z-20 max-w-[320px] rounded-lg border border-shodh-border-strong bg-shodh-surface px-2.5 py-1.5 text-[12.5px] leading-snug text-shodh-text shadow-md pointer-events-none"
+          className="absolute z-20 max-w-[320px] rounded-lg border border-shodh-border-strong bg-shodh-surface px-2.5 py-1.5 text-small leading-snug text-shodh-text shadow-md pointer-events-none"
           style={{ left: Math.max(0, shown.left), top: shown.top + shown.height + 6 }}
         >
-          <span className="font-mono text-[11.5px] text-shodh-text-muted">{shownNote.symbol}</span>
+          <span className="font-mono text-caption text-shodh-text-muted">{shownNote.symbol}</span>
           <span className="block">{symbolDescription(shownNote)}</span>
         </div>
       )}

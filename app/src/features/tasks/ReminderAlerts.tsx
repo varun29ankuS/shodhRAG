@@ -23,7 +23,7 @@ const MISSED_TOAST_ID = 'reminders-missed';
 const MISSED_SHOWN = 5;
 
 const ACTION = cn(
-  'h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[12px] font-medium transition-colors duration-micro',
+  'h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-caption font-medium transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -57,8 +57,8 @@ function ReminderToast({ id, reminder }: { id: string | number; reminder: DueRem
       <div className="flex items-start gap-2">
         <BellRing className="w-4 h-4 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
         <div className="min-w-0 flex flex-col">
-          <span id={`${id}-title`} className="text-[13px] font-medium truncate">{reminder.title}</span>
-          <span id={`${id}-when`} className="text-[11.5px] text-shodh-text-muted">
+          <span id={`${id}-title`} className="text-small font-medium truncate">{reminder.title}</span>
+          <span id={`${id}-when`} className="text-caption text-shodh-text-muted">
             Reminder · {reminderLabel(reminder.reminder)}
           </span>
         </div>
@@ -117,7 +117,7 @@ function MissedToast({ reminders }: { reminders: DueReminder[] }) {
     >
       <div className="flex items-start gap-2">
         <History className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
-        <span id="reminders-missed-title" className="text-[13px] font-medium">
+        <span id="reminders-missed-title" className="text-small font-medium">
           Missed while Shodh was closed
         </span>
       </div>
@@ -129,12 +129,12 @@ function MissedToast({ reminders }: { reminders: DueReminder[] }) {
               onClick={() => { dismiss(); openTask(r.taskId); }}
               className={cn('w-full text-left rounded px-1 py-0.5 hover:bg-shodh-raised', FOCUS_RING)}
             >
-              <span className="block text-[12.5px] truncate">{r.title}</span>
-              <span className="block text-[11px] text-shodh-text-muted">{reminderLabel(r.reminder)}</span>
+              <span className="block text-small truncate">{r.title}</span>
+              <span className="block text-caption text-shodh-text-muted">{reminderLabel(r.reminder)}</span>
             </button>
           </li>
         ))}
-        {more > 0 && <li className="px-1 text-[11.5px] text-shodh-text-muted">and {more} more</li>}
+        {more > 0 && <li className="px-1 text-caption text-shodh-text-muted">and {more} more</li>}
       </ul>
       <div className="flex justify-end">
         <button type="button" className={cn(ACTION, 'text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text')} onClick={dismiss}>

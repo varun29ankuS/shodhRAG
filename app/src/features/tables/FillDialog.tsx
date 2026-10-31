@@ -30,10 +30,10 @@ export function ModelProblem({ failure, onOpenSettings }: { failure: TableFailur
     <div role="alert" className="flex items-start gap-2.5 rounded-lg border border-shodh-warning/40 bg-shodh-warning/10 px-3 py-2.5">
       <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
       <div className="min-w-0 flex flex-col gap-1.5">
-        <p className="m-0 text-[13px] font-semibold text-shodh-text">
+        <p className="m-0 text-small font-semibold text-shodh-text">
           {failure.code === 'model_refused' ? 'This model cannot fill tables' : 'No model can fill tables now'}
         </p>
-        <p className="m-0 text-[12.5px] text-shodh-text-secondary">{failure.message || reasonText(failure.code)}</p>
+        <p className="m-0 text-small text-shodh-text-secondary">{failure.message || reasonText(failure.code)}</p>
         <button
           type="button"
           className={cn(OUTLINE_BUTTON, 'self-start')}
@@ -124,8 +124,8 @@ export function FillDialog({
         <Dialog.Content aria-describedby={descriptionId} className={DIALOG_CONTENT}>
           <header className={DIALOG_HEADER}>
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[15px] font-semibold">Fill the table</Dialog.Title>
-              <Dialog.Description id={descriptionId} className="text-[12.5px] text-shodh-text-muted">
+              <Dialog.Title className="text-body-lg font-semibold">Fill the table</Dialog.Title>
+              <Dialog.Description id={descriptionId} className="text-small text-shodh-text-muted">
                 The model reads each paper's best passages for your columns and answers with a quote, which Shodh
                 checks word for word against the paper. Cells you edited are never overwritten.
               </Dialog.Description>
@@ -136,46 +136,46 @@ export function FillDialog({
           </header>
           <div className={DIALOG_BODY}>
             {load.status === 'loading' && (
-              <p role="status" className="m-0 flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+              <p role="status" className="m-0 flex items-center gap-2 text-small text-shodh-text-muted">
                 <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Working out what the fill needs…
               </p>
             )}
             {load.status === 'error' && (MODEL_CODES.includes(load.failure.code) ? (
               <ModelProblem failure={load.failure} onOpenSettings={() => onOpenChange(false)} />
             ) : (
-              <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+              <p role="alert" className="m-0 text-small text-shodh-error">
                 What the fill needs could not be worked out: {load.failure.message || reasonText(load.failure.code)}
               </p>
             ))}
             {load.status === 'ready' && (
               <>
                 {load.estimate.cells === 0 ? (
-                  <p className="m-0 text-[13px] text-shodh-text">
+                  <p className="m-0 text-small text-shodh-text">
                     Every cell is filled, edited or answered already; there is nothing to ask the model.
                   </p>
                 ) : (
                   <div className="flex flex-col gap-1.5">
-                    <p className="m-0 text-[13.5px] text-shodh-text">
+                    <p className="m-0 text-body text-shodh-text">
                       {estimateText(load.estimate.papers, load.estimate.columns, load.estimate.calls)}
                     </p>
                     {load.estimate.cached > 0 && (
-                      <p className="m-0 text-[12.5px] text-shodh-text-secondary">
+                      <p className="m-0 text-small text-shodh-text-secondary">
                         {load.estimate.cached} {load.estimate.cached === 1 ? 'cell is' : 'cells are'} answered from earlier fills of
                         the same paper and question, without a call.
                       </p>
                     )}
-                    <p className="m-0 text-[12.5px] text-shodh-text-muted">
+                    <p className="m-0 text-small text-shodh-text-muted">
                       A paper whose reply cannot be read is asked once more, which counts as a call too.
                     </p>
                   </div>
                 )}
-                <p className="m-0 text-[12.5px] text-shodh-text-secondary">
+                <p className="m-0 text-small text-shodh-text-secondary">
                   {callsLine(load.estimate.callsToday, load.estimate.cap, load.estimate.dayResetsAt, now)}
                 </p>
                 {load.estimate.cells > 0 && (() => {
                   const notice = capNotice(load.estimate.calls, load.estimate.callsToday, load.estimate.cap, load.estimate.dayResetsAt, now);
                   return notice ? (
-                    <p className="m-0 text-[12.5px] text-shodh-warning">
+                    <p className="m-0 text-small text-shodh-warning">
                       {notice}{' '}
                       <button
                         type="button"
@@ -195,7 +195,7 @@ export function FillDialog({
             {startError && (MODEL_CODES.includes(startError.code) ? (
               <ModelProblem failure={startError} onOpenSettings={() => onOpenChange(false)} />
             ) : (
-              <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+              <p role="alert" className="m-0 text-small text-shodh-error">
                 The fill did not start: {startError.message || reasonText(startError.code)}
               </p>
             ))}

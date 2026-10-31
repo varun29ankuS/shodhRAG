@@ -33,14 +33,14 @@ function NeedCoverage({ item }: { item: PlanItem }) {
   if (item.coverage === 'covered') {
     const sources = item.evidence.map(n => `[${n}]`).join('');
     return (
-      <span className="inline-flex w-full items-center gap-1 mt-0.5 text-[11.5px] text-shodh-success no-underline">
+      <span className="inline-flex w-full items-center gap-1 mt-0.5 text-caption text-shodh-success no-underline">
         <CircleCheck className="w-3 h-3 shrink-0" aria-hidden="true" />
         {sources ? `Found in ${sources}` : 'Found in the sources'}
       </span>
     );
   }
   return (
-    <span className="inline-flex w-full items-center gap-1 mt-0.5 text-[11.5px] text-shodh-warning no-underline">
+    <span className="inline-flex w-full items-center gap-1 mt-0.5 text-caption text-shodh-warning no-underline">
       <SearchX className="w-3 h-3 shrink-0" aria-hidden="true" />
       Not found in the sources
     </span>
@@ -62,7 +62,7 @@ export function PlanPanel({ items, live, variant }: PlanPanelProps) {
     <section
       aria-label="Plan for this answer"
       className={cn(
-        'ask-fade-in rounded-xl border border-shodh-border bg-shodh-surface text-[12.5px]',
+        'ask-fade-in rounded-xl border border-shodh-border bg-shodh-surface text-small',
         variant === 'docked' ? 'w-[260px]' : 'w-full',
       )}
     >

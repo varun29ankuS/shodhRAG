@@ -84,8 +84,8 @@ export function NewTableDialog({
         <Dialog.Content aria-describedby={ids.desc} className={DIALOG_CONTENT}>
           <header className={DIALOG_HEADER}>
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[15px] font-semibold">New evidence table</Dialog.Title>
-              <Dialog.Description id={ids.desc} className="text-[12.5px] text-shodh-text-muted">
+              <Dialog.Title className="text-body-lg font-semibold">New evidence table</Dialog.Title>
+              <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
                 One row per paper, one column per question. Every answer carries the quote it rests on, checked word for
                 word against the paper, and its page.
               </Dialog.Description>
@@ -132,15 +132,15 @@ export function NewTableDialog({
                     className={cn('mt-0.5 w-3.5 h-3.5 accent-[var(--c-accent)]', FOCUS_RING)}
                   />
                   <span className="min-w-0">
-                    <span className="block text-[13px] font-semibold text-shodh-text">
+                    <span className="block text-small font-semibold text-shodh-text">
                       {preset.label} <span className="font-normal text-shodh-text-muted">· {KIND_LABELS[preset.spec.kind]}</span>
                     </span>
-                    <span className="block text-[12px] text-shodh-text-muted">{preset.spec.question}</span>
+                    <span className="block text-caption text-shodh-text-muted">{preset.spec.question}</span>
                   </span>
                 </label>
               ))}
             </fieldset>
-            {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+            {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
             <div className="flex items-center justify-end gap-2 pt-1">
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
               <button type="submit" className={PRIMARY_BUTTON} disabled={saving || name.trim().length === 0}>

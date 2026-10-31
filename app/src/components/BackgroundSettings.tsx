@@ -75,7 +75,7 @@ export default function BackgroundSettings() {
   };
 
   if (!status) {
-    return <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
   }
 
   return (
@@ -96,8 +96,8 @@ export default function BackgroundSettings() {
       />
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          <label htmlFor={idleId} className="m-0 text-[13.5px] font-semibold text-shodh-text">Stop the assistant's runtime when idle for</label>
-          <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+          <label htmlFor={idleId} className="m-0 text-body font-semibold text-shodh-text">Stop the assistant's runtime when idle for</label>
+          <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
             The runtime that answers questions uses several hundred megabytes of memory. It starts when you ask and
             stops after this long without use; the next question starts it again, with the conversation's recent turns.
           </p>
@@ -110,7 +110,7 @@ export default function BackgroundSettings() {
             const minutes = Number(e.target.value);
             void save(() => invoke('set_agent_idle_minutes', { minutes }), 'The setting was not saved');
           }}
-          className={cn('shrink-0 h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-[12.5px] text-shodh-text disabled:opacity-50', FOCUS_RING)}
+          className={cn('shrink-0 h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-small text-shodh-text disabled:opacity-50', FOCUS_RING)}
         >
           {!AGENT_IDLE_CHOICES.some(c => c.minutes === status.agentIdleMinutes) && (
             <option value="" disabled>{`${status.agentIdleMinutes} minutes`}</option>
@@ -121,7 +121,7 @@ export default function BackgroundSettings() {
         </select>
       </div>
       {status.paused && (
-        <p className="m-0 text-[12.5px] text-shodh-warning" role="status">
+        <p className="m-0 text-small text-shodh-warning" role="status">
           Background work is paused from the tray: indexing the assistant starts waits until you resume it there.
         </p>
       )}

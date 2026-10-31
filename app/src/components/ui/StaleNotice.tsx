@@ -13,7 +13,7 @@ export function StaleNotice({ error, onRetry, className }: { error: string; onRe
     <div
       role="status"
       className={cn(
-        'flex items-start gap-2.5 rounded-lg border border-shodh-warning/40 bg-shodh-warning-soft px-3.5 py-2.5 text-[12.5px] text-shodh-text-secondary',
+        'flex items-start gap-2.5 rounded-lg border border-shodh-warning/40 bg-shodh-warning-soft px-3.5 py-2.5 text-small text-shodh-text-secondary',
         className,
       )}
     >
@@ -22,12 +22,12 @@ export function StaleNotice({ error, onRetry, className }: { error: string; onRe
         <p className="m-0">
           <span className="font-semibold text-shodh-text">{STALE_TITLE}.</span> {STALE_DETAIL}
         </p>
-        <p className="m-0 mt-0.5 text-[11.5px] text-shodh-text-faint break-words">{error}</p>
+        <p className="m-0 mt-0.5 text-caption text-shodh-text-faint break-words">{error}</p>
       </div>
       <button
         type="button"
         onClick={onRetry}
-        className="shrink-0 h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-shodh-border bg-shodh-surface text-[12px] font-medium text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="shrink-0 h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md border border-shodh-border bg-shodh-surface text-caption font-medium text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
         Try again

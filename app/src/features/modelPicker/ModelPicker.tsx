@@ -20,7 +20,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 const SMALL_BUTTON = cn(
-  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-shodh-border bg-shodh-raised text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
+  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-shodh-border bg-shodh-raised text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro disabled:opacity-50 disabled:pointer-events-none',
   FOCUS_RING,
 );
 
@@ -130,7 +130,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
 
   if (!view) {
     return (
-      <div className="flex items-center gap-2 p-4 text-[12.5px] text-shodh-text-muted" role="status">
+      <div className="flex items-center gap-2 p-4 text-small text-shodh-text-muted" role="status">
         {loadError ? (
           <>
             <AlertTriangle className="w-4 h-4 shrink-0 text-shodh-warning" aria-hidden="true" />
@@ -158,7 +158,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
   return (
     <div className="flex flex-col min-h-0">
       {view.environment && (
-        <p className="mx-3 mt-3 px-3 py-2 rounded-lg bg-shodh-raised text-[12px] leading-relaxed text-shodh-text-secondary">
+        <p className="mx-3 mt-3 px-3 py-2 rounded-lg bg-shodh-raised text-caption leading-relaxed text-shodh-text-secondary">
           <span className="font-semibold text-shodh-text">Set by environment:</span>{' '}
           {modelName(view.models, view.environment)} ({PROVIDER_LABELS[view.environment.provider]}).{' '}
           {view.active?.source === 'session'
@@ -167,7 +167,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
         </p>
       )}
       {view.localOnly && (
-        <p className="mx-3 mt-3 px-3 py-2 rounded-lg bg-shodh-raised text-[12px] text-shodh-text-secondary">
+        <p className="mx-3 mt-3 px-3 py-2 rounded-lg bg-shodh-raised text-caption text-shodh-text-secondary">
           Local-only mode is on: only models on this computer can answer.
         </p>
       )}
@@ -189,7 +189,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
             aria-activedescendant={flat.length > 0 ? optionId(clampedIndex) : undefined}
             aria-describedby={notice ? noticeId : undefined}
             className={cn(
-              'w-full h-8 pl-8 pr-2 rounded-lg border border-shodh-border bg-shodh-ground text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 pl-8 pr-2 rounded-lg border border-shodh-border bg-shodh-ground text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />
@@ -207,17 +207,17 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
       </div>
 
       {notice && (
-        <p id={noticeId} className="px-4 pb-2 text-[11.5px] text-shodh-text-muted">
+        <p id={noticeId} className="px-4 pb-2 text-caption text-shodh-text-muted">
           {notice}
         </p>
       )}
       {answerRunning && (
-        <p className="px-4 pb-2 text-[11.5px] text-shodh-text-muted">The answer in progress finishes with its model; a new choice applies to the next answer.</p>
+        <p className="px-4 pb-2 text-caption text-shodh-text-muted">The answer in progress finishes with its model; a new choice applies to the next answer.</p>
       )}
 
       {pending && (
         <div role="alertdialog" aria-labelledby={`${listId}-confirm`} className="mx-3 mb-2 p-3 rounded-lg border border-shodh-warning/50 bg-shodh-raised flex flex-col gap-2">
-          <p id={`${listId}-confirm`} className="flex items-start gap-2 text-[12.5px] leading-relaxed text-shodh-text">
+          <p id={`${listId}-confirm`} className="flex items-start gap-2 text-small leading-relaxed text-shodh-text">
             <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
             {pending.kind === 'stealth'
               ? `${pending.model.name} is a stealth model: its provider may log your prompts and the passages sent with them, and use them for training. Do not use it with confidential files.`
@@ -245,7 +245,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
       )}
 
       {refusal && (
-        <div role="alert" className="mx-3 mb-2 px-3 py-2 rounded-lg bg-shodh-raised flex flex-wrap items-center gap-2 text-[12px] text-shodh-text-secondary">
+        <div role="alert" className="mx-3 mb-2 px-3 py-2 rounded-lg bg-shodh-raised flex flex-wrap items-center gap-2 text-caption text-shodh-text-secondary">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           <span className="flex-1 min-w-[12rem]">{refusal.message}</span>
           {refusal.code === 'missing_key' && onOpenSettings && (
@@ -263,7 +263,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
         className={cn('overflow-y-auto scrollbar-thin px-1.5 pb-2', tall ? 'max-h-[460px]' : 'max-h-[360px]')}
       >
         {sections.length === 0 && (
-          <p className="px-3 py-6 text-center text-[12.5px] text-shodh-text-muted">
+          <p className="px-3 py-6 text-center text-small text-shodh-text-muted">
             {query.trim()
               ? 'No model matches.'
               : view.connected.length === 0
@@ -273,7 +273,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
         )}
         {sections.map(section => (
           <div key={section.id} role="group" aria-labelledby={`${listId}-${section.id}`}>
-            <div id={`${listId}-${section.id}`} className="px-2.5 pt-2.5 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+            <div id={`${listId}-${section.id}`} className="px-2.5 pt-2.5 pb-1 text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
               {section.title}
             </div>
             {section.models.map(model => {
@@ -300,10 +300,10 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
                   <Check className={cn('w-3.5 h-3.5 mt-[3px] shrink-0 text-shodh-accent-text', !isActive && 'invisible')} aria-hidden="true" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2 min-w-0">
-                      <span className="truncate text-[13px] font-medium text-shodh-text">{model.name}</span>
-                      <span className="shrink-0 text-[11px] text-shodh-text-faint">{PROVIDER_LABELS[model.provider]}</span>
+                      <span className="truncate text-small font-medium text-shodh-text">{model.name}</span>
+                      <span className="shrink-0 text-caption text-shodh-text-faint">{PROVIDER_LABELS[model.provider]}</span>
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11.5px] text-shodh-text-muted">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-caption text-shodh-text-muted">
                       <span className="tabular-nums">{formatPrice(model)}</span>
                       {context && <span className="tabular-nums">{context} context</span>}
                       {model.tools === 'unknown' && (
@@ -313,7 +313,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
                         </span>
                       )}
                     </div>
-                    <div className={cn('mt-0.5 text-[11px]', model.stealth || model.privacy === 'may_log_prompts' ? 'text-shodh-warning' : 'text-shodh-text-faint')}>
+                    <div className={cn('mt-0.5 text-caption', model.stealth || model.privacy === 'may_log_prompts' ? 'text-shodh-warning' : 'text-shodh-text-faint')}>
                       {privacyText(model.privacy, model.stealth)}
                     </div>
                   </div>
@@ -337,7 +337,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
           </div>
         ))}
         {view.llamaCppFile && !query.trim() && (
-          <div className="mx-1 mt-2 px-2.5 py-2 rounded-lg border border-dashed border-shodh-border flex items-start gap-2 text-[11.5px] text-shodh-text-muted">
+          <div className="mx-1 mt-2 px-2.5 py-2 rounded-lg border border-dashed border-shodh-border flex items-start gap-2 text-caption text-shodh-text-muted">
             <Cpu className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
             <span>
               <span className="font-medium text-shodh-text-secondary">{view.llamaCppFile}</span> (llama.cpp) is not listed: the
@@ -347,7 +347,7 @@ export function ModelPickerPanel({ picker, answerRunning, onSelected, onOpenSett
         )}
       </div>
 
-      <p className="px-4 py-2 border-t border-shodh-border-subtle text-[11px] text-shodh-text-faint">
+      <p className="px-4 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-faint">
         {source ? `${source}. ` : ''}Models without tool calling are hidden. Keys stay in the system keychain.
       </p>
     </div>

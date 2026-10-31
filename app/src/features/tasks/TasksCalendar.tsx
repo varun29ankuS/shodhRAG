@@ -170,14 +170,14 @@ function DayComposer({ dayKeyValue, inputRef }: { dayKeyValue: string; inputRef:
     inputRef.current?.focus();
   };
 
-  const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
   const segment = (value: ComposerKind, label: string) => (
     <button
       type="button"
       aria-pressed={kind === value}
       onClick={() => { setKind(value); setProblem(null); }}
       className={cn(
-        'flex-1 h-7 rounded-md text-[12px] transition-colors duration-micro',
+        'flex-1 h-7 rounded-md text-caption transition-colors duration-micro',
         kind === value ? 'bg-shodh-surface text-shodh-text shadow-sm' : 'text-shodh-text-muted hover:text-shodh-text',
         FOCUS_RING,
       )}
@@ -204,24 +204,24 @@ function DayComposer({ dayKeyValue, inputRef }: { dayKeyValue: string; inputRef:
       />
       {kind === 'event' && (
         <div className="flex items-center gap-2 flex-wrap">
-          <label className="inline-flex items-center gap-1.5 text-[12px] text-shodh-text-secondary">
+          <label className="inline-flex items-center gap-1.5 text-caption text-shodh-text-secondary">
             <input type="checkbox" checked={allDay} onChange={e => setAllDay(e.target.checked)} className="accent-[var(--c-accent)]" />
             All day
           </label>
           {!allDay && (
             <>
               <input type="time" aria-label="Starts" value={start} onChange={e => setStart(e.target.value)} className={cn(control, 'w-[6.5rem] tabular-nums')} />
-              <span className="text-[12px] text-shodh-text-faint" aria-hidden="true">–</span>
+              <span className="text-caption text-shodh-text-faint" aria-hidden="true">–</span>
               <input type="time" aria-label="Ends" value={end} onChange={e => setEnd(e.target.value)} className={cn(control, 'w-[6.5rem] tabular-nums')} />
             </>
           )}
         </div>
       )}
-      {problem && <p role="alert" className="text-[12px] text-shodh-error">{problem}</p>}
+      {problem && <p role="alert" className="text-caption text-shodh-error">{problem}</p>}
       <button
         type="submit"
         disabled={!title.trim() || busy}
-        className={cn('h-8 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center justify-center gap-1.5', FOCUS_RING)}
+        className={cn('h-8 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center justify-center gap-1.5', FOCUS_RING)}
       >
         <Plus className="w-3.5 h-3.5" aria-hidden="true" />
         {kind === 'task' ? 'Add task' : 'Add event'}
@@ -332,11 +332,11 @@ export default function TasksCalendar() {
         <div role="alert" className="max-w-sm text-center flex flex-col items-center gap-3">
           <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
           <p className="text-sm text-shodh-text-secondary">Could not load tasks and events.</p>
-          <p className="text-[12px] text-shodh-text-faint break-words">{error}</p>
+          <p className="text-caption text-shodh-text-faint break-words">{error}</p>
           <button
             type="button"
             onClick={() => void refresh()}
-            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-[12.5px] hover:bg-shodh-raised', FOCUS_RING)}
+            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small hover:bg-shodh-raised', FOCUS_RING)}
           >
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
             Try again
@@ -354,13 +354,13 @@ export default function TasksCalendar() {
     <div className="h-full flex gap-5 px-6 pb-6 pt-2 min-h-0">
       <section aria-labelledby="tasks-calendar-month" className="flex-1 min-w-0 flex flex-col min-h-0">
         <div className="flex items-center gap-1 mb-3 shrink-0">
-          <h2 id="tasks-calendar-month" className="text-[15px] font-semibold mr-auto" aria-live="polite">
+          <h2 id="tasks-calendar-month" className="text-body-lg font-semibold mr-auto" aria-live="polite">
             {monthLabel}
           </h2>
           <button
             type="button"
             onClick={() => select(new Date(), false)}
-            className={cn('h-8 px-3 rounded-lg border border-shodh-border text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
+            className={cn('h-8 px-3 rounded-lg border border-shodh-border text-small text-shodh-text-secondary hover:bg-shodh-raised transition-colors duration-micro', FOCUS_RING)}
           >
             Today
           </button>
@@ -382,7 +382,7 @@ export default function TasksCalendar() {
         >
           <div role="row" className="grid grid-cols-7 border-b border-shodh-border">
             {WEEKDAYS.map(d => (
-              <div key={d} role="columnheader" className="px-2 py-1.5 text-[11px] font-medium text-shodh-text-faint">
+              <div key={d} role="columnheader" className="px-2 py-1.5 text-caption font-medium text-shodh-text-faint">
                 {d}
               </div>
             ))}
@@ -410,24 +410,24 @@ export default function TasksCalendar() {
       </section>
 
       <aside aria-labelledby="tasks-calendar-day" className="w-72 shrink-0 flex flex-col min-h-0">
-        <h2 id="tasks-calendar-day" className="text-[15px] font-semibold mb-3 h-8 flex items-center">
+        <h2 id="tasks-calendar-day" className="text-body-lg font-semibold mb-3 h-8 flex items-center">
           {selectedLabel}
         </h2>
         <DayComposer key={selectedKey} dayKeyValue={selectedKey} inputRef={composerRef} />
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin flex flex-col gap-4">
           {dayEvents.length === 0 && dayTasks.length === 0 ? (
-            <p className="text-[12.5px] text-shodh-text-faint">
+            <p className="text-small text-shodh-text-faint">
               Nothing on this day yet. Double-click a day (or press Enter on it) to add something, or ask Shodh to schedule it.
             </p>
           ) : null}
           {dayTasks.length > 0 && (
-            <p className="text-[11.5px] text-shodh-text-faint">
+            <p className="text-caption text-shodh-text-faint">
               Drag a task onto another day to move it, or open it to change its due date.
             </p>
           )}
           {dayEvents.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Events</h3>
+              <h3 className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Events</h3>
               <ul className="flex flex-col gap-1.5">
                 {dayEvents.map(ev => (
                   <li key={ev.id}>
@@ -438,8 +438,8 @@ export default function TasksCalendar() {
                     >
                       <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
                       <span className="flex-1 min-w-0 flex flex-col">
-                        <span className="text-[13px] text-shodh-text truncate">{ev.title}</span>
-                        <span className="text-[11.5px] text-shodh-text-faint truncate">
+                        <span className="text-small text-shodh-text truncate">{ev.title}</span>
+                        <span className="text-caption text-shodh-text-faint truncate">
                           {eventTimeLabel(ev)}{ev.location ? ` · ${ev.location}` : ''}
                         </span>
                       </span>
@@ -454,7 +454,7 @@ export default function TasksCalendar() {
           )}
           {dayTasks.length > 0 && (
             <div className="flex flex-col gap-1.5">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Due</h3>
+              <h3 className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Due</h3>
               <ul className="flex flex-col gap-1.5">
                 {dayTasks.map(task => (
                   <li key={task.id} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border">
@@ -479,10 +479,10 @@ export default function TasksCalendar() {
                       aria-label={`${task.title}, ${task.priority} priority. Open details`}
                       className={cn('flex-1 min-w-0 flex flex-col text-left rounded-sm cursor-grab active:cursor-grabbing select-none', FOCUS_RING)}
                     >
-                      <span className={cn('text-[13px] truncate', isDone(task) ? 'line-through text-shodh-text-faint' : 'text-shodh-text')}>
+                      <span className={cn('text-small truncate', isDone(task) ? 'line-through text-shodh-text-faint' : 'text-shodh-text')}>
                         {task.title}
                       </span>
-                      <span className="text-[11.5px] text-shodh-text-faint capitalize">{task.priority} priority</span>
+                      <span className="text-caption text-shodh-text-faint capitalize">{task.priority} priority</span>
                     </button>
                     <ReminderBadge task={task} />
                     {task.source === 'agent' && (
@@ -500,7 +500,7 @@ export default function TasksCalendar() {
       <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
       {drag && (
         <div
-          className="fixed z-50 pointer-events-none max-w-[220px] truncate px-2 py-1 rounded-md border border-shodh-border-strong bg-shodh-surface text-[12px] text-shodh-text shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
+          className="fixed z-50 pointer-events-none max-w-[220px] truncate px-2 py-1 rounded-md border border-shodh-border-strong bg-shodh-surface text-caption text-shodh-text shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
           style={{ left: drag.x + 12, top: drag.y + 8 }}
           aria-hidden="true"
         >
@@ -568,7 +568,7 @@ function DayCell({
       >
         <span
           className={cn(
-            'self-start text-[11.5px] tabular-nums w-6 h-6 inline-flex items-center justify-center rounded-full',
+            'self-start text-caption tabular-nums w-6 h-6 inline-flex items-center justify-center rounded-full',
             isToday ? 'bg-shodh-accent text-shodh-on-accent font-semibold' : day.inMonth ? 'text-shodh-text-secondary' : 'text-shodh-text-faint',
           )}
           aria-hidden="true"
@@ -586,7 +586,7 @@ function DayCell({
                 key={chip.id}
                 onPointerDown={chip.task ? e => onTaskPointerDown(e, chip.task as CalendarTask) : undefined}
                 className={cn(
-                  'truncate text-[11px] leading-4 px-1.5 rounded select-none',
+                  'truncate text-caption leading-4 px-1.5 rounded select-none',
                   chip.kind === 'event' ? 'bg-shodh-info/15 text-shodh-text' : 'bg-shodh-raised-2 text-shodh-text-secondary cursor-grab',
                   chip.done && 'line-through text-shodh-text-faint',
                 )}
@@ -594,7 +594,7 @@ function DayCell({
                 {chip.title}
               </span>
             ))}
-            {more > 0 && <span className="text-[10.5px] px-1.5 text-shodh-text-faint">+{more} more</span>}
+            {more > 0 && <span className="text-caption px-1.5 text-shodh-text-faint">+{more} more</span>}
           </span>
         )}
       </button>

@@ -13,7 +13,7 @@ const MAX_NOTE_CHARS = 2_000;
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 const FIELD = cn(
-  'w-full rounded-lg border border-shodh-border bg-shodh-surface-2 px-3 py-2 text-[13.5px] text-shodh-text placeholder:text-shodh-text-faint',
+  'w-full rounded-lg border border-shodh-border bg-shodh-surface-2 px-3 py-2 text-body text-shodh-text placeholder:text-shodh-text-faint',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
 );
 
@@ -79,7 +79,7 @@ export function EditVisualDialog({
           className="ask-fade-in fixed z-[70] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(460px,calc(100vw-32px))] rounded-[16px] border border-shodh-border-strong bg-shodh-surface p-5 text-shodh-text shadow-[0_24px_80px_rgba(0,0,0,0.45)] focus:outline-none"
         >
           <div className="flex items-start justify-between gap-3">
-            <Dialog.Title className="text-[15px] font-semibold">Rename and note</Dialog.Title>
+            <Dialog.Title className="text-body-lg font-semibold">Rename and note</Dialog.Title>
             <Dialog.Close
               aria-label="Close"
               className={cn('w-7 h-7 -mt-1 -mr-1 inline-flex items-center justify-center rounded-lg text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
@@ -87,12 +87,12 @@ export function EditVisualDialog({
               <X className="w-4 h-4" aria-hidden="true" />
             </Dialog.Close>
           </div>
-          <Dialog.Description className="mt-1 text-[12.5px] text-shodh-text-muted">
+          <Dialog.Description className="mt-1 text-small text-shodh-text-muted">
             Applies to every version of this visual. The note is searchable in the gallery.
           </Dialog.Description>
           <form onSubmit={e => void save(e)} className="mt-4 flex flex-col gap-3">
             <div className="flex flex-col gap-1.5">
-              <label htmlFor={titleId} className="text-[12.5px] font-medium text-shodh-text-secondary">Title</label>
+              <label htmlFor={titleId} className="text-small font-medium text-shodh-text-secondary">Title</label>
               <input
                 id={titleId}
                 value={title}
@@ -103,7 +103,7 @@ export function EditVisualDialog({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <label htmlFor={noteId} className="text-[12.5px] font-medium text-shodh-text-secondary">Note</label>
+              <label htmlFor={noteId} className="text-small font-medium text-shodh-text-secondary">Note</label>
               <textarea
                 id={noteId}
                 value={note}
@@ -114,18 +114,18 @@ export function EditVisualDialog({
                 className={cn(FIELD, 'resize-y min-h-[84px]')}
               />
             </div>
-            {error && <p role="alert" className="text-[12.5px] text-shodh-error">{error}</p>}
+            {error && <p role="alert" className="text-small text-shodh-error">{error}</p>}
             <div className="flex justify-end gap-2 pt-1">
               <Dialog.Close
                 type="button"
-                className={cn('h-8 px-3 rounded-lg text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+                className={cn('h-8 px-3 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
               >
                 Cancel
               </Dialog.Close>
               <button
                 type="submit"
                 disabled={saving}
-                className={cn('h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-50', FOCUS_RING)}
+                className={cn('h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover disabled:opacity-50', FOCUS_RING)}
               >
                 {saving ? 'Saving…' : 'Save'}
               </button>

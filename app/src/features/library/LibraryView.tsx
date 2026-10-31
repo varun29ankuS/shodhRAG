@@ -40,12 +40,12 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
 
 const PRIMARY_BUTTON = cn(
-  'h-9 px-3.5 inline-flex items-center gap-2 rounded-lg bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
+  'h-9 px-3.5 inline-flex items-center gap-2 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const QUIET_BUTTON = cn(
-  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -210,7 +210,7 @@ export function LibraryView({
         ) : (
           groups.map(group => (
             <section key={group.id} aria-labelledby={`library-kind-${group.id}`} className="flex flex-col gap-3">
-              <h2 id={`library-kind-${group.id}`} className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+              <h2 id={`library-kind-${group.id}`} className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                 {group.label}
               </h2>
               <ul className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(300px,1fr))]">
@@ -235,10 +235,10 @@ export function LibraryView({
         {hasLibrary && (
           <section aria-labelledby="library-snippets" className="flex flex-col gap-3">
             <div className="flex flex-col gap-0.5">
-              <h2 id="library-snippets" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+              <h2 id="library-snippets" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                 Snippets
               </h2>
-              <p className="text-[12.5px] text-shodh-text-muted">
+              <p className="text-small text-shodh-text-muted">
                 Regions saved from papers: figures, tables, equations and passages. Drag one onto the chat to ask about it.
               </p>
             </div>
@@ -250,10 +250,10 @@ export function LibraryView({
           <section aria-labelledby="library-graph" className="flex flex-col gap-3">
             <div className="flex items-end justify-between gap-3">
               <div className="flex flex-col gap-0.5">
-                <h2 id="library-graph" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+                <h2 id="library-graph" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                   Graph
                 </h2>
-                <p className="text-[12.5px] text-shodh-text-muted">
+                <p className="text-small text-shodh-text-muted">
                   Which of your papers cite each other, what they build on, and a page for every paper, method and dataset.
                 </p>
               </div>
@@ -268,10 +268,10 @@ export function LibraryView({
         {hasLibrary && (
           <section aria-labelledby="library-compare" className="flex flex-col gap-3">
             <div className="flex flex-col gap-0.5">
-              <h2 id="library-compare" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+              <h2 id="library-compare" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                 Compare results
               </h2>
-              <p className="text-[12.5px] text-shodh-text-muted">
+              <p className="text-small text-shodh-text-muted">
                 Results extracted from papers’ tables, side by side. Every value opens the cell it came from.
               </p>
             </div>
@@ -281,10 +281,10 @@ export function LibraryView({
 
         <section aria-labelledby="library-generated" className="flex flex-col gap-3">
           <div className="flex flex-col gap-0.5">
-            <h2 id="library-generated" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+            <h2 id="library-generated" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
               Generated
             </h2>
-            <p className="text-[12.5px] text-shodh-text-muted">
+            <p className="text-small text-shodh-text-muted">
               Diagrams, charts, sketches, plots, simulations, equations and tables from every conversation, with your snippets.
             </p>
           </div>
@@ -322,28 +322,28 @@ function UnlistedFilesCard({
   return (
     <section aria-labelledby="library-unlisted" className="rounded-xl border border-shodh-border bg-shodh-surface p-4 flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <h2 id="library-unlisted" className="m-0 text-[14px] font-semibold text-shodh-text">
+        <h2 id="library-unlisted" className="m-0 text-body font-semibold text-shodh-text">
           {`${countOf(count, 'indexed file')} ${count === 1 ? "isn't" : "aren't"} in any folder here`}
         </h2>
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           Answers in Ask can cite them. Add their folders to see them here and keep them in sync.
         </p>
       </div>
       <ul className="m-0 p-0 list-none flex flex-col gap-1" aria-label="Folders of these files">
         {shown.map(group => (
-          <li key={group.folder} className="flex items-center gap-2 text-[12.5px] text-shodh-text-secondary min-w-0">
+          <li key={group.folder} className="flex items-center gap-2 text-small text-shodh-text-secondary min-w-0">
             <Folder className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
             <span className="truncate" title={group.folder}>{`${baseName(group.folder) || group.folder} (${group.files.toLocaleString()})`}</span>
           </li>
         ))}
         {rest.length > 0 && (
-          <li className="text-[12.5px] text-shodh-text-muted pl-[22px]">
+          <li className="text-small text-shodh-text-muted pl-[22px]">
             {`and ${countOf(rest.length, 'more folder')} (${restFiles.toLocaleString()})`}
           </li>
         )}
       </ul>
       {skipped > 0 && (
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           {addableFolders === 0
             ? NOT_ADDED_REASON
             : `${countOf(skipped, 'folder')} ${skipped === 1 ? 'is' : 'are'} not added for you: a whole drive, your home folder or a folder holding it, or holding a folder already here.`}
@@ -369,7 +369,7 @@ function EmptyLibrary({ onAddFolder }: { onAddFolder: () => void }) {
       </span>
       <div className="flex flex-col gap-1.5 max-w-md">
         <h2 id="library-empty" className="text-[17px] font-semibold text-shodh-text">Add a folder to start searching it</h2>
-        <p className="text-[13px] leading-relaxed text-shodh-text-muted">
+        <p className="text-small leading-relaxed text-shodh-text-muted">
           Shodh reads the {SUPPORTED_SUMMARY} in the folder and its subfolders, and indexes them on this computer. Nothing
           is uploaded. Answers in Ask then cite the exact passage they came from.
         </p>
@@ -378,7 +378,7 @@ function EmptyLibrary({ onAddFolder }: { onAddFolder: () => void }) {
         <FolderPlus className="w-4 h-4" aria-hidden="true" />
         Add folder
       </button>
-      <p className="text-[12px] text-shodh-text-faint">You can also drop a folder or file anywhere on this window.</p>
+      <p className="text-caption text-shodh-text-faint">You can also drop a folder or file anywhere on this window.</p>
     </section>
   );
 }
@@ -397,13 +397,13 @@ interface FolderCardProps {
 /** One line on what to do about an indexing failure, with the button that does it. */
 function AdviceLine({ advice, onAction }: { advice: IndexingAdvice; onAction: (action: IndexingAction) => void }) {
   return (
-    <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-shodh-text-secondary">
+    <p className="m-0 flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-shodh-text-secondary">
       <span className="min-w-0">{advice.hint}</span>
       {advice.actionLabel && (
         <button
           type="button"
           onClick={() => onAction(advice.action)}
-          className={cn('h-6 px-2 rounded-md bg-shodh-raised-2 text-[11.5px] font-medium text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
+          className={cn('h-6 px-2 rounded-md bg-shodh-raised-2 text-caption font-medium text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro', FOCUS_RING)}
         >
           {advice.actionLabel}
         </button>
@@ -435,9 +435,9 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
     const done = source.processedCount ?? 0;
     statusLine = (
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between text-[12px] text-shodh-text-secondary">
+        <div className="flex items-center justify-between text-caption text-shodh-text-secondary">
           <span>{total > 0 ? `Indexing ${done.toLocaleString()} of ${countOf(total, 'file')}` : 'Preparing files…'}</span>
-          <span className="font-mono text-[11px]">{percent}%</span>
+          <span className="font-mono text-caption">{percent}%</span>
         </div>
         <div
           role="progressbar"
@@ -454,19 +454,19 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
           />
         </div>
         {source.currentFile && (
-          <p className="text-[11.5px] font-mono text-shodh-text-faint truncate" title={source.currentFile}>
+          <p className="text-caption font-mono text-shodh-text-faint truncate" title={source.currentFile}>
             {baseName(source.currentFile)}
           </p>
         )}
         {source.currentStep && (
-          <p className="m-0 text-[11.5px] text-shodh-text-secondary tabular-nums">{source.currentStep}</p>
+          <p className="m-0 text-caption text-shodh-text-secondary tabular-nums">{source.currentStep}</p>
         )}
       </div>
     );
   } else if (source.status === 'error') {
     statusLine = (
       <div className="flex flex-col gap-1">
-        <p className="m-0 text-[12.5px] text-shodh-error flex items-start gap-1.5">
+        <p className="m-0 text-small text-shodh-error flex items-start gap-1.5">
           <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
           <span className="break-words">{source.lastError ? `Indexing failed: ${runError.reason}` : 'Indexing failed.'}</span>
         </p>
@@ -476,7 +476,7 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
     );
   } else if (source.status === 'interrupted') {
     statusLine = (
-      <p className="text-[12.5px] text-shodh-warning flex items-start gap-1.5">
+      <p className="text-small text-shodh-warning flex items-start gap-1.5">
         <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
         <span>Indexing stopped before it finished (the app was closed). Index it again to finish.</span>
       </p>
@@ -484,17 +484,17 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
   } else {
     statusLine = (
       <div className="flex flex-col gap-1">
-        <p className="text-[12.5px] text-shodh-text-secondary">
+        <p className="text-small text-shodh-text-secondary">
           {`${(source.fileCount || 0).toLocaleString()} file${source.fileCount === 1 ? '' : 's'}`}
           {source.indexedAt && <span className="text-shodh-text-faint">{` · indexed ${relativeTime(source.indexedAt)}`}</span>}
         </p>
         {source.syncProgress && (
-          <p className="m-0 text-[12px] text-shodh-text-secondary tabular-nums" role="status">
+          <p className="m-0 text-caption text-shodh-text-secondary tabular-nums" role="status">
             {syncProgressLine(source.syncProgress)}
           </p>
         )}
         {source.syncError && (
-          <p className="m-0 text-[12px] text-shodh-warning flex items-start gap-1.5">
+          <p className="m-0 text-caption text-shodh-warning flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
             <span className="break-words">{`Not kept in sync: ${source.syncError}`}</span>
           </p>
@@ -518,11 +518,11 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
           {source.status === 'indexing' ? <FolderOpen className="w-[18px] h-[18px] text-shodh-warning" /> : <Folder className="w-[18px] h-[18px] text-shodh-text-muted" />}
         </span>
         <div className="flex-1 min-w-0">
-          <h3 id={nameId} className="text-[14px] font-semibold text-shodh-text truncate" title={source.name}>{source.name}</h3>
-          <p className="text-[11.5px] text-shodh-text-faint truncate" title={source.path}>{source.path}</p>
+          <h3 id={nameId} className="text-body font-semibold text-shodh-text truncate" title={source.name}>{source.name}</h3>
+          <p className="text-caption text-shodh-text-faint truncate" title={source.path}>{source.path}</p>
         </div>
         <label
-          className="shrink-0 flex items-center gap-1.5 text-[11.5px] text-shodh-text-muted cursor-pointer select-none"
+          className="shrink-0 flex items-center gap-1.5 text-caption text-shodh-text-muted cursor-pointer select-none"
           title="Include this folder when answering in Ask"
         >
           <input
@@ -544,13 +544,13 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
             onClick={() => setShowFailures(v => !v)}
             aria-expanded={showFailures}
             aria-controls={failuresId}
-            className={cn('self-start inline-flex items-center gap-1 text-[12px] text-shodh-error hover:underline rounded', FOCUS_RING)}
+            className={cn('self-start inline-flex items-center gap-1 text-caption text-shodh-error hover:underline rounded', FOCUS_RING)}
           >
             {showFailures ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
             {`${failures.length.toLocaleString()} file${failures.length === 1 ? '' : 's'} could not be indexed`}
           </button>
           {!showFailures && (
-            <p className="m-0 text-[12px] text-shodh-text-secondary break-words">
+            <p className="m-0 text-caption text-shodh-text-secondary break-words">
               {failureGroups.map(g => `${g.reason} (${g.files.length.toLocaleString()})`).join(' · ')}
             </p>
           )}
@@ -559,13 +559,13 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
             <div id={failuresId} className="max-h-72 overflow-y-auto scrollbar-thin flex flex-col gap-3 rounded-lg bg-shodh-raised p-2">
               {failureGroups.map(group => (
                 <section key={group.kind} className="flex flex-col gap-1.5">
-                  <h4 className="m-0 text-[12px] font-semibold text-shodh-text">
+                  <h4 className="m-0 text-caption font-semibold text-shodh-text">
                     {`${group.reason} · ${group.files.length.toLocaleString()} file${group.files.length === 1 ? '' : 's'}`}
                   </h4>
                   <AdviceLine advice={group.advice} onAction={act} />
                   <ul className="flex flex-col gap-1" aria-label={group.reason}>
                     {group.files.map(f => (
-                      <li key={f.file} className="text-[11.5px] leading-snug">
+                      <li key={f.file} className="text-caption leading-snug">
                         <span className="text-shodh-text-secondary break-all" title={f.file}>{f.relative}</span>
                         <FailureDetails detail={f.detail} />
                       </li>

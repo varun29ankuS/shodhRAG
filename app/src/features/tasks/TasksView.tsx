@@ -122,7 +122,7 @@ function TasksLayouts() {
                 data-mode={m.id}
                 onClick={() => choose(m.id)}
                 className={cn(
-                  'h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md text-[12.5px] transition-colors duration-micro',
+                  'h-7 px-2.5 inline-flex items-center gap-1.5 rounded-md text-small transition-colors duration-micro',
                   checked
                     ? 'bg-shodh-surface text-shodh-text font-semibold shadow-sm'
                     : 'text-shodh-text-muted hover:text-shodh-text',

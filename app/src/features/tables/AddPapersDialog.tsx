@@ -147,8 +147,8 @@ export function AddPapersDialog({
             className={cn('w-3.5 h-3.5 accent-[var(--c-accent)]', FOCUS_RING)}
           />
           <FileText className="w-3.5 h-3.5 text-shodh-text-faint shrink-0" aria-hidden="true" />
-          <span className="flex-1 min-w-0 truncate text-[12.5px] text-shodh-text" title={c.path}>{c.label}</span>
-          {already && <span className="text-[11.5px] text-shodh-text-muted shrink-0">In the table</span>}
+          <span className="flex-1 min-w-0 truncate text-small text-shodh-text" title={c.path}>{c.label}</span>
+          {already && <span className="text-caption text-shodh-text-muted shrink-0">In the table</span>}
         </label>
       </li>
     );
@@ -163,8 +163,8 @@ export function AddPapersDialog({
         <Dialog.Content aria-describedby={ids.desc} className={DIALOG_CONTENT}>
           <header className={DIALOG_HEADER}>
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[15px] font-semibold">Add papers</Dialog.Title>
-              <Dialog.Description id={ids.desc} className="text-[12.5px] text-shodh-text-muted">
+              <Dialog.Title className="text-body-lg font-semibold">Add papers</Dialog.Title>
+              <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
                 Each paper becomes a row. Papers must be indexed in the Library for the fill to read them.
               </Dialog.Description>
             </div>
@@ -178,7 +178,7 @@ export function AddPapersDialog({
               <input id={ids.filter} className={INPUT} value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter by name" />
             </div>
             {direct.length === 0 && folderSources.length === 0 && (
-              <p className="m-0 text-[12.5px] text-shodh-text-muted">
+              <p className="m-0 text-small text-shodh-text-muted">
                 This workspace has no files, papers or folders yet. Add them on its Sources tab first.
               </p>
             )}
@@ -186,7 +186,7 @@ export function AddPapersDialog({
               <section aria-label="Files and papers of this workspace" className="flex flex-col gap-1">
                 <h3 className={SECTION_TITLE}>Files and papers</h3>
                 {visibleDirect.length === 0 ? (
-                  <p className="m-0 text-[12.5px] text-shodh-text-muted">None match the filter.</p>
+                  <p className="m-0 text-small text-shodh-text-muted">None match the filter.</p>
                 ) : (
                   <ul className="m-0 p-0 list-none">{visibleDirect.map(item)}</ul>
                 )}
@@ -227,20 +227,20 @@ export function AddPapersDialog({
                     ) : null}
                   </div>
                   {load.status === 'loading' && (
-                    <p role="status" className="m-0 flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+                    <p role="status" className="m-0 flex items-center gap-2 text-small text-shodh-text-muted">
                       <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Listing its indexed files…
                     </p>
                   )}
-                  {load.status === 'error' && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">Its files could not be listed: {load.message}</p>}
+                  {load.status === 'error' && <p role="alert" className="m-0 text-small text-shodh-error">Its files could not be listed: {load.message}</p>}
                   {load.status === 'ready' && (files.length === 0 ? (
-                    <p className="m-0 text-[12.5px] text-shodh-text-muted">No indexed files in this folder yet.</p>
+                    <p className="m-0 text-small text-shodh-text-muted">No indexed files in this folder yet.</p>
                   ) : (
                     <ul className="m-0 p-0 list-none max-h-[240px] overflow-y-auto scrollbar-thin">{files.filter(shown).map(item)}</ul>
                   ))}
                 </section>
               );
             })}
-            {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+            {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
             <div className="flex items-center justify-end gap-2 pt-1">
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
               <button type="button" className={PRIMARY_BUTTON} disabled={picked.size === 0 || adding} onClick={() => void add()}>

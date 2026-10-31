@@ -18,13 +18,13 @@ export function ModelSettingsSection() {
   return (
     <div className="flex flex-col gap-5">
       <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border flex flex-col gap-4" aria-labelledby={connectId}>
-        <h3 id={connectId} className="m-0 text-[15px] font-semibold text-shodh-text">
+        <h3 id={connectId} className="m-0 text-body-lg font-semibold text-shodh-text">
           Connect
         </h3>
         <ConnectPanel picker={picker} />
       </section>
       <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border flex flex-col gap-3" aria-labelledby={modelId}>
-        <h3 id={modelId} className="m-0 text-[15px] font-semibold text-shodh-text">
+        <h3 id={modelId} className="m-0 text-body-lg font-semibold text-shodh-text">
           Model
         </h3>
         <ModelPicks picker={picker} />

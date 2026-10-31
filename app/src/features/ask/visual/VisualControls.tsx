@@ -40,7 +40,7 @@ export function ParamSliders({
         const shown = formatNumber(value, 4);
         return (
           <div key={p.name} className="flex flex-col gap-1 min-w-0">
-            <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
+            <div className="flex items-baseline justify-between gap-3 text-small">
               <label htmlFor={id} className="text-shodh-text-secondary truncate">
                 {p.label}
               </label>
@@ -97,7 +97,7 @@ export function FrameAxes({
   const zeroX = x[0] <= 0 && x[1] >= 0 ? layout.sx(0) : null;
   const zeroY = y[0] <= 0 && y[1] >= 0 ? layout.sy(0) : null;
   return (
-    <g aria-hidden="true" fontSize={11} fill="var(--c-text-muted)">
+    <g aria-hidden="true" fontSize={12} fill="var(--c-text-muted)">
       <rect x={left} y={top} width={w} height={h} fill="none" stroke="var(--c-border)" />
       {grid && xTicks.map(t => <line key={`gx${t}`} x1={layout.sx(t)} x2={layout.sx(t)} y1={top} y2={bottom} stroke="var(--c-border-subtle)" />)}
       {grid && yTicks.map(t => <line key={`gy${t}`} y1={layout.sy(t)} y2={layout.sy(t)} x1={left} x2={left + w} stroke="var(--c-border-subtle)" />)}

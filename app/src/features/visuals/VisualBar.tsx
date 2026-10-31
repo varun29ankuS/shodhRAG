@@ -18,7 +18,7 @@ import { currentValues } from '../focus/liveValues';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 const BAR_BUTTON = cn(
-  'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
+  'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -159,7 +159,7 @@ export function VisualBar({
                 onClick={() => { if (v.id !== visual.id) showVersion(v.id); }}
                 title={v.instruction ? `v${v.version}: ${v.instruction}` : v.version === 1 ? 'v1: from the answer' : `v${v.version}`}
                 className={cn(
-                  'h-7 min-w-[34px] px-2 rounded-lg text-[12px] tabular-nums transition-colors duration-micro',
+                  'h-7 min-w-[34px] px-2 rounded-lg text-caption tabular-nums transition-colors duration-micro',
                   v.id === visual.id ? 'bg-shodh-accent-soft text-shodh-accent-text font-semibold' : 'text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
                   FOCUS_RING,
                 )}
@@ -169,9 +169,9 @@ export function VisualBar({
             ))}
           </div>
         ) : (
-          <span className="mr-1 text-[12px] text-shodh-text-muted">{detail ? 'v1 · from the answer' : loadError ? '' : 'Loading…'}</span>
+          <span className="mr-1 text-caption text-shodh-text-muted">{detail ? 'v1 · from the answer' : loadError ? '' : 'Loading…'}</span>
         )}
-        {loadError && <span role="alert" className="text-[12px] text-shodh-error">{loadError}</span>}
+        {loadError && <span role="alert" className="text-caption text-shodh-error">{loadError}</span>}
         <span className="flex-1" />
         <button
           type="button"
@@ -225,7 +225,7 @@ export function VisualBar({
                     setExportOpen(false);
                     void runExport(record, format, stage.current, dark);
                   }}
-                  className="w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-[12.5px] text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none"
+                  className="w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none"
                 >
                   {FORMAT_LABEL[format]}
                 </button>
@@ -257,13 +257,13 @@ export function VisualBar({
           disabled={refining || !record}
           aria-describedby={refineMessage ? statusId : undefined}
           placeholder={`Refine this ${noun}: “label the forces”, “use a log scale”…`}
-          className="flex-1 min-w-0 h-8 px-3 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+          className="flex-1 min-w-0 h-8 px-3 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
         />
         {refining ? (
           <button
             type="button"
             onClick={() => focus?.stop()}
-            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-[12.5px] text-shodh-text hover:bg-shodh-raised', FOCUS_RING)}
+            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small text-shodh-text hover:bg-shodh-raised', FOCUS_RING)}
           >
             <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             <Square className="w-3 h-3" aria-hidden="true" />
@@ -274,14 +274,14 @@ export function VisualBar({
             type="submit"
             disabled={!instruction.trim() || !record || busyElsewhere}
             title={busyElsewhere ? 'Another answer is running' : 'Save a revised version (the original stays)'}
-            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-50 disabled:cursor-not-allowed', FOCUS_RING)}
+            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover disabled:opacity-50 disabled:cursor-not-allowed', FOCUS_RING)}
           >
             <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
             Refine
           </button>
         )}
       </form>
-      <p id={statusId} role="status" aria-live="polite" className={cn('text-[12px] min-h-0', refineMessage?.tone === 'error' ? 'text-shodh-error' : 'text-shodh-text-muted', !refineMessage && 'sr-only')}>
+      <p id={statusId} role="status" aria-live="polite" className={cn('text-caption min-h-0', refineMessage?.tone === 'error' ? 'text-shodh-error' : 'text-shodh-text-muted', !refineMessage && 'sr-only')}>
         {refining ? `Refining the ${noun}…` : refineMessage?.text ?? ''}
       </p>
 

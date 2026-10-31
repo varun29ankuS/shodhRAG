@@ -12,7 +12,7 @@ const TOAST_ID = 'table-model-suggested';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 const ACTION = cn(
-  'h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-[12px] font-medium transition-colors duration-micro',
+  'h-7 px-2.5 inline-flex items-center gap-1 rounded-md text-caption font-medium transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -47,10 +47,10 @@ function SuggestionToast() {
       <div className="flex items-start gap-2">
         <Table2 className="w-4 h-4 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
         <div className="min-w-0 flex flex-col">
-          <span id="table-model-suggested-title" className="text-[13px] font-medium">
+          <span id="table-model-suggested-title" className="text-small font-medium">
             Install the table model for better tables (212 MB)
           </span>
-          <span id="table-model-suggested-text" className="text-[11.5px] text-shodh-text-muted">
+          <span id="table-model-suggested-text" className="text-caption text-shodh-text-muted">
             Some of your PDFs have tables. Without the model they are read with layout rules only, and rows or cells
             can be missed. You can also install it later in Settings → Search.
           </span>

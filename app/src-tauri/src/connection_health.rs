@@ -776,7 +776,24 @@ pub fn connection_status(app: AppHandle) -> ConnectionSnapshot {
 #[tauri::command]
 pub async fn connection_check(app: AppHandle, provider: Option<ProviderId>) -> ConnectionSnapshot {
     check(&app, provider).await;
-    snapshot(&app)
+    let snapshot = snapshot(&app);
+    // The user acted on the check: a provider it found working no longer has
+    // "failing" notices waiting in the Inbox.
+    for working in providers_cleared(&snapshot, provider) {
+        crate::model_fallback::clear_failure_notices(&app, working).await;
+    }
+    snapshot
+}
+
+/// The providers a check of `only` (or of every provider) found working.
+fn providers_cleared(snapshot: &ConnectionSnapshot, only: Option<ProviderId>) -> Vec<ProviderId> {
+    snapshot
+        .providers
+        .iter()
+        .filter(|p| only.is_none_or(|o| o == p.provider))
+        .filter(|p| p.health == Health::Works)
+        .map(|p| p.provider)
+        .collect()
 }
 
 #[cfg(test)]
@@ -784,6 +801,46 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_759_750_000_000;
+
+    fn status_of(provider: ProviderId, health: Health) -> ProviderStatus {
+        ProviderStatus {
+            provider,
+            label: provider.label(),
+            source: None,
+            health,
+            message: None,
+            http_status: None,
+            quota: false,
+            reset_at_ms: None,
+            checked_at_ms: None,
+            learned_from: None,
+            key_hint: None,
+            env_var: None,
+            checking: false,
+        }
+    }
+
+    #[test]
+    fn a_check_clears_the_notices_of_the_providers_it_found_working() {
+        let snapshot = ConnectionSnapshot {
+            active: None,
+            providers: vec![
+                status_of(ProviderId::OpenRouter, Health::Works),
+                status_of(ProviderId::Anthropic, Health::Rejected),
+                status_of(ProviderId::LmStudio, Health::Works),
+            ],
+            local_only: false,
+        };
+        assert_eq!(
+            providers_cleared(&snapshot, None),
+            vec![ProviderId::OpenRouter, ProviderId::LmStudio]
+        );
+        assert_eq!(
+            providers_cleared(&snapshot, Some(ProviderId::OpenRouter)),
+            vec![ProviderId::OpenRouter]
+        );
+        assert!(providers_cleared(&snapshot, Some(ProviderId::Anthropic)).is_empty());
+    }
 
     #[test]
     fn a_key_hint_never_shows_more_than_four_characters() {

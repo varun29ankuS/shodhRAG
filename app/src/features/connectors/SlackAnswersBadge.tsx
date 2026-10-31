@@ -41,7 +41,7 @@ export function SlackAnswersBadge({ source, workspaceId }: { source: SlackAnswer
     <span
       title={title}
       aria-label={title}
-      className="inline-flex items-center gap-1 shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-warning"
+      className="inline-flex items-center gap-1 shrink-0 text-caption font-medium px-1.5 py-0.5 rounded-full bg-shodh-raised text-shodh-warning"
     >
       <SlackLogo className="w-3 h-3" />
       Answers in Slack

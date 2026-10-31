@@ -134,7 +134,7 @@ export function ConversationHistory({
     <section aria-labelledby={headingId} className="flex-1 min-h-0 flex flex-col">
       <h2
         id={headingId}
-        className="px-5 pt-4 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"
+        className="px-5 pt-4 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint shrink-0"
       >
         Chats
       </h2>
@@ -146,7 +146,7 @@ export function ConversationHistory({
         </div>
       ) : groups.length === 0 && named.length === 0 && fromConnectors.length === 0 ? (
         // Loaded and nothing to list: every chat is in an archived workspace (or there is none).
-        <div className="px-5 py-2 flex flex-col items-start gap-1.5 text-[12.5px] text-shodh-text-muted">
+        <div className="px-5 py-2 flex flex-col items-start gap-1.5 text-small text-shodh-text-muted">
           <p className="m-0">{conversations.length > 0 ? 'No chats outside archived workspaces.' : 'No chats yet.'}</p>
           {conversations.length > 0 && (
             <button
@@ -181,7 +181,7 @@ export function ConversationHistory({
                     aria-controls={listId}
                     aria-label={`${group.workspace.name}, ${group.items.length} ${group.items.length === 1 ? 'chat' : 'chats'}`}
                     className={cn(
-                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                      'flex-1 min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                       FOCUS_RING,
                     )}
                   >
@@ -191,7 +191,7 @@ export function ConversationHistory({
                     />
                     <WorkspaceIcon icon={group.workspace.icon} color={group.workspace.color} className="w-3.5 h-3.5" />
                     <span className="truncate">{group.workspace.name}</span>
-                    <span className="ml-auto text-[11px] font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
+                    <span className="ml-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
                   </button>
                   <button
                     type="button"
@@ -242,7 +242,7 @@ export function ConversationHistory({
                   aria-controls={listId}
                   aria-label={`${group.label}, from ${name}, ${group.items.length} ${group.items.length === 1 ? 'conversation' : 'conversations'}`}
                   className={cn(
-                    'w-full min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
+                    'w-full min-w-0 flex items-center gap-1.5 h-7 pl-1.5 pr-2 rounded-md text-left text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
                     FOCUS_RING,
                   )}
                 >
@@ -252,7 +252,7 @@ export function ConversationHistory({
                   />
                   <ConnectorIcon connector={group.connector} className="w-3.5 h-3.5 shrink-0" />
                   <span className="truncate">{group.label}</span>
-                  <span className="ml-auto text-[11px] font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
+                  <span className="ml-auto text-caption font-normal text-shodh-text-faint" aria-hidden="true">{group.items.length}</span>
                 </button>
                 {open && (
                   <ul id={listId} className="flex flex-col gap-px pl-2">
@@ -265,7 +265,7 @@ export function ConversationHistory({
             );
           })}
           {(named.length > 0 || fromConnectors.length > 0) && groups.length > 0 && (
-            <h3 className="px-3 pt-3 pb-0.5 text-[11px] font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
+            <h3 className="px-3 pt-3 pb-0.5 text-caption font-semibold tracking-[0.06em] uppercase text-shodh-text-faint">
               No workspace
             </h3>
           )}
@@ -273,7 +273,7 @@ export function ConversationHistory({
             <div key={group.id} role="group" aria-labelledby={`${headingId}-${group.id}`} className="pt-2 first:pt-0">
               <h3
                 id={`${headingId}-${group.id}`}
-                className="px-3 pt-1 pb-1 text-[11px] font-medium text-shodh-text-faint"
+                className="px-3 pt-1 pb-1 text-caption font-medium text-shodh-text-faint"
               >
                 {group.label}
               </h3>
@@ -426,7 +426,7 @@ function ConversationRow({
               }
             }}
             onBlur={commitRename}
-            className="w-full bg-transparent text-[13px] text-shodh-text border-b border-shodh-accent-text outline-none py-0.5"
+            className="w-full bg-transparent text-small text-shodh-text border-b border-shodh-accent-text outline-none py-0.5"
           />
         </div>
       ) : (
@@ -457,9 +457,9 @@ function ConversationRow({
         >
           <span className="flex items-center gap-1.5 min-w-0">
             {conversation.pinned && <Pin className="w-3 h-3 shrink-0 text-shodh-text-faint" aria-hidden="true" />}
-            <span className="text-[13px] truncate">{conversation.title}</span>
+            <span className="text-small truncate">{conversation.title}</span>
           </span>
-          {meta && <span className="text-[11px] text-shodh-text-faint truncate" aria-hidden="true">{meta}</span>}
+          {meta && <span className="text-caption text-shodh-text-faint truncate" aria-hidden="true">{meta}</span>}
         </button>
       )}
 
@@ -578,13 +578,13 @@ function MenuItem({
       role="menuitem"
       onClick={onSelect}
       className={cn(
-        'w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none',
+        'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none',
         destructive ? 'text-shodh-error' : 'text-shodh-text-secondary'
       )}
     >
       {icon}
       <span className="flex-1">{children}</span>
-      {hint && <kbd className="font-mono text-[10.5px] text-shodh-text-faint">{hint}</kbd>}
+      {hint && <kbd className="font-mono text-caption text-shodh-text-faint">{hint}</kbd>}
     </button>
   );
 }

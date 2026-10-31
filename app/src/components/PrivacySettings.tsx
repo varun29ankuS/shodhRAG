@@ -10,7 +10,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
   'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
@@ -29,8 +29,8 @@ export function SwitchRow({ label, description, checked, disabled = false, onCha
   return (
     <div className="flex items-start justify-between gap-6">
       <div className="min-w-0">
-        <p id={labelId} className="m-0 text-[13.5px] font-semibold text-shodh-text">{label}</p>
-        <p id={descriptionId} className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">{description}</p>
+        <p id={labelId} className="m-0 text-body font-semibold text-shodh-text">{label}</p>
+        <p id={descriptionId} className="m-0 mt-0.5 text-small text-shodh-text-muted">{description}</p>
       </div>
       <button
         type="button"
@@ -93,7 +93,7 @@ export default function PrivacySettings() {
   };
 
   if (!policy) {
-    return <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
   }
 
   return (
@@ -167,8 +167,8 @@ function CodeModeSettings() {
       />
       {confirming && (
         <div role="group" aria-labelledby={explainId} className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
-          <p id={explainId} className="m-0 text-[13px] font-semibold text-shodh-text">Turn on Code mode?</p>
-          <p className="m-0 text-[13px] text-shodh-text-secondary">
+          <p id={explainId} className="m-0 text-small font-semibold text-shodh-text">Turn on Code mode?</p>
+          <p className="m-0 text-small text-shodh-text-secondary">
             In Code mode the assistant can change files in the workspace&apos;s code folder and run commands on this
             computer, such as builds and tests. Each change and command asks you first unless you allow it in the
             workspace&apos;s Overview, and the work goes on a separate branch you can discard. Only turn it on for code
@@ -261,14 +261,14 @@ function UpdateSettings() {
         <button type="button" className={BUTTON} onClick={() => void checkNow()} disabled={busy || blocked}>
           Check now
         </button>
-        <span className="text-[12.5px] text-shodh-text-muted">Version {status.currentVersion}</span>
+        <span className="text-small text-shodh-text-muted">Version {status.currentVersion}</span>
       </div>
       {blocked ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">{status.blockedReason}</p>
+        <p className="m-0 text-small text-shodh-text-muted">{status.blockedReason}</p>
       ) : result ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">{result}</p>
+        <p className="m-0 text-small text-shodh-text-muted" role="status">{result}</p>
       ) : status.lastCheck ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted" role="status">
+        <p className="m-0 text-small text-shodh-text-muted" role="status">
           {status.lastCheck.message}
         </p>
       ) : null}

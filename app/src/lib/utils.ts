@@ -1,5 +1,16 @@
 import { type ClassValue, clsx } from "clsx"
-import { twMerge } from "tailwind-merge"
+import { extendTailwindMerge } from "tailwind-merge"
+import { TYPE_SCALE_NAMES } from "./typeScale.ts"
+
+// The type scale's sizes (`text-caption`, `text-small`, …) are font sizes, not text
+// colours: told so, a class list with a size and a colour keeps both.
+const twMerge = extendTailwindMerge({
+  extend: {
+    classGroups: {
+      "font-size": [{ text: [...TYPE_SCALE_NAMES] }],
+    },
+  },
+})
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))

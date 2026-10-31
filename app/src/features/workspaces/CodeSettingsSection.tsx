@@ -111,11 +111,11 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
     <section aria-labelledby={ids.title} className="flex flex-col gap-2">
       <div>
         <h3 id={ids.title} className={SECTION_TITLE}>Code mode approvals</h3>
-        <p id={ids.help} className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
           Commands that delete files, reset or rewrite git history, or push always ask, whatever you choose.
         </p>
       </div>
-      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">The settings could not be read: {error}</p>}
+      {error && <p role="alert" className="m-0 text-small text-shodh-error">The settings could not be read: {error}</p>}
       <form
         className="flex flex-col gap-3"
         aria-busy={saved === null && !error}
@@ -143,8 +143,8 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
                 className={cn('mt-[3px] accent-shodh-accent', FOCUS_RING)}
               />
               <span className="flex flex-col">
-                <span className="text-[13px] font-medium text-shodh-text">{option.label}</span>
-                <span className="text-[12px] text-shodh-text-muted">{option.hint}</span>
+                <span className="text-small font-medium text-shodh-text">{option.label}</span>
+                <span className="text-caption text-shodh-text-muted">{option.hint}</span>
               </span>
             </label>
           ))}
@@ -159,9 +159,9 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
               onChange={e => setAllowlist(e.target.value)}
               spellCheck={false}
               placeholder="cargo test"
-              className={cn(TEXTAREA, 'font-mono text-[12.5px]')}
+              className={cn(TEXTAREA, 'font-mono text-small')}
             />
-            <p className="m-0 text-[12px] text-shodh-text-muted">
+            <p className="m-0 text-caption text-shodh-text-muted">
               A command runs by itself only when it is exactly a line here, with nothing added, and has no ; | &amp; &gt; $ or backticks. It also needs no other options, must run in the code folder itself, and asks while another command is running. Tests run code the assistant may have changed, so after a change you did not review, the command asks first.
             </p>
           </div>
@@ -172,7 +172,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
           disabled={saved === null}
         >
           <legend className={cn(SECTION_TITLE, 'p-0 mb-0.5')}>Command limits</legend>
-          <p id={ids.limitsHelp} className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p id={ids.limitsHelp} className="m-0 text-small text-shodh-text-muted">
             Each command runs in its own process under these limits, together with everything it starts, and may have 64 processes at once. A command still running at the time limit is stopped. Beyond the memory or process limit, Windows refuses what is asked for and macOS stops the command. macOS has no CPU cap: commands there run at a lower priority instead.
           </p>
           {parsedLimits.map(({ spec, parsed }) => {
@@ -200,12 +200,12 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
                     }}
                     aria-invalid={invalid || undefined}
                     aria-describedby={describedBy}
-                    className={cn(INPUT, 'w-36 font-mono text-[12.5px]', invalid && 'border-shodh-error')}
+                    className={cn(INPUT, 'w-36 font-mono text-small', invalid && 'border-shodh-error')}
                   />
-                  {hint && <span id={hintId} className="text-[12px] text-shodh-text-muted">{hint}</span>}
+                  {hint && <span id={hintId} className="text-caption text-shodh-text-muted">{hint}</span>}
                 </div>
                 {invalid && parsed.ok === false && (
-                  <p id={errorId} className="m-0 text-[12px] text-shodh-error">{parsed.error}</p>
+                  <p id={errorId} className="m-0 text-caption text-shodh-error">{parsed.error}</p>
                 )}
               </div>
             );
@@ -213,7 +213,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
         </fieldset>
         <div className="flex flex-col gap-0.5">
           <h4 className={SECTION_TITLE}>Command sandbox</h4>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">{SANDBOX_TEXT}</p>
+          <p className="m-0 text-small text-shodh-text-muted">{SANDBOX_TEXT}</p>
         </div>
         <div>
           <button type="submit" className={OUTLINE_BUTTON} disabled={!dirty || !limitsValid || saving}>

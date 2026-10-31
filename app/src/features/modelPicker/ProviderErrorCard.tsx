@@ -18,7 +18,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 const BUTTON = cn(
-  'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-shodh-raised-2 text-[12.5px] text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro',
+  'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-shodh-raised-2 text-small text-shodh-text hover:bg-shodh-pressed transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -144,11 +144,11 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, fellBack
 
   return (
     <div role="alert" className={cn('flex flex-col gap-2 rounded-xl border border-shodh-border bg-shodh-surface', compact ? 'p-3' : 'p-3.5')}>
-      <p className="m-0 flex items-start gap-2 text-[13px] font-semibold text-shodh-text">
+      <p className="m-0 flex items-start gap-2 text-small font-semibold text-shodh-text">
         <AlertTriangle className="w-4 h-4 mt-px shrink-0 text-shodh-warning" aria-hidden="true" />
         <span className="min-w-0 break-words">{copy.title}</span>
       </p>
-      <p className="m-0 text-[12.5px] leading-relaxed text-shodh-text-secondary">
+      <p className="m-0 text-small leading-relaxed text-shodh-text-secondary">
         {decision === 'automatic' && offer && actions
           ? `Always fall back is on: answering with ${offer.name} instead.`
           : copy.hint}
@@ -182,7 +182,7 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, fellBack
                 <button
                   type="button"
                   onClick={() => setCountdown(null)}
-                  className={cn('h-8 px-2 rounded-lg text-[12px] text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised', FOCUS_RING)}
+                  className={cn('h-8 px-2 rounded-lg text-caption text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised', FOCUS_RING)}
                 >
                   Don&apos;t retry automatically
                 </button>
@@ -200,9 +200,9 @@ export function ProviderErrorCard({ error, runModel, message, fellBack, fellBack
         </button>
       </div>
       {message && (
-        <details className="text-[12px] text-shodh-text-muted">
+        <details className="text-caption text-shodh-text-muted">
           <summary className={cn('cursor-pointer w-fit rounded-sm hover:text-shodh-text-secondary', FOCUS_RING)}>Details from the provider</summary>
-          <p className="m-0 mt-1 break-words font-mono text-[11.5px]">{message}</p>
+          <p className="m-0 mt-1 break-words font-mono text-caption">{message}</p>
         </details>
       )}
     </div>

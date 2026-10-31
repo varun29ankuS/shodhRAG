@@ -343,14 +343,14 @@ export function SimulationPlayer({
     prefersReducedMotion() ? 'Ready. Press Run to start (motion is reduced, so it does not start by itself).' : 'Ready';
 
   const button = cn(
-    'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] font-medium text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
+    'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small font-medium text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
     FOCUS_RING,
   );
 
   return (
     <div className="flex flex-col gap-3">
       <div className="min-h-[28px] flex items-baseline pr-28">
-        {model.title && <h4 className="m-0 text-[14px] font-semibold text-shodh-text">{model.title}</h4>}
+        {model.title && <h4 className="m-0 text-body font-semibold text-shodh-text">{model.title}</h4>}
       </div>
       <div ref={hostRef} className="w-full flex justify-center">
         {layout && (
@@ -396,15 +396,15 @@ export function SimulationPlayer({
           <Square className="w-3.5 h-3.5" aria-hidden="true" />
           Stop
         </button>
-        <span className="ml-auto font-mono text-[12px] tabular-nums text-shodh-text-muted" aria-hidden="true">
+        <span className="ml-auto font-mono text-caption tabular-nums text-shodh-text-muted" aria-hidden="true">
           {`t = ${formatNumber(t, 3)} s`}
         </span>
       </div>
-      <p className={cn('m-0 text-[12px]', sim.finished === 'diverged' ? 'text-shodh-warning' : 'text-shodh-text-muted')} role="status" aria-live="polite">
+      <p className={cn('m-0 text-caption', sim.finished === 'diverged' ? 'text-shodh-warning' : 'text-shodh-text-muted')} role="status" aria-live="polite">
         {statusText}
       </p>
       {model.readouts.length > 0 && (
-        <dl className="m-0 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1.5 text-[12.5px]">
+        <dl className="m-0 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1.5 text-small">
           {model.readouts.map((r, i) => (
             <div key={i} className="flex flex-col min-w-0">
               <dt className="text-shodh-text-muted truncate">{r.label}</dt>
@@ -446,7 +446,7 @@ export function SimulationBlock({ source }: { source: string }) {
     return (
       <figure className="m-0 my-4 rounded-xl border border-shodh-border bg-shodh-surface p-4" data-print-block="">
         <SimulationPlayer model={model} maxHeight={380} autoPlay={false} />
-        <figcaption className="mt-2 text-[12px] text-shodh-text-muted">
+        <figcaption className="mt-2 text-caption text-shodh-text-muted">
           Still of the first frame. The simulation is interactive in Shodh.
         </figcaption>
       </figure>

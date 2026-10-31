@@ -210,6 +210,8 @@ pub fn run() {
                 .build()?;
             }
             tracing::info!("Main window created");
+            // Drawn at the user's text size from the start.
+            app_settings::apply_saved_text_size(app.handle());
             // Notices about damaged data files reach the window from here on;
             // earlier ones are listed by `store_notices`.
             store_notices::attach(app.handle());

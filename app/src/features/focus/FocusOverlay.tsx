@@ -93,7 +93,7 @@ export interface FocusOverlayProps {
 }
 
 const headerButton = cn(
-  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-[12.5px] transition-colors duration-micro',
+  'h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-small transition-colors duration-micro',
   FOCUS_RING,
 );
 const iconButton = cn(
@@ -379,7 +379,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
   }, [focus]);
 
   const crumbButton = cn(
-    'max-w-[220px] h-6 px-1.5 rounded-md truncate text-[12px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+    'max-w-[220px] h-6 px-1.5 rounded-md truncate text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
     FOCUS_RING,
   );
 
@@ -427,10 +427,10 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
                   </button>
                 </div>
               )}
-              <span className={cn('text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint', !multiLevel && 'pl-2')} aria-hidden="true">
+              <span className={cn('text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint', !multiLevel && 'pl-2')} aria-hidden="true">
                 {KIND_LABEL[target.kind]}
               </span>
-              <Dialog.Title className="flex-1 min-w-0 text-[14px] font-semibold text-shodh-text truncate" title={target.label}>
+              <Dialog.Title className="flex-1 min-w-0 text-body font-semibold text-shodh-text truncate" title={target.label}>
                 {target.label}
               </Dialog.Title>
               <Dialog.Description id={descriptionId} className="sr-only">
@@ -472,7 +472,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
                 <MessageSquareText className="w-4 h-4" aria-hidden="true" />
                 Ask about this
                 {thread && thread.turns.length > 0 && (
-                  <span className="ml-0.5 px-1.5 rounded-full bg-shodh-raised-2 text-[11px] tabular-nums text-shodh-text-muted">
+                  <span className="ml-0.5 px-1.5 rounded-full bg-shodh-raised-2 text-caption tabular-nums text-shodh-text-muted">
                     {thread.turns.filter(t => t.role === 'assistant').length}
                   </span>
                 )}
@@ -494,7 +494,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
 
             {multiLevel && (
               <nav aria-label="Exploration path" className="px-4 pb-2 -mt-1">
-                <ol className="flex items-center gap-0.5 min-w-0 overflow-hidden text-[12px]">
+                <ol className="flex items-center gap-0.5 min-w-0 overflow-hidden text-caption">
                   <li className="flex items-center min-w-0 shrink-0">
                     <button type="button" onClick={onClose} className={crumbButton} title={`Close and return to the ${rootPlace.toLowerCase()}`}>
                       {rootPlace}
@@ -545,7 +545,7 @@ export function FocusOverlay({ session, onClose }: FocusOverlayProps) {
             <div className="flex-1 min-w-0 min-h-0 flex">
               <div ref={stageAreaRef} className="flex-1 min-w-0 min-h-0 flex flex-col">
                 {peek && (
-                  <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-shodh-border-subtle bg-shodh-surface-2 text-[12.5px] text-shodh-text-secondary">
+                  <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-shodh-border-subtle bg-shodh-surface-2 text-small text-shodh-text-secondary">
                     <button
                       type="button"
                       onClick={() => setPeek(null)}

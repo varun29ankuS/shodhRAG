@@ -752,10 +752,10 @@ impl HostTool for DownloadFileTool {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| shown.clone());
         Ok(ToolOutput {
+            // The file's name only: its path never reaches the model.
             text_for_model: format!(
-                "Saved {shown} ({} KB, sha256 {}). It is being indexed and will be searchable shortly.",
-                written.div_ceil(1024),
-                &sha256[..12]
+                "Saved {name} ({} KB). It is being indexed and will be searchable shortly.",
+                written.div_ceil(1024)
             ),
             summary_for_ui: format!("Saved {name} ({} KB)", written.div_ceil(1024)),
             detail: Some(serde_json::to_value(&saved).unwrap_or(Value::Null)),

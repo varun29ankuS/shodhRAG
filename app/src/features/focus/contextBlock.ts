@@ -15,6 +15,15 @@ import { compactSvg } from '../ask/visual/svgSanitize.ts';
 import { symbolDescription } from '../ask/visual/symbols.ts';
 import type { SymbolNote } from '../ask/visual/symbols.ts';
 
+/**
+ * The last part of a path ("C:/Users/…/paper.pdf" → "paper.pdf"): side questions
+ * name files, never their folders (a path holds the user's name).
+ */
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
 /** Most characters of the object itself placed in one question. */
 export const MAX_CONTEXT_CHARS = 6_000;
 /** Most characters of a reader's selection placed in one question. */
@@ -195,7 +204,7 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
     case 'image':
       return [{ heading: 'image', payload: [`Description: ${oneLine(target.alt) || 'none given'}`, target.src && !target.src.startsWith('data:') ? `Address: ${target.src}` : ''].filter(Boolean).join('\n'), info: '' }];
     case 'source': {
-      const name = oneLine(target.hit.fileName || target.hit.title || target.hit.sourceFile);
+      const name = oneLine(target.hit.fileName || target.hit.title || baseName(target.hit.sourceFile));
       const where = `${name}${pageLabel(target, extras)}`;
       const selection = extras.selection?.trim();
       if (selection) {
@@ -232,7 +241,7 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
 
 function selectionWhere(target: Extract<FocusTarget, { kind: 'selection' }>): string {
   if (target.document) {
-    const name = oneLine(target.document.fileName || target.document.sourceFile);
+    const name = oneLine(target.document.fileName || baseName(target.document.sourceFile));
     return target.document.page !== null ? `${name} page ${target.document.page}` : name;
   }
   return 'an answer';

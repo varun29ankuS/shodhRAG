@@ -359,7 +359,11 @@ impl HostTool for ShowSourceTool {
             }),
         );
         Ok(ToolOutput {
-            text_for_model: format!("{folder} is now shown in the Library."),
+            // The folder's name only: its path never reaches the model.
+            text_for_model: format!(
+                "The folder \"{}\" is now shown in the Library.",
+                source.name
+            ),
             summary_for_ui: format!("Opened {folder} in Library"),
             detail: Some(json!({ "sourceId": source.source_id, "folder": folder })),
         })

@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::{
-    req_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE,
+    opt_str, CitedPassage, HostTool, ToolContext, ToolError, ToolOutput, UNTRUSTED_NOTICE,
 };
 use crate::harness::events::RiskTier;
 use crate::processing::parser::ParsedDocument;
@@ -533,6 +533,24 @@ fn render(
     })
 }
 
+/// The indexed file passage `n` of this run came from.
+fn passage_source(ctx: &ToolContext, n: u64) -> Result<String, ToolError> {
+    let passage = u32::try_from(n)
+        .ok()
+        .and_then(|n| ctx.cited_passage(n))
+        .ok_or_else(|| {
+            ToolError::NotFound(format!(
+                "There is no passage [{n}] in this answer. Use the number of a passage search_documents returned."
+            ))
+        })?;
+    if passage.web || passage.path.contains("://") {
+        return Err(ToolError::Forbidden(format!(
+            "Passage [{n}] is not from an indexed file (it is a web page, a note or a calendar item), so it cannot be opened."
+        )));
+    }
+    Ok(passage.path)
+}
+
 /// What the user sees for a file: its name.
 fn file_name(source: &str) -> String {
     source
@@ -554,7 +572,7 @@ fn cite_read(read: &Read, source: &str, display: Option<&str>, ctx: &ToolContext
     let display = display.filter(|d| normalize_source_path(Path::new(d)) == identity);
     let file = file_name(display.unwrap_or(source));
     let mut text = format!(
-        "{UNTRUSTED_NOTICE}\nDocument: {} ({source}), {}\nCite what you use with the passage numbers below.\n",
+        "{UNTRUSTED_NOTICE}\nDocument: {} ({file}), {}\nCite what you use with the passage numbers below.\n",
         read.title, read.location
     );
     let mut passages = Vec::with_capacity(read.segments.len());
@@ -623,20 +641,22 @@ impl HostTool for OpenDocumentTool {
         "Open document"
     }
     fn label_template(&self) -> &'static str {
-        "Reading {path}"
+        "Reading[ {path}][ the document of passage {passage!}]"
     }
     fn description(&self) -> &'static str {
-        "Read part of an indexed document: a page (PDFs) or a character range. Pass the path from \
-         search_documents (or a unique file name). Without page or range, returns the beginning. \
-         Long sections are cut at 12,000 characters with a hint for the next range. Examples: \
-         {\"path\":\"x.pdf\",\"page\":3} or {\"path\":\"x.pdf\",\"range\":{\"start\":0,\"end\":6000}}. \
-         If both are given, the page is used when the document has page text, else the range."
+        "Read part of an indexed document: a page (PDFs) or a character range. Name the document by \
+         the number of one of its passages from search_documents (`passage`), or by its file name \
+         (`path`). Without page or range, returns the beginning. Long sections are cut at 12,000 \
+         characters with a hint for the next range. Examples: {\"passage\":4,\"page\":3} or \
+         {\"path\":\"x.pdf\",\"range\":{\"start\":0,\"end\":6000}}. If both page and range are \
+         given, the page is used when the document has page text, else the range."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
                 "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "passage": {"type": "integer", "minimum": 1},
                 "page": {"type": "integer", "minimum": 1},
                 "range": {
                     "type": "object",
@@ -648,7 +668,6 @@ impl HostTool for OpenDocumentTool {
                     "additionalProperties": false
                 }
             },
-            "required": ["path"],
             "additionalProperties": false
         })
     }
@@ -657,7 +676,19 @@ impl HostTool for OpenDocumentTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let requested = req_str(&args, "path", OPEN_DOCUMENT)?;
+        // The model names a document by a passage number (its path never reaches the
+        // model) or by its file name.
+        let by_passage = match args.get("passage").and_then(Value::as_u64) {
+            Some(n) => Some(passage_source(ctx, n)?),
+            None => None,
+        };
+        let requested = match &by_passage {
+            Some(path) => path.as_str(),
+            None => opt_str(&args, "path").ok_or_else(|| ToolError::InvalidArguments {
+                tool: OPEN_DOCUMENT.to_string(),
+                reasons: "pass `passage` (the number of one of its search results) or `path` (its file name)".to_string(),
+            })?,
+        };
         check_requested_path(requested)?;
         let selection = selection(&args)?;
 
@@ -670,14 +701,16 @@ impl HostTool for OpenDocumentTool {
         let source = match matches.as_slice() {
             [] => {
                 return Err(ToolError::NotFound(format!(
-                    "{requested} is not an indexed file. Use a path returned by search_documents."
+                    "{} is not an indexed file. Name a document by the number of one of its passages from search_documents.",
+                    file_name(requested)
                 )))
             }
             [one] => one.clone(),
             many => {
                 return Err(ToolError::NotFound(format!(
-                    "{requested} matches several indexed files; pass the full path: {}",
-                    many.join(", ")
+                    "{} matches {} indexed files; name the one you mean by the number of one of its passages from search_documents.",
+                    file_name(requested),
+                    many.len()
                 )))
             }
         };
@@ -703,7 +736,9 @@ impl HostTool for OpenDocumentTool {
                 .map(|row| row.space_id)
                 .collect();
             if !may_open(ctx.scope(), &source, &owners) {
-                return Err(ToolError::Forbidden(ctx.scope().outside_message(&source)));
+                return Err(ToolError::Forbidden(
+                    ctx.scope().outside_message(&file_name(&source)),
+                ));
             }
         }
 
@@ -724,7 +759,8 @@ impl HostTool for OpenDocumentTool {
         .map_err(|e| ToolError::Failed(format!("Reading the document was interrupted: {e}")))?
         .map_err(|e| {
             ToolError::Unavailable(format!(
-                "{source} is indexed but could not be read from disk ({e}). It may have been moved or deleted; re-index its folder."
+                "{} is indexed but could not be read from disk. It may have been moved or deleted; re-index its folder.",
+                file_name(&source)
             ))
         })?;
         let read = render(&parsed, &pages, selection)?;
@@ -868,11 +904,66 @@ mod tests {
         let in_a = ctx().with_scope(Arc::new(workspace("ws-a")));
         let out = tool.execute(json!({ "path": path }), &in_a).await.unwrap();
         assert!(out.text_for_model.contains("heron"));
-        let in_b = ctx().with_scope(Arc::new(workspace("ws-b")));
+        // The model reads the file's name, never the folders it is in; the step
+        // detail keeps the path for the citation.
+        let folder = dir.path().display().to_string();
+        assert!(
+            !out.text_for_model.contains(&folder),
+            "{}",
+            out.text_for_model
+        );
+        assert!(
+            !out.text_for_model.contains(&folder.replace('\\', "/")),
+            "{}",
+            out.text_for_model
+        );
+        assert!(out.text_for_model.contains("notes.md"));
+        assert!(out.detail.as_ref().unwrap()["path"].as_str().is_some());
+
+        // A document is opened by the number of one of its passages.
+        let n = in_a.cite_passage(CitedPassage {
+            n: 0,
+            file: "notes.md".to_string(),
+            path: out.detail.as_ref().unwrap()["path"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            page: None,
+            web: false,
+            text: "The heron was seen near the river at dawn.".to_string(),
+            checkable: true,
+        });
+        let by_number = tool.execute(json!({ "passage": n }), &in_a).await.unwrap();
+        assert!(by_number.text_for_model.contains("heron"));
+        assert!(!by_number.text_for_model.contains(&folder));
         assert!(matches!(
-            tool.execute(json!({ "path": path }), &in_b).await,
-            Err(ToolError::Forbidden(_))
+            tool.execute(json!({ "passage": 999 }), &in_a).await,
+            Err(ToolError::NotFound(_))
         ));
+        assert!(matches!(
+            tool.execute(json!({}), &in_a).await,
+            Err(ToolError::InvalidArguments { .. })
+        ));
+        // Errors name the file, not its folders.
+        let missing = dir.path().join("gone.pdf").display().to_string();
+        match tool.execute(json!({ "path": missing }), &in_a).await {
+            Err(ToolError::NotFound(message)) => {
+                assert!(
+                    message.starts_with("gone.pdf is not an indexed file"),
+                    "{message}"
+                );
+                assert!(!message.contains(&folder), "{message}");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+        let in_b = ctx().with_scope(Arc::new(workspace("ws-b")));
+        match tool.execute(json!({ "path": path }), &in_b).await {
+            Err(ToolError::Forbidden(message)) => {
+                assert!(!message.contains(&folder), "{message}");
+                assert!(message.contains("notes.md"), "{message}");
+            }
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
     }
 
     fn open(

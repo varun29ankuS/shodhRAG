@@ -369,7 +369,9 @@ pub struct CodePrefs {
 }
 
 /// Why a Code mode answer was refused while Code mode is off.
-pub const CODE_MODE_OFF: &str = "Code mode is off, so answers cannot change files or run commands.      Turn it on in Settings → Privacy, or switch this conversation to Research.";
+pub const CODE_MODE_OFF: &str =
+    "Code mode is off, so answers cannot change files or run commands. \
+     Turn it on in Settings → Privacy, or switch this conversation to Research.";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

@@ -114,6 +114,10 @@ impl SearchDocumentsTool {
 struct Passage {
     n: u32,
     file: String,
+    /// The file's path (the index's identity): sent in the step detail, never in
+    /// the text the model reads, which names the file by `file` (a path holds the
+    /// user's name and folders, which an answer must not quote).
+    #[serde(skip)]
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<String>,
@@ -148,7 +152,10 @@ struct Passage {
 /// installed (the first run, before or while setup downloads them). It is told
 /// what to say, so the answer is a clear message, never an empty reply or an
 /// answer from memory that reads as if it came from the user's files.
-pub const SEARCH_NOT_READY: &str = "Search is not ready yet: Shodh is still setting up the search      models on this computer (a one-time download). Tell the user that their files can be      searched once setup finishes, which Ask shows with its progress, and do not answer from      memory as if you had searched their files.";
+pub const SEARCH_NOT_READY: &str = "Search is not ready yet: Shodh is still setting up the search \
+     models on this computer (a one-time download). Tell the user that their files can be \
+     searched once setup finishes, which Ask shows with its progress, and do not answer from \
+     memory as if you had searched their files.";
 
 /// A failed search as the model reads it.
 fn search_failure(error: anyhow::Error) -> ToolError {
@@ -164,11 +171,12 @@ fn search_failure(error: anyhow::Error) -> ToolError {
 }
 
 impl Passage {
-    /// The passage as shown to the UI: the model's fields plus `regions` and
-    /// `display_path`.
+    /// The passage as shown to the UI: the model's fields plus `path`, `regions`
+    /// and `display_path`.
     fn detail_value(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
         if let Some(map) = value.as_object_mut() {
+            map.insert("path".to_string(), json!(self.path));
             if let Some(regions) = &self.regions {
                 map.insert("regions".to_string(), regions.clone());
             }
@@ -1736,6 +1744,30 @@ mod tests {
         paths.sort();
         paths.dedup();
         (paths, out.text_for_model)
+    }
+
+    #[tokio::test]
+    async fn search_results_name_files_never_their_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let rag = Box::pin(engine_with_two_spaces(dir.path())).await;
+        let tool = SearchDocumentsTool::new(rag);
+        let (paths, text) = search_paths(
+            &tool,
+            RunScope::default(),
+            json!({"query": "notice period days"}),
+        )
+        .await;
+        // The app keeps every path (citations open the file)...
+        assert_eq!(paths.len(), 3, "{paths:?}");
+        assert!(paths.iter().all(|p| p.contains("docs/")), "{paths:?}");
+        // ...the model reads file names only.
+        let lower = text.to_lowercase();
+        assert!(
+            !lower.contains("c:/docs") && !lower.contains("docs/"),
+            "{text}"
+        );
+        assert!(!text.contains("\"path\""), "{text}");
+        assert!(text.contains("inside.txt"), "{text}");
     }
 
     #[tokio::test]

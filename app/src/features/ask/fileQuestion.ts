@@ -7,8 +7,10 @@
  * connector the conversation is continued in.
  *
  * The reference waits per conversation (like the draft) as a removable chip, and the user
- * message keeps it (metadata `aboutFiles`) so Retry asks about the same file again. Kept
- * for the session only. No imports: unit-tested under Node.
+ * message keeps it (metadata `aboutFiles`) so Retry asks about the same file again. Once
+ * a question about it is sent, the file stays the chat's search limit: follow-ups are about
+ * it too, and the conversation keeps it (`aboutFile`) until the user removes the chip.
+ * No imports: unit-tested under Node.
  */
 
 /** A file a question is about. */
@@ -75,6 +77,36 @@ export function replaceFilePrefix(draft: string, previous: FileRef | null, text:
 /** A title fit for the question: one line, no surrounding space. */
 function displayName(name: string): string {
   return name.replace(/\s+/g, ' ').trim();
+}
+
+/** The file a conversation keeps as its search limit, as saved with it. */
+export interface ConversationFile {
+  path: string;
+  name: string;
+}
+
+/** A conversation's saved file limit, if it holds a usable one. */
+export function readConversationFile(value: unknown): FileRef | null {
+  if (!isRecord(value) || typeof value.path !== 'string') return null;
+  const path = value.path.trim();
+  if (!path) return null;
+  const name = typeof value.name === 'string' && value.name.trim() ? displayName(value.name) : fileNameOfPath(path);
+  return { path, name };
+}
+
+/**
+ * What a chat keeps after a question about `sent` went out: the same file, without the
+ * composer text it came with (that text was sent).
+ */
+export function keptFile(sent: FileRef): ConversationFile {
+  return { path: sent.path.trim(), name: displayName(sent.name) || fileNameOfPath(sent.path) };
+}
+
+/** Whether a conversation's saved limit already is `file`. */
+export function sameConversationFile(saved: unknown, file: ConversationFile | null): boolean {
+  const current = readConversationFile(saved);
+  if (!current || !file) return current === null && file === null;
+  return current.path === file.path && current.name === file.name;
 }
 
 /** The last segment of a path (either separator), for a reference stored without its name. */

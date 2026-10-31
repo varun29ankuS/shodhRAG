@@ -30,7 +30,8 @@ import { useQueuedQuestion } from '../../features/setup/useQueuedQuestion';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
 import { useSendOptions } from '../../features/ask/useSendOptions';
-import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from '../../features/ask/AttachmentChips';
+import { AttachmentChips, FileRefChip, useChatFileScope, useImageAttachments } from '../../features/ask/AttachmentChips';
+import type { ConversationFile } from '../../features/ask/fileQuestion';
 import { attachedContextOf, composerAttachments } from '../../features/ask/imageAttachments';
 import { composerFiles, limitedToFiles } from '../../features/ask/fileQuestion';
 import { missingIndexedFiles, reportMissingFiles } from '../../features/ask/fileQuestionApi';
@@ -127,7 +128,13 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   const sendOptions = useSendOptions(sources);
   // Image text attached in Ask goes out with a reply sent from here too.
   const attachments = useImageAttachments(session.activeConversationId);
-  const aboutFile = useComposerFile(session.activeConversationId);
+  // As in Ask: an "About <file>" chat stays limited to that file until its chip is removed.
+  const saveAboutFile = useCallback((file: ConversationFile | null) => {
+    const id = session.activeConversationId;
+    if (id) session.updateConversationMeta(id, { aboutFile: file ?? undefined });
+  }, [session.activeConversationId, session.updateConversationMeta]);
+  const fileScope = useChatFileScope(session.activeConversationId, session.activeConversation?.aboutFile, saveAboutFile);
+  const aboutFile = fileScope.file;
   // Read after the file check: a conversation switch meanwhile cancels the send.
   const shownConversationRef = useRef(session.activeConversationId);
   shownConversationRef.current = session.activeConversationId;
@@ -340,7 +347,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       if (!send(text, limitedToFiles(sendOptions, file ? [file.path] : []), { attachedContext: attachedContextOf(attached) })) return;
       setDraft('');
       composerAttachments.consume(conversationId, attached);
-      composerFiles.consume(conversationId, file);
+      if (file) fileScope.keep(file);
     };
     if (!file) {
       go();
@@ -352,7 +359,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       .then(missing => {
         if (shownConversationRef.current !== conversationId) return;
         if (missing.length === 0) go();
-        else reportMissingFiles(missing, false, () => composerFiles.set(conversationId, null));
+        else reportMissingFiles(missing, false, fileScope.remove);
       })
       .finally(() => {
         checkingFileRef.current = false;
@@ -490,7 +497,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
             placeholder="Reply…"
             attachments={(
               <>
-                {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact />}
+                {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} compact onRemove={fileScope.remove} />}
                 <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} compact />
               </>
             )}

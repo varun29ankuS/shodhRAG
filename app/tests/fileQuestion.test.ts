@@ -19,8 +19,11 @@ import {
   missingFileNotice,
   missingFiles,
   paperQuestion,
+  keptFile,
   readAboutFiles,
+  readConversationFile,
   replaceFilePrefix,
+  sameConversationFile,
 } from '../src/features/ask/fileQuestion.ts';
 
 const PATH = 'c:/users/someone/documents/research papers/2605.04308 - memory as a markov matrix.pdf';
@@ -184,4 +187,37 @@ test('a missing file is said by name, never by path', () => {
   const retry = missingFileNotice(['a/x.pdf', 'b/y.pdf'], true);
   assert.equal(retry.title, 'These files are no longer in your library');
   assert.ok(retry.description.startsWith('x.pdf, y.pdf were removed or renamed, so this question cannot be asked about them again.'), retry.description);
+});
+
+test('an About-file chat keeps its file for follow-ups until the chip is removed', () => {
+  const sent = { path: 'C:/papers/spann.pdf', name: 'SPANN', prefix: 'About SPANN: ' };
+  // After the first question the chat keeps the file, without the composer text it came with.
+  const kept = keptFile(sent);
+  assert.deepEqual(kept, { path: 'C:/papers/spann.pdf', name: 'SPANN' });
+  // Saved with the conversation and read back on the next open.
+  assert.deepEqual(readConversationFile(kept), { path: 'C:/papers/spann.pdf', name: 'SPANN' });
+  assert.equal(sameConversationFile(kept, kept), true);
+  assert.equal(sameConversationFile(undefined, kept), false);
+  assert.equal(sameConversationFile(undefined, null), true);
+  assert.equal(sameConversationFile(kept, null), false);
+  // A saved limit without a name is named by its file; nonsense is no limit.
+  assert.deepEqual(readConversationFile({ path: ' C:/papers/diskann.pdf ' }), { path: 'C:/papers/diskann.pdf', name: 'diskann.pdf' });
+  for (const value of [undefined, null, 'C:/x.pdf', { path: '' }, { path: 3 }, []]) {
+    assert.equal(readConversationFile(value), null, JSON.stringify(value));
+  }
+  // Every follow-up is limited to the kept file (and only that file).
+  assert.deepEqual(
+    limitedToFiles({ sourceIds: ['lib-1'], sourceFiles: [] }, [kept.path]),
+    { sourceIds: [], sourceFiles: ['C:/papers/spann.pdf'] },
+  );
+
+  // The composer's store keeps the chip after the send, and removing it forgets the file.
+  const store = new FileRefStore();
+  store.set('conv-1', sent);
+  const chosen = store.get('conv-1');
+  assert.ok(chosen);
+  store.set('conv-1', keptFile(chosen));
+  assert.deepEqual(store.get('conv-1'), { path: 'C:/papers/spann.pdf', name: 'SPANN' });
+  store.set('conv-1', null);
+  assert.equal(store.get('conv-1'), null);
 });

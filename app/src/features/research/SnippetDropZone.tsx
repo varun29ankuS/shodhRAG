@@ -58,7 +58,7 @@ export function SnippetDropZone({ onInsert, children, className }: { onInsert: (
       {children}
       {over && (
         <div
-          className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[14px] border-2 border-dashed border-shodh-accent bg-shodh-ground/70 text-[13px] font-medium text-shodh-text"
+          className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[14px] border-2 border-dashed border-shodh-accent bg-shodh-ground/70 text-small font-medium text-shodh-text"
           aria-hidden="true"
         >
           Drop to add the snippet as context

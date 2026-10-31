@@ -41,7 +41,7 @@ export function SuggestionsBadge({ onOpen }: { onOpen: () => void }) {
       onClick={onOpen}
       className={cn(
         'shrink-0 h-[22px] px-2 inline-flex items-center gap-1 rounded-full border border-shodh-border bg-shodh-surface',
-        'text-[11.5px] text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+        'text-caption text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
         FOCUS_RING,
       )}
       aria-label={`${text}: review them in Settings, Memory`}

@@ -6,7 +6,7 @@ import { nextRing, presetReminder, REMINDER_PRESETS, reminderChoice, reminderLab
 import type { TodoItem } from './types';
 
 const SELECT = cn(
-  'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text',
+  'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text',
   'hover:border-shodh-border-strong focus:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
 );
 
@@ -99,7 +99,7 @@ export function ReminderField({
         />
       )}
       {status && (
-        <p id={statusId} className="text-[11px] text-shodh-text-faint">
+        <p id={statusId} className="text-caption text-shodh-text-faint">
           {status} Reminders ring on this computer while Shodh is running, also from the tray.
         </p>
       )}
@@ -115,7 +115,7 @@ export function ReminderBadge({ task }: { task: TodoItem }) {
   const text = status === 'snoozed' ? `Snoozed until ${reminderLabel(ring)}` : `Reminder ${reminderLabel(ring)}`;
   return (
     <span
-      className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-[11.5px] text-shodh-text-muted"
+      className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted"
       title={text}
     >
       <BellRing className="w-3 h-3" aria-hidden="true" />

@@ -25,10 +25,10 @@ export function SymbolsBlock({ source }: { source: string }) {
   if ('error' in parsed) return <BlockError title="Symbols not shown" message={parsed.error} source={source} />;
   return (
     <aside aria-labelledby={headingId} className="my-3 rounded-xl border border-shodh-border-subtle bg-shodh-surface-2 px-3 py-2">
-      <h4 id={headingId} className="m-0 mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+      <h4 id={headingId} className="m-0 mb-1 text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
         Symbols
       </h4>
-      <dl className="m-0 grid grid-cols-[minmax(0,auto)_1fr] gap-x-3 gap-y-1 text-[13px] leading-snug">
+      <dl className="m-0 grid grid-cols-[minmax(0,auto)_1fr] gap-x-3 gap-y-1 text-small leading-snug">
         {parsed.symbols.map(s => (
           <React.Fragment key={s.symbol}>
             <dt className="text-shodh-text overflow-x-auto scrollbar-thin">
@@ -82,7 +82,7 @@ function Step({
       <FocusFrame noun={`step ${index + 1}`} getTarget={getTarget} doubleClick={false}>
         <div className="flex items-start gap-3 py-2 pr-28">
           <span
-            className="shrink-0 mt-1 inline-flex items-center justify-center w-6 h-6 rounded-full bg-shodh-raised-2 text-[11.5px] font-semibold tabular-nums text-shodh-text-secondary"
+            className="shrink-0 mt-1 inline-flex items-center justify-center w-6 h-6 rounded-full bg-shodh-raised-2 text-caption font-semibold tabular-nums text-shodh-text-secondary"
             aria-hidden="true"
           >
             {index + 1}
@@ -97,7 +97,7 @@ function Step({
               aria-expanded={open}
               aria-controls={reasonId}
               className={cn(
-                'mt-1 h-6 px-1.5 -ml-1.5 inline-flex items-center gap-1 rounded-md text-[12px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+                'mt-1 h-6 px-1.5 -ml-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
                 FOCUS_RING,
               )}
             >
@@ -105,10 +105,10 @@ function Step({
               {`Why step ${index + 1}`}
               {step.support === 'unsupported' && <AlertTriangle className="w-3 h-3 text-shodh-warning" aria-label="no source or algebra given" />}
             </button>
-            <div id={reasonId} hidden={!open} className="mt-1 pl-2 border-l-2 border-shodh-border-subtle text-[13.5px] leading-relaxed text-shodh-text-secondary">
+            <div id={reasonId} hidden={!open} className="mt-1 pl-2 border-l-2 border-shodh-border-subtle text-body leading-relaxed text-shodh-text-secondary">
               {text ? renderInline(text) : <span className="italic text-shodh-text-muted">No justification was given.</span>}
               {step.support === 'unsupported' && (
-                <span className="block mt-0.5 text-[12px] text-shodh-warning">This step cites no source and is not marked as algebra.</span>
+                <span className="block mt-0.5 text-caption text-shodh-warning">This step cites no source and is not marked as algebra.</span>
               )}
             </div>
           </div>
@@ -143,12 +143,12 @@ export function DerivationBlock({ source }: { source: string }) {
   return (
     <section aria-labelledby={headingId} className="my-4 rounded-xl border border-shodh-border bg-shodh-surface">
       <header className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-shodh-border-subtle">
-        <h4 id={headingId} className="m-0 flex-1 min-w-0 text-[14px] font-semibold text-shodh-text truncate">
+        <h4 id={headingId} className="m-0 flex-1 min-w-0 text-body font-semibold text-shodh-text truncate">
           {derivation.title || 'Derivation'}
         </h4>
-        <span className="text-[12px] text-shodh-text-muted">{`${derivation.steps.length} ${derivation.steps.length === 1 ? 'step' : 'steps'}`}</span>
+        <span className="text-caption text-shodh-text-muted">{`${derivation.steps.length} ${derivation.steps.length === 1 ? 'step' : 'steps'}`}</span>
         {unsupported > 0 && (
-          <span className="inline-flex items-center gap-1 text-[12px] text-shodh-warning">
+          <span className="inline-flex items-center gap-1 text-caption text-shodh-warning">
             <AlertTriangle className="w-3 h-3" aria-hidden="true" />
             {`${unsupported} without a source`}
           </span>
@@ -156,7 +156,7 @@ export function DerivationBlock({ source }: { source: string }) {
         <button
           type="button"
           onClick={() => setOpen(all ? new Set() : new Set(derivation.steps.map((_, i) => i)))}
-          className={cn('h-7 px-2 rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
+          className={cn('h-7 px-2 rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro', FOCUS_RING)}
         >
           {all ? 'Hide reasons' : 'Show all reasons'}
         </button>

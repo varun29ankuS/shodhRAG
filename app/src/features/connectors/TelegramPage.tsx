@@ -87,7 +87,7 @@ function Meter({ share, label }: { share: number; label: string }) {
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-shodh-border-subtle bg-shodh-surface p-4 min-w-0">
-      <p className="m-0 text-[12px] font-medium text-shodh-text-muted">{title}</p>
+      <p className="m-0 text-caption font-medium text-shodh-text-muted">{title}</p>
       {children}
     </div>
   );
@@ -103,31 +103,31 @@ function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: TelegramT
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Panel title="Connection">
-          <p className="m-0 flex items-center gap-2 text-[13.5px] font-semibold text-shodh-text">
+          <p className="m-0 flex items-center gap-2 text-body font-semibold text-shodh-text">
             <span aria-hidden="true" className={cn('w-2 h-2 rounded-full shrink-0', TONE_DOT[line.tone])} />
             <span className="min-w-0 break-words">{line.title}</span>
           </p>
-          {line.detail && <p className={cn('m-0 text-[12.5px] break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
-          <p className="m-0 text-[12px] text-shodh-text-muted">{lastUpdateLine(status, now)}</p>
-          {on && <p className="m-0 text-[12px] text-shodh-text-muted">{TELEGRAM_RUNNING_HINT}</p>}
+          {line.detail && <p className={cn('m-0 text-small break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
+          <p className="m-0 text-caption text-shodh-text-muted">{lastUpdateLine(status, now)}</p>
+          {on && <p className="m-0 text-caption text-shodh-text-muted">{TELEGRAM_RUNNING_HINT}</p>}
         </Panel>
         <Panel title="Your account">
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text">{ownerLine(status)}</p>
-          <p className="m-0 text-[12px] text-shodh-text-muted">
+          <p className="m-0 text-body font-semibold text-shodh-text">{ownerLine(status)}</p>
+          <p className="m-0 text-caption text-shodh-text-muted">
             {status.owner
               ? 'Your chat answers from all your workspaces and memories. It can’t change anything; open Shodh for that.'
               : 'Link it to ask Shodh from your phone.'}
           </p>
         </Panel>
         <Panel title="Answers to others today">
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text tabular-nums">
+          <p className="m-0 text-body font-semibold text-shodh-text tabular-nums">
             {status.answersToday} of {status.dailyCap}
           </p>
           <Meter share={capShare(status)} label="Answers to others used today" />
-          <p className="m-0 text-[12px] text-shodh-text-muted">{telegramUsageLine(status, now)}</p>
+          <p className="m-0 text-caption text-shodh-text-muted">{telegramUsageLine(status, now)}</p>
         </Panel>
         <Panel title="People & groups">
-          <p className="m-0 text-[13px] text-shodh-text">
+          <p className="m-0 text-small text-shodh-text">
             {status.people.length} {status.people.length === 1 ? 'person' : 'people'}, {status.groups.filter(g => g.allowed).length} allowed{' '}
             {status.groups.filter(g => g.allowed).length === 1 ? 'group' : 'groups'}
             {waitingGroups(status).length > 0 && `, ${waitingGroups(status).length} waiting`}
@@ -149,8 +149,8 @@ function OverviewTab({ status, now, onTab }: TabProps & { onTab: (tab: TelegramT
               <li key={step.id} className="flex flex-wrap sm:flex-nowrap items-start gap-3 px-4 py-3">
                 <span aria-hidden="true" className={cn('mt-1.5 w-2 h-2 rounded-full shrink-0', TONE_DOT[step.tone])} />
                 <div className="flex-1 min-w-0">
-                  <p className="m-0 text-[13px] font-semibold text-shodh-text">{step.title}</p>
-                  <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted break-words">{step.detail}</p>
+                  <p className="m-0 text-small font-semibold text-shodh-text">{step.title}</p>
+                  <p className="m-0 mt-0.5 text-small text-shodh-text-muted break-words">{step.detail}</p>
                 </div>
                 {step.tab && step.action && (
                   <button type="button" className={cn(OUTLINE_BUTTON, 'shrink-0')} onClick={() => onTab(step.tab as TelegramTabId)}>
@@ -183,10 +183,10 @@ function OwnerSection(props: TabProps) {
       {status.owner ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-shodh-border-subtle bg-shodh-surface px-4 py-3">
           <CheckCircle2 className="w-4 h-4 text-shodh-success shrink-0" aria-hidden="true" />
-          <span className="text-[13px] font-medium text-shodh-text">{ownerLine(status)}</span>
+          <span className="text-small font-medium text-shodh-text">{ownerLine(status)}</span>
           {confirm ? (
             <span role="alertdialog" aria-label="Unlink your account" className="ml-auto flex items-center gap-2">
-              <span className="text-[12.5px] text-shodh-text-secondary">The bot will refuse this account.</span>
+              <span className="text-small text-shodh-text-secondary">The bot will refuse this account.</span>
               <button
                 type="button"
                 className={DANGER_BUTTON}
@@ -252,7 +252,7 @@ function WorkspaceSection(props: TabProps & { workspaces: WorkspaceListing[] | n
       )}
       {pending ? (
         <div role="alertdialog" aria-label="Confirm the workspace others are answered from" className="flex flex-col gap-2 rounded-lg border border-shodh-warning/40 bg-shodh-warning-soft px-3.5 py-3">
-          <p className="m-0 text-[12.5px] text-shodh-text-secondary">
+          <p className="m-0 text-small text-shodh-text-secondary">
             Everyone you invite, and every group you allow, will get answers from the documents of “{pending.name}”.
           </p>
           <div className="flex items-center gap-2">
@@ -280,7 +280,7 @@ function WorkspaceSection(props: TabProps & { workspaces: WorkspaceListing[] | n
           </div>
         </div>
       ) : (
-        <p className={cn('m-0 text-[12.5px] max-w-[68ch]', TONE_TEXT[source.tone])}>{source.text}</p>
+        <p className={cn('m-0 text-small max-w-[68ch]', TONE_TEXT[source.tone])}>{source.text}</p>
       )}
     </Section>
   );
@@ -304,14 +304,14 @@ function PeopleSection(props: TabProps) {
     >
       {inviting && <LinkCard kind="invite" botUsername={status.bot.username} />}
       {status.people.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">Nobody else can ask. Invite someone to let them.</p>
+        <p className="m-0 text-small text-shodh-text-muted">Nobody else can ask. Invite someone to let them.</p>
       ) : (
         <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
           {status.people.map(p => (
             <li key={p.id} className="flex items-center gap-3 px-4 py-2.5">
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] text-shodh-text truncate">{p.name}</span>
-                {p.username && <span className="block text-[12px] text-shodh-text-muted truncate">@{p.username}</span>}
+                <span className="block text-small text-shodh-text truncate">{p.name}</span>
+                {p.username && <span className="block text-caption text-shodh-text-muted truncate">@{p.username}</span>}
               </span>
               <button
                 type="button"
@@ -338,7 +338,7 @@ function GroupsSection(props: TabProps) {
   return (
     <Section title="Groups" description={groupPrivacyLine(status)}>
       {status.groups.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           Add the bot to a Telegram group and it appears here, waiting for you. Nobody there gets an answer until you allow it.
         </p>
       ) : (
@@ -347,8 +347,8 @@ function GroupsSection(props: TabProps) {
             <li key={g.id} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
               <Users className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] text-shodh-text truncate">{g.title}</span>
-                <span className={cn('block text-[12px]', g.allowed ? 'text-shodh-text-muted' : 'text-shodh-warning')}>
+                <span className="block text-small text-shodh-text truncate">{g.title}</span>
+                <span className={cn('block text-caption', g.allowed ? 'text-shodh-text-muted' : 'text-shodh-warning')}>
                   {g.allowed ? 'Allowed' : `Waiting for you${g.addedBy ? `: added by ${g.addedBy}` : ''}`}
                 </span>
               </span>
@@ -394,7 +394,7 @@ function CapSection(props: TabProps) {
     >
       <div className="flex flex-col gap-2 max-w-sm">
         <Meter share={capShare(status)} label="Answers to others used today" />
-        <p className="m-0 text-[12px] text-shodh-text-muted">{telegramUsageLine(status, now)}</p>
+        <p className="m-0 text-caption text-shodh-text-muted">{telegramUsageLine(status, now)}</p>
       </div>
       <form
         className="flex items-center gap-2"
@@ -403,7 +403,7 @@ function CapSection(props: TabProps) {
           if (cap !== null && cap !== status.dailyCap) void run(() => telegramApi.setDailyCap(cap), 'The daily limit was not saved');
         }}
       >
-        <label htmlFor={capId} className="text-[12.5px] text-shodh-text-secondary">Daily limit</label>
+        <label htmlFor={capId} className="text-small text-shodh-text-secondary">Daily limit</label>
         <input
           id={capId}
           type="number"
@@ -421,7 +421,7 @@ function CapSection(props: TabProps) {
         <button type="submit" className={OUTLINE_BUTTON} disabled={busy || cap === null || cap === status.dailyCap}>Save</button>
       </form>
       {cap === null && capInput.trim() !== '' && (
-        <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+        <p role="alert" className="m-0 text-small text-shodh-error">
           Enter a whole number from {status.minDailyCap} to {status.maxDailyCap}.
         </p>
       )}
@@ -461,7 +461,7 @@ function SettingsTab(props: TabProps & { onDisconnect: () => void }) {
         <div className="flex flex-col gap-3">
           <LearnMore summary="Telegram bot chats are not end-to-end encrypted.">{status.privacyNote}</LearnMore>
           <LearnMore summary="Messages go to your model provider.">{TELEGRAM_MODEL_NOTE}</LearnMore>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">{TELEGRAM_RUNNING_HINT}</p>
+          <p className="m-0 text-small text-shodh-text-muted">{TELEGRAM_RUNNING_HINT}</p>
         </div>
       </Section>
 
@@ -488,8 +488,8 @@ function DisconnectConfirm({ status, busy, onDone, run }: { status: TelegramStat
       className="flex flex-col gap-3 rounded-xl border border-shodh-error/40 bg-shodh-surface p-4"
     >
       <div>
-        <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Disconnect {bot}?</p>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-secondary max-w-[68ch]">
+        <p className="m-0 text-body font-semibold text-shodh-text">Disconnect {bot}?</p>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-secondary max-w-[68ch]">
           The token is deleted from this computer and the bot stops answering, you and everyone you allowed. Keep the Telegram
           conversations in Shodh’s sidebar, or remove them too? Messages already in Telegram stay there.
         </p>
@@ -519,7 +519,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
-  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
   return (
     <div ref={menuRef} className="relative shrink-0">
       <button ref={buttonRef} type="button" className={cn(QUIET_BUTTON, 'w-9 h-9 justify-center px-0')} aria-label="Telegram options" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>
@@ -574,7 +574,7 @@ function HeaderMenu({ onDisconnect, link }: { onDisconnect: () => void; link: st
 
 function Breadcrumb({ onBack }: { onBack: () => void }) {
   return (
-    <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-[12.5px]">
+    <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-small">
       <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5')} onClick={onBack} aria-label="Back to all connectors">
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         Connectors
@@ -685,7 +685,7 @@ export function TelegramPage({
               <StatusPill pill={pill} />
             </span>
           </div>
-          <p className="m-0 mt-0.5 text-[13px] text-shodh-text-secondary truncate">
+          <p className="m-0 mt-0.5 text-small text-shodh-text-secondary truncate">
             {status.bot ? `@${status.bot.username} · ${ownerLine(status)}` : 'Ask Shodh from your phone, with your whole library and memories.'}
           </p>
         </div>
@@ -712,7 +712,7 @@ export function TelegramPage({
           <CheckCircle2 className="w-7 h-7 text-shodh-success" aria-hidden="true" />
           <div>
             <h3 id="telegram-linked" className="m-0 text-[16px] font-semibold text-shodh-text">{ownerLine(status)}</h3>
-            <p className="m-0 mt-1 text-[13px] text-shodh-text-secondary max-w-[60ch]">
+            <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
               Ask anything in that chat: Shodh answers from all your workspaces and memories, with sources. Send /new for a fresh
               conversation. Your Telegram conversations appear in Shodh’s sidebar too.
             </p>
@@ -753,7 +753,7 @@ export function TelegramPage({
                 >
                   {TELEGRAM_TAB_LABELS[t]}
                   {badge && (
-                    <span className="min-w-[18px] h-[18px] px-1 inline-flex items-center justify-center rounded-full text-[10.5px] font-semibold tabular-nums bg-shodh-warning-soft text-shodh-warning">
+                    <span className="min-w-[18px] h-[18px] px-1 inline-flex items-center justify-center rounded-full text-caption font-semibold tabular-nums bg-shodh-warning-soft text-shodh-warning">
                       {badge.count}
                       <span className="sr-only"> waiting</span>
                     </span>

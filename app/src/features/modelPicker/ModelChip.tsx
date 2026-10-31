@@ -107,13 +107,13 @@ export function ModelChip({ answerRunning, onOpenSettings }: ModelChipProps) {
         aria-label={`Model: ${label}${source ? ` (${source.toLowerCase()})` : ''}. Change model`}
         title={source ? `${label} (${source})` : label}
         className={cn(
-          'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-[12.5px] text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
+          'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
           FOCUS_RING,
         )}
       >
         <span className={cn('w-[7px] h-[7px] rounded-full shrink-0', active ? 'bg-shodh-info' : 'bg-shodh-warning')} aria-hidden="true" />
         <span className="truncate max-w-[200px]">{label}</span>
-        {source && <span className="shrink-0 text-[11px] text-shodh-text-faint">· {source}</span>}
+        {source && <span className="shrink-0 text-caption text-shodh-text-faint">· {source}</span>}
         <ChevronDown className="w-3 h-3 shrink-0" aria-hidden="true" />
       </button>
       {open &&

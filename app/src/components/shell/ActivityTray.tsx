@@ -125,7 +125,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
         <Activity className="w-4 h-4" aria-hidden="true" />
         {count > 0 && (
           <span
-            className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-[3px] rounded-full bg-shodh-accent text-shodh-on-accent text-[9.5px] font-bold leading-[15px] text-center tabular-nums"
+            className="absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-[3px] rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[15px] text-center tabular-nums"
             aria-hidden="true"
           >
             {count}
@@ -140,8 +140,8 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
           aria-label="Running now"
           className="ask-rise absolute z-50 bottom-full left-0 mb-2 w-[300px] rounded-xl border border-shodh-border-strong bg-shodh-surface shadow-[0_12px_36px_rgba(0,0,0,0.32)] p-2 flex flex-col gap-1"
         >
-          <p className="px-2 pt-1 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-shodh-text-faint">Running now</p>
-          {count === 0 && <p className="px-2 py-2 text-[12.5px] text-shodh-text-muted">Nothing is running.</p>}
+          <p className="px-2 pt-1 pb-0.5 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">Running now</p>
+          {count === 0 && <p className="px-2 py-2 text-small text-shodh-text-muted">Nothing is running.</p>}
 
           {liveRun && (
             <div className="flex items-start gap-2 rounded-lg px-2 py-2 hover:bg-shodh-raised">
@@ -154,9 +154,9 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                 }}
                 className={cn('min-w-0 flex-1 text-left rounded-sm', FOCUS_RING)}
               >
-                <span className="block text-[12.5px] font-medium text-shodh-text truncate">{conversationTitle}</span>
-                <span className="block text-[11.5px] text-shodh-text-muted truncate">{runActivity(liveRun.transcript)}</span>
-                <span className="block text-[11px] font-mono text-shodh-text-faint tabular-nums">
+                <span className="block text-small font-medium text-shodh-text truncate">{conversationTitle}</span>
+                <span className="block text-caption text-shodh-text-muted truncate">{runActivity(liveRun.transcript)}</span>
+                <span className="block text-caption font-mono text-shodh-text-faint tabular-nums">
                   {formatMs(Math.max(0, now - liveRun.transcript.startedAtMs))}
                 </span>
               </button>
@@ -179,9 +179,9 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
             <div className="flex items-start gap-2 px-2 py-1.5" role="status" aria-live="polite">
               <Bot className="w-3.5 h-3.5 mt-[2px] shrink-0 text-shodh-text-faint" aria-hidden="true" />
               <div className="min-w-0 flex flex-col">
-                <span className="text-[12px] text-shodh-text-secondary tabular-nums">{sessionCountsLabel(sessions)}</span>
+                <span className="text-caption text-shodh-text-secondary tabular-nums">{sessionCountsLabel(sessions)}</span>
                 {sessions.side > 0 && (
-                  <span className="text-[11px] text-shodh-text-faint">Side discussions close after 5 minutes idle.</span>
+                  <span className="text-caption text-shodh-text-faint">Side discussions close after 5 minutes idle.</span>
                 )}
               </div>
             </div>
@@ -195,7 +195,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
               <div key={job.id} className="flex items-start gap-2 rounded-lg px-2 py-2">
                 <span className="mt-[5px] w-2 h-2 rounded-full shrink-0 bg-shodh-warning" aria-hidden="true" />
                 <div className="min-w-0 flex-1 flex flex-col gap-1">
-                  <span className="text-[12.5px] font-medium text-shodh-text truncate">{`Indexing ${job.name}`}</span>
+                  <span className="text-small font-medium text-shodh-text truncate">{`Indexing ${job.name}`}</span>
                   <div
                     role="progressbar"
                     aria-label={`Indexing ${job.name}`}
@@ -209,12 +209,12 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                       style={{ transform: `scaleX(${percent / 100})` }}
                     />
                   </div>
-                  <span className="text-[11px] font-mono text-shodh-text-faint tabular-nums">
+                  <span className="text-caption font-mono text-shodh-text-faint tabular-nums">
                     {paused ? 'Paused · ' : ''}
                     {total > 0 ? `${processed.toLocaleString()} of ${countOf(total, 'file')} · ${percent}%` : 'Preparing files'}
                   </span>
                   {job.currentStep && (
-                    <span className="text-[11px] text-shodh-text-faint tabular-nums">{job.currentStep}</span>
+                    <span className="text-caption text-shodh-text-faint tabular-nums">{job.currentStep}</span>
                   )}
                 </div>
                 <button

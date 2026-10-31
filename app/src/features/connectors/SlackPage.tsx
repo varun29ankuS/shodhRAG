@@ -34,8 +34,8 @@ function DisconnectConfirm({
       className="flex flex-col gap-3 rounded-xl border border-shodh-error/40 bg-shodh-surface p-4"
     >
       <div>
-        <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Disconnect {status.installation?.teamName ?? 'Slack'}?</p>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-secondary max-w-[68ch]">
+        <p className="m-0 text-body font-semibold text-shodh-text">Disconnect {status.installation?.teamName ?? 'Slack'}?</p>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-secondary max-w-[68ch]">
           The tokens are deleted from this computer and the bot stops answering. Keep what was indexed from Slack (
           {channels} {channels === 1 ? 'channel' : 'channels'}, {memories} {memories === 1 ? 'memory' : 'memories'}), or forget all of it?
         </p>
@@ -100,7 +100,7 @@ function HeaderMenu({ onDisconnect }: { onDisconnect: () => void }) {
             type="button"
             role="menuitem"
             autoFocus
-            className="w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left text-shodh-error hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-error hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none"
             onClick={() => {
               setOpen(false);
               onDisconnect();
@@ -116,7 +116,7 @@ function HeaderMenu({ onDisconnect }: { onDisconnect: () => void }) {
 
 function Breadcrumb({ onBack }: { onBack: () => void }) {
   return (
-    <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-[12.5px]">
+    <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-small">
       <button type="button" className={cn(QUIET_BUTTON, '-ml-2.5')} onClick={onBack} aria-label="Back to all connectors">
         <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
         Connectors
@@ -229,7 +229,7 @@ export function SlackPage({
               <StatusPill pill={pill} />
             </span>
           </div>
-          <p className="m-0 mt-0.5 text-[13px] text-shodh-text-secondary truncate">
+          <p className="m-0 mt-0.5 text-small text-shodh-text-secondary truncate">
             {status.installation
               ? `${status.installation.teamName} · @${status.installation.botName}`
               : 'Your team asks @shodh in Slack and gets cited answers from one workspace you choose.'}
@@ -261,7 +261,7 @@ export function SlackPage({
             <h3 id="slack-connected" className="m-0 text-[16px] font-semibold text-shodh-text">
               Connected to {status.installation?.teamName} as @{status.installation?.botName}
             </h3>
-            <p className="m-0 mt-1 text-[13px] text-shodh-text-secondary max-w-[60ch]">
+            <p className="m-0 mt-1 text-small text-shodh-text-secondary max-w-[60ch]">
               Next, pick the workspace Slack answers from and the channels it answers in. Until then the bot replies that it
               isn’t set up yet.
             </p>
@@ -319,7 +319,7 @@ export function SlackPage({
                   {badge && (
                     <span
                       className={cn(
-                        'min-w-[18px] h-[18px] px-1 inline-flex items-center justify-center rounded-full text-[10.5px] font-semibold tabular-nums',
+                        'min-w-[18px] h-[18px] px-1 inline-flex items-center justify-center rounded-full text-caption font-semibold tabular-nums',
                         badge.tone === 'warning' ? 'bg-shodh-warning-soft text-shodh-warning' : 'bg-shodh-raised text-shodh-text-muted',
                       )}
                     >

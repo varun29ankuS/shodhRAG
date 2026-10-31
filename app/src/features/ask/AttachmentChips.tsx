@@ -78,7 +78,7 @@ export function FileRefChip({
   return (
     <div className={cn('flex', compact ? 'px-3 pt-2' : 'px-[18px] pt-3')}>
       <span
-        className="inline-flex items-center gap-1.5 h-7 max-w-full pl-2.5 pr-1 rounded-full bg-shodh-raised-2 text-[12px] text-shodh-text-secondary"
+        className="inline-flex items-center gap-1.5 h-7 max-w-full pl-2.5 pr-1 rounded-full bg-shodh-raised-2 text-caption text-shodh-text-secondary"
         title={`Answers in this chat search only ${file.name}, until you remove it`}
       >
         <FileText className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
@@ -118,7 +118,7 @@ export function AttachmentChips({
         return (
           <li
             key={attachment.id}
-            className="inline-flex items-center gap-1.5 h-7 max-w-full pl-2.5 pr-1 rounded-full bg-shodh-raised-2 text-[12px] text-shodh-text-secondary"
+            className="inline-flex items-center gap-1.5 h-7 max-w-full pl-2.5 pr-1 rounded-full bg-shodh-raised-2 text-caption text-shodh-text-secondary"
             title={attachment.text.slice(0, 400)}
           >
             <FileText className="w-3.5 h-3.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />

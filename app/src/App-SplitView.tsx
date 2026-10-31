@@ -81,6 +81,8 @@ import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
+import { useTextSizeShortcuts } from './hooks/useTextSize';
+import { shortcutText } from './lib/shortcuts';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
 import { WorkspaceProvider, useWorkspaces } from './features/workspaces/WorkspaceContext';
 import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
@@ -462,6 +464,8 @@ function AppSplitView() {
     };
   }, []);
   const { status: searchModelsStatus } = useSearchModels();
+  // Ctrl + / Ctrl − / Ctrl 0: the text size (Settings → Appearance), from anywhere.
+  useTextSizeShortcuts();
   const [showFeedback, setShowFeedback] = useState(false);
   // "New task…" / "New event…" over the current view (New menu, palette).
   const [quickCreate, setQuickCreate] = useState<QuickCreateKind | null>(null);
@@ -696,14 +700,14 @@ function AppSplitView() {
 
   // Primary actions offered by the command palette.
   const paletteActions: PaletteAction[] = [
-    { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: IS_MAC ? '⌘N' : 'Ctrl+N', run: newItemActions['new-chat'] },
+    { id: 'new-chat', label: 'New chat', icon: Plus, keywords: 'new chat conversation ask create', shortcut: shortcutText('newChat', IS_MAC), run: newItemActions['new-chat'] },
     { id: 'new-chat-plain', label: 'New chat outside workspaces', description: 'Searches your whole library', icon: MessageCircle, keywords: 'new chat no workspace library all', run: () => startChat(null) },
     { id: 'new-workspace', label: 'New workspace', description: 'Sources, instructions and chats for one piece of work', icon: Layers, keywords: 'new create workspace project template', run: newItemActions['new-workspace'] },
     { id: 'add-folder', label: 'Add folder to Library', description: 'Index a folder of documents', icon: FolderPlus, keywords: 'add source folder documents index import', run: newItemActions['add-folder'] },
     { id: 'new-task', label: 'New task', description: 'Add a task without leaving this view', icon: ListTodo, keywords: 'new create task todo reminder due', run: newItemActions['new-task'] },
     { id: 'new-event', label: 'New event', description: 'Add an event without leaving this view', icon: CalendarDays, keywords: 'new create event calendar meeting schedule', run: newItemActions['new-event'] },
     { id: 'choose-model', label: 'Choose model', description: 'Provider and model that answer', icon: Bot, keywords: 'model llm provider ai settings api key', run: () => setActiveTab('settings') },
-    { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: IS_MAC ? '⌘B' : 'Ctrl+B', run: toggleSidebar },
+    { id: 'toggle-sidebar', label: collapsed ? 'Expand sidebar' : 'Collapse sidebar', icon: collapsed ? PanelLeftOpen : PanelLeftClose, keywords: 'sidebar toggle hide show collapse expand', shortcut: shortcutText('toggleSidebar', IS_MAC), run: toggleSidebar },
     { id: 'toggle-theme', label: theme === 'dark' ? 'Use light theme' : 'Use dark theme', icon: theme === 'dark' ? Sun : Moon, keywords: 'theme dark light mode appearance', run: toggleTheme },
     { id: 'inbox', label: 'Inbox', description: 'Approvals, suggestions, reminders and finished work', icon: Bell, keywords: 'inbox notifications approvals approve pending reminders suggestions done finished', run: () => window.dispatchEvent(new Event(OPEN_INBOX_EVENT)) },
     { id: 'feedback', label: 'Send feedback', icon: Bug, keywords: 'feedback bug report problem', run: () => setShowFeedback(true) },
@@ -1555,7 +1559,7 @@ function AppSplitView() {
                 <button
                   type="button"
                   onClick={() => openWorkspace(workspace.id)}
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 max-w-[180px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="text-caption px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 max-w-[180px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title={`Workspace: ${workspace.name} (${sourceSummary(workspace.sourceCounts)}). Open it.`}
                 >
                   <WorkspaceIcon icon={workspace.icon} color={workspace.color} className="w-3 h-3" />
@@ -1589,7 +1593,7 @@ function AppSplitView() {
                     setEditingInstructionIdx(null);
                     setNewInstructionText('');
                   }}
-                  className="text-[10px] px-2 py-0.5 rounded-full font-medium transition-colors"
+                  className="text-caption px-2 py-0.5 rounded-full font-medium transition-colors"
                   style={{
                     backgroundColor: instructionsList.length > 0 ? `${colors.primary}14` : colors.bgTertiary,
                     color: instructionsList.length > 0 ? colors.primary : colors.textMuted,
@@ -1612,7 +1616,7 @@ function AppSplitView() {
                       <div className="px-3 py-2 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
                         <div>
                           <span className="text-xs font-semibold" style={{ color: colors.text }}>Custom Instructions</span>
-                          <p className="text-[10px] mt-0.5" style={{ color: colors.textMuted }}>
+                          <p className="text-caption mt-0.5" style={{ color: colors.textMuted }}>
                             Applied to every AI response in this chat
                           </p>
                         </div>
@@ -1632,8 +1636,8 @@ function AppSplitView() {
                       <div className="max-h-48 overflow-y-auto">
                         {instructionsList.length === 0 ? (
                           <div className="px-3 py-4 text-center">
-                            <p className="text-[11px]" style={{ color: colors.textMuted }}>No instructions yet</p>
-                            <p className="text-[10px] mt-0.5" style={{ color: colors.textTertiary }}>Add instructions below to guide AI responses</p>
+                            <p className="text-caption" style={{ color: colors.textMuted }}>No instructions yet</p>
+                            <p className="text-caption mt-0.5" style={{ color: colors.textTertiary }}>Add instructions below to guide AI responses</p>
                           </div>
                         ) : (
                           <div className="py-1">
@@ -1645,7 +1649,7 @@ function AppSplitView() {
                                 onMouseEnter={e => { if (editingInstructionIdx !== idx) e.currentTarget.style.backgroundColor = colors.bgTertiary; }}
                                 onMouseLeave={e => { if (editingInstructionIdx !== idx) e.currentTarget.style.backgroundColor = 'transparent'; }}
                               >
-                                <span className="text-[10px] mt-0.5 shrink-0 font-bold" style={{ color: colors.primary }}>•</span>
+                                <span className="text-caption mt-0.5 shrink-0 font-bold" style={{ color: colors.primary }}>•</span>
                                 {editingInstructionIdx === idx ? (
                                   <div className="flex-1 flex items-center gap-1">
                                     <input
@@ -1661,7 +1665,7 @@ function AppSplitView() {
                                       }}
                                       aria-label="Edit instruction"
                                       autoFocus
-                                      className="flex-1 text-[11px] bg-transparent border-b outline-none py-0.5"
+                                      className="flex-1 text-caption bg-transparent border-b outline-none py-0.5"
                                       style={{ color: colors.text, borderColor: colors.primary }}
                                     />
                                     <button
@@ -1685,7 +1689,7 @@ function AppSplitView() {
                                   </div>
                                 ) : (
                                   <>
-                                    <span className="flex-1 text-[11px] leading-snug" style={{ color: colors.textSecondary }}>
+                                    <span className="flex-1 text-caption leading-snug" style={{ color: colors.textSecondary }}>
                                       {instruction}
                                     </span>
                                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
@@ -1732,7 +1736,7 @@ function AppSplitView() {
                             // Focus starts here as the popover opens, and comes back here
                             // after Save, Cancel, Remove or Clear all (focusNewInstruction).
                             autoFocus
-                            className="flex-1 text-[11px] rounded-md border px-2 py-1.5 outline-none"
+                            className="flex-1 text-caption rounded-md border px-2 py-1.5 outline-none"
                             style={{
                               backgroundColor: colors.inputBg,
                               borderColor: colors.border,
@@ -1743,7 +1747,7 @@ function AppSplitView() {
                             type="button"
                             onClick={addInstruction}
                             disabled={!newInstructionText.trim()}
-                            className="px-2 py-1.5 rounded-md text-[10px] font-medium text-white transition-colors disabled:opacity-40"
+                            className="px-2 py-1.5 rounded-md text-caption font-medium text-white transition-colors disabled:opacity-40"
                             style={{ backgroundColor: colors.primary }}
                             aria-label="Add instruction"
                             title="Add instruction"
@@ -1759,7 +1763,7 @@ function AppSplitView() {
                               notify.success('All instructions cleared');
                               focusNewInstruction();
                             }}
-                            className="text-[10px] mt-1.5 transition-colors"
+                            className="text-caption mt-1.5 transition-colors"
                             style={{ color: colors.error }}
                           >
                             Clear all
@@ -1776,7 +1780,7 @@ function AppSplitView() {
               return (
                 <Badge
                   variant="outline"
-                  className="text-[10px] px-2 py-0.5 h-auto"
+                  className="text-caption px-2 py-0.5 h-auto"
                   style={{ borderColor: colors.border, color: colors.textMuted }}
                   title={chip.title}
                 >
@@ -1789,7 +1793,7 @@ function AppSplitView() {
         </div>
 
         {initError && (
-          <div role="alert" className="shrink-0 px-5 py-2 flex items-center gap-3 border-b border-shodh-border bg-shodh-warning-soft text-[12.5px] text-shodh-text">
+          <div role="alert" className="shrink-0 px-5 py-2 flex items-center gap-3 border-b border-shodh-border bg-shodh-warning-soft text-small text-shodh-text">
             <AlertTriangle className="w-4 h-4 shrink-0 text-shodh-warning" aria-hidden="true" />
             <span className="flex-1 min-w-0 break-words">{`The local index could not be opened: ${initError}`}</span>
             <button

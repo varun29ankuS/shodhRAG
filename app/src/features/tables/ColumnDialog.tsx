@@ -104,8 +104,8 @@ export function ColumnDialog({
         <Dialog.Content aria-describedby={ids.desc} className={DIALOG_CONTENT}>
           <header className={DIALOG_HEADER}>
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[15px] font-semibold">{column ? 'Edit column' : 'New column'}</Dialog.Title>
-              <Dialog.Description id={ids.desc} className="text-[12.5px] text-shodh-text-muted">
+              <Dialog.Title className="text-body-lg font-semibold">{column ? 'Edit column' : 'New column'}</Dialog.Title>
+              <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
                 {column
                   ? 'Changing the question, kind, options or instructions asks this column again for every paper on the next fill. Cells you edited keep your values.'
                   : 'A question asked of every paper in the table. Each answer comes with the quote it rests on.'}
@@ -156,8 +156,8 @@ export function ColumnDialog({
                       className={cn('mt-0.5 accent-[var(--c-accent)]', FOCUS_RING)}
                     />
                     <span className="min-w-0">
-                      <span className="block text-[13px] font-semibold text-shodh-text">{KIND_LABELS[k]}</span>
-                      <span className="block text-[12px] text-shodh-text-muted">{KIND_HELP[k]}</span>
+                      <span className="block text-small font-semibold text-shodh-text">{KIND_LABELS[k]}</span>
+                      <span className="block text-caption text-shodh-text-muted">{KIND_HELP[k]}</span>
                     </span>
                   </label>
                 ))}
@@ -175,7 +175,7 @@ export function ColumnDialog({
                   aria-describedby={ids.optionsHelp}
                   placeholder={'e.g.\nGraph-based\nQuantization\nHashing'}
                 />
-                <p id={ids.optionsHelp} className="m-0 text-[12px] text-shodh-text-muted">
+                <p id={ids.optionsHelp} className="m-0 text-caption text-shodh-text-muted">
                   {MIN_OPTIONS} to {MAX_OPTIONS} different options. The model must answer with one of them.
                 </p>
               </div>
@@ -192,7 +192,7 @@ export function ColumnDialog({
                 placeholder="e.g. Report the best result on the main benchmark."
               />
             </div>
-            {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+            {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
             <div className="flex items-center justify-end gap-2 pt-1">
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
               <button type="submit" className={PRIMARY_BUTTON} disabled={saving || question.trim().length === 0}>

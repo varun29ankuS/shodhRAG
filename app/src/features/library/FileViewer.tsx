@@ -207,7 +207,7 @@ export function FileViewer({ path, onFirstPageVisible, workspace = null, highlig
   return (
     <div className="h-full flex flex-col min-h-0">
       {note && (
-        <p role="status" className="shrink-0 px-4 py-2 text-[12px] text-shodh-text-muted border-b border-shodh-border-subtle">
+        <p role="status" className="shrink-0 px-4 py-2 text-caption text-shodh-text-muted border-b border-shodh-border-subtle">
           {note}
         </p>
       )}
@@ -227,7 +227,7 @@ function DelayedLoading() {
     return () => window.clearTimeout(timer);
   }, []);
   return (
-    <div className="h-full flex items-center justify-center gap-2 text-[12.5px] text-shodh-text-muted" role="status" aria-busy="true">
+    <div className="h-full flex items-center justify-center gap-2 text-small text-shodh-text-muted" role="status" aria-busy="true">
       {shown && (
         <>
           <Loader2 className="w-4 h-4 agent-spin" aria-hidden="true" />
@@ -243,7 +243,7 @@ function Unavailable({ message }: { message: string }) {
     <div className="h-full flex items-center justify-center p-6">
       <div className="max-w-sm flex flex-col items-center gap-2 text-center">
         <AlertTriangle className="w-5 h-5 text-shodh-warning" aria-hidden="true" />
-        <p className="text-[13px] text-shodh-text-secondary">{message}</p>
+        <p className="text-small text-shodh-text-secondary">{message}</p>
       </div>
     </div>
   );

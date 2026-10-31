@@ -16,14 +16,14 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const BUTTON = cn(
-  'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12.5px] font-medium border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed',
+  'inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-small font-medium border border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed',
   FOCUS_RING,
 );
 const INPUT = cn(
-  'w-full rounded-lg border border-shodh-border bg-shodh-ground px-2.5 py-1.5 text-[13px] text-shodh-text placeholder:text-shodh-text-faint',
+  'w-full rounded-lg border border-shodh-border bg-shodh-ground px-2.5 py-1.5 text-small text-shodh-text placeholder:text-shodh-text-faint',
   FOCUS_RING,
 );
-const SECTION_HEADING = 'm-0 text-[15px] font-semibold text-shodh-text';
+const SECTION_HEADING = 'm-0 text-body-lg font-semibold text-shodh-text';
 
 type ModeChoice = 'both' | ToolMode;
 
@@ -40,7 +40,7 @@ function StatusDot({ server }: { server: ServerView }) {
         ? ['bg-shodh-error', 'Not working']
         : ['bg-shodh-text-faint', 'Not started yet'];
   return (
-    <span className="inline-flex items-center gap-1.5 text-[11.5px] text-shodh-text-muted shrink-0">
+    <span className="inline-flex items-center gap-1.5 text-caption text-shodh-text-muted shrink-0">
       <span className={cn('w-2 h-2 rounded-full', color)} aria-hidden="true" />
       {text}
     </span>
@@ -124,10 +124,10 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
       <div className="flex items-center gap-3 min-w-0">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0">
-            <h4 className="m-0 text-[13.5px] font-semibold text-shodh-text truncate">{server.name}</h4>
+            <h4 className="m-0 text-body font-semibold text-shodh-text truncate">{server.name}</h4>
             <StatusDot server={server} />
           </div>
-          <p className="m-0 mt-0.5 text-[11.5px] font-mono text-shodh-text-muted truncate" title={server.target}>
+          <p className="m-0 mt-0.5 text-caption font-mono text-shodh-text-muted truncate" title={server.target}>
             {server.kind === 'http' ? server.target : `$ ${server.target}`}
             {server.needsFolder && ' (in the code folder)'}
           </p>
@@ -141,7 +141,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
             const modes: ToolMode[] = choice === 'both' ? ['research', 'code'] : [choice];
             void run(() => toolsApi.setServer(workspaceId, server.name, { modes }), 'The modes were not saved');
           }}
-          className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-[12.5px] text-shodh-text', FOCUS_RING)}
+          className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-small text-shodh-text', FOCUS_RING)}
         >
           <option value="both">Research and Code</option>
           <option value="research">Research only</option>
@@ -154,7 +154,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
         />
       </div>
       {server.error && (
-        <p role="status" className="m-0 text-[12px] text-shodh-error break-words">
+        <p role="status" className="m-0 text-caption text-shodh-error break-words">
           {server.error}
         </p>
       )}
@@ -165,7 +165,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
           aria-expanded={expanded}
           aria-controls={toolsId}
           disabled={server.tools.length === 0}
-          className={cn('inline-flex items-center gap-1 text-[12.5px] text-shodh-text-secondary hover:text-shodh-text disabled:text-shodh-text-faint rounded', FOCUS_RING)}
+          className={cn('inline-flex items-center gap-1 text-small text-shodh-text-secondary hover:text-shodh-text disabled:text-shodh-text-faint rounded', FOCUS_RING)}
         >
           {expanded ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
           {server.tools.length === 0
@@ -198,12 +198,12 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
                 }
               />
               <div className="min-w-0 flex-1">
-                <p className="m-0 text-[12.5px] font-medium text-shodh-text break-words">
+                <p className="m-0 text-small font-medium text-shodh-text break-words">
                   {tool.title ?? tool.name}
-                  {tool.readOnly && <span className="ml-1.5 text-[11px] font-normal text-shodh-text-faint">read-only</span>}
+                  {tool.readOnly && <span className="ml-1.5 text-caption font-normal text-shodh-text-faint">read-only</span>}
                 </p>
                 {tool.description && (
-                  <p className="m-0 text-[12px] text-shodh-text-muted line-clamp-2" title={tool.description}>
+                  <p className="m-0 text-caption text-shodh-text-muted line-clamp-2" title={tool.description}>
                     {tool.description}
                   </p>
                 )}
@@ -218,7 +218,7 @@ function ServerCard({ server, workspaceId, onChanged, onTested }: ServerCardProp
                     'The approval setting was not saved',
                   )
                 }
-                className={cn('h-7 rounded-md border border-shodh-border bg-shodh-ground px-1.5 text-[12px] text-shodh-text', FOCUS_RING)}
+                className={cn('h-7 rounded-md border border-shodh-border bg-shodh-ground px-1.5 text-caption text-shodh-text', FOCUS_RING)}
               >
                 <option value="ask">Ask first</option>
                 <option value="auto">Run automatically</option>
@@ -279,7 +279,7 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
               setProblem(null);
             }}
             className={cn(
-              'h-7 px-2.5 rounded-full text-[12px] font-medium',
+              'h-7 px-2.5 rounded-full text-caption font-medium',
               tab === id ? 'bg-shodh-raised-2 text-shodh-text' : 'text-shodh-text-muted hover:text-shodh-text',
               FOCUS_RING,
             )}
@@ -290,7 +290,7 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
       </div>
       {tab === 'paste' ? (
         <div className="flex flex-col gap-1.5">
-          <label htmlFor={`${ids}-paste`} className="text-[12.5px] text-shodh-text-secondary">
+          <label htmlFor={`${ids}-paste`} className="text-small text-shodh-text-secondary">
             An <code>mcp.json</code> from Cursor or Claude Desktop, or just its servers
           </label>
           <textarea
@@ -300,14 +300,14 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
             rows={6}
             spellCheck={false}
             placeholder={'{\n  "mcpServers": {\n    "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }\n  }\n}'}
-            className={cn(INPUT, 'font-mono text-[12px] resize-y')}
+            className={cn(INPUT, 'font-mono text-caption resize-y')}
           />
         </div>
       ) : (
         <div className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 items-center">
-          <label htmlFor={`${ids}-name`} className="text-[12.5px] text-shodh-text-secondary">Name</label>
+          <label htmlFor={`${ids}-name`} className="text-small text-shodh-text-secondary">Name</label>
           <input id={`${ids}-name`} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={INPUT} />
-          <label htmlFor={`${ids}-kind`} className="text-[12.5px] text-shodh-text-secondary">Runs as</label>
+          <label htmlFor={`${ids}-kind`} className="text-small text-shodh-text-secondary">Runs as</label>
           <select
             id={`${ids}-kind`}
             value={form.kind}
@@ -317,7 +317,7 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
             <option value="stdio">A program on this computer</option>
             <option value="http">A server at a URL</option>
           </select>
-          <label htmlFor={`${ids}-target`} className="text-[12.5px] text-shodh-text-secondary">
+          <label htmlFor={`${ids}-target`} className="text-small text-shodh-text-secondary">
             {form.kind === 'stdio' ? 'Command' : 'URL'}
           </label>
           <input
@@ -326,9 +326,9 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
             onChange={e => setForm({ ...form, target: e.target.value })}
             placeholder={form.kind === 'stdio' ? 'npx -y @modelcontextprotocol/server-filesystem C:/Notes' : 'https://example.com/mcp'}
             spellCheck={false}
-            className={cn(INPUT, 'font-mono text-[12px]')}
+            className={cn(INPUT, 'font-mono text-caption')}
           />
-          <label htmlFor={`${ids}-secrets`} className="text-[12.5px] text-shodh-text-secondary self-start pt-1.5">
+          <label htmlFor={`${ids}-secrets`} className="text-small text-shodh-text-secondary self-start pt-1.5">
             {form.kind === 'stdio' ? 'Environment' : 'Headers'}
           </label>
           <textarea
@@ -338,15 +338,15 @@ function AddServer({ workspaceId, onAdded }: { workspaceId: string | null; onAdd
             rows={2}
             spellCheck={false}
             placeholder={form.kind === 'stdio' ? 'API_TOKEN=…' : 'Authorization: Bearer …'}
-            className={cn(INPUT, 'font-mono text-[12px] resize-y')}
+            className={cn(INPUT, 'font-mono text-caption resize-y')}
           />
         </div>
       )}
-      <p className="m-0 text-[12px] text-shodh-text-muted">
+      <p className="m-0 text-caption text-shodh-text-muted">
         Tokens stay in the config file on this computer. They are never shown to the model or written to logs.
       </p>
       {problem && (
-        <p role="alert" className="m-0 text-[12px] text-shodh-error break-words">
+        <p role="alert" className="m-0 text-caption text-shodh-error break-words">
           {problem}
         </p>
       )}
@@ -443,7 +443,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
     <section aria-labelledby={`${sourceId}-heading`} className="flex flex-col gap-3">
       <div>
         <h3 id={`${sourceId}-heading`} className={SECTION_HEADING}>Skills</h3>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
           Instructions the assistant loads when a task fits (the Agent Skills format: a folder with a SKILL.md). Only
           each skill's name and description are in every answer; files a skill ships are read, never run.
         </p>
@@ -453,9 +453,9 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
           {skills.map(skill => (
             <li key={skill.name} className="flex items-start gap-3 rounded-xl border border-shodh-border-subtle bg-shodh-surface-2 p-3">
               <div className="min-w-0 flex-1">
-                <p className="m-0 text-[13px] font-semibold text-shodh-text">{skill.name}</p>
-                <p className="m-0 text-[12px] text-shodh-text-muted">{skill.description}</p>
-                <p className="m-0 mt-0.5 text-[11.5px] text-shodh-text-faint">
+                <p className="m-0 text-small font-semibold text-shodh-text">{skill.name}</p>
+                <p className="m-0 text-caption text-shodh-text-muted">{skill.description}</p>
+                <p className="m-0 mt-0.5 text-caption text-shodh-text-faint">
                   {skill.files === 1 ? '1 file' : `${skill.files} files`} besides SKILL.md
                   {skill.license && skill.repo && (
                     <>
@@ -479,7 +479,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
                     .then(onChanged)
                     .catch(err => notify.error('The modes were not saved', { description: errorText(err) }));
                 }}
-                className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-[12.5px] text-shodh-text', FOCUS_RING)}
+                className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-small text-shodh-text', FOCUS_RING)}
               >
                 <option value="both">Research and Code</option>
                 <option value="research">Research only</option>
@@ -510,16 +510,16 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
       )}
       {overview.recommended.some(r => !r.installed) && (
         <div className="flex flex-col gap-2">
-          <h4 className="m-0 text-[11.5px] font-semibold uppercase tracking-wide text-shodh-text-faint">Recommended</h4>
+          <h4 className="m-0 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">Recommended</h4>
           <ul className="m-0 p-0 list-none flex flex-col gap-2">
             {overview.recommended
               .filter(r => !r.installed)
               .map(r => (
                 <li key={r.id} className="flex items-start gap-3 rounded-xl border border-dashed border-shodh-border p-3">
                   <div className="min-w-0 flex-1">
-                    <p className="m-0 text-[13px] font-semibold text-shodh-text">{r.title}</p>
-                    <p className="m-0 text-[12px] text-shodh-text-muted">{r.description}</p>
-                    <p className="m-0 mt-0.5 text-[11.5px] text-shodh-text-faint">
+                    <p className="m-0 text-small font-semibold text-shodh-text">{r.title}</p>
+                    <p className="m-0 text-caption text-shodh-text-muted">{r.description}</p>
+                    <p className="m-0 mt-0.5 text-caption text-shodh-text-faint">
                       {r.skills.join(', ')} · {r.modes.length === 1 ? `${r.modes[0] === 'code' ? 'Code' : 'Research'} mode` : 'Research and Code'}
                       {' · '}
                       {r.license}
@@ -536,12 +536,12 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
         </div>
       )}
       {overview.skillProblems.map(p => (
-        <p key={p.folder} className="m-0 text-[12px] text-shodh-error break-words">
+        <p key={p.folder} className="m-0 text-caption text-shodh-error break-words">
           {p.folder}: {p.error}
         </p>
       ))}
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={sourceId} className="text-[12.5px] text-shodh-text-secondary">Install from a folder or an https git URL</label>
+        <label htmlFor={sourceId} className="text-small text-shodh-text-secondary">Install from a folder or an https git URL</label>
         <div className="flex gap-2">
           <input
             id={sourceId}
@@ -549,7 +549,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
             onChange={e => setSource(e.target.value)}
             placeholder="https://github.com/… or C:\Skills\my-skill"
             spellCheck={false}
-            className={cn(INPUT, 'font-mono text-[12px]')}
+            className={cn(INPUT, 'font-mono text-caption')}
           />
           <button
             type="button"
@@ -568,17 +568,17 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
         </div>
       </div>
       {problem && (
-        <p role="alert" className="m-0 text-[12px] text-shodh-error break-words">
+        <p role="alert" className="m-0 text-caption text-shodh-error break-words">
           {problem}
         </p>
       )}
       {staged && (
         <div className="rounded-xl border border-shodh-border bg-shodh-surface-2 p-3.5 flex flex-col gap-2" aria-live="polite">
-          <p className="m-0 text-[12.5px] text-shodh-text">
+          <p className="m-0 text-small text-shodh-text">
             {staged.skills.length === 1 ? 'This skill' : `These ${staged.skills.length} skills`} will be installed from{' '}
             <span className="font-mono break-all">{staged.source}</span>:
           </p>
-          <ul className="m-0 pl-4 flex flex-col gap-1 text-[12.5px]">
+          <ul className="m-0 pl-4 flex flex-col gap-1 text-small">
             {staged.skills.map(s => (
               <li key={s.name}>
                 <span className="font-semibold text-shodh-text">{s.name}</span>
@@ -588,7 +588,7 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
             ))}
           </ul>
           {staged.problems.length > 0 && (
-            <p className="m-0 text-[12px] text-shodh-text-muted">{staged.problems.length} folder(s) could not be read and are skipped.</p>
+            <p className="m-0 text-caption text-shodh-text-muted">{staged.problems.length} folder(s) could not be read and are skipped.</p>
           )}
           <div className="flex gap-2">
             <button type="button" className={cn(BUTTON, 'bg-shodh-raised-2')} disabled={busy} onClick={() => void install()}>
@@ -685,14 +685,14 @@ export default function ToolsSettings() {
     }
   };
 
-  if (loadError) return <p role="alert" className="m-0 text-[13px] text-shodh-error">{loadError}</p>;
-  if (!overview) return <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>;
+  if (loadError) return <p role="alert" className="m-0 text-small text-shodh-error">{loadError}</p>;
+  if (!overview) return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
 
   const enola = overview.enola;
   return (
     <div className="flex flex-col gap-7">
       <div className="flex flex-col gap-1.5">
-        <label htmlFor={scopeId} className="text-[12.5px] font-medium text-shodh-text-secondary">
+        <label htmlFor={scopeId} className="text-small font-medium text-shodh-text-secondary">
           Servers and skills for
         </label>
         <select
@@ -712,7 +712,7 @@ export default function ToolsSettings() {
             </option>
           ))}
         </select>
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           {workspaceId
             ? 'Servers here are added to this workspace’s chats and replace an every-chat server of the same name.'
             : 'Servers here are offered in every chat, in the modes you choose.'}
@@ -723,7 +723,7 @@ export default function ToolsSettings() {
         <div className="flex items-start gap-3 flex-wrap">
           <div className="min-w-0 flex-1">
             <h3 id={`${scopeId}-mcp`} className={SECTION_HEADING}>MCP servers</h3>
-            <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+            <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
               Programs and services that give the assistant more tools. Tools the server does not mark read-only ask
               you before every call.
             </p>
@@ -746,15 +746,15 @@ export default function ToolsSettings() {
             }}
           />
         )}
-        {overview.configError && <p role="alert" className="m-0 text-[12px] text-shodh-error break-words">{overview.configError}</p>}
+        {overview.configError && <p role="alert" className="m-0 text-caption text-shodh-error break-words">{overview.configError}</p>}
         {overview.problems.map(p => (
-          <p key={p.name} className="m-0 text-[12px] text-shodh-error break-words">
+          <p key={p.name} className="m-0 text-caption text-shodh-error break-words">
             {p.name ? `${p.name}: ` : ''}
             {p.error}
           </p>
         ))}
         {overview.servers.length === 0 && !adding && (
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">No servers yet.</p>
+          <p className="m-0 text-small text-shodh-text-muted">No servers yet.</p>
         )}
         <ul className="m-0 p-0 list-none flex flex-col gap-2.5">
           {overview.servers.map(server => (
@@ -772,8 +772,8 @@ export default function ToolsSettings() {
         {!workspaceId && enola.supported && !enola.registered && (
           <div className="rounded-xl border border-dashed border-shodh-border p-3.5 flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <p className="m-0 text-[13px] font-semibold text-shodh-text">enola {enola.version}</p>
-              <p className="m-0 text-[12px] text-shodh-text-muted">
+              <p className="m-0 text-small font-semibold text-shodh-text">enola {enola.version}</p>
+              <p className="m-0 text-caption text-shodh-text-muted">
                 Maps a codebase’s architecture (modules, dependencies, impact of a change) for Code mode. Downloaded
                 from its GitHub release and checked to match the official copy before it runs; it reads the code folder and keeps its
                 index in <code>.enola/</code> there.
@@ -791,7 +791,7 @@ export default function ToolsSettings() {
       <section aria-labelledby={`${scopeId}-builtin`} className="flex flex-col gap-3">
         <div>
           <h3 id={`${scopeId}-builtin`} className={SECTION_HEADING}>Built-in tools</h3>
-          <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
             What Shodh’s assistant can always do. Tools that change something ask you first.
           </p>
         </div>
@@ -799,7 +799,7 @@ export default function ToolsSettings() {
           type="button"
           onClick={() => setBuiltinOpen(o => !o)}
           aria-expanded={builtinOpen}
-          className={cn('self-start inline-flex items-center gap-1 text-[12.5px] text-shodh-text-secondary hover:text-shodh-text rounded', FOCUS_RING)}
+          className={cn('self-start inline-flex items-center gap-1 text-small text-shodh-text-secondary hover:text-shodh-text rounded', FOCUS_RING)}
         >
           {builtinOpen ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
           {countOf(overview.builtin.reduce((n, g) => n + g.tools.length, 0), 'tool')} in {countOf(overview.builtin.length, 'group')}
@@ -807,18 +807,18 @@ export default function ToolsSettings() {
         {builtinOpen &&
           overview.builtin.map(group => (
             <div key={group.group} className="flex flex-col gap-1">
-              <h4 className="m-0 text-[11.5px] font-semibold uppercase tracking-wide text-shodh-text-faint">{group.group}</h4>
+              <h4 className="m-0 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">{group.group}</h4>
               <ul className="m-0 p-0 list-none flex flex-col">
                 {group.tools.map(tool => (
-                  <li key={tool.name} className="flex items-baseline gap-3 py-1 text-[12.5px]">
+                  <li key={tool.name} className="flex items-baseline gap-3 py-1 text-small">
                     <span className="font-mono text-shodh-text shrink-0">{tool.name}</span>
                     <span className="text-shodh-text-muted truncate flex-1" title={tool.description}>
                       {tool.description}
                     </span>
                     {tool.tier !== 'read' && (
-                      <span className="text-[11px] text-shodh-text-faint shrink-0">{tool.tier === 'destructive' ? 'always asks' : 'asks'}</span>
+                      <span className="text-caption text-shodh-text-faint shrink-0">{tool.tier === 'destructive' ? 'always asks' : 'asks'}</span>
                     )}
-                    <span className="text-[11px] text-shodh-text-faint shrink-0">{formatUsed(tool.lastUsed)}</span>
+                    <span className="text-caption text-shodh-text-faint shrink-0">{formatUsed(tool.lastUsed)}</span>
                   </li>
                 ))}
               </ul>

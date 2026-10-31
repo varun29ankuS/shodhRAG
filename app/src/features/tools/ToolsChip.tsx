@@ -90,7 +90,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
         aria-controls={open ? popoverId : undefined}
         title="Tools this chat can use"
         className={cn(
-          'inline-flex items-center gap-1 h-[26px] px-2 rounded-full text-[11.5px] font-medium border transition-colors duration-micro',
+          'inline-flex items-center gap-1 h-[26px] px-2 rounded-full text-caption font-medium border transition-colors duration-micro',
           view?.many || failing.length > 0 || error
             ? 'border-shodh-warning text-shodh-text-secondary hover:bg-shodh-raised'
             : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
@@ -112,29 +112,29 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
           aria-labelledby={headingId}
           className="absolute bottom-full left-0 mb-2 z-40 w-[340px] max-h-[420px] overflow-y-auto scrollbar-thin rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
         >
-          <h2 id={headingId} className="m-0 text-[13px] font-semibold text-shodh-text">
+          <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text">
             This chat can use
           </h2>
-          {error && <p className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+          {error && <p className="m-0 text-small text-shodh-error">{error}</p>}
           {view && (
             <>
               {view.many && (
-                <p className="m-0 text-[12px] text-shodh-text-secondary bg-shodh-warning-soft rounded-lg px-2.5 py-2">
+                <p className="m-0 text-caption text-shodh-text-secondary bg-shodh-warning-soft rounded-lg px-2.5 py-2">
                   This chat has many tools in every answer; models choose less well with more than 40. Turn off
                   servers or tools you do not need here.
                 </p>
               )}
-              <p className="m-0 text-[12.5px] text-shodh-text-secondary">
+              <p className="m-0 text-small text-shodh-text-secondary">
                 {view.builtin} built-in {mode === 'code' ? 'Code mode' : 'Research'} {nounFor(view.builtin, 'tool')}
               </p>
               {view.servers.length > 0 && (
                 <section aria-label="MCP servers" className="flex flex-col gap-1.5">
-                  <h3 className="m-0 text-[11.5px] font-semibold uppercase tracking-wide text-shodh-text-faint">
+                  <h3 className="m-0 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">
                     MCP servers
                   </h3>
                   <ul className="m-0 p-0 list-none flex flex-col gap-1.5">
                     {view.servers.map(server => (
-                      <li key={`${server.scope}-${server.name}`} className="text-[12.5px]">
+                      <li key={`${server.scope}-${server.name}`} className="text-small">
                         <span className="font-medium text-shodh-text">{server.name}</span>
                         {server.scope === 'workspace' && <span className="text-shodh-text-faint"> · workspace</span>}
                         {server.error ? (
@@ -151,10 +151,10 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
               )}
               {view.skills.length > 0 && (
                 <section aria-label="Skills" className="flex flex-col gap-1.5">
-                  <h3 className="m-0 text-[11.5px] font-semibold uppercase tracking-wide text-shodh-text-faint">Skills</h3>
+                  <h3 className="m-0 text-caption font-semibold uppercase tracking-wide text-shodh-text-faint">Skills</h3>
                   <ul className="m-0 p-0 list-none flex flex-col gap-1">
                     {view.skills.map(skill => (
-                      <li key={skill.name} className="text-[12.5px]">
+                      <li key={skill.name} className="text-small">
                         <span className="font-medium text-shodh-text">{skill.name}</span>
                         <span className="text-shodh-text-muted"> · {skill.description}</span>
                       </li>
@@ -170,7 +170,7 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
               close(false);
               onOpenSettings();
             }}
-            className={cn('self-start text-[12.5px] font-medium text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
+            className={cn('self-start text-small font-medium text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
           >
             Manage tools and connections
           </button>

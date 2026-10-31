@@ -130,7 +130,7 @@ export function CodeModeSwitch({ conversationId, workspaceId, mode, onChange, an
               title={title}
               onClick={() => { if (!selected) onChange(id); }}
               className={cn(
-                'inline-flex items-center gap-1 h-[26px] px-2.5 rounded-full text-[12px] font-medium transition-colors duration-micro',
+                'inline-flex items-center gap-1 h-[26px] px-2.5 rounded-full text-caption font-medium transition-colors duration-micro',
                 selected
                   ? 'bg-shodh-surface text-shodh-text shadow-sm'
                   : 'text-shodh-text-muted hover:text-shodh-text',
@@ -144,7 +144,7 @@ export function CodeModeSwitch({ conversationId, workspaceId, mode, onChange, an
         })}
       </div>
       {branch && (
-        <span className="inline-flex items-center gap-1 min-w-0 text-[11.5px] text-shodh-text-muted" title={`Changes are on ${branch.branch} (from ${branch.base})`}>
+        <span className="inline-flex items-center gap-1 min-w-0 text-caption text-shodh-text-muted" title={`Changes are on ${branch.branch} (from ${branch.base})`}>
           <GitBranch className="w-3 h-3 shrink-0" aria-hidden="true" />
           <span className="truncate max-w-[140px] font-mono">{branch.branch}</span>
           <button
@@ -154,7 +154,7 @@ export function CodeModeSwitch({ conversationId, workspaceId, mode, onChange, an
             aria-live="polite"
             title={`Commit this conversation's changes on ${branch.branch} and go back to ${branch.base}`}
             className={cn(
-              'h-6 px-2 rounded-full text-[11.5px] font-medium border transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed',
+              'h-6 px-2 rounded-full text-caption font-medium border transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed',
               confirming
                 ? 'border-shodh-error text-shodh-error hover:bg-shodh-raised'
                 : 'border-shodh-border text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',

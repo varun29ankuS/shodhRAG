@@ -99,10 +99,10 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
   return (
     <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border flex flex-col gap-4" aria-labelledby={headingId}>
       <div className="flex flex-col gap-1">
-        <h3 id={headingId} className="m-0 text-[15px] font-semibold text-shodh-text">
+        <h3 id={headingId} className="m-0 text-body-lg font-semibold text-shodh-text">
           Backup models
         </h3>
-        <p className="m-0 text-[12.5px] text-shodh-text-muted max-w-[65ch]">
+        <p className="m-0 text-small text-shodh-text-muted max-w-[65ch]">
           When a model can&apos;t answer (it is down, overloaded or out of free requests), Shodh tries the next one in this list. A model that just failed is skipped for a few minutes.
         </p>
       </div>
@@ -111,8 +111,8 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
 
       {chain?.direct && chain.plan && !samePlan(chain.direct, chain.plan) && (
         <div className="flex flex-col gap-2">
-          <p className="m-0 text-[12.5px] font-medium text-shodh-text-secondary">For Slack, Telegram and background work</p>
-          <p className="m-0 -mt-1 text-[12px] text-shodh-text-muted max-w-[65ch]">
+          <p className="m-0 text-small font-medium text-shodh-text-secondary">For Slack, Telegram and background work</p>
+          <p className="m-0 -mt-1 text-caption text-shodh-text-muted max-w-[65ch]">
             These answer without the assistant, so a subscription (Claude Pro, ChatGPT Plus…) can&apos;t answer them. They also never switch to a model less private than yours, not even your own backup.
           </p>
           <ChainList chain={chain.direct} nowMs={chain.nowMs} localOnly={chain.localOnly} />
@@ -120,7 +120,7 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
       )}
 
       <div className="flex flex-col gap-1.5 max-w-[30rem]">
-        <label htmlFor={selectId} className="text-[13px] font-medium text-shodh-text">
+        <label htmlFor={selectId} className="text-small font-medium text-shodh-text">
           Your backup
         </label>
         <select
@@ -140,7 +140,7 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
             </option>
           ))}
         </select>
-        <p className="m-0 text-[12px] text-shodh-text-muted">Tried first when your model can&apos;t answer.</p>
+        <p className="m-0 text-caption text-shodh-text-muted">Tried first when your model can&apos;t answer.</p>
       </div>
 
       <div className="flex items-start gap-2.5">
@@ -153,8 +153,8 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
           onChange={e => void save(prefs.fallback, e.target.checked)}
         />
         <label htmlFor={askId} className="flex flex-col gap-0.5">
-          <span className="text-[13px] text-shodh-text">In Ask, switch to a backup without asking</span>
-          <span className="text-[12px] text-shodh-text-muted">
+          <span className="text-small text-shodh-text">In Ask, switch to a backup without asking</span>
+          <span className="text-caption text-shodh-text-muted">
             Off: Ask shows what failed and offers the backup as a button. Either way the answer says which model wrote it.
           </span>
         </label>
@@ -170,14 +170,14 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
           onChange={e => void saveAllowPaid(e.target.checked)}
         />
         <label htmlFor={paidId} className="flex flex-col gap-0.5">
-          <span className="text-[13px] text-shodh-text">Allow paid backups</span>
-          <span className="text-[12px] text-shodh-text-muted">
+          <span className="text-small text-shodh-text">Allow paid backups</span>
+          <span className="text-caption text-shodh-text-muted">
             Off: a free model only falls back to other free or local models, and when today&apos;s free quota is used up Shodh says so and when it resets. On: it may use a paid model or an API key, which bills that provider per request, typically a fraction of a cent to a few cents an answer.
           </span>
         </label>
       </div>
 
-      <p className="m-0 text-[12.5px] text-shodh-text-secondary max-w-[65ch]" role="note">
+      <p className="m-0 text-small text-shodh-text-secondary max-w-[65ch]" role="note">
         Slack, Telegram, memory learning and other background tasks always switch to a backup on their own, since nobody is there to ask. Their conversations in Shodh say which model answered.
       </p>
     </section>
@@ -191,7 +191,7 @@ function samePlan(a: ChainPlan, b: ChainPlan): boolean {
 
 function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs: number; localOnly: boolean }) {
   if (!chain) {
-    return <p className="m-0 text-[12.5px] text-shodh-text-muted">Choose a model above to see its backups.</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">Choose a model above to see its backups.</p>;
   }
   const rows: ChainCandidate[] = [chain.requested, ...chain.fallbacks];
   return (
@@ -208,13 +208,13 @@ function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs
                 {!last && <span className="flex-1 w-px mt-1 bg-shodh-border" />}
               </span>
               <span className="min-w-0 flex flex-col gap-0.5">
-                <span className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
+                <span className="flex flex-wrap items-baseline gap-x-2 text-small">
                   <span className={cn('font-medium text-shodh-text', i > 0 && !c.reachable && 'line-through text-shodh-text-muted')}>{c.name}</span>
-                  <span className="text-[11.5px] text-shodh-text-muted">
+                  <span className="text-caption text-shodh-text-muted">
                     {`${originLabel(c.origin)}, ${PROVIDER_LABELS[c.model.provider]}, ${privacyLabel(c.privacy)}${c.paid ? ', paid' : ''}`}
                   </span>
                 </span>
-                <span className="text-[12px] text-shodh-text-muted">
+                <span className="text-caption text-shodh-text-muted">
                   {c.reachable ? health.text : 'Answers only in Ask'}
                   <span className="sr-only">{` (${health.tone === 'ok' ? 'healthy' : health.tone === 'unknown' ? 'not checked' : 'having problems'})`}</span>
                 </span>
@@ -224,7 +224,7 @@ function ChainList({ chain, nowMs, localOnly }: { chain: ChainPlan | null; nowMs
         })}
       </ol>
       {chain.fallbacks.length === 0 && (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           {localOnly
             ? 'Local-only mode is on, and no other model runs on this computer. Load another model in LM Studio to have a backup.'
             : 'No backup is available yet. Connect another provider above, or choose a backup below.'}

@@ -41,7 +41,7 @@ interface WebSourcesProps {
 export function WebSources({ sources, provider }: WebSourcesProps) {
   return (
     <div className="mt-1.5 flex flex-col gap-1 font-sans">
-      <p className="flex items-center gap-1.5 text-[11px] text-shodh-text-faint">
+      <p className="flex items-center gap-1.5 text-caption text-shodh-text-faint">
         <Globe className="w-3 h-3" aria-hidden="true" />
         {provider ? `Web content via ${provider} — untrusted` : 'Web content — untrusted'}
       </p>
@@ -54,15 +54,15 @@ export function WebSources({ sources, provider }: WebSourcesProps) {
               title={s.url}
               className={cn('flex items-baseline gap-1.5 min-w-0 text-left rounded-sm hover:underline', FOCUS_RING)}
             >
-              <span className="shrink-0 px-1 rounded-[4px] border border-dashed border-shodh-info text-shodh-info text-[10.5px] font-bold tabular-nums">
+              <span className="shrink-0 px-1 rounded-[4px] border border-dashed border-shodh-info text-shodh-info text-caption font-bold tabular-nums">
                 {s.n}
               </span>
               <span className="text-shodh-text truncate">{s.title}</span>
-              <span className="shrink-0 text-shodh-text-faint text-[11px]">{hostOf(s.url)}</span>
+              <span className="shrink-0 text-shodh-text-faint text-caption">{hostOf(s.url)}</span>
               <span className="sr-only">(opens in your browser)</span>
             </button>
             {s.snippet && (
-              <p className="ml-7 text-[11.5px] text-shodh-text-muted line-clamp-2 whitespace-normal">{s.snippet}</p>
+              <p className="ml-7 text-caption text-shodh-text-muted line-clamp-2 whitespace-normal">{s.snippet}</p>
             )}
           </li>
         ))}

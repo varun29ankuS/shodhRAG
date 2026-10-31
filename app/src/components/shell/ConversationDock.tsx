@@ -26,6 +26,8 @@ import { currentStep, isLive, pendingApproval } from '../../features/agent/reduc
 import { StatusLine } from '../../features/agent/StatusLine';
 import { Transcript } from '../../features/agent/Transcript';
 import { SetupCard } from '../../features/setup/SetupCard';
+import { Kbd, IS_MAC } from '../ui/Kbd';
+import { ariaKeyShortcuts, matchesShortcut, withShortcut } from '../../lib/shortcuts';
 import { useQueuedQuestion } from '../../features/setup/useQueuedQuestion';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
@@ -201,7 +203,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   useEffect(() => {
     if (!offAsk) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key.toLowerCase() !== 'j') return;
+      if (!matchesShortcut(e, 'toggleDock')) return;
       e.preventDefault();
       if (layout === 'pill' || layout === null) expand();
       else collapse(true);
@@ -381,10 +383,11 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
         ref={pillRef}
         type="button"
         onClick={expand}
-        aria-label={`Open the conversation${waiting ? ', needs your approval' : working ? `, working: ${working.label}` : live ? ', working' : ''}${unread > 0 ? `, ${unread} new` : ''} (Ctrl+J)`}
-        title="Open the conversation (Ctrl+J)"
+        aria-label={`Open the conversation${waiting ? ', needs your approval' : working ? `, working: ${working.label}` : live ? ', working' : ''}${unread > 0 ? `, ${unread} new` : ''}`}
+        aria-keyshortcuts={ariaKeyShortcuts('toggleDock', IS_MAC)}
+        title={withShortcut('Open the conversation', 'toggleDock', IS_MAC)}
         className={cn(
-          'dock-pop fixed bottom-4 right-4 z-40 inline-flex items-center gap-2 h-10 max-w-[320px] pl-3 pr-3.5 rounded-full border border-shodh-border-strong bg-shodh-surface shadow-[0_8px_28px_rgba(0,0,0,0.3)] text-[12.5px] text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+          'dock-pop fixed bottom-4 right-4 z-40 inline-flex items-center gap-2 h-10 max-w-[320px] pl-3 pr-3.5 rounded-full border border-shodh-border-strong bg-shodh-surface shadow-[0_8px_28px_rgba(0,0,0,0.3)] text-small text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
           FOCUS_RING,
         )}
       >
@@ -399,10 +402,11 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
           </span>
         )}
         {unread > 0 && (
-          <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-accent text-shodh-on-accent text-[10.5px] font-bold leading-[18px] text-center tabular-nums" aria-hidden="true">
+          <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-shodh-accent text-shodh-on-accent text-caption font-bold leading-[18px] text-center tabular-nums" aria-hidden="true">
             {unread > 99 ? '99+' : unread}
           </span>
         )}
+        <Kbd shortcut="toggleDock" className="ml-0.5" />
       </button>
     );
   }
@@ -417,7 +421,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
           icon: Pin,
           onClick: () => updatePrefs({ pinned: true }),
         },
-    { label: 'Minimise (Ctrl+J)', icon: Minus, onClick: () => collapse(true) },
+    { label: withShortcut('Minimise', 'toggleDock', IS_MAC), icon: Minus, onClick: () => collapse(true) },
     { label: 'Close', icon: X, onClick: () => setDismissed(true) },
   ];
 
@@ -428,8 +432,8 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
           className={cn('w-2 h-2 rounded-full shrink-0', live ? 'bg-shodh-accent-text ask-breathe' : 'bg-shodh-success')}
           aria-hidden="true"
         />
-        <span className="text-[13px] font-semibold text-shodh-text shrink-0">Assistant</span>
-        <span className="min-w-0 truncate text-[12px] text-shodh-text-muted">
+        <span className="text-small font-semibold text-shodh-text shrink-0">Assistant</span>
+        <span className="min-w-0 truncate text-caption text-shodh-text-muted">
           {session.activeConversation?.title ?? ''}
         </span>
         <div className="ml-auto flex items-center">
@@ -453,7 +457,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
 
       <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-3.5 py-3 flex flex-col gap-3" role="log" aria-label="Latest exchange">
         {lastUser && (
-          <div className="self-end max-w-[85%] px-3 py-2 rounded-[14px] bg-shodh-raised-2 text-[13px] leading-[1.5] text-shodh-text whitespace-pre-wrap break-words">
+          <div className="self-end max-w-[85%] px-3 py-2 rounded-[14px] bg-shodh-raised-2 text-small leading-[1.5] text-shodh-text whitespace-pre-wrap break-words">
             {lastUser.content}
           </div>
         )}

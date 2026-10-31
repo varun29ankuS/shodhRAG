@@ -46,7 +46,7 @@ function DetailView({ step }: { step: TranscriptStep }) {
   const webSources = webSourcesFromDetail(step.detail);
   const passages = passagesFromDetail(step.detail).filter(p => !p.web);
   return (
-    <div className="mt-1 ml-[18px] rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-[11.5px] leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
+    <div className="mt-1 ml-[18px] rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary overflow-x-auto scrollbar-thin">
       {hasContent(step.args) && (
         <>
           <p className="text-shodh-text-faint">{step.tool}</p>
@@ -154,7 +154,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
 
   return (
     <div className={cn('ask-rise flex flex-col min-w-0', depth > 0 && 'ml-[18px] pl-2.5 border-l border-shodh-border-subtle')}>
-      <div className={cn('flex items-start gap-2 min-w-0', compact ? 'text-[12.5px]' : 'text-[13.5px]')}>
+      <div className={cn('flex items-start gap-2 min-w-0', compact ? 'text-small' : 'text-body')}>
         {marker}
         {expandable ? (
           <button
@@ -176,7 +176,7 @@ export function StepLine({ step, steps, onDecide, compact = false, depth = 0, li
         <p
           className={cn(
             'ml-[3px] flex gap-1.5 min-w-0 font-mono',
-            compact ? 'text-[11px]' : 'text-[12px]',
+            compact ? 'text-caption' : 'text-caption',
             failed ? 'text-shodh-error' : 'text-shodh-text-muted',
           )}
         >

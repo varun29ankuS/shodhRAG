@@ -39,13 +39,13 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
   'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const ICON_BUTTON = cn(
-  'h-7 px-2 inline-flex items-center gap-1 rounded-md text-[12px] text-shodh-text-secondary',
+  'h-7 px-2 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-secondary',
   'hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
@@ -86,7 +86,7 @@ function StrengthBar({ memory }: { memory: MemoryRecord }) {
       >
         <div className={cn('h-full rounded-full', BAR_COLOUR[display.level])} style={{ width: `${display.percent}%` }} />
       </div>
-      <span className="text-[11.5px] text-shodh-text-muted whitespace-nowrap">{display.label}</span>
+      <span className="text-caption text-shodh-text-muted whitespace-nowrap">{display.label}</span>
     </div>
   );
 }
@@ -205,11 +205,11 @@ function MemoryItem({
   return (
     <li ref={itemRef} className="py-3 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-4">
-        <p className="m-0 text-[13.5px] text-shodh-text break-words">{memory.text}</p>
+        <p className="m-0 text-body text-shodh-text break-words">{memory.text}</p>
         <StrengthBar memory={memory} />
       </div>
 
-      <p className="m-0 text-[12px] text-shodh-text-muted flex flex-wrap gap-x-2 gap-y-0.5">
+      <p className="m-0 text-caption text-shodh-text-muted flex flex-wrap gap-x-2 gap-y-0.5">
         <span>Since {formatDate(memory.validFrom)}</span>
         <span aria-hidden="true">·</span>
         <span>
@@ -250,7 +250,7 @@ function MemoryItem({
           }}
         >
           {fields.length === 0 ? (
-            <p className="m-0 text-[12.5px] text-shodh-text-muted">
+            <p className="m-0 text-small text-shodh-text-muted">
               This memory has no text to edit. Forget it and ask Shodh to remember the corrected fact.
             </p>
           ) : (
@@ -263,13 +263,13 @@ function MemoryItem({
                 onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
                   setDraft(d => ({ ...d, [field.name]: e.target.value })),
                 className: cn(
-                  'w-full rounded-md border border-shodh-border bg-shodh-surface px-2.5 py-1.5 text-[13px] text-shodh-text',
+                  'w-full rounded-md border border-shodh-border bg-shodh-surface px-2.5 py-1.5 text-small text-shodh-text',
                   FOCUS_RING,
                 ),
               };
               return (
                 <div key={field.name} className="flex flex-col gap-1">
-                  <label htmlFor={inputId} className="text-[12px] font-semibold text-shodh-text-secondary">
+                  <label htmlFor={inputId} className="text-caption font-semibold text-shodh-text-secondary">
                     {field.label}
                   </label>
                   {field.multiline ? <textarea rows={3} {...common} /> : <input type="text" {...common} />}
@@ -315,13 +315,13 @@ function MemoryItem({
       {historyOpen && (
         <div id={historyId} className="rounded-lg border border-shodh-border-subtle bg-shodh-ground p-3">
           {history === null ? (
-            <p className="m-0 text-[12.5px] text-shodh-text-muted">Loading…</p>
+            <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
           ) : history.length <= 1 ? (
-            <p className="m-0 text-[12.5px] text-shodh-text-muted">No earlier versions: this fact has not changed.</p>
+            <p className="m-0 text-small text-shodh-text-muted">No earlier versions: this fact has not changed.</p>
           ) : (
             <ol className="m-0 p-0 list-none flex flex-col gap-1.5" aria-label="Versions, oldest first">
               {history.map(version => (
-                <li key={version.id} className="text-[12.5px]">
+                <li key={version.id} className="text-small">
                   <span className={cn('text-shodh-text', !version.current && 'line-through decoration-shodh-text-faint')}>
                     {version.text}
                   </span>
@@ -523,7 +523,7 @@ export default function MemorySettings(props: MemorySettingsProps) {
             onChange={e => setFilter(e.target.value)}
             placeholder="Search memories"
             className={cn(
-              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-[13px] text-shodh-text placeholder:text-shodh-text-faint',
+              'w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text placeholder:text-shodh-text-faint',
               FOCUS_RING,
             )}
           />
@@ -540,15 +540,15 @@ export default function MemorySettings(props: MemorySettingsProps) {
       </div>
 
       {loadError ? (
-        <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-[13px] text-shodh-error">
+        <p role="alert" className="m-0 rounded-lg border border-shodh-error/40 bg-shodh-surface px-3 py-2 text-small text-shodh-error">
           Memories could not be loaded: {loadError}
         </p>
       ) : scoped === null ? (
-        <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>
+        <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
       ) : scoped.length === 0 && scope !== null ? (
         <div className="rounded-lg border border-dashed border-shodh-border px-4 py-5 flex flex-col gap-2">
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Nothing remembered in this workspace yet</p>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 text-body font-semibold text-shodh-text">Nothing remembered in this workspace yet</p>
+          <p className="m-0 text-small text-shodh-text-muted">
             What Shodh learns from this workspace’s chats, and what you ask it to remember in them, is kept here and
             used only in this workspace’s chats (memories about you in general apply everywhere). Settings → Memory
             controls learning and shows every memory.
@@ -556,23 +556,23 @@ export default function MemorySettings(props: MemorySettingsProps) {
         </div>
       ) : scoped.length === 0 ? (
         <div className="rounded-lg border border-dashed border-shodh-border px-4 py-5 flex flex-col gap-2">
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Shodh doesn’t remember anything about you yet</p>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 text-body font-semibold text-shodh-text">Shodh doesn’t remember anything about you yet</p>
+          <p className="m-0 text-small text-shodh-text-muted">
             Ask in a conversation — for example “Remember that I prefer reports as PDF” or “Remember that Priya is
             my accountant”. Shodh shows you exactly what it will save and saves it only if you approve. It never
             saves anything from your documents or the web on its own.
           </p>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 text-small text-shodh-text-muted">
             Memories strengthen each time they help an answer and fade when they go unused. When a fact changes,
             the new version replaces the old one, which stays in its history.
           </p>
         </div>
       ) : groups.length === 0 ? (
-        <p className="m-0 text-[13px] text-shodh-text-muted">No memories match “{filter.trim()}”.</p>
+        <p className="m-0 text-small text-shodh-text-muted">No memories match “{filter.trim()}”.</p>
       ) : (
         groups.map(group => (
           <section key={group.classId} aria-labelledby={`memory-group-${group.classId}`} className="flex flex-col">
-            <h3 id={`memory-group-${group.classId}`} className="m-0 text-[13px] font-bold text-shodh-text-secondary">
+            <h3 id={`memory-group-${group.classId}`} className="m-0 text-small font-bold text-shodh-text-secondary">
               {group.heading} <span className="font-normal text-shodh-text-muted">({group.memories.length})</span>
             </h3>
             <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">
@@ -620,34 +620,34 @@ function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: Cor
   const headingId = useId();
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
-      <h3 id={headingId} className="m-0 text-[13px] font-bold text-shodh-text-secondary">
+      <h3 id={headingId} className="m-0 text-small font-bold text-shodh-text-secondary">
         {coreHeading(injecting ? (core?.length ?? 0) : 0)}
       </h3>
       {!injecting ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           Nothing is sent while “Use memories in answers” is off.
         </p>
       ) : error ? (
-        <p role="alert" className="m-0 text-[12.5px] text-shodh-error break-words">
+        <p role="alert" className="m-0 text-small text-shodh-error break-words">
           They could not be read: {error}
         </p>
       ) : core === null ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">Loading…</p>
+        <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
       ) : core.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           None yet. Who you are, your projects, your preferences and the notes you ask Shodh to keep go with every
           question.
         </p>
       ) : (
         <>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 text-small text-shodh-text-muted">
             Sent with every question, marked as possibly outdated. The core holds your strongest standing notes: ones
             you do not use fade and can leave it, so pin a note to keep it here. “Not relevant” under an answer makes one
             weigh less.
           </p>
           <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle">
             {core.map(memory => (
-              <li key={memory.id} className="py-1.5 flex items-start gap-2 text-[12.5px]">
+              <li key={memory.id} className="py-1.5 flex items-start gap-2 text-small">
                 <p className="m-0 flex-1 min-w-0 text-shodh-text break-words">
                   {memory.text}
                   <span className="text-shodh-text-muted">

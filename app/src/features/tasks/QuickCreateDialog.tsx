@@ -98,8 +98,8 @@ function QuickDialogFrame({
         >
           <header className="shrink-0 flex items-start gap-3 px-5 py-4 border-b border-shodh-border-subtle">
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[15px] font-semibold">{title}</Dialog.Title>
-              <Dialog.Description id={descId} className="text-[12.5px] text-shodh-text-muted">
+              <Dialog.Title className="text-body-lg font-semibold">{title}</Dialog.Title>
+              <Dialog.Description id={descId} className="text-small text-shodh-text-muted">
                 {description}
               </Dialog.Description>
             </div>
@@ -124,7 +124,7 @@ function QuickDialogFrame({
             {children}
             <div className="flex items-center justify-end gap-2 pt-1">
               {/* Always in the DOM so the live region announces each new reason. */}
-              <p id={problemId} aria-live="polite" className="m-0 mr-auto text-[12px] text-shodh-text-muted">{shown ?? ''}</p>
+              <p id={problemId} aria-live="polite" className="m-0 mr-auto text-caption text-shodh-text-muted">{shown ?? ''}</p>
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>
               <button
                 type="submit"
@@ -306,7 +306,7 @@ function QuickTaskDialog({
             value={draft.workspaceId ?? ''}
             onChange={e => update({ workspaceId: e.target.value || null })}
             className={cn(
-              'h-8 w-full max-w-[20rem] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[13px] text-shodh-text hover:border-shodh-border-strong',
+              'h-8 w-full max-w-[20rem] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text hover:border-shodh-border-strong',
               FOCUS_RING,
             )}
           >

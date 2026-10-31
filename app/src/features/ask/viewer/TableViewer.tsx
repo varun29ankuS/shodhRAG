@@ -134,7 +134,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
 
   if (!sheets) {
     return (
-      <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-shodh-text-muted">
+      <div className="flex-1 flex items-center justify-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Loading table…
       </div>
@@ -181,7 +181,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
                 onClick={() => setActive(index)}
                 onKeyDown={e => onTabKeyDown(e, index)}
                 className={cn(
-                  'shrink-0 h-8 px-3 -mb-px inline-flex items-center gap-1.5 rounded-t-lg border border-transparent text-[12.5px] transition-colors duration-micro',
+                  'shrink-0 h-8 px-3 -mb-px inline-flex items-center gap-1.5 rounded-t-lg border border-transparent text-small transition-colors duration-micro',
                   selected
                     ? 'border-shodh-border-subtle border-b-shodh-surface bg-shodh-surface text-shodh-text font-semibold'
                     : 'text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
@@ -199,7 +199,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
       )}
 
       {sheet && sheet.truncated && (
-        <p className="px-4 py-1.5 text-[12px] text-shodh-text-muted border-b border-shodh-border-subtle">
+        <p className="px-4 py-1.5 text-caption text-shodh-text-muted border-b border-shodh-border-subtle">
           Showing the first {sheet.rows.length.toLocaleString()} of {sheet.totalRows.toLocaleString()} rows.
         </p>
       )}
@@ -215,7 +215,7 @@ export function TableViewer({ filePath, passage, onLocate, onError }: TableViewe
       >
         {sheet && (
           <table
-            className="table-fixed border-separate border-spacing-0 text-[12.5px] text-shodh-text-secondary"
+            className="table-fixed border-separate border-spacing-0 text-small text-shodh-text-secondary"
             style={{ width: tableWidth }}
             aria-label={sheet.name}
             aria-rowcount={rowCount + 1}

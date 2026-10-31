@@ -91,7 +91,7 @@ function ZoomToolbar({
   onActual: () => void;
 }) {
   const button = cn(
-    'h-8 min-w-8 px-1.5 inline-flex items-center justify-center rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
+    'h-8 min-w-8 px-1.5 inline-flex items-center justify-center rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-micro',
     FOCUS_RING,
   );
   const percent = Math.round(scale * 100);
@@ -105,7 +105,7 @@ function ZoomToolbar({
       <button type="button" className={button} onClick={onZoomOut} disabled={scale <= MIN_ZOOM + 1e-6} aria-label="Zoom out" title="Zoom out (−)">
         <Minus className="w-4 h-4" aria-hidden="true" />
       </button>
-      <span className="w-12 text-center text-[12px] tabular-nums text-shodh-text-secondary" aria-hidden="true">
+      <span className="w-12 text-center text-caption tabular-nums text-shodh-text-secondary" aria-hidden="true">
         {percent}%
       </span>
       <span className="sr-only" role="status" aria-live="polite">{`Zoom ${percent} percent`}</span>
@@ -264,7 +264,7 @@ function CanvasStage({
           {children(view.scale)}
         </div>
       ) : (
-        <div className="h-full flex items-center justify-center gap-2 text-[13px] text-shodh-text-muted" role="status">
+        <div className="h-full flex items-center justify-center gap-2 text-small text-shodh-text-muted" role="status">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Preparing view…
         </div>
@@ -378,12 +378,12 @@ function TextStage({
 function StageError({ message, detail }: { message: string; detail?: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
-      <p role="alert" className="flex items-center gap-2 text-[13px] text-shodh-text-secondary">
+      <p role="alert" className="flex items-center gap-2 text-small text-shodh-text-secondary">
         <AlertTriangle className="w-4 h-4 text-shodh-warning" aria-hidden="true" />
         {message}
       </p>
       {detail && (
-        <pre className="max-w-full max-h-60 overflow-auto scrollbar-thin rounded-lg border border-shodh-border bg-shodh-surface-2 p-3 text-left text-[12px] font-mono text-shodh-text-muted whitespace-pre-wrap">
+        <pre className="max-w-full max-h-60 overflow-auto scrollbar-thin rounded-lg border border-shodh-border bg-shodh-surface-2 p-3 text-left text-caption font-mono text-shodh-text-muted whitespace-pre-wrap">
           {detail}
         </pre>
       )}
@@ -599,7 +599,7 @@ function FigureStage({ target, commandRef }: { target: Extract<FocusTarget, { ki
       )}
       <div className="shrink-0 max-h-[30%] overflow-y-auto scrollbar-thin border-t border-shodh-border-subtle bg-shodh-surface px-4 py-2.5 flex flex-col gap-1.5">
         <div className="flex items-start gap-3">
-          <p className="m-0 flex-1 min-w-0 text-[13px] leading-snug text-shodh-text">{target.caption || target.label}</p>
+          <p className="m-0 flex-1 min-w-0 text-small leading-snug text-shodh-text">{target.caption || target.label}</p>
           <button
             type="button"
             onClick={() =>
@@ -611,12 +611,12 @@ function FigureStage({ target, commandRef }: { target: Extract<FocusTarget, { ki
                 label: target.label,
               })
             }
-            className="shrink-0 h-7 px-2 rounded-lg text-[12px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="shrink-0 h-7 px-2 rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {`Show in PDF (page ${target.page})`}
           </button>
         </div>
-        {target.nearby && <p className="m-0 text-[12.5px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap">{target.nearby}</p>}
+        {target.nearby && <p className="m-0 text-small leading-relaxed text-shodh-text-secondary whitespace-pre-wrap">{target.nearby}</p>}
       </div>
     </div>
   );
@@ -671,7 +671,7 @@ function TaskStage({ task }: { task: FocusTaskSnapshot }) {
     <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin bg-shodh-raised-2 p-6 flex justify-center">
       <article className="w-full max-w-[560px] h-fit rounded-2xl border border-shodh-border bg-shodh-surface p-5 flex flex-col gap-4">
         <h3 className="text-[18px] font-semibold text-shodh-text break-words">{task.title}</h3>
-        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-[13.5px]">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-body">
           {rows.map(([k, v]) => (
             <React.Fragment key={k}>
               <dt className="text-shodh-text-muted">{k}</dt>
@@ -682,20 +682,20 @@ function TaskStage({ task }: { task: FocusTaskSnapshot }) {
         {task.tags.length > 0 && (
           <ul className="flex flex-wrap gap-1.5" aria-label="Tags">
             {task.tags.map(tag => (
-              <li key={tag} className="px-2 h-6 inline-flex items-center rounded-full bg-shodh-raised-2 text-[12px] text-shodh-text-secondary">{tag}</li>
+              <li key={tag} className="px-2 h-6 inline-flex items-center rounded-full bg-shodh-raised-2 text-caption text-shodh-text-secondary">{tag}</li>
             ))}
           </ul>
         )}
         <section className="flex flex-col gap-1.5">
-          <h4 className="text-[11.5px] font-medium uppercase tracking-wider text-shodh-text-faint">Notes</h4>
-          <p className="text-[14px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">{task.notes.trim() || 'No notes.'}</p>
+          <h4 className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">Notes</h4>
+          <p className="text-body leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">{task.notes.trim() || 'No notes.'}</p>
         </section>
         {task.subtasks.length > 0 && (
           <section className="flex flex-col gap-1.5">
-            <h4 className="text-[11.5px] font-medium uppercase tracking-wider text-shodh-text-faint">Subtasks</h4>
+            <h4 className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">Subtasks</h4>
             <ul className="flex flex-col gap-1">
               {task.subtasks.map((s, i) => (
-                <li key={`${i}-${s.title}`} className="flex items-center gap-2 text-[13.5px] text-shodh-text-secondary">
+                <li key={`${i}-${s.title}`} className="flex items-center gap-2 text-body text-shodh-text-secondary">
                   {s.completed ? <CheckSquare className="w-4 h-4 text-shodh-success" aria-label="Done" /> : <Square className="w-4 h-4 text-shodh-text-faint" aria-label="Not done" />}
                   <span className={cn(s.completed && 'line-through text-shodh-text-muted')}>{s.title}</span>
                 </li>
@@ -703,7 +703,7 @@ function TaskStage({ task }: { task: FocusTaskSnapshot }) {
             </ul>
           </section>
         )}
-        <p className="text-[12px] text-shodh-text-muted">A snapshot from when this view opened. Edit the task in Tasks.</p>
+        <p className="text-caption text-shodh-text-muted">A snapshot from when this view opened. Edit the task in Tasks.</p>
       </article>
     </div>
   );
@@ -720,18 +720,18 @@ function SelectionStage({ target }: { target: Extract<FocusTarget, { kind: 'sele
   return (
     <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin bg-shodh-raised-2 p-6 flex justify-center">
       <article className="w-full max-w-[640px] h-fit rounded-2xl border border-shodh-border bg-shodh-surface p-5 flex flex-col gap-3">
-        <p className="text-[11.5px] font-medium uppercase tracking-wider text-shodh-text-faint">{where}</p>
+        <p className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">{where}</p>
         {at >= 0 ? (
-          <p className="text-[15px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">
+          <p className="text-body-lg leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">
             {paragraph.slice(0, at)}
             <mark className="rounded-[3px] bg-shodh-accent-soft px-0.5 text-shodh-text">{text}</mark>
             {paragraph.slice(at + text.length)}
           </p>
         ) : (
           <>
-            <blockquote className="pl-4 border-l-2 border-shodh-accent text-[15px] leading-relaxed text-shodh-text whitespace-pre-wrap break-words">{text}</blockquote>
+            <blockquote className="pl-4 border-l-2 border-shodh-accent text-body-lg leading-relaxed text-shodh-text whitespace-pre-wrap break-words">{text}</blockquote>
             {paragraph && (
-              <p className="text-[13.5px] leading-relaxed text-shodh-text-muted whitespace-pre-wrap break-words">{paragraph}</p>
+              <p className="text-body leading-relaxed text-shodh-text-muted whitespace-pre-wrap break-words">{paragraph}</p>
             )}
           </>
         )}

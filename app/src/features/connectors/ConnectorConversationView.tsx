@@ -59,9 +59,9 @@ export function ConnectorConversationView({
               <ConnectorIcon connector={source.connector} className="w-5 h-5" />
             </span>
             <div className="min-w-0">
-              <h1 className="m-0 text-[15px] font-semibold text-shodh-text truncate">{conversation.title}</h1>
-              <p className="m-0 mt-0.5 flex items-center gap-1.5 text-[12px] text-shodh-text-muted">
-                <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-md bg-shodh-raised text-[11px] font-medium text-shodh-text-secondary">
+              <h1 className="m-0 text-body-lg font-semibold text-shodh-text truncate">{conversation.title}</h1>
+              <p className="m-0 mt-0.5 flex items-center gap-1.5 text-caption text-shodh-text-muted">
+                <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-md bg-shodh-raised text-caption font-medium text-shodh-text-secondary">
                   <Lock className="w-3 h-3" aria-hidden="true" />
                   From {name}
                 </span>
@@ -96,29 +96,29 @@ export function ConnectorConversationView({
             if (author.shodh) {
               return (
                 <li key={message.id} className="flex flex-col gap-1">
-                  <span className="text-[11.5px] font-medium text-shodh-text-muted">
+                  <span className="text-caption font-medium text-shodh-text-muted">
                     Shodh{when && <span className="font-normal text-shodh-text-faint">{`, ${when}`}</span>}
                   </span>
-                  <div className="text-[14.5px] leading-[1.6] text-shodh-text [&_p]:my-2 [&_ul]:my-2 [&_ul]:pl-5 [&_ol]:pl-5 [&_li]:my-0.5">
+                  <div className="text-body-lg leading-[1.6] text-shodh-text [&_p]:my-2 [&_ul]:my-2 [&_ul]:pl-5 [&_ol]:pl-5 [&_li]:my-0.5">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                       {message.content}
                     </ReactMarkdown>
                   </div>
                   {author.answeredBy && (
-                    <p className="m-0 text-[12px] text-shodh-text-muted">{`${author.answeredBy}.`}</p>
+                    <p className="m-0 text-caption text-shodh-text-muted">{`${author.answeredBy}.`}</p>
                   )}
                 </li>
               );
             }
             return (
               <li key={message.id} className={cn('flex flex-col gap-1', author.owner ? 'items-end' : 'items-start')}>
-                <span className="text-[11.5px] font-medium text-shodh-text-muted">
+                <span className="text-caption font-medium text-shodh-text-muted">
                   {author.owner ? 'You' : author.name}
                   {when && <span className="font-normal text-shodh-text-faint">{`, ${when}`}</span>}
                 </span>
                 <div
                   className={cn(
-                    'max-w-[520px] min-w-0 px-4 py-[10px] rounded-[18px] text-[14.5px] leading-[1.55] whitespace-pre-wrap break-words',
+                    'max-w-[520px] min-w-0 px-4 py-[10px] rounded-[18px] text-body-lg leading-[1.55] whitespace-pre-wrap break-words',
                     author.owner ? 'bg-shodh-raised-2 text-shodh-text' : 'bg-shodh-surface border border-shodh-border text-shodh-text',
                   )}
                 >
@@ -131,7 +131,7 @@ export function ConnectorConversationView({
       </div>
 
       <footer className="shrink-0 border-t border-shodh-border px-7 py-3">
-        <p className="max-w-[700px] mx-auto m-0 text-[12px] text-shodh-text-muted" role="note">
+        <p className="max-w-[700px] mx-auto m-0 text-caption text-shodh-text-muted" role="note">
           {readOnlyLine(source)}
         </p>
       </footer>
@@ -160,15 +160,15 @@ export function SeedNotice({
         <ConnectorIcon connector={connector} className="w-4 h-4" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="m-0 text-[13px] font-medium text-shodh-text">Continuing {label}</p>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small font-medium text-shodh-text">Continuing {label}</p>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
           Your first question carries its last {messages} {messages === 1 ? 'message' : 'messages'} as quoted context. Other people's words in it are never treated as instructions or saved to your memories.
         </p>
       </div>
       <button
         type="button"
         onClick={onRemove}
-        className={cn('shrink-0 h-7 px-2 rounded-md text-[12px] text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+        className={cn('shrink-0 h-7 px-2 rounded-md text-caption text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
       >
         Don't include
       </button>

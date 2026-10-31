@@ -7,6 +7,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { parseNotificationPrefs, saveNotificationPrefs } from '../features/notifications/notificationPrefs.ts';
 import type { NotificationPrefs } from '../features/notifications/notificationPrefs.ts';
+import { parseTextSize } from './textSize.ts';
+import type { TextSize } from './textSize.ts';
 
 export const APP_SETTINGS_CHANGED = 'app-settings-changed';
 
@@ -18,6 +20,8 @@ export interface Preferences {
   theme: 'light' | 'dark';
   /** Passages a document search returns by default. */
   searchMaxResults: number;
+  /** How large the interface is drawn (Settings → Appearance). */
+  textSize: TextSize;
 }
 
 export interface Policy {
@@ -156,7 +160,11 @@ export function parseAppSettings(value: unknown): AppSettings | null {
   const notifications = parseNotificationPrefs(value.notifications);
   if (!notifications) return null;
   return {
-    preferences: { theme: preferences.theme, searchMaxResults: preferences.searchMaxResults },
+    preferences: {
+      theme: preferences.theme,
+      searchMaxResults: preferences.searchMaxResults,
+      textSize: parseTextSize(preferences.textSize),
+    },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
     code: parseCodePrefs(value.code),
     memory,

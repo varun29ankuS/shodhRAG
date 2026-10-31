@@ -93,7 +93,7 @@ function FillStatusLine({
   };
 
   if (!status) {
-    return error ? <p role="alert" className="m-0 text-[12.5px] text-shodh-error">The fill status could not be read: {error}</p> : null;
+    return error ? <p role="alert" className="m-0 text-small text-shodh-error">The fill status could not be read: {error}</p> : null;
   }
   const now = Date.now();
   const failedCells = job && job.state === 'done' ? failedCellsSince(cells, job.createdAt) : 0;
@@ -108,7 +108,7 @@ function FillStatusLine({
       <p role="status" aria-live="polite" className="sr-only">{line?.text ?? ''}</p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         {line && (
-          <p className={cn('m-0 flex-1 min-w-[240px] text-[12.5px]', TONE_CLASSES[line.tone])}>
+          <p className={cn('m-0 flex-1 min-w-[240px] text-small', TONE_CLASSES[line.tone])}>
             {spinning && <Loader2 className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
             {line.text}
             {line.progress && <span className="text-shodh-text-muted"> {line.progress}</span>}
@@ -132,9 +132,9 @@ function FillStatusLine({
           </button>
         )}
       </div>
-      <p className="m-0 text-[12px] text-shodh-text-muted">{callsLine(status.callsToday, status.cap, status.dayResetsAt, now)}</p>
+      <p className="m-0 text-caption text-shodh-text-muted">{callsLine(status.callsToday, status.cap, status.dayResetsAt, now)}</p>
       {error && (
-        <p role="alert" className="m-0 text-[12px] text-shodh-error">
+        <p role="alert" className="m-0 text-caption text-shodh-error">
           Couldn't refresh the fill status: {error} The line above may be out of date.
         </p>
       )}
@@ -286,11 +286,11 @@ function TableEditor({
         <button type="button" className={cn(QUIET_BUTTON, 'self-start -ml-2')} onClick={onBack}>
           <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> All tables
         </button>
-        <p role="alert" className="m-0 text-[13px] text-shodh-error">This table could not be opened: {loadError}</p>
+        <p role="alert" className="m-0 text-small text-shodh-error">This table could not be opened: {loadError}</p>
       </div>
     );
   }
-  if (!view) return <p role="status" className="m-0 text-[13px] text-shodh-text-muted">Opening the table…</p>;
+  if (!view) return <p role="status" className="m-0 text-small text-shodh-text-muted">Opening the table…</p>;
 
   const table = view.table;
   const selectedRow = selected ? view.rows.find(r => r.id === selected.rowId) ?? null : null;
@@ -403,7 +403,7 @@ function TableEditor({
     }
   };
 
-  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  const menuItem = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
   const canFill = view.rows.length > 0 && sortedColumns.length > 0;
 
   return (
@@ -525,12 +525,12 @@ function TableEditor({
 
       {view.rows.length > 0 && sortedColumns.length > 0 && (
         <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filter papers">
-          <label htmlFor={ids.status} className="text-[12px] text-shodh-text-muted">Show</label>
+          <label htmlFor={ids.status} className="text-caption text-shodh-text-muted">Show</label>
           <select
             id={ids.status}
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value)}
-            className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text', FOCUS_RING)}
+            className={cn('h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text', FOCUS_RING)}
           >
             {STATUS_FILTERS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
           </select>
@@ -545,7 +545,7 @@ function TableEditor({
                 aria-label={`Filter by “${column.question}”`}
                 value={valueFilters[column.id] ?? ''}
                 onChange={e => setValueFilters(prev => ({ ...prev, [column.id]: e.target.value }))}
-                className={cn('h-8 max-w-[220px] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text', FOCUS_RING)}
+                className={cn('h-8 max-w-[220px] rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text', FOCUS_RING)}
               >
                 <option value="">{column.question}: any</option>
                 {values.map(v => (
@@ -554,7 +554,7 @@ function TableEditor({
               </select>
             );
           })}
-          <span className="text-[12px] text-shodh-text-muted" aria-live="polite">
+          <span className="text-caption text-shodh-text-muted" aria-live="polite">
             {rows.length === view.rows.length ? `${rows.length} ${rows.length === 1 ? 'paper' : 'papers'}` : `Showing ${rows.length} of ${view.rows.length} papers`}
           </span>
         </div>
@@ -562,7 +562,7 @@ function TableEditor({
 
       {sortedColumns.length === 0 || view.rows.length === 0 ? (
         <div className="flex flex-col items-start gap-2 rounded-xl border border-dashed border-shodh-border px-4 py-5">
-          <p className="m-0 text-[13px] text-shodh-text">
+          <p className="m-0 text-small text-shodh-text">
             {view.rows.length === 0 && sortedColumns.length === 0
               ? 'Add the papers to compare and the questions to ask of each.'
               : view.rows.length === 0
@@ -586,7 +586,7 @@ function TableEditor({
         <div className="flex flex-col xl:flex-row gap-4 items-start">
           <div className="flex-1 min-w-0 w-full">
             {rows.length === 0 ? (
-              <p className="m-0 text-[12.5px] text-shodh-text-muted">No paper matches the filters.</p>
+              <p className="m-0 text-small text-shodh-text-muted">No paper matches the filters.</p>
             ) : (
               <TableGrid
                 caption={`${table.name}: ${rows.length} papers by ${sortedColumns.length} questions`}
@@ -621,7 +621,7 @@ function TableEditor({
                 onChanged={() => void load()}
               />
             ) : (
-              <p className="m-0 text-[12.5px] text-shodh-text-muted">
+              <p className="m-0 text-small text-shodh-text-muted">
                 Choose a cell to see its quote, its page in the paper and why it is marked. In the table, arrow keys
                 move between cells and column headers; Enter opens a cell.
               </p>
@@ -712,10 +712,10 @@ export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
           <Plus className="w-4 h-4" aria-hidden="true" /> New table
         </button>
       </div>
-      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">The tables could not be listed: {error}</p>}
-      {tables === null && !error && <p role="status" className="m-0 text-[12.5px] text-shodh-text-muted">Loading tables…</p>}
+      {error && <p role="alert" className="m-0 text-small text-shodh-error">The tables could not be listed: {error}</p>}
+      {tables === null && !error && <p role="status" className="m-0 text-small text-shodh-text-muted">Loading tables…</p>}
       {tables !== null && tables.length === 0 && (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <p className="m-0 text-small text-shodh-text-muted">
           No tables yet. A table compares this workspace's papers question by question: the model answers each cell
           with a quote that Shodh checks against the paper, so every value can be traced to its page.
         </p>
@@ -730,8 +730,8 @@ export function TablesTab({ workspace }: { workspace: WorkspaceDetail }) {
                 className={cn('w-full flex items-center gap-3 py-2 px-1 text-left rounded-md hover:bg-shodh-raised/60', FOCUS_RING)}
               >
                 <Table2 className="w-4 h-4 text-shodh-text-faint shrink-0" aria-hidden="true" />
-                <span className="flex-1 min-w-0 text-[13px] text-shodh-text truncate">{t.name}</span>
-                <span className="text-[11.5px] text-shodh-text-muted shrink-0">{relativeTime(t.updatedAt)}</span>
+                <span className="flex-1 min-w-0 text-small text-shodh-text truncate">{t.name}</span>
+                <span className="text-caption text-shodh-text-muted shrink-0">{relativeTime(t.updatedAt)}</span>
               </button>
             </li>
           ))}

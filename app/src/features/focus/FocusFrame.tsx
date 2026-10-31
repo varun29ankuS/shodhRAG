@@ -9,7 +9,7 @@ const FOCUS_RING =
 
 /** The look of a button in a visual's corner ("Expand & ask" and the `actions` beside it): subdued until hovered. */
 export const FRAME_ACTION = cn(
-  'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface/95 text-[11.5px] font-medium text-shodh-text-secondary shadow-sm',
+  'h-7 px-2 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface/95 text-caption font-medium text-shodh-text-secondary shadow-sm',
   'opacity-75 group-hover/focus:opacity-100 focus-visible:opacity-100 hover:text-shodh-text hover:bg-shodh-raised transition-opacity duration-micro',
 );
 

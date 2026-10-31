@@ -404,7 +404,7 @@ function PdfPageView({
         </div>
       )}
       {stage === 'failed' && (
-        <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-[12.5px] text-zinc-700">
+        <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-small text-zinc-700">
           Page {pageNumber} could not be rendered.
         </div>
       )}
@@ -1361,7 +1361,7 @@ export function PdfViewer({
       className="flex-1 min-h-0 flex flex-col"
       onKeyDown={handleKeyDown}
     >
-      <div role="toolbar" aria-label="PDF controls" className="flex items-center gap-1 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
+      <div role="toolbar" aria-label="PDF controls" className="flex items-center gap-1 px-3 py-1.5 border-b border-shodh-border-subtle text-small text-shodh-text-secondary">
         <button type="button" className={toolButton} onClick={() => goToPage(currentPage - 1)} disabled={!doc || currentPage <= 1} aria-label="Previous page" title="Previous page (PageUp)">
           <ChevronUp className="w-4 h-4" aria-hidden="true" />
         </button>
@@ -1451,7 +1451,7 @@ export function PdfViewer({
       </div>
 
       {snipping && (
-        <p role="status" className="px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-accent-text bg-shodh-accent-soft">
+        <p role="status" className="px-3 py-1.5 border-b border-shodh-border-subtle text-small text-shodh-accent-text bg-shodh-accent-soft">
           Drag a rectangle on a page to save it as a snippet. Esc cancels.
         </p>
       )}
@@ -1466,7 +1466,7 @@ export function PdfViewer({
             e.preventDefault();
             closeFind();
           }}
-          className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary"
+          className="flex items-center gap-1.5 px-3 py-1.5 border-b border-shodh-border-subtle text-small text-shodh-text-secondary"
         >
           <label htmlFor={findInputId} className="sr-only">
             Find in document
@@ -1513,7 +1513,7 @@ export function PdfViewer({
         style={{ padding: PAGE_PADDING }}
       >
         {sizes.length === 0 ? (
-          <div className="h-full flex items-center justify-center gap-2 text-[13px] text-shodh-text-muted" role="status">
+          <div className="h-full flex items-center justify-center gap-2 text-small text-shodh-text-muted" role="status">
             <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
             Loading PDF…
           </div>

@@ -103,7 +103,7 @@ export function LinkCard({
             {loading ? (
               <Skeleton className="w-full h-full" />
             ) : (
-              <span className="text-[12px] text-shodh-text-muted">{expired ? 'This code expired.' : 'No code yet.'}</span>
+              <span className="text-caption text-shodh-text-muted">{expired ? 'This code expired.' : 'No code yet.'}</span>
             )}
           </div>
         )}
@@ -111,10 +111,10 @@ export function LinkCard({
 
       <div className="min-w-0 flex-1 flex flex-col gap-3">
         <div>
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text">
+          <p className="m-0 text-body font-semibold text-shodh-text">
             {kind === 'owner' ? 'Scan with your phone’s camera' : 'Send this link to one person'}
           </p>
-          <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-secondary max-w-[56ch]">
+          <p className="m-0 mt-0.5 text-small text-shodh-text-secondary max-w-[56ch]">
             {kind === 'owner'
               ? `It opens your chat with @${botUsername} in Telegram. Press Start, and that chat is your Shodh.`
               : `Whoever opens it first and presses Start can ask questions of the workspace you chose. It works once.`}
@@ -122,7 +122,7 @@ export function LinkCard({
         </div>
 
         {invite && !expired && (
-          <p className="m-0 font-mono text-[12px] text-shodh-text-muted break-all select-all">{invite.url}</p>
+          <p className="m-0 font-mono text-caption text-shodh-text-muted break-all select-all">{invite.url}</p>
         )}
 
         <div className="flex flex-wrap items-center gap-2">
@@ -142,7 +142,7 @@ export function LinkCard({
           <span aria-live="polite" className="sr-only">{copied ? 'The link was copied.' : ''}</span>
         </div>
 
-        <p className="m-0 text-[12px] text-shodh-text-muted" aria-live="off">
+        <p className="m-0 text-caption text-shodh-text-muted" aria-live="off">
           {invite && left ? (
             <>Works once, for <span className="tabular-nums">{left}</span> more. A new link replaces this one.</>
           ) : expired ? (

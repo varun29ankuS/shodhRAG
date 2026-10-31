@@ -45,10 +45,10 @@ export default function EvidenceTableSettings() {
   }, []);
 
   if (loadError && !settings) {
-    return <p role="alert" className="m-0 text-[13px] text-shodh-error">The tables settings could not be loaded: {loadError}</p>;
+    return <p role="alert" className="m-0 text-small text-shodh-error">The tables settings could not be loaded: {loadError}</p>;
   }
   if (!settings) {
-    return <p className="m-0 text-[13px] text-shodh-text-muted">Loading…</p>;
+    return <p className="m-0 text-small text-shodh-text-muted">Loading…</p>;
   }
 
   const cap = Number(capInput);
@@ -78,15 +78,15 @@ export default function EvidenceTableSettings() {
         }}
       >
         <div className="min-w-0">
-          <label htmlFor={capId} className="m-0 text-[13.5px] font-semibold text-shodh-text">Model calls tables may make per day</label>
-          <p id={capHelpId} className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+          <label htmlFor={capId} className="m-0 text-body font-semibold text-shodh-text">Model calls tables may make per day</label>
+          <p id={capHelpId} className="m-0 mt-0.5 text-small text-shodh-text-muted">
             Filling a paper takes one or two calls, and one more when a reply cannot be read. A fill that reaches the
             cap pauses and goes on when the day's count resets, next at {localTime(nextUtcMidnight(Date.now()), Date.now())} (midnight UTC,
             in your time). Raising the cap lets paused fills go on
             at once. {settings.minDailyCallCap} to {settings.maxDailyCallCap}.
           </p>
           {!capValid && capInput.trim() !== '' && (
-            <p role="alert" className="m-0 mt-1 text-[12.5px] text-shodh-error">
+            <p role="alert" className="m-0 mt-1 text-small text-shodh-error">
               Enter a whole number from {settings.minDailyCallCap} to {settings.maxDailyCallCap}.
             </p>
           )}
@@ -104,12 +104,12 @@ export default function EvidenceTableSettings() {
             aria-describedby={capHelpId}
             aria-invalid={!capValid}
             onChange={e => setCapInput(e.target.value)}
-            className={cn('w-20 h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-[12.5px] text-shodh-text tabular-nums disabled:opacity-50', FOCUS_RING)}
+            className={cn('w-20 h-8 rounded-lg border border-shodh-border bg-shodh-ground px-2 text-small text-shodh-text tabular-nums disabled:opacity-50', FOCUS_RING)}
           />
           <button
             type="submit"
             disabled={!capChanged || saving}
-            className={cn('h-8 px-3 rounded-lg border border-shodh-border text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed', FOCUS_RING)}
+            className={cn('h-8 px-3 rounded-lg border border-shodh-border text-small text-shodh-text-secondary hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed', FOCUS_RING)}
           >
             Save
           </button>

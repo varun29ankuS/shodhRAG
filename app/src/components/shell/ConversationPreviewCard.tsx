@@ -59,27 +59,27 @@ export function ConversationPreviewCard({
       style={{ width: CARD_WIDTH, left: pos?.left ?? -9999, top: pos?.top ?? -9999 }}
       className="shell-pop fixed z-[60] pointer-events-none rounded-xl border border-shodh-border-strong bg-shodh-raised shadow-[0_12px_32px_rgba(0,0,0,0.28)] p-3.5 flex flex-col gap-2.5"
     >
-      <p className="text-[13px] font-semibold text-shodh-text leading-snug">{conversation.title}</p>
+      <p className="text-small font-semibold text-shodh-text leading-snug">{conversation.title}</p>
       {empty ? (
-        <p className="text-[12.5px] text-shodh-text-muted">No messages yet.</p>
+        <p className="text-small text-shodh-text-muted">No messages yet.</p>
       ) : (
         <>
           {preview.firstQuestion && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Started with</span>
-              <p className="text-[12.5px] leading-snug text-shodh-text-secondary">{preview.firstQuestion}</p>
+              <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Started with</span>
+              <p className="text-small leading-snug text-shodh-text-secondary">{preview.firstQuestion}</p>
             </div>
           )}
           {preview.latestAnswer && (
             <div className="flex flex-col gap-0.5">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Latest answer</span>
-              <p className="text-[12.5px] leading-snug text-shodh-text-secondary">{preview.latestAnswer}</p>
+              <span className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Latest answer</span>
+              <p className="text-small leading-snug text-shodh-text-secondary">{preview.latestAnswer}</p>
             </div>
           )}
           {preview.sources.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {preview.sources.map(s => (
-                <span key={s} className="inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded-md bg-shodh-raised-2 text-[11px] text-shodh-text-secondary">
+                <span key={s} className="inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded-md bg-shodh-raised-2 text-caption text-shodh-text-secondary">
                   <FileText className="w-3 h-3 shrink-0" aria-hidden="true" />
                   <span className="truncate">{s}</span>
                 </span>
@@ -88,7 +88,7 @@ export function ConversationPreviewCard({
           )}
         </>
       )}
-      <p className="flex items-center gap-1.5 text-[11px] text-shodh-text-faint">
+      <p className="flex items-center gap-1.5 text-caption text-shodh-text-faint">
         <MessageSquare className="w-3 h-3" aria-hidden="true" />
         {preview.questionCount} {preview.questionCount === 1 ? 'question' : 'questions'}
         {created && <> · started {created}</>}

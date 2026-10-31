@@ -121,7 +121,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         </div>
         <button
           onClick={() => { loadStats(); }}
-          className="text-[10px] flex items-center gap-1 px-2 py-1 rounded border transition-colors"
+          className="text-caption flex items-center gap-1 px-2 py-1 rounded border transition-colors"
           style={{ borderColor: colors.border, color: colors.textMuted }}
         >
           <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
@@ -144,7 +144,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
               style={{ backgroundColor: `${colors.primary}08`, border: `1px solid ${colors.border}` }}
             >
               <div className="text-xs font-bold" style={{ color: colors.text }}>{item.value}</div>
-              <div className="text-[10px]" style={{ color: colors.textMuted }}>{item.label}</div>
+              <div className="text-caption" style={{ color: colors.textMuted }}>{item.label}</div>
             </div>
           ))}
         </div>
@@ -166,10 +166,10 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
                 <div className="flex items-center gap-2 min-w-0">
                   <FolderOpen className="w-3 h-3 shrink-0" style={{ color: colors.textMuted }} />
                   <div className="min-w-0">
-                    <div className="text-[11px] font-medium truncate" style={{ color: colors.text }}>
+                    <div className="text-caption font-medium truncate" style={{ color: colors.text }}>
                       {source.name}
                     </div>
-                    <div className="text-[10px] truncate" style={{ color: colors.textMuted }}>
+                    <div className="text-caption truncate" style={{ color: colors.textMuted }}>
                       {source.path}
                     </div>
                   </div>
@@ -190,7 +190,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
       {sources.length === 0 && (
         <div className="text-center py-3 rounded-md" style={{ backgroundColor: `${colors.primary}06`, border: `1px solid ${colors.border}` }}>
           <HardDrive className="w-5 h-5 mx-auto mb-1" style={{ color: colors.textMuted }} />
-          <p className="text-[11px]" style={{ color: colors.textMuted }}>No indexed sources</p>
+          <p className="text-caption" style={{ color: colors.textMuted }}>No indexed sources</p>
         </div>
       )}
 
@@ -198,13 +198,13 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
       <div>
         <button
           onClick={handleToggleIndexed}
-          className="w-full text-left text-[11px] px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
+          className="w-full text-left text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
           style={{ borderColor: colors.border, color: colors.text }}
         >
           <FileText className="w-3 h-3" style={{ color: colors.primary }} />
           {showIndexed ? 'Hide' : 'Show'} Actual Indexed Files
           {indexedSources.length > 0 && (
-            <span className="ml-auto text-[10px]" style={{ color: colors.textMuted }}>
+            <span className="ml-auto text-caption" style={{ color: colors.textMuted }}>
               {countOf(indexedSources.length, 'file')}
             </span>
           )}
@@ -213,7 +213,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         {showIndexed && (
           <div className="mt-1.5 space-y-1 max-h-60 overflow-y-auto pr-1">
             {indexedSources.length === 0 ? (
-              <div className="text-[11px] text-center py-2" style={{ color: colors.textMuted }}>
+              <div className="text-caption text-center py-2" style={{ color: colors.textMuted }}>
                 No files found in vector store
               </div>
             ) : (
@@ -223,10 +223,10 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
                   className="rounded-md px-2.5 py-1.5"
                   style={{ backgroundColor: `${colors.primary}06`, border: `1px solid ${colors.border}` }}
                 >
-                  <div className="text-[11px] font-medium truncate" style={{ color: colors.text }}>
+                  <div className="text-caption font-medium truncate" style={{ color: colors.text }}>
                     {src.title}
                   </div>
-                  <div className="text-[10px] truncate" style={{ color: colors.textMuted }} title={src.display_path || src.source}>
+                  <div className="text-caption truncate" style={{ color: colors.textMuted }} title={src.display_path || src.source}>
                     {src.display_path || src.source}
                   </div>
                 </div>
@@ -245,7 +245,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         <button
           onClick={() => setConfirmAction('clear_docs')}
           disabled={loading}
-          className="w-full text-left text-[11px] px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
+          className="w-full text-left text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
           style={{
             borderColor: colors.border,
             color: colors.text,
@@ -254,13 +254,13 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         >
           <Trash2 className="w-3 h-3 text-orange-500" />
           Clear All Documents
-          <span className="ml-auto text-[10px] text-orange-500">Keeps spaces</span>
+          <span className="ml-auto text-caption text-orange-500">Keeps spaces</span>
         </button>
 
         <button
           onClick={() => setConfirmAction('reset')}
           disabled={loading}
-          className="w-full text-left text-[11px] px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
+          className="w-full text-left text-caption px-3 py-2 rounded-md border transition-colors flex items-center gap-2"
           style={{
             borderColor: colors.border,
             color: colors.text,
@@ -269,7 +269,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
         >
           <AlertTriangle className="w-3 h-3 text-red-500" />
           Reset Entire Database
-          <span className="ml-auto text-[10px] text-red-500">Destructive</span>
+          <span className="ml-auto text-caption text-red-500">Destructive</span>
         </button>
       </div>
 
@@ -279,7 +279,7 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           className="rounded-md p-3 space-y-2"
           style={{ backgroundColor: '#fef2f2', border: '1px solid #fca5a5' }}
         >
-          <p className="text-[11px] font-medium text-red-800">
+          <p className="text-caption font-medium text-red-800">
             {confirmAction === 'clear_docs'
               ? 'This will permanently delete all indexed documents from the vector store and text index. Spaces will be preserved. This cannot be undone.'
               : 'This will delete everything — all documents, vectors, and spaces. The app will need a restart. This cannot be undone.'}
@@ -287,13 +287,13 @@ export default function DataManagement({ sources, onRemoveSource, onSourcesClear
           <div className="flex gap-2">
             <button
               onClick={() => setConfirmAction(null)}
-              className="text-[11px] px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
+              className="text-caption px-3 py-1 rounded border border-gray-300 text-gray-700 hover:bg-gray-100"
             >
               Cancel
             </button>
             <button
               onClick={confirmAction === 'clear_docs' ? handleClearAllDocuments : handleResetDatabase}
-              className="text-[11px] px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
+              className="text-caption px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
             >
               {confirmAction === 'clear_docs' ? 'Clear All Documents' : 'Reset Database'}
             </button>

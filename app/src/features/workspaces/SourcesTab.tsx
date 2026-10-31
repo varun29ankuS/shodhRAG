@@ -35,13 +35,13 @@ function fileName(path: string): string {
 }
 
 function StateBadge({ state }: { state: SourceState | null }) {
-  if (state === null) return <span className="text-[11.5px] text-shodh-text-faint">Checking…</span>;
+  if (state === null) return <span className="text-caption text-shodh-text-faint">Checking…</span>;
   const ok = state === 'indexed';
   const neutral = state === 'reference' || state === 'unknown';
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 text-[11.5px]',
+        'inline-flex items-center gap-1 text-caption',
         ok ? 'text-shodh-success' : neutral ? 'text-shodh-text-muted' : 'text-shodh-warning',
       )}
     >
@@ -98,7 +98,7 @@ function Checklist<T>({
         </div>
       )}
       {items.length === 0 ? (
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">{emptyText}</p>
+        <p className="m-0 text-small text-shodh-text-muted">{emptyText}</p>
       ) : (
         <ul className="m-0 p-0 list-none max-h-[260px] overflow-y-auto scrollbar-thin rounded-lg border border-shodh-border-subtle divide-y divide-shodh-border-subtle">
           {items.map(item => {
@@ -118,7 +118,7 @@ function Checklist<T>({
                     return next;
                   })}
                 />
-                <label htmlFor={id} className="min-w-0 flex-1 text-[12.5px] cursor-pointer">{render(item)}</label>
+                <label htmlFor={id} className="min-w-0 flex-1 text-small cursor-pointer">{render(item)}</label>
               </li>
             );
           })}
@@ -225,7 +225,7 @@ function AddSources({
             aria-pressed={mode === t.id}
             onClick={() => setMode(t.id)}
             className={cn(
-              'h-8 px-3 rounded-full text-[12.5px] border transition-colors duration-micro',
+              'h-8 px-3 rounded-full text-small border transition-colors duration-micro',
               mode === t.id ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text' : 'border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised',
               FOCUS_RING,
             )}
@@ -241,7 +241,7 @@ function AddSources({
           render={f => (
             <>
               <span className="block font-medium text-shodh-text">{f.name}</span>
-              <span className="block text-[11.5px] text-shodh-text-muted truncate">{f.path}</span>
+              <span className="block text-caption text-shodh-text-muted truncate">{f.path}</span>
             </>
           )}
           emptyText={library.length === 0 ? 'The Library has no folders yet. Add one in Library first.' : 'Every Library folder is already in this workspace.'}
@@ -251,7 +251,7 @@ function AddSources({
       )}
       {mode === 'files' && (
         <div className="flex flex-col gap-2">
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 text-small text-shodh-text-muted">
             Single files, for example one paper from a large folder. Answers search a file once it is indexed: files
             outside your Library folders show as not indexed until you add their folder in Library.
           </p>
@@ -264,7 +264,7 @@ function AddSources({
       )}
       {mode === 'snippets' && (
         snippetError ? (
-          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">Snippets could not be loaded: {snippetError}</p>
+          <p role="alert" className="m-0 text-small text-shodh-error">Snippets could not be loaded: {snippetError}</p>
         ) : (
           <Checklist
             items={snippetItems}
@@ -272,7 +272,7 @@ function AddSources({
             render={s => (
               <>
                 <span className="block font-medium text-shodh-text">{s.title || `${s.fileName}, page ${s.page}`}</span>
-                <span className="block text-[11.5px] text-shodh-text-muted line-clamp-2">{s.text || s.note}</span>
+                <span className="block text-caption text-shodh-text-muted line-clamp-2">{s.text || s.note}</span>
               </>
             )}
             emptyText={snippets === null ? 'Loading snippets…' : 'No snippets match. Save snippets from the PDF viewer.'}
@@ -291,7 +291,7 @@ function AddSources({
       )}
       {mode === 'papers' && (
         paperError ? (
-          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">The paper graph could not be loaded: {paperError}</p>
+          <p role="alert" className="m-0 text-small text-shodh-error">The paper graph could not be loaded: {paperError}</p>
         ) : (
           <Checklist
             items={paperItems}
@@ -299,7 +299,7 @@ function AddSources({
             render={p => (
               <>
                 <span className="block font-medium text-shodh-text">{p.label}{p.year ? ` (${p.year})` : ''}</span>
-                <span className="block text-[11.5px] text-shodh-text-muted">
+                <span className="block text-caption text-shodh-text-muted">
                   {p.inLibrary ? `In your library: ${p.filePath ? fileName(p.filePath) : 'PDF'}` : 'Not in your library: kept as a reference, never searched'}
                 </span>
               </>
@@ -411,16 +411,16 @@ export function SourcesTab({
           </button>
         </div>
         {healthError ? (
-          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">The index could not be checked: {healthError}</p>
+          <p role="alert" className="m-0 text-small text-shodh-error">The index could not be checked: {healthError}</p>
         ) : health === null ? (
-          <p role="status" className="m-0 text-[12.5px] text-shodh-text-muted">Checking the index…</p>
+          <p role="status" className="m-0 text-small text-shodh-text-muted">Checking the index…</p>
         ) : workspace.sources.length === 0 ? (
-          <p className="m-0 text-[12.5px] text-shodh-text-secondary">
+          <p className="m-0 text-small text-shodh-text-secondary">
             Nothing yet: answers in this workspace find nothing until you add sources (or turn on “Search all my
             library” for a question).
           </p>
         ) : (
-          <p role="status" className="m-0 text-[12.5px] text-shodh-text-secondary">
+          <p role="status" className="m-0 text-small text-shodh-text-secondary">
             {`${health.searchableFiles.toLocaleString()} ${health.searchableFiles === 1 ? 'file' : 'files'}`}
             {health.chunks > 0 ? ` (${health.chunks.toLocaleString()} indexed passages)` : ''}
             {workspace.sourceCounts.snippets > 0 ? ` and ${workspace.sourceCounts.snippets} ${workspace.sourceCounts.snippets === 1 ? 'snippet' : 'snippets'}` : ''}
@@ -447,19 +447,19 @@ export function SourcesTab({
                 return (
                   <li key={key} className="flex items-start gap-3 py-2">
                     <div className="min-w-0 flex-1">
-                      <p className="m-0 text-[13px] text-shodh-text truncate">{s.label}</p>
+                      <p className="m-0 text-small text-shodh-text truncate">{s.label}</p>
                       {s.path && s.path !== s.label && (
-                        <p className="m-0 text-[11.5px] text-shodh-text-muted truncate" title={s.path}>{s.path}</p>
+                        <p className="m-0 text-caption text-shodh-text-muted truncate" title={s.path}>{s.path}</p>
                       )}
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5">
                         <StateBadge state={stateOf(s)} />
                         {status?.files !== null && status?.files !== undefined && s.kind === 'folder' && (
-                          <span className="text-[11.5px] text-shodh-text-muted">
+                          <span className="text-caption text-shodh-text-muted">
                             {`${status.files.toLocaleString()} ${status.files === 1 ? 'file' : 'files'}`}
                             {status.chunks !== null ? ` · ${countOf(status.chunks, 'passage')}` : ''}
                           </span>
                         )}
-                        {s.addedBy === 'agent' && <span className="text-[11.5px] text-shodh-text-muted">Added by Shodh (you approved)</span>}
+                        {s.addedBy === 'agent' && <span className="text-caption text-shodh-text-muted">Added by Shodh (you approved)</span>}
                       </div>
                     </div>
                     <button

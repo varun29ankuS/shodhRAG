@@ -110,9 +110,9 @@ function PaperPanel({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <p className="m-0 text-[11.5px] uppercase tracking-wide text-shodh-text-muted">Paper</p>
-        <h3 className="m-0 mt-0.5 text-[14px] font-semibold text-shodh-text break-words">{row.title}</h3>
-        <p className="m-0 mt-1 text-[12px] text-shodh-text-muted break-all">{row.documentId}</p>
+        <p className="m-0 text-caption uppercase tracking-wide text-shodh-text-muted">Paper</p>
+        <h3 className="m-0 mt-0.5 text-body font-semibold text-shodh-text break-words">{row.title}</h3>
+        <p className="m-0 mt-1 text-caption text-shodh-text-muted break-all">{row.documentId}</p>
       </div>
       <div className="flex flex-wrap gap-2">
         {diagnostics && (
@@ -126,12 +126,12 @@ function PaperPanel({
         </button>
       </div>
       {diagnostics && (
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           The quality check fills this paper and keeps every model call it made (cells that are current or cached cost
           no call: clear them first for a fresh check). It counts against today's calls.
         </p>
       )}
-      <p role="status" aria-live="polite" className={cn('m-0 text-[12.5px]', notice ? NOTICE_CLASSES[notice.tone] : 'sr-only')}>
+      <p role="status" aria-live="polite" className={cn('m-0 text-small', notice ? NOTICE_CLASSES[notice.tone] : 'sr-only')}>
         {notice?.text ?? ''}
       </p>
     </div>
@@ -241,30 +241,30 @@ export function CellPanel({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <p className="m-0 text-[11.5px] uppercase tracking-wide text-shodh-text-muted">{KIND_LABELS[column.kind]} · {row.title}</p>
-        <h3 className="m-0 mt-0.5 text-[14px] font-semibold text-shodh-text break-words">{column.question}</h3>
+        <p className="m-0 text-caption uppercase tracking-wide text-shodh-text-muted">{KIND_LABELS[column.kind]} · {row.title}</p>
+        <h3 className="m-0 mt-0.5 text-body font-semibold text-shodh-text break-words">{column.question}</h3>
       </div>
 
       <div className={cn('flex flex-col gap-1', stale && 'opacity-70')}>
         {value ? (
-          <p className="m-0 text-[15px] text-shodh-text break-words">{valueText(value)}</p>
+          <p className="m-0 text-body-lg text-shodh-text break-words">{valueText(value)}</p>
         ) : null}
-        <p className="m-0 flex flex-wrap items-center gap-1.5 text-[12.5px]">
-          <span className={cn('px-1.5 py-0.5 rounded text-[11.5px] font-medium', badgeClass)}>
+        <p className="m-0 flex flex-wrap items-center gap-1.5 text-small">
+          <span className={cn('px-1.5 py-0.5 rounded text-caption font-medium', badgeClass)}>
             {explanation.label}
           </span>
-          {stale && <span className="px-1.5 py-0.5 rounded text-[11.5px] font-medium bg-shodh-raised-2 text-shodh-text-muted">Out of date</span>}
+          {stale && <span className="px-1.5 py-0.5 rounded text-caption font-medium bg-shodh-raised-2 text-shodh-text-muted">Out of date</span>}
         </p>
-        {explanation.detail && <p className="m-0 text-[12.5px] text-shodh-text-secondary">{explanation.detail}</p>}
-        {explanation.refreshFailed && <p className="m-0 text-[12.5px] text-shodh-warning">{explanation.refreshFailed}</p>}
+        {explanation.detail && <p className="m-0 text-small text-shodh-text-secondary">{explanation.detail}</p>}
+        {explanation.refreshFailed && <p className="m-0 text-small text-shodh-warning">{explanation.refreshFailed}</p>}
       </div>
 
       {segments.length > 0 && (
         <figure className="m-0 flex flex-col gap-1">
-          <blockquote className="m-0 pl-3 border-l-2 border-shodh-border-strong text-[12.5px] leading-[1.55] text-shodh-text-secondary">
+          <blockquote className="m-0 pl-3 border-l-2 border-shodh-border-strong text-small leading-[1.55] text-shodh-text-secondary">
             “{segments.map((s, i) => (s.marked ? <mark key={i} className="bg-shodh-accent-soft text-shodh-text rounded-sm px-0.5">{s.text}</mark> : <React.Fragment key={i}>{s.text}</React.Fragment>))}”
           </blockquote>
-          <figcaption className="text-[12px] text-shodh-text-muted flex flex-wrap items-center gap-x-3 gap-y-1">
+          <figcaption className="text-caption text-shodh-text-muted flex flex-wrap items-center gap-x-3 gap-y-1">
             {source && <span>Page {source.page}</span>}
             {source && (
               <button
@@ -280,7 +280,7 @@ export function CellPanel({
       )}
 
       {cell && (cell.model || cell.filledAt || cell.editedAt) && (
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           {edited && cell.editedAt
             ? `Edited ${relativeTime(cell.editedAt)}`
             : [cell.model ? `Answered by ${cell.model}` : null, cell.filledAt ? relativeTime(cell.filledAt) : null].filter(Boolean).join(' · ')}
@@ -295,7 +295,7 @@ export function CellPanel({
             void saveEdit();
           }}
         >
-          <label htmlFor={editId} className="text-[12px] font-medium text-shodh-text-secondary">
+          <label htmlFor={editId} className="text-caption font-medium text-shodh-text-secondary">
             Your value ({KIND_LABELS[column.kind].toLowerCase()}{column.kind === 'choice' ? `: ${column.options.join(', ')}` : ''})
           </label>
           <input
@@ -312,7 +312,7 @@ export function CellPanel({
             }}
             autoFocus
           />
-          {editError && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{editError}</p>}
+          {editError && <p role="alert" className="m-0 text-small text-shodh-error">{editError}</p>}
           <div className="flex gap-2">
             <button type="submit" className={PRIMARY_BUTTON} disabled={busy !== null || draft.trim().length === 0}>
               {busy === 'edit' && <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
@@ -344,8 +344,8 @@ export function CellPanel({
           )}
         </div>
       )}
-      {edited && !editing && <p className="m-0 text-[12px] text-shodh-text-muted">Refill asks the model only for a cell without your value: clear it first.</p>}
-      <p role="status" aria-live="polite" className={cn('m-0 text-[12.5px]', notice ? NOTICE_CLASSES[notice.tone] : 'sr-only')}>
+      {edited && !editing && <p className="m-0 text-caption text-shodh-text-muted">Refill asks the model only for a cell without your value: clear it first.</p>}
+      <p role="status" aria-live="polite" className={cn('m-0 text-small', notice ? NOTICE_CLASSES[notice.tone] : 'sr-only')}>
         {notice?.text ?? ''}
       </p>
     </div>

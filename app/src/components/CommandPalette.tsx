@@ -276,16 +276,16 @@ export default function CommandPalette({
                 value={query}
                 onChange={e => setQuery(e.target.value)}
                 placeholder="Search views, actions, chats and folders…"
-                className="flex-1 bg-transparent text-[14px] text-shodh-text placeholder:text-shodh-text-faint outline-none"
+                className="flex-1 bg-transparent text-body text-shodh-text placeholder:text-shodh-text-faint outline-none"
               />
-              <kbd className="text-[10.5px] px-1.5 py-0.5 rounded border border-shodh-border font-mono text-shodh-text-muted shrink-0">
+              <kbd className="text-caption px-1.5 py-0.5 rounded border border-shodh-border font-mono text-shodh-text-muted shrink-0">
                 Esc
               </kbd>
             </div>
 
             <div id={listId} role="listbox" aria-label="Results" className="overflow-y-auto scrollbar-thin py-1.5 flex-1 min-h-0">
               {flat.length === 0 ? (
-                <p className="px-4 py-8 text-center text-[13px] text-shodh-text-muted" role="status">
+                <p className="px-4 py-8 text-center text-small text-shodh-text-muted" role="status">
                   Nothing matches “{query.trim()}”.
                 </p>
               ) : (
@@ -293,7 +293,7 @@ export default function CommandPalette({
                   <div key={group.section} role="group" aria-labelledby={`${baseId}-g-${group.section}`}>
                     <div
                       id={`${baseId}-g-${group.section}`}
-                      className="px-4 pt-2 pb-1 text-[11px] font-semibold tracking-[0.08em] uppercase text-shodh-text-faint"
+                      className="px-4 pt-2 pb-1 text-caption font-semibold tracking-[0.08em] uppercase text-shodh-text-faint"
                     >
                       {group.section}
                     </div>
@@ -320,13 +320,13 @@ export default function CommandPalette({
                             aria-hidden="true"
                           />
                           <span className="flex-1 min-w-0 flex items-baseline gap-2">
-                            <span className="text-[13.5px] font-medium truncate">{item.label}</span>
+                            <span className="text-body font-medium truncate">{item.label}</span>
                             {item.description && (
-                              <span className="text-[12px] text-shodh-text-faint truncate">{item.description}</span>
+                              <span className="text-caption text-shodh-text-faint truncate">{item.description}</span>
                             )}
                           </span>
                           {item.shortcut && (
-                            <kbd className="text-[10.5px] font-mono text-shodh-text-faint shrink-0">{item.shortcut}</kbd>
+                            <kbd className="text-caption font-mono text-shodh-text-faint shrink-0">{item.shortcut}</kbd>
                           )}
                           {selected && <ArrowRight className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />}
                         </div>
@@ -337,7 +337,7 @@ export default function CommandPalette({
               )}
             </div>
             <div
-              className="shrink-0 border-t border-shodh-border px-4 h-8 flex items-center gap-4 text-[11px] text-shodh-text-faint"
+              className="shrink-0 border-t border-shodh-border px-4 h-8 flex items-center gap-4 text-caption text-shodh-text-faint"
               aria-hidden="true"
             >
               <span><kbd className="font-mono">↑ ↓</kbd> move</span>

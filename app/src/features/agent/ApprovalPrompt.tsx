@@ -134,7 +134,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
 
   if (!pending) {
     return (
-      <p className={cn('text-[12px]', approval.decision === 'approved' ? 'text-shodh-success' : 'text-shodh-text-muted')}>
+      <p className={cn('text-caption', approval.decision === 'approved' ? 'text-shodh-success' : 'text-shodh-text-muted')}>
         {approval.decision === 'approved' ? 'You approved this.' : 'You declined this.'}
       </p>
     );
@@ -156,14 +156,14 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           aria-hidden="true"
         />
         <div className="min-w-0">
-          <p className="text-[13px] font-semibold text-shodh-text break-words">{approval.label}</p>
-          <p className="text-[11.5px] text-shodh-text-muted">
+          <p className="text-small font-semibold text-shodh-text break-words">{approval.label}</p>
+          <p className="text-caption text-shodh-text-muted">
             {destructive ? 'This removes data. It needs your approval.' : 'This changes your data. It needs your approval.'}
           </p>
         </div>
       </div>
       {rows.length > 0 && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-shodh-raised px-3 py-2 text-[12.5px]">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-shodh-raised px-3 py-2 text-small">
           {rows.map(([key, value]) => (
             <React.Fragment key={key}>
               <dt className="text-shodh-text-muted whitespace-nowrap">{key}</dt>
@@ -175,7 +175,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
       {changes.length > 0 && (
         <dl
           aria-label="Changes"
-          className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-shodh-raised px-3 py-2 text-[12.5px]"
+          className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-shodh-raised px-3 py-2 text-small"
         >
           {changes.map(change => (
             <React.Fragment key={change.field}>
@@ -193,11 +193,11 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
         </dl>
       )}
       {unreviewed.length > 0 && (
-        <div className="rounded-lg bg-shodh-raised px-3 py-2 text-[12.5px]">
+        <div className="rounded-lg bg-shodh-raised px-3 py-2 text-small">
           <p className="m-0 mb-1 text-shodh-text-muted">{`Changed without your review (${unreviewed.length})`}</p>
           <ul
             aria-label="Files changed without your review"
-            className="m-0 p-0 list-none max-h-40 overflow-y-auto flex flex-col gap-0.5 font-mono text-[12px]"
+            className="m-0 p-0 list-none max-h-40 overflow-y-auto flex flex-col gap-0.5 font-mono text-caption"
           >
             {unreviewed.map(file => (
               <li key={file} className="text-shodh-text break-all">{file}</li>
@@ -212,7 +212,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           type="button"
           onClick={() => onDecide(true, false, reviewToken)}
           className={cn(
-            'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[12.5px] font-semibold transition-colors duration-micro',
+            'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-small font-semibold transition-colors duration-micro',
             destructive
               ? 'bg-shodh-error text-white hover:opacity-90'
               : 'bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover',
@@ -220,7 +220,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           )}
         >
           Approve
-          {!destructive && <kbd className="font-mono text-[10.5px] opacity-80">Enter</kbd>}
+          {!destructive && <kbd className="font-mono text-caption opacity-80">Enter</kbd>}
         </button>
         {allowance && !destructive && (
           <button
@@ -229,7 +229,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
             title="Shodh will not ask again for this in this conversation. Closing the conversation ends it."
             aria-describedby={allowanceNote ? allowanceNoteId : undefined}
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[12.5px] font-medium text-shodh-text bg-shodh-raised-2 hover:bg-shodh-pressed transition-colors duration-micro',
+              'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-small font-medium text-shodh-text bg-shodh-raised-2 hover:bg-shodh-pressed transition-colors duration-micro',
               FOCUS_RING,
             )}
           >
@@ -241,16 +241,16 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           type="button"
           onClick={() => onDecide(false)}
           className={cn(
-            'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-[12.5px] font-medium text-shodh-text-secondary bg-shodh-raised-2 hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro',
+            'inline-flex items-center gap-2 h-8 px-3 rounded-lg text-small font-medium text-shodh-text-secondary bg-shodh-raised-2 hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro',
             FOCUS_RING,
           )}
         >
           Deny
-          <kbd className="font-mono text-[10.5px] opacity-70">Esc</kbd>
+          <kbd className="font-mono text-caption opacity-70">Esc</kbd>
         </button>
       </div>
       {allowance && allowanceNote && !destructive && (
-        <p id={allowanceNoteId} className="text-[11.5px] text-shodh-text-muted">{allowanceNote}</p>
+        <p id={allowanceNoteId} className="text-caption text-shodh-text-muted">{allowanceNote}</p>
       )}
     </div>
   );

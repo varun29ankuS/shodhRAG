@@ -163,7 +163,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     FOCUS_RING,
   );
   const chip = cn(
-    'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-[12.5px] text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
+    'inline-flex items-center gap-[7px] h-[30px] px-2.5 rounded-full bg-shodh-raised-2 text-small text-shodh-text-secondary hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro min-w-0',
     FOCUS_RING,
   );
   const roundButton = cn(
@@ -196,7 +196,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         aria-describedby={blockedReason ? blockedId : undefined}
         className={cn(
           'block w-full resize-none [field-sizing:content] border-0 bg-transparent text-shodh-text placeholder:text-shodh-text-faint outline-none focus:outline-none scrollbar-thin',
-          compact ? 'px-3 pt-2.5 pb-0.5 text-[13.5px] leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-[15px] leading-[1.5]',
+          compact ? 'px-3 pt-2.5 pb-0.5 text-body leading-[1.45]' : 'px-[18px] pt-4 pb-1 text-body-lg leading-[1.5]',
         )}
         style={NATIVE_FIELD_SIZING ? { maxHeight, minHeight: compact ? MIN_COMPACT_HEIGHT : MIN_TEXTAREA_HEIGHT } : { maxHeight }}
       />
@@ -263,7 +263,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
         </div>
       </div>
       {blockedReason && (
-        <p id={blockedId} className={cn('-mt-1 text-[12px] text-shodh-text-muted', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
+        <p id={blockedId} className={cn('-mt-1 text-caption text-shodh-text-muted', compact ? 'px-3 pb-2' : 'px-[18px] pb-3')}>
           {blockedReason}
         </p>
       )}

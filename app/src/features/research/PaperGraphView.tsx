@@ -412,7 +412,7 @@ export function PaperGraphView({
           {building ? <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <RefreshCw className="w-4 h-4" aria-hidden="true" />}
           {report ? 'Rebuild graph' : 'Build graph'}
         </button>
-        <label htmlFor={ids.online} className={cn('inline-flex items-center gap-1.5 text-[12.5px]', st?.onlineAllowed ? 'text-shodh-text-secondary' : 'text-shodh-text-faint')}>
+        <label htmlFor={ids.online} className={cn('inline-flex items-center gap-1.5 text-small', st?.onlineAllowed ? 'text-shodh-text-secondary' : 'text-shodh-text-faint')}>
           <input
             id={ids.online}
             type="checkbox"
@@ -425,7 +425,7 @@ export function PaperGraphView({
           <Globe className="w-3.5 h-3.5" aria-hidden="true" />
           Look papers up on OpenAlex
         </label>
-        <p id={`${ids.online}-help`} className="text-[11.5px] text-shodh-text-muted basis-full">
+        <p id={`${ids.online}-help`} className="text-caption text-shodh-text-muted basis-full">
           {st && !st.onlineAllowed
             ? `${st.onlineBlockedReason ?? 'Web access is off.'} The graph is built from your PDFs only.`
             : 'Only reference identifiers (DOI, arXiv id) and reference titles are sent — never your documents’ text or your own papers’ titles. Answers are cached on this computer.'}
@@ -433,19 +433,19 @@ export function PaperGraphView({
       </div>
 
       {(building || progress) && (
-        <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           {progress ? progressLabel(progress) : 'Starting…'}
         </p>
       )}
       {buildError && (
-        <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+        <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           {`The graph could not be built: ${buildError}`}
         </p>
       )}
       {report && (
-        <p className="text-[12px] text-shodh-text-muted">
+        <p className="text-caption text-shodh-text-muted">
           {`${report.size.libraryPapers} library papers, ${report.size.papers - report.size.libraryPapers} cited works, ${report.size.cites} citations · ${report.identifiableReferences} of ${report.references} references read`}
           {report.online || report.referencesResolved > 0 ? ` · ${report.referencesResolved} matched on OpenAlex` : ''}
           {report.halted ? ` · lookups stopped: ${report.halted}` : ''}
@@ -454,37 +454,37 @@ export function PaperGraphView({
       )}
 
       {data.status === 'loading' || status.status === 'loading' ? (
-        <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Loading the graph…
         </p>
       ) : data.status === 'error' ? (
-        <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+        <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           {`The graph could not be loaded: ${data.message}`}
         </p>
       ) : empty ? (
-        <p className="text-[12.5px] text-shodh-text-muted">
+        <p className="text-small text-shodh-text-muted">
           No graph yet. Build it to see which of your papers cite each other and what they build on.
         </p>
       ) : view && shaped ? (
         <>
           <div className="flex flex-wrap items-end gap-3">
-            <label htmlFor={ids.library} className="inline-flex items-center gap-1.5 text-[12.5px] text-shodh-text-secondary h-8">
+            <label htmlFor={ids.library} className="inline-flex items-center gap-1.5 text-small text-shodh-text-secondary h-8">
               <input id={ids.library} type="checkbox" checked={filters.libraryOnly} onChange={e => setFilters(f => ({ ...f, libraryOnly: e.target.checked }))} className={cn('w-3.5 h-3.5 accent-[var(--c-accent)]', FOCUS_RING)} />
               Library papers only
             </label>
             <div className="flex flex-col gap-1 w-24">
-              <label htmlFor={ids.from} className="text-[12px] font-medium text-shodh-text-secondary">From year</label>
+              <label htmlFor={ids.from} className="text-caption font-medium text-shodh-text-secondary">From year</label>
               <input id={ids.from} type="number" inputMode="numeric" className={INPUT} placeholder={bounds ? String(bounds.min) : ''} value={filters.yearFrom ?? ''} onChange={e => setFilters(f => ({ ...f, yearFrom: e.target.value ? Number(e.target.value) : null }))} />
             </div>
             <div className="flex flex-col gap-1 w-24">
-              <label htmlFor={ids.to} className="text-[12px] font-medium text-shodh-text-secondary">To year</label>
+              <label htmlFor={ids.to} className="text-caption font-medium text-shodh-text-secondary">To year</label>
               <input id={ids.to} type="number" inputMode="numeric" className={INPUT} placeholder={bounds ? String(bounds.max) : ''} value={filters.yearTo ?? ''} onChange={e => setFilters(f => ({ ...f, yearTo: e.target.value ? Number(e.target.value) : null }))} />
             </div>
             {view.methods.length > 0 && (
               <div className="flex flex-col gap-1 min-w-[180px]">
-                <label htmlFor={ids.method} className="text-[12px] font-medium text-shodh-text-secondary">Method</label>
+                <label htmlFor={ids.method} className="text-caption font-medium text-shodh-text-secondary">Method</label>
                 <select id={ids.method} className={INPUT} value={filters.method ?? ''} onChange={e => setFilters(f => ({ ...f, method: e.target.value || null }))}>
                   <option value="">Every method</option>
                   {view.methods.map(m => (
@@ -585,7 +585,7 @@ export function PaperGraphView({
                           <circle r={r + 6} fill="transparent" />
                           <circle r={r} fill={FILL[n.kind]} fillOpacity={n.kind === 'external' ? 0.55 : 1} stroke="var(--c-surface)" strokeWidth={2} />
                           {n.kind !== 'external' && (
-                            <text y={r + 12} textAnchor="middle" className="fill-[var(--c-text-secondary)] text-[10px] pointer-events-none select-none">
+                            <text y={r + 12} textAnchor="middle" className="fill-[var(--c-text-secondary)] text-caption pointer-events-none select-none">
                               {shortLabel(n.label, 28)}
                             </text>
                           )}
@@ -601,7 +601,7 @@ export function PaperGraphView({
                   <button type="button" onClick={() => zoomStep(-1)} aria-label="Zoom out" title="Zoom out (−)" className={ICON_BUTTON}>
                     <Minus className="w-4 h-4" aria-hidden="true" />
                   </button>
-                  <button type="button" onClick={resetZoom} aria-label="Actual size" title="Actual size (0)" className={cn(ICON_BUTTON, 'text-[11px] font-semibold tabular-nums')}>
+                  <button type="button" onClick={resetZoom} aria-label="Actual size" title="Actual size (0)" className={cn(ICON_BUTTON, 'text-caption font-semibold tabular-nums')}>
                     1:1
                   </button>
                   <button type="button" onClick={fit} aria-label="Fit the graph in view" title="Fit to view (F)" className={ICON_BUTTON}>
@@ -609,7 +609,7 @@ export function PaperGraphView({
                   </button>
                 </div>
                 {hoveredNode && (
-                  <div role="tooltip" className="absolute left-3 top-3 max-w-[60%] rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2 text-[12px] text-shodh-text shadow-sm pointer-events-none">
+                  <div role="tooltip" className="absolute left-3 top-3 max-w-[60%] rounded-lg border border-shodh-border bg-shodh-raised px-3 py-2 text-caption text-shodh-text shadow-sm pointer-events-none">
                     <p className="font-medium">{shortLabel(hoveredNode.label, 120)}</p>
                     <p className="text-shodh-text-muted">
                       {hoveredNode.kind === 'cluster'
@@ -619,7 +619,7 @@ export function PaperGraphView({
                   </div>
                 )}
               </div>
-              <figcaption className="flex flex-wrap items-center gap-4 text-[11.5px] text-shodh-text-muted">
+              <figcaption className="flex flex-wrap items-center gap-4 text-caption text-shodh-text-muted">
                 <span id={ids.help} className="basis-full">Drag a paper to move it, drag the background to pan, scroll or pinch to zoom. With the drawing focused: + and − zoom, 0 shows actual size, F fits, arrow keys pan.</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="5" fill="var(--c-accent)" /></svg>In your library (labelled)</span>
                 <span className="inline-flex items-center gap-1.5"><svg width="12" height="12" aria-hidden="true"><circle cx="6" cy="6" r="3" fill="var(--c-text-faint)" fillOpacity={0.55} /></svg>Cited work</span>
@@ -637,8 +637,8 @@ export function PaperGraphView({
                     <button type="button" onClick={() => onOpenPaper(row.node.id)} className={cn('w-full text-left px-3 py-2 flex items-start gap-3 hover:bg-shodh-raised', FOCUS_RING)}>
                       <span className={cn('mt-1 w-2 h-2 rounded-full shrink-0', row.node.inLibrary ? 'bg-shodh-accent' : 'bg-shodh-text-faint')} aria-hidden="true" />
                       <span className="flex-1 min-w-0">
-                        <span className={cn('block text-[13px] truncate', row.node.inLibrary ? 'text-shodh-text font-medium' : 'text-shodh-text-secondary')}>{row.node.label}</span>
-                        <span className="block text-[11.5px] text-shodh-text-muted">
+                        <span className={cn('block text-small truncate', row.node.inLibrary ? 'text-shodh-text font-medium' : 'text-shodh-text-secondary')}>{row.node.label}</span>
+                        <span className="block text-caption text-shodh-text-muted">
                           {[row.node.year ?? 'Year unknown', row.node.inLibrary ? 'in your library' : 'cited work', `cites ${row.cites}`, `cited by ${row.citedBy}`].join(' · ')}
                         </span>
                       </span>

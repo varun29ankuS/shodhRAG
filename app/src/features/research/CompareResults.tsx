@@ -31,7 +31,7 @@ function CellValue({ cell, method, column }: { cell: ComparisonCell; method: str
       title={`Show the cell in ${cell.fileName}, page ${cell.page}`}
     >
       <span className="tabular-nums text-shodh-text underline decoration-dotted underline-offset-2">{valueLabel(cell)}</span>
-      <span className="block text-[11px] text-shodh-text-muted">{`${cell.fileName} p.${cell.page}${cell.setting ? ` · ${cell.setting}` : ''}`}</span>
+      <span className="block text-caption text-shodh-text-muted">{`${cell.fileName} p.${cell.page}${cell.setting ? ` · ${cell.setting}` : ''}`}</span>
     </button>
   );
 }
@@ -152,7 +152,7 @@ export function CompareResults({
 
   if (facets.status === 'loading') {
     return (
-      <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+      <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Loading results…
       </p>
@@ -160,7 +160,7 @@ export function CompareResults({
   }
   if (facets.status === 'error') {
     return (
-      <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+      <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
         {`Results could not be loaded: ${facets.message}`}
       </p>
@@ -169,7 +169,7 @@ export function CompareResults({
   const f = facets.value;
   if (allowedPapers !== null && allowedPapers.length === 0) {
     return (
-      <p className="text-[12.5px] text-shodh-text-muted">
+      <p className="text-small text-shodh-text-muted">
         None of this workspace's papers have extracted results yet. Open one of its papers in Library, choose Results and extract them; then compare them here.
       </p>
     );
@@ -177,7 +177,7 @@ export function CompareResults({
   const paperChoices = allowedPapers === null ? f.papers : f.papers.filter(p => allowedPapers.includes(p.filePath));
   if (f.metrics.length === 0) {
     return (
-      <p className="text-[12.5px] text-shodh-text-muted">
+      <p className="text-small text-shodh-text-muted">
         No results extracted yet. Open a paper in a folder, choose Results and extract them; then compare them across papers here.
       </p>
     );
@@ -185,7 +185,7 @@ export function CompareResults({
 
   const select = (id: string, label: string, value: string, set: (v: string) => void, options: { id: string; label: string; count: number }[], any: string) => (
     <div className="flex flex-col gap-1 min-w-[180px] flex-1">
-      <label htmlFor={id} className="text-[12px] font-medium text-shodh-text-secondary">{label}</label>
+      <label htmlFor={id} className="text-caption font-medium text-shodh-text-secondary">{label}</label>
       <select id={id} className={INPUT} value={value} onChange={e => set(e.target.value)}>
         <option value="">{any}</option>
         {options.map(o => (
@@ -204,7 +204,7 @@ export function CompareResults({
       </div>
       {paperChoices.length > 1 && (
         <fieldset className="flex flex-col gap-1.5">
-          <legend className="text-[12px] font-medium text-shodh-text-secondary">
+          <legend className="text-caption font-medium text-shodh-text-secondary">
             {allowedPapers === null ? 'Papers (none selected means all)' : "Papers (none selected means all of this workspace's)"}
           </legend>
           <div className="flex flex-wrap gap-1.5">
@@ -217,7 +217,7 @@ export function CompareResults({
                   aria-pressed={on}
                   onClick={() => setPapers(list => (on ? list.filter(x => x !== p.filePath) : [...list, p.filePath]))}
                   className={cn(
-                    'h-7 px-2.5 rounded-full text-[12px] border max-w-[260px] truncate transition-colors duration-micro',
+                    'h-7 px-2.5 rounded-full text-caption border max-w-[260px] truncate transition-colors duration-micro',
                     on ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text' : 'border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised',
                     FOCUS_RING,
                   )}
@@ -232,21 +232,21 @@ export function CompareResults({
       )}
 
       {!filter ? (
-        <p className="text-[12.5px] text-shodh-text-muted">Choose a metric, a dataset or a method to compare papers.</p>
+        <p className="text-small text-shodh-text-muted">Choose a metric, a dataset or a method to compare papers.</p>
       ) : result?.status === 'loading' ? (
-        <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Comparing…
         </p>
       ) : result?.status === 'error' ? (
-        <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+        <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           {`The comparison failed: ${result.message}`}
         </p>
       ) : comparison ? (
         <>
           {(comparison.notes.length > 0 || comparison.pendingReview > 0 || comparison.truncated) && (
-            <div role="note" className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+            <div role="note" className="rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 flex items-start gap-2 text-small text-shodh-text-secondary">
               <Info className="w-4 h-4 mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
               <ul className="flex flex-col gap-1">
                 {comparison.notes.map((n, i) => <li key={i}>{n}</li>)}
@@ -258,10 +258,10 @@ export function CompareResults({
             </div>
           )}
           {rows.length === 0 ? (
-            <p className="text-[12.5px] text-shodh-text-muted">No accepted results match.</p>
+            <p className="text-small text-shodh-text-muted">No accepted results match.</p>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-shodh-border">
-              <table className="min-w-full border-collapse text-[12.5px]">
+              <table className="min-w-full border-collapse text-small">
                 <caption className="sr-only">Results by method and dataset/metric; each value opens its cell in the paper.</caption>
                 <thead className="bg-shodh-raised">
                   <tr>
@@ -319,13 +319,13 @@ export function CompareResults({
                   <ChartArtifact artifact={artifact} theme={theme} height={300} />
                 </div>
               ) : (
-                <p className="text-[12.5px] text-shodh-text-muted">The values in this column are not plain numbers, so they are not charted.</p>
+                <p className="text-small text-shodh-text-muted">The values in this column are not plain numbers, so they are not charted.</p>
               )}
               {chart && chart.multiple > 0 && (
-                <p className="text-[11.5px] text-shodh-text-muted">{`${chart.multiple} further ${chart.multiple === 1 ? 'value' : 'values'} from the same paper (other settings) are in the table but not in the chart.`}</p>
+                <p className="text-caption text-shodh-text-muted">{`${chart.multiple} further ${chart.multiple === 1 ? 'value' : 'values'} from the same paper (other settings) are in the table but not in the chart.`}</p>
               )}
               {chart && chart.skipped > 0 && (
-                <p className="text-[11.5px] text-shodh-text-muted">{`${chart.skipped} ${chart.skipped === 1 ? 'value is' : 'values are'} not a plain number and not charted.`}</p>
+                <p className="text-caption text-shodh-text-muted">{`${chart.skipped} ${chart.skipped === 1 ? 'value is' : 'values are'} not a plain number and not charted.`}</p>
               )}
             </section>
           )}

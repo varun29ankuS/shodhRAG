@@ -56,21 +56,21 @@ export default function ScanReaderSettings() {
   return (
     <div className="mt-6 pt-6 border-t border-shodh-border-subtle flex items-start justify-between gap-6">
       <div className="min-w-0">
-        <h3 className="m-0 text-[15px] font-semibold text-shodh-text">Scan reader</h3>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">{description}</p>
+        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">Scan reader</h3>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">{description}</p>
         {installing && status.ready && !summary.installed && (
-          <p className="m-0 mt-1 text-[12px] text-shodh-text-secondary tabular-nums" role="status" aria-live="polite">
+          <p className="m-0 mt-1 text-caption text-shodh-text-secondary tabular-nums" role="status" aria-live="polite">
             {percent !== null ? `Downloading… ${percent}%` : 'Installing…'}
           </p>
         )}
         {started === false && installError && status.ready && !summary.installed && (
-          <p role="alert" className="m-0 mt-1 text-[12.5px] text-shodh-error break-words">
+          <p role="alert" className="m-0 mt-1 text-small text-shodh-error break-words">
             {`The scan reader could not be installed: ${installError}`}
           </p>
         )}
       </div>
       {summary.installed ? (
-        <span className="shrink-0 inline-flex items-center gap-1.5 text-[12.5px] text-shodh-success">
+        <span className="shrink-0 inline-flex items-center gap-1.5 text-small text-shodh-success">
           <ShieldCheck className="w-4 h-4" aria-hidden="true" />
           Ready
         </span>
@@ -80,7 +80,7 @@ export default function ScanReaderSettings() {
           onClick={() => void installReader()}
           disabled={installing}
           className={cn(
-            'shrink-0 h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+            'shrink-0 h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
             'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
             FOCUS_RING,
           )}

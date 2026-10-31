@@ -119,7 +119,7 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
     titleRef.current?.focus();
   };
 
-  const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12.5px] text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  const control = 'h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-small text-shodh-text hover:border-shodh-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
     <form onSubmit={submit} aria-label="Add a task" className="flex items-center gap-2 p-1.5 pl-3 rounded-xl border border-shodh-border bg-shodh-raised">
@@ -133,7 +133,7 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
         onChange={e => setTitle(e.target.value)}
         onKeyDown={e => { if (e.key === 'Escape' && title) { e.preventDefault(); setTitle(''); } }}
         placeholder={workspace ? `Add a task to ${workspace.name}` : 'Add a task'}
-        className="flex-1 min-w-0 h-8 bg-transparent text-[13px] text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
+        className="flex-1 min-w-0 h-8 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint focus:outline-none"
       />
       <input
         type="date"
@@ -148,7 +148,7 @@ function QuickAdd({ defaultDay, workspace }: { defaultDay: string | null; worksp
       <button
         type="submit"
         disabled={!title.trim() || busy}
-        className={cn('h-8 px-3 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12.5px] font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center gap-1.5', FOCUS_RING)}
+        className={cn('h-8 px-3 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-medium hover:bg-shodh-accent-hover disabled:opacity-50 transition-colors duration-micro inline-flex items-center gap-1.5', FOCUS_RING)}
       >
         {busy && <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
         Add
@@ -274,11 +274,11 @@ function TaskRow({
                   if (e.key === 'Escape') { e.preventDefault(); cancelEdit.current = true; e.currentTarget.blur(); }
                 }}
                 onBlur={finishEdit}
-                className="flex-1 min-w-0 h-6 -my-0.5 px-1.5 -mx-1.5 rounded-md border border-shodh-border-strong bg-shodh-surface text-[13.5px] font-medium text-shodh-text focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex-1 min-w-0 h-6 -my-0.5 px-1.5 -mx-1.5 rounded-md border border-shodh-border-strong bg-shodh-surface text-body font-medium text-shodh-text focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
             ) : (
               <span
-                className={cn('truncate text-[13.5px] font-medium', done ? 'line-through text-shodh-text-faint' : 'text-shodh-text')}
+                className={cn('truncate text-body font-medium', done ? 'line-through text-shodh-text-faint' : 'text-shodh-text')}
                 title="Double-click or press F2 to rename"
                 onClick={e => {
                   // Wait for a possible double-click before opening the detail sheet.
@@ -330,27 +330,27 @@ function TaskRow({
               />
             )}
             {task.project && (
-              <span className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-[11.5px] text-shodh-text-muted">
+              <span className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted">
                 <FolderOpen className="w-3 h-3" aria-hidden="true" />
                 {task.project}
               </span>
             )}
             {task.subtasks.length > 0 && (
-              <span className="h-6 px-1.5 inline-flex items-center gap-1 text-[11.5px] text-shodh-text-muted tabular-nums" aria-label={`${subDone} of ${task.subtasks.length} subtasks done`}>
+              <span className="h-6 px-1.5 inline-flex items-center gap-1 text-caption text-shodh-text-muted tabular-nums" aria-label={`${subDone} of ${task.subtasks.length} subtasks done`}>
                 <ListTodo className="w-3 h-3" aria-hidden="true" />
                 {subDone}/{task.subtasks.length}
               </span>
             )}
             {task.tags.slice(0, 3).map(tag => (
-              <span key={tag} className="h-5 px-1.5 inline-flex items-center rounded-md bg-shodh-raised-2 text-[11px] text-shodh-text-secondary">
+              <span key={tag} className="h-5 px-1.5 inline-flex items-center rounded-md bg-shodh-raised-2 text-caption text-shodh-text-secondary">
                 {tag}
               </span>
             ))}
-            {task.tags.length > 3 && <span className="text-[11px] text-shodh-text-faint">+{task.tags.length - 3}</span>}
+            {task.tags.length > 3 && <span className="text-caption text-shodh-text-faint">+{task.tags.length - 3}</span>}
           </div>
 
           {task.description && (
-            <p className="text-[12px] text-shodh-text-muted line-clamp-2 whitespace-pre-line">{task.description}</p>
+            <p className="text-caption text-shodh-text-muted line-clamp-2 whitespace-pre-line">{task.description}</p>
           )}
         </div>
 
@@ -404,14 +404,14 @@ function MiniCalendar({
         <button type="button" onClick={() => shift(-1)} aria-label="Previous month" className={ICON_BUTTON}>
           <ChevronLeft className="w-4 h-4" aria-hidden="true" />
         </button>
-        <span className="text-[12px] font-semibold text-shodh-text" aria-live="polite">{label}</span>
+        <span className="text-caption font-semibold text-shodh-text" aria-live="polite">{label}</span>
         <button type="button" onClick={() => shift(1)} aria-label="Next month" className={ICON_BUTTON}>
           <ChevronRight className="w-4 h-4" aria-hidden="true" />
         </button>
       </div>
       <div className="grid grid-cols-7 gap-0.5">
         {weeks[0].map(d => (
-          <span key={d.key} className="text-center text-[10px] font-medium text-shodh-text-faint py-0.5" aria-hidden="true">
+          <span key={d.key} className="text-center text-caption font-medium text-shodh-text-faint py-0.5" aria-hidden="true">
             {d.date.toLocaleDateString(undefined, { weekday: 'narrow' })}
           </span>
         ))}
@@ -427,7 +427,7 @@ function MiniCalendar({
               aria-label={`${d.date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}${has ? ', has items' : ''}`}
               onClick={() => onSelect(isSelected ? null : d.key)}
               className={cn(
-                'relative h-7 rounded-md text-[11px] tabular-nums inline-flex flex-col items-center justify-center transition-colors duration-micro',
+                'relative h-7 rounded-md text-caption tabular-nums inline-flex flex-col items-center justify-center transition-colors duration-micro',
                 isSelected ? 'bg-shodh-accent-soft text-shodh-accent-text font-semibold' : 'hover:bg-shodh-raised',
                 !isSelected && (isToday ? 'text-shodh-accent-text font-semibold' : d.inMonth ? 'text-shodh-text-secondary' : 'text-shodh-text-faint'),
                 FOCUS_RING,
@@ -591,11 +591,11 @@ export default function CalendarTodoPanel() {
         <div role="alert" className="max-w-sm text-center flex flex-col items-center gap-3">
           <AlertCircle className="w-6 h-6 text-shodh-error" aria-hidden="true" />
           <p className="text-sm text-shodh-text-secondary">Could not load tasks.</p>
-          <p className="text-[12px] text-shodh-text-faint break-words">{error}</p>
+          <p className="text-caption text-shodh-text-faint break-words">{error}</p>
           <button
             type="button"
             onClick={() => void refresh()}
-            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-[12.5px] hover:bg-shodh-raised', FOCUS_RING)}
+            className={cn('h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border text-small hover:bg-shodh-raised', FOCUS_RING)}
           >
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
             Try again
@@ -615,7 +615,7 @@ export default function CalendarTodoPanel() {
     <div className="h-full overflow-hidden flex flex-col">
       <div className="px-6 pt-3 pb-3 shrink-0">
         <h1 className="text-lg font-bold text-shodh-text">Tasks</h1>
-        <p className="text-[12px] text-shodh-text-muted mt-0.5">
+        <p className="text-caption text-shodh-text-muted mt-0.5">
           {pendingCount} to do
           {overdueCount > 0 && <span className="text-shodh-error"> · {overdueCount} overdue</span>}
           {completedCount > 0 && ` · ${completedCount} done`}
@@ -634,7 +634,7 @@ export default function CalendarTodoPanel() {
                 aria-pressed={filter === tab.id}
                 onClick={() => setFilter(tab.id)}
                 className={cn(
-                  'h-7 px-3 rounded-full text-[12px] font-medium transition-colors duration-micro',
+                  'h-7 px-3 rounded-full text-caption font-medium transition-colors duration-micro',
                   filter === tab.id ? 'bg-shodh-accent-soft text-shodh-accent-text' : 'text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
                   FOCUS_RING,
                 )}
@@ -649,7 +649,7 @@ export default function CalendarTodoPanel() {
                   type="button"
                   onClick={() => chooseWorkspaceFilter(ALL_WORKSPACES)}
                   aria-label={`Clear workspace filter ${workspaceFilterLabel}`}
-                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-[11.5px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
+                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-caption bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
                 >
                   <Briefcase className="w-3 h-3" aria-hidden="true" />
                   {workspaceFilterLabel}
@@ -661,7 +661,7 @@ export default function CalendarTodoPanel() {
                   type="button"
                   onClick={() => setProjectFilter(null)}
                   aria-label={`Clear project filter ${projectFilter}`}
-                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-[11.5px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
+                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-caption bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
                 >
                   <FolderOpen className="w-3 h-3" aria-hidden="true" />
                   {projectFilter}
@@ -673,7 +673,7 @@ export default function CalendarTodoPanel() {
                   type="button"
                   onClick={() => setSelectedDay(null)}
                   aria-label="Clear day filter"
-                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-[11.5px] bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
+                  className={cn('h-7 px-2 rounded-full inline-flex items-center gap-1 text-caption bg-shodh-raised text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
                 >
                   {new Date(`${selectedDay}T00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                   <X className="w-3 h-3" aria-hidden="true" />
@@ -686,14 +686,14 @@ export default function CalendarTodoPanel() {
             {filteredTasks.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-center gap-1">
                 <CheckCircle2 className="w-9 h-9 mb-2 text-shodh-text-faint opacity-50" aria-hidden="true" />
-                <p className="text-[13px] font-medium text-shodh-text-secondary">
+                <p className="text-small font-medium text-shodh-text-secondary">
                   {filter === 'completed' ? 'No completed tasks'
                     : selectedDay ? 'Nothing due on this day'
                       : filteredWorkspace ? `No tasks in ${filteredWorkspace.name}`
                         : workspaceFilter.kind === 'none' ? 'No tasks outside workspaces'
                           : 'No tasks yet'}
                 </p>
-                <p className="text-[12px] text-shodh-text-faint">
+                <p className="text-caption text-shodh-text-faint">
                   {filter === 'all' && !selectedDay && !projectFilter && workspaceFilter.kind === 'all'
                     ? 'Add one above, or ask Shodh to create tasks for you.'
                     : 'Try a different filter or day.'}
@@ -724,7 +724,7 @@ export default function CalendarTodoPanel() {
 
           {workspaceOptions.length > 0 && (
             <div className="flex flex-col gap-1" role="group" aria-labelledby={workspacesHeadingId}>
-              <h2 id={workspacesHeadingId} className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-1">Workspaces</h2>
+              <h2 id={workspacesHeadingId} className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-1">Workspaces</h2>
               {[
                 { filter: ALL_WORKSPACES, label: 'All' },
                 { filter: NO_WORKSPACE_FILTER, label: 'No workspace' },
@@ -738,7 +738,7 @@ export default function CalendarTodoPanel() {
                     aria-pressed={isActive}
                     onClick={() => chooseWorkspaceFilter(option.filter)}
                     className={cn(
-                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-[12.5px] transition-colors duration-micro',
+                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-small transition-colors duration-micro',
                       isActive ? 'bg-shodh-accent-soft text-shodh-accent-text' : 'text-shodh-text-secondary hover:bg-shodh-raised',
                       FOCUS_RING,
                     )}
@@ -754,7 +754,7 @@ export default function CalendarTodoPanel() {
 
           {allProjects.length > 0 && (
             <div className="flex flex-col gap-1">
-              <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-1">Projects</h2>
+              <h2 className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-1">Projects</h2>
               {allProjects.map(proj => {
                 const count = tasks.filter(t => t.project === proj && !isDone(t)).length;
                 const isActive = projectFilter === proj;
@@ -765,7 +765,7 @@ export default function CalendarTodoPanel() {
                     aria-pressed={isActive}
                     onClick={() => setProjectFilter(isActive ? null : proj)}
                     className={cn(
-                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-[12.5px] transition-colors duration-micro',
+                      'h-8 px-2.5 rounded-lg flex items-center gap-2 text-left text-small transition-colors duration-micro',
                       isActive ? 'bg-shodh-accent-soft text-shodh-accent-text' : 'text-shodh-text-secondary hover:bg-shodh-raised',
                       FOCUS_RING,
                     )}
@@ -780,9 +780,9 @@ export default function CalendarTodoPanel() {
           )}
 
           <div className="flex flex-col gap-1.5">
-            <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-0.5">Upcoming events</h2>
+            <h2 className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint mb-0.5">Upcoming events</h2>
             {upcomingEvents.length === 0 ? (
-              <p className="text-[12px] text-shodh-text-faint">No upcoming events.</p>
+              <p className="text-caption text-shodh-text-faint">No upcoming events.</p>
             ) : (
               <ul className="flex flex-col gap-1.5">
                 {upcomingEvents.map(ev => (
@@ -794,8 +794,8 @@ export default function CalendarTodoPanel() {
                     >
                       <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-shodh-info shrink-0" aria-hidden="true" />
                       <span className="flex-1 min-w-0 flex flex-col">
-                        <span className="text-[12.5px] text-shodh-text truncate">{ev.title}</span>
-                        <span className="text-[11.5px] text-shodh-text-faint truncate">
+                        <span className="text-small text-shodh-text truncate">{ev.title}</span>
+                        <span className="text-caption text-shodh-text-faint truncate">
                           {formatEventWhen(ev)}{ev.location ? ` · ${ev.location}` : ''}
                         </span>
                       </span>
@@ -807,7 +807,7 @@ export default function CalendarTodoPanel() {
             )}
           </div>
 
-          <dl className="p-3 rounded-xl border border-shodh-border bg-shodh-surface grid grid-cols-[1fr_auto] gap-y-1.5 text-[12px]">
+          <dl className="p-3 rounded-xl border border-shodh-border bg-shodh-surface grid grid-cols-[1fr_auto] gap-y-1.5 text-caption">
             <dt className="text-shodh-text-muted">Total tasks</dt><dd className="tabular-nums font-semibold text-shodh-text text-right">{scopedTasks.length}</dd>
             <dt className="text-shodh-text-muted">To do</dt><dd className="tabular-nums font-semibold text-shodh-warning text-right">{pendingCount}</dd>
             <dt className="text-shodh-text-muted">Overdue</dt><dd className="tabular-nums font-semibold text-shodh-error text-right">{overdueCount}</dd>

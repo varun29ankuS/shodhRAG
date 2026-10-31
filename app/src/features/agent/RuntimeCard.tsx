@@ -68,14 +68,14 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
           <TriangleAlert className="w-[18px] h-[18px] mt-px shrink-0 text-shodh-warning" aria-hidden="true" />
         )}
         <div className="min-w-0 flex flex-col gap-1">
-          <p className="text-[13.5px] font-semibold text-shodh-text">
+          <p className="text-body font-semibold text-shodh-text">
             {done
               ? 'Answer engine installed'
               : reason === 'invalid'
                 ? "The answer engine couldn't be verified"
                 : 'The answer engine is not installed yet'}
           </p>
-          <p className="text-[13px] leading-relaxed text-shodh-text-muted">
+          <p className="text-small leading-relaxed text-shodh-text-muted">
             {done
               ? `${verifiedSentence(source)} Ask your question again.`
               : reason === 'invalid'
@@ -101,7 +101,7 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
               style={{ transform: `scaleX(${fraction ?? 0.15})` }}
             />
           </div>
-          <p className="text-[12px] text-shodh-text-muted tabular-nums">
+          <p className="text-caption text-shodh-text-muted tabular-nums">
             {progress
               ? total
                 ? `${megabytes(progress.downloaded)} of ${megabytes(total)}`
@@ -112,7 +112,7 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
       )}
 
       {failedMessage && (
-        <p role="alert" className="text-[13px] text-shodh-error break-words">{failedMessage}</p>
+        <p role="alert" className="text-small text-shodh-error break-words">{failedMessage}</p>
       )}
 
       {(result || (message && !installing && !done)) && (
@@ -131,7 +131,7 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
             onClick={() => void install()}
             disabled={installing}
             className={cn(
-              'inline-flex items-center gap-2 h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-micro',
+              'inline-flex items-center gap-2 h-8 px-3.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-micro',
               FOCUS_RING,
             )}
           >

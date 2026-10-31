@@ -49,10 +49,11 @@ test('setup cards show checksums only inside Technical details', () => {
 test('off Windows the answer engine is checked against the release checksum, and says only that', () => {
   assert.equal(runtimeVerifiedSentence('GitHub', true), verifiedSentence('GitHub'));
   const unpinned = runtimeVerifiedSentence('GitHub', false);
-  assert.match(unpinned, /checksum GitHub published with the release/);
+  assert.match(unpinned, /matches what GitHub published with the release/);
   assert.doesNotMatch(unpinned, /official copy|tampered/);
-  assert.match(runtimeCheckPromise('GitHub', false), /checksum published with the release/);
+  assert.match(runtimeCheckPromise('GitHub', false), /published with the release/);
   assert.doesNotMatch(runtimeCheckPromise('GitHub', false), HASH);
+  assert.doesNotMatch(unpinned, HASH);
 });
 
 test('a status that only saw the file never says verified', () => {

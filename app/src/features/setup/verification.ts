@@ -25,14 +25,14 @@ export function verifiedSentence(source: string, plural = false): string {
 export function runtimeVerifiedSentence(source: string, pinned: boolean): string {
   return pinned
     ? verifiedSentence(source)
-    : `Checked: this file matches the checksum ${source} published with the release, so it arrived complete and unchanged.`;
+    : `Checked: this file matches what ${source} published with the release, so it arrived complete and unchanged.`;
 }
 
 /** Before the answer engine's download: what its check will mean. */
 export function runtimeCheckPromise(source: string, pinned: boolean): string {
   return pinned
     ? verificationPromise(source)
-    : `Shodh downloads it from ${source} and checks it against the checksum published with the release before using it, so a damaged download is never run.`;
+    : `Shodh downloads it from ${source} and checks that it matches what was published with the release before using it, so a damaged download is never run.`;
 }
 
 /** The sentence for a file that failed its check. */

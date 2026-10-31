@@ -173,7 +173,7 @@ impl RunPassages {
             .lock()
             .values()
             .rev()
-            .filter(|p| matches(*p))
+            .filter(|p| matches(p))
             .cloned()
             .collect();
         out.extend(
@@ -182,7 +182,7 @@ impl RunPassages {
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
                 .rev()
-                .filter(|p| matches(*p))
+                .filter(|p| matches(p))
                 .cloned(),
         );
         out

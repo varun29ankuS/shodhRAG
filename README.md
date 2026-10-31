@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="#watch-the-2-minute-tour">Tour</a> &middot;
+  <a href="#screenshots">Screenshots</a> &middot;
   <a href="#download">Download</a> &middot;
   <a href="#pricing">Pricing</a> &middot;
   <a href="#what-works-today">What works today</a> &middot;
@@ -40,7 +41,27 @@
 <!-- TOUR-VIDEO: paste the GitHub video link on the next line -->
 https://github.com/user-attachments/assets/16719eb6-af1b-49a0-8adf-8ee3b34b4fe1
 
-> **Status: pre-release.** The latest release is 0.0.4. This README describes the `master` branch, so some items below are newer than the latest installers and arrive with the next release. What does not work yet is listed under [In progress](#in-progress).
+> **Status: pre-release.** The latest installers are on the [Releases](https://github.com/varun29ankuS/shodhRAG/releases/latest) page. This README describes the `master` branch, so some items below are newer than the latest installers and arrive with the next release. What does not work yet is listed under [In progress](#in-progress).
+
+## Screenshots
+
+The screenshots show six open-access papers (CC BY 4.0, from arXiv): Self-RAG, RAPTOR, GraphRAG, the Faiss library, E5 text embeddings and best practices in RAG.
+
+**An answer, cited.** Ask a question across your papers. The answer is a table whose cells carry citation badges, and statements the source doesn't back are flagged.
+
+<p align="center"><img src="docs/screenshots/answer.png" alt="Shodh answering how Self-RAG and RAPTOR differ, as a comparison table with citation badges" width="900" /></p>
+
+**Straight to the passage.** Click a citation and the PDF opens at the cited page with the passage outlined. The other passages the answer cites are one click away.
+
+<p align="center"><img src="docs/screenshots/cited-source.png" alt="The Self-RAG PDF opened at page 4 with the cited passage outlined" width="900" /></p>
+
+**Your library.** Folders stay in sync. Snippets, a citation graph and results compared across papers are built from what you read.
+
+<p align="center"><img src="docs/screenshots/library.png" alt="The Library with the papers folder, snippets, graph and compare-results sections" width="900" /></p>
+
+**Where your team works.** Connectors bring the same cited answers to Slack and Telegram.
+
+<p align="center"><img src="docs/screenshots/connectors.png" alt="The Connectors view with Slack and Telegram cards" width="900" /></p>
 
 ## Download
 
@@ -224,6 +245,9 @@ Nothing below works yet.
 | **Structure-aware chunks for every format** | Word, PowerPoint, HTML and plain text still use sliding windows. |
 | **Answer-quality baseline** | Published answer metrics for the committed sets. |
 | **Code signing** | Signed installers for Windows and macOS. |
+| **GPU embeddings** | Indexing and search on the graphics chip: DirectML on Windows, Core ML on macOS. Today they run on the CPU, which makes indexing a large folder slow. |
+| **GitHub connector** | Code mode fetching, pushing to its own branches and opening pull requests on repositories you choose, each write after your approval. |
+| **Code mode sandbox on Windows** | On macOS, Code mode commands already run in an OS sandbox. On Windows they run with your account's access, after your approval. |
 
 ## Quickstart
 

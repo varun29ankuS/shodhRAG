@@ -22,6 +22,20 @@ export const COMMAND_LIMITS: readonly CommandLimitSpec[] = [
   { key: 'cpuPercent', label: 'CPU cap on Windows', unit: 'percent', min: 10, max: 100, defaultValue: 80 },
 ];
 
+/** The systems Code-mode commands run on, as `desktopPlatform` names them. */
+export type CommandPlatform = 'windows' | 'macos' | 'linux';
+
+/** What Settings says about the command sandbox on `platform`: what the backend enforces there. */
+export function commandSandboxText(platform: CommandPlatform): string {
+  if (platform === 'macos') {
+    return 'Active: commands have no network, can change only the project folder and the conversation\'s scratch folder, and cannot read the rest of your home folder, your keychain or Shodh\'s data.';
+  }
+  if (platform === 'windows') {
+    return "Not available on Windows yet: commands run with your account's access, after your approval, with time and memory limits and without your API keys.";
+  }
+  return 'Not available: commands do not run on this system.';
+}
+
 /** A limit typed by the user, read as a whole number in its range. */
 export type ParsedLimit = { ok: true; value: number } | { ok: false; error: string };
 

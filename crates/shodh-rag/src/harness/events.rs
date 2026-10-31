@@ -432,6 +432,9 @@ pub enum AgentEvent {
         command: String,
         /// Wall-clock limit in seconds.
         time_limit_secs: u64,
+        /// The sandbox it runs in, in words
+        /// ([`super::run_command::sandbox_text`]).
+        sandbox: String,
         at_ms: u64,
     },
     /// Output of a running command: stdout and stderr interleaved as they
@@ -695,6 +698,7 @@ mod tests {
                     command_id: "c".into(),
                     command: "cargo test".into(),
                     time_limit_secs: 600,
+                    sandbox: "Sandboxed".into(),
                     at_ms: 3,
                 },
                 "command_started",
@@ -704,6 +708,7 @@ mod tests {
                     "commandId",
                     "command",
                     "timeLimitSecs",
+                    "sandbox",
                     "atMs",
                 ],
             ),

@@ -647,6 +647,7 @@ export function reduceTranscript(state: TranscriptState, action: TranscriptActio
               command: action.command,
               atMs: action.atMs,
               timeLimitSecs: typeof action.timeLimitSecs === 'number' ? action.timeLimitSecs : null,
+              sandbox: typeof action.sandbox === 'string' && action.sandbox.trim() !== '' ? action.sandbox : null,
             }),
           }));
 

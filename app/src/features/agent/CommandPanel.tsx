@@ -212,6 +212,7 @@ function RunningCommand({ run, nowMs, stateLabel, stopping, stopError, onStop, o
           />
         </div>
       )}
+      {run.sandbox && <p className="m-0 text-[11.5px] text-shodh-text-muted">{run.sandbox}</p>}
       {stopError && <p role="alert" className="m-0 text-[12px] text-shodh-error">{stopError}</p>}
       {run.output.length > 0 || run.outputCut ? (
         <CommandOutput run={run} />

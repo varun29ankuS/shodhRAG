@@ -14,12 +14,17 @@
 //! - inside limits ([`CommandLimits`]): a Job Object on Windows, a process
 //!   group with a CPU-time limit and a memory watchdog on macOS (the platform
 //!   modules), a wall-clock limit and an output cap on both;
+//! - on macOS, in macOS's sandbox (Seatbelt, `seatbelt.rs`), rendered from
+//!   the command's policy (`policy.rs`): no network, changes only in the code
+//!   folder and the scratch folder, nothing of the rest of the home, the
+//!   keychains or Shodh's data read. Windows has no sandbox yet, and the
+//!   approval prompt and the live panel say so ([`sandbox_text`]);
 //! - and when it ends (by itself, at its time limit, on Stop, or when the call
 //!   is cancelled), every process it started is stopped.
 //!
 //! `spawn_contained` in the platform module is the one place a process is
-//! created. Step 1b of the sandbox plan wraps it with an OS sandbox
-//! (AppContainer, Seatbelt); it fails closed like the rest of this module.
+//! created. It fails closed like the rest of this module: on macOS a command
+//! whose sandbox cannot be set up is refused, never run without it.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -36,6 +41,11 @@ use super::code_mode::CodeSettings;
 use super::events::{CommandState, RiskTier};
 use super::protocol::{HostToolDefinition, ToolLoadMode};
 use super::truncate_chars;
+
+#[cfg(any(target_os = "macos", test))]
+mod policy;
+#[cfg(target_os = "macos")]
+mod seatbelt;
 
 #[cfg(target_os = "macos")]
 mod mac;
@@ -97,6 +107,15 @@ const DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// processes that left the process tree by it).
 pub const RUN_ID_ENV: &str = "SHODH_RUN_COMMAND_ID";
 
+/// What the model is told about the sandbox commands run in on this system.
+#[cfg(target_os = "macos")]
+const SANDBOX_FOR_MODEL: &str = "Commands run in macOS's sandbox: they have no network \
+     access (no downloads, package installs or connections, localhost included), can change \
+     only the code folder and the scratch folder, and cannot read the rest of the user's home \
+     folder, the keychain or Shodh's data.";
+#[cfg(not(target_os = "macos"))]
+const SANDBOX_FOR_MODEL: &str = "Network access is not guaranteed.";
+
 /// What the model is told the tool does.
 pub fn description() -> String {
     format!(
@@ -105,7 +124,7 @@ pub fn description() -> String {
          on Windows this is Git for Windows' bash. Each call is a fresh process in the code \
          folder: nothing carries over between calls (no cd, no exported variables), HOME and \
          the temporary folder are a scratch folder of this conversation, and Shodh's API keys \
-         and tokens are not passed to it. Network access is not guaranteed. Do not start \
+         and tokens are not passed to it. {SANDBOX_FOR_MODEL} Do not start \
          background processes, servers, scheduled tasks or services: everything the command \
          starts is stopped when it ends. The command stops at its time limit (the \
          workspace's, at most; ask for less with timeout_secs) and the user can stop it at \
@@ -333,9 +352,9 @@ impl CommandLimits {
         duration_words(self.time)
     }
 
-    /// What an approval prompt says about the limits: only what this
-    /// system enforces.
-    pub fn prompt_rows(&self) -> [(&'static str, String); 2] {
+    /// What an approval prompt says about the limits and the sandbox: only
+    /// what this system enforces.
+    pub fn prompt_rows(&self) -> [(&'static str, String); 3] {
         [
             (
                 "time_limit",
@@ -346,6 +365,7 @@ impl CommandLimits {
                 },
             ),
             ("limits", self.enforced_text()),
+            ("sandbox", sandbox_text().to_string()),
         ]
     }
 
@@ -370,6 +390,71 @@ impl CommandLimits {
         let enforced = "None: commands do not run on this system.".to_string();
         format!("{enforced} {STOPPED_AT_END}")
     }
+}
+
+/// What the approval prompt and the live panel of a macOS command say about
+/// its sandbox: what `seatbelt.rs` enforces.
+pub const SANDBOX_MAC: &str = "Sandboxed: no network, only this project folder (and this \
+     conversation's scratch folder) can change. It cannot read the rest of your home folder, \
+     your keychain or Shodh's data.";
+
+/// What they say on Windows, which has no sandbox yet.
+pub const SANDBOX_WINDOWS: &str = "Not sandboxed on Windows yet — runs with your account's \
+     access, after your approval, with time/memory limits and without your API keys.";
+
+/// What they say where commands do not run.
+pub const SANDBOX_NONE: &str = "Not sandboxed: commands do not run on this system.";
+
+/// What the approval prompt and the live panel say about the sandbox
+/// commands run in on this system.
+pub fn sandbox_text() -> &'static str {
+    if cfg!(target_os = "macos") {
+        SANDBOX_MAC
+    } else if cfg!(windows) {
+        SANDBOX_WINDOWS
+    } else {
+        SANDBOX_NONE
+    }
+}
+
+/// Why a failed command may have failed because of macOS's sandbox, in
+/// plain words, from what it printed: no network, or a file outside the
+/// folders it may use. `None` when nothing in the output points at it.
+#[cfg(any(target_os = "macos", test))]
+pub fn failure_hint(output: &str) -> Option<&'static str> {
+    const NETWORK: &[&str] = &[
+        "could not resolve host",
+        "could not resolve hostname",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "nodename nor servname",
+        "getaddrinfo",
+        "network is unreachable",
+        "no route to host",
+        "failed to connect to",
+        "couldn't connect to server",
+        "unable to connect to",
+        "connect: operation not permitted",
+        "socket: operation not permitted",
+        "failed to lookup address",
+        "dns error",
+    ];
+    const FILES: &[&str] = &["operation not permitted", "permission denied"];
+    let lowered = output.to_lowercase();
+    if NETWORK.iter().any(|needle| lowered.contains(needle)) {
+        return Some(
+            "Network is blocked for commands: downloads, package installs and connections to \
+             servers (on this computer too) fail in Shodh's sandbox.",
+        );
+    }
+    if FILES.iter().any(|needle| lowered.contains(needle)) {
+        return Some(
+            "Commands can change only the project folder and this conversation's scratch \
+             folder, and cannot read the rest of your home folder, your keychain or Shodh's \
+             data.",
+        );
+    }
+    None
 }
 
 /// What every command prompt says about processes left at the end.
@@ -403,6 +488,9 @@ pub struct CommandSpec {
     pub folder: PathBuf,
     /// The conversation's scratch folder ([`scratch_dir`]).
     pub scratch: PathBuf,
+    /// Shodh's data folder, which holds the scratch folder: commands never
+    /// read the rest of it.
+    pub data_dir: PathBuf,
     pub limits: CommandLimits,
 }
 
@@ -981,8 +1069,8 @@ pub const ACCOUNT_GUARDS: [(&str, &str); 7] = [
 /// `home`), the account guards ([`ACCOUNT_GUARDS`]), the home and temporary
 /// folders in `scratch`, and the run's marker ([`RUN_ID_ENV`]). Nothing
 /// else of Shodh's environment is inherited: no provider key, token or Shodh
-/// setting. (Inherited is all this promises: until the sandbox of step 1b, a
-/// command can still read what any program of the user can.)
+/// setting. (Inherited is all this promises: on Windows, which has no sandbox
+/// yet, a command can still read what any program of the user can.)
 pub fn command_env(
     scratch: &Path,
     command_id: &str,
@@ -1167,16 +1255,29 @@ async fn pump<R: tokio::io::AsyncRead + Unpin>(mut reader: R, tx: mpsc::Sender<V
     }
 }
 
-/// Run `spec` in `shell` (or refuse with the reason there is none): a fresh
-/// contained process ([`platform::spawn_contained`]) whose output is kept
+/// Run `spec` in `shell` (or refuse with the reason there is none) in this
+/// system's sandbox: [`run_bounded`] with the system's own boundary.
+pub async fn run_contained(
+    spec: CommandSpec,
+    shell: Result<PathBuf, String>,
+    control: RunControl,
+) -> CommandOutcome {
+    run_bounded(spec, shell, platform::Boundary::system(), control).await
+}
+
+/// Run `spec` in `shell` (or refuse with the reason there is none) in the
+/// sandbox of `boundary`: a fresh contained process
+/// ([`platform::spawn_contained`], which refuses it when the sandbox cannot
+/// be set up) whose output is kept
 /// within [`OUTPUT_CAP_BYTES`] and sent live through `control`. The main
 /// process exiting, the time limit, a memory limit or [`stop`] ends the run;
 /// then every process it started is stopped before the output pipes are
 /// read to their end, so a background process holding them cannot keep the
 /// call open.
-pub async fn run_contained(
+pub async fn run_bounded(
     spec: CommandSpec,
     shell: Result<PathBuf, String>,
+    boundary: platform::Boundary,
     control: RunControl,
 ) -> CommandOutcome {
     let started = Instant::now();
@@ -1198,7 +1299,7 @@ pub async fn run_contained(
         home.as_deref(),
     );
     let (mut child, mut contained) =
-        match platform::spawn_contained(&shell, &spec, &env, &control.command_id) {
+        match platform::spawn_contained(&shell, &spec, &env, &control.command_id, &boundary) {
             Ok(spawned) => spawned,
             Err(reason) => return CommandOutcome::refused(reason),
         };
@@ -1319,11 +1420,19 @@ pub async fn run_contained(
             if left == 1 { "was" } else { "were" },
         ));
     }
+    let output = output.text();
+    // A failure the sandbox may explain is explained in words.
+    #[cfg(target_os = "macos")]
+    if state == CommandState::Done && exit_code != Some(0) {
+        if let Some(hint) = failure_hint(&output) {
+            notes.push(hint.to_string());
+        }
+    }
     CommandOutcome {
         state,
         exit_code,
         note: (!notes.is_empty()).then(|| notes.join(" ")),
-        output: output.text(),
+        output,
         duration: started.elapsed(),
         escaped,
     }

@@ -45,12 +45,25 @@ pub fn signal_exit(_signal: i32) -> Option<&'static str> {
     None
 }
 
+/// Commands' sandbox on this system: none yet, so the approval prompt says
+/// commands are not sandboxed ([`super::sandbox_text`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Boundary;
+
+impl Boundary {
+    /// The system's sandbox (none).
+    pub fn system() -> Self {
+        Boundary
+    }
+}
+
 /// Commands are refused on this system.
 pub fn spawn_contained(
     _shell: &Path,
     _spec: &CommandSpec,
     _env: &[(String, String)],
     _command_id: &str,
+    _boundary: &Boundary,
 ) -> Result<(Child, Contained), String> {
     Err(UNSUPPORTED.to_string())
 }

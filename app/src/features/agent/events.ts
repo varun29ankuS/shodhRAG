@@ -341,6 +341,8 @@ export interface CommandStartedEvent {
   command: string;
   /** Wall-clock limit in seconds. */
   timeLimitSecs: number;
+  /** The sandbox it runs in, in words ("Sandboxed: no network, ..." on macOS; not sandboxed on Windows). Absent from older events. */
+  sandbox?: string;
   atMs: number;
 }
 

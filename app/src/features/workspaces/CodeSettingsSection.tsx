@@ -5,7 +5,8 @@ import { notify } from '../../lib/notify';
 import { agentApi, toAgentError } from '../agent/useAgentSession';
 import type { ApprovalLevel, CodeSettings } from '../agent/useAgentSession';
 import { FOCUS_RING, INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
-import { COMMAND_LIMITS, commandLimitHint, parseCommandLimit } from './commandLimits';
+import { desktopPlatform } from '../../lib/startupText';
+import { COMMAND_LIMITS, commandLimitHint, commandSandboxText, parseCommandLimit } from './commandLimits';
 import type { CommandLimitKey } from './commandLimits';
 
 export const APPROVAL_LEVELS: readonly { id: ApprovalLevel; label: string; hint: string }[] = [
@@ -23,6 +24,9 @@ export const APPROVAL_LEVELS: readonly { id: ApprovalLevel; label: string; hint:
 ];
 
 const linesOf = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
+
+/** The command sandbox on this system, in words. */
+const SANDBOX_TEXT = commandSandboxText(desktopPlatform(typeof navigator !== 'undefined' ? navigator.platform : ''));
 
 type LimitTexts = Record<CommandLimitKey, string>;
 
@@ -207,6 +211,10 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
             );
           })}
         </fieldset>
+        <div className="flex flex-col gap-0.5">
+          <h4 className={SECTION_TITLE}>Command sandbox</h4>
+          <p className="m-0 text-[12.5px] text-shodh-text-muted">{SANDBOX_TEXT}</p>
+        </div>
         <div>
           <button type="submit" className={OUTLINE_BUTTON} disabled={!dirty || !limitsValid || saving}>
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Save className="w-3.5 h-3.5" aria-hidden="true" />}

@@ -422,12 +422,25 @@ fn with_git_path(shell: &Path, env: &[(String, String)]) -> Vec<(String, String)
     out
 }
 
+/// Commands' sandbox on this system: none yet, so the approval prompt says
+/// commands are not sandboxed ([`super::sandbox_text`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Boundary;
+
+impl Boundary {
+    /// The system's sandbox (none).
+    pub fn system() -> Self {
+        Boundary
+    }
+}
+
 /// Start `spec`'s command in `shell`, inside a new job ([`new_job`]).
 pub fn spawn_contained(
     shell: &Path,
     spec: &CommandSpec,
     env: &[(String, String)],
     _command_id: &str,
+    _boundary: &Boundary,
 ) -> Result<(Child, Contained), String> {
     let (job, port) = new_job(spec).map_err(|e| {
         format!("Shodh could not set up the command's limits ({e}), so it was not run.")

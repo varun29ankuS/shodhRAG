@@ -112,9 +112,24 @@ export function parseAnswerPrefs(value: unknown): AnswerPrefs | null {
   return { autoRepair, thinkBeforeAnswering };
 }
 
+/**
+ * Code mode: answers that read and change a workspace's code folder and run
+ * commands there, each behind an approval. User-only; off on a new install
+ * (installs from before the setting keep it on).
+ */
+export interface CodePrefs {
+  enabled: boolean;
+}
+
+/** The code section; anything but an explicit `enabled: true` reads as off (fail closed). */
+export function parseCodePrefs(value: unknown): CodePrefs {
+  return { enabled: isRecord(value) && value.enabled === true };
+}
+
 export interface AppSettings {
   preferences: Preferences;
   policy: Policy;
+  code: CodePrefs;
   memory: MemoryPrefs;
   answers: AnswerPrefs;
   /** Desktop notifications by category. User-only. */
@@ -143,6 +158,7 @@ export function parseAppSettings(value: unknown): AppSettings | null {
   return {
     preferences: { theme: preferences.theme, searchMaxResults: preferences.searchMaxResults },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
+    code: parseCodePrefs(value.code),
     memory,
     answers,
     notifications,
@@ -166,6 +182,10 @@ export async function updatePreferences(patch: Partial<Preferences>, seed = fals
 
 export async function setPolicy(policy: Policy): Promise<AppSettings | null> {
   return parseAppSettings(await invoke<unknown>('set_app_policy', { policy }));
+}
+
+export async function setCodeMode(enabled: boolean): Promise<AppSettings | null> {
+  return parseAppSettings(await invoke<unknown>('set_code_mode', { enabled }));
 }
 
 export async function setMemoryPreferences(memory: MemoryPrefs): Promise<AppSettings | null> {

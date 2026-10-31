@@ -6,8 +6,9 @@ import { ConnectPanel } from '../modelPicker/ConnectPanel';
 import { ModelPicks } from '../modelPicker/ModelPicks';
 import { cn } from '../../lib/utils';
 import { ENTER_TRANSITION, EXIT_TRANSITION } from '../../lib/motion';
-import { SearchSetupCard } from './SearchSetupCard';
-import { useSearchModels } from './SearchModelsContext';
+import { SetupCard } from './SetupCard';
+import { useReadiness } from './useReadiness';
+import { setupDisclosure } from './readiness';
 import { AnswerCheckModelRow } from '../../components/AnswerCheckSettings';
 import { FIRST_RUN_STEPS, FIRST_RUN_STEP_LABELS, folderStepDone, nextStep, previousStep, stepIndex } from './firstRun';
 import type { FirstRunStep } from './firstRun';
@@ -104,7 +105,30 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onSkip]);
 
-  const advance = () => (step === 'done' ? onFinish() : onStepChange(nextStep(step)));
+  const setup = useReadiness();
+  const { startSetup } = setup;
+  // "Get started" pressed while the statuses were still being read: the downloads start
+  // once Shodh knows what is missing.
+  const setupRequested = useRef(false);
+  useEffect(() => {
+    if (setupRequested.current && (setup.phase === 'needed' || setup.phase === 'failed')) {
+      setupRequested.current = false;
+      startSetup();
+    }
+  }, [setup.phase, startSetup]);
+  const advance = () => {
+    if (step === 'done') {
+      onFinish();
+      return;
+    }
+    // "Get started" starts the one-time downloads (search models and answer engine)
+    // the welcome step described; they continue while the other steps are done.
+    if (step === 'welcome') {
+      if (setup.phase === 'checking') setupRequested.current = true;
+      else startSetup();
+    }
+    onStepChange(nextStep(step));
+  };
 
   return (
     <div className="fixed inset-0 z-[9000] flex items-center justify-center p-6">
@@ -154,7 +178,7 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
 
         {/* Step */}
         <div key={step} className="shell-view-enter flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 pt-4 pb-2">
-          {step === 'welcome' && <WelcomeStep titleId={titleId} headingRef={headingRef} />}
+          {step === 'welcome' && <WelcomeStep titleId={titleId} headingRef={headingRef} disclosure={welcomeDisclosure(setup)} />}
           {step === 'search' && <SearchStep titleId={titleId} headingRef={headingRef} />}
           {step === 'model' && (
             <ModelStep titleId={titleId} headingRef={headingRef} llmStatus={llmStatus} />
@@ -214,7 +238,19 @@ function StepHeading({ titleId, headingRef, children }: StepProps & { children: 
   );
 }
 
-function WelcomeStep(props: StepProps) {
+/** What the welcome step says about the downloads, for what is known so far. */
+function welcomeDisclosure(setup: ReturnType<typeof useReadiness>): string {
+  switch (setup.phase) {
+    case 'checking':
+      return 'Shodh is checking what it needs to download; it starts when you choose Get started.';
+    case 'ready':
+      return 'Everything Shodh needs is already on this computer.';
+    default:
+      return `${setupDisclosure(setup, setup.runtimeSource)} It starts when you choose Get started.`;
+  }
+}
+
+function WelcomeStep({ disclosure, ...props }: StepProps & { disclosure: string }) {
   const points = [
     { icon: Search, title: 'Search your own files', text: 'Folders on this computer are indexed locally. Nothing is uploaded.' },
     { icon: Quote, title: 'Answers with sources', text: 'Every answer cites the passage it came from, opened right in the app.' },
@@ -226,7 +262,7 @@ function WelcomeStep(props: StepProps) {
         <img src="/shodh_logo_nobackground.svg" alt="" aria-hidden="true" className="w-10 h-10" />
         <div className="flex flex-col gap-0.5">
           <StepHeading {...props}>Welcome to Shodh</StepHeading>
-          <p className="text-[13px] text-shodh-text-muted">Three short steps and you can ask questions about your documents.</p>
+          <p className="text-[13px] text-shodh-text-muted">A few short steps and you can ask questions about your documents.</p>
         </div>
       </div>
       <ul className="flex flex-col gap-2.5">
@@ -243,37 +279,40 @@ function WelcomeStep(props: StepProps) {
           );
         })}
       </ul>
+      <p className="m-0 text-[13px] leading-relaxed text-shodh-text-secondary">
+        {disclosure}
+      </p>
     </div>
   );
 }
 
 function SearchStep(props: StepProps) {
-  const { status, statusError, installing, installed } = useSearchModels();
-  const ready = !!status?.ready && !installing;
+  const setup = useReadiness();
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
-        <StepHeading {...props}>Set up search</StepHeading>
+        <StepHeading {...props}>Getting Shodh ready</StepHeading>
         <p className="text-[13px] text-shodh-text-muted">
-          Search runs on this computer with two small models: one finds passages by meaning, the other ranks them.
+          Two things run on this computer: search models, which find passages in your files by meaning, and the
+          answer engine, which writes the answers from them.
         </p>
       </div>
-      {!status && !statusError && (
+      {setup.phase === 'checking' && (
         <p role="status" className="flex items-center gap-2 text-[13px] text-shodh-text-muted">
           <Loader2 className="w-4 h-4 agent-spin" aria-hidden="true" />
-          Checking whether search is set up…
+          Checking what is already on this computer…
         </p>
       )}
-      {ready && !installed && (
+      {setup.phase === 'ready' && (
         <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-[13px] text-shodh-text">
           <CheckCircle2 className="w-[18px] h-[18px] text-shodh-success shrink-0" aria-hidden="true" />
-          Search is set up and verified.
+          Search models and answer engine are installed. Each is checked against its official copy before it is used.
         </p>
       )}
-      <SearchSetupCard />
-      {installing && (
-        <p className="text-[12px] text-shodh-text-faint">
-          The download continues if you move on or close this window.
+      <SetupCard />
+      {setup.phase === 'installing' && (
+        <p className="text-[12px] text-shodh-text-muted">
+          You can continue with the next steps; the download goes on in the background, even if you close this window.
         </p>
       )}
       <section aria-label="Optional: answer checking" className="p-4 rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-2">

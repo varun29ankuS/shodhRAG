@@ -648,16 +648,13 @@ async fn check_provider(app: &AppHandle, provider: ProviderId) {
         ProviderKind::Local => {
             let connect = app.state::<ConnectState>();
             refresh_local(app, &connect, &ollama_host()).await;
-            let running = match provider {
-                ProviderId::LmStudio => connect.lmstudio().running,
-                _ => connect.ollama().running,
-            };
-            let result = if running {
-                KeyHealth::Works
-            } else {
-                KeyHealth::Unreachable {
+            let result = match provider {
+                // LM Studio says what detection found, as the model picker does.
+                ProviderId::LmStudio => lmstudio_health(&connect.lmstudio()),
+                _ if connect.ollama().running => KeyHealth::Works,
+                _ => KeyHealth::Unreachable {
                     message: format!("{} isn't running on this computer.", provider.label()),
-                }
+                },
             };
             health.update(provider, |r| r.apply_check(result, None, now));
         }
@@ -666,6 +663,39 @@ async fn check_provider(app: &AppHandle, provider: ProviderId) {
     }
     health.end_check(provider);
     notify(app);
+}
+
+/// LM Studio's health from its detection, in the same plain sentences as the model
+/// picker: only a server with a chat model loaded works.
+fn lmstudio_health(server: &crate::connect_commands::LocalServer) -> KeyHealth {
+    use shodh_rag::harness::lmstudio::LmStudioState;
+    let state = server.state.unwrap_or(if server.running {
+        LmStudioState::Running
+    } else {
+        LmStudioState::NotRunning
+    });
+    match state {
+        LmStudioState::Running if !server.models.is_empty() => KeyHealth::Works,
+        LmStudioState::Running | LmStudioState::NoChatModel => KeyHealth::Unreachable {
+            message: "LM Studio is running but has no chat model loaded. Load one in LM Studio."
+                .to_string(),
+        },
+        LmStudioState::NeedsToken => KeyHealth::Rejected {
+            status: Some(401),
+            message: Some(
+                "LM Studio needs its API token. Paste it in Settings → Model → Run locally."
+                    .to_string(),
+            ),
+        },
+        LmStudioState::ServerOff => KeyHealth::Unreachable {
+            message: "LM Studio is open, but its local server is off. In LM Studio → Developer, \
+                      turn on Start server."
+                .to_string(),
+        },
+        LmStudioState::NotRunning => KeyHealth::Unreachable {
+            message: "LM Studio isn't running on this computer.".to_string(),
+        },
+    }
 }
 
 /// Check `only`, or every listed provider, at once.
@@ -784,6 +814,43 @@ mod tests {
     use super::*;
 
     const NOW: u64 = 1_759_750_000_000;
+
+    #[test]
+    fn lm_studio_health_says_what_detection_found() {
+        use crate::connect_commands::LocalServer;
+        use shodh_rag::harness::lmstudio::LmStudioState;
+        let server = |state: LmStudioState, models: &[&str]| LocalServer {
+            running: matches!(state, LmStudioState::Running | LmStudioState::NoChatModel),
+            models: models.iter().map(|m| m.to_string()).collect(),
+            state: Some(state),
+            address: Some("http://127.0.0.1:1234/v1".to_string()),
+            has_token: false,
+        };
+        assert!(matches!(
+            lmstudio_health(&server(LmStudioState::Running, &["qwen3-8b"])),
+            KeyHealth::Works
+        ));
+        let message = |health: KeyHealth| match health {
+            KeyHealth::Unreachable { message } => message,
+            KeyHealth::Rejected { message, .. } => message.unwrap_or_default(),
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            message(lmstudio_health(&server(LmStudioState::NoChatModel, &[])))
+                .contains("no chat model")
+        );
+        assert!(
+            message(lmstudio_health(&server(LmStudioState::NeedsToken, &[]))).contains("API token")
+        );
+        assert!(
+            message(lmstudio_health(&server(LmStudioState::ServerOff, &[])))
+                .contains("server is off")
+        );
+        assert!(
+            message(lmstudio_health(&server(LmStudioState::NotRunning, &[])))
+                .contains("isn't running")
+        );
+    }
 
     #[test]
     fn a_key_hint_never_shows_more_than_four_characters() {

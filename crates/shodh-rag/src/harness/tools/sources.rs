@@ -197,10 +197,10 @@ pub async fn find_folder_source(
 
 /// What `sources` of `search_documents` accepts, for its description and its
 /// errors.
-pub const SOURCES_ACCEPTED: &str = "source ids from list_sources, folder paths at or \
-inside an indexed folder (a folder is searched with its subfolders), paths of indexed files, \
-the name of a folder or file when only one indexed folder or file has it, \"notes\" or \
-\"calendar\"";
+pub const SOURCES_ACCEPTED: &str = "source ids from list_sources, a folder or file as \
+list_sources names it (\"<folder name>/<path inside it>\"; a folder is searched with its \
+subfolders), the name of a folder or file when only one indexed folder or file has it, \"notes\" \
+or \"calendar\"";
 
 /// One indexed file a source argument named.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +293,71 @@ fn folders_of(summary: &SourceSummary, rows: &[DocumentSourceRow]) -> BTreeSet<S
     folders
 }
 
+/// How the model reads an indexed file or folder: the source folder's name and
+/// the path inside it ("papers/ann/hnsw.pdf"), never the full path (which holds
+/// the user's name and folders, and an answer must not quote it). Anything
+/// outside a folder source is named by its last component.
+pub fn shown_path(path: &str, summaries: &[SourceSummary]) -> String {
+    let best = summaries
+        .iter()
+        .filter(|s| s.kind == SourceKind::Folder)
+        .filter_map(|s| s.folder.as_deref().map(|f| (s, f.trim_end_matches('/'))))
+        .filter(|(_, folder)| path.eq(*folder) || path_within(path, folder))
+        .max_by_key(|(_, folder)| folder.len());
+    match best {
+        Some((summary, folder)) => {
+            let head = shown_head(summary, summaries);
+            let rest = path[folder.len()..].trim_start_matches('/');
+            if rest.is_empty() {
+                head
+            } else {
+                format!("{head}/{rest}")
+            }
+        }
+        None => last_component(path).to_string(),
+    }
+}
+
+/// How a folder source starts its files' shown paths: its name, or its source id when
+/// another folder source has the same name (so two "papers" folders are told apart).
+fn shown_head(summary: &SourceSummary, summaries: &[SourceSummary]) -> String {
+    let same_name = summaries
+        .iter()
+        .filter(|s| s.kind == SourceKind::Folder && s.name.eq_ignore_ascii_case(&summary.name))
+        .count();
+    if same_name > 1 {
+        summary.source_id.clone()
+    } else {
+        summary.name.clone()
+    }
+}
+
+/// The full paths a value shown by [`shown_path`] ("<folder name>/<rest>") may
+/// stand for: each folder source with that name, joined with the rest.
+pub fn unshown_paths(value: &str, summaries: &[SourceSummary]) -> Vec<String> {
+    let value = value.replace('\\', "/");
+    let (head, rest) = match value.split_once('/') {
+        Some((head, rest)) => (head.to_lowercase(), rest.trim_matches('/').to_string()),
+        None => (value.to_lowercase(), String::new()),
+    };
+    summaries
+        .iter()
+        .filter(|s| {
+            s.kind == SourceKind::Folder
+                && (s.name.to_lowercase() == head || s.source_id.to_lowercase() == head)
+        })
+        .filter_map(|s| s.folder.as_deref())
+        .map(|folder| {
+            let folder = folder.trim_end_matches('/');
+            if rest.is_empty() {
+                folder.to_string()
+            } else {
+                format!("{folder}/{rest}")
+            }
+        })
+        .collect()
+}
+
 /// What `value` names among the indexed sources: `Err` with the candidates
 /// when it names several folders or files, `Err` with none when nothing.
 fn match_target(
@@ -335,7 +400,28 @@ fn match_target(
         if rows.iter().any(|r| path_within(&r.source, &wanted)) {
             return Ok(Target::Folder(wanted));
         }
-        return Err(Vec::new());
+        // A file or folder as the model was shown it: "<folder name>/<path inside it>".
+        let mut found: Vec<Target> = Vec::new();
+        for full in unshown_paths(value, summaries) {
+            let full = crate::rag_engine::normalize_source_path(std::path::Path::new(&full));
+            if rows.iter().any(|r| r.source == full) {
+                found.push(Target::File(full));
+            } else if rows.iter().any(|r| path_within(&r.source, &full)) {
+                found.push(Target::Folder(full));
+            }
+        }
+        return match found.len() {
+            1 => Ok(found.remove(0)),
+            0 => Err(Vec::new()),
+            _ => Err(found
+                .into_iter()
+                .map(|t| match t {
+                    Target::File(f) => format!("file {}", shown_path(&f, summaries)),
+                    Target::Folder(f) => format!("folder {}", shown_path(&f, summaries)),
+                    Target::Sources(ids) => format!("source {}", ids.join(", ")),
+                })
+                .collect()),
+        };
     }
     // A name: of a folder at or inside a source's folder, or of a file.
     let mut folders = BTreeSet::new();
@@ -363,8 +449,12 @@ fn match_target(
         (0, 1) => Ok(Target::File(files.into_iter().next().unwrap_or_default())),
         _ => Err(folders
             .into_iter()
-            .map(|f| format!("folder {f}"))
-            .chain(files.into_iter().map(|f| format!("file {f}")))
+            .map(|f| format!("folder {}", shown_path(&f, summaries)))
+            .chain(
+                files
+                    .into_iter()
+                    .map(|f| format!("file {}", shown_path(&f, summaries))),
+            )
             .collect()),
     }
 }
@@ -407,8 +497,10 @@ pub fn resolve_sources(
                 if let Some(row) = rows.iter().find(|r| r.source == path) {
                     out.add_file(row);
                 }
-                out.notes
-                    .push(format!("\"{value}\" is the indexed file {path}."));
+                out.notes.push(format!(
+                    "\"{value}\" is the indexed file {}.",
+                    shown_path(&path, &summaries)
+                ));
             }
             Ok(Target::Folder(folder)) => {
                 let whole: Vec<&str> = summaries
@@ -441,12 +533,14 @@ pub fn resolve_sources(
                         plural(n, "more indexed file", "more indexed files")
                     ),
                 };
-                out.notes
-                    .push(format!("\"{value}\" is the folder {folder}: {what}."));
+                out.notes.push(format!(
+                    "\"{value}\" is the folder {}: {what}.",
+                    shown_path(&folder, &summaries)
+                ));
             }
             Err(candidates) if candidates.is_empty() => unknown.push(format!("\"{value}\"")),
             Err(candidates) => ambiguous.push(format!(
-                "\"{value}\" names more than one: {}; pass its path instead.",
+                "\"{value}\" names more than one: {}; pass one of these instead.",
                 candidates.join(", ")
             )),
         }
@@ -481,8 +575,8 @@ pub fn valid_sources_text(summaries: &[SourceSummary]) -> String {
         .iter()
         .take(MAX_LISTED_SOURCES)
         .map(|s| match &s.folder {
-            Some(folder) => format!(
-                "{} (\"{}\", folder {folder}, {})",
+            Some(_) => format!(
+                "{} (\"{}\", {})",
                 s.source_id,
                 s.name,
                 plural(s.files, "file", "files")
@@ -519,7 +613,7 @@ impl HostTool for ListSourcesTool {
         "Checking indexed folders"
     }
     fn description(&self) -> &'static str {
-        "List what is indexed for search_documents: folders (with their path and name), and the \
+        "List what is indexed for search_documents: folders (by name), and the \
          calendar and notes as searchable text, with file and chunk counts. It does not list the \
          user's tasks or events: list_tasks and list_events do. Source ids can be passed to \
          search_documents to restrict a search. With source_id (an id this tool listed), list the \
@@ -563,7 +657,13 @@ impl HostTool for ListSourcesTool {
             }
             let total = files.len();
             let shown: Vec<&SourceFile> = files.iter().take(limit).collect();
-            let body = serde_json::to_string(&shown)
+            // The model reads each file as "<folder name>/<path inside it>", not its full path.
+            let summaries = summarise_sources(&rows);
+            let for_model: Vec<Value> = shown
+                .iter()
+                .map(|f| json!({ "file": shown_path(&f.path, &summaries), "chunks": f.chunks }))
+                .collect();
+            let body = serde_json::to_string(&for_model)
                 .map_err(|e| ToolError::Failed(format!("Could not encode files: {e}")))?;
             let more = if total > shown.len() {
                 format!(" Showing the first {}.", shown.len())
@@ -591,7 +691,18 @@ impl HostTool for ListSourcesTool {
             .filter(|s| s.kind == SourceKind::Folder)
             .map(|s| s.files)
             .sum();
-        let body = serde_json::to_string(&sources)
+        // The model reads each folder by its name; the step detail keeps its path.
+        let for_model: Vec<Value> = sources
+            .iter()
+            .map(|s| {
+                let mut value = serde_json::to_value(s).unwrap_or(Value::Null);
+                if let Some(map) = value.as_object_mut() {
+                    map.remove("folder");
+                }
+                value
+            })
+            .collect();
+        let body = serde_json::to_string(&for_model)
             .map_err(|e| ToolError::Failed(format!("Could not encode sources: {e}")))?;
         let text = if sources.is_empty() {
             "Nothing is indexed yet. The user can add a folder in the Library view.".to_string()
@@ -768,7 +879,10 @@ mod tests {
                 panic!("{wanted} resolved");
             };
             assert!(message.contains(&format!("No indexed source matches \"{wanted}\"")));
-            assert!(message.contains("s1 (\"papers\", folder c:/docs/papers, 3 files)"));
+            assert!(message.contains("s1 (\"papers\", 3 files)"), "{message}");
+            // No path but the value the model itself sent, which the message quotes back.
+            let without_echo = message.replace(&format!("\"{wanted}\""), "");
+            assert!(!without_echo.contains("c:/docs"), "{message}");
             assert!(message.contains("s2 (\"contracts\""));
             assert!(message.contains("notes (\"Notes\")"));
             assert!(message.contains("Nothing was searched"));
@@ -777,13 +891,64 @@ mod tests {
         let Err(ToolError::NotFound(message)) = resolve(&["acme.pdf"]) else {
             panic!("an ambiguous name resolved");
         };
-        assert!(message.contains("file c:/docs/contracts/acme.pdf"));
-        assert!(message.contains("file c:/docs/contracts/old/acme.pdf"));
+        assert!(message.contains("file contracts/acme.pdf"), "{message}");
+        assert!(message.contains("file contracts/old/acme.pdf"), "{message}");
+        assert!(!message.contains("c:/docs"), "{message}");
+        // Either is then named as it was shown.
+        assert_eq!(
+            file_paths(&resolve(&["contracts/old/acme.pdf"]).unwrap()),
+            vec!["c:/docs/contracts/old/acme.pdf"]
+        );
+        assert_eq!(
+            file_paths(&resolve(&["papers/ann"]).unwrap()),
+            vec!["c:/docs/papers/ann/hnsw.pdf", "c:/docs/papers/ann/nsg.pdf"]
+        );
+        assert_eq!(resolve(&["papers"]).unwrap().source_ids, vec!["s1"]);
         // Nothing indexed at all.
         let Err(ToolError::NotFound(message)) = resolve_sources(&[], &["s1".to_string()]) else {
             panic!("resolved in an empty index");
         };
         assert!(message.contains("Nothing is indexed yet"));
+    }
+
+    #[test]
+    fn folders_with_the_same_name_are_told_apart_by_their_source_id() {
+        let rows = vec![
+            row("1", "c:/work/papers/a.pdf", "s1", 1),
+            row("2", "d:/home/papers/b.pdf", "s2", 1),
+        ];
+        let summaries = summarise_sources(&rows);
+        assert_eq!(shown_path("c:/work/papers/a.pdf", &summaries), "s1/a.pdf");
+        assert_eq!(shown_path("d:/home/papers/b.pdf", &summaries), "s2/b.pdf");
+        assert_eq!(
+            unshown_paths("s2/b.pdf", &summaries),
+            vec!["d:/home/papers/b.pdf".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_model_reads_folders_and_files_by_name_never_by_path() {
+        let summaries = summarise_sources(&library());
+        assert_eq!(
+            shown_path("c:/docs/papers/ann/hnsw.pdf", &summaries),
+            "papers/ann/hnsw.pdf"
+        );
+        assert_eq!(shown_path("c:/docs/papers", &summaries), "papers");
+        assert_eq!(shown_path("c:/elsewhere/x.pdf", &summaries), "x.pdf");
+        let notes = resolve(&["c:/docs/papers/ann"]).unwrap().notes.join(" ");
+        assert!(notes.contains("is the folder papers/ann"), "{notes}");
+        // The value the model sent is quoted back; nothing else holds a path.
+        assert!(
+            !notes
+                .replace("\"c:/docs/papers/ann\"", "")
+                .contains("c:/docs"),
+            "{notes}"
+        );
+        let file = resolve(&["hnsw.pdf"]).unwrap().notes.join(" ");
+        assert!(
+            file.contains("is the indexed file papers/ann/hnsw.pdf"),
+            "{file}"
+        );
     }
 
     #[test]

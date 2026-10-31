@@ -775,7 +775,7 @@ export default function ToolsSettings() {
               <p className="m-0 text-[13px] font-semibold text-shodh-text">enola {enola.version}</p>
               <p className="m-0 text-[12px] text-shodh-text-muted">
                 Maps a codebase’s architecture (modules, dependencies, impact of a change) for Code mode. Downloaded
-                from its GitHub release and checked against a pinned checksum; it reads the code folder and keeps its
+                from its GitHub release and checked to match the official copy before it runs; it reads the code folder and keeps its
                 index in <code>.enola/</code> there.
               </p>
             </div>

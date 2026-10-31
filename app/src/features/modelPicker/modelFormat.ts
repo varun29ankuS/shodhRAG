@@ -4,7 +4,7 @@
  *
  * Pure module (no React), unit-tested with Node (`app/tests/modelPicker.test.ts`).
  */
-import type { ActiveModel, CatalogModel, ModelRef, ModelPrefs, PickId, PickerView, PrivacyNote, ProviderId } from './modelTypes.ts';
+import type { ActiveModel, CatalogModel, LocalServer, ModelRef, ModelPrefs, PickId, PickerView, PrivacyNote, ProviderId } from './modelTypes.ts';
 import { PROVIDER_LABELS, sameModel } from './modelTypes.ts';
 
 /** USD per million tokens as shown: "$0.18", "$3", "$15", "<$0.01"; null is unknown. */
@@ -165,13 +165,63 @@ export const PICK_HINTS: Record<PickId, string> = {
   private: 'Runs on this computer. Nothing leaves it.',
 };
 
+/** What the Run locally row says about LM Studio, and what it offers to fix it. */
+export interface LmStudioStatus {
+  text: string;
+  /** `token`: a field for its API token; `address`: the address tried, with a field to change it. */
+  fix: 'token' | 'address' | null;
+  tone: 'ok' | 'warn' | 'muted';
+}
+
+export function lmStudioStatus(server: LocalServer): LmStudioStatus {
+  const state = server.state ?? (server.running ? (server.models.length > 0 ? 'running' : 'noChatModel') : 'notRunning');
+  const address = server.address ?? 'http://127.0.0.1:1234/v1';
+  switch (state) {
+    case 'running':
+      return { text: `Running with ${server.models.join(', ')}.`, fix: null, tone: 'ok' };
+    case 'noChatModel':
+      return {
+        text: 'LM Studio is running but has no chat model loaded. Load one in LM Studio (embedding models cannot answer), then check again.',
+        fix: null,
+        tone: 'warn',
+      };
+    case 'needsToken':
+      return {
+        text: server.hasToken
+          ? "LM Studio didn't accept the saved API token. Paste the token from LM Studio → Developer → Server settings."
+          : 'LM Studio needs its API token (its server has "Require API token" on). Paste the token from LM Studio → Developer → Server settings.',
+        fix: 'token',
+        tone: 'warn',
+      };
+    case 'serverOff':
+      return {
+        text: `LM Studio is open, but its local server is off. In LM Studio → Developer, turn on Start server, then check again. (Shodh looked at ${address}.)`,
+        fix: 'address',
+        tone: 'warn',
+      };
+    case 'notRunning':
+      return {
+        text: `LM Studio isn't running on this computer, or its server isn't at ${address}. Open LM Studio and turn on its server (Developer → Start server).`,
+        fix: 'address',
+        tone: 'muted',
+      };
+  }
+}
+
 /** Why a pick has no model, for its disabled row. */
 export function pickUnavailableText(pick: PickId, view: Pick<PickerView, 'localOnly' | 'lmstudio'>): string {
   switch (pick) {
     case 'free':
       return view.localOnly ? 'Off in Local-only mode.' : 'Connect OpenRouter for free models.';
     case 'private':
-      return view.lmstudio.running ? 'Load a model in LM Studio.' : 'Start LM Studio to run a model here.';
+      switch (view.lmstudio.state) {
+        case 'needsToken':
+          return 'LM Studio needs its API token (see Run locally).';
+        case 'serverOff':
+          return "Turn on LM Studio's server (Developer → Start server).";
+        default:
+          return view.lmstudio.running ? 'Load a model in LM Studio.' : 'Start LM Studio to run a model here.';
+      }
     default:
       return view.localOnly ? 'Off in Local-only mode.' : 'Connect a provider above.';
   }

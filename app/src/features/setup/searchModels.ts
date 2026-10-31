@@ -12,6 +12,8 @@ export const SEARCH_MODELS_READY_EVENT = 'search-models-ready';
 export const SEARCH_MODELS_MISSING_CODE = 'search_models_missing';
 /** Error code when another install is already running. */
 export const INSTALL_IN_PROGRESS_CODE = 'install_in_progress';
+/** Error code when an install could not connect (likely offline). */
+export const OFFLINE_CODE = 'offline';
 
 export type ArtifactState = 'missing' | 'partial' | 'unverified' | 'verified' | 'corrupt';
 
@@ -117,16 +119,22 @@ export function describeProgress(progress: InstallProgress | null): string {
     case 'downloading':
       return `Downloading ${progress.artifact} · ${formatMegabytes(progress.overallBytes)} of ${formatMegabytes(progress.overallTotal)}`;
     case 'verifying':
-      return `Verifying ${progress.artifact} (SHA-256)…`;
+      return `Checking ${progress.artifact} matches the official copy…`;
     case 'verified':
       return `${progress.artifact} verified · ${formatMegabytes(progress.overallBytes)} of ${formatMegabytes(progress.overallTotal)}`;
   }
 }
 
+/** Whether a command error says the download could not connect. */
+export function isOfflineError(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.startsWith(`${OFFLINE_CODE}: `);
+}
+
 /** The message of a command error, without its machine-readable code prefix. */
 export function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  for (const code of [SEARCH_MODELS_MISSING_CODE, INSTALL_IN_PROGRESS_CODE]) {
+  for (const code of [SEARCH_MODELS_MISSING_CODE, INSTALL_IN_PROGRESS_CODE, OFFLINE_CODE]) {
     if (raw.startsWith(`${code}: `)) {
       const rest = raw.slice(code.length + 2);
       return rest.charAt(0).toUpperCase() + rest.slice(1);

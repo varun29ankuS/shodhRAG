@@ -9,6 +9,7 @@ import {
   catalogNotice,
   chipEntries,
   pickUnavailableText,
+  lmStudioStatus,
   formatContext,
   formatPrice,
   formatUsd,
@@ -380,4 +381,34 @@ test('OpenRouter privacy settings that leave no provider get their own hint; net
   const network = providerErrorCopy({ kind: 'network', status: null, retryAfterSecs: null }, 'vendor/model', 'openrouter');
   assert.equal(network.title, "The connection to the model's provider broke (OpenRouter · vendor/model)");
   assert.equal(network.hint, 'Try again, or choose another model in Settings → Model.');
+});
+
+test('LM Studio detection says exactly what is wrong and what to do', () => {
+  const at = 'http://127.0.0.1:1234/v1';
+  assert.deepEqual(lmStudioStatus({ running: true, models: ['qwen3-8b'], state: 'running', address: at }), {
+    text: 'Running with qwen3-8b.',
+    fix: null,
+    tone: 'ok',
+  });
+  const noModel = lmStudioStatus({ running: true, models: [], state: 'noChatModel', address: at });
+  assert.match(noModel.text, /^LM Studio is running but has no chat model loaded/);
+  assert.equal(noModel.fix, null);
+  const token = lmStudioStatus({ running: false, models: [], state: 'needsToken', address: at });
+  assert.match(token.text, /^LM Studio needs its API token/);
+  assert.equal(token.fix, 'token');
+  assert.match(lmStudioStatus({ running: false, models: [], state: 'needsToken', hasToken: true }).text, /didn't accept the saved API token/);
+  const off = lmStudioStatus({ running: false, models: [], state: 'serverOff', address: 'http://127.0.0.1:4321/v1' });
+  assert.match(off.text, /^LM Studio is open, but its local server is off\. In LM Studio → Developer, turn on Start server/);
+  assert.match(off.text, /127\.0\.0\.1:4321/);
+  assert.equal(off.fix, 'address');
+  const gone = lmStudioStatus({ running: false, models: [], state: 'notRunning', address: at });
+  assert.match(gone.text, /^LM Studio isn't running on this computer/);
+  assert.equal(gone.fix, 'address');
+  // A view from before the state was reported still reads sensibly.
+  assert.equal(lmStudioStatus({ running: true, models: ['a'] }).text, 'Running with a.');
+  assert.equal(lmStudioStatus({ running: false, models: [] }).fix, 'address');
+  assert.equal(
+    pickUnavailableText('private', { localOnly: false, lmstudio: { running: false, models: [], state: 'serverOff' } }),
+    "Turn on LM Studio's server (Developer → Start server).",
+  );
 });

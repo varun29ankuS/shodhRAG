@@ -228,7 +228,9 @@ pub struct CreateSnippetTool {
 }
 
 struct SnippetArgs {
-    file: String,
+    file: Option<String>,
+    /// A passage number of this conversation naming the PDF.
+    passage: Option<u64>,
     page: u32,
     rect: PageRect,
     title: Option<String>,
@@ -239,9 +241,14 @@ struct SnippetArgs {
 
 fn snippet_args(args: &Value) -> Result<SnippetArgs, ToolError> {
     let tool = app_tools::CREATE_SNIPPET;
-    let file = str_arg(args, "file")
-        .ok_or_else(|| invalid(tool, "`file` is required"))?
-        .to_string();
+    let file = str_arg(args, "file").map(str::to_string);
+    let passage = args.get("passage").and_then(Value::as_u64);
+    if file.is_none() && passage.is_none() {
+        return Err(invalid(
+            tool,
+            "pass `passage` (the number of one of its passages) or `file` (its file name)",
+        ));
+    }
     let page = args
         .get("page")
         .and_then(Value::as_u64)
@@ -274,6 +281,7 @@ fn snippet_args(args: &Value) -> Result<SnippetArgs, ToolError> {
         .unwrap_or_default();
     Ok(SnippetArgs {
         file,
+        passage,
         page,
         rect,
         title: str_arg(args, "title").map(str::to_string),
@@ -284,27 +292,62 @@ fn snippet_args(args: &Value) -> Result<SnippetArgs, ToolError> {
 }
 
 impl CreateSnippetTool {
-    /// The indexed PDF `requested` names (a full path, or a file name that is unique), in
-    /// its on-disk spelling.
-    async fn resolve(&self, requested: &str) -> Result<String, ToolError> {
+    /// The indexed PDF the arguments name, in its on-disk spelling: a passage number of
+    /// this conversation (`passage`), else `file` (a file name, or a path the app passes).
+    /// Errors name the file, never its folders.
+    async fn resolve(
+        &self,
+        a: &SnippetArgs,
+        ctx: Option<&ToolContext>,
+    ) -> Result<String, ToolError> {
+        if let (Some(n), Some(ctx)) = (a.passage, ctx) {
+            let passage = shodh_rag::harness::tools::document_of_passage(ctx, n)?;
+            return self.resolve_file(&passage.path, None).await;
+        }
+        let file = a.file.as_deref().ok_or_else(|| {
+            invalid(
+                app_tools::CREATE_SNIPPET,
+                "pass `passage` (the number of one of its passages) or `file` (its file name)",
+            )
+        })?;
+        self.resolve_file(file, ctx).await
+    }
+
+    async fn resolve_file(
+        &self,
+        requested: &str,
+        ctx: Option<&ToolContext>,
+    ) -> Result<String, ToolError> {
         let matches = {
             let rag = self.host.rag.read().await;
             rag.find_indexed_sources(requested)
                 .await
                 .map_err(|e| ToolError::Failed(format!("Could not read the index: {e}")))?
         };
+        let name = shodh_rag::research::file_name(requested);
         let source = match matches.as_slice() {
             [] => {
                 return Err(ToolError::NotFound(format!(
-                    "{requested} is not an indexed file. Use a path returned by search_documents."
+                    "{name} is not an indexed file. Name it by the number of one of its passages \
+                     from search_documents."
                 )))
             }
             [one] => one.clone(),
             many => {
-                return Err(ToolError::NotFound(format!(
-                    "{requested} matches several indexed files; pass the full path: {}",
-                    many.join(", ")
-                )))
+                let found = match ctx {
+                    Some(ctx) => shodh_rag::harness::tools::document_named(ctx, requested)?,
+                    None => None,
+                };
+                match found {
+                    Some(found) if many.contains(&found.path) => found.path,
+                    _ => {
+                        return Err(ToolError::NotFound(format!(
+                            "{name} matches {} indexed files; name the one you mean by the number \
+                             of one of its passages from search_documents.",
+                            many.len()
+                        )))
+                    }
+                }
             }
         };
         if source.contains("://") || !source.to_ascii_lowercase().ends_with(".pdf") {
@@ -329,8 +372,9 @@ impl HostTool for CreateSnippetTool {
         "Saving a snippet from {file}[, page {page}]"
     }
     fn description(&self) -> &'static str {
-        "Save a region of an indexed PDF page as a snippet in the user's Library: `file` (a \
-         path from search_documents), `page` (1-based) and `rect` in PDF points from the \
+        "Save a region of an indexed PDF page as a snippet in the user's Library: the PDF by \
+         `passage` (the number of one of its passages from search_documents) or `file` (its \
+         file name), `page` (1-based) and `rect` in PDF points from the \
          page's top-left corner ({x, y, width, height}; search passages carry boxes you can \
          convert). The text inside the region is read from the PDF; the image is rendered \
          when the user first opens it. Optional `title`, `note`, `kind` (figure, table, \
@@ -341,6 +385,7 @@ impl HostTool for CreateSnippetTool {
             "type": "object",
             "properties": {
                 "file": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "passage": {"type": "integer", "minimum": 1},
                 "page": {"type": "integer", "minimum": 1, "maximum": 100000},
                 "rect": {
                     "type": "object",
@@ -358,7 +403,7 @@ impl HostTool for CreateSnippetTool {
                 "kind": {"type": "string", "enum": ["figure", "table", "equation", "passage"]},
                 "tags": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 60}, "maxItems": 20}
             },
-            "required": ["file", "page", "rect"],
+            "required": ["page", "rect"],
             "additionalProperties": false
         })
     }
@@ -367,8 +412,15 @@ impl HostTool for CreateSnippetTool {
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let a = snippet_args(args)?;
-        let path = self.resolve(&a.file).await?;
-        let name = shodh_rag::research::file_name(&path);
+        // The preview has no run context: a passage number is resolved when it runs.
+        let path = match (&a.file, a.passage) {
+            (Some(file), None) => self.resolve_file(file, None).await?,
+            _ => String::new(),
+        };
+        let name = match a.passage {
+            Some(n) if path.is_empty() => format!("the PDF of passage [{n}]"),
+            _ => shodh_rag::research::file_name(&path).to_string(),
+        };
         Ok(ApprovalPreview {
             label: Some(format!("Save a snippet of {name}, page {}", a.page)),
             details: json!({
@@ -383,7 +435,7 @@ impl HostTool for CreateSnippetTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let a = snippet_args(&args)?;
-        let path = self.resolve(&a.file).await?;
+        let path = self.resolve(&a, Some(ctx)).await?;
         let read_path = path.clone();
         let (page, rect) = (a.page, a.rect);
         let region = tokio::task::spawn_blocking(move || {

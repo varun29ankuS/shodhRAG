@@ -114,10 +114,15 @@ export function summarise(row: AuditRow): string {
       return action ?? 'Setting changed';
     }
     case 'runtime_install': {
-      const version = str(p.version) ?? '';
-      if (p.ok === false) return `Agent runtime ${version} install failed · ${clip(str(p.error) ?? '', 80)}`;
-      const sha = str(p.sha256);
-      return `Agent runtime ${version} installed${sha ? ` · sha256 ${sha.slice(0, 12)}…` : ''}`;
+      // The checksum stays in the entry's details; the line says what the check meant.
+      if (p.component === 'search_models') {
+        if (p.ok === false) return `Search models download failed · ${clip(str(p.error) ?? '', 80)}`;
+        return 'Search models downloaded · verified: they match the official copies';
+      }
+      const version = str(p.version);
+      const name = version ? `Answer engine (omp ${version})` : 'Answer engine';
+      if (p.ok === false) return `${name} install failed · ${clip(str(p.error) ?? '', 80)}`;
+      return `${name} installed · verified: it matches the official copy`;
     }
     case 'memory_write': {
       const actions: Record<string, string> = {

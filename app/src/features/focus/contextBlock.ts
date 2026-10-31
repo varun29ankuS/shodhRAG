@@ -15,6 +15,32 @@ import { compactSvg } from '../ask/visual/svgSanitize.ts';
 import { symbolDescription } from '../ask/visual/symbols.ts';
 import type { SymbolNote } from '../ask/visual/symbols.ts';
 
+/**
+ * The last part of a path ("C:/Users/…/paper.pdf" → "paper.pdf"): side questions
+ * name files, never their folders (a path holds the user's name).
+ */
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+/**
+ * An image's address when it is a public web address: a local image's address (an app
+ * asset, a file) holds the folders it is in, which a question never carries.
+ */
+export function publicAddress(src: string | null | undefined): string | null {
+  if (!src) return null;
+  try {
+    const url = new URL(src);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '[::1]') return null;
+    return src;
+  } catch {
+    return null;
+  }
+}
+
 /** Most characters of the object itself placed in one question. */
 export const MAX_CONTEXT_CHARS = 6_000;
 /** Most characters of a reader's selection placed in one question. */
@@ -169,7 +195,7 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
       return sections;
     }
     case 'figure': {
-      const name = oneLine(target.fileName || target.filePath);
+      const name = oneLine(target.fileName || baseName(target.filePath));
       const where = `figure from ${name} page ${extras.page ?? target.page}`;
       const sections: Section[] = [{ heading: `${where}, caption`, payload: target.caption.trim() || '(no caption was found)', info: 'text' }];
       if (target.nearby.trim()) sections.push({ heading: `${where}, text that refers to it`, payload: target.nearby.trim(), info: 'text' });
@@ -193,9 +219,9 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
       return [{ heading: 'table (Markdown)', payload: `${table.text}${note}`, info: 'markdown' }];
     }
     case 'image':
-      return [{ heading: 'image', payload: [`Description: ${oneLine(target.alt) || 'none given'}`, target.src && !target.src.startsWith('data:') ? `Address: ${target.src}` : ''].filter(Boolean).join('\n'), info: '' }];
+      return [{ heading: 'image', payload: [`Description: ${oneLine(target.alt) || 'none given'}`, publicAddress(target.src) ? `Address: ${publicAddress(target.src)}` : ''].filter(Boolean).join('\n'), info: '' }];
     case 'source': {
-      const name = oneLine(target.hit.fileName || target.hit.title || target.hit.sourceFile);
+      const name = oneLine(target.hit.fileName || target.hit.title || baseName(target.hit.sourceFile));
       const where = `${name}${pageLabel(target, extras)}`;
       const selection = extras.selection?.trim();
       if (selection) {
@@ -209,7 +235,7 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
     case 'task':
       return [{ heading: 'task', payload: taskJson(target.task), info: 'json' }];
     case 'snippet': {
-      const name = oneLine(target.fileName || target.filePath);
+      const name = oneLine(target.fileName || baseName(target.filePath));
       const where = `snippet from ${name} page ${extras.page ?? target.page}`;
       const selection = extras.selection?.trim();
       const sections: Section[] = [];
@@ -232,7 +258,7 @@ function sectionsFor(target: FocusTarget, extras: FocusExtras): Section[] {
 
 function selectionWhere(target: Extract<FocusTarget, { kind: 'selection' }>): string {
   if (target.document) {
-    const name = oneLine(target.document.fileName || target.document.sourceFile);
+    const name = oneLine(target.document.fileName || baseName(target.document.sourceFile));
     return target.document.page !== null ? `${name} page ${target.document.page}` : name;
   }
   return 'an answer';

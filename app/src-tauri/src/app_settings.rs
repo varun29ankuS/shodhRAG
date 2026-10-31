@@ -358,6 +358,21 @@ impl TablesPrefs {
     }
 }
 
+/// Code mode: answers that read and change a workspace's code folder and run
+/// commands there (each behind an approval). User-only and off on a new install;
+/// a settings file written before this setting existed keeps it on
+/// ([`parse_settings`]), so no existing user loses the mode they had.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CodePrefs {
+    pub enabled: bool,
+}
+
+/// Why a Code mode answer was refused while Code mode is off.
+pub const CODE_MODE_OFF: &str =
+    "Code mode is off, so answers cannot change files or run commands. \
+     Turn it on in Settings → Privacy, or switch this conversation to Research.";
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
@@ -378,6 +393,8 @@ pub struct AppSettings {
     /// workspace it answers from and its daily cap. User-only; no tokens (those stay in
     /// the OS credential store).
     pub connectors: crate::connectors::ConnectorsPrefs,
+    /// Code mode (see [`CodePrefs`]). User-only.
+    pub code: CodePrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
     /// Learning from conversations was moved, once, from Ask (the earlier default) to
@@ -398,6 +415,32 @@ fn with_automatic_learning(mut settings: AppSettings) -> AppSettings {
         settings.learn_auto_migrated = true;
     }
     settings
+}
+
+/// Settings as saved. A file without a `code` section was written before Code mode
+/// had a setting, when it was always available: it stays on for that user. A new
+/// profile ([`AppSettings::default`]) has it off.
+fn parse_settings(text: &str) -> Result<AppSettings, String> {
+    let raw: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let had_code_setting = raw.get("code").is_some();
+    let mut settings = serde_json::from_value::<AppSettings>(raw).map_err(|e| e.to_string())?;
+    if !had_code_setting {
+        settings.code.enabled = true;
+    }
+    settings.memory = settings.memory.with_current_default_caps();
+    Ok(with_automatic_learning(settings))
+}
+
+/// Whether Code mode may be used, from the settings in `data_dir`. Settings that
+/// cannot be read count as off (failing closed).
+pub fn code_mode_enabled(data_dir: &Path) -> bool {
+    match SettingsStore::in_dir(data_dir).load() {
+        Ok(settings) => settings.code.enabled,
+        Err(e) => {
+            tracing::warn!(error = %e, "settings unreadable; Code mode counts as off");
+            false
+        }
+    }
 }
 
 /// A preference the agent may change. Everything else is either policy
@@ -438,7 +481,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 26] = [
+pub const AGENT_DENIED: [(&str, &str); 27] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -464,6 +507,7 @@ pub const AGENT_DENIED: [(&str, &str); 26] = [
     ("always_fall_back", "Switching models without asking changes who receives the user's documents; only the user may allow that."),
     ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
     ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
+    ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
     ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, and how many model calls they may spend; only the user may change that."),
 ];
 
@@ -509,14 +553,7 @@ impl SettingsStore {
     fn read_unlocked(&self) -> Result<Loaded<AppSettings>, SettingsError> {
         let read = durable_file::read_with_backup(
             &self.path,
-            |text| {
-                serde_json::from_str::<AppSettings>(text)
-                    .map(|mut settings| {
-                        settings.memory = settings.memory.with_current_default_caps();
-                        with_automatic_learning(settings)
-                    })
-                    .map_err(|e| e.to_string())
-            },
+            parse_settings,
             // Marked moved, so the first save of a new profile records it.
             || with_automatic_learning(AppSettings::default()),
         );
@@ -791,6 +828,37 @@ pub async fn set_memory_preferences(
                 "action": "memory_preferences_change",
                 "old": before,
                 "new": settings.memory,
+                "via": "ui",
+            }),
+        ));
+    }
+    broadcast(&app, &settings);
+    Ok(settings)
+}
+
+/// Turn Code mode on or off. User-only: no agent tool calls this, and the agent's
+/// settings tools refuse `code_mode`.
+#[tauri::command]
+pub async fn set_code_mode(
+    app: AppHandle,
+    enabled: bool,
+    audit: State<'_, AuditState>,
+) -> Result<AppSettings, String> {
+    let (settings, before) = store(&app)?
+        .update(|s| Ok(std::mem::replace(&mut s.code.enabled, enabled)))
+        .map_err(|e| e.to_string())?;
+    if !enabled {
+        // Off takes effect at once: running Code answers stop, and an edit or command
+        // waiting for approval never runs.
+        crate::agent_session_commands::stop_code_sessions(&app).await;
+    }
+    if before != enabled {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({
+                "action": "code_mode_change",
+                "old": before,
+                "new": enabled,
                 "via": "ui",
             }),
         ));
@@ -1109,6 +1177,48 @@ mod tests {
             with_automatic_learning(AppSettings::default()),
             "the settings of a new profile"
         );
+    }
+
+    #[test]
+    fn code_mode_is_off_for_a_new_profile_and_kept_for_existing_ones() {
+        // A new profile: off.
+        assert!(!AppSettings::default().code.enabled);
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!code_mode_enabled(dir.path()), "no settings file yet");
+        let store = SettingsStore::in_dir(dir.path());
+        store.update(|_| Ok(())).unwrap();
+        assert!(
+            !store.load().unwrap().code.enabled,
+            "a new profile's first save keeps it off"
+        );
+
+        // A file written before the setting existed: Code mode was always there, so it stays on.
+        let old =
+            parse_settings(r#"{"preferences": {"theme": "dark", "searchMaxResults": 8}}"#).unwrap();
+        assert!(old.code.enabled);
+
+        // An explicit choice is kept, either way.
+        let off = parse_settings(r#"{"code": {"enabled": false}}"#).unwrap();
+        assert!(!off.code.enabled);
+        let on = parse_settings(r#"{"code": {"enabled": true}}"#).unwrap();
+        assert!(on.code.enabled);
+
+        // Saved and read back, the choice survives (the file now has the section).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(SETTINGS_FILE), r#"{"seeded": true}"#).unwrap();
+        assert!(
+            code_mode_enabled(dir.path()),
+            "an existing user keeps Code mode"
+        );
+        let store = SettingsStore::in_dir(dir.path());
+        store
+            .update(|s| {
+                s.code.enabled = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!code_mode_enabled(dir.path()), "turned off, it stays off");
+        assert!(denied_reason("code_mode").is_some());
     }
 
     #[test]

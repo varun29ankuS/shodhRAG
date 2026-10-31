@@ -29,6 +29,8 @@ pub const SEARCH_MODELS_PROGRESS_EVENT: &str = "search-models-progress";
 pub const SEARCH_MODELS_READY_EVENT: &str = "search-models-ready";
 /// Error code returned when an install is already running.
 pub const INSTALL_IN_PROGRESS_CODE: &str = "install_in_progress";
+/// Error code at the start of an install that could not connect (likely offline).
+pub const OFFLINE_CODE: &str = "offline";
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -138,6 +140,9 @@ pub async fn install_search_models(
                 json!({"component": "search_models", "ok": false, "error": e.to_string()}),
             ));
             tracing::error!(error = %e, "Search model install failed");
+            if e.is_unreachable() {
+                return Err(format!("{OFFLINE_CODE}: {e}"));
+            }
             return Err(e.to_string());
         }
     };

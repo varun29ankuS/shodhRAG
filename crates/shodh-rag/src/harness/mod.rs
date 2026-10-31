@@ -14,6 +14,7 @@ pub mod code_mode;
 pub mod error;
 pub mod events;
 pub mod grounding;
+pub mod lmstudio;
 pub mod mcp;
 pub mod model;
 pub mod model_catalog;
@@ -42,8 +43,8 @@ pub use profile::AgentProfile;
 pub use provider_error::{ProviderError, ProviderErrorKind};
 pub use session::{CodeSession, OmpSession, SessionConfig};
 pub use sidecar::{
-    fetch_omp, resolve_binary_path, FetchProgress, InstalledRuntime, LaunchSpec, OmpLayout,
-    Thinking, OMP_VERSION,
+    fetch_omp, pinned_size, resolve_binary_path, verify_binary, FetchProgress, InstalledRuntime,
+    LaunchSpec, OmpLayout, Thinking, OMP_VERSION, RUNTIME_SOURCE,
 };
 
 /// One agent session as the app sees it. `OmpSession` is the production

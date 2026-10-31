@@ -25,8 +25,11 @@ import { passageHits } from '../../features/agent/citations';
 import { currentStep, isLive, pendingApproval } from '../../features/agent/reducer';
 import { StatusLine } from '../../features/agent/StatusLine';
 import { Transcript } from '../../features/agent/Transcript';
+import { SetupCard } from '../../features/setup/SetupCard';
+import { useQueuedQuestion } from '../../features/setup/useQueuedQuestion';
 import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useDraft } from '../../features/ask/useDraft';
+import { composerDrafts } from '../../features/ask/draftStore';
 import { useSendOptions } from '../../features/ask/useSendOptions';
 import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from '../../features/ask/AttachmentChips';
 import { attachedContextOf, composerAttachments } from '../../features/ask/imageAttachments';
@@ -320,20 +323,33 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
   // A connector's conversation is read-only here too.
   const readOnlySource = session.activeConversation?.source ?? null;
 
+  // As in Ask: a question asked before Shodh is ready waits for setup.
+  const queued = useQueuedQuestion(session.activeConversationId);
+
   const submit = () => {
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere || checkingFileRef.current) return;
     // As in Ask: the attached image text goes beside the typed words, and both are
     // cleared only once the question is accepted.
     const conversationId = session.activeConversationId;
+    const options = sendOptions;
+    const sendComposer = (): boolean => {
+      const current = composerDrafts.get(conversationId).trim();
+      if (!current) return true;
+      const queuedFile = composerFiles.get(conversationId);
+      const attached = composerAttachments.get(conversationId);
+      if (!send(current, limitedToFiles(options, queuedFile ? [queuedFile.path] : []), { attachedContext: attachedContextOf(attached) })) return false;
+      composerDrafts.set(conversationId, '');
+      composerAttachments.consume(conversationId, attached);
+      composerFiles.consume(conversationId, queuedFile);
+      return true;
+    };
+    // As in Ask: before Shodh is ready the question waits for setup.
+    if (queued.hold(sendComposer)) return;
     // The file the question is about ("Ask about this file") goes with it as its search limit.
     const file = composerFiles.get(conversationId);
     const go = () => {
-      const attached = composerAttachments.get(conversationId);
-      if (!send(text, limitedToFiles(sendOptions, file ? [file.path] : []), { attachedContext: attachedContextOf(attached) })) return;
-      setDraft('');
-      composerAttachments.consume(conversationId, attached);
-      composerFiles.consume(conversationId, file);
+      sendComposer();
     };
     if (!file) {
       go();
@@ -456,6 +472,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       </div>
 
       <div className="shrink-0 border-t border-shodh-border bg-shodh-surface px-2.5 pt-2 pb-2.5 flex flex-col gap-1.5">
+        <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />
         {transcript && (
           <div className="px-1">
             <StatusLine transcript={transcript} fallbackModel={null} compact />
@@ -476,6 +493,7 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
             approvalPending={waiting !== null}
             blockedReason={readOnlySource
               ? `This conversation happened in ${connectorName(readOnlySource.connector)}. Open it in Ask and choose Continue in Ask to reply.`
+              : queued.waiting ? 'Your question is sent as soon as Shodh is ready.'
               : sideRun ? `Answering your side question about “${sideRun.label}”.` : busyElsewhere ? 'An answer is running in another conversation.' : null}
             placeholder="Reply…"
             attachments={(

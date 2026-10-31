@@ -33,6 +33,8 @@ import { ConversationHistory } from './ConversationHistory';
 import { requestArchivedWorkspaces } from '../../features/workspaces/archivedRequest';
 import { ConnectionStatusChip } from '../../features/connection/ConnectionStatusChip';
 import { countOf } from '../../lib/plural';
+import { ariaKeyShortcuts, shortcutText, withShortcut } from '../../lib/shortcuts';
+import { Kbd, IS_MAC } from '../ui/Kbd';
 import { MENU_ITEM, POPOVER, usePopover } from '../../hooks/usePopover';
 import {
   NEW_MENU_LABEL,
@@ -99,11 +101,9 @@ const COLLAPSED_WIDTH = 64;
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
 
-const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
-const NEW_CHAT_HINT = IS_MAC ? '⌘N' : 'Ctrl N';
-const NEW_CHAT_LABEL = `New chat (${IS_MAC ? '⌘N' : 'Ctrl+N'})`;
-const SEARCH_LABEL = `Search and commands (${IS_MAC ? '⌘K' : 'Ctrl+K'})`;
-const TOGGLE_HINT = IS_MAC ? '⌘B' : 'Ctrl+B';
+const NEW_CHAT_LABEL = withShortcut('New chat', 'newChat', IS_MAC);
+const SEARCH_LABEL = withShortcut('Search and commands', 'commandPalette', IS_MAC);
+const TOGGLE_HINT = shortcutText('toggleSidebar', IS_MAC);
 const NEW_MENU_ITEMS = newMenuItems(IS_MAC);
 const NEW_MENU_TITLE = `${NEW_MENU_LABEL} (${newMenuShortcutHint(IS_MAC)})`;
 const NEW_MENU_ICONS: Record<NewMenuItemId, React.ElementType> = {
@@ -298,8 +298,8 @@ export default function Sidebar({
         />
         {!collapsed && (
           <div className="flex flex-col min-w-0 flex-1 leading-tight">
-            <span className="text-[15px] font-bold tracking-[0.02em]">Shodh</span>
-            <span className="text-[11px] text-shodh-text-faint" lang="hi">शोध</span>
+            <span className="text-body-lg font-bold tracking-[0.02em]">Shodh</span>
+            <span className="text-caption text-shodh-text-faint" lang="hi">शोध</span>
           </div>
         )}
         <button
@@ -307,7 +307,7 @@ export default function Sidebar({
           onClick={toggleSidebar}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-expanded={!collapsed}
-          aria-keyshortcuts={IS_MAC ? 'Meta+B' : 'Control+B'}
+          aria-keyshortcuts={ariaKeyShortcuts('toggleSidebar', IS_MAC)}
           title={`${collapsed ? 'Expand' : 'Collapse'} sidebar (${TOGGLE_HINT})`}
           className={cn(
             'w-8 h-8 rounded-lg shrink-0 inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised-2/60 hover:text-shodh-text transition-colors duration-micro',
@@ -326,9 +326,9 @@ export default function Sidebar({
             onClick={onNewConversation}
             aria-label={collapsed ? NEW_CHAT_LABEL : undefined}
             title={collapsed ? NEW_CHAT_LABEL : undefined}
-            aria-keyshortcuts={IS_MAC ? 'Meta+N' : 'Control+N'}
+            aria-keyshortcuts={ariaKeyShortcuts('newChat', IS_MAC)}
             className={cn(
-              'flex items-center gap-2 h-9 text-[13px] font-semibold transition-colors duration-micro',
+              'flex items-center gap-2 h-9 text-small font-semibold transition-colors duration-micro',
               collapsed
                 ? 'w-10 justify-center rounded-[9px] bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover'
                 : 'flex-1 min-w-0 px-3 rounded-l-[9px] hover:bg-shodh-accent-hover',
@@ -339,7 +339,7 @@ export default function Sidebar({
             {!collapsed && (
               <>
                 <span>New chat</span>
-                <kbd className="ml-auto font-mono text-[11px] font-normal">{NEW_CHAT_HINT}</kbd>
+                <Kbd shortcut="newChat" onAccent className="ml-auto" />
               </>
             )}
           </button>
@@ -368,7 +368,7 @@ export default function Sidebar({
                 >
                   <Icon className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
                   <span className="flex-1 truncate">{item.label}</span>
-                  {item.hint && <kbd className="font-mono text-[11px] text-shodh-text-faint">{item.hint}</kbd>}
+                  {item.hint && <kbd className="font-mono text-caption text-shodh-text-faint">{item.hint}</kbd>}
                 </button>
               );
             })}
@@ -472,7 +472,7 @@ function NavButton({
       aria-label={collapsed ? label : undefined}
       title={collapsed ? label : undefined}
       className={cn(
-        'flex items-center h-9 rounded-lg text-[13.5px] transition-colors duration-micro',
+        'flex items-center h-9 rounded-lg text-body transition-colors duration-micro',
         collapsed ? 'w-10 justify-center' : 'w-full gap-2.5 px-3',
         active
           ? 'bg-shodh-raised-2 text-shodh-text font-semibold'
@@ -560,10 +560,10 @@ function IndexingStatus({
       >
         <span className="w-2 h-2 rounded-full bg-shodh-warning shrink-0" aria-hidden="true" />
         <span className="flex flex-col gap-0.5 flex-1 min-w-0">
-          <span className="text-[12px] font-semibold truncate">Indexing {source.name}</span>
-          <span className="text-[11px] text-shodh-text-faint">{detail}</span>
+          <span className="text-caption font-semibold truncate">Indexing {source.name}</span>
+          <span className="text-caption text-shodh-text-faint">{detail}</span>
         </span>
-        <span className="font-mono text-[11px] text-shodh-text-secondary">{percent}%</span>
+        <span className="font-mono text-caption text-shodh-text-secondary">{percent}%</span>
       </button>
       <div
         role="progressbar"

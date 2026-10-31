@@ -66,7 +66,7 @@ function ColumnMenu({
     ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true });
   }, []);
 
-  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-50';
+  const item = 'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none disabled:opacity-50';
   const run = (action: () => void) => {
     onClose();
     action();
@@ -121,7 +121,7 @@ function CellContent({ cell, column }: { cell: Cell | undefined; column: Column 
     return (
       <span className="inline-flex items-center gap-1.5 text-shodh-text-faint">
         <Loader2 className="w-3 h-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-        <span className="text-[12px]">Waiting</span>
+        <span className="text-caption">Waiting</span>
       </span>
     );
   }
@@ -140,15 +140,15 @@ function CellContent({ cell, column }: { cell: Cell | undefined; column: Column 
   return (
     <span className={cn('flex flex-col gap-1 min-w-0', stale && 'opacity-55')}>
       {text && (
-        <span className={cn('line-clamp-3 break-words', status === 'not_found' ? 'text-[12px] italic text-shodh-text-muted' : 'text-shodh-text')}>{text}</span>
+        <span className={cn('line-clamp-3 break-words', status === 'not_found' ? 'text-caption italic text-shodh-text-muted' : 'text-shodh-text')}>{text}</span>
       )}
       <span className="flex flex-wrap items-center gap-1">
         {mark && mark !== 'not_found' && (
-          <span className={cn('px-1 py-px rounded text-[10.5px] font-medium', MARK_CLASSES[mark])}>{MARK_LABELS[mark]}</span>
+          <span className={cn('px-1 py-px rounded text-caption font-medium', MARK_CLASSES[mark])}>{MARK_LABELS[mark]}</span>
         )}
-        {stale && <span className="px-1 py-px rounded text-[10.5px] font-medium bg-shodh-raised-2 text-shodh-text-muted">Out of date</span>}
+        {stale && <span className="px-1 py-px rounded text-caption font-medium bg-shodh-raised-2 text-shodh-text-muted">Out of date</span>}
         {refreshFailed && (
-          <span className="inline-flex items-center gap-0.5 px-1 py-px rounded text-[10.5px] font-medium bg-shodh-warning/15 text-shodh-warning">
+          <span className="inline-flex items-center gap-0.5 px-1 py-px rounded text-caption font-medium bg-shodh-warning/15 text-shodh-warning">
             <AlertTriangle className="w-2.5 h-2.5" aria-hidden="true" /> Couldn’t refresh
           </span>
         )}
@@ -270,11 +270,11 @@ export function TableGrid({
 
   const cellClass = (body: GridPos) =>
     cn(
-      'align-top px-3 py-2 border-b border-r border-shodh-border-subtle text-[12.5px] cursor-pointer',
+      'align-top px-3 py-2 border-b border-r border-shodh-border-subtle text-small cursor-pointer',
       selected && selected.row === body.row && selected.col === body.col ? 'bg-shodh-accent-soft' : 'hover:bg-shodh-raised/60',
       CELL_FOCUS,
     );
-  const headClass = 'align-top px-3 py-2 border-b border-r border-shodh-border text-[12px] font-semibold text-shodh-text-secondary';
+  const headClass = 'align-top px-3 py-2 border-b border-r border-shodh-border text-caption font-semibold text-shodh-text-secondary';
 
   return (
     <div className="overflow-x-auto scrollbar-thin rounded-xl border border-shodh-border">
@@ -336,7 +336,7 @@ export function TableGrid({
                       <MoreHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
                     </button>
                   </div>
-                  <span className="block mt-0.5 text-[10.5px] font-normal text-shodh-text-faint">{KIND_LABELS[column.kind]}</span>
+                  <span className="block mt-0.5 text-caption font-normal text-shodh-text-faint">{KIND_LABELS[column.kind]}</span>
                 </th>
               );
             })}

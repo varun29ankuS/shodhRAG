@@ -36,7 +36,7 @@ export function PaperPane({ paper, onClose }: { paper: PaperRef; onClose: () => 
   const name = doc.info?.fileName ?? paper.fileName ?? paper.sourceFile;
   return (
     <section aria-label={`Source document: ${name}`} className="flex-1 min-w-0 min-h-0 flex flex-col border-l border-shodh-border-subtle bg-shodh-surface">
-      <header className="shrink-0 flex items-center gap-2 pl-3 pr-1.5 h-9 border-b border-shodh-border-subtle text-[12.5px] text-shodh-text-secondary">
+      <header className="shrink-0 flex items-center gap-2 pl-3 pr-1.5 h-9 border-b border-shodh-border-subtle text-small text-shodh-text-secondary">
         <FileText className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="truncate" title={name}>{name}</span>
         {paper.page !== null && <span className="shrink-0 text-shodh-text-muted">{`page ${paper.page}`}</span>}

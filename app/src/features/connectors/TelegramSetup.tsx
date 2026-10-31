@@ -118,7 +118,7 @@ export function TelegramSetup({
       )}
 
       <nav aria-label="Setup progress" className="flex flex-col gap-2">
-        <p aria-live="polite" className="m-0 text-[12px] font-medium text-shodh-text-muted">
+        <p aria-live="polite" className="m-0 text-caption font-medium text-shodh-text-muted">
           Step {step} of {TELEGRAM_STEPS.length}
         </p>
         <ol className="m-0 p-0 list-none grid grid-cols-3 gap-2">
@@ -144,7 +144,7 @@ export function TelegramSetup({
                       broken ? 'bg-shodh-error' : here || done ? 'bg-shodh-accent' : 'bg-shodh-raised-2',
                     )}
                   />
-                  <span className={cn('hidden sm:block truncate text-[11.5px]', here ? 'text-shodh-text font-medium' : 'text-shodh-text-muted')}>
+                  <span className={cn('hidden sm:block truncate text-caption', here ? 'text-shodh-text font-medium' : 'text-shodh-text-muted')}>
                     {done && <Check className="inline w-3 h-3 mr-1 -mt-0.5" aria-hidden="true" />}
                     {s.title}
                     <span className="sr-only">{done ? ' (done)' : here ? ' (current)' : ''}</span>
@@ -161,7 +161,7 @@ export function TelegramSetup({
           <h3 id="telegram-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-[16px] font-semibold text-shodh-text focus:outline-none">
             {current.title}
           </h3>
-          {current.detail && <p className="m-0 text-[13px] text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>}
+          {current.detail && <p className="m-0 text-small text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>}
         </div>
 
         {step === 1 && (
@@ -176,19 +176,19 @@ export function TelegramSetup({
               </button>
               <span aria-live="polite" className="sr-only">{copied ? 'The link to @BotFather was copied.' : ''}</span>
             </div>
-            <ol className="m-0 pl-5 list-decimal flex flex-col gap-1 text-[12.5px] text-shodh-text-secondary max-w-[64ch]">
+            <ol className="m-0 pl-5 list-decimal flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[64ch]">
               <li>Send <code className="font-mono text-shodh-text">/newbot</code> to @BotFather.</li>
               <li>Name it (for example “Shodh”), then choose a username ending in “bot”.</li>
               <li>Keep the reply open: it holds the token for the next step.</li>
             </ol>
-            <p className="m-0 text-[12px] text-shodh-text-muted">If Telegram opens behind Shodh, copy the link and open it in Telegram.</p>
+            <p className="m-0 text-caption text-shodh-text-muted">If Telegram opens behind Shodh, copy the link and open it in Telegram.</p>
           </div>
         )}
 
         {step === 2 && (
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5 max-w-[480px]">
-              <label htmlFor={tokenId} className="text-[12.5px] font-semibold text-shodh-text">Bot token</label>
+              <label htmlFor={tokenId} className="text-small font-semibold text-shodh-text">Bot token</label>
               <div className="relative">
                 <input
                   id={tokenId}
@@ -207,9 +207,9 @@ export function TelegramSetup({
                 {check.ok && <Check className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-shodh-success" aria-label="Looks right" />}
               </div>
               {check.problem ? (
-                <p id={hintId} role="alert" className="m-0 text-[12px] text-shodh-error">{check.problem}</p>
+                <p id={hintId} role="alert" className="m-0 text-caption text-shodh-error">{check.problem}</p>
               ) : (
-                <p id={hintId} className="m-0 text-[12px] text-shodh-text-muted">The bot’s number, a colon, then 35 characters.</p>
+                <p id={hintId} className="m-0 text-caption text-shodh-text-muted">The bot’s number, a colon, then 35 characters.</p>
               )}
             </div>
             <Callout tone="neutral">
@@ -239,7 +239,7 @@ export function TelegramSetup({
           )}
           {step === 3 ? (
             <>
-              <p className="m-0 text-[12px] text-shodh-text-muted" role="status" aria-live="polite">
+              <p className="m-0 text-caption text-shodh-text-muted" role="status" aria-live="polite">
                 Waiting for you to press Start in Telegram…
               </p>
               <button type="button" className={cn(QUIET_BUTTON, 'ml-auto')} onClick={onLater}>

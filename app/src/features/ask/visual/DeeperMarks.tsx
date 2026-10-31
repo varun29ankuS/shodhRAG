@@ -50,14 +50,14 @@ export function DeeperChips({ lang, source }: { lang: string; source: string }) 
   if (marks.length === 0) return null;
   return (
     <div className="-mt-2 mb-4 flex flex-wrap items-center gap-1.5" role="group" aria-label="Go deeper">
-      <span className="text-[11.5px] text-shodh-text-muted" data-answer-ui="">Go deeper:</span>
+      <span className="text-caption text-shodh-text-muted" data-answer-ui="">Go deeper:</span>
       {marks.map(mark => (
         <button
           key={`${mark.label}\n${mark.question}`}
           type="button"
           title={mark.question}
           className={cn(
-            'inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border bg-shodh-surface text-[11.5px] text-shodh-text-secondary',
+            'inline-flex items-center gap-1 h-6 px-2 rounded-full border border-shodh-border bg-shodh-surface text-caption text-shodh-text-secondary',
             'hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
             FOCUS_RING,
           )}

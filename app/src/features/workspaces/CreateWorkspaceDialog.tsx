@@ -75,8 +75,8 @@ export function CreateWorkspaceDialog({
         >
           <header className="shrink-0 flex items-start gap-3 px-5 py-4 border-b border-shodh-border-subtle">
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[15px] font-semibold">New workspace</Dialog.Title>
-              <Dialog.Description id={ids.desc} className="text-[12.5px] text-shodh-text-muted">
+              <Dialog.Title className="text-body-lg font-semibold">New workspace</Dialog.Title>
+              <Dialog.Description id={ids.desc} className="text-small text-shodh-text-muted">
                 A workspace keeps the sources, instructions and chats of one piece of work together. Chats in it
                 search only its sources.
               </Dialog.Description>
@@ -98,7 +98,7 @@ export function CreateWorkspaceDialog({
             <fieldset className="flex flex-col gap-2 m-0 p-0 border-0">
               <legend id={ids.templates} className={cn(LABEL, 'mb-2')}>Start from</legend>
               {templates === null && !error ? (
-                <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+                <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
                   <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Loading templates…
                 </p>
               ) : (
@@ -120,8 +120,8 @@ export function CreateWorkspaceDialog({
                       >
                         <WorkspaceIcon icon={t.icon} color={t.color} className="w-4 h-4 mt-0.5" />
                         <span className="min-w-0 flex-1">
-                          <span className="block text-[13px] font-semibold text-shodh-text">{t.id === 'blank' ? 'Blank' : t.name}</span>
-                          <span className="block text-[12px] text-shodh-text-muted">{t.description}</span>
+                          <span className="block text-small font-semibold text-shodh-text">{t.id === 'blank' ? 'Blank' : t.name}</span>
+                          <span className="block text-caption text-shodh-text-muted">{t.description}</span>
                         </span>
                         {selected && <Check className="w-4 h-4 text-shodh-accent-text shrink-0" aria-hidden="true" />}
                       </button>
@@ -132,10 +132,10 @@ export function CreateWorkspaceDialog({
             </fieldset>
             {chosen && chosen.instructions && (
               <details className="rounded-lg border border-shodh-border-subtle bg-shodh-raised px-3 py-2">
-                <summary className={cn('cursor-pointer text-[12.5px] text-shodh-text-secondary rounded', FOCUS_RING)}>
+                <summary className={cn('cursor-pointer text-small text-shodh-text-secondary rounded', FOCUS_RING)}>
                   Starting instructions of “{chosen.name}” (you can edit them after creating)
                 </summary>
-                <p className="mt-2 mb-0 whitespace-pre-wrap text-[12.5px] text-shodh-text-secondary">{chosen.instructions}</p>
+                <p className="mt-2 mb-0 whitespace-pre-wrap text-small text-shodh-text-secondary">{chosen.instructions}</p>
               </details>
             )}
             <div className="flex flex-col gap-1">
@@ -164,7 +164,7 @@ export function CreateWorkspaceDialog({
               />
             </div>
             {error && (
-              <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>
+              <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>
             )}
             <div className="flex items-center justify-end gap-2 pt-1">
               <Dialog.Close className={QUIET_BUTTON} type="button">Cancel</Dialog.Close>

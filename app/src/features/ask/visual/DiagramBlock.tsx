@@ -17,7 +17,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
 
 const ACTION =
-  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-shodh-border bg-shodh-surface text-[12px] font-medium text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed';
+  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-shodh-border bg-shodh-surface text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro disabled:opacity-50 disabled:cursor-not-allowed';
 
 type Files =
   | { status: 'none' }
@@ -84,7 +84,7 @@ export function DiagramBlock({ source }: { source: string }) {
   if (!spec) return null;
   if (files.status === 'checking') {
     return (
-      <div className="my-4 flex items-center justify-center gap-2 h-24 rounded-xl border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text-muted" aria-busy="true">
+      <div className="my-4 flex items-center justify-center gap-2 h-24 rounded-xl border border-shodh-border bg-shodh-surface text-small text-shodh-text-muted" aria-busy="true">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Checking the files it names…
       </div>
@@ -174,7 +174,7 @@ function DiagramView({ spec, files, openCitation, allowance }: DiagramViewProps)
     <FocusFrame noun="diagram" getTarget={getTarget} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
         {spec.title && (
-          <figcaption className="px-4 pt-3 pr-32 text-[13px] font-semibold text-shodh-text">{spec.title}</figcaption>
+          <figcaption className="px-4 pt-3 pr-32 text-small font-semibold text-shodh-text">{spec.title}</figcaption>
         )}
         <div
           ref={canvasRef}
@@ -201,9 +201,9 @@ function DiagramView({ spec, files, openCitation, allowance }: DiagramViewProps)
         <div role="status" aria-live="polite" className="empty:hidden border-t border-shodh-border-subtle px-4 py-2.5 flex flex-col gap-2">
           {node && (
             <>
-              <div className="min-w-0 text-[12.5px] text-shodh-text-secondary">
+              <div className="min-w-0 text-small text-shodh-text-secondary">
                 <span className="font-semibold text-shodh-text">{node.label}</span>
-                {node.kind && <span className="ml-2 font-mono text-[11px] text-shodh-text-muted">{node.kind}</span>}
+                {node.kind && <span className="ml-2 font-mono text-caption text-shodh-text-muted">{node.kind}</span>}
                 {node.detail && <p className="mt-0.5 mb-0 text-shodh-text-tertiary">{node.detail}</p>}
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -243,7 +243,7 @@ function DiagramView({ spec, files, openCitation, allowance }: DiagramViewProps)
             </>
           )}
           {!node && (hasDelta || actionable || drawing.loops.length > 0 || marked.size > 0) && (
-            <p className="m-0 text-[11.5px] text-shodh-text-muted">
+            <p className="m-0 text-caption text-shodh-text-muted">
               {[
                 hasDelta ? '+ added · − removed (dashed) · Δ changed' : null,
                 drawing.loops.length > 0 ? 'R reinforcing loop (even number of − links) · B balancing loop (odd)' : null,

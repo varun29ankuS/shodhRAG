@@ -213,7 +213,7 @@ export function SvgBlock({ source }: { source: string }) {
           className="flex justify-center [&_svg]:max-w-full [&_svg]:h-auto [&_svg]:max-h-[560px]"
         />
         {result.removed.length > 0 && (
-          <figcaption className="mt-2 text-[11.5px] text-shodh-text-muted">
+          <figcaption className="mt-2 text-caption text-shodh-text-muted">
             {`Not drawn for safety: ${result.removed.slice(0, 6).join(', ')}${result.removed.length > 6 ? '…' : ''}.`}
           </figcaption>
         )}

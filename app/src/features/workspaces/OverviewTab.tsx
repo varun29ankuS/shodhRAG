@@ -224,14 +224,14 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
       <div className="flex items-end justify-between gap-3">
         <div>
           <h3 id={`${ids.text}-title`} className={SECTION_TITLE}>Instructions</h3>
-          <p id={ids.help} className="m-0 text-[12.5px] text-shodh-text-muted">
+          <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
             Sent with every question in this workspace, marked as your instructions. They say how to answer; sources
             still decide what is true. The assistant can propose changes, which you approve and can see as a diff.
           </p>
         </div>
       </div>
       {stale && (
-        <p role="alert" className="m-0 rounded-lg border border-shodh-warning/50 bg-shodh-warning-soft px-3 py-2 text-[12.5px] text-shodh-text">
+        <p role="alert" className="m-0 rounded-lg border border-shodh-warning/50 bg-shodh-warning-soft px-3 py-2 text-small text-shodh-text">
           A newer version (v{workspace.instructionsVersion}) was saved while you were editing. Saving now makes your text
           the next version; the history keeps both.
           <button
@@ -267,7 +267,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
             <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" /> Undo changes
           </button>
         )}
-        <span id={ids.count} className={cn('ml-auto text-[12px]', tooLong ? 'text-shodh-error' : 'text-shodh-text-muted')}>
+        <span id={ids.count} className={cn('ml-auto text-caption', tooLong ? 'text-shodh-error' : 'text-shodh-text-muted')}>
           {`${count.toLocaleString()} / ${MAX_INSTRUCTIONS_CHARS.toLocaleString()} characters`}
           {workspace.instructionsVersion > 0 ? ` · version ${workspace.instructionsVersion}` : ''}
         </span>
@@ -288,18 +288,18 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
         {historyOpen && (
           <div id={ids.history} className="flex flex-col gap-2">
             {historyError ? (
-              <p role="alert" className="m-0 text-[12.5px] text-shodh-error">History could not be loaded: {historyError}</p>
+              <p role="alert" className="m-0 text-small text-shodh-error">History could not be loaded: {historyError}</p>
             ) : history === null ? (
-              <p role="status" className="m-0 text-[12.5px] text-shodh-text-muted">Loading history…</p>
+              <p role="status" className="m-0 text-small text-shodh-text-muted">Loading history…</p>
             ) : (
               <ol className="m-0 p-0 list-none divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle">
                 {versions.map(v => (
                   <li key={v.version} className="px-3 py-2 flex flex-col gap-1.5">
-                    <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
+                    <div className="flex flex-wrap items-center gap-2 text-small">
                       <span className="font-semibold text-shodh-text">Version {v.version}</span>
                       <span className="text-shodh-text-muted">{AUTHOR_LABELS[v.author]} · {formatDate(v.createdAt)}</span>
                       {v.version === workspace.instructionsVersion && (
-                        <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-shodh-accent-soft text-shodh-accent-text">Current</span>
+                        <span className="text-caption px-1.5 py-0.5 rounded-full bg-shodh-accent-soft text-shodh-accent-text">Current</span>
                       )}
                       <span className="ml-auto flex items-center gap-1">
                         <button
@@ -324,7 +324,7 @@ function InstructionsEditor({ workspace, onSaved }: { workspace: WorkspaceDetail
                         )}
                       </span>
                     </div>
-                    {v.note && <p className="m-0 text-[12px] text-shodh-text-secondary">{v.note}</p>}
+                    {v.note && <p className="m-0 text-caption text-shodh-text-secondary">{v.note}</p>}
                     {compare === v.version && comparison && (
                       <DiffView
                         lines={comparison}

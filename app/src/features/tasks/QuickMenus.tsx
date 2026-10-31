@@ -92,7 +92,7 @@ function ChoiceMenu({
         title={triggerTitle}
         onClick={e => { e.stopPropagation(); setOpen(!open); }}
         className={cn(
-          'h-6 px-1.5 rounded-md inline-flex items-center gap-1 text-[11.5px] hover:bg-shodh-raised-2 transition-colors duration-micro',
+          'h-6 px-1.5 rounded-md inline-flex items-center gap-1 text-caption hover:bg-shodh-raised-2 transition-colors duration-micro',
           triggerClassName,
           FOCUS_RING,
         )}
@@ -317,7 +317,7 @@ export function DueMenu({
         aria-label={`Due: ${label}${overdue ? ', overdue' : ''}. Change due date of ${taskTitle}`}
         onClick={e => { e.stopPropagation(); setOpen(!open); }}
         className={cn(
-          'h-6 px-1.5 rounded-md inline-flex items-center gap-1 text-[11.5px] hover:bg-shodh-raised-2 transition-colors duration-micro',
+          'h-6 px-1.5 rounded-md inline-flex items-center gap-1 text-caption hover:bg-shodh-raised-2 transition-colors duration-micro',
           overdue ? 'text-shodh-error' : dueDate ? 'text-shodh-text-muted' : 'text-shodh-text-faint',
           FOCUS_RING,
         )}
@@ -385,12 +385,12 @@ export function DueMenu({
               type="date"
               value={picked}
               onChange={e => setPicked(e.target.value)}
-              className="flex-1 min-w-0 h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-[12px] text-shodh-text focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex-1 min-w-0 h-8 rounded-lg border border-shodh-border bg-shodh-surface px-2 text-caption text-shodh-text focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
             <button
               type="submit"
               disabled={!picked}
-              className={cn('h-8 px-2.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12px] font-medium disabled:opacity-50', FOCUS_RING)}
+              className={cn('h-8 px-2.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-caption font-medium disabled:opacity-50', FOCUS_RING)}
             >
               Set
             </button>

@@ -23,7 +23,7 @@ use shodh_rag::user_memory::learn::{
     LearnCaps, LearnMode, DEFAULT_AUTO_MIN_CONFIDENCE, MAX_CALLS_PER_DAY_LIMIT,
     MAX_INPUT_CHARS_LIMIT, MAX_PROPOSALS_LIMIT,
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::audit_commands::AuditState;
 use crate::durable_file::{self, Loaded, Origin, ReadFailure};
@@ -67,12 +67,39 @@ pub enum Theme {
     Dark,
 }
 
+/// How large the whole interface is drawn (Settings → Appearance → Text size, and
+/// Ctrl + / Ctrl − / Ctrl 0). Applied as the windows' zoom, on top of the
+/// operating system's display scaling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TextSize {
+    Small,
+    #[default]
+    Default,
+    Large,
+    Larger,
+}
+
+impl TextSize {
+    /// The zoom factor of the windows (`src/lib/textSize.ts` has the same table).
+    pub fn zoom(self) -> f64 {
+        match self {
+            TextSize::Small => 0.9,
+            TextSize::Default => 1.0,
+            TextSize::Large => 1.15,
+            TextSize::Larger => 1.3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Preferences {
     pub theme: Theme,
     /// Passages each document search returns by default.
     pub search_max_results: u32,
+    /// How large the interface is drawn.
+    pub text_size: TextSize,
 }
 
 impl Default for Preferences {
@@ -80,7 +107,26 @@ impl Default for Preferences {
         Self {
             theme: Theme::default(),
             search_max_results: DEFAULT_SEARCH_RESULTS,
+            text_size: TextSize::default(),
         }
+    }
+}
+
+/// Draw every open window at the text size in `prefs`.
+pub fn apply_text_size(app: &AppHandle, prefs: &Preferences) {
+    let zoom = prefs.text_size.zoom();
+    for (label, window) in app.webview_windows() {
+        if let Err(e) = window.set_zoom(zoom) {
+            tracing::warn!(window = %label, error = %e, "the text size could not be applied");
+        }
+    }
+}
+
+/// At startup, once the windows exist: draw them at the saved text size.
+pub fn apply_saved_text_size(app: &AppHandle) {
+    match store(app).and_then(|s| s.load().map_err(|e| e.to_string())) {
+        Ok(settings) => apply_text_size(app, &settings.preferences),
+        Err(e) => tracing::warn!(error = %e, "settings unreadable; the default text size is used"),
     }
 }
 
@@ -727,6 +773,7 @@ pub async fn get_app_settings(app: AppHandle) -> Result<AppSettings, String> {
 pub struct PreferencesPatch {
     pub theme: Option<Theme>,
     pub search_max_results: Option<u32>,
+    pub text_size: Option<TextSize>,
 }
 
 impl PreferencesPatch {
@@ -736,6 +783,9 @@ impl PreferencesPatch {
         }
         if let Some(n) = self.search_max_results {
             prefs.search_max_results = n;
+        }
+        if let Some(size) = self.text_size {
+            prefs.text_size = size;
         }
     }
 }
@@ -760,6 +810,9 @@ pub async fn update_app_preferences(
             Ok(before)
         })
         .map_err(|e| e.to_string())?;
+    if settings.preferences.text_size != before.text_size {
+        apply_text_size(&app, &settings.preferences);
+    }
     if !seed {
         for key in AGENT_WRITABLE {
             let old = preference_value(&before, key);
@@ -1177,6 +1230,40 @@ mod tests {
             with_automatic_learning(AppSettings::default()),
             "the settings of a new profile"
         );
+    }
+
+    #[test]
+    fn text_size_defaults_to_default_and_is_kept_when_set() {
+        assert_eq!(Preferences::default().text_size, TextSize::Default);
+        let old: AppSettings =
+            serde_json::from_str(r#"{"preferences": {"theme": "dark", "searchMaxResults": 8}}"#)
+                .unwrap();
+        assert_eq!(old.preferences.text_size, TextSize::Default);
+        let set: AppSettings =
+            serde_json::from_str(r#"{"preferences": {"textSize": "larger"}}"#).unwrap();
+        assert_eq!(set.preferences.text_size, TextSize::Larger);
+        let mut prefs = Preferences::default();
+        PreferencesPatch {
+            text_size: Some(TextSize::Large),
+            ..PreferencesPatch::default()
+        }
+        .apply(&mut prefs);
+        assert_eq!(prefs.text_size, TextSize::Large);
+        assert_eq!(
+            prefs.search_max_results, DEFAULT_SEARCH_RESULTS,
+            "the rest is kept"
+        );
+        let zooms: Vec<f64> = [
+            TextSize::Small,
+            TextSize::Default,
+            TextSize::Large,
+            TextSize::Larger,
+        ]
+        .iter()
+        .map(|s| s.zoom())
+        .collect();
+        assert!(zooms.windows(2).all(|w| w[0] < w[1]), "{zooms:?}");
+        assert_eq!(TextSize::Default.zoom(), 1.0);
     }
 
     #[test]

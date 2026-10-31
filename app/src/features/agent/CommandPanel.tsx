@@ -33,7 +33,7 @@ function CommandOutput({ run, id }: { run: CommandRun; id?: string }) {
 
   return (
     <div id={id} className="flex flex-col gap-1">
-      {run.outputCut && <p className="m-0 text-[11px] text-shodh-text-faint">Earlier output not shown</p>}
+      {run.outputCut && <p className="m-0 text-caption text-shodh-text-faint">Earlier output not shown</p>}
       <pre
         ref={ref}
         tabIndex={0}
@@ -43,7 +43,7 @@ function CommandOutput({ run, id }: { run: CommandRun; id?: string }) {
           follow.current = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK_PX;
         }}
         className={cn(
-          'm-0 max-h-64 overflow-auto scrollbar-thin rounded-md bg-shodh-raised px-2.5 py-2 font-mono text-[11.5px] leading-[1.5] text-shodh-text-secondary whitespace-pre-wrap break-words',
+          'm-0 max-h-64 overflow-auto scrollbar-thin rounded-md bg-shodh-raised px-2.5 py-2 font-mono text-caption leading-[1.5] text-shodh-text-secondary whitespace-pre-wrap break-words',
           FOCUS_RING,
         )}
       >
@@ -114,7 +114,7 @@ export function CommandPanel({ run, compact = false }: { run: CommandRun; compac
       });
   }, [run.commandId]);
 
-  const textSize = compact ? 'text-[11.5px]' : 'text-[12px]';
+  const textSize = compact ? 'text-caption' : 'text-caption';
   const stateLabel = running && stopping ? 'Stopping' : commandStateLabel(run);
 
   return (
@@ -175,7 +175,7 @@ function RunningCommand({ run, nowMs, stateLabel, stopping, stopError, onStop, o
           onBlur={() => onStopFocus(false)}
           aria-disabled={stopping}
           className={cn(
-            'shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12px] font-medium text-shodh-text bg-shodh-raised-2 hover:bg-shodh-pressed aria-disabled:opacity-60 aria-disabled:cursor-not-allowed transition-colors duration-micro',
+            'shrink-0 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-caption font-medium text-shodh-text bg-shodh-raised-2 hover:bg-shodh-pressed aria-disabled:opacity-60 aria-disabled:cursor-not-allowed transition-colors duration-micro',
             FOCUS_RING,
           )}
         >
@@ -212,12 +212,12 @@ function RunningCommand({ run, nowMs, stateLabel, stopping, stopError, onStop, o
           />
         </div>
       )}
-      {run.sandbox && <p className="m-0 text-[11.5px] text-shodh-text-muted">{run.sandbox}</p>}
-      {stopError && <p role="alert" className="m-0 text-[12px] text-shodh-error">{stopError}</p>}
+      {run.sandbox && <p className="m-0 text-caption text-shodh-text-muted">{run.sandbox}</p>}
+      {stopError && <p role="alert" className="m-0 text-caption text-shodh-error">{stopError}</p>}
       {run.output.length > 0 || run.outputCut ? (
         <CommandOutput run={run} />
       ) : (
-        <p className="m-0 text-[11.5px] text-shodh-text-faint">No output yet</p>
+        <p className="m-0 text-caption text-shodh-text-faint">No output yet</p>
       )}
     </div>
   );

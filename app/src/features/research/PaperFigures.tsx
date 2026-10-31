@@ -68,15 +68,15 @@ function FigureCard({ figure, parts, paperTitle }: { figure: PaperFigure; parts:
         )}
       </div>
       <div className="flex-1 flex flex-col gap-1.5 px-3 py-2 border-t border-shodh-border-subtle">
-        <p className="m-0 text-[12.5px] font-semibold text-shodh-text">
+        <p className="m-0 text-small font-semibold text-shodh-text">
           {figure.label}
           <span className="font-normal text-shodh-text-muted">{` · page ${figure.page}`}</span>
         </p>
-        <p className="m-0 text-[12.5px] leading-snug text-shodh-text-secondary line-clamp-3" title={figure.caption}>
+        <p className="m-0 text-small leading-snug text-shodh-text-secondary line-clamp-3" title={figure.caption}>
           {figure.caption}
         </p>
         {!figure.regionFound && (
-          <p className="m-0 text-[11.5px] text-shodh-text-muted">Only the caption could be located on the page.</p>
+          <p className="m-0 text-caption text-shodh-text-muted">Only the caption could be located on the page.</p>
         )}
         <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
           <button
@@ -134,7 +134,7 @@ export function PaperFigures({ filePath, paperTitle }: { filePath: string; paper
 
   if (load.status === 'loading') {
     return (
-      <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+      <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Reading the paper’s figures…
       </p>
@@ -142,7 +142,7 @@ export function PaperFigures({ filePath, paperTitle }: { filePath: string; paper
   }
   if (load.status === 'error') {
     return (
-      <p role="alert" className="flex items-start gap-2 text-[12.5px] text-shodh-text-secondary">
+      <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
         <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
         {load.message}
       </p>
@@ -150,7 +150,7 @@ export function PaperFigures({ filePath, paperTitle }: { filePath: string; paper
   }
   const { parts } = load;
   if (parts.figures.length === 0) {
-    return <p className="text-[12.5px] text-shodh-text-muted">No figure captions (“Figure 1: …”) were found in this paper.</p>;
+    return <p className="text-small text-shodh-text-muted">No figure captions (“Figure 1: …”) were found in this paper.</p>;
   }
   return (
     <ul className={cn('m-0 p-0 grid gap-3 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]')} aria-label={`Figures of ${paperTitle}`}>

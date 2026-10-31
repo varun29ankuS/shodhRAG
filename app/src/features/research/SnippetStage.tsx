@@ -71,20 +71,20 @@ export function SnippetStage({ target }: { target: Extract<FocusTarget, { kind: 
           onOpenTable={openTable}
         />
       ) : state.status === 'loading' ? (
-        <p role="status" className="flex items-center gap-2 text-[12.5px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Opening the snippet…
         </p>
       ) : (
         <article className="w-full max-w-[640px] h-fit rounded-2xl border border-shodh-border bg-shodh-surface p-5 flex flex-col gap-3">
-          <p role="alert" className="flex items-start gap-2 text-[13px] text-shodh-text-secondary">
+          <p role="alert" className="flex items-start gap-2 text-small text-shodh-text-secondary">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
             {state.status === 'deleted'
               ? 'This snippet was deleted. Its text, as it was saved with this discussion:'
               : `The snippet could not be opened: ${state.message}. Its text, as it was saved with this discussion:`}
           </p>
-          <p className="text-[13.5px] leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">{target.text || '(no text)'}</p>
-          <p className="text-[12px] text-shodh-text-muted">{`${target.fileName || target.filePath}, page ${target.page}`}</p>
+          <p className="text-body leading-relaxed text-shodh-text-secondary whitespace-pre-wrap break-words">{target.text || '(no text)'}</p>
+          <p className="text-caption text-shodh-text-muted">{`${target.fileName || target.filePath}, page ${target.page}`}</p>
         </article>
       )}
     </div>

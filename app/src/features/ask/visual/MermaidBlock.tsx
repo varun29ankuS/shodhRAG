@@ -31,25 +31,25 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
 
 const QUIET_BUTTON = cn(
-  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-shodh-border bg-shodh-raised text-[12px] font-medium text-shodh-text-secondary',
+  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-shodh-border bg-shodh-raised text-caption font-medium text-shodh-text-secondary',
   'hover:bg-shodh-raised-2 hover:text-shodh-text disabled:opacity-50 disabled:pointer-events-none transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const PRIMARY_BUTTON = cn(
-  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-[12px] font-medium',
+  'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-shodh-accent text-shodh-on-accent text-caption font-medium',
   'hover:bg-shodh-accent-hover disabled:opacity-50 disabled:pointer-events-none transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const TEXT_BUTTON = cn(
-  'inline-flex items-center h-6 px-1.5 rounded-md text-[11.5px] font-medium text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
+  'inline-flex items-center h-6 px-1.5 rounded-md text-caption font-medium text-shodh-text-secondary hover:text-shodh-text hover:bg-shodh-raised transition-colors duration-micro',
   FOCUS_RING,
 );
 
-const DETAILS_SUMMARY = cn('px-3 py-1.5 text-[12px] text-shodh-text-muted cursor-pointer hover:text-shodh-text-secondary rounded-sm', FOCUS_RING);
-const DETAILS_PRE = 'm-0 px-3 pb-2 max-h-40 overflow-auto scrollbar-thin text-[12px] leading-relaxed font-mono text-shodh-text-muted whitespace-pre-wrap';
-const SOURCE_PRE = 'm-0 p-3 max-h-60 overflow-auto scrollbar-thin text-[12px] leading-relaxed font-mono text-shodh-text-muted whitespace-pre-wrap';
+const DETAILS_SUMMARY = cn('px-3 py-1.5 text-caption text-shodh-text-muted cursor-pointer hover:text-shodh-text-secondary rounded-sm', FOCUS_RING);
+const DETAILS_PRE = 'm-0 px-3 pb-2 max-h-40 overflow-auto scrollbar-thin text-caption leading-relaxed font-mono text-shodh-text-muted whitespace-pre-wrap';
+const SOURCE_PRE = 'm-0 p-3 max-h-60 overflow-auto scrollbar-thin text-caption leading-relaxed font-mono text-shodh-text-muted whitespace-pre-wrap';
 
 /** Notes offered under "Adjust": the changes asked for most. */
 const ADJUST_SUGGESTIONS = ['Arrows the other way', 'Simpler', 'Left to right'] as const;
@@ -296,7 +296,7 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
         >
           <div className="p-4 overflow-x-auto scrollbar-thin">
             {state.status === 'loading' ? (
-              <div className="flex items-center gap-2 h-24 justify-center text-[12.5px] text-shodh-text-muted">
+              <div className="flex items-center gap-2 h-24 justify-center text-small text-shodh-text-muted">
                 <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 Drawing diagram…
               </div>
@@ -318,7 +318,7 @@ export function MermaidBlock({ source, dark }: { source: string; dark: boolean }
             <span role="status" aria-live="polite" className="sr-only">{status}</span>
           )}
           {showBar && (
-            <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-muted">
+            <figcaption className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-muted">
               {eligible && total > 1 && <VersionStepper record={record} onChoose={choose} />}
               {note && (
                 <span className="inline-flex items-center gap-1.5 min-w-0">
@@ -407,7 +407,7 @@ function RunningLine({ kind, attempt, live, onStop }: { kind: AttemptKind; attem
           type="button"
           onClick={onStop}
           className={cn(
-            'inline-flex items-center gap-1 h-6 px-2 rounded-md border border-shodh-border text-[11.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+            'inline-flex items-center gap-1 h-6 px-2 rounded-md border border-shodh-border text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
             FOCUS_RING,
           )}
         >
@@ -486,7 +486,7 @@ function HintField({ label, placeholder, submitLabel, required, busy, attempt, s
           spellCheck
           data-esc-local=""
           className={cn(
-            'flex-1 min-w-[12rem] h-8 px-2.5 rounded-lg border border-shodh-border bg-shodh-ground text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint',
+            'flex-1 min-w-[12rem] h-8 px-2.5 rounded-lg border border-shodh-border bg-shodh-ground text-small text-shodh-text placeholder:text-shodh-text-faint',
             'focus-visible:outline-none focus-visible:border-shodh-border-strong focus-visible:ring-2 focus-visible:ring-ring',
           )}
         />
@@ -510,7 +510,7 @@ function HintField({ label, placeholder, submitLabel, required, busy, attempt, s
               inputRef.current?.focus({ preventScroll: true });
             }}
             className={cn(
-              'h-6 px-2 rounded-full border border-shodh-border-subtle bg-shodh-surface text-[11.5px] text-shodh-text-secondary',
+              'h-6 px-2 rounded-full border border-shodh-border-subtle bg-shodh-surface text-caption text-shodh-text-secondary',
               'hover:border-shodh-border hover:text-shodh-text transition-colors duration-micro',
               value === s && 'border-shodh-border-strong text-shodh-text',
               FOCUS_RING,
@@ -519,7 +519,7 @@ function HintField({ label, placeholder, submitLabel, required, busy, attempt, s
             {s}
           </button>
         ))}
-        <span id={metaId} className="ml-auto text-[11px] text-shodh-text-muted tabular-nums">
+        <span id={metaId} className="ml-auto text-caption text-shodh-text-muted tabular-nums">
           Attempt {attempt} of {MAX_ATTEMPTS}
         </span>
       </div>
@@ -542,7 +542,7 @@ function CapNotice({ onClose }: { onClose: () => void }) {
         e.stopPropagation();
         onClose();
       }}
-      className="flex flex-wrap items-center gap-2 text-[12px] text-shodh-text-secondary"
+      className="flex flex-wrap items-center gap-2 text-caption text-shodh-text-secondary"
     >
       <span className="flex-1 min-w-[12rem]">
         {`This diagram has been reworked ${MAX_ATTEMPTS} times, the most it can be. Ask a follow-up question to change it further.`}
@@ -634,12 +634,12 @@ function MermaidFailure({ source, error, record, offer, list, live, notice, elig
     <FocusFrame noun="diagram" getTarget={getTarget} doubleClick={false} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
         {/* Right padding keeps the text clear of the "Expand & ask" button. */}
-        <figcaption className="flex items-start gap-2 pl-3 pr-32 py-2 text-[12.5px] text-shodh-text-secondary border-b border-shodh-border-subtle">
+        <figcaption className="flex items-start gap-2 pl-3 pr-32 py-2 text-small text-shodh-text-secondary border-b border-shodh-border-subtle">
           <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           <span>Diagram not drawn: {short}</span>
         </figcaption>
         {eligible && total > 1 && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-[11.5px] text-shodh-text-muted border-b border-shodh-border-subtle">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1.5 text-caption text-shodh-text-muted border-b border-shodh-border-subtle">
             <VersionStepper record={record} onChoose={onChoose} />
             <span>{versionCaption(record, false)}</span>
           </div>
@@ -651,7 +651,7 @@ function MermaidFailure({ source, error, record, offer, list, live, notice, elig
             role="status"
             aria-live="polite"
             data-answer-ui=""
-            className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 text-[12px] text-shodh-text-muted border-b border-shodh-border-subtle focus:outline-none"
+            className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 text-caption text-shodh-text-muted border-b border-shodh-border-subtle focus:outline-none"
           >
             {body}
             {notice && <span className="text-shodh-text-secondary">{notice}</span>}
@@ -704,10 +704,10 @@ function DiagramListView({ written, error, list, renderInline }: { written: stri
     <FocusFrame noun="diagram" getTarget={getTarget} doubleClick={false} className="my-4">
       <figure className="m-0 rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden">
         {/* Right padding keeps the first item clear of the "Expand & ask" button. */}
-        <div className="pl-4 pr-32 py-3 text-[13.5px] leading-relaxed text-shodh-text-secondary">
+        <div className="pl-4 pr-32 py-3 text-body leading-relaxed text-shodh-text-secondary">
           <ListTree list={list} renderInline={renderInline} depth={0} />
         </div>
-        <figcaption className="flex items-center gap-1.5 px-3 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-muted">
+        <figcaption className="flex items-center gap-1.5 px-3 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-muted">
           <List className="w-3 h-3 shrink-0" aria-hidden="true" />
           Shown as a list: the diagram could not be drawn.
         </figcaption>

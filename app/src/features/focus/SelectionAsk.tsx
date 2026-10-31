@@ -224,13 +224,13 @@ export function SelectionAsk() {
       title="Ask about the selected text (Ctrl+Shift+A)"
       style={{ left: pending.left, top: pending.top }}
       className={cn(
-        'ask-fade-in fixed z-[70] h-[30px] px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong bg-shodh-surface text-[12px] font-medium text-shodh-text shadow-[0_6px_24px_rgba(0,0,0,0.25)] hover:bg-shodh-raised transition-colors duration-micro',
+        'ask-fade-in fixed z-[70] h-[30px] px-2.5 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border-strong bg-shodh-surface text-caption font-medium text-shodh-text shadow-[0_6px_24px_rgba(0,0,0,0.25)] hover:bg-shodh-raised transition-colors duration-micro',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       )}
     >
       <MessageSquareText className="w-3.5 h-3.5 text-shodh-accent-text" aria-hidden="true" />
       Ask about this
-      <kbd className="ml-0.5 text-[10.5px] font-sans text-shodh-text-faint">Ctrl+Shift+A</kbd>
+      <kbd className="ml-0.5 text-caption font-sans text-shodh-text-faint">Ctrl+Shift+A</kbd>
     </button>,
     pending.container,
   );

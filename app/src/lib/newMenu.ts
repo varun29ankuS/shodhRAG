@@ -4,9 +4,12 @@
  * Ctrl+Shift+N (⌘⇧N on a Mac) from anywhere but a modal dialog, text fields
  * included. Each item runs the same handler as its command-palette entry.
  *
- * Pure module (no runtime imports) so it is unit-tested directly with Node
- * (`app/tests/newMenu.test.ts`).
+ * Pure module (its one import has its extension) so it is unit-tested directly with
+ * Node (`app/tests/newMenu.test.ts`). The shortcuts come from the registry
+ * (`shortcuts.ts`), so the hints and the bindings are the same.
  */
+
+import { ariaKeyShortcuts, matchesShortcut, shortcutText } from './shortcuts.ts';
 
 export type NewMenuItemId = 'new-chat' | 'new-workspace' | 'new-task' | 'new-event' | 'add-folder';
 
@@ -23,7 +26,7 @@ export const NEW_MENU_LABEL = 'New…';
 /** The items, in menu order. Labels ending in … open a dialog or picker. */
 export function newMenuItems(isMac: boolean): NewMenuItem[] {
   return [
-    { id: 'new-chat', label: 'New chat', hint: isMac ? '⌘N' : 'Ctrl+N' },
+    { id: 'new-chat', label: 'New chat', hint: shortcutText('newChat', isMac) },
     { id: 'new-workspace', label: 'New workspace…' },
     { id: 'new-task', label: 'New task…' },
     { id: 'new-event', label: 'New event…' },
@@ -33,12 +36,12 @@ export function newMenuItems(isMac: boolean): NewMenuItem[] {
 
 /** The shortcut that opens the menu, as shown to people. */
 export function newMenuShortcutHint(isMac: boolean): string {
-  return isMac ? '⌘⇧N' : 'Ctrl+Shift+N';
+  return shortcutText('newMenu', isMac);
 }
 
 /** The same shortcut for `aria-keyshortcuts`. */
 export function newMenuKeyShortcuts(isMac: boolean): string {
-  return isMac ? 'Meta+Shift+N' : 'Control+Shift+N';
+  return ariaKeyShortcuts('newMenu', isMac);
 }
 
 export interface ShortcutKey {
@@ -64,12 +67,12 @@ export function isNKey(e: Pick<ShortcutKey, 'key' | 'code'>): boolean {
 
 /** Ctrl/⌘+N, without Shift or Alt: New chat. */
 export function isNewChatChord(e: ShortcutKey): boolean {
-  return (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && isNKey(e);
+  return matchesShortcut(e, 'newChat');
 }
 
 /** Whether Ctrl/⌘+Shift+N is pressed, whatever the context. */
 export function isNewMenuChord(e: ShortcutKey): boolean {
-  return (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && isNKey(e);
+  return matchesShortcut(e, 'newMenu');
 }
 
 /**

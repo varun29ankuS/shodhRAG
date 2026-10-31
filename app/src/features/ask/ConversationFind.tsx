@@ -208,9 +208,9 @@ export function ConversationFind({ messages, firstVisibleIndex, reveal, onTarget
         placeholder="Find in conversation"
         aria-label="Find in conversation"
         spellCheck={false}
-        className="w-48 min-w-0 bg-transparent text-[13px] text-shodh-text placeholder:text-shodh-text-faint outline-none"
+        className="w-48 min-w-0 bg-transparent text-small text-shodh-text placeholder:text-shodh-text-faint outline-none"
       />
-      <span className="min-w-[72px] text-right text-[12px] tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
+      <span className="min-w-[72px] text-right text-caption tabular-nums text-shodh-text-muted" role="status" aria-live="polite">
         {status}
       </span>
       <button

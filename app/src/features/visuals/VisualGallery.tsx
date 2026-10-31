@@ -26,7 +26,7 @@ import { buildPrintDocument, visualPrintMarkdown } from '../print/printModel';
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 const MENU_ITEM =
-  'w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-[12.5px] text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none disabled:opacity-40';
+  'w-full h-8 px-2.5 rounded-lg inline-flex items-center gap-2 text-left text-small text-shodh-text hover:bg-shodh-raised focus:bg-shodh-raised focus:outline-none disabled:opacity-40';
 
 /** Cards loaded at once (search narrows beyond that). */
 const PAGE = 500;
@@ -189,21 +189,21 @@ function VisualCard({
             <VisualThumb record={card} theme={theme} className="border-b border-shodh-border-subtle" />
           </div>
           <div className="px-3 pt-2.5 pb-1 flex flex-col gap-0.5 min-w-0">
-            <h3 id={titleId} className="text-[13px] font-semibold text-shodh-text truncate" title={card.title}>
+            <h3 id={titleId} className="text-small font-semibold text-shodh-text truncate" title={card.title}>
               {card.pinned && <Pin className="inline w-3 h-3 mr-1 -mt-0.5 text-shodh-accent-text" aria-label="Pinned" />}
               {card.title}
             </h3>
-            <p className="text-[11.5px] text-shodh-text-muted truncate">
+            <p className="text-caption text-shodh-text-muted truncate">
               <span>{noun}</span>
               {card.versionCount > 1 && <span>{` · v${card.versionCount}`}</span>}
               <span>{' · '}</span>
               <time dateTime={card.firstCreatedAt} title={relativeTime(card.updatedAt)}>{dateLabel(card.firstCreatedAt)}</time>
             </p>
-            {card.note && <p className="text-[11.5px] text-shodh-text-secondary line-clamp-2">{card.note}</p>}
+            {card.note && <p className="text-caption text-shodh-text-secondary line-clamp-2">{card.note}</p>}
           </div>
         </button>
         {showConversation && (
-          <div className="px-3 pb-2.5 text-[11.5px] text-shodh-text-muted truncate">
+          <div className="px-3 pb-2.5 text-caption text-shodh-text-muted truncate">
             {'from '}
             <button
               type="button"
@@ -392,7 +392,7 @@ export function VisualGallery({
       aria-checked={kind === value}
       onClick={() => setKind(value)}
       className={cn(
-        'h-7 px-2.5 rounded-full text-[12px] inline-flex items-center gap-1.5 border transition-colors duration-micro',
+        'h-7 px-2.5 rounded-full text-caption inline-flex items-center gap-1.5 border transition-colors duration-micro',
         kind === value
           ? 'bg-shodh-accent-soft border-shodh-accent text-shodh-accent-text'
           : 'border-shodh-border text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
@@ -417,7 +417,7 @@ export function VisualGallery({
             onChange={e => setQuery(e.target.value)}
             placeholder="Search titles, notes and content"
             autoFocus={autoFocusSearch}
-            className="w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-[12.5px] text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="w-full h-8 pl-8 pr-2.5 rounded-lg border border-shodh-border bg-shodh-surface-2 text-small text-shodh-text placeholder:text-shodh-text-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
         <div role="radiogroup" aria-label="Kind" className="flex flex-wrap items-center gap-1.5">
@@ -432,12 +432,12 @@ export function VisualGallery({
       </p>
 
       {status === 'loading' && items.length === 0 ? (
-        <div className="flex items-center gap-2 py-10 justify-center text-[12.5px] text-shodh-text-muted">
+        <div className="flex items-center gap-2 py-10 justify-center text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Loading visuals…
         </div>
       ) : status === 'error' ? (
-        <div role="alert" className="flex items-start gap-2 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 text-[12.5px] text-shodh-text-secondary">
+        <div role="alert" className="flex items-start gap-2 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 text-small text-shodh-text-secondary">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
           <span className="flex-1">{`The gallery could not be loaded: ${error ?? ''}`}</span>
           <button type="button" onClick={() => setReload(r => r + 1)} className={cn('h-7 px-2.5 rounded-lg border border-shodh-border hover:bg-shodh-raised', FOCUS_RING)}>
@@ -445,7 +445,7 @@ export function VisualGallery({
           </button>
         </div>
       ) : shown.length === 0 ? (
-        <p className="py-8 text-center text-[13px] text-shodh-text-muted">
+        <p className="py-8 text-center text-small text-shodh-text-muted">
           {debounced || kind !== 'all'
             ? 'No visual matches.'
             : emptyText ?? 'Diagrams, charts, sketches, plots, simulations, equations and tables from answers appear here.'}
@@ -471,7 +471,7 @@ export function VisualGallery({
             )}
           </ul>
           {total > items.length && (
-            <p className="text-[12px] text-shodh-text-muted">{`Showing the first ${items.length} of ${total}. Search to find others.`}</p>
+            <p className="text-caption text-shodh-text-muted">{`Showing the first ${items.length} of ${total}. Search to find others.`}</p>
           )}
         </>
       )}

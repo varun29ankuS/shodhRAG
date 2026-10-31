@@ -28,13 +28,13 @@ export function BlockError({ title, message, source, ask }: BlockErrorProps) {
   const figure = (
     <figure className={cn('rounded-xl border border-shodh-border bg-shodh-surface overflow-hidden', ask ? 'm-0' : 'my-4')}>
       {/* With "Expand & ask", the right padding keeps the text clear of its button. */}
-      <figcaption className={cn('flex items-start gap-2 pl-3 py-2 text-[12.5px] text-shodh-text-secondary border-b border-shodh-border-subtle', ask ? 'pr-32' : 'pr-3')}>
+      <figcaption className={cn('flex items-start gap-2 pl-3 py-2 text-small text-shodh-text-secondary border-b border-shodh-border-subtle', ask ? 'pr-32' : 'pr-3')}>
         <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
         <span>
           {title}: {message}
         </span>
       </figcaption>
-      <pre className="m-0 p-3 max-h-60 overflow-auto scrollbar-thin text-[12px] leading-relaxed font-mono text-shodh-text-muted whitespace-pre-wrap">{source}</pre>
+      <pre className="m-0 p-3 max-h-60 overflow-auto scrollbar-thin text-caption leading-relaxed font-mono text-shodh-text-muted whitespace-pre-wrap">{source}</pre>
     </figure>
   );
   if (!ask) return figure;

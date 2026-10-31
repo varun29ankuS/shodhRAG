@@ -56,7 +56,7 @@ function TokenField({
   const ok = value.trim() !== '' && hint === null;
   return (
     <div className="flex flex-col gap-1.5 max-w-[480px]">
-      <label htmlFor={id} className="text-[12.5px] font-semibold text-shodh-text">{label}</label>
+      <label htmlFor={id} className="text-small font-semibold text-shodh-text">{label}</label>
       <div className="relative">
         <input
           id={id}
@@ -75,9 +75,9 @@ function TokenField({
         {ok && <Check className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-shodh-success" aria-label="Looks right" />}
       </div>
       {hint ? (
-        <p id={hintId} role="alert" className="m-0 text-[12px] text-shodh-error">{hint}</p>
+        <p id={hintId} role="alert" className="m-0 text-caption text-shodh-error">{hint}</p>
       ) : (
-        <p id={helpId} className="m-0 text-[12px] text-shodh-text-muted">Starts with {prefix}</p>
+        <p id={helpId} className="m-0 text-caption text-shodh-text-muted">Starts with {prefix}</p>
       )}
     </div>
   );
@@ -94,21 +94,21 @@ function Permissions({ status }: { status: SlackStatus }) {
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen(o => !o)}
-        className={cn('w-full flex items-center gap-2 px-3.5 h-10 text-left text-[12.5px] font-medium text-shodh-text-secondary rounded-lg hover:text-shodh-text', FOCUS_RING)}
+        className={cn('w-full flex items-center gap-2 px-3.5 h-10 text-left text-small font-medium text-shodh-text-secondary rounded-lg hover:text-shodh-text', FOCUS_RING)}
       >
         What Shodh will be allowed to do
         <ChevronDown className={cn('ml-auto w-3.5 h-3.5 transition-transform duration-micro motion-reduce:transition-none', open && 'rotate-180')} aria-hidden="true" />
       </button>
       <div id={id} hidden={!open} className="px-3.5 pb-3 flex flex-col gap-2">
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           No public URL: Shodh connects out from this computer (Socket Mode). It never reads a channel it is not added to.
         </p>
-        <ul className="m-0 pl-4 list-disc flex flex-col gap-0.5 text-[12.5px] text-shodh-text-secondary">
+        <ul className="m-0 pl-4 list-disc flex flex-col gap-0.5 text-small text-shodh-text-secondary">
           {status.botScopes.map(scope => (
             <li key={scope}>{scopeWords(scope)}</li>
           ))}
         </ul>
-        <p className="m-0 text-[11.5px] text-shodh-text-faint break-words">Slack scopes: {status.botScopes.join(', ')}</p>
+        <p className="m-0 text-caption text-shodh-text-faint break-words">Slack scopes: {status.botScopes.join(', ')}</p>
       </div>
     </div>
   );
@@ -207,7 +207,7 @@ export function SlackSetup({
       )}
 
       <nav aria-label="Setup progress" className="flex flex-col gap-2">
-        <p aria-live="polite" className="m-0 text-[12px] font-medium text-shodh-text-muted">
+        <p aria-live="polite" className="m-0 text-caption font-medium text-shodh-text-muted">
           Step {step} of {WIZARD_STEPS.length}
         </p>
         <ol className="m-0 p-0 list-none grid grid-cols-4 gap-2">
@@ -234,7 +234,7 @@ export function SlackSetup({
                   />
                   <span
                     className={cn(
-                      'hidden sm:block truncate text-[11.5px]',
+                      'hidden sm:block truncate text-caption',
                       broken ? 'text-shodh-error font-medium' : here ? 'text-shodh-text font-medium' : 'text-shodh-text-muted',
                     )}
                   >
@@ -258,7 +258,7 @@ export function SlackSetup({
           <h3 id="slack-setup-step" ref={headingRef} tabIndex={-1} className="m-0 text-[16px] font-semibold text-shodh-text focus:outline-none">
             {current.title}
           </h3>
-          <p className="m-0 text-[13px] text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>
+          <p className="m-0 text-small text-shodh-text-secondary max-w-[64ch]">{current.detail}</p>
         </div>
 
         {step === 1 && (
@@ -273,7 +273,7 @@ export function SlackSetup({
               </button>
               <span aria-live="polite" className="sr-only">{copied ? 'The link to create the Slack app was copied.' : ''}</span>
             </div>
-            <p className="m-0 text-[12px] text-shodh-text-muted">
+            <p className="m-0 text-caption text-shodh-text-muted">
               If your browser opens behind Shodh, copy the link and paste it into the browser.
             </p>
             <Permissions status={status} />
@@ -306,7 +306,7 @@ export function SlackSetup({
 
         {step === 4 && (
           <div className="flex flex-col gap-4">
-            <dl className="m-0 grid grid-cols-[auto_1fr_auto] items-center gap-x-4 gap-y-2 text-[12.5px] max-w-[480px]">
+            <dl className="m-0 grid grid-cols-[auto_1fr_auto] items-center gap-x-4 gap-y-2 text-small max-w-[480px]">
               <dt className="text-shodh-text-secondary">App-level token</dt>
               <dd className="m-0 inline-flex items-center gap-1.5 text-shodh-text">
                 <Check className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" /> Pasted

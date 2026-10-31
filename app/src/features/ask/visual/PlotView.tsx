@@ -176,9 +176,9 @@ export function InteractivePlot({
     <div className="flex flex-col gap-3">
       {/* Always present: keeps the plot clear of the "Expand & ask" button. */}
       <div className="min-h-[28px] flex flex-wrap items-baseline gap-x-4 gap-y-1 pr-28">
-        {spec.title && <h4 className="m-0 text-[14px] font-semibold text-shodh-text">{spec.title}</h4>}
+        {spec.title && <h4 className="m-0 text-body font-semibold text-shodh-text">{spec.title}</h4>}
         {legend.map((item, i) => (
-          <span key={i} className="inline-flex items-center gap-1.5 text-[12px] text-shodh-text-secondary">
+          <span key={i} className="inline-flex items-center gap-1.5 text-caption text-shodh-text-secondary">
             <span aria-hidden="true" className="inline-block w-3 h-0.5 rounded" style={{ background: colorVar(item.color) }} />
             {'label' in item ? item.label : ''}
           </span>

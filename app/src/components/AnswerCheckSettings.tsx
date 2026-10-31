@@ -90,20 +90,20 @@ export function AnswerCheckModelRow() {
     <div className="flex flex-col gap-2">
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text">Answer checking model</p>
-          <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+          <p className="m-0 text-body font-semibold text-shodh-text">Answer checking model</p>
+          <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
             {status?.ready
               ? 'Installed. Statements are checked for what their passage actually says, including reversed or swapped facts.'
               : `Without it, statements are only checked for topic and numbers. A small local model (${megabytes(status?.totalBytes ?? 96_034_745)}, verified download).`}
           </p>
           {status?.installing && (
-            <p className="m-0 mt-1 text-[12px] text-shodh-text-secondary tabular-nums" role="status" aria-live="polite">
+            <p className="m-0 mt-1 text-caption text-shodh-text-secondary tabular-nums" role="status" aria-live="polite">
               {percent !== null ? `Downloading… ${percent}%` : 'Installing…'}
             </p>
           )}
         </div>
         {status?.ready ? (
-          <span className="shrink-0 inline-flex items-center gap-1.5 text-[12.5px] text-shodh-success">
+          <span className="shrink-0 inline-flex items-center gap-1.5 text-small text-shodh-success">
             <ShieldCheck className="w-4 h-4" aria-hidden="true" />
             Ready
           </span>
@@ -113,7 +113,7 @@ export function AnswerCheckModelRow() {
             onClick={() => void install()}
             disabled={status === null || status.installing}
             className={cn(
-              'shrink-0 h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+              'shrink-0 h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
               'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
               FOCUS_RING,
             )}
@@ -124,7 +124,7 @@ export function AnswerCheckModelRow() {
         )}
       </div>
       {error && (
-        <p role="alert" className="m-0 text-[12.5px] text-shodh-error break-words">
+        <p role="alert" className="m-0 text-small text-shodh-error break-words">
           {error}
         </p>
       )}
@@ -184,8 +184,8 @@ export default function AnswerCheckSettings() {
         onChange={value => void change({ thinkBeforeAnswering: value })}
       />
       <div className="flex flex-col gap-1">
-        <h3 className="m-0 text-[15px] font-semibold text-shodh-text">Answer checking</h3>
-        <p className="m-0 text-[12.5px] text-shodh-text-muted">
+        <h3 className="m-0 text-body-lg font-semibold text-shodh-text">Answer checking</h3>
+        <p className="m-0 text-small text-shodh-text-muted">
           Every answer is checked on this computer, statement by statement, against the passages it cites. Statements
           a passage does not support are flagged in the answer.
         </p>
@@ -199,7 +199,7 @@ export default function AnswerCheckSettings() {
       />
       <AnswerCheckModelRow />
       {error && (
-        <p role="alert" className="m-0 text-[12.5px] text-shodh-error break-words">
+        <p role="alert" className="m-0 text-small text-shodh-error break-words">
           {error}
         </p>
       )}

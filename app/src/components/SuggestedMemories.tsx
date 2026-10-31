@@ -35,13 +35,13 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const BUTTON = cn(
-  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-[12.5px] text-shodh-text',
+  'h-8 px-3 inline-flex items-center gap-1.5 rounded-lg border border-shodh-border bg-shodh-surface text-small text-shodh-text',
   'hover:bg-shodh-raised disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const ICON_BUTTON = cn(
-  'h-7 px-2 inline-flex items-center gap-1 rounded-md text-[12px] text-shodh-text-secondary',
+  'h-7 px-2 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-secondary',
   'hover:bg-shodh-raised hover:text-shodh-text disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-micro',
   FOCUS_RING,
 );
@@ -136,8 +136,8 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <p id={groupId} className="m-0 text-[13.5px] font-semibold text-shodh-text">Learn from conversations</p>
-        <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted">
+        <p id={groupId} className="m-0 text-body font-semibold text-shodh-text">Learn from conversations</p>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
           After each answer, a model reads only what you wrote — never your documents, web pages or tool results — and
           suggests memories in Shodh’s types. Health, financial identifiers, passwords and facts about other people always
           ask first.
@@ -156,7 +156,7 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
               title={mode.description}
               onClick={() => onChange({ ...prefs, learnMode: mode.id })}
               className={cn(
-                'h-8 px-3 rounded-lg border text-[12.5px] transition-colors duration-micro disabled:opacity-50',
+                'h-8 px-3 rounded-lg border text-small transition-colors duration-micro disabled:opacity-50',
                 checked
                   ? 'border-shodh-accent bg-shodh-raised-2 text-shodh-text font-semibold'
                   : 'border-shodh-border bg-shodh-surface text-shodh-text-secondary hover:bg-shodh-raised',
@@ -168,23 +168,23 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
           );
         })}
       </div>
-      <p className="m-0 text-[12px] text-shodh-text-muted">
+      <p className="m-0 text-caption text-shodh-text-muted">
         {MODES.find(m => m.id === prefs.learnMode)?.description} {SAVED_IN_CHAT}
       </p>
       {status?.killSwitch && (
-        <p role="status" className="m-0 text-[12.5px] text-shodh-warning">
+        <p role="status" className="m-0 text-small text-shodh-warning">
           Learning is turned off on this computer by its administrator (SHODH_MEMORY_LEARNING=off).
         </p>
       )}
       {prefs.learnMode !== 'off' && status && !status.available && (
-        <p role="status" className="m-0 text-[12.5px] text-shodh-warning">
+        <p role="status" className="m-0 text-small text-shodh-warning">
           Not learning right now: {status.unavailableReason ?? 'no model is available'}.
         </p>
       )}
       {prefs.learnMode !== 'off' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="flex flex-col gap-1">
-            <label htmlFor={modelId} className="text-[12px] font-semibold text-shodh-text-secondary">
+            <label htmlFor={modelId} className="text-caption font-semibold text-shodh-text-secondary">
               Learning model (same provider)
             </label>
             <input
@@ -197,13 +197,13 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
                 const next = model.trim() || null;
                 if (next !== prefs.learnModel) onChange({ ...prefs, learnModel: next });
               }}
-              className={cn('h-8 rounded-md border border-shodh-border bg-shodh-surface px-2.5 text-[13px] text-shodh-text', FOCUS_RING)}
+              className={cn('h-8 rounded-md border border-shodh-border bg-shodh-surface px-2.5 text-small text-shodh-text', FOCUS_RING)}
             />
-            <span className="text-[11.5px] text-shodh-text-muted">A smaller model keeps learning cheap. Empty uses your answer model.</span>
+            <span className="text-caption text-shodh-text-muted">A smaller model keeps learning cheap. Empty uses your answer model.</span>
           </div>
           {prefs.learnMode === 'auto' && (
             <div className="flex flex-col gap-1">
-              <label htmlFor={confidenceId} className="text-[12px] font-semibold text-shodh-text-secondary">
+              <label htmlFor={confidenceId} className="text-caption font-semibold text-shodh-text-secondary">
                 Save automatically from confidence (%)
               </label>
               <input
@@ -215,14 +215,14 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
                 value={confidence}
                 onChange={e => setConfidence(e.target.value)}
                 onBlur={saveConfidence}
-                className={cn('h-8 w-28 rounded-md border border-shodh-border bg-shodh-surface px-2.5 text-[13px] text-shodh-text', FOCUS_RING)}
+                className={cn('h-8 w-28 rounded-md border border-shodh-border bg-shodh-surface px-2.5 text-small text-shodh-text', FOCUS_RING)}
               />
             </div>
           )}
         </div>
       )}
       {status && (
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           Today: {status.usage.llmCalls} of {status.caps.maxCallsPerDay} model calls, {status.usage.proposals} of{' '}
           {status.caps.maxProposalsPerDay} suggestions
           {status.usage.refused > 0 ? `, ${status.usage.refused} refused (not in your words)` : ''}
@@ -299,8 +299,8 @@ function SuggestionItem({
   if (suggestion.forgotten) {
     return (
       <li className="py-3 flex flex-col gap-1">
-        <p className="m-0 text-[13.5px] text-shodh-text-muted">A memory you forgot</p>
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-body text-shodh-text-muted">A memory you forgot</p>
+        <p className="m-0 text-caption text-shodh-text-muted">
           Its words were erased when you forgot it, so there is nothing to undo · {formatDate(suggestion.createdAt)}
         </p>
       </li>
@@ -309,14 +309,14 @@ function SuggestionItem({
 
   return (
     <li className="py-3 flex flex-col gap-1.5">
-      <p className="m-0 text-[13.5px] text-shodh-text break-words">{suggestionText(suggestion)}</p>
-      <p className="m-0 text-[12px] text-shodh-text-secondary">{describeDecision(suggestion)}</p>
+      <p className="m-0 text-body text-shodh-text break-words">{suggestionText(suggestion)}</p>
+      <p className="m-0 text-caption text-shodh-text-secondary">{describeDecision(suggestion)}</p>
       {suggestion.action.kind === 'remember' && (
-        <p className="m-0 text-[12px] text-shodh-text-muted">
+        <p className="m-0 text-caption text-shodh-text-muted">
           You said: “{suggestion.action.evidence}” · confidence {Math.round(suggestion.confidence * 100)}%
         </p>
       )}
-      <p className="m-0 text-[12px] text-shodh-text-muted flex flex-wrap gap-x-2">
+      <p className="m-0 text-caption text-shodh-text-muted flex flex-wrap gap-x-2">
         <span>{formatDate(suggestion.createdAt)}</span>
         {conversation && (
           <>
@@ -338,11 +338,11 @@ function SuggestionItem({
         )}
       </p>
       {sensitive && (
-        <p className="m-0 text-[12px] text-shodh-warning inline-flex items-center gap-1">
+        <p className="m-0 text-caption text-shodh-warning inline-flex items-center gap-1">
           <ShieldAlert aria-hidden="true" className="w-3.5 h-3.5" /> {sensitive} — never saved without you
         </p>
       )}
-      {suggestion.error && <p className="m-0 text-[12px] text-shodh-error">{suggestion.error}</p>}
+      {suggestion.error && <p className="m-0 text-caption text-shodh-error">{suggestion.error}</p>}
 
       {editing ? (
         <form
@@ -357,7 +357,7 @@ function SuggestionItem({
             const inputId = `${formId}-${field.name}`;
             return (
               <div key={field.name} className="flex flex-col gap-1">
-                <label htmlFor={inputId} className="text-[12px] font-semibold text-shodh-text-secondary">
+                <label htmlFor={inputId} className="text-caption font-semibold text-shodh-text-secondary">
                   {propertyLabel(field.name)}
                 </label>
                 <input
@@ -365,7 +365,7 @@ function SuggestionItem({
                   type="text"
                   value={draft[field.name] ?? field.value}
                   onChange={e => setDraft(d => ({ ...d, [field.name]: e.target.value }))}
-                  className={cn('w-full rounded-md border border-shodh-border bg-shodh-surface px-2.5 py-1.5 text-[13px] text-shodh-text', FOCUS_RING)}
+                  className={cn('w-full rounded-md border border-shodh-border bg-shodh-surface px-2.5 py-1.5 text-small text-shodh-text', FOCUS_RING)}
                 />
               </div>
             );
@@ -523,7 +523,7 @@ export default function SuggestedMemories({
       )}
 
       {loadError && (
-        <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+        <p role="alert" className="m-0 text-small text-shodh-error">
           Suggestions could not be loaded: {loadError}
         </p>
       )}
@@ -531,7 +531,7 @@ export default function SuggestedMemories({
       {shown.length > 0 && (
         <section aria-labelledby="suggested-memories-heading" className="flex flex-col">
           <div className="flex items-center justify-between gap-2">
-            <h3 id="suggested-memories-heading" className="m-0 text-[13px] font-bold text-shodh-text-secondary">
+            <h3 id="suggested-memories-heading" className="m-0 text-small font-bold text-shodh-text-secondary">
               Suggested memories <span className="font-normal text-shodh-text-muted">({shown.length})</span>
             </h3>
             {batch.length > 1 && (
@@ -570,7 +570,7 @@ export default function SuggestedMemories({
 
       {decided.length > 0 && (
         <section aria-labelledby="learned-memories-heading" className="flex flex-col">
-          <h3 id="learned-memories-heading" className="m-0 text-[13px] font-bold text-shodh-text-secondary">
+          <h3 id="learned-memories-heading" className="m-0 text-small font-bold text-shodh-text-secondary">
             Recently learned <span className="font-normal text-shodh-text-muted">({decided.length})</span>
           </h3>
           <ul className="m-0 p-0 list-none divide-y divide-shodh-border-subtle">

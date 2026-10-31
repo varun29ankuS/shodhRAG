@@ -110,7 +110,7 @@ function Meter({ share, label }: { share: number; label: string }) {
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-shodh-border-subtle bg-shodh-surface p-4 min-w-0">
-      <p className="m-0 text-[12px] font-medium text-shodh-text-muted">{title}</p>
+      <p className="m-0 text-caption font-medium text-shodh-text-muted">{title}</p>
       {children}
     </div>
   );
@@ -194,7 +194,7 @@ function UpdateSlackApp({
         </button>
         <span aria-live="polite" className="sr-only">{copied ? 'The updated manifest was copied.' : ''}</span>
       </div>
-      <ol id={stepsId} className="m-0 pl-5 list-decimal flex flex-col gap-1 text-[12.5px] text-shodh-text-secondary max-w-[64ch]">
+      <ol id={stepsId} className="m-0 pl-5 list-decimal flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[64ch]">
         {UPDATE_APP_STEPS.map(step => (
           <li key={step}>{step}</li>
         ))}
@@ -213,7 +213,7 @@ function UpdateSlackApp({
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
           {permissions.map(scope => (
             <li key={scope}>
-              <code className="font-mono text-[12px] text-shodh-text">{scope}</code>
+              <code className="font-mono text-caption text-shodh-text">{scope}</code>
               {scopeWords(scope) !== scope && <span className="text-shodh-text-muted">{`: ${scopeWords(scope)}`}</span>}
             </li>
           ))}
@@ -234,29 +234,29 @@ export function OverviewTab(props: TabProps & { onTab: (tab: SlackTabId) => void
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Panel title="Connection">
-          <p className="m-0 flex items-center gap-2 text-[13.5px] font-semibold text-shodh-text">
+          <p className="m-0 flex items-center gap-2 text-body font-semibold text-shodh-text">
             <span aria-hidden="true" className={cn('w-2 h-2 rounded-full shrink-0', TONE_DOT[line.tone])} />
             <span className="min-w-0 break-words">{line.title}</span>
           </p>
-          {line.detail && <p className={cn('m-0 text-[12.5px] break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
-          <p className="m-0 text-[12px] text-shodh-text-muted">{lastEventLine(status, now)}</p>
-          {on && <p className="m-0 text-[12px] text-shodh-text-muted">{RUNNING_HINT}</p>}
+          {line.detail && <p className={cn('m-0 text-small break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
+          <p className="m-0 text-caption text-shodh-text-muted">{lastEventLine(status, now)}</p>
+          {on && <p className="m-0 text-caption text-shodh-text-muted">{RUNNING_HINT}</p>}
         </Panel>
         <Panel title="Answers today">
-          <p className="m-0 text-[13.5px] font-semibold text-shodh-text tabular-nums">
+          <p className="m-0 text-body font-semibold text-shodh-text tabular-nums">
             {status.answersToday} of {status.dailyCap}
           </p>
           <Meter share={capShare(status)} label="Slack answers used today" />
-          <p className="m-0 text-[12px] text-shodh-text-muted">{usageLine(status, now)}</p>
+          <p className="m-0 text-caption text-shodh-text-muted">{usageLine(status, now)}</p>
         </Panel>
         <Panel title="Indexing">
-          <p className="m-0 text-[13px] text-shodh-text">{indexSummary(status.index)}</p>
+          <p className="m-0 text-small text-shodh-text">{indexSummary(status.index)}</p>
           <button type="button" className={cn(OUTLINE_BUTTON, 'self-start mt-1.5')} onClick={() => onTab('indexing')}>
             Open Indexing
           </button>
         </Panel>
         <Panel title="Memories from Slack">
-          <p className="m-0 text-[13px] text-shodh-text">{memoriesCountLine(status.index)}</p>
+          <p className="m-0 text-small text-shodh-text">{memoriesCountLine(status.index)}</p>
           <button type="button" className={cn(OUTLINE_BUTTON, 'self-start mt-1.5')} onClick={() => onTab('memories')}>
             Open Memories
           </button>
@@ -280,8 +280,8 @@ export function OverviewTab(props: TabProps & { onTab: (tab: SlackTabId) => void
                 <li key={step.id} className="flex flex-wrap sm:flex-nowrap items-start gap-3 px-4 py-3">
                   <span aria-hidden="true" className={cn('mt-1.5 w-2 h-2 rounded-full shrink-0', TONE_DOT[step.tone])} />
                   <div className="flex-1 min-w-0">
-                    <p className="m-0 text-[13px] font-semibold text-shodh-text">{step.title}</p>
-                    <p className="m-0 mt-0.5 text-[12.5px] text-shodh-text-muted break-words max-w-[72ch]">{step.detail}</p>
+                    <p className="m-0 text-small font-semibold text-shodh-text">{step.title}</p>
+                    <p className="m-0 mt-0.5 text-small text-shodh-text-muted break-words max-w-[72ch]">{step.detail}</p>
                     {step.permissions && step.permissions.length > 0 && (
                       <div className="mt-3">
                         <UpdateSlackApp {...props} permissions={step.permissions} onResolved={() => focusAfterRender(nextStepsRef)} />
@@ -370,7 +370,7 @@ function ChannelPicker({ status, onStatus, busy, setBusy }: TabProps) {
             <li
               key={c.id}
               className={cn(
-                'inline-flex items-center gap-1 h-7 px-2.5 rounded-full border text-[12px]',
+                'inline-flex items-center gap-1 h-7 px-2.5 rounded-full border text-caption',
                 c.nowShared || c.shared ? 'border-shodh-warning/50 text-shodh-warning' : 'border-shodh-border text-shodh-text-secondary',
               )}
             >
@@ -394,7 +394,7 @@ function ChannelPicker({ status, onStatus, busy, setBusy }: TabProps) {
           <ul aria-label="Channels the bot is in" className="m-0 p-0 list-none grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-60 overflow-y-auto scrollbar-thin">
             {choices.map(c => (
               <li key={c.id}>
-                <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised cursor-pointer">
+                <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-small text-shodh-text-secondary hover:bg-shodh-raised cursor-pointer">
                   <input type="checkbox" checked={picked.has(c.id)} disabled={busy} onChange={() => toggle(c.id)} />
                   <span className={c.shared ? 'text-shodh-warning' : undefined}>{channelLabel(c)}</span>
                 </label>
@@ -407,7 +407,7 @@ function ChannelPicker({ status, onStatus, busy, setBusy }: TabProps) {
           </div>
         </div>
       ))}
-      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+      {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
     </Section>
   );
 }
@@ -478,7 +478,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
         )}
         {pending ? (
           <div role="alertdialog" aria-label="Confirm the workspace Slack answers from" className="flex flex-col gap-2 rounded-lg border border-shodh-warning/40 bg-shodh-warning-soft px-3.5 py-3">
-            <p className="m-0 text-[12.5px] text-shodh-text-secondary">{pending.line}</p>
+            <p className="m-0 text-small text-shodh-text-secondary">{pending.line}</p>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -505,7 +505,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
             </div>
           </div>
         ) : (
-          <p className={cn('m-0 text-[12.5px] max-w-[68ch]', TONE_TEXT[source.tone])}>{source.text}</p>
+          <p className={cn('m-0 text-small max-w-[68ch]', TONE_TEXT[source.tone])}>{source.text}</p>
         )}
       </Section>
 
@@ -517,7 +517,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
       >
         <div className="flex flex-col gap-2 max-w-sm">
           <Meter share={capShare(status)} label="Slack answers used today" />
-          <p className="m-0 text-[12px] text-shodh-text-muted">{usageLine(status, now)}</p>
+          <p className="m-0 text-caption text-shodh-text-muted">{usageLine(status, now)}</p>
         </div>
         <form
           className="flex items-center gap-2"
@@ -526,7 +526,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
             if (cap !== null && cap !== status.dailyCap) void run(() => slackApi.setDailyCap(cap), 'The daily limit was not saved');
           }}
         >
-          <label htmlFor={capId} className="text-[12.5px] text-shodh-text-secondary">Daily limit</label>
+          <label htmlFor={capId} className="text-small text-shodh-text-secondary">Daily limit</label>
           <input
             id={capId}
             type="number"
@@ -544,7 +544,7 @@ export function AnsweringTab(props: TabProps & { workspaces: WorkspaceListing[] 
           <button type="submit" className={OUTLINE_BUTTON} disabled={busy || cap === null || cap === status.dailyCap}>Save</button>
         </form>
         {cap === null && capInput.trim() !== '' && (
-          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+          <p role="alert" className="m-0 text-small text-shodh-error">
             Enter a whole number from {status.minDailyCap} to {status.maxDailyCap}.
           </p>
         )}
@@ -559,12 +559,12 @@ function ChannelBadges({ channel }: { channel: { private?: boolean; shared: bool
   return (
     <>
       {channel.private && (
-        <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-shodh-raised text-[11px] text-shodh-text-secondary">
+        <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-shodh-raised text-caption text-shodh-text-secondary">
           <Lock className="w-3 h-3" aria-hidden="true" /> Private
         </span>
       )}
       {channel.shared && (
-        <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-shodh-warning-soft text-[11px] text-shodh-warning">
+        <span className="inline-flex items-center gap-1 h-5 px-1.5 rounded-full bg-shodh-warning-soft text-caption text-shodh-warning">
           <Users className="w-3 h-3" aria-hidden="true" /> Shared
         </span>
       )}
@@ -596,15 +596,15 @@ function ChannelRow({
     <li className={cn('px-4 py-3', channelNeedsAttention(channel) && 'bg-shodh-warning-soft/40')}>
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_7.5rem] gap-x-4 gap-y-1.5 items-start">
         <div className="min-w-0 flex flex-wrap items-center gap-1.5">
-          <span className="text-[13px] font-semibold text-shodh-text truncate">#{channel.name}</span>
+          <span className="text-small font-semibold text-shodh-text truncate">#{channel.name}</span>
           <ChannelBadges channel={channel} />
         </div>
-        <p className="m-0 text-[12.5px] text-shodh-text-secondary truncate">
+        <p className="m-0 text-small text-shodh-text-secondary truncate">
           <span className="md:sr-only">Into </span>
           {channel.workspace.name || 'a deleted workspace'}
         </p>
         <div className="min-w-0 flex flex-col gap-1">
-          <p className="m-0 flex items-center gap-1.5 text-[12.5px] text-shodh-text">
+          <p className="m-0 flex items-center gap-1.5 text-small text-shodh-text">
             <span aria-hidden="true" className={cn('w-1.5 h-1.5 rounded-full shrink-0', TONE_DOT[line.tone])} />
             {line.title}
           </p>
@@ -613,9 +613,9 @@ function ChannelRow({
               <div className="h-full bg-shodh-accent" style={{ width: `${Math.round(progress * 100)}%` }} />
             </div>
           )}
-          {line.detail && <p className={cn('m-0 text-[12px] break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
+          {line.detail && <p className={cn('m-0 text-caption break-words', TONE_TEXT[line.tone])}>{line.detail}</p>}
         </div>
-        <p className="m-0 text-[12.5px] text-shodh-text-secondary tabular-nums md:text-right">
+        <p className="m-0 text-small text-shodh-text-secondary tabular-nums md:text-right">
           {channel.threads}
           <span className="md:sr-only"> {channel.threads === 1 ? 'thread' : 'threads'}</span>
         </p>
@@ -640,7 +640,7 @@ function ChannelRow({
           onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); onConfirm(false); } }}
           className="mt-3 flex flex-col gap-2 rounded-lg border border-shodh-error/40 bg-shodh-surface-2 px-3.5 py-3"
         >
-          <p className="m-0 text-[12.5px] text-shodh-text-secondary">
+          <p className="m-0 text-small text-shodh-text-secondary">
             Stop indexing #{channel.name} and forget its {channel.threads} {channel.threads === 1 ? 'thread' : 'threads'}, its sync
             state and the memories saved there?
           </p>
@@ -743,7 +743,7 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
           <div className="flex flex-col gap-3 rounded-lg border border-shodh-border-subtle bg-shodh-surface p-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
-                <label htmlFor={channelPickerId} className="text-[12.5px] font-semibold text-shodh-text">Channel</label>
+                <label htmlFor={channelPickerId} className="text-small font-semibold text-shodh-text">Channel</label>
                 <select
                   id={channelPickerId}
                   value={channelId}
@@ -758,7 +758,7 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
                 </select>
               </div>
               <div className="flex flex-col gap-1">
-                <label htmlFor={workspacePickerId} className="text-[12.5px] font-semibold text-shodh-text">Into workspace</label>
+                <label htmlFor={workspacePickerId} className="text-small font-semibold text-shodh-text">Into workspace</label>
                 <select
                   id={workspacePickerId}
                   value={workspaceId}
@@ -774,12 +774,12 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
               </div>
             </div>
             {chosen?.shared && (
-              <label className="flex items-start gap-2 text-[12.5px] text-shodh-warning">
+              <label className="flex items-start gap-2 text-small text-shodh-warning">
                 <input type="checkbox" className="mt-0.5" checked={sharedConfirmed} disabled={busy} onChange={e => setSharedConfirmed(e.target.checked)} />
                 <span>{sharedIndexLine(chosen)}</span>
               </label>
             )}
-            {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+            {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -793,18 +793,18 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
             </div>
           </div>
         ))}
-        {choices === null && error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+        {choices === null && error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
 
         {index.channels.length === 0 ? (
           <div className="flex flex-col items-start gap-1 rounded-lg border border-dashed border-shodh-border px-4 py-6">
-            <p className="m-0 text-[13px] font-medium text-shodh-text">No channel indexed yet</p>
-            <p className="m-0 text-[12.5px] text-shodh-text-muted max-w-[60ch]">
+            <p className="m-0 text-small font-medium text-shodh-text">No channel indexed yet</p>
+            <p className="m-0 text-small text-shodh-text-muted max-w-[60ch]">
               Index a channel your team discusses work in, and its threads show up in Ask with links back to Slack.
             </p>
           </div>
         ) : (
           <div className="rounded-lg border border-shodh-border-subtle bg-shodh-surface overflow-hidden">
-            <div aria-hidden="true" className="hidden md:grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_7.5rem] gap-x-4 px-4 py-2 border-b border-shodh-border-subtle text-[11.5px] font-medium text-shodh-text-muted">
+            <div aria-hidden="true" className="hidden md:grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1.6fr)_4.5rem_7.5rem] gap-x-4 px-4 py-2 border-b border-shodh-border-subtle text-caption font-medium text-shodh-text-muted">
               <span>Channel</span>
               <span>Workspace</span>
               <span>Status</span>
@@ -841,7 +841,7 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
             }
           }}
         >
-          <label htmlFor={windowId} className="text-[12.5px] text-shodh-text-secondary">Read back</label>
+          <label htmlFor={windowId} className="text-small text-shodh-text-secondary">Read back</label>
           <input
             id={windowId}
             type="number"
@@ -855,11 +855,11 @@ export function IndexingTab(props: TabProps & { workspaces: WorkspaceListing[] |
             onChange={e => setWindowInput(e.target.value)}
             className={cn(INPUT, 'w-24 tabular-nums')}
           />
-          <span className="text-[12.5px] text-shodh-text-secondary">days</span>
+          <span className="text-small text-shodh-text-secondary">days</span>
           <button type="submit" className={OUTLINE_BUTTON} disabled={busy || windowDays === null || windowDays === index.windowDays}>Save</button>
         </form>
         {windowDays === null && windowInput.trim() !== '' && (
-          <p role="alert" className="m-0 text-[12.5px] text-shodh-error">
+          <p role="alert" className="m-0 text-small text-shodh-error">
             Enter a whole number of days from {index.minWindowDays} to {index.maxWindowDays}.
           </p>
         )}
@@ -925,26 +925,26 @@ function OwnerSection({ status, onStatus, busy, setBusy }: TabProps) {
     >
       {people !== null && (
         <div className="flex flex-col gap-2 rounded-lg border border-shodh-border-subtle bg-shodh-surface p-4">
-          <label htmlFor={filterId} className="text-[12.5px] font-semibold text-shodh-text">Find yourself</label>
+          <label htmlFor={filterId} className="text-small font-semibold text-shodh-text">Find yourself</label>
           <input id={filterId} value={filter} autoFocus onChange={e => setFilter(e.target.value)} className={cn(INPUT, 'max-w-xs')} />
           <ul aria-label="Members of the Slack workspace" className="m-0 p-0 list-none grid grid-cols-1 sm:grid-cols-2 gap-1 max-h-56 overflow-y-auto scrollbar-thin">
             {shown.map(p => (
               <li key={p.id}>
-                <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-shodh-text-secondary hover:bg-shodh-raised cursor-pointer">
+                <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-small text-shodh-text-secondary hover:bg-shodh-raised cursor-pointer">
                   <input type="radio" name="slack-owner" checked={picked === p.id} disabled={busy} onChange={() => setPicked(p.id)} />
                   {p.name}
                 </label>
               </li>
             ))}
           </ul>
-          {shown.length === 0 && <p className="m-0 text-[12.5px] text-shodh-text-muted">No member matches “{filter.trim()}”.</p>}
+          {shown.length === 0 && <p className="m-0 text-small text-shodh-text-muted">No member matches “{filter.trim()}”.</p>}
           <div className="flex items-center gap-2">
             <button type="button" className={PRIMARY_BUTTON} disabled={busy || !picked} onClick={() => void save(picked)}>This is me</button>
             <button type="button" className={QUIET_BUTTON} disabled={busy} onClick={() => setPeople(null)}>Cancel</button>
           </div>
         </div>
       )}
-      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+      {error && <p role="alert" className="m-0 text-small text-shodh-error">{error}</p>}
     </Section>
   );
 }
@@ -1000,8 +1000,8 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
         </div>
       ) : memories.length === 0 ? (
         <div className="flex flex-col items-start gap-1 rounded-lg border border-dashed border-shodh-border px-4 py-6">
-          <p className="m-0 text-[13px] font-medium text-shodh-text">Nothing saved from Slack yet</p>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted max-w-[60ch]">
+          <p className="m-0 text-small font-medium text-shodh-text">Nothing saved from Slack yet</p>
+          <p className="m-0 text-small text-shodh-text-muted max-w-[60ch]">
             In a channel Shodh answers in, anyone can write “@shodh remember: the launch moved to May”. It shows up here,
             with who saved it and where.
           </p>
@@ -1010,8 +1010,8 @@ function MemoriesList({ status, busy, setBusy }: TabProps) {
         <ul aria-label="Memories from Slack" className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle rounded-lg border border-shodh-border-subtle bg-shodh-surface">
           {memories.map(m => (
             <li key={m.id} className="flex flex-col gap-1.5 px-4 py-3">
-              <p className="m-0 text-[13px] text-shodh-text whitespace-pre-wrap break-words">{m.text}</p>
-              <p className="m-0 text-[12px] text-shodh-text-muted">
+              <p className="m-0 text-small text-shodh-text whitespace-pre-wrap break-words">{m.text}</p>
+              <p className="m-0 text-caption text-shodh-text-muted">
                 {memoryProvenance(m)} · {memoryPlace(m)}
               </p>
               <div className="flex flex-wrap items-center gap-1 -ml-2.5">
@@ -1059,7 +1059,7 @@ export function SettingsTab({ status, busy, onDisconnect }: TabProps & { onDisco
   return (
     <div className="flex flex-col gap-8">
       <Section title="What Slack can see">
-        <ul className="m-0 pl-4 list-disc flex flex-col gap-1.5 text-[12.5px] text-shodh-text-secondary max-w-[68ch]">
+        <ul className="m-0 pl-4 list-disc flex flex-col gap-1.5 text-small text-shodh-text-secondary max-w-[68ch]">
           <li className={cn(source.tone === 'warning' && 'text-shodh-warning')}>{source.text}</li>
           <li className={cn(places.tone === 'warning' && 'text-shodh-warning')}>{places.text}</li>
         </ul>
@@ -1069,7 +1069,7 @@ export function SettingsTab({ status, busy, onDisconnect }: TabProps & { onDisco
         <div className="flex flex-col gap-3">
           <LearnMore summary="Questions from Slack go to your model provider.">{MODEL_PRIVACY_NOTE}</LearnMore>
           <LearnMore summary="Indexed threads are stored on this computer; use your disk’s encryption.">{INDEX_PRIVACY_NOTE}</LearnMore>
-          <p className="m-0 text-[12.5px] text-shodh-text-muted">{RUNNING_HINT}</p>
+          <p className="m-0 text-small text-shodh-text-muted">{RUNNING_HINT}</p>
         </div>
       </Section>
 

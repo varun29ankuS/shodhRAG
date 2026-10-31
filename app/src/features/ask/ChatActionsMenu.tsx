@@ -10,7 +10,7 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
 
 const ITEM =
-  'w-full flex items-center gap-2 px-3 py-1.5 text-[12.5px] text-left text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
+  'w-full flex items-center gap-2 px-3 py-1.5 text-small text-left text-shodh-text-secondary hover:bg-shodh-raised-2 focus-visible:bg-shodh-raised-2 focus-visible:outline-none';
 
 interface ChatActionsMenuProps {
   conversationId: string;
@@ -111,7 +111,7 @@ export function ChatActionsMenu({ conversationId, conversationTitle, messages, o
             </button>
           </div>
           {usageLine && (
-            <p className="m-0 px-3 py-2 border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-muted tabular-nums">
+            <p className="m-0 px-3 py-2 border-t border-shodh-border-subtle text-caption text-shodh-text-muted tabular-nums">
               {usageLine}
             </p>
           )}

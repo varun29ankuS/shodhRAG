@@ -17,7 +17,7 @@ const SnippetDetail = lazy(() => import('./SnippetDetail').then(m => ({ default:
 const FileViewer = lazy(() => import('../library/FileViewer').then(m => ({ default: m.FileViewer })));
 
 function DialogLoading() {
-  return <p className="m-0 text-[13px] text-shodh-text-muted" role="status">Loading…</p>;
+  return <p className="m-0 text-small text-shodh-text-muted" role="status">Loading…</p>;
 }
 
 function isInToast(target: EventTarget | null): boolean {
@@ -91,8 +91,8 @@ function SnippetDialog({ snippet, onClose, onChanged }: { snippet: Snippet | nul
           <header className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-shodh-border-subtle">
             <Scissors className="w-4 h-4 text-shodh-text-muted" aria-hidden="true" />
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[14px] font-semibold truncate">{snippet ? snippetLabel(snippet) : 'Snippet'}</Dialog.Title>
-              <Dialog.Description id={descriptionId} className="text-[12px] text-shodh-text-muted">
+              <Dialog.Title className="text-body font-semibold truncate">{snippet ? snippetLabel(snippet) : 'Snippet'}</Dialog.Title>
+              <Dialog.Description id={descriptionId} className="text-caption text-shodh-text-muted">
                 Open a conversation in Ask to discuss snippets in the focus view.
               </Dialog.Description>
             </div>
@@ -139,8 +139,8 @@ function SourceBoxDialog({ request, onClose }: { request: SourceBoxRequest | nul
           <header className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-shodh-border-subtle">
             <FileText className="w-4 h-4 text-shodh-text-muted" aria-hidden="true" />
             <div className="flex-1 min-w-0">
-              <Dialog.Title className="text-[14px] font-semibold truncate">{request?.fileName || request?.filePath || 'Source'}</Dialog.Title>
-              <Dialog.Description id={descriptionId} className="text-[12px] text-shodh-text-muted truncate">
+              <Dialog.Title className="text-body font-semibold truncate">{request?.fileName || request?.filePath || 'Source'}</Dialog.Title>
+              <Dialog.Description id={descriptionId} className="text-caption text-shodh-text-muted truncate">
                 {request ? `Page ${request.page}${request.label ? ` · ${request.label}` : ''} · the source box is outlined` : ''}
               </Dialog.Description>
             </div>

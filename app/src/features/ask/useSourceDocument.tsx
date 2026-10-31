@@ -54,7 +54,7 @@ class ViewerBoundary extends React.Component<
 
 function PassageBlock({ passage }: { passage: string }) {
   return (
-    <blockquote className="m-0 rounded-xl border border-shodh-border bg-shodh-surface-2 px-4 py-3.5 text-[14px] leading-[1.7] text-shodh-text-secondary whitespace-pre-wrap break-words">
+    <blockquote className="m-0 rounded-xl border border-shodh-border bg-shodh-surface-2 px-4 py-3.5 text-body leading-[1.7] text-shodh-text-secondary whitespace-pre-wrap break-words">
       {passage || 'No text was stored for this passage.'}
     </blockquote>
   );
@@ -64,7 +64,7 @@ function PassageBlock({ passage }: { passage: string }) {
 function PassageFallback({ message, passage, tone = 'warning' }: { message: string; passage: string; tone?: 'warning' | 'info' }) {
   return (
     <div tabIndex={0} aria-label="Cited passage" className={cn('flex-1 min-h-0 overflow-y-auto scrollbar-thin p-5 flex flex-col gap-4', FOCUS_RING)}>
-      <p role={tone === 'warning' ? 'alert' : undefined} className="flex items-start gap-2 text-[13px] leading-relaxed text-shodh-text-secondary">
+      <p role={tone === 'warning' ? 'alert' : undefined} className="flex items-start gap-2 text-small leading-relaxed text-shodh-text-secondary">
         {tone === 'warning' ? (
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-shodh-warning" aria-hidden="true" />
         ) : (
@@ -73,7 +73,7 @@ function PassageFallback({ message, passage, tone = 'warning' }: { message: stri
         <span>{message}</span>
       </p>
       <figure className="m-0 flex flex-col gap-2">
-        <figcaption className="text-[11.5px] font-medium uppercase tracking-wider text-shodh-text-faint">Retrieved passage</figcaption>
+        <figcaption className="text-caption font-medium uppercase tracking-wider text-shodh-text-faint">Retrieved passage</figcaption>
         <PassageBlock passage={passage} />
       </figure>
     </div>
@@ -105,7 +105,7 @@ function LocateNotice({
   return (
     <div className="px-4 py-2 border-b border-shodh-border-subtle flex flex-col gap-1.5">
       {reason && (
-        <p className="flex items-start gap-2 text-[12.5px] leading-snug text-shodh-text-secondary">
+        <p className="flex items-start gap-2 text-small leading-snug text-shodh-text-secondary">
           <Info className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-info" aria-hidden="true" />
           <span>
             {reason}
@@ -124,7 +124,7 @@ function LocateNotice({
           </span>
         </p>
       )}
-      <p role="status" aria-live="polite" className="flex items-start gap-2 text-[12.5px] leading-snug text-shodh-text-secondary min-h-[18px]">
+      <p role="status" aria-live="polite" className="flex items-start gap-2 text-small leading-snug text-shodh-text-secondary min-h-[18px]">
         {result && (
           <>
             <Icon
@@ -142,7 +142,7 @@ function LocateNotice({
       </p>
       {showPassage && passage && (
         <details>
-          <summary className={cn('cursor-pointer w-fit rounded text-[12px] text-shodh-text-muted hover:text-shodh-text', FOCUS_RING)}>
+          <summary className={cn('cursor-pointer w-fit rounded text-caption text-shodh-text-muted hover:text-shodh-text', FOCUS_RING)}>
             Show the retrieved passage
           </summary>
           <div className="mt-2 max-h-48 overflow-y-auto scrollbar-thin">
@@ -261,7 +261,7 @@ export function useSourceDocument(hit: SearchHit, { onPageChange }: SourceDocume
   let body: React.ReactNode;
   if (panel.status === 'loading') {
     body = (
-      <div className="flex-1 flex items-center justify-center gap-2 text-[13px] text-shodh-text-muted">
+      <div className="flex-1 flex items-center justify-center gap-2 text-small text-shodh-text-muted">
         <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
         Opening document…
       </div>

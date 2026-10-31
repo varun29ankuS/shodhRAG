@@ -55,7 +55,7 @@ export function TurnMemoryLines({ lines, onReview, align }: TurnMemoryLinesProps
   return (
     <div
       aria-live="polite"
-      className={cn('flex flex-col gap-0.5 text-[12.5px] text-shodh-text-muted', align === 'end' ? 'items-end' : 'items-start')}
+      className={cn('flex flex-col gap-0.5 text-small text-shodh-text-muted', align === 'end' ? 'items-end' : 'items-start')}
     >
       {folded ? (
         <p className="m-0 inline-flex items-center gap-1.5 max-w-full">

@@ -41,7 +41,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="m-0 text-[12.5px] text-shodh-text-muted max-w-[65ch]">
+      <p className="m-0 text-small text-shodh-text-muted max-w-[65ch]">
         {view.active
           ? `Answering with ${modelName(view.models, view.active.model)} (${PROVIDER_LABELS[view.active.model.provider]})${source ? `. ${source}` : ''}.`
           : 'Choose how answers are written. If a model is busy, the next one in its list answers instead.'}
@@ -78,16 +78,16 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
                 {selected && <Check className="w-3 h-3" />}
               </span>
               <span className="min-w-0 flex flex-col gap-0.5">
-                <span className="flex items-center gap-2 text-[13.5px] font-semibold text-shodh-text">
+                <span className="flex items-center gap-2 text-body font-semibold text-shodh-text">
                   {option.label}
                   {busy === option.pick && <Loader2 className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}
                 </span>
-                <span className="text-[12px] text-shodh-text-secondary truncate">
+                <span className="text-caption text-shodh-text-secondary truncate">
                   {available && option.model
                     ? `${option.name ?? option.model.model} · ${PROVIDER_LABELS[option.model.provider]}`
                     : pickUnavailableText(option.pick, view)}
                 </span>
-                <span className="text-[11.5px] text-shodh-text-muted">
+                <span className="text-caption text-shodh-text-muted">
                   {available && option.fallbacks.length > 0
                     ? `${PICK_HINTS[option.pick]} Then ${option.fallbacks.length === 1 ? '1 other model' : `${option.fallbacks.length} other models`} if busy.`
                     : PICK_HINTS[option.pick]}
@@ -98,7 +98,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
         })}
       </div>
       {refusal && (
-        <div role="alert" className="flex flex-wrap items-center gap-2 text-[12.5px] text-shodh-text-secondary">
+        <div role="alert" className="flex flex-wrap items-center gap-2 text-small text-shodh-text-secondary">
           <span className="flex-1 min-w-[14rem]">
             {refusal.code === 'environment_set'
               ? 'The environment sets the model for this computer. Use this pick for this session only? The environment returns when Shodh restarts.'
@@ -114,7 +114,7 @@ export function ModelPicks({ picker }: { picker: ModelPickerHandle }) {
       <div>
         <button
           type="button"
-          className={cn('inline-flex items-center gap-1 text-[12.5px] font-medium text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
+          className={cn('inline-flex items-center gap-1 text-small font-medium text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
           aria-expanded={showAll}
           aria-controls={allId}
           onClick={() => setShowAll(s => !s)}

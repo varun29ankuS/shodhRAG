@@ -18,12 +18,12 @@ const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
 
 const PRIMARY = cn(
-  'h-9 px-4 inline-flex items-center gap-2 rounded-lg bg-shodh-accent text-shodh-on-accent text-[13px] font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 transition-colors duration-micro',
+  'h-9 px-4 inline-flex items-center gap-2 rounded-lg bg-shodh-accent text-shodh-on-accent text-small font-semibold hover:bg-shodh-accent-hover disabled:opacity-60 transition-colors duration-micro',
   FOCUS_RING,
 );
 
 const QUIET = cn(
-  'h-9 px-3 inline-flex items-center gap-1.5 rounded-lg text-[13px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+  'h-9 px-3 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
   FOCUS_RING,
 );
 
@@ -171,7 +171,7 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
               </li>
             ))}
           </ol>
-          <span className="text-[11.5px] text-shodh-text-faint tabular-nums" aria-hidden="true">
+          <span className="text-caption text-shodh-text-faint tabular-nums" aria-hidden="true">
             {`Step ${index + 1} of ${FIRST_RUN_STEPS.length}`}
           </span>
         </div>
@@ -262,7 +262,7 @@ function WelcomeStep({ disclosure, ...props }: StepProps & { disclosure: string 
         <img src="/shodh_logo_nobackground.svg" alt="" aria-hidden="true" className="w-10 h-10" />
         <div className="flex flex-col gap-0.5">
           <StepHeading {...props}>Welcome to Shodh</StepHeading>
-          <p className="text-[13px] text-shodh-text-muted">A few short steps and you can ask questions about your documents.</p>
+          <p className="text-small text-shodh-text-muted">A few short steps and you can ask questions about your documents.</p>
         </div>
       </div>
       <ul className="flex flex-col gap-2.5">
@@ -272,14 +272,14 @@ function WelcomeStep({ disclosure, ...props }: StepProps & { disclosure: string 
             <li key={p.title} className="flex items-start gap-3 p-3 rounded-xl bg-shodh-raised">
               <Icon className="w-[18px] h-[18px] mt-0.5 shrink-0 text-shodh-accent-text" aria-hidden="true" />
               <span className="flex flex-col gap-0.5">
-                <span className="text-[13.5px] font-semibold text-shodh-text">{p.title}</span>
-                <span className="text-[12.5px] text-shodh-text-muted">{p.text}</span>
+                <span className="text-body font-semibold text-shodh-text">{p.title}</span>
+                <span className="text-small text-shodh-text-muted">{p.text}</span>
               </span>
             </li>
           );
         })}
       </ul>
-      <p className="m-0 text-[13px] leading-relaxed text-shodh-text-secondary">
+      <p className="m-0 text-small leading-relaxed text-shodh-text-secondary">
         {disclosure}
       </p>
     </div>
@@ -292,33 +292,33 @@ function SearchStep(props: StepProps) {
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Getting Shodh ready</StepHeading>
-        <p className="text-[13px] text-shodh-text-muted">
+        <p className="text-small text-shodh-text-muted">
           Two things run on this computer: search models, which find passages in your files by meaning, and the
           answer engine, which writes the answers from them.
         </p>
       </div>
       {setup.phase === 'checking' && (
-        <p role="status" className="flex items-center gap-2 text-[13px] text-shodh-text-muted">
+        <p role="status" className="flex items-center gap-2 text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 agent-spin" aria-hidden="true" />
           Checking what is already on this computer…
         </p>
       )}
       {setup.phase === 'ready' && (
-        <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-[13px] text-shodh-text">
+        <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-small text-shodh-text">
           <CheckCircle2 className="w-[18px] h-[18px] text-shodh-success shrink-0" aria-hidden="true" />
           Search models and answer engine are installed. Each is checked against its official copy before it is used.
         </p>
       )}
       <SetupCard />
       {setup.phase === 'installing' && (
-        <p className="text-[12px] text-shodh-text-muted">
+        <p className="text-caption text-shodh-text-muted">
           You can continue with the next steps; the download goes on in the background, even if you close this window.
         </p>
       )}
       <section aria-label="Optional: answer checking" className="p-4 rounded-xl border border-shodh-border bg-shodh-surface flex flex-col gap-2">
-        <p className="m-0 text-[12px] font-semibold uppercase tracking-[0.06em] text-shodh-text-faint">Optional</p>
+        <p className="m-0 text-caption font-semibold uppercase tracking-[0.06em] text-shodh-text-faint">Optional</p>
         <AnswerCheckModelRow />
-        <p className="m-0 text-[12px] text-shodh-text-faint">You can install it later in Settings → Search.</p>
+        <p className="m-0 text-caption text-shodh-text-faint">You can install it later in Settings → Search.</p>
       </section>
     </div>
   );
@@ -330,12 +330,12 @@ function ModelStep({ llmStatus, ...props }: StepProps & { llmStatus: FirstRunFlo
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Choose the model that answers</StepHeading>
-        <p className="text-[13px] text-shodh-text-muted">
+        <p className="text-small text-shodh-text-muted">
           Search finds the passages; a language model writes the answer from them. Connect one way below, then pick a model. You can change this any time in Settings.
         </p>
       </div>
       {llmStatus.connected && (
-        <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-[13px] text-shodh-text">
+        <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-small text-shodh-text">
           <CheckCircle2 className="w-[18px] h-[18px] text-shodh-success shrink-0" aria-hidden="true" />
           <span>
             {`Answers come from ${llmStatus.model}`}
@@ -347,7 +347,7 @@ function ModelStep({ llmStatus, ...props }: StepProps & { llmStatus: FirstRunFlo
         <ConnectPanel picker={picker} />
       </div>
       <div className="rounded-xl border border-shodh-border p-4 flex flex-col gap-2">
-        <h3 className="m-0 text-[13.5px] font-semibold text-shodh-text">Model</h3>
+        <h3 className="m-0 text-body font-semibold text-shodh-text">Model</h3>
         <ModelPicks picker={picker} />
       </div>
     </div>
@@ -360,13 +360,13 @@ function FolderStep({ sources, unlistedFiles, onAddFolder, ...props }: StepProps
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <StepHeading {...props}>Add your first folder</StepHeading>
-        <p className="text-[13px] text-shodh-text-muted">
+        <p className="text-small text-shodh-text-muted">
           Pick a folder of documents: PDFs, Word, Excel, PowerPoint, text or code. Shodh indexes it and its subfolders on
           this computer.
         </p>
       </div>
       {unlistedFiles > 0 && (
-        <p className="m-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-raised text-[13px] text-shodh-text-secondary">
+        <p className="m-0 flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-raised text-small text-shodh-text-secondary">
           <Check className="w-4 h-4 mt-px text-shodh-success shrink-0" aria-hidden="true" />
           <span>
             {`${countOf(unlistedFiles, 'file')} ${unlistedFiles === 1 ? 'is' : 'are'} already indexed outside the folders listed here. The Library can add their folders.`}
@@ -376,14 +376,14 @@ function FolderStep({ sources, unlistedFiles, onAddFolder, ...props }: StepProps
       {sources.length > 0 && (
         <ul className="flex flex-col gap-1.5" aria-label="Folders in your Library">
           {sources.map(s => (
-            <li key={s.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-shodh-raised text-[13px]">
+            <li key={s.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-shodh-raised text-small">
               {s.status === 'indexing' ? (
                 <Loader2 className="w-4 h-4 agent-spin text-shodh-warning shrink-0" aria-hidden="true" />
               ) : (
                 <Check className="w-4 h-4 text-shodh-success shrink-0" aria-hidden="true" />
               )}
               <span className="flex-1 truncate text-shodh-text">{s.name}</span>
-              <span className="text-[12px] text-shodh-text-faint tabular-nums">
+              <span className="text-caption text-shodh-text-faint tabular-nums">
                 {s.status === 'indexing'
                   ? s.fileCount > 0
                     ? `${(s.processedCount ?? 0).toLocaleString()} of ${s.fileCount.toLocaleString()}`
@@ -401,7 +401,7 @@ function FolderStep({ sources, unlistedFiles, onAddFolder, ...props }: StepProps
         </button>
       </div>
       {indexing && (
-        <p className="text-[12px] text-shodh-text-faint">Indexing continues in the background; you can move on.</p>
+        <p className="text-caption text-shodh-text-faint">Indexing continues in the background; you can move on.</p>
       )}
     </div>
   );
@@ -420,7 +420,7 @@ function DoneStep({ llmReady, hasFolder, ...props }: StepProps & { llmReady: boo
         </span>
         <StepHeading {...props}>{missing.length === 0 ? 'You are ready' : 'Almost there'}</StepHeading>
       </div>
-      <p className="text-[13px] text-shodh-text-muted">
+      <p className="text-small text-shodh-text-muted">
         {missing.length === 0
           ? 'Ask anything about your files. Press Ctrl+K at any time to jump to a view, a chat or a folder.'
           : `To get answers from your files, ${missing.join(' and ')}. You can reopen this setup from the command palette (Ctrl+K).`}

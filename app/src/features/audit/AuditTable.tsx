@@ -117,7 +117,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
           aria-rowindex={1}
           className={cn(
             GRID,
-            'h-8 px-3 border-b border-shodh-border-subtle text-[11px] uppercase tracking-wide text-shodh-text-faint',
+            'h-8 px-3 border-b border-shodh-border-subtle text-caption uppercase tracking-wide text-shodh-text-faint',
           )}
         >
           <span role="columnheader" className="sr-only">
@@ -136,7 +136,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
         className="relative h-[480px] overflow-y-auto scrollbar-thin"
       >
         {rows.length === 0 ? (
-          <p className="px-4 py-10 text-center text-[13px] text-shodh-text-muted">
+          <p className="px-4 py-10 text-center text-small text-shodh-text-muted">
             {loading ? 'Loading events…' : 'No events match these filters.'}
           </p>
         ) : (
@@ -156,7 +156,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                   <div
                     className={cn(
                       GRID,
-                      'px-3 text-[12.5px] border-b border-shodh-border-subtle',
+                      'px-3 text-small border-b border-shodh-border-subtle',
                       expanded ? 'bg-shodh-raised' : 'hover:bg-shodh-raised',
                     )}
                     style={{ height: ROW_HEIGHT }}
@@ -197,7 +197,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                           onClick={() => row.conversationId && onSelectConversation(row.conversationId)}
                           title={`Show only conversation ${row.conversationId}`}
                           className={cn(
-                            'font-mono text-[11.5px] text-shodh-text-faint hover:text-shodh-accent-text rounded',
+                            'font-mono text-caption text-shodh-text-faint hover:text-shodh-accent-text rounded',
                             FOCUS_RING,
                           )}
                         >
@@ -213,7 +213,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                       role="cell"
                       className="px-3 py-2 border-b border-shodh-border-subtle bg-shodh-ground"
                     >
-                      <dl className="m-0 mb-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11.5px]">
+                      <dl className="m-0 mb-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-caption">
                         <dt className="text-shodh-text-faint">Event</dt>
                         <dd className="m-0 font-mono text-shodh-text-secondary">
                           #{row.id} · {row.eventType} · {row.principal}
@@ -235,7 +235,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                           {row.hash}
                         </dd>
                       </dl>
-                      <pre className="m-0 max-h-[320px] overflow-auto scrollbar-thin rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-[11.5px] leading-[1.55] text-shodh-text-secondary whitespace-pre-wrap break-words">
+                      <pre className="m-0 max-h-[320px] overflow-auto scrollbar-thin rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary whitespace-pre-wrap break-words">
                         {prettyJson(row.payload, 20_000)}
                       </pre>
                     </div>
@@ -246,7 +246,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
           </div>
         )}
       </div>
-      <div className="h-8 px-3 flex items-center border-t border-shodh-border-subtle text-[11.5px] text-shodh-text-faint tabular-nums">
+      <div className="h-8 px-3 flex items-center border-t border-shodh-border-subtle text-caption text-shodh-text-faint tabular-nums">
         {loading && rows.length > 0
           ? `Loading… ${rows.length.toLocaleString()} of ${total.toLocaleString()}`
           : `${rows.length.toLocaleString()} of ${countOf(total, 'event')}`}

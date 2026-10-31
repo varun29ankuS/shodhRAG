@@ -65,7 +65,7 @@ export function FigureBlock({ source }: { source: string }) {
   if (state.status === 'loading' || !parts) {
     return (
       <figure className="my-4 rounded-xl border border-shodh-border bg-shodh-surface" aria-busy="true">
-        <div role="status" className="flex items-center gap-2 h-24 justify-center text-[12.5px] text-shodh-text-muted">
+        <div role="status" className="flex items-center gap-2 h-24 justify-center text-small text-shodh-text-muted">
           <Loader2 className="w-4 h-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           Finding the figure in the paper…
         </div>
@@ -100,16 +100,16 @@ export function FigureBlock({ source }: { source: string }) {
         <div className="bg-white p-3 flex justify-center">
           <FigureImage filePath={parts.filePath} page={figure.page} bbox={figure.bbox} alt={caption || `${figure.label} of ${parts.fileName}`} className="max-h-[560px] w-auto" />
         </div>
-        <figcaption className="flex items-start gap-3 px-3 py-2 border-t border-shodh-border-subtle text-[13px] leading-snug text-shodh-text-secondary">
+        <figcaption className="flex items-start gap-3 px-3 py-2 border-t border-shodh-border-subtle text-small leading-snug text-shodh-text-secondary">
           <span className="flex-1 min-w-0">
             {caption || figure.label}
-            <span className="block mt-0.5 text-[11.5px] text-shodh-text-muted">{`${parts.fileName}, page ${figure.page}`}</span>
+            <span className="block mt-0.5 text-caption text-shodh-text-muted">{`${parts.fileName}, page ${figure.page}`}</span>
           </span>
           <button
             type="button"
             onClick={showInPdf}
             className={cn(
-              'shrink-0 h-7 px-2 inline-flex items-center gap-1.5 rounded-lg text-[11.5px] text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
+              'shrink-0 h-7 px-2 inline-flex items-center gap-1.5 rounded-lg text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
               FOCUS_RING,
             )}
             aria-label={`Show ${figure.label} in ${parts.fileName}, page ${figure.page}`}

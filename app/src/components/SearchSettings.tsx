@@ -107,7 +107,7 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
         </div>
         <button
           onClick={onReset}
-          className="text-[10px] flex items-center gap-1 px-2 py-1 rounded border transition-colors"
+          className="text-caption flex items-center gap-1 px-2 py-1 rounded border transition-colors"
           style={{ borderColor: colors.border, color: colors.textMuted }}
         >
           <RotateCcw className="w-3 h-3" />
@@ -133,11 +133,11 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
           className="w-full h-1 rounded-full appearance-none cursor-pointer"
           style={{ accentColor: colors.primary }}
         />
-        <div className="flex justify-between text-[10px] mt-0.5" style={{ color: colors.textMuted }}>
+        <div className="flex justify-between text-caption mt-0.5" style={{ color: colors.textMuted }}>
           <span>{MIN_SEARCH_RESULTS} (fast)</span>
           <span>{MAX_SEARCH_RESULTS} (thorough)</span>
         </div>
-        <p className="text-[10px] mt-1.5" style={{ color: colors.textMuted }}>
+        <p className="text-caption mt-1.5" style={{ color: colors.textMuted }}>
           Each search combines meaning-based and keyword matching, then ranks the passages; the assistant may ask for more when a question needs it.
         </p>
       </div>

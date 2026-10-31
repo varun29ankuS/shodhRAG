@@ -2,8 +2,11 @@
  * Keyboard map of the focus pop-out stage. Esc is handled by the dialog
  * (stop a running side answer, then close).
  *
- * Pure module, unit-tested with Node (`app/tests/focusKeys.test.ts`).
+ * Pure module (its one import has its extension), unit-tested with Node
+ * (`app/tests/focusKeys.test.ts`). The zoom chords come from the shortcut registry.
  */
+
+import { IS_MAC_PLATFORM, matchesShortcut } from '../../lib/shortcuts.ts';
 
 export type FocusCommand =
   | 'zoomIn'

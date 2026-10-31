@@ -38,7 +38,8 @@ import { UserText } from './UserText';
 import { useChatSession } from './ChatSessionContext';
 import { useDraft } from './useDraft';
 import { useSendOptions } from './useSendOptions';
-import { AttachmentChips, FileRefChip, useComposerFile, useImageAttachments } from './AttachmentChips';
+import { AttachmentChips, FileRefChip, useChatFileScope, useImageAttachments } from './AttachmentChips';
+import type { ConversationFile } from './fileQuestion';
 import { attachedContextOf, attachmentLabel, composerAttachments } from './imageAttachments';
 import { composerFiles, fileNameOfPath, limitedToFiles, replaceFilePrefix } from './fileQuestion';
 import { missingIndexedFiles, reportMissingFiles } from './fileQuestionApi';
@@ -637,7 +638,13 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // Text read from images, sent with the next question as the user's own context.
   const attachments = useImageAttachments(session.activeConversationId);
   // The file the next question is about ("Ask about this file"): its search limit.
-  const aboutFile = useComposerFile(session.activeConversationId);
+  // "About <file>": the file stays the chat's search limit until its chip is removed.
+  const saveAboutFile = useCallback((file: ConversationFile | null) => {
+    const id = session.activeConversationId;
+    if (id) session.updateConversationMeta(id, { aboutFile: file ?? undefined });
+  }, [session.activeConversationId, session.updateConversationMeta]);
+  const fileScope = useChatFileScope(session.activeConversationId, session.activeConversation?.aboutFile, saveAboutFile);
+  const aboutFile = fileScope.file;
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [openArtifactId, setOpenArtifactId] = useState<string | null>(null);
   const previewTriggerRef = useRef<HTMLElement | null>(null);
@@ -914,7 +921,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       if (!accepted) return false;
       composerDrafts.set(conversationId, '');
       composerAttachments.consume(conversationId, attached);
-      composerFiles.consume(conversationId, queuedFile);
+      // The chat stays about the file (its chip and the conversation keep it).
+      if (queuedFile) fileScope.keep(queuedFile);
       return true;
     };
     // Before Shodh is ready the question waits for setup, and is sent from wherever the
@@ -938,12 +946,12 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       .then(missing => {
         if (shownConversationRef.current !== conversationId) return;
         if (missing.length === 0) go();
-        else reportMissingFiles(missing, false, () => composerFiles.set(conversationId, null));
+        else reportMissingFiles(missing, false, fileScope.remove);
       })
       .finally(() => {
         checkingFileRef.current = false;
       });
-  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold]);
+  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold, fileScope]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -1217,7 +1225,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onPasteImage={onPasteImage}
         attachments={(
           <>
-            {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} />}
+            {aboutFile && <FileRefChip conversationId={session.activeConversationId} file={aboutFile} onRemove={fileScope.remove} />}
             <AttachmentChips conversationId={session.activeConversationId} attachments={attachments} />
           </>
         )}

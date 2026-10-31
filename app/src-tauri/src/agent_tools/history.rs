@@ -445,6 +445,7 @@ mod tests {
             focus_threads: None,
             source: None,
             seed: None,
+            about_file: None,
         }
     }
 

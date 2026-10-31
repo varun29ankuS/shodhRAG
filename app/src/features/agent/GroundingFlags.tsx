@@ -247,7 +247,7 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
   const flagged = report.claims.filter(c => isFlagged(c.outcome));
   const weak = report.claims.filter(c => c.outcome === 'weak');
   const corrected = report.claims.filter(isCorrected);
-  const Icon = tone === 'ok' ? ShieldCheck : tone === 'partial' ? CircleHelp : AlertTriangle;
+  const Icon = tone === 'ok' ? ShieldCheck : tone === 'flagged' ? AlertTriangle : CircleHelp;
   // One-time hints: what to do about flagged statements, else what the chip is.
   const hint = flagged.length > 0 && explainFlags ? 'flags' : explainChip ? 'chip' : null;
   const hintButton = cn(
@@ -296,7 +296,7 @@ export function GroundingChip({ report, hits, onOpenCitation, onCiteInstead, com
             'list-none [&::-webkit-details-marker]:hidden w-fit inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border cursor-pointer select-none tabular-nums transition-colors duration-micro',
             compact ? 'text-[11.5px]' : 'text-[12px]',
             tone === 'ok' && 'border-shodh-success/40 bg-shodh-success-soft text-shodh-success',
-            tone === 'partial' && 'border-shodh-border bg-shodh-raised text-shodh-text-secondary',
+            (tone === 'partial' || tone === 'uncited') && 'border-shodh-border bg-shodh-raised text-shodh-text-secondary',
             tone === 'flagged' && 'border-shodh-warning/50 bg-shodh-warning-soft text-shodh-warning',
             FOCUS_RING,
           )}

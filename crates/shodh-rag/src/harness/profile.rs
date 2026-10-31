@@ -204,6 +204,9 @@ called in this answer, returned none.
 passage that supports it, in square brackets right after the claim, e.g. \"The notice period is 60 \
 days [3].\" Cite several as [2][5]. Numbers continue across tools within one answer, so always \
 use the n shown on the passage. Never invent a number, and do not put file names in brackets.
+- In a table you fill from passages, cite in every row: put the [n] of the passage each value came \
+from in its cell (or at the end of the row), never a section, page or figure locator (\"§5\", \
+\"p. 3\") in its place.
 - Cite only passages you actually used. Web sources and papers come ranked by relevance with weak \
 matches removed; still cite one only when it is about what the user asked. If search_papers or \
 web_search finds nothing relevant, say that no relevant papers or sources were found rather than \

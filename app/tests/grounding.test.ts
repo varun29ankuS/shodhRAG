@@ -130,8 +130,26 @@ test('the summary chip counts supported claims of the checkable ones', () => {
   assert.equal(summaryTone(summary({ unsupported: 0, uncited: 0 })), 'ok');
   assert.equal(
     summaryDescription(summary({})),
-    '14 of 16 checked statements supported by their sources, 2 flagged',
+    '14 of 16 checked statements supported by their sources, 1 not supported by the source they cite, 1 statement without a citation',
   );
+});
+
+test('statements without a citation read apart from statements their source does not back', () => {
+  // Only uncited statements (e.g. table rows): a neutral chip that says so.
+  const uncited = summary({ supported: 2, unsupported: 0, uncited: 4, checked: 6 });
+  assert.equal(summaryTone(uncited), 'uncited');
+  assert.equal(summaryLabel(uncited), '4 statements have no citation');
+  assert.equal(summaryLabel(summary({ supported: 5, unsupported: 0, uncited: 1, checked: 6 })), '1 statement has no citation');
+  assert.equal(
+    summaryDescription(uncited),
+    '2 of 6 checked statements supported by their sources, 4 statements without a citation',
+  );
+  // Any statement the cited source does not back, or a citation of no source, is the warning.
+  assert.equal(summaryTone(summary({ unsupported: 1, uncited: 4 })), 'flagged');
+  assert.equal(summaryTone(summary({ unsupported: 0, invalid: 1, uncited: 0 })), 'flagged');
+  assert.equal(summaryLabel(summary({ unsupported: 1, uncited: 4 })), 'Grounded 14/16');
+  // Nothing checked is loosened: uncited statements are still counted and listed.
+  assert.equal(summariseClaims([]).uncited, 0);
 });
 
 function report(partial: Partial<GroundingReport>): GroundingReport {

@@ -9,6 +9,7 @@ import PrintView from "./features/print/PrintView";
 import { ThemeProvider, useTheme } from "./contexts/ThemeContext";
 import { SidebarProvider } from "./contexts/SidebarContext";
 import { SearchModelsProvider } from "./features/setup/SearchModelsContext";
+import { RuntimeSetupProvider } from "./features/setup/RuntimeSetupContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { StoreNoticeToasts } from "./components/StoreNoticeToasts";
 import { Toaster } from "sonner";
@@ -84,7 +85,9 @@ if (path === '/print-view') {
           <ThemeProvider>
             <SidebarProvider>
               <SearchModelsProvider>
-                <App />
+                <RuntimeSetupProvider>
+                  <App />
+                </RuntimeSetupProvider>
               </SearchModelsProvider>
               <ThemedToaster />
               <StoreNoticeToasts />

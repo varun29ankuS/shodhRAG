@@ -156,9 +156,11 @@ impl HostTool for AddFolderTool {
             },
         );
         Ok(ToolOutput {
+            // The folder's name only: its path never reaches the model.
             text_for_model: format!(
-                "Started indexing {folder_text} as source {source_id}. It runs in the background; \
-                 its documents become searchable as files finish."
+                "Started indexing the folder \"{}\" as source {source_id}. It runs in the \
+                 background; its documents become searchable as files finish.",
+                shodh_rag::research::file_name(&folder_text)
             ),
             summary_for_ui: format!("Indexing {folder_text}"),
             detail: Some(json!({ "sourceId": source_id, "path": folder_text })),
@@ -224,7 +226,8 @@ impl HostTool for ReindexSourceTool {
         );
         Ok(ToolOutput {
             text_for_model: format!(
-                "Started re-indexing {folder} (source {source_id}) in the background."
+                "Started re-indexing the folder \"{}\" (source {source_id}) in the background.",
+                shodh_rag::research::file_name(&folder)
             ),
             summary_for_ui: format!("Re-indexing {folder}"),
             detail: Some(json!({ "sourceId": source_id, "path": folder })),
@@ -297,7 +300,8 @@ impl HostTool for RemoveSourceTool {
         );
         Ok(ToolOutput {
             text_for_model: format!(
-                "Removed {folder} (source {source_id}, {} files, {deleted} chunks) from the index. Files on disk were not touched.",
+                "Removed the folder \"{}\" (source {source_id}, {} files, {deleted} chunks) from the index. Files on disk were not touched.",
+                shodh_rag::research::file_name(&folder),
                 source.files
             ),
             summary_for_ui: format!("Removed {folder} from the index"),

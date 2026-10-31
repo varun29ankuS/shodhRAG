@@ -8,6 +8,7 @@ import {
   describeProgress,
   errorMessage,
   installFraction,
+  isOfflineError,
   isInstallProgress,
   isSearchModelsStatus,
   scanReaderSummary,
@@ -77,7 +78,8 @@ test('progress fraction is clamped and null before the first event', () => {
   assert.equal(installFraction({ ...p, overallBytes: 2000 }), 1);
   assert.equal(installFraction({ ...p, overallTotal: 0 }), null);
   assert.match(describeProgress(p), /^Downloading E5 tokenizer/);
-  assert.match(describeProgress({ ...p, phase: 'verifying' }), /SHA-256/);
+  assert.equal(describeProgress({ ...p, phase: 'verifying' }), 'Checking E5 tokenizer matches the official copy…');
+  assert.doesNotMatch(describeProgress({ ...p, phase: 'verifying' }), /SHA|sha256|checksum/i);
   assert.equal(describeProgress(null), 'Connecting…');
 });
 
@@ -118,4 +120,11 @@ test('the scan reader is read from its own model files', () => {
 
   const windowsPaths = scanReaderSummary(status([det({ relativePath: 'pp-ocrv6\\det.onnx' })]));
   assert.equal(windowsPaths?.installed, false);
+});
+test('an install that could not connect is recognised and its code is not shown', () => {
+  const raw = "offline: couldn't reach Hugging Face to download E5 embedding model. Check the internet connection and try again";
+  assert.equal(isOfflineError(raw), true);
+  assert.equal(isOfflineError(new Error(raw)), true);
+  assert.equal(isOfflineError('downloading E5 failed: HTTP 500'), false);
+  assert.match(errorMessage(raw), /^Couldn't reach Hugging Face/);
 });

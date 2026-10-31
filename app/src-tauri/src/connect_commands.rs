@@ -20,7 +20,8 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use shodh_rag::audit::{payload as audit_payload, AuditEventType, AuditRecord};
-use shodh_rag::harness::catalog_fetch::{fetch_lmstudio, fetch_ollama, verify_key, KeyCheckError};
+use shodh_rag::harness::catalog_fetch::{fetch_ollama, verify_key, KeyCheckError};
+use shodh_rag::harness::lmstudio::{self, LmStudioState};
 use shodh_rag::harness::model_catalog::{
     detect_key_provider, is_plausible_key, KeyDetection, ProviderId,
 };
@@ -102,8 +103,39 @@ pub struct SubscriptionStatus {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalServer {
+    /// Its server answers (LM Studio: with or without a chat model loaded).
     pub running: bool,
     pub models: Vec<String>,
+    /// LM Studio only: what detection found, so the UI says exactly what to do.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<LmStudioState>,
+    /// LM Studio only: the address that was asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// LM Studio only: an API token is saved for it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub has_token: bool,
+}
+
+/// Credential-store user of LM Studio's API token (its server's "Require API
+/// token" option). Not a provider key: the provider key commands never touch it.
+pub const LMSTUDIO_TOKEN_USER: &str = "lmstudio-api-token";
+
+/// LM Studio's saved API token, if any.
+pub async fn lmstudio_token() -> Option<String> {
+    match tokio::task::spawn_blocking(|| api_key_store::load_secret(LMSTUDIO_TOKEN_USER)).await {
+        Ok(Ok(token)) => token
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "shodh::connect", "LM Studio token not read: {e}");
+            None
+        }
+        Err(e) => {
+            tracing::warn!(target: "shodh::connect", error = %e, "credential store task failed");
+            None
+        }
+    }
 }
 
 /// Process-wide connect state: the last subscription statuses, the last
@@ -178,37 +210,56 @@ fn data_dir(app: &AppHandle) -> ConnectResult<PathBuf> {
 }
 
 /// LM Studio's address: the Advanced override, else `LM_STUDIO_BASE_URL`,
-/// else the default.
+/// else the port in LM Studio's own server settings, else the default.
 pub fn lmstudio_url(app: &AppHandle) -> String {
     let saved = data_dir(app)
         .ok()
         .and_then(|dir| SettingsStore::in_dir(&dir).load().ok())
         .and_then(|s| s.models.base_url(ProviderId::LmStudio).map(str::to_string));
-    saved
-        .or_else(|| {
-            std::env::var(shodh_rag::harness::model::LM_STUDIO_URL_VAR)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
+    lmstudio_address(
+        saved,
+        std::env::var(shodh_rag::harness::model::LM_STUDIO_URL_VAR).ok(),
+        lmstudio::configured_port_for_user(),
+    )
+}
+
+/// LM Studio's address from, in order: the Advanced override, `LM_STUDIO_BASE_URL`,
+/// the port in LM Studio's own server settings, the default.
+fn lmstudio_address(
+    saved: Option<String>,
+    env: Option<String>,
+    settings_port: Option<u16>,
+) -> String {
+    let given = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    given(saved)
+        .or_else(|| given(env))
+        .or_else(|| settings_port.map(|port| format!("http://127.0.0.1:{port}/v1")))
         .unwrap_or_else(|| LM_STUDIO_DEFAULT_BASE_URL.to_string())
 }
 
 /// Detect LM Studio and Ollama on this computer (loopback only).
 pub async fn refresh_local(app: &AppHandle, state: &ConnectState, ollama_host: &str) {
     let lm_url = lmstudio_url(app);
-    let (lm, ol) = tokio::join!(fetch_lmstudio(&lm_url), fetch_ollama(ollama_host));
-    *lock(&state.lmstudio) = match lm {
-        Ok(models) => LocalServer {
-            running: true,
-            models,
-        },
-        Err(_) => LocalServer::default(),
+    let token = lmstudio_token().await;
+    let (lm, ol) = tokio::join!(
+        lmstudio::detect(&lm_url, token.as_deref()),
+        fetch_ollama(ollama_host)
+    );
+    *lock(&state.lmstudio) = LocalServer {
+        running: matches!(
+            lm.state,
+            LmStudioState::Running | LmStudioState::NoChatModel
+        ),
+        models: lm.models,
+        state: Some(lm.state),
+        address: Some(lm.address),
+        has_token: token.is_some(),
     };
     *lock(&state.ollama) = match ol {
         Ok(models) => LocalServer {
             running: true,
             models,
+            ..LocalServer::default()
         },
         Err(_) => LocalServer::default(),
     };
@@ -614,6 +665,33 @@ pub async fn connect_save_key(
     })
 }
 
+/// Save LM Studio's API token (for a server with "Require API token" on) in the OS
+/// credential store, or remove it with an empty `token`. Detection and the agent
+/// runtime (`LM_STUDIO_API_KEY`) use it from then on.
+#[tauri::command]
+pub async fn connect_set_lmstudio_token(app: AppHandle, token: String) -> ConnectResult<()> {
+    let token = token.trim().to_string();
+    if token.len() > 4096 || token.chars().any(char::is_control) {
+        return Err(ConnectError::new(
+            "invalid",
+            "That doesn't look like an LM Studio API token.".to_string(),
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        if token.is_empty() {
+            api_key_store::remove_secret(LMSTUDIO_TOKEN_USER)
+        } else {
+            api_key_store::store_secret(LMSTUDIO_TOKEN_USER, &token)
+        }
+    })
+    .await
+    .map_err(|e| ConnectError::new("failed", format!("Credential store task failed: {e}")))?
+    .map_err(|e| ConnectError::new("failed", e))?;
+    crate::agent_session_commands::stop_provider_sessions(&app, ProviderId::LmStudio).await;
+    crate::connection_health::notify(&app);
+    Ok(())
+}
+
 /// Remove a saved key (an environment key, if set, is used from then on).
 ///
 /// Every copy goes: the vault entry, the in-memory key, the copy the
@@ -687,6 +765,36 @@ pub fn migrate_env_keys_once(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lm_studio_is_looked_for_at_the_port_its_own_settings_name() {
+        assert_eq!(
+            lmstudio_address(None, None, None),
+            LM_STUDIO_DEFAULT_BASE_URL
+        );
+        assert_eq!(
+            lmstudio_address(None, None, Some(4321)),
+            "http://127.0.0.1:4321/v1"
+        );
+        // The environment and the Advanced override win, in that order.
+        assert_eq!(
+            lmstudio_address(None, Some("http://127.0.0.1:9000/v1".into()), Some(4321)),
+            "http://127.0.0.1:9000/v1"
+        );
+        assert_eq!(
+            lmstudio_address(
+                Some("http://localhost:7000/v1".into()),
+                Some("x".into()),
+                Some(4321)
+            ),
+            "http://localhost:7000/v1"
+        );
+        // Blank values are no value.
+        assert_eq!(
+            lmstudio_address(Some(" ".into()), Some(String::new()), Some(4321)),
+            "http://127.0.0.1:4321/v1"
+        );
+    }
 
     #[test]
     fn keys_are_routed_by_prefix_or_by_choice() {

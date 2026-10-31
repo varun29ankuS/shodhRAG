@@ -714,3 +714,124 @@ mod tests {
         assert_eq!(registered, allowed);
     }
 }
+
+#[cfg(test)]
+mod no_paths_tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    /// Whether `text` holds the folders of `dir` (either separator, any case).
+    fn holds_folder(text: &str, dir: &std::path::Path) -> bool {
+        let text = text.to_lowercase().replace('\\', "/");
+        let dir = dir.display().to_string().to_lowercase().replace('\\', "/");
+        let dir = dir.trim_start_matches("//?/");
+        text.contains(dir) || text.contains("alice-private")
+    }
+
+    /// Every tool the assistant has, called with no arguments and with the arguments a
+    /// conversation about an indexed file uses, never puts the user's folders into what
+    /// the model reads: its output text or its error. A path holds the user's name and
+    /// folders, which an answer could quote.
+    #[tokio::test]
+    async fn no_model_visible_tool_output_holds_a_local_path() {
+        let t = testing::host_with_search_models().await;
+        let folder = t
+            .dir
+            .path()
+            .join("Users")
+            .join("alice-private")
+            .join("Papers");
+        std::fs::create_dir_all(folder.join("Drafts")).unwrap();
+        let file = folder.join("delta notes.md");
+        std::fs::write(
+            &file,
+            "# Delta\n\nThe chunkwise form is faster than the recurrent form on long sequences.\n",
+        )
+        .unwrap();
+        let source_id = testing::index_folder(&t, &folder).await;
+        t.host
+            .rag
+            .write()
+            .await
+            .add_document_from_file(
+                &file,
+                HashMap::from([("space_id".to_string(), source_id.clone())]),
+            )
+            .await
+            .unwrap();
+        let registry = build_registry(t.host.clone()).unwrap();
+        let (ctx, _rx) = testing::ctx();
+
+        // The calls a conversation about the file makes, in order (the search numbers the
+        // passage the later calls name), then every tool with no arguments.
+        let mut calls: Vec<(String, Value)> = vec![
+            (
+                "search_documents".into(),
+                json!({"query": "chunkwise form"}),
+            ),
+            ("open_document".into(), json!({"passage": 1})),
+            ("open_document".into(), json!({"path": "delta notes.md"})),
+            ("open_document".into(), json!({"path": "missing.md"})),
+            ("show_document".into(), json!({"number": 1})),
+            ("show_document".into(), json!({"path": "delta notes.md"})),
+            ("show_document".into(), json!({"path": "other.pdf"})),
+            ("list_sources".into(), json!({})),
+            ("list_sources".into(), json!({"source_id": source_id})),
+            ("list_sources".into(), json!({"source_id": "nope"})),
+            ("show_source".into(), json!({"source_id": source_id})),
+            (
+                "search_documents".into(),
+                json!({"query": "chunkwise", "sources": ["nothing-here"]}),
+            ),
+            (
+                "list_directory".into(),
+                json!({"path": "papers", "recursive": true}),
+            ),
+            (
+                "list_directory".into(),
+                json!({"path": folder.display().to_string()}),
+            ),
+            (
+                "create_folder".into(),
+                json!({"parent": "papers", "name": "Notes"}),
+            ),
+            (
+                "create_folder".into(),
+                json!({"parent": "papers", "name": "Notes"}),
+            ),
+            ("reindex_source".into(), json!({"source_id": source_id})),
+        ];
+        for name in registry.names() {
+            calls.push((name.to_string(), json!({})));
+        }
+
+        let mut leaks = Vec::new();
+        let mut ran = 0;
+        for (name, args) in calls {
+            let Some(tool) = registry.tool(&name) else {
+                continue;
+            };
+            let outcome =
+                tokio::time::timeout(Duration::from_secs(20), tool.execute(args.clone(), &ctx))
+                    .await;
+            let text = match outcome {
+                Ok(Ok(out)) => out.text_for_model,
+                Ok(Err(e)) => e.to_string(),
+                // A call that does not finish shows the model nothing.
+                Err(_) => continue,
+            };
+            ran += 1;
+            if holds_folder(&text, t.dir.path()) {
+                leaks.push(format!("{name} {args}: {text}"));
+            }
+        }
+        assert!(ran > 20, "the sweep ran only {ran} calls");
+        assert!(
+            leaks.is_empty(),
+            "model-visible text with a local path:\n{}",
+            leaks.join("\n\n")
+        );
+    }
+}

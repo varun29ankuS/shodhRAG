@@ -222,6 +222,14 @@ pub fn run() {
                 .map_err(|e| setup_error("Failed to create the app data directory", e))?;
 
             tracing::info!("App data directory: {:?}", app_data_dir);
+            // Leftover answer-engine downloads that can never resume (earlier builds wrote
+            // them under random names) are removed; the current one is kept to resume.
+            {
+                let dir = app_data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    shodh_rag::harness::sidecar::sweep_stale_downloads(&dir).await;
+                });
+            }
 
             // Audit log first, so every later event can be recorded.
             let audit_state = audit_commands::AuditState::open(&app_data_dir);
@@ -673,6 +681,7 @@ pub fn run() {
             connect_commands::connect_sign_in_cancel,
             connect_commands::connect_sign_out,
             connect_commands::connect_save_key,
+            connect_commands::connect_set_lmstudio_token,
             connect_commands::connect_remove_key,
             connection_health::connection_status,
             connection_health::connection_check,
@@ -752,6 +761,7 @@ pub fn run() {
             app_settings::set_app_policy,
             app_settings::set_memory_preferences,
             app_settings::set_answer_preferences,
+            app_settings::set_code_mode,
             // Desktop notifications (Settings → Notifications)
             notifications::set_notification_preferences,
             notifications::send_test_notification,

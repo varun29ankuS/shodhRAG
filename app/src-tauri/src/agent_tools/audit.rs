@@ -134,7 +134,12 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
                 .unwrap_or(0);
             match p.get("query").and_then(Value::as_str) {
                 Some(q) => format!("{} retrieved {passages} passages for \"{q}\"", s(p, "tool")),
-                None => format!("{} read {}", s(p, "tool"), s(p, "path")),
+                // The file's name only: its path never reaches the model.
+                None => format!(
+                    "{} read {}",
+                    s(p, "tool"),
+                    shodh_rag::research::file_name(s(p, "path"))
+                ),
             }
         }
         "answer" => {
@@ -146,7 +151,12 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
                 s(p, "model")
             )
         }
-        "source_change" => format!("{} {} via {}", s(p, "action"), s(p, "path"), s(p, "via")),
+        "source_change" => format!(
+            "{} {} via {}",
+            s(p, "action"),
+            shodh_rag::research::file_name(s(p, "path")),
+            s(p, "via")
+        ),
         "settings_change" => {
             let action = s(p, "action");
             match p.get("key").and_then(Value::as_str) {

@@ -6,7 +6,8 @@ import { Check, Copy, KeyRound, Loader2, LogIn, Monitor } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import type { ModelPickerHandle, SignInEvent } from './modelApi';
-import { SIGN_IN_EVENT, connectApi, toConnectError } from './modelApi';
+import { SIGN_IN_EVENT, connectApi, modelApi, toConnectError } from './modelApi';
+import { lmStudioStatus } from './modelFormat';
 import type { PickerView, ProviderId, SubscriptionStatus } from './modelTypes';
 import { KEY_PROVIDERS, PROVIDER_LABELS } from './modelTypes';
 import { FIX_KEY_EVENT, peekFixKeyRequest, takeFixKeyRequest } from './navigation';
@@ -419,28 +420,123 @@ function ApiKeyRow({ picker, fixFor, onSaved }: { picker: ModelPickerHandle; fix
   );
 }
 
+/** LM Studio's state in plain words, with the fix it needs: its API token, or the address. */
+function LmStudioRow({ picker }: { picker: ModelPickerHandle }) {
+  const { view, reload } = picker;
+  const [token, setToken] = useState('');
+  const [address, setAddress] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const tokenId = useId();
+  const addressId = useId();
+  if (!view) return null;
+  const server = view.lmstudio;
+  const status = lmStudioStatus(server);
+  const saved = view.prefs.baseUrls.find(b => b.provider === 'lmstudio')?.url ?? '';
+
+  const run = async (action: () => Promise<unknown>) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await action();
+      await reload(false);
+      return true;
+    } catch (e) {
+      setError(toConnectError(e).message);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-medium text-shodh-text">LM Studio</span>
+      <span
+        role="status"
+        className={status.tone === 'ok' ? 'text-shodh-text-secondary' : status.tone === 'warn' ? 'text-shodh-text' : 'text-shodh-text-muted'}
+      >
+        {status.text}
+      </span>
+      {status.fix === 'token' && (
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={e => {
+            e.preventDefault();
+            void run(() => connectApi.setLmStudioToken(token)).then(ok => { if (ok) setToken(''); });
+          }}
+        >
+          <label htmlFor={tokenId} className="sr-only">LM Studio API token</label>
+          <input
+            id={tokenId}
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            placeholder="LM Studio API token"
+            className={cn(INPUT, 'flex-1 min-w-[12rem]')}
+          />
+          <button type="submit" className={PRIMARY_BUTTON} disabled={saving || token.trim().length === 0}>
+            Save token
+          </button>
+        </form>
+      )}
+      {status.fix === 'address' && address === null && (
+        <div>
+          <button type="button" className={BUTTON} onClick={() => setAddress(saved || server.address || '')}>
+            Change the address
+          </button>
+        </div>
+      )}
+      {status.fix === 'address' && address !== null && (
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={e => {
+            e.preventDefault();
+            void run(() => modelApi.setBaseUrl('lmstudio', address.trim() || null)).then(ok => { if (ok) setAddress(null); });
+          }}
+        >
+          <label htmlFor={addressId} className="text-[12.5px] text-shodh-text-secondary">LM Studio server address</label>
+          <input
+            id={addressId}
+            spellCheck={false}
+            value={address}
+            onChange={e => setAddress(e.target.value)}
+            placeholder="http://127.0.0.1:1234/v1"
+            className={cn(INPUT, 'flex-1 min-w-[14rem] font-mono')}
+          />
+          <button type="submit" className={PRIMARY_BUTTON} disabled={saving}>
+            Save
+          </button>
+          <button type="button" className={BUTTON} onClick={() => setAddress(null)} disabled={saving}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {server.hasToken && status.fix !== 'token' && (
+        <div>
+          <button type="button" className={BUTTON} disabled={saving} onClick={() => void run(() => connectApi.setLmStudioToken(''))}>
+            Remove the saved token
+          </button>
+        </div>
+      )}
+      {error && <p role="alert" className="m-0 text-[12.5px] text-shodh-error">{error}</p>}
+    </div>
+  );
+}
+
 function LocalRow({ picker }: { picker: ModelPickerHandle }) {
   const { view, reload, loading } = picker;
   if (!view) return null;
-  const { lmstudio, ollama } = view;
+  const { ollama } = view;
   return (
     <section data-connect-target="local" className="py-4 last:pb-0 flex flex-col gap-3" aria-label="Run locally">
       <RowHeading icon={Monitor} title="Run locally">
         Models on this computer answer without anything leaving it.
       </RowHeading>
       <div className="pl-7 flex flex-col gap-3 text-[12.5px]">
-        <div className="flex flex-col gap-1">
-          <span className="font-medium text-shodh-text">LM Studio</span>
-          {lmstudio.running ? (
-            lmstudio.models.length > 0 ? (
-              <span className="text-shodh-text-secondary">{`Running with ${lmstudio.models.join(', ')}.`}</span>
-            ) : (
-              <span className="text-shodh-text-muted">Running, but no model is loaded. Load one in LM Studio.</span>
-            )
-          ) : (
-            <span className="text-shodh-text-muted">Not running. Start the LM Studio server (port 1234) to use its models.</span>
-          )}
-        </div>
+        <LmStudioRow picker={picker} />
         <div className="flex flex-col gap-1">
           <span className="font-medium text-shodh-text">Ollama</span>
           {ollama.running ? (

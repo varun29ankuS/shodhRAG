@@ -81,6 +81,7 @@ import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
 import { useSidebar } from './contexts/SidebarContext';
+import { useQueuedQuestionSender } from './features/setup/useQueuedQuestion';
 import { ChatSessionProvider, useChatSession } from './features/ask/ChatSessionContext';
 import { WorkspaceProvider, useWorkspaces } from './features/workspaces/WorkspaceContext';
 import { sourceSummary, workspaceForNewChat } from './features/workspaces/model';
@@ -182,7 +183,10 @@ function AppSplitView() {
     updateMessage,
     navigation,
     streamingConversationId,
+    sideRun,
   } = useChatSession();
+  // A question asked before Shodh was ready goes out once it is, whichever view is open.
+  useQueuedQuestionSender(activeConversationId, streamingConversationId !== null || sideRun !== null);
 
   // Workspaces: the sidebar groups chats by them, new chats start in the current one.
   const {

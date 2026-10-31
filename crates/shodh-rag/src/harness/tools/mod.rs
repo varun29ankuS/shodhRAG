@@ -76,6 +76,9 @@ pub struct CitedPassage {
     pub checkable: bool,
 }
 
+/// Most passages of a session's earlier runs kept for opening by number.
+pub const MAX_EARLIER_PASSAGES: usize = 2_000;
+
 /// Most characters of opened document text kept per run for checking
 /// claims (`open_document` returns at most 12 000 per call).
 pub const MAX_OPENED_CHARS: usize = 120_000;
@@ -86,8 +89,14 @@ pub const MAX_OPENED_CHARS: usize = 120_000;
 /// `[n]` to its source.
 #[derive(Debug, Default)]
 pub struct RunPassages {
+    /// Numbers handed out in this session. Not reset between runs: a number names one
+    /// passage for the whole session, so `[4]` of an earlier answer (which the model still
+    /// sees in the conversation) never means another passage in a later one.
     issued: AtomicU32,
     cited: Mutex<BTreeMap<u32, CitedPassage>>,
+    /// Passages of the session's earlier runs, by number, so a document an earlier answer
+    /// cited can still be opened by its number ([`document_of_passage`]).
+    earlier: Mutex<BTreeMap<u32, CitedPassage>>,
     /// Text read with `open_document` this run, by file path, in order.
     opened: Mutex<Vec<(String, String)>>,
     /// The session has had private content (a document passage, opened
@@ -123,12 +132,60 @@ impl RunPassages {
         self.private.load(Ordering::SeqCst)
     }
 
-    /// Forget every number (a new run starts). What the session has seen
+    /// A new run starts: its passages are its own (what the run's answer is checked
+    /// against), the earlier run's move to [`Self::earlier`], and numbering continues so
+    /// no number is reused within the session. What the session has seen
     /// ([`Self::private_seen`]) is kept.
     pub fn reset(&self) {
-        self.issued.store(0, Ordering::SeqCst);
-        self.lock().clear();
+        let finished = std::mem::take(&mut *self.lock());
+        let mut earlier = self.earlier.lock().unwrap_or_else(|e| e.into_inner());
+        earlier.extend(finished);
+        // Bounded: the oldest numbers go first.
+        while earlier.len() > MAX_EARLIER_PASSAGES {
+            earlier.pop_first();
+        }
+        drop(earlier);
         self.lock_opened().clear();
+    }
+
+    /// A passage an earlier run of this session numbered `n`.
+    pub fn earlier(&self, n: u32) -> Option<CitedPassage> {
+        self.earlier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&n)
+            .cloned()
+    }
+
+    /// The passages of this run and the earlier ones, newest first, whose file is `name`
+    /// (its file name, case-insensitive).
+    pub fn named(&self, name: &str) -> Vec<CitedPassage> {
+        let wanted = name.trim().to_lowercase();
+        let matches = |p: &CitedPassage| {
+            !p.web
+                && (p.file.to_lowercase() == wanted
+                    || p.path
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .is_some_and(|f| f.to_lowercase() == wanted))
+        };
+        let mut out: Vec<CitedPassage> = self
+            .lock()
+            .values()
+            .rev()
+            .filter(|p| matches(*p))
+            .cloned()
+            .collect();
+        out.extend(
+            self.earlier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .rev()
+                .filter(|p| matches(*p))
+                .cloned(),
+        );
+        out
     }
 
     /// Remember document text the run read (beyond numbered passages), up to
@@ -212,6 +269,47 @@ impl RunPassages {
             cited.insert(passage.n, passage.clone());
         }
         self.issued.fetch_max(highest, Ordering::SeqCst);
+    }
+}
+
+/// The indexed file behind passage `[n]` of this answer or an earlier one of the
+/// session (numbers are unique within a session). Web pages, notes and calendar
+/// items are not files.
+pub fn document_of_passage(ctx: &ToolContext, n: u64) -> Result<CitedPassage, ToolError> {
+    let passage = u32::try_from(n)
+        .ok()
+        .and_then(|n| ctx.cited_passage(n).or_else(|| ctx.earlier_passage(n)))
+        .ok_or_else(|| {
+            ToolError::NotFound(format!(
+                "There is no passage [{n}] in this conversation. Use the number of a passage \
+                 search_documents returned, or the document's file name."
+            ))
+        })?;
+    if passage.web || passage.path.contains("://") {
+        return Err(ToolError::Forbidden(format!(
+            "Passage [{n}] is not from an indexed file (it is a web page, a note or a calendar \
+             item), so it cannot be opened."
+        )));
+    }
+    Ok(passage)
+}
+
+/// The indexed file a file name stands for among the documents this conversation's
+/// answers found: `Ok(None)` when none of them has that name, an error (counting, never
+/// listing paths) when several different files do.
+pub fn document_named(ctx: &ToolContext, name: &str) -> Result<Option<CitedPassage>, ToolError> {
+    let found = ctx.passages_named(name);
+    let mut paths: Vec<&str> = found.iter().map(|p| p.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    match paths.len() {
+        0 => Ok(None),
+        1 => Ok(found.into_iter().next()),
+        n => Err(ToolError::NotFound(format!(
+            "{} names {n} different documents in this conversation; name it by the number of \
+             one of its passages instead.",
+            name.trim()
+        ))),
     }
 }
 
@@ -693,6 +791,16 @@ impl ToolContext {
         self.plan.replace(items)
     }
 
+    /// What `[n]` referred to in an earlier answer of this session.
+    pub fn earlier_passage(&self, n: u32) -> Option<CitedPassage> {
+        self.passages.earlier(n)
+    }
+
+    /// Passages of this session (this answer first) whose file is `name`.
+    pub fn passages_named(&self, name: &str) -> Vec<CitedPassage> {
+        self.passages.named(name)
+    }
+
     /// What `[n]` refers to in this run, if it was issued.
     pub fn cited_passage(&self, n: u32) -> Option<CitedPassage> {
         self.passages.get(n)
@@ -1038,6 +1146,11 @@ impl ToolRegistry {
 
     pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|r| r.tool.name()).collect()
+    }
+
+    /// A registered tool, to call it directly (tests that sweep every tool).
+    pub fn tool(&self, name: &str) -> Option<Arc<dyn HostTool>> {
+        self.get(name).map(|r| r.tool.clone())
     }
 
     /// A registered tool's label, description and tier.
@@ -2613,9 +2726,16 @@ mod tests {
         );
         assert_eq!(passages.issued(), 4);
         passages.reset();
+        // The new run's passages are its own...
         assert!(passages.get(2).is_none());
+        assert!(passages.all().is_empty());
         assert!(passages.opened().is_empty());
-        assert_eq!(passages.reserve(1), 1);
+        // ...the earlier one's stay reachable by their numbers, and numbering continues,
+        // so [2] never names another passage later in the session.
+        assert_eq!(passages.earlier(2).unwrap().file, "a.pdf");
+        assert_eq!(passages.reserve(1), 5);
+        assert_eq!(passages.named("A.PDF").len(), 1);
+        assert!(passages.named("b.pdf").is_empty());
     }
 
     #[test]

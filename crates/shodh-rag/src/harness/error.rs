@@ -11,14 +11,17 @@ pub enum HarnessError {
         version: &'static str,
     },
 
-    #[error("The agent runtime at {path} failed its integrity check (expected sha256 {expected}, found {actual}). Delete it and download it again.")]
+    /// The plain sentence comes first; the checksums stay in the fields and in the
+    /// tracing log (`verify_binary`, `fetch_omp`) for diagnostics, never in the message a
+    /// user reads (the audit log records that message).
+    #[error("The answer engine on this computer doesn't match the official copy, so it may be damaged or changed, and Shodh won't run it. Download it again to replace it.")]
     HashMismatch {
         path: PathBuf,
         expected: String,
         actual: String,
     },
 
-    #[error("No pinned checksum exists for the agent runtime on this platform ({0}). Download it through Shodh so its checksum is recorded.")]
+    #[error("Shodh has nothing to check the answer engine against on this platform ({0}). Download it through Shodh so it can be checked before it runs.")]
     NoPinnedHash(String),
 
     #[error("The agent runtime is not available for this platform ({0}).")]
@@ -26,6 +29,10 @@ pub enum HarnessError {
 
     #[error("Downloading the agent runtime failed: {0}")]
     Download(String),
+
+    /// The download could not connect (offline, DNS, firewall) or timed out.
+    #[error("Couldn't reach {0} to download the answer engine. Check the internet connection and try again.")]
+    Unreachable(&'static str),
 
     #[error("The local in-process model cannot drive the agent yet. Choose a cloud provider or Ollama in Settings → Models.")]
     UnsupportedLocalModel,

@@ -17,8 +17,9 @@ import type { CorrectionOutcome } from '../agent/grounding';
 import { CORRECTION_BUSY, CORRECTION_NOT_RECORDED, CorrectionGuard, applyAuditedCorrection, citationCorrection, citeSuggested, sameCorrection } from '../agent/grounding';
 import { recordCitationCorrection } from '../audit/api';
 import type { TranscriptState } from '../agent/reducer';
-import { RuntimeCard } from '../agent/RuntimeCard';
-import { SearchSetupCard } from '../setup/SearchSetupCard';
+import { SetupCard } from '../setup/SetupCard';
+import { useQueuedQuestion } from '../setup/useQueuedQuestion';
+import { useCodeModeEnabled } from '../../hooks/useCodeModeEnabled';
 import { StatusLine } from '../agent/StatusLine';
 import { SuggestionsBadge } from '../memory/SuggestionsBadge';
 import { requestSettingsSection } from '../memory/navigation';
@@ -627,7 +628,7 @@ function SystemNotice({ message }: { message: ChatMessage }) {
 export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage, onPasteImage, isDraggingFile = false, dropHandlers, draftRequest = null, onDraftApplied }: AskViewProps) {
   const { theme } = useTheme();
   const session = useChatSession();
-  const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, runtimeInstalled, setRuntimeInstalled, updateMessage } = session;
+  const { messages, isStreaming, streamingConversationId, sideRun, send, retry, cancel, steer, approve, setRuntimeInstalled, updateMessage } = session;
   const focus = useFocus();
   const wide = useMediaQuery(WIDE_LAYOUT_QUERY);
 
@@ -672,6 +673,9 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
 
   // Research or Code, per conversation (Code works in the workspace's code folder).
   const mode = session.activeConversation?.mode ?? 'research';
+  // Code mode is opt-in (Settings → Privacy): its switch shows once it is on, or for a
+  // conversation already in Code mode so it can be switched back to Research.
+  const codeModeEnabled = useCodeModeEnabled();
   const [codeProblem, setCodeProblem] = useState<string | null>(null);
   const codeWorkspaceId = mode === 'code' ? session.activeConversation?.workspaceId ?? null : null;
   const diagramHost = useMemo(() => ({ codeWorkspaceId }), [codeWorkspaceId]);
@@ -682,10 +686,17 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   }, [session.activeConversationId, updateConversationMeta]);
 
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
-  const blockedReason = sideRun
+  // A question asked before the search models and the answer engine are in place
+  // waits for them (and starts their download) instead of failing.
+  const queued = useQueuedQuestion(session.activeConversationId);
+  const blockedReason = queued.waiting
+    ? 'Your question is sent as soon as Shodh is ready.'
+    : sideRun
     ? `Answering your side question about “${sideRun.label}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`
     : busyElsewhere
       ? 'An answer is still being written in another conversation. You can send once it finishes.'
+      : mode === 'code' && codeModeEnabled === false && !isStreaming
+        ? 'Code mode is off. Turn it on in Settings → Privacy, or switch this conversation to Research.'
       : mode === 'code' && codeProblem && !isStreaming
         ? `${codeProblem} Or switch this conversation to Research.`
         : null;
@@ -887,19 +898,32 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     // The typed words and the attached image text go out separately; both are kept
     // until the question is accepted.
     const conversationId = session.activeConversationId;
+    const options = { ...sendOptions, searchAll: workspace !== null && searchAll };
+    // Sends this conversation's composer as it is when it runs (a question waiting for
+    // setup may be edited meanwhile); clears it only when the send was accepted.
+    const sendComposer = (): boolean => {
+      const current = composerDrafts.get(conversationId).trim();
+      if (!current) return true;
+      const queuedFile = composerFiles.get(conversationId);
+      const attached = composerAttachments.get(conversationId);
+      const accepted = send(
+        current,
+        limitedToFiles(options, queuedFile ? [queuedFile.path] : []),
+        { attachedContext: attachedContextOf(attached) },
+      );
+      if (!accepted) return false;
+      composerDrafts.set(conversationId, '');
+      composerAttachments.consume(conversationId, attached);
+      composerFiles.consume(conversationId, queuedFile);
+      return true;
+    };
+    // Before Shodh is ready the question waits for setup, and is sent from wherever the
+    // user is then.
+    if (queued.hold(sendComposer)) return;
     // A question about a file goes with the file as its search limit, not in its text.
     const file = composerFiles.get(conversationId);
     const go = () => {
-      const attached = composerAttachments.get(conversationId);
-      const accepted = send(
-        text,
-        limitedToFiles({ ...sendOptions, searchAll: workspace !== null && searchAll }, file ? [file.path] : []),
-        { attachedContext: attachedContextOf(attached) },
-      );
-      if (!accepted) return;
-      setDraft('');
-      composerAttachments.consume(conversationId, attached);
-      composerFiles.consume(conversationId, file);
+      if (!sendComposer()) return;
       setSearchAll(false);
       composerRef.current?.focus();
     };
@@ -919,7 +943,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       .finally(() => {
         checkingFileRef.current = false;
       });
-  }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId]);
+  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -1130,10 +1154,6 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     [messages],
   );
 
-  // The latest answer shows its own install card when it failed for this reason.
-  const runtimeCard = runtimeInstalled === false && latest?.errorCode !== 'runtime_missing' && (
-    <RuntimeCard reason="missing" onInstalled={markRuntimeInstalled} />
-  );
 
   const composer = (autoFocus: boolean) => (
     <SnippetDropZone onInsert={insertContext}>
@@ -1154,14 +1174,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         modelChip={(
           <>
             <ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />
-            <CodeModeSwitch
+            {(codeModeEnabled === true || mode === 'code') && <CodeModeSwitch
               conversationId={conversationId}
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}
               onChange={changeMode}
               answerRunning={isStreaming}
               onProblem={setCodeProblem}
-            />
+            />}
             <ToolsChip
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}
@@ -1343,8 +1363,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
             <h1 className="text-center text-[28px] font-semibold tracking-[-0.01em] text-shodh-text">
               Ask anything about your files
             </h1>
-            <SearchSetupCard />
-            {runtimeCard}
+            <SetupCard waiting={queued.waiting} onCancelWaiting={queued.cancel} />
             {seedNotice}
             {composer(true)}
             {!hasSources ? (
@@ -1430,8 +1449,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
 
       <div ref={setComposerArea} className="absolute left-0 right-0 bottom-0 px-7 pt-10 pb-[22px] bg-gradient-to-b from-transparent via-shodh-ground via-[38%] to-shodh-ground pointer-events-none">
         <div className="max-w-[700px] mx-auto pointer-events-auto flex flex-col gap-2">
-          <SearchSetupCard compact />
-          {runtimeCard}
+          <SetupCard compact waiting={queued.waiting} onCancelWaiting={queued.cancel} />
           {composer(true)}
           <div className="min-h-[18px] px-2 flex items-center justify-between gap-2">
             <div className="min-w-0">

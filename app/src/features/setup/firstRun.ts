@@ -14,7 +14,7 @@ export type FirstRunStep = typeof FIRST_RUN_STEPS[number];
 
 export const FIRST_RUN_STEP_LABELS: Record<FirstRunStep, string> = {
   welcome: 'Welcome',
-  search: 'Search',
+  search: 'Get ready',
   model: 'Model',
   folder: 'First folder',
   done: 'Ready',

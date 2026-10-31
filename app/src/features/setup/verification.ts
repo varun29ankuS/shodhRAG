@@ -16,6 +16,25 @@ export function verifiedSentence(source: string, plural = false): string {
     : `Verified: this file matches the official copy from ${source}, so it hasn't been changed or tampered with.`;
 }
 
+/**
+ * The answer engine after its download was checked. With a pinned checksum (Windows) it
+ * matches the copy Shodh was built against; elsewhere it is checked against the checksum
+ * published with the same release, which proves it arrived complete and unchanged, not
+ * that the release itself is genuine, so it says only that.
+ */
+export function runtimeVerifiedSentence(source: string, pinned: boolean): string {
+  return pinned
+    ? verifiedSentence(source)
+    : `Checked: this file matches the checksum ${source} published with the release, so it arrived complete and unchanged.`;
+}
+
+/** Before the answer engine's download: what its check will mean. */
+export function runtimeCheckPromise(source: string, pinned: boolean): string {
+  return pinned
+    ? verificationPromise(source)
+    : `Shodh downloads it from ${source} and checks it against the checksum published with the release before using it, so a damaged download is never run.`;
+}
+
 /** The sentence for a file that failed its check. */
 export function unverifiedSentence(plural = false): string {
   return plural

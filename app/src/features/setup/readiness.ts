@@ -110,7 +110,11 @@ function searchPart(input: SearchInput): PartView {
     return { ...base, state: 'installing', fraction, detail, remainingBytes: remaining };
   }
   if (!status) return { ...base, state: 'unknown', detail: input.statusError ? 'Could not be checked' : 'Checking…', remainingBytes: 0 };
-  if (status.ready) return { ...base, state: 'ready', detail: 'Downloaded and verified', remainingBytes: 0 };
+  if (status.ready) {
+    // "Verified" only when every file's checksum was checked; a quick status check reads sizes.
+    const hashed = status.artifacts.length > 0 && status.artifacts.every(a => a.state === 'verified');
+    return { ...base, state: 'ready', detail: hashed ? 'Downloaded and verified' : 'Installed', remainingBytes: 0 };
+  }
   const summary = summarizeSetup(status);
   if (input.installError) {
     return {
@@ -145,7 +149,8 @@ function runtimePart(input: RuntimeInput): PartView {
   if (!input.status) {
     return { ...base, state: 'unknown', detail: input.statusError ? 'Could not be checked' : 'Checking…', remainingBytes: 0 };
   }
-  if (input.status.installed) return { ...base, state: 'ready', detail: 'Installed and verified', remainingBytes: 0 };
+  // The status only sees the file; its checksum is checked before every launch.
+  if (input.status.installed) return { ...base, state: 'ready', detail: 'Installed (checked before each launch)', remainingBytes: 0 };
   if (input.installError) {
     return {
       ...base,
@@ -189,28 +194,16 @@ export function readiness(search: SearchInput, runtime: RuntimeInput): Readiness
 export type QuestionGate = 'send' | 'wait';
 
 /**
- * A question waits while a part it needs is missing, downloading or failed: the
- * answer engine writes every answer and the search models find the passages.
- * A part whose status is not known yet (or could not be read) never holds one:
- * the send then reports any real problem itself.
+ * A question waits only while the answer engine, which writes every answer, is
+ * missing, downloading or failed. The search models do not hold it: a Code-mode
+ * question, a library with nothing indexed, or an offline download must not block
+ * asking, and a search before they are in place tells the model to say plainly that
+ * search is still being set up. A status not known yet (or unreadable) never holds a
+ * question: the send then reports any real problem itself.
  */
 export function questionGate(state: Readiness): QuestionGate {
-  return state.parts.some(p => p.state === 'needed' || p.state === 'installing' || p.state === 'failed') ? 'wait' : 'send';
-}
-
-/**
- * A question queued in `queuedFor` (a conversation id) while setup ran, with
- * `activeId` shown now: send it once setup lets it go, drop it when another
- * conversation is shown (its text stays in that conversation's draft), else keep it.
- */
-export function queuedQuestionAction(
-  queuedFor: string | null,
-  activeId: string | null,
-  gate: QuestionGate,
-): 'none' | 'send' | 'drop' | 'keep' {
-  if (queuedFor === null) return 'none';
-  if (queuedFor !== activeId) return 'drop';
-  return gate === 'send' ? 'send' : 'keep';
+  const engine = state.parts.find(p => p.id === 'runtime');
+  return engine && (engine.state === 'needed' || engine.state === 'installing' || engine.state === 'failed') ? 'wait' : 'send';
 }
 
 /** The parts setup still has to download (missing or failed), for one Set up / Try again. */
@@ -235,7 +228,7 @@ export function setupDisclosure(state: Readiness, runtimeSource = DEFAULT_RUNTIM
   const what = pieces.length === 1 ? pieces[0] : `${pieces[0]}, and ${pieces[1]}`;
   const total = state.remainingBytes > 0 && pieces.length > 1 ? ` About ${approxMegabytes(state.remainingBytes).replace('≈', '')} in all.` : '';
   const runs = pieces.length === 1 ? 'it runs' : 'both run';
-  return `Shodh downloads ${what}. This happens once; ${runs} on this computer, and each file is checked against the official copy before it is used.${total}`;
+  return `Shodh downloads ${what}. This happens once; ${runs} on this computer, and each file is checked before it is used.${total}`;
 }
 
 /** The heading of the setup card. */

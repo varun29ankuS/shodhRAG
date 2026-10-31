@@ -160,6 +160,11 @@ export interface RuntimeStatus {
   downloadBytes: number | null;
   /** Where it is downloaded from ("GitHub"). */
   source: string;
+  /**
+   * Its checksum is built into Shodh (Windows). Otherwise it is checked against the
+   * checksum published with the release.
+   */
+  pinned: boolean;
 }
 
 export interface RuntimeInstall {

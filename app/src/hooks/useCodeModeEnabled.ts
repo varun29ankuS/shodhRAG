@@ -3,11 +3,11 @@ import { getAppSettings, onAppSettingsChanged } from '../lib/appSettings';
 
 /**
  * Whether Code mode is turned on in Settings → Privacy (off on a new install).
- * False until the settings are read, so the Code switch never flashes up for a
- * user who has not turned it on.
+ * Null until the settings are read: nothing is shown or blocked on a guess (the
+ * backend refuses Code work while it is off either way).
  */
-export function useCodeModeEnabled(): boolean {
-  const [enabled, setEnabled] = useState(false);
+export function useCodeModeEnabled(): boolean | null {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
   useEffect(() => {
     let cancelled = false;
     getAppSettings()

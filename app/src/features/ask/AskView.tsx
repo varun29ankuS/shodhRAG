@@ -688,15 +688,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
   // A question asked before the search models and the answer engine are in place
   // waits for them (and starts their download) instead of failing.
-  const submitRef = useRef<() => void>(() => {});
-  const queued = useQueuedQuestion(session.activeConversationId, submitRef);
+  const queued = useQueuedQuestion(session.activeConversationId);
   const blockedReason = queued.waiting
     ? 'Your question is sent as soon as Shodh is ready.'
     : sideRun
     ? `Answering your side question about “${sideRun.label}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`
     : busyElsewhere
       ? 'An answer is still being written in another conversation. You can send once it finishes.'
-      : mode === 'code' && !codeModeEnabled && !isStreaming
+      : mode === 'code' && codeModeEnabled === false && !isStreaming
         ? 'Code mode is off. Turn it on in Settings → Privacy, or switch this conversation to Research.'
       : mode === 'code' && codeProblem && !isStreaming
         ? `${codeProblem} Or switch this conversation to Research.`
@@ -896,23 +895,35 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const submit = useCallback(() => {
     const text = draft.trim();
     if (!text || isStreaming || busyElsewhere || checkingFileRef.current) return;
-    if (queued.hold()) return;
     // The typed words and the attached image text go out separately; both are kept
     // until the question is accepted.
     const conversationId = session.activeConversationId;
+    const options = { ...sendOptions, searchAll: workspace !== null && searchAll };
+    // Sends this conversation's composer as it is when it runs (a question waiting for
+    // setup may be edited meanwhile); clears it only when the send was accepted.
+    const sendComposer = (): boolean => {
+      const current = composerDrafts.get(conversationId).trim();
+      if (!current) return true;
+      const queuedFile = composerFiles.get(conversationId);
+      const attached = composerAttachments.get(conversationId);
+      const accepted = send(
+        current,
+        limitedToFiles(options, queuedFile ? [queuedFile.path] : []),
+        { attachedContext: attachedContextOf(attached) },
+      );
+      if (!accepted) return false;
+      composerDrafts.set(conversationId, '');
+      composerAttachments.consume(conversationId, attached);
+      composerFiles.consume(conversationId, queuedFile);
+      return true;
+    };
+    // Before Shodh is ready the question waits for setup, and is sent from wherever the
+    // user is then.
+    if (queued.hold(sendComposer)) return;
     // A question about a file goes with the file as its search limit, not in its text.
     const file = composerFiles.get(conversationId);
     const go = () => {
-      const attached = composerAttachments.get(conversationId);
-      const accepted = send(
-        text,
-        limitedToFiles({ ...sendOptions, searchAll: workspace !== null && searchAll }, file ? [file.path] : []),
-        { attachedContext: attachedContextOf(attached) },
-      );
-      if (!accepted) return;
-      setDraft('');
-      composerAttachments.consume(conversationId, attached);
-      composerFiles.consume(conversationId, file);
+      if (!sendComposer()) return;
       setSearchAll(false);
       composerRef.current?.focus();
     };
@@ -932,8 +943,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       .finally(() => {
         checkingFileRef.current = false;
       });
-  }, [draft, setDraft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold]);
-  submitRef.current = submit;
+  }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -1164,7 +1174,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         modelChip={(
           <>
             <ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />
-            {(codeModeEnabled || mode === 'code') && <CodeModeSwitch
+            {(codeModeEnabled === true || mode === 'code') && <CodeModeSwitch
               conversationId={conversationId}
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}

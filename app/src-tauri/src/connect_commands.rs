@@ -216,16 +216,24 @@ pub fn lmstudio_url(app: &AppHandle) -> String {
         .ok()
         .and_then(|dir| SettingsStore::in_dir(&dir).load().ok())
         .and_then(|s| s.models.base_url(ProviderId::LmStudio).map(str::to_string));
-    saved
-        .or_else(|| {
-            std::env::var(shodh_rag::harness::model::LM_STUDIO_URL_VAR)
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        })
-        .or_else(|| {
-            lmstudio::configured_port_for_user().map(|port| format!("http://127.0.0.1:{port}/v1"))
-        })
+    lmstudio_address(
+        saved,
+        std::env::var(shodh_rag::harness::model::LM_STUDIO_URL_VAR).ok(),
+        lmstudio::configured_port_for_user(),
+    )
+}
+
+/// LM Studio's address from, in order: the Advanced override, `LM_STUDIO_BASE_URL`,
+/// the port in LM Studio's own server settings, the default.
+fn lmstudio_address(
+    saved: Option<String>,
+    env: Option<String>,
+    settings_port: Option<u16>,
+) -> String {
+    let given = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    given(saved)
+        .or_else(|| given(env))
+        .or_else(|| settings_port.map(|port| format!("http://127.0.0.1:{port}/v1")))
         .unwrap_or_else(|| LM_STUDIO_DEFAULT_BASE_URL.to_string())
 }
 
@@ -757,6 +765,36 @@ pub fn migrate_env_keys_once(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lm_studio_is_looked_for_at_the_port_its_own_settings_name() {
+        assert_eq!(
+            lmstudio_address(None, None, None),
+            LM_STUDIO_DEFAULT_BASE_URL
+        );
+        assert_eq!(
+            lmstudio_address(None, None, Some(4321)),
+            "http://127.0.0.1:4321/v1"
+        );
+        // The environment and the Advanced override win, in that order.
+        assert_eq!(
+            lmstudio_address(None, Some("http://127.0.0.1:9000/v1".into()), Some(4321)),
+            "http://127.0.0.1:9000/v1"
+        );
+        assert_eq!(
+            lmstudio_address(
+                Some("http://localhost:7000/v1".into()),
+                Some("x".into()),
+                Some(4321)
+            ),
+            "http://localhost:7000/v1"
+        );
+        // Blank values are no value.
+        assert_eq!(
+            lmstudio_address(Some(" ".into()), Some(String::new()), Some(4321)),
+            "http://127.0.0.1:4321/v1"
+        );
+    }
 
     #[test]
     fn keys_are_routed_by_prefix_or_by_choice() {

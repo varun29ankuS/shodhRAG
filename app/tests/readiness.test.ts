@@ -8,7 +8,6 @@ import {
   approxMegabytes,
   partsToInstall,
   questionGate,
-  queuedQuestionAction,
   readiness,
   setupDisclosure,
   setupHeading,
@@ -164,12 +163,21 @@ test('unknown statuses never hold a question', () => {
   assert.equal(questionGate(readiness(search({ status: null }), READY_RUNTIME)), 'send');
 });
 
-test('a waiting question is sent once setup is ready, kept meanwhile, dropped on a conversation switch', () => {
-  assert.equal(queuedQuestionAction(null, 'c1', 'send'), 'none');
-  assert.equal(queuedQuestionAction('c1', 'c1', 'wait'), 'keep');
-  assert.equal(queuedQuestionAction('c1', 'c1', 'send'), 'send');
-  assert.equal(queuedQuestionAction('c1', 'c2', 'wait'), 'drop');
-  assert.equal(queuedQuestionAction('c1', null, 'send'), 'drop');
+test('only the answer engine holds a question; the search models never do', () => {
+  // Search models downloading, failed or offline: a Code question or an empty library asks at once.
+  assert.equal(questionGate(readiness(search({ installing: true }), READY_RUNTIME)), 'send');
+  assert.equal(questionGate(readiness(search({ installError: 'x', installOffline: true }), READY_RUNTIME)), 'send');
+  assert.equal(questionGate(readiness(search(), READY_RUNTIME)), 'send');
+  // No answer engine: nothing can answer yet.
+  assert.equal(questionGate(readiness(READY_SEARCH, runtime({ installing: true }))), 'wait');
+  assert.equal(questionGate(readiness(READY_SEARCH, runtime({ installError: 'x', installOffline: true }))), 'wait');
+});
+
+test('a ready search part says verified only when every file was hashed', () => {
+  const quick = readiness(search({ status: searchStatus([artifact({ state: 'unverified', presentBytes: 600 * MB })], true) }), READY_RUNTIME);
+  assert.equal(quick.parts[0].detail, 'Installed');
+  assert.equal(readiness(READY_SEARCH, READY_RUNTIME).parts[0].detail, 'Downloaded and verified');
+  assert.equal(readiness(READY_SEARCH, READY_RUNTIME).parts[1].detail, 'Installed (checked before each launch)');
 });
 
 test('sizes read as rounded megabytes', () => {

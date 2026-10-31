@@ -18,6 +18,8 @@ interface RuntimeSetupValue {
   installOffline: boolean;
   /** Result of an install that finished in this session. */
   justInstalled: RuntimeInstall | null;
+  /** When that install finished (ms), so a card shown after it is not covered by it. */
+  installedAt: number | null;
   dismissInstalled: () => void;
   /** Download and verify it; resolves whether it is installed afterwards. */
   install: () => Promise<boolean>;
@@ -41,6 +43,7 @@ export function RuntimeSetupProvider({ children }: { children: React.ReactNode }
   const [installError, setInstallError] = useState<string | null>(null);
   const [installOffline, setInstallOffline] = useState(false);
   const [justInstalled, setJustInstalled] = useState<RuntimeInstall | null>(null);
+  const [installedAt, setInstalledAt] = useState<number | null>(null);
   const installingRef = useRef<Promise<boolean> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -72,6 +75,7 @@ export function RuntimeSetupProvider({ children }: { children: React.ReactNode }
       try {
         const result = await agentApi.installRuntime();
         setJustInstalled(result);
+        setInstalledAt(Date.now());
         setInstalledState(true);
         setStatus(prev => (prev ? { ...prev, installed: true } : prev));
         return true;
@@ -92,14 +96,22 @@ export function RuntimeSetupProvider({ children }: { children: React.ReactNode }
 
   const setInstalled = useCallback((next: boolean) => {
     setInstalledState(next);
+    // Gone again (removed, or quarantined by antivirus): the earlier install no longer counts.
+    if (!next) {
+      setJustInstalled(null);
+      setInstalledAt(null);
+    }
     setStatus(prev => (prev ? { ...prev, installed: next } : prev));
   }, []);
 
-  const dismissInstalled = useCallback(() => setJustInstalled(null), []);
+  const dismissInstalled = useCallback(() => {
+    setJustInstalled(null);
+    setInstalledAt(null);
+  }, []);
 
   const value = useMemo<RuntimeSetupValue>(
-    () => ({ status, statusError, installed, installing, progress, installError, installOffline, justInstalled, dismissInstalled, install, setInstalled, refresh }),
-    [status, statusError, installed, installing, progress, installError, installOffline, justInstalled, dismissInstalled, install, setInstalled, refresh],
+    () => ({ status, statusError, installed, installing, progress, installError, installOffline, justInstalled, installedAt, dismissInstalled, install, setInstalled, refresh }),
+    [status, statusError, installed, installing, progress, installError, installOffline, justInstalled, installedAt, dismissInstalled, install, setInstalled, refresh],
   );
 
   return <RuntimeSetupContext.Provider value={value}>{children}</RuntimeSetupContext.Provider>;

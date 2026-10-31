@@ -9,6 +9,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   checksumRow,
+  runtimeCheckPromise,
+  runtimeVerifiedSentence,
   unverifiedSentence,
   verificationPromise,
   verifiedSentence,
@@ -42,4 +44,19 @@ test('setup cards show checksums only inside Technical details', () => {
     // No visible SHA wording in the markup; hashes reach the page only through checksumRow.
     assert.doesNotMatch(source, /sha256 \$\{|SHA-256 checksum|checks its SHA-256|\.sha256\.slice/, file);
   }
+});
+
+test('off Windows the answer engine is checked against the release checksum, and says only that', () => {
+  assert.equal(runtimeVerifiedSentence('GitHub', true), verifiedSentence('GitHub'));
+  const unpinned = runtimeVerifiedSentence('GitHub', false);
+  assert.match(unpinned, /checksum GitHub published with the release/);
+  assert.doesNotMatch(unpinned, /official copy|tampered/);
+  assert.match(runtimeCheckPromise('GitHub', false), /checksum published with the release/);
+  assert.doesNotMatch(runtimeCheckPromise('GitHub', false), HASH);
+});
+
+test('a status that only saw the file never says verified', () => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/features/setup/readiness.ts'), 'utf8');
+  assert.doesNotMatch(source, /Installed and verified/);
+  assert.match(source, /Installed \(checked before each launch\)/);
 });

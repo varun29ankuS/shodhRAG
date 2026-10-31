@@ -6,7 +6,7 @@ import { useRuntimeSetup } from './RuntimeSetupContext';
 import { useReadiness } from './useReadiness';
 import { SEARCH_MODELS_SOURCE, setupDisclosure, setupHeading, waitingLine } from './readiness';
 import type { PartView } from './readiness';
-import { checksumRow, verifiedSentence } from './verification';
+import { checksumRow, runtimeVerifiedSentence, verifiedSentence } from './verification';
 import { TechnicalDetails } from './TechnicalDetails';
 
 const FOCUS_RING =
@@ -74,7 +74,11 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
       ...(searchDone ? searchDone.artifacts.map(a => checksumRow(a.name, a.sha256)) : []),
       ...(runtimeDone ? [checksumRow(`Answer engine (omp ${runtimeDone.version})`, runtimeDone.sha256)] : []),
     ];
-    const sources = [searchDone ? SEARCH_MODELS_SOURCE : null, runtimeDone ? state.runtimeSource : null].filter(Boolean).join(' and ');
+    // Each part says what its own check proved (the answer engine's differs off Windows).
+    const checks = [
+      searchDone ? verifiedSentence(SEARCH_MODELS_SOURCE, true) : null,
+      runtimeDone ? runtimeVerifiedSentence(state.runtimeSource, runtime.status?.pinned ?? false) : null,
+    ].filter(Boolean).join(' ');
     return (
       <section aria-label="Shodh setup" className={shell}>
         <div className="flex items-start gap-2.5">
@@ -82,7 +86,7 @@ export function SetupCard({ compact = false, className, waiting = false, onCance
           <div className="min-w-0 flex-1 flex flex-col gap-1">
             <p className="text-[14px] font-semibold text-shodh-text">Shodh is ready</p>
             <p className="text-[13px] leading-relaxed text-shodh-text-muted">
-              {`${searchDone && runtimeDone ? 'Search models and answer engine downloaded.' : searchDone ? 'Search models downloaded.' : 'Answer engine downloaded.'} ${verifiedSentence(sources, true)}`}
+              {`${searchDone && runtimeDone ? 'Search models and answer engine downloaded.' : searchDone ? 'Search models downloaded.' : 'Answer engine downloaded.'} ${checks}`}
             </p>
           </div>
           <button

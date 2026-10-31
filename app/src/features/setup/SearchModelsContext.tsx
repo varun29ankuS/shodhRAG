@@ -100,6 +100,9 @@ export function SearchModelsProvider({ children }: { children: React.ReactNode }
     setInstallError(null);
     setInstallOffline(false);
     setProgress(null);
+    // Another caller's install is already running: show it as running (the poll below
+    // follows it to its end) instead of offering setup again.
+    let runningElsewhere = false;
     try {
       const result = await invoke<unknown>('install_search_models');
       if (!isSearchModelsStatus(result)) throw new Error('Unexpected search setup result');
@@ -110,11 +113,13 @@ export function SearchModelsProvider({ children }: { children: React.ReactNode }
       if (!raw.startsWith(INSTALL_IN_PROGRESS_CODE)) {
         setInstallError(errorMessage(error));
         setInstallOffline(isOfflineError(error));
+      } else {
+        runningElsewhere = true;
       }
       await refresh();
     } finally {
       installingRef.current = false;
-      setInstalling(false);
+      setInstalling(runningElsewhere);
     }
   }, [refresh]);
 

@@ -11,8 +11,9 @@ pub enum HarnessError {
         version: &'static str,
     },
 
-    /// The plain sentence comes first; the checksums stay in the fields (and the
-    /// audit log) for diagnostics, never in the message a user reads.
+    /// The plain sentence comes first; the checksums stay in the fields and in the
+    /// tracing log (`verify_binary`, `fetch_omp`) for diagnostics, never in the message a
+    /// user reads (the audit log records that message).
     #[error("The answer engine on this computer doesn't match the official copy, so it may be damaged or changed, and Shodh won't run it. Download it again to replace it.")]
     HashMismatch {
         path: PathBuf,

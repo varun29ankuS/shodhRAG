@@ -149,22 +149,23 @@ impl HostTool for ShowDocumentTool {
         "Show document"
     }
     fn label_template(&self) -> &'static str {
-        "Showing {path}"
+        "Showing[ {path}][ the document of passage {number!}]"
     }
     fn description(&self) -> &'static str {
         "Open a document in the app's viewer for the user, optionally at a page and with a \
-         passage highlighted. Use the path from search_documents. This only shows the document; \
-         use open_document to read it yourself."
+         passage highlighted. Name the document by the number of one of its passages from \
+         search_documents (`number`; its page is used unless you give one), or by its file \
+         name (`path`). This only shows the document; use open_document to read it yourself."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
+                "number": {"type": "integer", "minimum": 1},
                 "path": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "page": {"type": "integer", "minimum": 1, "maximum": 100000},
                 "passage": {"type": "string", "minLength": 1, "maxLength": 2000}
             },
-            "required": ["path"],
             "additionalProperties": false
         })
     }
@@ -173,19 +174,13 @@ impl HostTool for ShowDocumentTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let path = req_str(&args, "path", SHOW_DOCUMENT)?;
-        let is_record = path.contains("://");
-        if !is_record && !std::path::Path::new(path).is_absolute() {
-            return Err(ToolError::InvalidArguments {
-                tool: SHOW_DOCUMENT.to_string(),
-                reasons: "`path` must be the absolute path returned by search_documents"
-                    .to_string(),
-            });
-        }
+        let (path, passage_page) = shown_document(&args, ctx)?;
+        let path = path.as_str();
         let page = args
             .get("page")
             .and_then(Value::as_u64)
-            .and_then(|p| u32::try_from(p).ok());
+            .and_then(|p| u32::try_from(p).ok())
+            .or(passage_page);
         let passage =
             opt_str(&args, "passage").map(|p| crate::harness::truncate_chars(p, MAX_PASSAGE_CHARS));
         let name = file_name(path).to_string();
@@ -205,6 +200,37 @@ impl HostTool for ShowDocumentTool {
             summary_for_ui: format!("Opened {name}{at}"),
             detail: Some(json!({ "path": path, "page": page })),
         })
+    }
+}
+
+/// The document `show_document` is asked to show, and the page of the passage it was
+/// named by: a passage number of this conversation, a file name one of its passages
+/// has, or (as the app itself passes) an absolute path or in-app record. Errors name
+/// files, never paths.
+fn shown_document(args: &Value, ctx: &ToolContext) -> Result<(String, Option<u32>), ToolError> {
+    if let Some(n) = args.get("number").and_then(Value::as_u64) {
+        let passage = super::document_of_passage(ctx, n)?;
+        let page = passage
+            .page
+            .as_deref()
+            .and_then(|p| p.split(['-', '–', ',']).next())
+            .and_then(|p| p.trim().parse::<u32>().ok());
+        return Ok((passage.path, page));
+    }
+    let requested = opt_str(args, "path").ok_or_else(|| ToolError::InvalidArguments {
+        tool: SHOW_DOCUMENT.to_string(),
+        reasons: "pass `number` (one of its passages) or `path` (its file name)".to_string(),
+    })?;
+    if requested.contains("://") || std::path::Path::new(requested).is_absolute() {
+        return Ok((requested.to_string(), None));
+    }
+    match super::document_named(ctx, requested)? {
+        Some(found) => Ok((found.path, None)),
+        None => Err(ToolError::NotFound(format!(
+            "{} is not a document this conversation found. Search for it first, then name it \
+             by the number of one of its passages.",
+            file_name(requested)
+        ))),
     }
 }
 
@@ -373,6 +399,7 @@ impl HostTool for ShowSourceTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::tools::CitedPassage;
     use tokio::sync::mpsc;
 
     fn ctx() -> (ToolContext, mpsc::UnboundedReceiver<AgentEvent>) {
@@ -410,11 +437,57 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        let relative = ShowDocumentTool
+        // A file name this conversation has not found is refused, naming only the file.
+        match ShowDocumentTool
             .execute(json!({"path": "acme.pdf"}), &ctx)
-            .await;
-        assert!(matches!(relative, Err(ToolError::InvalidArguments { .. })));
+            .await
+        {
+            Err(ToolError::NotFound(message)) => {
+                assert!(
+                    message.starts_with("acme.pdf is not a document"),
+                    "{message}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(rx.try_recv().is_err());
+
+        // By a passage number, at the passage's page, or by the file name it has.
+        let n = ctx.cite_passage(CitedPassage {
+            n: 0,
+            file: "acme.pdf".to_string(),
+            path: path.to_string(),
+            page: Some("7".to_string()),
+            web: false,
+            text: "Notice is sixty days.".to_string(),
+            checkable: true,
+        });
+        let out = ShowDocumentTool
+            .execute(json!({"number": n}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.summary_for_ui, "Opened acme.pdf at page 7");
+        assert!(!out.text_for_model.contains(path));
+        match rx.recv().await.unwrap() {
+            AgentEvent::Navigated { target, .. } => assert_eq!(
+                target,
+                Some(NavigationTarget::Document {
+                    path: path.into(),
+                    page: Some(7),
+                    passage: None,
+                })
+            ),
+            other => panic!("{other:?}"),
+        }
+        let by_name = ShowDocumentTool
+            .execute(json!({"path": "ACME.pdf", "page": 2}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(by_name.summary_for_ui, "Opened acme.pdf at page 2");
+        assert!(matches!(
+            ShowDocumentTool.execute(json!({"number": 99}), &ctx).await,
+            Err(ToolError::NotFound(_))
+        ));
     }
 
     #[tokio::test]

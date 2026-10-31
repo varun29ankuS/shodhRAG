@@ -213,10 +213,39 @@ pub struct CreateFolderTool {
     host: Arc<AgentHost>,
 }
 
-fn create_folder_target(tool: &str, args: &Value) -> Result<PathBuf, ToolError> {
+/// A folder argument: a folder as list_sources names it ("<folder name>/<path inside
+/// it>", the only form the model is shown), or a full path (as the user may type one).
+async fn folder_arg(host: &AgentHost, tool: &str, raw: &str) -> Result<PathBuf, ToolError> {
+    if Path::new(raw.trim()).is_absolute() {
+        return absolute_arg(tool, raw);
+    }
+    let sources = {
+        let engine = host.rag.read().await;
+        shodh_rag::harness::tools::sources::load_sources(&engine).await?
+    };
+    match shodh_rag::harness::tools::sources::unshown_paths(raw.trim(), &sources).as_slice() {
+        [one] => absolute_arg(tool, one),
+        [] => Err(ToolError::NotFound(format!(
+            "\"{}\" is not a folder of an indexed source. Name it as list_sources does: \
+             \"<folder name>/<path inside it>\".",
+            raw.trim()
+        ))),
+        many => Err(ToolError::NotFound(format!(
+            "\"{}\" names {} indexed folders; list_sources gives each source's id and name.",
+            raw.trim(),
+            many.len()
+        ))),
+    }
+}
+
+async fn create_folder_target(
+    host: &AgentHost,
+    tool: &str,
+    args: &Value,
+) -> Result<PathBuf, ToolError> {
     let parent = str_arg(args, "parent").ok_or_else(|| invalid(tool, "`parent` is required"))?;
     let name = str_arg(args, "name").ok_or_else(|| invalid(tool, "`name` is required"))?;
-    let parent = absolute_arg(tool, parent)?;
+    let parent = folder_arg(host, tool, parent).await?;
     let segments = relative_segments(tool, name)?;
     Ok(segments.iter().fold(parent, |p, s| p.join(s)))
 }
@@ -234,8 +263,9 @@ impl HostTool for CreateFolderTool {
     }
     fn description(&self) -> &'static str {
         "Create a folder (or nested folders, e.g. \"Research/Transformers\") inside an indexed \
-         source folder. parent must be that source folder (from list_sources) or a folder inside \
-         it. Folders elsewhere cannot be created."
+         source folder. parent must be that source folder or a folder inside it, named as \
+         list_sources names it (\"<folder name>/<path inside it>\"). Folders elsewhere cannot \
+         be created."
     }
     fn schema(&self) -> Value {
         json!({
@@ -253,13 +283,13 @@ impl HostTool for CreateFolderTool {
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::CREATE_FOLDER;
-        let target = create_folder_target(tool, args)?;
+        let target = create_folder_target(&self.host, tool, args).await?;
         let roots = self.host.roots.roots().await?;
         let plan = plan_folder(tool, &target, &roots)?;
         if plan.missing.is_empty() {
             return Err(ToolError::Failed(format!(
-                "{} already exists.",
-                plan.existing.display()
+                "The folder \"{}\" already exists.",
+                shodh_rag::research::file_name(&plan.existing.display().to_string())
             )));
         }
         Ok(ApprovalPreview {
@@ -274,7 +304,7 @@ impl HostTool for CreateFolderTool {
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_FOLDER;
-        let target = create_folder_target(tool, &args)?;
+        let target = create_folder_target(&self.host, tool, &args).await?;
         let roots = self.host.roots.roots().await?;
         let plan = plan_folder(tool, &target, &roots)?;
         let existed = plan.missing.is_empty();
@@ -294,10 +324,17 @@ impl HostTool for CreateFolderTool {
             self.host.effects.library_changed(&plan.root.source_id);
         }
         Ok(ToolOutput {
+            // The folder's name only: its path never reaches the model.
             text_for_model: if existed {
-                format!("{shown} already exists.")
+                format!(
+                    "The folder \"{}\" already exists.",
+                    shodh_rag::research::file_name(&shown)
+                )
             } else {
-                format!("Created {shown}.")
+                format!(
+                    "Created the folder \"{}\".",
+                    shodh_rag::research::file_name(&shown)
+                )
             },
             summary_for_ui: if existed {
                 format!("{shown} already exists")
@@ -539,7 +576,7 @@ impl DownloadFileTool {
         })?;
         let folder =
             str_arg(args, "folder").ok_or_else(|| invalid(tool, "`folder` is required"))?;
-        let folder = absolute_arg(tool, folder)?;
+        let folder = folder_arg(&self.host, tool, folder).await?;
         let roots = self.host.roots.roots().await?;
         let plan = plan_folder(tool, &folder, &roots)?;
         Ok((url, plan))
@@ -560,7 +597,8 @@ impl HostTool for DownloadFileTool {
     fn description(&self) -> &'static str {
         "Download a document or image from the web (PDF, DOCX, XLSX, CSV, TXT, Markdown, HTML, \
          PNG, JPEG, GIF, WebP, TIFF; up to 100 MB) into a folder inside an indexed source folder, \
-         e.g. <source>/Research/<topic> (created if missing), then index it so it is searchable. \
+         named as list_sources names it, e.g. \"<folder name>/Research/<topic>\" (created if \
+         missing), then index it so it is searchable. \
          Only download open-access files the user may keep. Never overwrites. Unavailable in \
          Local-only mode or when web access is off."
     }
@@ -891,6 +929,18 @@ pub fn list_directory_in(
     })
 }
 
+/// `path` relative to the folder `root` (either separator); its last part when it is
+/// not inside `root`.
+fn relative_to(path: &str, root: &str) -> String {
+    let norm = |p: &str| p.replace('\\', "/");
+    let (path_n, root_n) = (norm(path), norm(root));
+    let root_n = root_n.trim_end_matches('/');
+    match path_n.strip_prefix(root_n) {
+        Some(rest) if rest.starts_with('/') => rest.trim_start_matches('/').to_string(),
+        _ => shodh_rag::research::file_name(path),
+    }
+}
+
 pub struct ListDirectoryTool {
     host: Arc<AgentHost>,
 }
@@ -908,7 +958,9 @@ impl HostTool for ListDirectoryTool {
     }
     fn description(&self) -> &'static str {
         "List the files and folders in a folder inside an indexed source folder (names, sizes, \
-         dates, and whether each file type can be indexed). recursive lists subfolders too."
+         dates, and whether each file type can be indexed): `path` is the folder as \
+         list_sources names it (\"<folder name>/<path inside it>\"). Entries are given relative \
+         to it. recursive lists subfolders too."
     }
     fn schema(&self) -> Value {
         json!({
@@ -928,8 +980,9 @@ impl HostTool for ListDirectoryTool {
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::LIST_DIRECTORY;
-        let path = str_arg(&args, "path").ok_or_else(|| invalid(tool, "`path` is required"))?;
-        let path = absolute_arg(tool, path)?;
+        let requested =
+            str_arg(&args, "path").ok_or_else(|| invalid(tool, "`path` is required"))?;
+        let path = folder_arg(&self.host, tool, requested).await?;
         let recursive = args
             .get("recursive")
             .and_then(Value::as_bool)
@@ -942,16 +995,18 @@ impl HostTool for ListDirectoryTool {
                 .map_err(|e| ToolError::Failed(format!("Listing was interrupted: {e}")))??;
         let folders = listing.entries.iter().filter(|e| e.is_dir).count();
         let files = listing.entries.len() - folders;
+        // Relative to the listed folder, which is named by its name: no path reaches the model.
+        let root_name = shodh_rag::research::file_name(&listing.path);
         let lines: Vec<String> = listing
             .entries
             .iter()
             .map(|e| {
+                let shown = relative_to(&e.path, &listing.path);
                 if e.is_dir {
-                    format!("{}/", e.path)
+                    format!("{shown}/")
                 } else {
                     format!(
-                        "{} ({} KB{})",
-                        e.path,
+                        "{shown} ({} KB{})",
                         e.size_bytes.unwrap_or(0).div_ceil(1024),
                         if e.supported { "" } else { ", not indexable" }
                     )
@@ -965,10 +1020,9 @@ impl HostTool for ListDirectoryTool {
         };
         Ok(ToolOutput {
             text_for_model: format!(
-                "{} folders and {} files in {}:\n{}{more}",
+                "{} folders and {} files in the folder \"{root_name}\":\n{}{more}",
                 folders,
                 files,
-                listing.path,
                 lines.join("\n")
             ),
             summary_for_ui: format!("{folders} folders, {files} files"),

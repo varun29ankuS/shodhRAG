@@ -934,11 +934,11 @@ impl HostTool for SearchDocumentsTool {
         "Searching {query}"
     }
     fn description(&self) -> &'static str {
-        "Search the user's indexed documents (hybrid keyword + semantic). Returns passages with \
-         file, path, page and score. Optionally restrict it with sources: source ids from \
-         list_sources, folder or file paths inside an indexed folder, a folder or file name, \
-         \"notes\" or \"calendar\". Use specific queries; search again with different wording \
-         if the first results miss."
+        "Search the user's indexed documents (hybrid keyword + semantic). Returns numbered \
+         passages with file name, page and score. Optionally restrict it with sources: source \
+         ids from list_sources, a folder or file as list_sources names it, a folder or file \
+         name, \"notes\" or \"calendar\". Use specific queries; search again with different \
+         wording if the first results miss."
     }
     fn schema(&self) -> Value {
         search_schema()

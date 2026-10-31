@@ -617,6 +617,34 @@ impl AgentSessions {
         closed
     }
 
+    /// Code mode was turned off: stop every Code session now (an answer it is writing
+    /// ends with `message`, its pending approvals with it). Returns how many were stopped.
+    pub async fn close_code_sessions(&self, message: &str) -> usize {
+        let listed: Vec<(String, bool)> = self
+            .sessions
+            .iter()
+            .map(|e| (e.key().clone(), e.value().code_folder.is_some()))
+            .collect();
+        let mut closed = 0;
+        for session_id in code_sessions(&listed) {
+            let Some(conversation) = self
+                .sessions
+                .get(&session_id)
+                .map(|e| e.conversation_id.clone())
+            else {
+                continue;
+            };
+            let lock = self.start_lock(&conversation);
+            let _guard = lock.lock().await;
+            if let Some(entry) = self.remove(&session_id) {
+                entry.session.shutdown_because(message.to_string()).await;
+                closed += 1;
+                tracing::info!(target: "shodh::harness", session = %session_id, "Code session stopped: Code mode was turned off");
+            }
+        }
+        closed
+    }
+
     /// Stop sessions idle past their limit (see [`idle_limit`]; `main` is the
     /// user's agent idle period). A conversation's agent runtime starts again
     /// on its next question, which replays the conversation's recent turns.
@@ -2006,6 +2034,43 @@ pub(crate) async fn stop_provider_sessions(app: &AppHandle, provider: ProviderId
     }
 }
 
+/// The ids of the Code sessions in `sessions` (id, works in a code folder).
+fn code_sessions(sessions: &[(String, bool)]) -> Vec<String> {
+    sessions
+        .iter()
+        .filter(|(_, code)| *code)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Why a Code session was stopped when Code mode was turned off.
+pub(crate) const CODE_MODE_TURNED_OFF: &str =
+    "Stopped because Code mode was turned off in Settings.";
+
+/// Code mode was turned off: stop the Code sessions, so no file is changed and no
+/// command runs after that, including one already waiting for approval.
+pub(crate) async fn stop_code_sessions(app: &AppHandle) {
+    let sessions = app.state::<AgentSessions>();
+    if sessions.close_code_sessions(CODE_MODE_TURNED_OFF).await > 0 {
+        emit_counts(app, &sessions);
+    }
+}
+
+/// Refuses work in a Code session while Code mode is off (a session started before it
+/// was turned off, if one was missed; defence in depth beside [`stop_code_sessions`]).
+fn refuse_code_when_off(app: &AppHandle, is_code: bool) -> CommandResult<()> {
+    if !is_code {
+        return Ok(());
+    }
+    if crate::app_settings::code_mode_enabled(&app_data_dir(app)?) {
+        Ok(())
+    } else {
+        Err(AgentCommandError::invalid(
+            crate::app_settings::CODE_MODE_OFF,
+        ))
+    }
+}
+
 /// The sessions in `sessions` (id, provider) whose model answers through
 /// `provider`.
 fn sessions_of_provider(
@@ -2149,6 +2214,7 @@ pub async fn agent_send(
         .and_then(|w| instructions_block(&w.name, &w.instructions));
     let entry = sessions.entry(&session_id)?;
     refuse_connector_conversation(entry.audit_conversation())?;
+    refuse_code_when_off(&app, entry.code_folder.is_some())?;
     entry.touch();
     // Checked here because the history preamble would hide a leading '/'.
     if text.trim().starts_with('/') {
@@ -2410,6 +2476,7 @@ fn question_record(
 /// Redirect the running answer (starts a new run when idle). Returns the run id.
 #[tauri::command]
 pub async fn agent_steer(
+    app: AppHandle,
     session_id: String,
     text: String,
     sessions: State<'_, AgentSessions>,
@@ -2417,6 +2484,7 @@ pub async fn agent_steer(
 ) -> CommandResult<String> {
     let entry = sessions.entry(&session_id)?;
     refuse_connector_conversation(entry.audit_conversation())?;
+    refuse_code_when_off(&app, entry.code_folder.is_some())?;
     entry.touch();
     let run_id = entry.session.steer(&text).await?;
     audit.record(question_record(&entry, &run_id, &text, true, false));
@@ -2449,6 +2517,17 @@ pub async fn agent_approve(
     sessions: State<'_, AgentSessions>,
 ) -> CommandResult<()> {
     check_id("step id", &step_id)?;
+    // A Code session's approval is never granted while Code mode is off: it is refused,
+    // so the command or edit waiting for it does not run.
+    let is_code = sessions.entry(&session_id)?.code_folder.is_some();
+    if approved && refuse_code_when_off(&app, is_code).is_err() {
+        let session = sessions.get(&session_id)?;
+        session.approve(&step_id, false)?;
+        inbox_commands::resolve(&app, inbox_commands::approval_id(&session_id, &step_id)).await;
+        return Err(AgentCommandError::invalid(
+            crate::app_settings::CODE_MODE_OFF,
+        ));
+    }
     let session = sessions.get(&session_id)?;
     // A review token comes only from the prompt that showed every file it
     // marks reviewed; the Inbox sends none, so its yes clears nothing.
@@ -2937,6 +3016,9 @@ pub struct RuntimeStatus {
     pub download_bytes: Option<u64>,
     /// Where it is downloaded from, as setup names it.
     pub source: &'static str,
+    /// Its checksum is built into Shodh on this platform; otherwise it is checked
+    /// against the checksum published with the release (setup words it so).
+    pub pinned: bool,
 }
 
 #[tauri::command]
@@ -2948,6 +3030,7 @@ pub async fn agent_runtime_status(app: AppHandle) -> CommandResult<RuntimeStatus
         version: OMP_VERSION,
         download_bytes: pinned_size(),
         source: RUNTIME_SOURCE,
+        pinned: pinned_size().is_some(),
     })
 }
 
@@ -3034,6 +3117,21 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_code_mode_off_stops_every_code_session_and_only_those() {
+        let listed = vec![
+            ("code-1".to_string(), true),
+            ("research".to_string(), false),
+            ("code-2".to_string(), true),
+        ];
+        assert_eq!(
+            code_sessions(&listed),
+            vec!["code-1".to_string(), "code-2".to_string()]
+        );
+        assert!(code_sessions(&[("research".to_string(), false)]).is_empty());
+        assert!(CODE_MODE_TURNED_OFF.contains("Code mode was turned off"));
+    }
 
     #[test]
     fn a_retry_carries_only_plausible_earlier_runs_and_the_newest_ones() {

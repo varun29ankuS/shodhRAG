@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Download, Loader2, RotateCcw, TriangleAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useRuntimeSetup } from '../setup/RuntimeSetupContext';
-import { checksumRow, unverifiedSentence, verificationPromise, verifiedSentence } from '../setup/verification';
+import { checksumRow, runtimeCheckPromise, runtimeVerifiedSentence, unverifiedSentence } from '../setup/verification';
 import { TechnicalDetails } from '../setup/TechnicalDetails';
 import { approxMegabytes } from '../setup/readiness';
 
@@ -31,8 +31,11 @@ interface RuntimeCardProps {
 export function RuntimeCard({ reason, message, onInstalled, compact = false }: RuntimeCardProps) {
   const runtime = useRuntimeSetup();
   const [done, setDone] = useState(false);
+  // Only an install that finished after this card appeared covers the failure it shows.
+  const shownAt = useRef(Date.now());
   const source = runtime.status?.source ?? 'GitHub';
   const size = runtime.status?.downloadBytes ?? null;
+  const pinned = runtime.status?.pinned ?? false;
 
   const install = useCallback(async () => {
     if (await runtime.install()) {
@@ -43,11 +46,11 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
 
   // Installed elsewhere (setup, another card) while this one was shown.
   useEffect(() => {
-    if (!done && reason === 'missing' && runtime.justInstalled) {
+    if (!done && reason === 'missing' && runtime.justInstalled && (runtime.installedAt ?? 0) > shownAt.current) {
       setDone(true);
       onInstalled();
     }
-  }, [done, reason, runtime.justInstalled, onInstalled]);
+  }, [done, reason, runtime.justInstalled, runtime.installedAt, onInstalled]);
 
   const installing = runtime.installing;
   const failedMessage = !installing && !done ? runtime.installError : null;
@@ -77,10 +80,10 @@ export function RuntimeCard({ reason, message, onInstalled, compact = false }: R
           </p>
           <p className="text-[13px] leading-relaxed text-shodh-text-muted">
             {done
-              ? `${verifiedSentence(source)} Ask your question again.`
+              ? `${runtimeVerifiedSentence(source, pinned)} Ask your question again.`
               : reason === 'invalid'
-                ? `${unverifiedSentence()} ${verificationPromise(source)}`
-                : `Answers are written by an answer engine that runs on this computer${size ? ` (${approxMegabytes(size)}, downloaded once)` : ''}. ${verificationPromise(source)}`}
+                ? `${unverifiedSentence()} ${runtimeCheckPromise(source, pinned)}`
+                : `Answers are written by an answer engine that runs on this computer${size ? ` (${approxMegabytes(size)}, downloaded once)` : ''}. ${runtimeCheckPromise(source, pinned)}`}
           </p>
 
         </div>

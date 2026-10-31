@@ -533,24 +533,6 @@ fn render(
     })
 }
 
-/// The indexed file passage `n` of this run came from.
-fn passage_source(ctx: &ToolContext, n: u64) -> Result<String, ToolError> {
-    let passage = u32::try_from(n)
-        .ok()
-        .and_then(|n| ctx.cited_passage(n))
-        .ok_or_else(|| {
-            ToolError::NotFound(format!(
-                "There is no passage [{n}] in this answer. Use the number of a passage search_documents returned."
-            ))
-        })?;
-    if passage.web || passage.path.contains("://") {
-        return Err(ToolError::Forbidden(format!(
-            "Passage [{n}] is not from an indexed file (it is a web page, a note or a calendar item), so it cannot be opened."
-        )));
-    }
-    Ok(passage.path)
-}
-
 /// What the user sees for a file: its name.
 fn file_name(source: &str) -> String {
     source
@@ -679,7 +661,7 @@ impl HostTool for OpenDocumentTool {
         // The model names a document by a passage number (its path never reaches the
         // model) or by its file name.
         let by_passage = match args.get("passage").and_then(Value::as_u64) {
-            Some(n) => Some(passage_source(ctx, n)?),
+            Some(n) => Some(super::document_of_passage(ctx, n)?.path),
             None => None,
         };
         let requested = match &by_passage {
@@ -706,13 +688,17 @@ impl HostTool for OpenDocumentTool {
                 )))
             }
             [one] => one.clone(),
-            many => {
-                return Err(ToolError::NotFound(format!(
-                    "{} matches {} indexed files; name the one you mean by the number of one of its passages from search_documents.",
-                    file_name(requested),
-                    many.len()
-                )))
-            }
+            many => match super::document_named(ctx, requested)? {
+                // Several indexed files have this name; the one this conversation found is meant.
+                Some(found) if many.contains(&found.path) => found.path,
+                _ => {
+                    return Err(ToolError::NotFound(format!(
+                        "{} matches {} indexed files; name the one you mean by the number of one of its passages from search_documents.",
+                        file_name(requested),
+                        many.len()
+                    )))
+                }
+            },
         };
         if source.contains("://") {
             return Err(ToolError::Forbidden(

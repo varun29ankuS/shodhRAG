@@ -230,6 +230,90 @@ pub fn pinned_size() -> Option<u64> {
     pinned_hash().map(|_| OMP_WINDOWS_X64_BYTES)
 }
 
+/// Where the runtime download is written until it is complete and checked.
+pub fn download_part_path(app_data_dir: &Path) -> PathBuf {
+    let target = default_binary_path(app_data_dir);
+    let dir = target
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| app_data_dir.to_path_buf());
+    dir.join(format!(".{}.part", binary_file_name()))
+}
+
+/// Remove the leftovers of downloads that can never resume: parts written under the
+/// random names earlier builds used, and parts of other runtime versions. The current
+/// version's part ([`download_part_path`]) is kept to resume.
+pub async fn sweep_stale_downloads(app_data_dir: &Path) {
+    let keep = download_part_path(app_data_dir);
+    let Some(dir) = keep.parent() else {
+        return;
+    };
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path != keep && is_runtime_part(&name) {
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {
+                    tracing::info!(target: "shodh::harness", file = %name, "removed a stale runtime download")
+                }
+                Err(e) => {
+                    tracing::debug!(target: "shodh::harness", file = %name, error = %e, "a stale runtime download could not be removed")
+                }
+            }
+        }
+    }
+}
+
+/// Whether a file name is a runtime download part (`.omp-<version>[.exe][.<id>].part`).
+fn is_runtime_part(name: &str) -> bool {
+    name.starts_with(".omp-") && name.ends_with(".part") && !name.ends_with(".sha256.part")
+}
+
+/// Open the runtime download from byte `offset` (a Range request when resuming).
+async fn open_download(
+    client: &reqwest::Client,
+    url: &str,
+    offset: u64,
+) -> Result<reqwest::Response, HarnessError> {
+    let mut request = client.get(url);
+    if offset > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={offset}-"));
+    }
+    request.send().await.map_err(|e| send_failure(url, e))
+}
+
+/// Feed the first `len` bytes of `path` (a kept part) to `hasher`.
+async fn hash_prefix(path: &Path, len: u64, hasher: &mut Sha256) -> Result<(), HarnessError> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut left = len;
+    let mut buf = vec![0u8; 1 << 16];
+    while left > 0 {
+        let want = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
+        let n = file.read(&mut buf[..want]).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        left -= n as u64;
+    }
+    Ok(())
+}
+
+/// A download that broke off mid-stream: a dropped connection or a stall is the
+/// network (resumable, said as such); anything else a download failure.
+fn stream_failure(url: &str, error: reqwest::Error) -> HarnessError {
+    if error.is_timeout() || error.is_connect() || error.is_body() {
+        tracing::warn!(target: "shodh::harness", %url, error = %error, "the agent runtime download broke off");
+        HarnessError::Unreachable(RUNTIME_SOURCE)
+    } else {
+        HarnessError::Download(format!("{url}: {error}"))
+    }
+}
+
 /// A request that failed before any answer came back: no connection (offline,
 /// DNS, a firewall) or no reply in time. Anything else (an HTTP error status, a
 /// broken body) is a download failure.
@@ -923,34 +1007,48 @@ pub async fn fetch_omp(
         }
     };
 
-    let url = format!("{RELEASE_BASE_URL}/{asset}");
-    let mut response = client
-        .get(&url)
-        .send()
+    // One fixed name, so a download interrupted (the app closed, the network dropped)
+    // resumes where it stopped; leftovers of earlier builds' random names are removed.
+    sweep_stale_downloads(app_data_dir).await;
+    let temp = download_part_path(app_data_dir);
+    let kept = tokio::fs::metadata(&temp)
         .await
-        .map_err(|e| send_failure(&url, e))?
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let url = format!("{RELEASE_BASE_URL}/{asset}");
+    let mut response = open_download(&client, &url, kept).await?;
+    if kept > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        // The kept part no longer matches the release: start over.
+        let _ = tokio::fs::remove_file(&temp).await;
+        response = open_download(&client, &url, 0).await?;
+    }
+    let mut response = response
         .error_for_status()
         .map_err(|e| HarnessError::Download(format!("{url}: {e}")))?;
-    let total = response.content_length();
+    let resumed = kept > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let start = if resumed { kept } else { 0 };
+    let total = response.content_length().map(|n| n + start);
     if total.unwrap_or(0) > MAX_DOWNLOAD_BYTES {
         return Err(HarnessError::Download(format!(
             "{url}: the file is larger than expected"
         )));
     }
 
-    let temp = dir.join(format!(
-        ".{}.{}.part",
-        binary_file_name(),
-        uuid::Uuid::new_v4()
-    ));
     let result = async {
-        let mut file = tokio::fs::File::create(&temp).await?;
         let mut hasher = Sha256::new();
-        let mut written: u64 = 0;
+        let mut file = if resumed {
+            // The kept bytes count toward the checksum like the new ones.
+            hash_prefix(&temp, start, &mut hasher).await?;
+            tokio::fs::OpenOptions::new().append(true).open(&temp).await?
+        } else {
+            tokio::fs::File::create(&temp).await?
+        };
+        let mut written: u64 = start;
+        progress(written, total);
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| HarnessError::Download(format!("{url}: {e}")))?
+            .map_err(|e| stream_failure(&url, e))?
         {
             written += chunk.len() as u64;
             if written > MAX_DOWNLOAD_BYTES {
@@ -990,9 +1088,14 @@ pub async fn fetch_omp(
     }
     .await;
 
-    if result.is_err() {
-        // Best effort: the partial file is useless.
-        let _ = tokio::fs::remove_file(&temp).await;
+    match &result {
+        // An interrupted download is kept to resume next time.
+        Err(HarnessError::Unreachable(_) | HarnessError::Download(_)) => {}
+        // A file that failed its check (or could not be written) is never resumed.
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+        }
+        Ok(()) => {}
     }
     result?;
     tracing::info!(target: "shodh::harness", "installed omp {OMP_VERSION} at {}", target.display());
@@ -1006,6 +1109,46 @@ pub async fn fetch_omp(
 mod tests {
     use super::*;
     use crate::harness::model::Secret;
+
+    #[tokio::test]
+    async fn stale_runtime_downloads_are_swept_and_the_resumable_one_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keep = download_part_path(tmp.path());
+        let dir = keep.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&keep, b"partial").unwrap();
+        let random = dir.join(format!(".{}.0b6f3c2e.part", binary_file_name()));
+        std::fs::write(&random, b"orphan").unwrap();
+        let older = dir.join(".omp-1.0.0.exe.part");
+        std::fs::write(&older, b"orphan").unwrap();
+        let record = dir.join(format!(".{}.sha256.part", binary_file_name()));
+        std::fs::write(&record, b"hash").unwrap();
+        let unrelated = dir.join("notes.part");
+        std::fs::write(&unrelated, b"x").unwrap();
+        sweep_stale_downloads(tmp.path()).await;
+        assert!(keep.exists(), "the current part resumes");
+        assert!(
+            !random.exists() && !older.exists(),
+            "parts that can never resume go"
+        );
+        assert!(record.exists() && unrelated.exists(), "other files stay");
+    }
+
+    #[tokio::test]
+    async fn a_kept_part_is_hashed_like_the_rest_of_the_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("part");
+        std::fs::write(&path, b"hello world").unwrap();
+        let mut resumed = Sha256::new();
+        hash_prefix(&path, 5, &mut resumed).await.unwrap();
+        resumed.update(b" world");
+        let mut whole = Sha256::new();
+        whole.update(b"hello world");
+        assert_eq!(
+            hex::encode(resumed.finalize()),
+            hex::encode(whole.finalize())
+        );
+    }
 
     fn model() -> OmpModel {
         OmpModel {

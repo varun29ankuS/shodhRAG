@@ -107,6 +107,15 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
 
   const setup = useReadiness();
   const { startSetup } = setup;
+  // "Get started" pressed while the statuses were still being read: the downloads start
+  // once Shodh knows what is missing.
+  const setupRequested = useRef(false);
+  useEffect(() => {
+    if (setupRequested.current && (setup.phase === 'needed' || setup.phase === 'failed')) {
+      setupRequested.current = false;
+      startSetup();
+    }
+  }, [setup.phase, startSetup]);
   const advance = () => {
     if (step === 'done') {
       onFinish();
@@ -114,7 +123,10 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
     }
     // "Get started" starts the one-time downloads (search models and answer engine)
     // the welcome step described; they continue while the other steps are done.
-    if (step === 'welcome') startSetup();
+    if (step === 'welcome') {
+      if (setup.phase === 'checking') setupRequested.current = true;
+      else startSetup();
+    }
     onStepChange(nextStep(step));
   };
 
@@ -166,7 +178,7 @@ function FlowDialog({ step, onStepChange, onFinish, onSkip, llmStatus, sources, 
 
         {/* Step */}
         <div key={step} className="shell-view-enter flex-1 min-h-0 overflow-y-auto scrollbar-thin px-6 pt-4 pb-2">
-          {step === 'welcome' && <WelcomeStep titleId={titleId} headingRef={headingRef} disclosure={setupDisclosure(setup, setup.runtimeSource)} />}
+          {step === 'welcome' && <WelcomeStep titleId={titleId} headingRef={headingRef} disclosure={welcomeDisclosure(setup)} />}
           {step === 'search' && <SearchStep titleId={titleId} headingRef={headingRef} />}
           {step === 'model' && (
             <ModelStep titleId={titleId} headingRef={headingRef} llmStatus={llmStatus} />
@@ -226,6 +238,18 @@ function StepHeading({ titleId, headingRef, children }: StepProps & { children: 
   );
 }
 
+/** What the welcome step says about the downloads, for what is known so far. */
+function welcomeDisclosure(setup: ReturnType<typeof useReadiness>): string {
+  switch (setup.phase) {
+    case 'checking':
+      return 'Shodh is checking what it needs to download; it starts when you choose Get started.';
+    case 'ready':
+      return 'Everything Shodh needs is already on this computer.';
+    default:
+      return `${setupDisclosure(setup, setup.runtimeSource)} It starts when you choose Get started.`;
+  }
+}
+
 function WelcomeStep({ disclosure, ...props }: StepProps & { disclosure: string }) {
   const points = [
     { icon: Search, title: 'Search your own files', text: 'Folders on this computer are indexed locally. Nothing is uploaded.' },
@@ -256,7 +280,7 @@ function WelcomeStep({ disclosure, ...props }: StepProps & { disclosure: string 
         })}
       </ul>
       <p className="m-0 text-[13px] leading-relaxed text-shodh-text-secondary">
-        {`${disclosure} It starts when you choose Get started.`}
+        {disclosure}
       </p>
     </div>
   );
@@ -282,7 +306,7 @@ function SearchStep(props: StepProps) {
       {setup.phase === 'ready' && (
         <p role="status" className="flex items-center gap-2 p-3 rounded-xl bg-shodh-success-soft text-[13px] text-shodh-text">
           <CheckCircle2 className="w-[18px] h-[18px] text-shodh-success shrink-0" aria-hidden="true" />
-          Search models and answer engine are downloaded and verified.
+          Search models and answer engine are installed. Each is checked against its official copy before it is used.
         </p>
       )}
       <SetupCard />

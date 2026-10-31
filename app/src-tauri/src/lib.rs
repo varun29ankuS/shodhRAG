@@ -222,6 +222,14 @@ pub fn run() {
                 .map_err(|e| setup_error("Failed to create the app data directory", e))?;
 
             tracing::info!("App data directory: {:?}", app_data_dir);
+            // Leftover answer-engine downloads that can never resume (earlier builds wrote
+            // them under random names) are removed; the current one is kept to resume.
+            {
+                let dir = app_data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    shodh_rag::harness::sidecar::sweep_stale_downloads(&dir).await;
+                });
+            }
 
             // Audit log first, so every later event can be recorded.
             let audit_state = audit_commands::AuditState::open(&app_data_dir);

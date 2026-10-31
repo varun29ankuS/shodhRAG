@@ -14,8 +14,14 @@
 //! - neither: [`LmStudioState::NotRunning`].
 //!
 //! A server still loading a model can be slow to answer: one retry with a
-//! longer timeout is made before giving up on a request that timed out (never
-//! on a refused connection, which is immediate and certain).
+//! longer timeout is made when the connection was made but the answer did not
+//! come in time. A connection that fails (refused, or no connection within
+//! [`CONNECT_TIMEOUT`]) is never retried: nothing is listening. On Windows a
+//! refused loopback connection is not immediate (the stack tries the SYN again
+//! before giving up, about 1–2 s), so the connection has its own timeout, longer
+//! than that, and the answer's timeout counts only once it is connected; the
+//! `a_closed_port_is_not_running_without_a_retry` test measures it on the CI
+//! runners.
 //!
 //! Only loopback addresses are asked: the list must not leave this computer.
 
@@ -28,7 +34,10 @@ use super::catalog_fetch::{
     is_loopback_url, parse_openai_models, CATALOG_USER_AGENT, MAX_LIST_BYTES,
 };
 
-/// Time allowed for the first request (LM Studio answers at once when its server is on).
+/// Time allowed to connect: longer than Windows takes to report a refused loopback
+/// connection (about 1–2 s), so "nothing is listening" is told by the refusal itself.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_millis(3_000);
+/// Time allowed for the answer once connected (LM Studio answers at once when its server is on).
 pub const FIRST_TIMEOUT: Duration = Duration::from_millis(1_500);
 /// Time allowed for the one retry of a request that timed out (a model loading).
 pub const RETRY_TIMEOUT: Duration = Duration::from_millis(4_000);
@@ -71,11 +80,45 @@ enum Probe {
     NoServer,
 }
 
-async fn probe_once(base: &str, token: Option<&str>, timeout: Duration) -> Probe {
+/// Whether something accepts a connection at `base`'s host and port within `connect`.
+/// A refusal (on Windows, after the stack's own retries) or no answer in time means
+/// nothing is listening.
+async fn listening(base: &str, connect: Duration) -> bool {
+    let Ok(url) = url::Url::parse(base) else {
+        return false;
+    };
+    let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
+        return false;
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    matches!(
+        tokio::time::timeout(
+            connect,
+            tokio::net::TcpStream::connect((host.as_str(), port))
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+async fn probe_once(
+    base: &str,
+    token: Option<&str>,
+    connect: Duration,
+    timeout: Duration,
+) -> Probe {
+    // Connected first, on its own timeout: the answer's timeout then counts only the
+    // server's answer, and a refused connection is never mistaken for a slow server.
+    if !listening(base, connect).await {
+        return Probe::NoServer;
+    }
     let Ok(client) = reqwest::Client::builder()
         .user_agent(CATALOG_USER_AGENT)
         .timeout(timeout)
-        .connect_timeout(timeout)
+        .connect_timeout(connect)
         .redirect(reqwest::redirect::Policy::none())
         .build()
     else {
@@ -89,7 +132,9 @@ async fn probe_once(base: &str, token: Option<&str>, timeout: Duration) -> Probe
     }
     let response = match request.send().await {
         Ok(response) => response,
-        Err(e) if e.is_timeout() => return Probe::TimedOut,
+        // Connected, but no answer in time: a model may be loading.
+        Err(e) if e.is_timeout() && !e.is_connect() => return Probe::TimedOut,
+        // Refused, or no connection in time: nothing is listening.
         Err(_) => return Probe::NoServer,
     };
     let status = response.status();
@@ -114,11 +159,27 @@ async fn probe_once(base: &str, token: Option<&str>, timeout: Duration) -> Probe
     }
 }
 
+/// The time limits of one detection.
+#[derive(Debug, Clone, Copy)]
+pub struct Timeouts {
+    pub connect: Duration,
+    pub first: Duration,
+    pub retry: Duration,
+}
+
+impl Timeouts {
+    pub const APP: Timeouts = Timeouts {
+        connect: CONNECT_TIMEOUT,
+        first: FIRST_TIMEOUT,
+        retry: RETRY_TIMEOUT,
+    };
+}
+
 /// Ask the server at `base` (e.g. `http://127.0.0.1:1234/v1`) for its models,
-/// retrying once with `retry` when the first request timed out.
-async fn probe(base: &str, token: Option<&str>, first: Duration, retry: Duration) -> Probe {
-    match probe_once(base, token, first).await {
-        Probe::TimedOut => probe_once(base, token, retry).await,
+/// retrying once with the longer timeout when it connected but did not answer in time.
+async fn probe(base: &str, token: Option<&str>, t: Timeouts) -> Probe {
+    match probe_once(base, token, t.connect, t.first).await {
+        Probe::TimedOut => probe_once(base, token, t.connect, t.retry).await,
         other => other,
     }
 }
@@ -128,13 +189,12 @@ async fn probe(base: &str, token: Option<&str>, first: Duration, retry: Duration
 pub async fn detect_with(
     base: &str,
     token: Option<&str>,
-    first: Duration,
-    retry: Duration,
-    app_open: impl FnOnce() -> bool,
+    timeouts: Timeouts,
+    app_open: impl FnOnce() -> bool + Send + 'static,
 ) -> LmStudioDetection {
     let base = base.trim().trim_end_matches('/').to_string();
     let probe = if is_loopback_url(&base) {
-        probe(&base, token, first, retry).await
+        probe(&base, token, timeouts).await
     } else {
         Probe::NoServer
     };
@@ -143,7 +203,9 @@ pub async fn detect_with(
         Probe::Models(models) => (LmStudioState::Running, models),
         Probe::NeedsToken => (LmStudioState::NeedsToken, Vec::new()),
         Probe::TimedOut | Probe::NoServer => {
-            if app_open() {
+            // The process list is read off the async workers (a snapshot, or `pgrep`).
+            let open = tokio::task::spawn_blocking(app_open).await.unwrap_or(false);
+            if open {
                 (LmStudioState::ServerOff, Vec::new())
             } else {
                 (LmStudioState::NotRunning, Vec::new())
@@ -159,7 +221,7 @@ pub async fn detect_with(
 
 /// [`detect_with`] with the app's timeouts and the process list of this computer.
 pub async fn detect(base: &str, token: Option<&str>) -> LmStudioDetection {
-    detect_with(base, token, FIRST_TIMEOUT, RETRY_TIMEOUT, app_is_open).await
+    detect_with(base, token, Timeouts::APP, app_is_open).await
 }
 
 /// The server port from LM Studio's settings file under `home`, when that file
@@ -260,17 +322,24 @@ mod tests {
     ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        // Requests are counted, not connections: detection connects once without
+        // sending anything to see whether something listens.
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tokio::spawn(async move {
-            let mut n = 0usize;
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
-                let delay = delays.get(n).or(delays.last()).copied().unwrap_or_default();
-                n += 1;
+                let requests = requests.clone();
+                let delays = delays.clone();
                 tokio::spawn(async move {
                     let mut buf = [0u8; 2048];
-                    let _ = socket.read(&mut buf).await;
+                    let read = socket.read(&mut buf).await.unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    let n = requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let delay = delays.get(n).or(delays.last()).copied().unwrap_or_default();
                     tokio::time::sleep(delay).await;
                     let reply = format!(
                         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -292,11 +361,33 @@ mod tests {
         format!("http://127.0.0.1:{port}/v1")
     }
 
-    const FAST: Duration = Duration::from_millis(300);
-    const RETRY: Duration = Duration::from_millis(3_000);
+    const FAST: Timeouts = Timeouts {
+        connect: CONNECT_TIMEOUT,
+        first: Duration::from_millis(300),
+        retry: Duration::from_millis(3_000),
+    };
 
     async fn detect_test(base: &str, token: Option<&str>, app_open: bool) -> LmStudioDetection {
-        detect_with(base, token, FAST, RETRY, || app_open).await
+        detect_with(base, token, FAST, move || app_open).await
+    }
+
+    /// Measured, not assumed: a closed loopback port (where Windows takes a while to
+    /// report the refusal) is reported as not running, without the retry, well within
+    /// the connection's own timeout.
+    #[tokio::test]
+    async fn a_closed_port_is_not_running_without_a_retry() {
+        let base = closed_port().await;
+        let started = std::time::Instant::now();
+        let found = detect_with(&base, None, Timeouts::APP, || false).await;
+        let took = started.elapsed();
+        eprintln!("a refused loopback connection was reported after {took:?}");
+        assert_eq!(found.state, LmStudioState::NotRunning);
+        // A retry would add the retry timeout; a connection timeout would take the
+        // whole connect timeout. The refusal arrives before either.
+        assert!(
+            took < CONNECT_TIMEOUT,
+            "detection of a closed port took {took:?}, as long as the connect timeout"
+        );
     }
 
     #[tokio::test]
@@ -356,9 +447,15 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let n = socket.read(&mut buf).await.unwrap();
+            // The first connection may only check that something listens: wait for a request.
+            let (mut socket, buf, n) = loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                if n > 0 {
+                    break (socket, buf, n);
+                }
+            };
             let body = r#"{"data":[{"id":"qwen3-8b"}]}"#;
             let reply = format!(
                 "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",

@@ -777,7 +777,7 @@ impl HostTool for AddToWorkspaceTool {
     }
     fn description(&self) -> &'static str {
         "Add sources to a workspace (asks the user first): kind folder (id: a folder source id \
-         from list_sources), file (id: an indexed file path), snippet (id: a snippet id from \
+         from list_sources), file (id: an indexed file's name), snippet (id: a snippet id from \
          list_snippets) or paper (id: a paper id, title, DOI or arXiv id from the paper graph; \
          only papers in the library are searched). Chats in the workspace then search them."
     }

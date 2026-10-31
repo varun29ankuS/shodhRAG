@@ -847,6 +847,11 @@ pub async fn set_code_mode(
     let (settings, before) = store(&app)?
         .update(|s| Ok(std::mem::replace(&mut s.code.enabled, enabled)))
         .map_err(|e| e.to_string())?;
+    if !enabled {
+        // Off takes effect at once: running Code answers stop, and an edit or command
+        // waiting for approval never runs.
+        crate::agent_session_commands::stop_code_sessions(&app).await;
+    }
     if before != enabled {
         audit.record(AuditRecord::new(
             AuditEventType::SettingsChange,

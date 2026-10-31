@@ -306,20 +306,35 @@ pub fn shown_path(path: &str, summaries: &[SourceSummary]) -> String {
         .max_by_key(|(_, folder)| folder.len());
     match best {
         Some((summary, folder)) => {
+            let head = shown_head(summary, summaries);
             let rest = path[folder.len()..].trim_start_matches('/');
             if rest.is_empty() {
-                summary.name.clone()
+                head
             } else {
-                format!("{}/{rest}", summary.name)
+                format!("{head}/{rest}")
             }
         }
         None => last_component(path).to_string(),
     }
 }
 
+/// How a folder source starts its files' shown paths: its name, or its source id when
+/// another folder source has the same name (so two "papers" folders are told apart).
+fn shown_head(summary: &SourceSummary, summaries: &[SourceSummary]) -> String {
+    let same_name = summaries
+        .iter()
+        .filter(|s| s.kind == SourceKind::Folder && s.name.eq_ignore_ascii_case(&summary.name))
+        .count();
+    if same_name > 1 {
+        summary.source_id.clone()
+    } else {
+        summary.name.clone()
+    }
+}
+
 /// The full paths a value shown by [`shown_path`] ("<folder name>/<rest>") may
 /// stand for: each folder source with that name, joined with the rest.
-fn unshown_paths(value: &str, summaries: &[SourceSummary]) -> Vec<String> {
+pub fn unshown_paths(value: &str, summaries: &[SourceSummary]) -> Vec<String> {
     let value = value.replace('\\', "/");
     let (head, rest) = match value.split_once('/') {
         Some((head, rest)) => (head.to_lowercase(), rest.trim_matches('/').to_string()),
@@ -327,7 +342,10 @@ fn unshown_paths(value: &str, summaries: &[SourceSummary]) -> Vec<String> {
     };
     summaries
         .iter()
-        .filter(|s| s.kind == SourceKind::Folder && s.name.to_lowercase() == head)
+        .filter(|s| {
+            s.kind == SourceKind::Folder
+                && (s.name.to_lowercase() == head || s.source_id.to_lowercase() == head)
+        })
         .filter_map(|s| s.folder.as_deref())
         .map(|folder| {
             let folder = folder.trim_end_matches('/');
@@ -891,6 +909,21 @@ mod tests {
             panic!("resolved in an empty index");
         };
         assert!(message.contains("Nothing is indexed yet"));
+    }
+
+    #[test]
+    fn folders_with_the_same_name_are_told_apart_by_their_source_id() {
+        let rows = vec![
+            row("1", "c:/work/papers/a.pdf", "s1", 1),
+            row("2", "d:/home/papers/b.pdf", "s2", 1),
+        ];
+        let summaries = summarise_sources(&rows);
+        assert_eq!(shown_path("c:/work/papers/a.pdf", &summaries), "s1/a.pdf");
+        assert_eq!(shown_path("d:/home/papers/b.pdf", &summaries), "s2/b.pdf");
+        assert_eq!(
+            unshown_paths("s2/b.pdf", &summaries),
+            vec!["d:/home/papers/b.pdf".to_string()]
+        );
     }
 
     #[test]

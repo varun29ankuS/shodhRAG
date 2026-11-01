@@ -147,18 +147,6 @@ fn indexed_detail(done: &IndexingResult) -> String {
 }
 
 #[tauri::command]
-pub async fn pause_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
-    indexing_state.pause();
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn resume_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
-    indexing_state.resume();
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn check_path_type(path: String) -> Result<serde_json::Value, String> {
     let (is_dir, is_file) = shodh_rag::indexing::check_path_type(&path)?;
     Ok(serde_json::json!({

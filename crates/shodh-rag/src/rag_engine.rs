@@ -1920,6 +1920,18 @@ impl RAGEngine {
         self.embeddings.is_some() && (!self.embedder_e5 || self.embedder.available())
     }
 
+    /// Whether the reranker is installed (it loads on first use and runs on
+    /// the CPU).
+    pub fn reranker_installed(&self) -> bool {
+        self.reranker.available()
+    }
+
+    /// Whether the PP-OCRv6 scan reader is installed (it runs on the CPU;
+    /// without it scans go to the system OCR).
+    pub fn scan_reader_installed(&self) -> bool {
+        self.ocr.available()
+    }
+
     /// What runs the search model and how fast; shared, so the app reads it
     /// without the engine lock.
     pub fn compute_status(&self) -> Arc<crate::compute::status::ComputeStatus> {

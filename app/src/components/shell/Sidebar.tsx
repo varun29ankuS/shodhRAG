@@ -29,10 +29,10 @@ import type { ViewTab } from '../../lib/viewTabs';
 import type { Conversation } from '../../hooks/useConversations';
 import type { GroupableWorkspace } from '../../features/workspaces/model';
 import { ActivityTray } from './ActivityTray';
+import { SystemStatusStrip } from './SystemStatusStrip';
 import { ConversationHistory } from './ConversationHistory';
 import { requestArchivedWorkspaces } from '../../features/workspaces/archivedRequest';
 import { ConnectionStatusChip } from '../../features/connection/ConnectionStatusChip';
-import { countOf } from '../../lib/plural';
 import { ariaKeyShortcuts, shortcutText, withShortcut } from '../../lib/shortcuts';
 import { Kbd, IS_MAC } from '../ui/Kbd';
 import { MENU_ITEM, POPOVER, usePopover } from '../../hooks/usePopover';
@@ -274,7 +274,6 @@ export default function Sidebar({
     </button>
   );
 
-  const indexingSource = sources.find(s => s.status === 'indexing') ?? null;
   const themeLabel = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
 
   return (
@@ -424,9 +423,12 @@ export default function Sidebar({
           <NavButton view="settings" active={activeView === 'settings'} collapsed={collapsed} onNavigate={onNavigate} />
         </div>
 
-        {indexingSource && (
-          <IndexingStatus source={indexingSource} collapsed={collapsed} onOpen={() => onNavigate('library')} />
-        )}
+        {/* What runs search, and the indexing in progress with Pause and Cancel. */}
+        <SystemStatusStrip
+          jobs={sources.filter(s => s.status === 'indexing')}
+          collapsed={collapsed}
+          onOpenLibrary={() => onNavigate('library')}
+        />
         {/* The model status stays visible while a folder indexes. */}
         <ConnectionStatusChip collapsed={collapsed} />
 
@@ -512,72 +514,5 @@ function FooterIconButton({
     >
       {children}
     </button>
-  );
-}
-
-function IndexingStatus({
-  source,
-  collapsed,
-  onOpen,
-}: {
-  source: SidebarSource;
-  collapsed: boolean;
-  onOpen: () => void;
-}) {
-  const percent = Math.max(0, Math.min(100, Math.round(source.progress ?? 0)));
-  const total = source.fileCount ?? 0;
-  const processed = source.processedCount ?? 0;
-  const detail = total > 0 ? `${processed.toLocaleString()} of ${countOf(total, 'file')}` : 'Preparing files';
-  const label = `Indexing ${source.name}: ${detail}, ${percent}%. Open Library`;
-
-  if (collapsed) {
-    return (
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={label}
-        title={label}
-        className={cn(
-          'w-10 h-10 rounded-[10px] bg-shodh-surface-2 border border-shodh-border inline-flex items-center justify-center',
-          FOCUS_RING
-        )}
-      >
-        <span className="w-2 h-2 rounded-full bg-shodh-warning motion-safe:animate-pulse" aria-hidden="true" />
-      </button>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={label}
-        className={cn(
-          'flex items-center gap-2.5 px-3 py-2.5 rounded-[10px] bg-shodh-surface-2 border border-shodh-border text-left hover:border-shodh-border-strong transition-colors duration-micro',
-          FOCUS_RING
-        )}
-      >
-        <span className="w-2 h-2 rounded-full bg-shodh-warning shrink-0" aria-hidden="true" />
-        <span className="flex flex-col gap-0.5 flex-1 min-w-0">
-          <span className="text-caption font-semibold truncate">Indexing {source.name}</span>
-          <span className="text-caption text-shodh-text-faint">{detail}</span>
-        </span>
-        <span className="font-mono text-caption text-shodh-text-secondary">{percent}%</span>
-      </button>
-      <div
-        role="progressbar"
-        aria-label={`Indexing ${source.name}`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        className="h-[3px] mx-1 rounded-[3px] bg-shodh-border overflow-hidden"
-      >
-        <div
-          className="h-full bg-shodh-warning origin-left transition-transform duration-panel ease-standard"
-          style={{ transform: `scaleX(${percent / 100})` }}
-        />
-      </div>
-    </div>
   );
 }

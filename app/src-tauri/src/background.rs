@@ -3,11 +3,11 @@
 //! ringing; the tray menu opens the window, pauses background work or quits.
 //! Starting with Windows is optional and off by default.
 //!
-//! "Background work" is indexing the agent starts on its own (folders it
-//! adds or re-indexes, files it downloads). Pausing holds those jobs before
-//! they take the index lock, so searches never wait on a paused job; a job
-//! already running finishes. Indexing the user starts, agent answers and
-//! reminders are not paused.
+//! The tray's pause is the indexing pause of the status strip and the
+//! Library ([`crate::indexing_control`]): every indexing run waits before its
+//! next file or batch, jobs the agent starts and folder syncs wait before
+//! they take the index lock, and the pause is kept across restarts. Agent
+//! answers and reminders are not paused.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -15,11 +15,11 @@ use std::sync::Mutex;
 use serde::Serialize;
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::indexing::PauseSwitch;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, State, Window, WindowEvent, Wry};
 use tauri_plugin_autostart::ManagerExt;
-use tokio::sync::Notify;
 
 use crate::app_settings::{broadcast, AppSettings, SettingsStore};
 use crate::audit_commands::AuditState;
@@ -41,8 +41,8 @@ const MENU_OPEN: &str = "tray-open";
 const MENU_PAUSE: &str = "tray-pause";
 const MENU_QUIT: &str = "tray-quit";
 
-const PAUSE_LABEL: &str = "Pause background work";
-const RESUME_LABEL: &str = "Resume background work";
+const PAUSE_LABEL: &str = "Pause indexing";
+const RESUME_LABEL: &str = "Resume indexing";
 
 /// Tray and pause state, managed by Tauri.
 #[derive(Default)]
@@ -52,21 +52,39 @@ pub struct BackgroundState {
     /// The tray icon exists. Without it a hidden window could not be
     /// brought back, so closing then quits as usual.
     tray_ready: AtomicBool,
-    paused: AtomicBool,
-    resumed: Notify,
+    /// Whether indexing is paused: the switch the engine's indexing state
+    /// shares ([`shodh_rag::indexing::PauseSwitch`]).
+    pause: PauseSwitch,
     pause_item: Mutex<Option<MenuItem<Wry>>>,
 }
 
 impl BackgroundState {
-    pub fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst)
+    /// Tray state over `pause`, the indexing pause switch.
+    pub fn with_pause(pause: PauseSwitch) -> Self {
+        Self {
+            quitting: AtomicBool::new(false),
+            tray_ready: AtomicBool::new(false),
+            pause,
+            pause_item: Mutex::new(None),
+        }
     }
 
-    fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::SeqCst);
-        if !paused {
-            self.resumed.notify_waiters();
-        }
+    pub fn is_paused(&self) -> bool {
+        self.pause.is_paused()
+    }
+
+    /// Pauses or resumes indexing and relabels the tray item; returns
+    /// whether anything changed. [`crate::indexing_control::set_paused`]
+    /// also saves it and tells the window.
+    pub(crate) fn set_paused(&self, paused: bool) -> bool {
+        let changed = self.pause.set(paused);
+        self.relabel();
+        changed
+    }
+
+    /// The tray item says what choosing it does now.
+    fn relabel(&self) {
+        let paused = self.is_paused();
         let item = self.pause_item.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(item) = item.as_ref() {
             let label = if paused { RESUME_LABEL } else { PAUSE_LABEL };
@@ -76,18 +94,10 @@ impl BackgroundState {
         }
     }
 
-    /// Wait while background work is paused. Call before taking the index
-    /// lock for an agent-started job.
+    /// Wait while indexing is paused. Call before taking the index lock for
+    /// an agent-started job or a folder sync.
     pub async fn wait_until_resumed(&self) {
-        loop {
-            let resumed = self.resumed.notified();
-            tokio::pin!(resumed);
-            resumed.as_mut().enable();
-            if !self.is_paused() {
-                return;
-            }
-            resumed.await;
-        }
+        self.pause.wait_until_resumed().await;
     }
 }
 
@@ -106,10 +116,9 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         MENU_OPEN => show_main(app),
         MENU_PAUSE => {
-            let state = app.state::<BackgroundState>();
-            let paused = !state.is_paused();
-            state.set_paused(paused);
-            tracing::info!(paused, "background work paused from the tray");
+            let paused = !app.state::<BackgroundState>().is_paused();
+            crate::indexing_control::set_paused(app, paused);
+            tracing::info!(paused, "indexing paused or resumed from the tray");
         }
         MENU_QUIT => {
             let state = app.state::<BackgroundState>();
@@ -135,6 +144,8 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         .pause_item
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(pause);
+    // Paused in an earlier run: the item offers to resume.
+    app.state::<BackgroundState>().relabel();
 
     let mut tray = TrayIconBuilder::with_id("shodh")
         .tooltip("Shodh")

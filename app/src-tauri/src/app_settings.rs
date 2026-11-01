@@ -198,6 +198,27 @@ impl Policy {
     }
 }
 
+/// Indexing (the status strip, the tray and Settings → Search). User-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IndexingPrefs {
+    /// Indexing is paused: every run waits, also after a restart, until it
+    /// is resumed.
+    pub paused: bool,
+    /// The search model may run on a graphics card (on by default; off runs
+    /// it on the CPU).
+    pub use_gpu: bool,
+}
+
+impl Default for IndexingPrefs {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            use_gpu: true,
+        }
+    }
+}
+
 /// Background mode (see [`crate::background`]). User-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -476,6 +497,9 @@ pub struct AppSettings {
     pub connectors: crate::connectors::ConnectorsPrefs,
     /// Code mode (see [`CodePrefs`]). User-only.
     pub code: CodePrefs,
+    /// Indexing: paused or not, and whether search may use the graphics card
+    /// (see [`IndexingPrefs`]). User-only.
+    pub indexing: IndexingPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
     /// Learning from conversations was moved, once, from Ask (the earlier default) to

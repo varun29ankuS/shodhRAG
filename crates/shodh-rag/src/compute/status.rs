@@ -38,13 +38,36 @@ pub struct EmbedderReport {
 }
 
 /// The engine's compute status, shared with the model loaders.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ComputeStatus {
     embedder: RwLock<Option<EmbedderReport>>,
     watch: Mutex<Option<ThroughputWatch>>,
+    /// Counts the changes worth showing (a load, an unload, a change of
+    /// the degraded state), for [`Self::subscribe`].
+    changes: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for ComputeStatus {
+    fn default() -> Self {
+        Self {
+            embedder: RwLock::new(None),
+            watch: Mutex::new(None),
+            changes: tokio::sync::watch::Sender::new(0),
+        }
+    }
 }
 
 impl ComputeStatus {
+    /// Wakes on every change worth showing: the model loaded or was
+    /// unloaded, or its batches became slower than calibrated, or recovered.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
+    fn changed(&self) {
+        self.changes.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
     /// The search model loaded: what runs it and its calibrated speed in
     /// tokens a second.
     pub fn embedder_loaded(&self, mut report: EmbedderReport, tokens_per_second: f64) {
@@ -53,6 +76,7 @@ impl ComputeStatus {
         report.degraded = false;
         *self.watch.lock() = Some(ThroughputWatch::new(tokens_per_second));
         *self.embedder.write() = Some(report);
+        self.changed();
     }
 
     /// The search model was dropped from memory; its report stays.
@@ -60,6 +84,7 @@ impl ComputeStatus {
         if let Some(report) = self.embedder.write().as_mut() {
             report.loaded = false;
         }
+        self.changed();
     }
 
     /// A batch of `tokens` was embedded in `elapsed`.
@@ -72,17 +97,24 @@ impl ComputeStatus {
             watch.record(tokens, elapsed);
             (watch.recent_rate(), watch.degraded())
         };
-        if let Some(report) = self.embedder.write().as_mut() {
-            let was = report.degraded;
-            report.recent_pages_per_minute = recent.map(speed::pages_per_minute);
-            report.degraded = degraded;
-            if degraded && !was {
-                tracing::warn!(
-                    calibrated_pages_per_minute = report.pages_per_minute,
-                    recent_pages_per_minute = report.recent_pages_per_minute,
-                    "The search model runs well below its calibrated speed (throttled or busy)"
-                );
+        let flipped = match self.embedder.write().as_mut() {
+            Some(report) => {
+                let was = report.degraded;
+                report.recent_pages_per_minute = recent.map(speed::pages_per_minute);
+                report.degraded = degraded;
+                if degraded && !was {
+                    tracing::warn!(
+                        calibrated_pages_per_minute = report.pages_per_minute,
+                        recent_pages_per_minute = report.recent_pages_per_minute,
+                        "The search model runs well below its calibrated speed (throttled or busy)"
+                    );
+                }
+                was != degraded
             }
+            None => false,
+        };
+        if flipped {
+            self.changed();
         }
     }
 
@@ -130,6 +162,33 @@ mod tests {
         // A new load is calibrated again and starts clean.
         status.embedder_loaded(report(), 1000.0);
         assert!(status.embedder().is_some_and(|r| !r.degraded));
+    }
+
+    #[test]
+    fn loads_and_slowdowns_are_announced_but_steady_batches_are_not() {
+        let status = ComputeStatus::default();
+        let mut changes = status.subscribe();
+        assert!(!changes.has_changed().expect("open"));
+        status.embedder_loaded(report(), 1000.0);
+        assert!(changes.has_changed().expect("open"));
+        changes.borrow_and_update();
+        for _ in 0..speed::DEGRADED_WINDOW {
+            status.embedded(2000, Duration::from_secs(2));
+        }
+        assert!(
+            !changes.has_changed().expect("open"),
+            "steady batches are quiet"
+        );
+        for _ in 0..speed::DEGRADED_WINDOW {
+            status.embedded(2000, Duration::from_secs(10));
+        }
+        assert!(
+            changes.has_changed().expect("open"),
+            "the slowdown is announced"
+        );
+        changes.borrow_and_update();
+        status.embedder_unloaded();
+        assert!(changes.has_changed().expect("open"));
     }
 
     #[test]

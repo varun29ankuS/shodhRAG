@@ -360,6 +360,7 @@ jobs:
         run: brew install protobuf
 
       - uses: ./.github/actions/onnxruntime
+        id: ort
         with:
           save-cache: ${{ github.ref == 'refs/heads/master' }}
 
@@ -388,9 +389,16 @@ jobs:
       # imports MSVCP140*.dll and VCOMP140.DLL, which a clean Windows does not
       # have. They are installed next to Shodh.exe (Microsoft's
       # app-local deployment of the Visual C++ Redistributable files).
-      - name: Visual C++ runtime for the installer
+      # It also imports DirectML.dll (ONNX Runtime's DirectML provider, which
+      # runs search on the graphics card). Windows has its own copy in
+      # System32, often older than the one ONNX Runtime was built with, so the
+      # redistributable from the archive ort-sys links is installed next to
+      # Shodh.exe as well (the application folder is searched first).
+      - name: Visual C++ runtime and DirectML for the installer
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          ORT_DIR: ${{ steps.ort.outputs.extract-dir }}
         run: |
           $ErrorActionPreference = 'Stop'
           $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
@@ -413,6 +421,15 @@ jobs:
             $resources["vc-runtime/$($dll.Name)"] = $dll.Name
             Write-Host "Bundling $($dll.Name) $($dll.VersionInfo.FileVersion) from $($redist.Name)"
           }
+          if (-not $env:ORT_DIR) { throw 'The ONNX Runtime step gave no archive folder' }
+          $directml = Join-Path $env:ORT_DIR 'DirectML.dll'
+          if (-not (Test-Path -LiteralPath $directml)) {
+            throw "No DirectML.dll in the ONNX Runtime archive at '$env:ORT_DIR'"
+          }
+          $dmlStaging = New-Item -ItemType Directory -Force -Path 'app/src-tauri/directml'
+          Copy-Item -LiteralPath $directml -Destination $dmlStaging
+          $resources['directml/DirectML.dll'] = 'DirectML.dll'
+          Write-Host "Bundling DirectML.dll $((Get-Item -LiteralPath $directml).VersionInfo.FileVersion) from the ONNX Runtime archive"
           @{ bundle = @{ resources = $resources } } | ConvertTo-Json -Depth 4 |
             Set-Content -Encoding utf8NoBOM "$env:RUNNER_TEMP/vc-runtime.conf.json"
 
@@ -517,6 +534,12 @@ jobs:
           # Libraries installed next to the app (not NSIS plug-ins).
           $installed = $files | Where-Object { $_ -notmatch '^\$PLUGINSDIR' -and $_ -notmatch '[\\/]' }
           Write-Host "Installed next to the app: $($installed -join ', ')"
+          # DirectML.dll is in System32 on the runner and on recent Windows,
+          # but ONNX Runtime needs the version it was built with: when the app
+          # imports it, it must be installed next to the app.
+          if (($deps -contains 'DirectML.dll') -and -not ($installed -contains 'DirectML.dll')) {
+            throw 'The app imports DirectML.dll but the installer does not put it next to the app'
+          }
           # API sets resolve inside Windows. The Visual C++ runtime may sit in
           # the runner's System32 (Visual Studio is installed) but not on a
           # clean Windows, so it must be in the installer.

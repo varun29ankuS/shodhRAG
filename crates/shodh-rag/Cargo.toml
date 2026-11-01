@@ -15,11 +15,6 @@ arrow-schema = "57"
 tantivy = "0.22"
 
 # Embeddings (ONNX)
-# The GPU providers are built where ONNX Runtime's prebuilt library has
-# them: DirectML on Windows, Core ML on Apple silicon (see
-# `compute::provider`). The archive ort-sys links is the same one either way:
-# its table has only the DirectML build for Windows and only the Core ML
-# build for aarch64 macOS. Linux has neither.
 ort = "2.0.0-rc.13"
 # default-features = false drops `esaxx_fast`, whose esaxx-rs build script hardcodes
 # `static_crt(true)` (/MT). Every other native dep (llama.cpp, onnxruntime, onig) is
@@ -115,7 +110,6 @@ sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
 # runner (harness/run_command/win.rs: Job Objects, the scratch folder's access
 # list, Git for Windows' install folder in the registry).
 [target.'cfg(windows)'.dependencies]
-ort = { version = "2.0.0-rc.13", features = ["directml"] }
 windows = { version = "0.58", features = [
     "Media_Ocr",
     "Data_Pdf",
@@ -139,10 +133,6 @@ windows = { version = "0.58", features = [
 # groups, CPU limits, the memory watchdog).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# Core ML on Apple silicon (compute::provider).
-[target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "2.0.0-rc.13", features = ["coreml"] }
 
 [dev-dependencies]
 tempfile = "3"

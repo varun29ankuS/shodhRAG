@@ -164,58 +164,43 @@ fn with_provider(
     }
 }
 
-#[cfg(windows)]
 fn direct_ml(
     builder: SessionBuilder,
     device: Option<&Device>,
 ) -> std::result::Result<SessionBuilder, String> {
-    let mut ep = ort::ep::DirectML::default();
-    if let Some(index) = device.and_then(|d| d.index) {
-        ep = ep.with_device_id(index);
-    }
-    builder
-        // DirectML runs operators one at a time.
+    // DirectML runs operators one at a time.
+    let mut builder = builder
         .with_parallel_execution(false)
-        .map_err(|e| format!("execution mode: {e}"))?
-        .with_execution_providers([ep.build().error_on_failure()])
-        .map_err(|e| format!("DirectML: {e}"))
+        .map_err(|e| format!("execution mode: {e}"))?;
+    let index = device.and_then(|d| d.index).unwrap_or(0);
+    crate::compute::ep::append_directml(&mut builder, index)
+        .map_err(|e| format!("DirectML: {e}"))?;
+    Ok(builder)
 }
 
-#[cfg(not(windows))]
-fn direct_ml(
-    _builder: SessionBuilder,
-    _device: Option<&Device>,
-) -> std::result::Result<SessionBuilder, String> {
-    Err("DirectML is available on Windows only".to_string())
-}
-
-#[cfg(target_os = "macos")]
 fn core_ml(
     builder: SessionBuilder,
     model_dir: &Path,
 ) -> std::result::Result<SessionBuilder, String> {
-    use ort::ep::coreml::{ComputeUnits, ModelFormat};
     // The compiled Core ML model is kept next to the ONNX file, so a later
     // load does not compile it again.
     let cache = model_dir.join("coreml-cache");
     if let Err(e) = std::fs::create_dir_all(&cache) {
         return Err(format!("Core ML cache folder: {e}"));
     }
-    let ep = ort::ep::CoreML::default()
-        .with_model_format(ModelFormat::MLProgram)
-        .with_compute_units(ComputeUnits::All)
-        .with_model_cache_dir(cache.display());
-    builder
-        .with_execution_providers([ep.build().error_on_failure()])
-        .map_err(|e| format!("Core ML: {e}"))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn core_ml(
-    _builder: SessionBuilder,
-    _model_dir: &Path,
-) -> std::result::Result<SessionBuilder, String> {
-    Err("Core ML is available on macOS only".to_string())
+    let mut builder = builder;
+    crate::compute::ep::append_coreml(
+        &mut builder,
+        &[
+            // The ML Program format runs inputs of any length; the older
+            // neural network format needs fixed shapes.
+            ("ModelFormat", "MLProgram".to_string()),
+            ("MLComputeUnits", "ALL".to_string()),
+            ("ModelCacheDirectory", cache.display().to_string()),
+        ],
+    )
+    .map_err(|e| format!("Core ML: {e}"))?;
+    Ok(builder)
 }
 
 /// Token ids of the calibration passages: [`CALIBRATION_WARMUP`] +

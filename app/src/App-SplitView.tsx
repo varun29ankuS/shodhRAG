@@ -67,7 +67,7 @@ function writeDurable(key: DurableKey, value: unknown): Promise<void> {
 }
 
 // Core components
-import { applyFolderSync, applyFolderSyncProgress, applyLibraryChange, indexedFileCount, indexedNotice, removedSourceIds, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
+import { applyFolderSync, applyFolderSyncProgress, applyLibraryChange, cancelledNotice, indexedFileCount, indexedNotice, removedSourceIds, parseStoredSources, readIndexingResult, scannedPagesStep, serializeSources, SOURCES_STORAGE_KEY, syncedFolders, withPathCase } from './features/library/sources';
 import { explainFailure } from './features/library/indexingAdvice';
 import type { FolderSyncOutcome, FolderSyncProgress, LibraryChange, LibrarySource } from './features/library/sources';
 import { addableFolders, indexedFilePaths, librarySourcesChip, nativePath, NOT_ADDED_REASON, reconcileSources, searchedSources } from './features/library/reconcile';
@@ -1275,6 +1275,25 @@ function AppSplitView() {
             options: { skip_indexed: adopt, watch_changes: false, process_subdirs: true, priority: 'normal', file_types: [] },
           });
       const outcome = readIndexingResult(raw);
+      if (outcome.stopped) {
+        // Cancelled: the files counted were stored, the rest were not read,
+        // so the source is not shown as indexed.
+        const left = cancelledNotice(outcome);
+        setSources(prev => prev.map(s => s.id === source.id
+          ? {
+              ...s,
+              status: 'interrupted' as const,
+              lastError: left,
+              progress: undefined,
+              currentFile: undefined,
+              currentStep: undefined,
+              processedCount: undefined,
+            }
+          : s));
+        await updateStats();
+        notify.info(`Indexing ${source.name} was cancelled`, { description: left });
+        return;
+      }
       setSources(prev => prev.map(s => s.id === source.id
         ? {
             ...s,

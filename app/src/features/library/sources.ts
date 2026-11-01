@@ -255,6 +255,8 @@ export interface IndexingOutcome {
   filesUnchanged: number;
   totalChunks: number;
   failures: FileFailure[];
+  /** The run was cancelled before every file was indexed (only set then). */
+  stopped?: boolean;
 }
 
 /** Normalise the result of `link_folder_enhanced` / `index_single_file` (snake_case `IndexingResult`). */
@@ -279,12 +281,22 @@ export function readIndexingResult(result: unknown): IndexingOutcome {
     filesUnchanged: num('files_unchanged', 'filesUnchanged'),
     totalChunks: num('total_chunks', 'totalChunks'),
     failures,
+    ...(result.stopped === true ? { stopped: true } : {}),
   };
 }
 
 /** The files of a source after an index run: those indexed now and those already indexed. */
 export function indexedFileCount(outcome: IndexingOutcome): number {
   return outcome.filesProcessed + outcome.filesUnchanged;
+}
+
+/**
+ * What a cancelled run left: "Cancelled after 12 files. The rest of the
+ * folder is not indexed; index it again to finish."
+ */
+export function cancelledNotice(outcome: IndexingOutcome): string {
+  const done = indexedFileCount(outcome);
+  return `Cancelled after ${done.toLocaleString()} file${done === 1 ? '' : 's'}. The rest of the folder is not indexed; index it again to finish.`;
 }
 
 /**

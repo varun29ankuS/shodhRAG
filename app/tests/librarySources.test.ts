@@ -8,6 +8,7 @@ import {
   applyFolderSync,
   applyFolderSyncProgress,
   applyLibraryChange,
+  cancelledNotice,
   groupSourcesByKind,
   indexedFileCount,
   indexedNotice,
@@ -253,4 +254,16 @@ test('a path saved lowercased gets its case on disk back, keeping its identity',
   // A source being indexed is left alone.
   const indexing = { ...saved, status: 'indexing' as const };
   assert.equal(withPathCase(indexing, 'C:\\Research\\papers'), indexing);
+});
+
+test('a cancelled run is read as stopped and says what it left', () => {
+  const cancelled = readIndexingResult({ files_processed: 11, files_unchanged: 1, total_chunks: 40, stopped: true });
+  assert.equal(cancelled.stopped, true);
+  assert.equal(
+    cancelledNotice(cancelled),
+    'Cancelled after 12 files. The rest of the folder is not indexed; index it again to finish.',
+  );
+  assert.equal(cancelledNotice(readIndexingResult({ files_processed: 1, stopped: true })).startsWith('Cancelled after 1 file.'), true);
+  // A finished run carries no flag.
+  assert.equal('stopped' in readIndexingResult({ files_processed: 3, stopped: false }), false);
 });

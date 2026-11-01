@@ -83,3 +83,53 @@ pub fn append_coreml(
         )
     })
 }
+
+/// The execution providers the linked ONNX Runtime was built with
+/// ("DmlExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider", ...).
+pub fn available_providers() -> Result<Vec<String>, String> {
+    let api = ort::api();
+    let mut list: *mut *mut c_char = std::ptr::null_mut();
+    let mut count: std::ffi::c_int = 0;
+    // SAFETY: both out-pointers are valid; the list is released below.
+    check(unsafe { (api.GetAvailableProviders)(&mut list, &mut count) })?;
+    if list.is_null() {
+        return Ok(Vec::new());
+    }
+    let names = (0..usize::try_from(count).unwrap_or(0))
+        .map(|i| {
+            // SAFETY: `list` holds `count` NUL-terminated names.
+            unsafe { CStr::from_ptr(*list.add(i)) }
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    // SAFETY: the list and count are the ones GetAvailableProviders gave.
+    check(unsafe { (api.ReleaseAvailableProviders)(list, count) })?;
+    Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ONNX Runtime this build links has the GPU provider of its
+    /// platform: DirectML on Windows, Core ML on Apple silicon.
+    #[test]
+    fn the_linked_onnx_runtime_has_this_platforms_gpu_provider() {
+        let providers = available_providers().expect("providers listed");
+        assert!(
+            providers.iter().any(|p| p == "CPUExecutionProvider"),
+            "{providers:?}"
+        );
+        #[cfg(windows)]
+        assert!(
+            providers.iter().any(|p| p == "DmlExecutionProvider"),
+            "{providers:?}"
+        );
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        assert!(
+            providers.iter().any(|p| p == "CoreMLExecutionProvider"),
+            "{providers:?}"
+        );
+    }
+}

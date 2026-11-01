@@ -177,14 +177,22 @@ pub async fn index_single_file(
     // Registered while it runs: removing the source waits for it, and a
     // removed source is not indexed again.
     let result = match indexing_state.begin_run_at(&space_id, &file_path) {
-        Some(_run) => {
-            shodh_rag::indexing::index_single_file(
-                &file_path,
-                &space_id,
-                &state.rag,
-                Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
-            )
-            .await
+        Some(run) => {
+            // Paused: the file waits like every other run; cancelled
+            // meanwhile, it is not indexed.
+            if run.wait_while_paused().await {
+                Err(format!(
+                    "Indexing {file_path} was cancelled before it started"
+                ))
+            } else {
+                shodh_rag::indexing::index_single_file(
+                    &file_path,
+                    &space_id,
+                    &state.rag,
+                    Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+                )
+                .await
+            }
         }
         None => Err(format!(
             "{file_path} was removed from the Library and is not indexed"

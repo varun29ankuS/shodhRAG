@@ -1467,6 +1467,7 @@ mod tests {
             }],
             files_unchanged: 3,
             duration: 10,
+            stopped: false,
         };
         let json = serde_json::to_value(&result).expect("serializable");
         assert_eq!(json["failures"][0]["file"], "a.xlsx");
@@ -1481,6 +1482,7 @@ mod tests {
         .expect("legacy payload deserializes");
         assert!(legacy.failures.is_empty());
         assert_eq!(legacy.files_unchanged, 0);
+        assert!(!legacy.stopped);
     }
 
     #[test]
@@ -1692,7 +1694,7 @@ mod tests {
         );
         assert!(state.should_stop("papers"));
         assert!(!state.should_stop("notes"), "other sources go on");
-        assert!(!state.is_cancelled(), "nothing else is cancelled");
+        assert!(!other.stopped(), "nothing else is cancelled");
         drop(run);
         stop.await;
         assert!(state.running_paths().is_empty());

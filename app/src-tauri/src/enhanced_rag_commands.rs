@@ -95,6 +95,14 @@ fn finished_item(
             format!("{name} was removed from the Library"),
             "Indexing stopped when the folder was removed.".to_string(),
         ),
+        Ok(done) if done.stopped => (
+            InboxStatus::Done,
+            format!("Indexing {name} was cancelled"),
+            format!(
+                "{}. The rest of the folder was not indexed; index it again to finish.",
+                indexed_detail(done)
+            ),
+        ),
         Ok(done) if done.failures.is_empty() => (
             InboxStatus::Done,
             format!("{name} is indexed"),
@@ -216,6 +224,25 @@ mod tests {
             duration: 0,
             stopped: false,
         }
+    }
+
+    #[test]
+    fn a_cancelled_run_says_what_it_indexed_and_that_the_rest_was_not() {
+        let mut cancelled = done(12, 3, 0);
+        cancelled.stopped = true;
+        let item = finished_item(
+            "indexing:s1".to_string(),
+            "Papers",
+            None,
+            false,
+            &Ok(cancelled),
+        );
+        assert_eq!(item.status, InboxStatus::Done);
+        assert_eq!(item.title, "Indexing Papers was cancelled");
+        assert_eq!(
+            item.detail.as_deref(),
+            Some("12 files indexed, 3 already indexed. The rest of the folder was not indexed; index it again to finish.")
+        );
     }
 
     #[test]

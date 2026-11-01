@@ -795,7 +795,8 @@ pub async fn index_folder_batched(
 
     let reader = async {
         let tx = tx;
-        let mut last_progress = Instant::now() - Duration::from_secs(1);
+        // The first file is reported at once.
+        let mut last_progress: Option<Instant> = None;
         for (index, file) in to_index.iter().enumerate() {
             if run.wait_while_paused().await {
                 break;
@@ -806,7 +807,7 @@ pub async fn index_folder_batched(
                 .unwrap_or("unknown")
                 .to_string();
             let finished = done.load(std::sync::atomic::Ordering::Relaxed);
-            if last_progress.elapsed() > Duration::from_millis(100) {
+            if last_progress.is_none_or(|at| at.elapsed() > Duration::from_millis(100)) {
                 emit_rated_progress(
                     emitter,
                     space_id,
@@ -819,7 +820,7 @@ pub async fn index_folder_batched(
                     ),
                     rate_since(indexing_started, finished - files_unchanged),
                 );
-                last_progress = Instant::now();
+                last_progress = Some(Instant::now());
             }
             // While a scan is read, its pages move the bar within the file's share.
             let on_page = |page: usize, pages: usize| {

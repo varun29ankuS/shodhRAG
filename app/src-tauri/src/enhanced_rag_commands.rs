@@ -244,7 +244,10 @@ mod tests {
         );
         assert_eq!(item.status, InboxStatus::Done);
         assert_eq!(item.title, "Indexing Papers was cancelled");
-        assert_eq!(item.data["quiet"], true, "the user cancelled it: no notification");
+        assert_eq!(
+            item.data["quiet"], true,
+            "the user cancelled it: no notification"
+        );
         assert_eq!(
             item.detail.as_deref(),
             Some("12 files indexed, 3 already indexed. The rest of the folder was not indexed; index it again to finish.")

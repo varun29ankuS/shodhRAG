@@ -367,14 +367,17 @@ async fn reread(app: AppHandle, rag: Arc<AsyncRwLock<ComprehensiveRAG>>, announc
         }
         // Registered while it is read: removing its source waits for it, and
         // a file of a removed source is not indexed again.
-        let _run = match metadata.get("space_id").filter(|id| !id.is_empty()) {
-            Some(source_id) => match indexing.begin_run(source_id) {
-                Some(run) => Some(run),
-                None => continue,
-            },
-            None => None,
+        // Shown in the status strip, and paused or cancelled like every run.
+        let file_text = file.display().to_string();
+        let source_id = metadata
+            .get("space_id")
+            .filter(|id| !id.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "scan-reader".to_string());
+        let Some(run) = indexing.begin_run_at(&source_id, &file_text) else {
+            continue;
         };
-        match shodh_rag::indexing::index_file(&rag, &file, metadata).await {
+        match shodh_rag::indexing::index_file_in_run(&run, &rag, &file, metadata, None).await {
             Ok(_) => read_again += 1,
             Err(e) => {
                 tracing::warn!(file = %shodh_rag::log_safe::file(&path), error = %shodh_rag::log_safe::scrub(&e.to_string(), &path), "scan not read again")

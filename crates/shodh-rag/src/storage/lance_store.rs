@@ -453,6 +453,34 @@ impl LanceStore {
         Ok(ids)
     }
 
+    /// The id and source of every chunk matching `predicate` (a LanceDB filter).
+    pub async fn ids_and_sources_where(&self, predicate: &str) -> Result<Vec<(String, String)>> {
+        let table = self.db.open_table(&self.table_name).execute().await?;
+        let results = table
+            .query()
+            .select(lancedb::query::Select::columns(&["id", "source"]))
+            .only_if(predicate)
+            .execute()
+            .await
+            .context("Failed to query chunk ids")?;
+        let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let column = |name: &str| {
+                batch
+                    .column_by_name(name)
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            };
+            if let (Some(ids), Some(sources)) = (column("id"), column("source")) {
+                rows.extend(
+                    (0..batch.num_rows())
+                        .map(|i| (ids.value(i).to_string(), sources.value(i).to_string())),
+                );
+            }
+        }
+        Ok(rows)
+    }
+
     /// [`Self::document_sources`] counting only the chunks that match
     /// `predicate` (a LanceDB filter); documents without such chunks are left out.
     pub async fn document_sources_where(

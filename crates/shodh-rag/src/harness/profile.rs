@@ -53,9 +53,13 @@ pub mod app_tools {
     pub const UPDATE_WORKSPACE: &str = "update_workspace";
     pub const ADD_TO_WORKSPACE: &str = "add_to_workspace";
     pub const REMOVE_FROM_WORKSPACE: &str = "remove_from_workspace";
+    pub const PAUSE_INDEXING: &str = "pause_indexing";
+    pub const RESUME_INDEXING: &str = "resume_indexing";
+    pub const CANCEL_INDEXING: &str = "cancel_indexing";
+    pub const SYSTEM_STATUS: &str = "system_status";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 45] = [
+    pub const ALL: [&str; 49] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -101,6 +105,10 @@ pub mod app_tools {
         UPDATE_WORKSPACE,
         ADD_TO_WORKSPACE,
         REMOVE_FROM_WORKSPACE,
+        PAUSE_INDEXING,
+        RESUME_INDEXING,
+        CANCEL_INDEXING,
+        SYSTEM_STATUS,
     ];
 }
 

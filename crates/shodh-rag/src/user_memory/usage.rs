@@ -570,7 +570,8 @@ mod tests {
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory to run this test");
         let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
-            .expect("multilingual-e5-base under SHODH_TEST_MODELS");
+            .expect("multilingual-e5-base under SHODH_TEST_MODELS")
+            .with_compute(crate::compute::provider::ComputePreference::Cpu);
         let e5 = crate::embeddings::e5::E5Embeddings::new(config).expect("load E5");
         let (mut tuning, mut held_out, mut long, mut short) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());

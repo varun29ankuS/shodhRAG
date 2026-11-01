@@ -117,6 +117,40 @@ pub struct ScanReaderRequest {
     pub metadata: HashMap<String, String>,
 }
 
+/// A file parsed and chunked, not embedded yet
+/// ([`FilePreparer::chunk_with_progress`]).
+pub struct ChunkedFile {
+    path: std::path::PathBuf,
+    source: String,
+    chunks: Vec<ContextualChunkResult>,
+    title: String,
+    metadata: HashMap<String, String>,
+    citation: Citation,
+    refine: bool,
+    scan_reader_missing: bool,
+    notice: Option<String>,
+    parse_ms: u128,
+    chunk_ms: u128,
+}
+
+impl ChunkedFile {
+    /// The chunks to embed.
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+
+    /// The file is a scan the system OCR read because the scan reader is not
+    /// installed.
+    pub fn scan_reader_missing(&self) -> bool {
+        self.scan_reader_missing
+    }
+
+    /// What the user should know about how the file was read.
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+}
+
 /// A file parsed, chunked and embedded, ready for [`RAGEngine::commit_file`].
 pub struct PreparedFile {
     path: std::path::PathBuf,
@@ -162,10 +196,22 @@ impl FilePreparer {
         metadata: HashMap<String, String>,
         progress: OcrProgress<'_>,
     ) -> Result<PreparedFile> {
+        self.embed(self.chunk_with_progress(path, metadata, progress)?)
+    }
+
+    /// Parses and chunks the file at `path` without embedding it (blocking),
+    /// reporting OCR's progress through a scanned PDF. [`Self::embed_all`]
+    /// embeds several such files together.
+    pub fn chunk_with_progress(
+        &self,
+        path: &Path,
+        metadata: HashMap<String, String>,
+        progress: OcrProgress<'_>,
+    ) -> Result<ChunkedFile> {
         let parse_started = std::time::Instant::now();
         let parsed = self.parser.parse_file_with_progress(path, progress)?;
         let parse_ms = parse_started.elapsed().as_millis();
-        self.prepare_parsed(path, parsed, metadata, parse_ms)
+        self.chunk_parsed(path, parsed, metadata, parse_ms)
     }
 
     /// Chunks and embeds a parsed file (blocking).
@@ -176,6 +222,17 @@ impl FilePreparer {
         metadata: HashMap<String, String>,
         parse_ms: u128,
     ) -> Result<PreparedFile> {
+        self.embed(self.chunk_parsed(path, parsed, metadata, parse_ms)?)
+    }
+
+    /// Chunks a parsed file (blocking).
+    fn chunk_parsed(
+        &self,
+        path: &Path,
+        parsed: ParsedDocument,
+        metadata: HashMap<String, String>,
+        parse_ms: u128,
+    ) -> Result<ChunkedFile> {
         let refine = parsed.metadata.contains_key(TABLE_CANDIDATES_KEY)
             && !parsed.metadata.contains_key(TABLE_MODEL_KEY);
         let scan_reader_missing = parsed.metadata.contains_key(OCR_READER_MISSING_KEY);
@@ -273,26 +330,108 @@ impl FilePreparer {
         }
         let chunk_ms = chunk_started.elapsed().as_millis();
 
-        let embed_started = std::time::Instant::now();
-        let document = prepare_chunks(
-            self.embeddings.as_ref(),
-            chunks,
-            title,
-            source.clone(),
-            &merged_metadata,
-            &citation,
-        )?;
-        Ok(PreparedFile {
+        Ok(ChunkedFile {
             path: path.to_path_buf(),
             source,
-            document,
+            chunks,
+            title,
+            metadata: merged_metadata,
+            citation,
             refine,
             scan_reader_missing,
             notice,
             parse_ms,
             chunk_ms,
+        })
+    }
+
+    /// Embeds a chunked file (blocking).
+    pub fn embed(&self, file: ChunkedFile) -> Result<PreparedFile> {
+        let embed_started = std::time::Instant::now();
+        let document = prepare_chunks(
+            self.embeddings.as_ref(),
+            file.chunks,
+            file.title,
+            file.source.clone(),
+            &file.metadata,
+            &file.citation,
+        )?;
+        Ok(PreparedFile {
+            path: file.path,
+            source: file.source,
+            document,
+            refine: file.refine,
+            scan_reader_missing: file.scan_reader_missing,
+            notice: file.notice,
+            parse_ms: file.parse_ms,
+            chunk_ms: file.chunk_ms,
             embed_ms: embed_started.elapsed().as_millis(),
         })
+    }
+
+    /// Embeds several chunked files together (blocking): their chunks go to
+    /// the model in one call, so small files fill its batches instead of
+    /// running a few chunks at a time. Each file's result is in input order.
+    /// When the joint call fails, each file is embedded on its own, so one
+    /// file the model cannot read fails alone.
+    pub fn embed_all(&self, files: Vec<ChunkedFile>) -> Vec<Result<PreparedFile>> {
+        if files.len() < 2 {
+            return files.into_iter().map(|file| self.embed(file)).collect();
+        }
+        let embed_started = std::time::Instant::now();
+        let contextualized: Vec<Vec<String>> = files
+            .iter()
+            .map(|f| f.chunks.iter().map(|c| c.contextualized_text()).collect())
+            .collect();
+        let texts: Vec<&str> = contextualized
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        let vectors = match self.embeddings.embed_documents(&texts) {
+            Ok(vectors) if vectors.len() == texts.len() => vectors,
+            Ok(vectors) => {
+                tracing::warn!(
+                    vectors = vectors.len(),
+                    chunks = texts.len(),
+                    "The embedding model returned a vector count that does not match; embedding each file on its own"
+                );
+                return files.into_iter().map(|file| self.embed(file)).collect();
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), files = files.len(), "Embedding files together failed; embedding each on its own");
+                return files.into_iter().map(|file| self.embed(file)).collect();
+            }
+        };
+        let embed_ms = embed_started.elapsed().as_millis();
+        let mut vectors = vectors.into_iter();
+        files
+            .into_iter()
+            .zip(contextualized)
+            .map(|(file, contextualized)| {
+                let own: Vec<Vec<f32>> = vectors.by_ref().take(file.chunks.len()).collect();
+                let document = document_from_vectors(
+                    file.chunks,
+                    contextualized,
+                    own,
+                    file.title,
+                    file.source.clone(),
+                    &file.metadata,
+                    &file.citation,
+                )?;
+                Ok(PreparedFile {
+                    path: file.path,
+                    source: file.source,
+                    document,
+                    refine: file.refine,
+                    scan_reader_missing: file.scan_reader_missing,
+                    notice: file.notice,
+                    parse_ms: file.parse_ms,
+                    chunk_ms: file.chunk_ms,
+                    embed_ms,
+                })
+            })
+            .collect()
     }
 
     /// Chunks and embeds `text`, a document that is no file (a Slack thread), as
@@ -430,6 +569,10 @@ pub const CHUNKS_KEPT_FROM_KEY: &str = "chunks_kept_from";
 /// The file, in the data directory, that lists the replacements of files a
 /// commit began and has not finished ([`RAGEngine::commit_file`]).
 pub const REPLACED_CHUNKS_FILE: &str = "replaced_chunks.json";
+
+/// File (in the data directory) keeping the search model's measured speed
+/// between loads ([`crate::compute::calibration`]).
+pub const SEARCH_SPEED_FILE: &str = "search-speed.json";
 
 /// The file, in the data directory, that lists the files removed from the index
 /// whose data the [`LibraryRemovalObserver`] has not confirmed forgetting
@@ -615,7 +758,46 @@ fn prepare_chunks(
     metadata: &HashMap<String, String>,
     citation: &Citation,
 ) -> Result<PreparedDocument> {
+    // Embed the contextualized text (with document context prefix) for better
+    // vector representation
+    let contextualized: Vec<String> = chunks.iter().map(|c| c.contextualized_text()).collect();
+    let embeddings = if chunks.is_empty() {
+        Vec::new()
+    } else {
+        let chunk_texts: Vec<&str> = contextualized.iter().map(String::as_str).collect();
+        embedder.embed_documents(&chunk_texts)?
+    };
+    document_from_vectors(
+        chunks,
+        contextualized,
+        embeddings,
+        title,
+        source,
+        metadata,
+        citation,
+    )
+}
+
+/// The storage records of one document from its chunks, their contextualized
+/// texts and their vectors (in chunk order).
+fn document_from_vectors(
+    chunks: Vec<ContextualChunkResult>,
+    contextualized: Vec<String>,
+    embeddings: Vec<Vec<f32>>,
+    title: String,
+    source: String,
+    metadata: &HashMap<String, String>,
+    citation: &Citation,
+) -> Result<PreparedDocument> {
     let space_id = metadata.get("space_id").cloned().unwrap_or_default();
+    if embeddings.len() != chunks.len() || contextualized.len() != chunks.len() {
+        anyhow::bail!(
+            "the embedding model returned {} vectors for {} chunks of {}",
+            embeddings.len(),
+            chunks.len(),
+            source
+        );
+    }
     if chunks.is_empty() {
         return Ok(PreparedDocument {
             title,
@@ -625,12 +807,6 @@ fn prepare_chunks(
             chunk_ids: Vec::new(),
         });
     }
-
-    // Embed the contextualized text (with document context prefix) for better
-    // vector representation
-    let contextualized: Vec<String> = chunks.iter().map(|c| c.contextualized_text()).collect();
-    let chunk_texts: Vec<&str> = contextualized.iter().map(String::as_str).collect();
-    let embeddings = embedder.embed_documents(&chunk_texts)?;
 
     let doc_id = Uuid::new_v4();
     let metadata_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string());
@@ -1400,8 +1576,9 @@ impl SearchModels {
     /// Locate the models under `config.embedding.model_dir` (nothing is
     /// loaded). Fails with [`SearchModelsMissing`] when the E5 files are absent.
     pub fn load(config: &RAGConfig) -> Result<Self> {
-        let e5_config =
-            E5Config::auto_detect(&config.embedding.model_dir).ok_or(SearchModelsMissing)?;
+        let e5_config = E5Config::auto_detect(&config.embedding.model_dir)
+            .ok_or(SearchModelsMissing)?
+            .with_compute(config.embedding.compute);
 
         let reranker_dir = if config.features.enable_reranking
             || config.features.enable_cross_encoder
@@ -1512,6 +1689,8 @@ pub struct RAGEngine {
     embedder: SharedEmbedder,
     /// `embeddings` is the E5 model in [`Self::embedder`] (not a test embedder).
     embedder_e5: bool,
+    /// What runs the search model and how fast ([`Self::compute_status`]).
+    compute_status: Arc<crate::compute::status::ComputeStatus>,
     chunker: TextChunker,
     structure_chunker: StructureChunker,
     parser: DocumentParser,
@@ -1554,6 +1733,9 @@ pub struct RAGEngine {
     /// Tests: the next [`Self::commit_file`] fails before it stores anything.
     #[cfg(test)]
     fail_next_store: std::sync::atomic::AtomicBool,
+    /// Tests: the next keyword-index write of a commit fails (after LanceDB took the chunks).
+    #[cfg(test)]
+    fail_next_keyword_index: std::sync::atomic::AtomicBool,
     /// Tests: removing replaced chunks fails while set.
     #[cfg(test)]
     fail_replaced_removal: std::sync::atomic::AtomicBool,
@@ -1622,6 +1804,7 @@ impl RAGEngine {
             embeddings: None,
             embedder: Arc::new(LazyModel::new("embedder")),
             embedder_e5: false,
+            compute_status: Default::default(),
             chunker,
             structure_chunker,
             parser,
@@ -1642,6 +1825,8 @@ impl RAGEngine {
             fail_text_removal: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_store: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_keyword_index: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_replaced_removal: std::sync::atomic::AtomicBool::new(false),
         };
@@ -1740,6 +1925,63 @@ impl RAGEngine {
         self.embeddings.is_some() && (!self.embedder_e5 || self.embedder.available())
     }
 
+    /// Whether the reranker is installed (it loads on first use and runs on
+    /// the CPU).
+    pub fn reranker_installed(&self) -> bool {
+        self.reranker.available()
+    }
+
+    /// Whether the PP-OCRv6 scan reader is installed (it runs on the CPU;
+    /// without it scans go to the system OCR).
+    pub fn scan_reader_installed(&self) -> bool {
+        self.ocr.available()
+    }
+
+    /// What runs the search model and how fast; shared, so the app reads it
+    /// without the engine lock.
+    pub fn compute_status(&self) -> Arc<crate::compute::status::ComputeStatus> {
+        self.compute_status.clone()
+    }
+
+    /// Whether the search model may use a graphics card. A change drops the
+    /// loaded model: the next use loads it on the new target. Returns
+    /// whether anything changed.
+    pub fn set_compute_preference(
+        &mut self,
+        preference: crate::compute::provider::ComputePreference,
+    ) -> Result<bool> {
+        if self.config.embedding.compute == preference {
+            return Ok(false);
+        }
+        // The cards are tried again: a card that failed under the old
+        // setting gets another chance.
+        crate::compute::calibration::forget(&self.config.data_dir.join(SEARCH_SPEED_FILE));
+        let previous = self.config.embedding.compute;
+        self.config.embedding.compute = preference;
+        if self.embedder_e5 {
+            // Only the embedder: the reranker and OCR do not depend on it.
+            match E5Config::auto_detect(&self.config.embedding.model_dir) {
+                Some(config) => self.set_embedder_loader(config),
+                None => {
+                    self.config.embedding.compute = previous;
+                    return Err(SearchModelsMissing.into());
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// The E5 model of `config` loads on first use, on this engine's compute
+    /// setting, reporting to its status and calibration file.
+    fn set_embedder_loader(&mut self, mut config: E5Config) {
+        config.compute = self.config.embedding.compute;
+        config.status = Some(self.compute_status.clone());
+        config.calibration_file = Some(self.config.data_dir.join(SEARCH_SPEED_FILE));
+        self.embedder
+            .set_loader(move || E5Embeddings::new(config.clone()));
+        self.embedder_e5 = true;
+    }
+
     /// Attach models loaded with [`SearchModels::load`]. Fails when the
     /// embedding dimension differs from the vector store's.
     pub fn attach_search_models(&mut self, models: SearchModels) -> Result<()> {
@@ -1752,9 +1994,7 @@ impl RAGEngine {
         }
         self.embeddings = Some(match models.embeddings {
             EmbedderSource::E5(config) => {
-                self.embedder
-                    .set_loader(move || E5Embeddings::new(config.clone()));
-                self.embedder_e5 = true;
+                self.set_embedder_loader(config);
                 Arc::new(LazyEmbeddings {
                     model: self.embedder.clone(),
                     dimension,
@@ -1892,7 +2132,8 @@ impl RAGEngine {
                 file.source
             );
         }
-        let ids = match self.store_document(file.document).await {
+        let before: std::collections::HashSet<String> = previous.iter().cloned().collect();
+        let ids = match self.store_document(&file.document, &before).await {
             Ok(ids) => ids,
             Err(e) => {
                 // Nothing was stored: the previous chunks are the file's still.
@@ -1939,6 +2180,146 @@ impl RAGEngine {
             }
         }
         Ok(ids)
+    }
+
+    /// [`Self::commit_file`] for several files at once, with the same
+    /// guarantees for each: their previous chunks are looked up in one query,
+    /// their replacements written down in one record, their new chunks
+    /// stored in one write to LanceDB and one keyword-index commit, and the
+    /// replaced chunks removed in one more. A file is stored only when the
+    /// whole write is. When the lookup, the record or the write fails, each
+    /// file is committed on its own instead, so a file the store rejects
+    /// fails alone. A write that LanceDB took and the keyword index did not is
+    /// undone ([`Self::write_chunks`]). Results are in input order.
+    pub async fn commit_files(&mut self, files: Vec<PreparedFile>) -> Vec<Result<Vec<Uuid>>> {
+        if files.len() < 2 {
+            let mut results = Vec::with_capacity(files.len());
+            for file in files {
+                results.push(self.commit_file(file).await);
+            }
+            return results;
+        }
+        let store_started = std::time::Instant::now();
+        if let Err(e) = self.settle_replaced().await {
+            tracing::warn!(error = %format!("{e:#}"), "replaced chunks not removed yet");
+        }
+        let spellings: Vec<Vec<String>> = files
+            .iter()
+            .map(|f| {
+                let mut all = vec![f.source.clone()];
+                all.extend(legacy_source_spellings(&f.path, &f.source));
+                all
+            })
+            .collect();
+        let wanted: Vec<String> = spellings.iter().flatten().cloned().collect();
+        let previous_by_source = match self.chunk_ids_by_source(&wanted).await {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "previous chunks not looked up together; committing each file on its own");
+                return self.commit_each(files).await;
+            }
+        };
+        let previous: Vec<Vec<String>> = spellings
+            .iter()
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|name| previous_by_source.get(name))
+                    .flatten()
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        let replacing: Vec<(String, Vec<String>)> = files
+            .iter()
+            .zip(&previous)
+            .filter(|(_, previous)| !previous.is_empty())
+            .map(|(file, previous)| (file.source.clone(), previous.clone()))
+            .collect();
+        // Written down before anything is stored, as for one file.
+        if !replacing.is_empty() && !self.begin_replacements(&replacing) {
+            return self.commit_each(files).await;
+        }
+        let replaced_sources: Vec<String> = replacing.into_iter().map(|(s, _)| s).collect();
+        let before: std::collections::HashSet<String> =
+            previous.iter().flatten().cloned().collect();
+        let written = {
+            let documents: Vec<&PreparedDocument> = files.iter().map(|f| &f.document).collect();
+            self.store_documents(&documents, &before).await
+        };
+        let stored = match written {
+            Ok(stored) => stored,
+            Err(e) => {
+                // Nothing was stored. One file the store rejects must not fail
+                // the others: each is committed on its own.
+                tracing::warn!(error = %format!("{e:#}"), files = files.len(), "storing files together failed; committing each on its own");
+                self.end_replacements(&replaced_sources);
+                return self.commit_each(files).await;
+            }
+        };
+        let mut rest = Vec::with_capacity(files.len());
+        for file in files {
+            rest.push((
+                file.path,
+                file.source,
+                file.refine,
+                file.parse_ms,
+                file.chunk_ms,
+                file.embed_ms,
+            ));
+        }
+        let mut obsolete = Vec::new();
+        for (ids, previous) in stored.iter().zip(previous) {
+            let kept: std::collections::HashSet<String> = ids.iter().map(Uuid::to_string).collect();
+            obsolete.extend(previous.into_iter().filter(|id| !kept.contains(id)));
+        }
+        let removed = obsolete.is_empty()
+            || match self.delete_chunk_ids(&obsolete).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %format!("{e:#}"),
+                        chunks = obsolete.len(),
+                        "replaced chunks not removed yet; they are removed at the next commit or start"
+                    );
+                    false
+                }
+            };
+        if removed {
+            self.end_replacements(&replaced_sources);
+        }
+        let store_ms = store_started.elapsed().as_millis();
+        let mut results = Vec::with_capacity(stored.len());
+        for (ids, (path, source, refine, parse_ms, chunk_ms, embed_ms)) in
+            stored.into_iter().zip(rest)
+        {
+            tracing::info!(
+                source = %crate::log_safe::file(&source),
+                chunks = ids.len(),
+                parse_ms,
+                chunk_ms,
+                embed_ms,
+                batch_store_ms = store_ms,
+                "Indexed file"
+            );
+            if refine {
+                if let Some(queue) = &self.refinement_queue {
+                    // A closed queue only means no refinement runs; the index is complete.
+                    let _ = queue.send(path);
+                }
+            }
+            results.push(Ok(ids));
+        }
+        results
+    }
+
+    /// [`Self::commit_file`] for each of `files` in turn.
+    async fn commit_each(&mut self, files: Vec<PreparedFile>) -> Vec<Result<Vec<Uuid>>> {
+        let mut results = Vec::with_capacity(files.len());
+        for file in files {
+            results.push(self.commit_file(file).await);
+        }
+        results
     }
 
     /// Reports every scan indexed from now on without the scan reader to
@@ -2414,8 +2795,14 @@ impl RAGEngine {
         Ok(())
     }
 
-    /// [`Self::store_prepared`] for a commit (tests can make it fail).
-    async fn store_document(&mut self, prepared: PreparedDocument) -> Result<Vec<Uuid>> {
+    /// Stores several prepared documents with one LanceDB write and one
+    /// keyword-index commit (tests can make it fail). The ids of each
+    /// document's chunks, in input order.
+    async fn store_documents(
+        &mut self,
+        prepared: &[&PreparedDocument],
+        previous: &std::collections::HashSet<String>,
+    ) -> Result<Vec<Vec<Uuid>>> {
         #[cfg(test)]
         if self
             .fail_next_store
@@ -2423,7 +2810,144 @@ impl RAGEngine {
         {
             anyhow::bail!("storing the chunks failed (injected)");
         }
-        self.store_prepared(prepared).await
+        let mut records = Vec::new();
+        let mut fts_batch = Vec::new();
+        let mut ids = Vec::with_capacity(prepared.len());
+        for document in prepared {
+            records.extend(document.records.iter().cloned());
+            fts_batch.extend(document.fts_batch.iter().cloned());
+            ids.push(document.chunk_ids.clone());
+        }
+        if records.is_empty() {
+            return Ok(ids);
+        }
+        let chunks = records.len();
+        let fresh: Vec<String> = ids
+            .iter()
+            .flatten()
+            .map(Uuid::to_string)
+            .filter(|id| !previous.contains(id))
+            .collect();
+        self.write_chunks(records, &fts_batch, &fresh).await?;
+        tracing::info!(chunks, documents = ids.len(), "Ingested documents");
+        Ok(ids)
+    }
+
+    /// Writes `records` to LanceDB, then their keyword entries. When the
+    /// keyword index fails after LanceDB took the records, the keyword
+    /// changes are rolled back and the records of `fresh` (chunks that did
+    /// not exist before) are removed from LanceDB again: nothing stays half
+    /// stored, so the file keeps its previous chunks and no copy is left.
+    async fn write_chunks(
+        &mut self,
+        records: Vec<crate::types::ChunkRecord>,
+        fts_batch: &[(String, String, String, String)],
+        fresh: &[String],
+    ) -> Result<()> {
+        self.store
+            .upsert_chunks(records)
+            .await
+            .context("Failed to store chunks in LanceDB")?;
+        if let Err(e) = self.index_keywords(fts_batch) {
+            if let Err(rollback) = self.text_search.rollback() {
+                tracing::warn!(error = %format!("{rollback:#}"), "keyword index changes not rolled back");
+            }
+            for batch in fresh.chunks(500) {
+                let quoted: Vec<String> = batch
+                    .iter()
+                    .map(|id| format!("'{}'", id.replace('\x27', "''")))
+                    .collect();
+                if let Err(undo) = self
+                    .store
+                    .delete_where(&format!("id IN ({})", quoted.join(", ")))
+                    .await
+                {
+                    tracing::warn!(error = %format!("{undo:#}"), "chunks written before the keyword index failed were not removed");
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Adds keyword entries and commits them (tests can make it fail).
+    fn index_keywords(&mut self, fts_batch: &[(String, String, String, String)]) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_keyword_index
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("the keyword index failed (injected)");
+        }
+        self.text_search.index_chunks_batch(fts_batch)?;
+        self.text_search.commit()
+    }
+
+    /// The ids of the chunks stored under each of `sources`, in one query.
+    async fn chunk_ids_by_source(
+        &self,
+        sources: &[String],
+    ) -> Result<HashMap<String, Vec<String>>> {
+        let mut found: HashMap<String, Vec<String>> = HashMap::new();
+        for batch in sources.chunks(200) {
+            let quoted: Vec<String> = batch
+                .iter()
+                .map(|s| format!("'{}'", s.replace('\'', "''")))
+                .collect();
+            let predicate = format!("source IN ({})", quoted.join(", "));
+            for (id, source) in self.store.ids_and_sources_where(&predicate).await? {
+                found.entry(source).or_default().push(id);
+            }
+        }
+        Ok(found)
+    }
+
+    /// [`Self::begin_replacement`] for several sources, in one write.
+    fn begin_replacements(&self, replacing: &[(String, Vec<String>)]) -> bool {
+        let mut pending = self.replaced_chunks().unwrap_or_else(|e| {
+            tracing::warn!(error = %format!("{e:#}"), "replacements record unreadable");
+            Vec::new()
+        });
+        pending.retain(|r| !replacing.iter().any(|(source, _)| *source == r.source));
+        pending.extend(replacing.iter().map(|(source, previous)| Replacement {
+            source: source.clone(),
+            previous_ids: previous.clone(),
+        }));
+        match self.write_replaced(&pending) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "replacements not written down");
+                false
+            }
+        }
+    }
+
+    /// [`Self::end_replacement`] for several sources, in one write.
+    fn end_replacements(&self, sources: &[String]) {
+        if sources.is_empty() {
+            return;
+        }
+        let ended = self.replaced_chunks().and_then(|mut pending| {
+            let before = pending.len();
+            pending.retain(|r| !sources.contains(&r.source));
+            if pending.len() == before {
+                return Ok(());
+            }
+            self.write_replaced(&pending)
+        });
+        if let Err(e) = ended {
+            tracing::warn!(error = %format!("{e:#}"), "replacements record not updated");
+        }
+    }
+
+    /// [`Self::store_prepared`] for a commit (tests can make it fail).
+    async fn store_document(
+        &mut self,
+        prepared: &PreparedDocument,
+        previous: &std::collections::HashSet<String>,
+    ) -> Result<Vec<Uuid>> {
+        let mut ids = self.store_documents(&[prepared], previous).await?;
+        Ok(ids.pop().unwrap_or_default())
     }
 
     /// Write prepared records to LanceDB and Tantivy.
@@ -5869,6 +6393,176 @@ Language models trained on long documents reach lower perplexity.
         assert_eq!(old_ids, new_ids);
         assert!(engine.stale_sources().await.unwrap().is_empty());
         assert!(!engine.upgrade_in_place("no such source").await.unwrap());
+    }
+
+    /// A batch whose write fails is committed file by file, so one file the
+    /// store rejects fails alone; a write LanceDB took and the keyword index
+    /// did not is undone, leaving neither half-stored chunks nor copies.
+    #[tokio::test]
+    async fn a_failed_batch_write_fails_only_the_file_that_cannot_be_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let paths: Vec<std::path::PathBuf> = ["lease.md", "parking.md", "boiler.md"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        std::fs::write(&paths[0], LEASE).unwrap();
+        std::fs::write(
+            &paths[1],
+            "# Parking\n\nVisitors park on the street. Residents park in the garage below the courtyard.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &paths[2],
+            "# Boiler\n\nThe boiler is serviced every October and is eleven years old.\n",
+        )
+        .unwrap();
+        let stored_ids =
+            |chunks: Vec<crate::storage::SearchHit>| -> std::collections::BTreeSet<String> {
+                chunks.into_iter().map(|c| c.id).collect()
+            };
+        let prepare_all = |engine: &RAGEngine| -> Vec<PreparedFile> {
+            let preparer = engine.file_preparer().unwrap();
+            paths
+                .iter()
+                .map(|p| preparer.prepare(p, HashMap::new()).unwrap())
+                .collect()
+        };
+        let first: Vec<Vec<Uuid>> = engine
+            .commit_files(prepare_all(&engine))
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // The keyword index fails once, for the whole batch: LanceDB's write
+        // is undone, each file is committed again on its own, and nothing is
+        // stored twice.
+        engine
+            .fail_next_keyword_index
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second: Vec<Vec<Uuid>> = engine
+            .commit_files(prepare_all(&engine))
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+        let expected: std::collections::BTreeSet<String> =
+            second.iter().flatten().map(Uuid::to_string).collect();
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            expected
+        );
+        assert_eq!(engine.text_search.count().unwrap(), expected.len());
+
+        // The batch fails, then the first file's own write fails in the
+        // keyword index: that file fails alone and keeps its chunks.
+        engine
+            .fail_next_store
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine
+            .fail_next_keyword_index
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let third = engine.commit_files(prepare_all(&engine)).await;
+        assert!(third[0].is_err(), "the first file fails");
+        assert!(
+            third[1].is_ok() && third[2].is_ok(),
+            "the others are stored"
+        );
+        let mut expected: std::collections::BTreeSet<String> =
+            second[0].iter().map(Uuid::to_string).collect();
+        for ids in third.into_iter().skip(1) {
+            expected.extend(ids.unwrap().iter().map(Uuid::to_string));
+        }
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            expected
+        );
+        assert_eq!(engine.text_search.count().unwrap(), expected.len());
+        assert!(engine.replaced_chunks().unwrap().is_empty());
+        assert!(!first.is_empty());
+    }
+
+    /// Files committed together are each stored with their own chunks, a
+    /// second commit replaces them (no copies), a failed batch write is
+    /// committed file by file, and a failed removal is written down for
+    /// every file and settled by the next commit.
+    #[tokio::test]
+    async fn files_committed_together_replace_their_chunks_as_one_file_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let paths: Vec<std::path::PathBuf> = ["lease.md", "parking.md", "boiler.md"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        std::fs::write(&paths[0], LEASE).unwrap();
+        std::fs::write(
+            &paths[1],
+            "# Parking\n\nVisitors park on the street. Residents park in the garage below the courtyard.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &paths[2],
+            "# Boiler\n\nThe boiler is serviced every October and is eleven years old.\n",
+        )
+        .unwrap();
+        let stored_ids =
+            |chunks: Vec<crate::storage::SearchHit>| -> std::collections::BTreeSet<String> {
+                chunks.into_iter().map(|c| c.id).collect()
+            };
+        let prepare_all = |engine: &RAGEngine| -> Vec<PreparedFile> {
+            let preparer = engine.file_preparer().unwrap();
+            paths
+                .iter()
+                .map(|p| preparer.prepare(p, HashMap::new()).unwrap())
+                .collect()
+        };
+        let ids_of = |results: Vec<Result<Vec<Uuid>>>| -> std::collections::BTreeSet<String> {
+            results
+                .into_iter()
+                .flat_map(|r| r.unwrap())
+                .map(|id| id.to_string())
+                .collect()
+        };
+
+        let first = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            first
+        );
+        assert_eq!(engine.document_sources().await.unwrap().len(), 3);
+
+        // The write of the batch fails: each file is committed on its own
+        // instead, and every one is stored, replacing its chunks.
+        engine
+            .fail_next_store
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let first = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            first
+        );
+        assert!(engine.replaced_chunks().unwrap().is_empty());
+
+        // Removing the old chunks fails: both copies stay, written down for
+        // every file, and the next commit removes the old ones.
+        engine
+            .fail_replaced_removal
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert!(second.is_disjoint(&first));
+        assert_eq!(engine.replaced_chunks().unwrap().len(), 3);
+        engine
+            .fail_replaced_removal
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let third = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            third
+        );
+        assert!(engine.replaced_chunks().unwrap().is_empty());
+        assert_eq!(engine.text_search.count().unwrap(), third.len());
+        assert_eq!(engine.document_sources().await.unwrap().len(), 3);
     }
 
     /// A commit stores the new chunks before it removes the old ones. A

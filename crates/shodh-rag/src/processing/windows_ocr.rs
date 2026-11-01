@@ -131,7 +131,7 @@ pub fn ocr_pdf_pages(
         path,
         on_page,
         |index| read_pdf_page(&pdf, &engine, max_side, index, dpi),
-    ))
+    )?)
 }
 
 /// Page `index` (0-based) of `pdf` rendered and read by `engine` (see

@@ -223,6 +223,9 @@ pub async fn index_corpus_with(
     config.embedding.model_dir = models.to_path_buf();
     config.embedding.use_e5 = true;
     config.embedding.dimension = 768;
+    // The eval measures the CPU path, the one every machine has (CI's
+    // runners have no graphics card).
+    config.embedding.compute = shodh_rag::compute::provider::ComputePreference::Cpu;
     config.ocr = ocr.clone();
     tweaks.apply(&mut config)?;
     let engine = RAGEngine::new(config).await.context("opening the engine")?;

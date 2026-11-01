@@ -730,6 +730,21 @@ pub fn indexing_result_outcome(
         .map(|n| one_line(&n.to_string_lossy()))
         .unwrap_or_else(|| one_line(path));
     match result {
+        Ok(done) if done.stopped => Outcome::Finished(WorkDone {
+            source,
+            kind: WorkKind::Indexing,
+            notice: Notice {
+                title: "Indexing cancelled".to_string(),
+                body: format!(
+                    "{name} · {} indexed before it stopped",
+                    match done.files_processed {
+                        1 => "1 file".to_string(),
+                        n => format!("{n} files"),
+                    }
+                ),
+            },
+            summary: name,
+        }),
         Ok(done) if done.failures.is_empty() => {
             let count = match done.files_processed {
                 1 => "1 file indexed".to_string(),
@@ -1633,6 +1648,7 @@ mod tests {
             failures: Vec::new(),
             files_unchanged: 0,
             duration: 0,
+            stopped: false,
         };
         assert_eq!(
             agent_indexing_outcome("indexing:s".into(), "C:/d/Papers", &Ok(ok)),
@@ -1659,6 +1675,7 @@ mod tests {
             failed_files: Vec::new(),
             files_unchanged: 0,
             duration: 0,
+            stopped: false,
         };
         let finished =
             indexing_result_outcome("indexing:s".into(), "C:/data/Papers", &Ok(done(12, 0)));
@@ -1694,6 +1711,7 @@ mod tests {
             failed_files: Vec::new(),
             files_unchanged: 0,
             duration: 0,
+            stopped: false,
         };
         let refused: Result<IndexingResult, String> =
             Err("C:/data/Papers was removed from the Library and is not indexed".into());

@@ -67,6 +67,11 @@ pub struct EmbeddingConfig {
     pub dimension: usize,
     pub use_e5: bool,
     pub cache_size: usize,
+    /// Whether the search model may run on a graphics card
+    /// ([`crate::compute::provider`]). The evals and the model tests choose
+    /// the CPU, which is what they measure.
+    #[serde(default)]
+    pub compute: crate::compute::provider::ComputePreference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +209,7 @@ impl Default for RAGConfig {
                 dimension,
                 use_e5: e5_available,
                 cache_size: 1000,
+                compute: Default::default(),
             },
             chunking: ChunkingConfig {
                 chunk_size: 1750,

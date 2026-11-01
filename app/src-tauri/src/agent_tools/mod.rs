@@ -16,6 +16,7 @@ mod figures;
 pub(crate) mod files;
 mod graph;
 mod history;
+mod indexing;
 mod memory;
 mod papers;
 mod research;
@@ -166,6 +167,19 @@ pub trait HostEffects: Send + Sync {
     fn research_changed(&self, kind: &str, file_path: &str);
     /// A workspace (its fields, instructions or sources) changed: refresh open views.
     fn workspaces_changed(&self, workspace_id: &str);
+    /// Whether indexing is paused.
+    fn indexing_paused(&self) -> bool;
+    /// Pauses (`true`) or resumes every indexing run, saved as the status
+    /// strip saves it.
+    fn set_indexing_paused(&self, paused: bool);
+    /// Cancels the indexing in progress of `source_id` (every run without
+    /// one); returns the runs stopped.
+    fn cancel_indexing(&self, source_id: Option<&str>) -> usize;
+    /// The System status the status strip shows, as JSON.
+    async fn system_status(&self) -> serde_json::Value;
+    /// Opens the System status panel with `part` ("search", "indexing")
+    /// highlighted, so the user sees what the assistant read or changed.
+    fn show_system_status(&self, part: &str);
 }
 
 /// Everything an app tool can reach.
@@ -224,6 +238,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     export::register(&mut registry, &host)?;
     research::register(&mut registry, &host)?;
     sources::register(&mut registry, &host)?;
+    indexing::register(&mut registry, &host)?;
     memory::register(&mut registry, &host)?;
     visuals::register(&mut registry, &host)?;
     papers::register(&mut registry, &host)?;
@@ -280,6 +295,8 @@ pub(crate) mod testing {
         pub indexing_state: shodh_rag::indexing::IndexingState,
         /// Sources removed through `remove_source`, as the Library is told.
         pub removed_sources: Mutex<Vec<String>>,
+        /// The System status panel opened, by the part highlighted.
+        pub shown_status: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -347,6 +364,30 @@ pub(crate) mod testing {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(workspace_id.to_string());
         }
+        fn indexing_paused(&self) -> bool {
+            self.indexing_state.is_paused()
+        }
+        fn set_indexing_paused(&self, paused: bool) {
+            self.indexing_state.pause_switch().set(paused);
+        }
+        fn cancel_indexing(&self, source_id: Option<&str>) -> usize {
+            match source_id {
+                Some(id) => self.indexing_state.cancel_source(id),
+                None => self.indexing_state.cancel(),
+            }
+        }
+        async fn system_status(&self) -> serde_json::Value {
+            serde_json::json!({
+                "indexingPaused": self.indexing_state.is_paused(),
+                "running": self.indexing_state.running_paths(),
+            })
+        }
+        fn show_system_status(&self, part: &str) {
+            self.shown_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(part.to_string());
+        }
         async fn remove_source(
             &self,
             rag: &RwLock<RAGEngine>,
@@ -399,6 +440,7 @@ pub(crate) mod testing {
             folder_sync: crate::file_watcher::FolderSyncState::new(dir.path().join("folder_sync")),
             indexing_state: shodh_rag::indexing::IndexingState::default(),
             removed_sources: Mutex::default(),
+            shown_status: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());

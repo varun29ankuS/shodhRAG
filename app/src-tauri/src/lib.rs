@@ -14,6 +14,7 @@ mod file_watcher;
 mod graph_commands;
 mod image_upload_commands;
 mod inbox_commands;
+mod indexing_control;
 mod library_profile;
 mod llm_bootstrap;
 mod llm_commands;
@@ -402,6 +403,17 @@ pub fn run() {
                     .map(|c| c.dimension)
                     .unwrap_or(768);
             rag_config.data_dir = app_data_dir.clone();
+            // Saved indexing settings: whether search may use the graphics card,
+            // and whether indexing was paused when the app last ran.
+            let indexing_prefs = app_settings::SettingsStore::in_dir(&app_data_dir)
+                .load()
+                .map(|s| s.indexing)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "settings unreadable; indexing runs, search may use the GPU");
+                    Default::default()
+                });
+            rag_config.embedding.compute =
+                indexing_control::compute_preference(indexing_prefs.use_gpu);
             let mut default_rag = tauri::async_runtime::block_on(
                 shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config),
             )
@@ -470,6 +482,8 @@ pub fn run() {
                     models, idle,
                 ));
             }
+            // The window's status strip follows what runs search.
+            indexing_control::watch_compute(app.handle().clone(), default_rag.compute_status());
             let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
             table_model_commands::start_worker(app.handle().clone(), rag_engine.clone(), refinement);
             // Long-term memory: typed statements next to the document index, dynamics in
@@ -558,7 +572,9 @@ pub fn run() {
             // Sources removed from the Library in an earlier run are never
             // indexed or watched again.
             let folder_sync = file_watcher::FolderSyncState::new(app_data_dir.join("folder_sync"));
-            let indexing_state = IndexingState::default();
+            // One pause for every indexing run and the tray, kept across restarts.
+            let pause = shodh_rag::indexing::PauseSwitch::new(indexing_prefs.paused);
+            let indexing_state = IndexingState::with_pause(pause.clone());
             for source_id in folder_sync.removed_ids() {
                 indexing_state.mark_removed(&source_id);
             }
@@ -569,7 +585,7 @@ pub fn run() {
             reminders::spawn(app.handle().clone());
 
             // Tray icon: the window can hide there and reminders keep ringing.
-            app.manage(background::BackgroundState::default());
+            app.manage(background::BackgroundState::with_pause(pause));
             let tray = background::create_tray(app.handle());
             if let Err(e) = &tray {
                 // Without a tray, hiding would strand the window: closing quits.
@@ -660,8 +676,11 @@ pub fn run() {
             // Enhanced RAG commands
             enhanced_rag_commands::link_folder_enhanced,
             enhanced_rag_commands::index_single_file,
-            enhanced_rag_commands::pause_indexing,
-            enhanced_rag_commands::resume_indexing,
+            indexing_control::pause_indexing,
+            indexing_control::resume_indexing,
+            indexing_control::cancel_indexing,
+            indexing_control::set_search_gpu,
+            indexing_control::system_status,
             enhanced_rag_commands::check_path_type,
             // PDF export and printing
             pdf_export::export_pdf,

@@ -3,8 +3,7 @@
   "dynamicInvokeFiles": {
     "features/agent/useAgentSession.ts": "Wraps invoke as call(command, args) to normalise agent errors; every command it sends is a string literal in the same file.",
     "features/modelPicker/modelApi.ts": "Wraps invoke as call(command, args) to normalise model picker errors; every command it sends is a string literal in the same file.",
-    "features/ask/viewer/sourceAccess.ts": "Wraps invoke as call(command, filePath) to normalise file access errors; every command it sends is a string literal in the same file.",
-    "components/shell/ActivityTray.tsx": "Picks pause_indexing or resume_indexing with a ternary of two string literals."
+    "features/ask/viewer/sourceAccess.ts": "Wraps invoke as call(command, filePath) to normalise file access errors; every command it sends is a string literal in the same file."
   },
   "commands": {
     "tools_overview": { "excluded": "Lists the servers, tools and skills the agent may use and how each is approved; the agent is told its own tools in its prompt and must not inspect or manage its own permissions." },
@@ -209,8 +208,11 @@
     "check_for_update": { "excluded": "Contacts the update server for a newer version of Shodh itself; which version of itself runs is the user's decision, never the agent's." },
     "install_update": { "excluded": "Replaces the installed app with a new version and restarts it; installing software is the user's decision, never the agent's." },
     "quit_ready": { "excluded": "Shutdown handshake: the window confirms its waiting saves are written before the app exits; not a user ability." },
-    "pause_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
-    "resume_indexing": { "excluded": "Resource control for the user over background indexing; indexing the assistant starts is audited and runs in the background." },
+    "pause_indexing": { "tool": "pause_indexing" },
+    "resume_indexing": { "tool": "resume_indexing" },
+    "cancel_indexing": { "tool": "cancel_indexing" },
+    "system_status": { "tool": "system_status" },
+    "set_search_gpu": { "excluded": "Deliberately user-only: whether search may use the graphics card decides what runs on the user's hardware, and on Windows whether Microsoft's DirectML (which may send diagnostic data to Microsoft) is used at all. The assistant reads the setting with system_status and can explain it; only the user changes it." },
     "index_single_file": { "excluded": "Indexes a file the user dropped or uploaded; the assistant indexes whole folders with add_folder and its downloads automatically." },
     "sync_folder_sources": { "excluded": "Tells the backend which Library folders to keep in sync; syncing then runs on its own, and the assistant adds, re-indexes and removes folders with add_folder, reindex_source and remove_source." },
     "check_path_type": { "excluded": "Drag-and-drop helper deciding whether a dropped path is a file or folder; add_folder validates paths itself." },

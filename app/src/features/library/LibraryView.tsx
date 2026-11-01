@@ -14,6 +14,7 @@ import {
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { SetupCard } from '../setup/SetupCard';
+import { CpuSearchNotice } from '../status/CpuSearchNotice';
 import { VisualGallery } from '../visuals/VisualGallery';
 import { SnippetShelf } from '../research/SnippetShelf';
 import { CompareResults } from '../research/CompareResults';
@@ -202,6 +203,8 @@ export function LibraryView({
         </header>
 
         <SetupCard />
+
+        <CpuSearchNotice />
 
         {unlistedCard}
 

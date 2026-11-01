@@ -246,6 +246,12 @@ jobs:
       - name: OCR tests (shodh-rag)
         run: cargo test --package shodh-rag --lib ocr
 
+      # What runs the models on a Mac: the performance-core count (sysctl),
+      # the provider selection and the Core ML provider in the linked ONNX
+      # Runtime; the same test binary as the OCR tests.
+      - name: Compute tests (shodh-rag)
+        run: cargo test --package shodh-rag --lib 'compute::'
+
       # Code mode's command runner on macOS (process group, CPU limit, memory
       # watchdog, the sweep of every process a command started), through the
       # probe; the same test binary as the OCR tests.
@@ -315,14 +321,21 @@ jobs:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
-      # The cutoff at which an answer counts as using a memory, measured on the labelled
-      # fixture (crates/shodh-rag/src/user_memory/fixtures/memory_use.json) with the real
-      # E5 model. SHODH_TEST_MODELS turns the model-backed tests on at compile time; the
-      # name filter runs this one only.
-      - name: Memory use cutoff (E5)
+      # The tests that need the real E5 model: the cutoff at which an answer counts as
+      # using a memory, measured on the labelled fixture
+      # (crates/shodh-rag/src/user_memory/fixtures/memory_use.json), and the embedder
+      # itself (batching, the CPU path and its calibration, GPU agreement where a GPU runs). SHODH_TEST_MODELS
+      # turns the model-backed tests on at compile time; the name filters run these only.
+      # One at a time: each loads the model (a gigabyte or more in memory).
+      - name: Model tests (E5)
         env:
           SHODH_TEST_MODELS: ${{ runner.temp }}/shodh-models
-        run: cargo test --package shodh-rag --lib the_use_cutoff_separates_used_from_unused_memories_with_e5 -- --nocapture
+        run: >
+          cargo test --package shodh-rag --lib --
+          the_use_cutoff_separates_used_from_unused_memories_with_e5
+          embeddings::e5::
+          --nocapture
+          --test-threads=1
 
       - name: Retrieval eval
         run: >

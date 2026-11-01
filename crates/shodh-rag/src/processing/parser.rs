@@ -329,6 +329,8 @@ impl DocumentParser {
         let unrendered = super::ocr::raster::uses_unrendered_codecs(bytes);
         let (route, reader_missing) = self.ocr_route(unrendered);
         let _below_normal = super::ocr::priority::BelowNormal::new();
+        // The search model's speed is not judged while OCR competes with it.
+        let _ocr_active = crate::compute::contention::OcrActive::begin();
         (
             self.read_scan(route, path, bytes, unrendered, progress),
             reader_missing,
@@ -724,6 +726,9 @@ impl DocumentParser {
                     crate::log_safe::file(&path)
                 );
             }
+            // Paused or cancelled by the indexer: nothing to report, the file
+            // is read again later or dropped.
+            Err(e) if e.is::<super::ocr::gate::OcrInterrupted>() => return Err(e),
             Err(e) => {
                 tracing::warn!("OCR failed for {}: {:#}", crate::log_safe::file(&path), e);
                 ocr_error = Some(e);

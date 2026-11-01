@@ -39,6 +39,7 @@ pub struct UploadResult {
 #[tauri::command]
 pub async fn upload_document_file(
     state: State<'_, RagState>,
+    indexing: State<'_, shodh_rag::indexing::IndexingState>,
     file_path: String,
     workspace_id: Option<String>,
 ) -> Result<UploadResult, String> {
@@ -88,7 +89,7 @@ pub async fn upload_document_file(
     metadata.insert("file_size_mb".to_string(), format!("{:.2}", file_size));
     metadata.insert("uploaded_at".to_string(), chrono::Utc::now().to_rfc3339());
 
-    metadata.insert("space_id".to_string(), owner);
+    metadata.insert("space_id".to_string(), owner.clone());
 
     // Create citation
     let _citation = Citation {
@@ -101,7 +102,17 @@ pub async fn upload_document_file(
         page_numbers: None,
     };
 
-    match shodh_rag::indexing::index_file_with_notice(&state.rag, path, metadata, None).await {
+    // Shown in the status strip while it is read, and paused or cancelled
+    // like every indexing run.
+    let Some(run) = indexing.begin_run_at(&owner, &file_path) else {
+        return Err(format!(
+            "{file_name} was not added: its chat's files are being removed"
+        ));
+    };
+    let indexed =
+        shodh_rag::indexing::index_file_in_run(&run, &state.rag, path, metadata, None).await;
+    drop(run);
+    match indexed {
         Ok(indexed) => {
             let processing_time = start_time.elapsed().as_millis() as u64;
 

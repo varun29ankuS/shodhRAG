@@ -555,7 +555,17 @@ impl OcrWorker {
                     id: reply,
                     page,
                     pages,
-                }) if reply == id => on_page(page, pages),
+                }) if reply == id => {
+                    // The child cannot be held: a pause or a cancel stops it
+                    // (it starts again with the next scan).
+                    if let Err(interrupted) = super::gate::before_child_page() {
+                        if let Some(running) = state.running.take() {
+                            running.kill();
+                        }
+                        return Err(anyhow::Error::new(interrupted));
+                    }
+                    on_page(page, pages)
+                }
                 Ok(Reply::Done {
                     id: reply,
                     pages,

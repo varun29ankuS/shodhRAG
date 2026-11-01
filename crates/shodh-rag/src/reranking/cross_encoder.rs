@@ -35,6 +35,10 @@ impl CrossEncoderReranker {
             .map_err(|e| anyhow!("Session builder: {:?}", e))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| anyhow!("Opt level: {:?}", e))?
+            // The performance cores only: an operator split across efficiency
+            // cores waits for the slowest of them (`compute::cores`).
+            .with_intra_threads(crate::compute::cores::inference_threads())
+            .map_err(|e| anyhow!("Intra threads: {:?}", e))?
             .commit_from_memory(&model_bytes)
             .map_err(|e| anyhow!("Failed to load reranker model: {:?}", e))?;
 

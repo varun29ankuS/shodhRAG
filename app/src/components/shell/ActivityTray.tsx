@@ -1,6 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { Activity, Bot, Pause, Play, Square } from 'lucide-react';
+import { Activity, Bot, Pause, Play, Square, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { formatMs } from '../../features/agent/format';
@@ -10,6 +9,7 @@ import { useChatSession } from '../../features/ask/ChatSessionContext';
 import { useSessionCounts } from '../../features/agent/useAgentSession';
 import { sessionCountsLabel } from '../../features/agent/sessionCounts';
 import { countOf } from '../../lib/plural';
+import { useSystemStatusContext } from '../../features/status/SystemStatusContext';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -58,16 +58,13 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
   const { liveRun, conversations, cancel } = useChatSession();
   const sessions = useSessionCounts();
   const [open, setOpen] = useState(false);
-  const [paused, setPaused] = useState(false);
+  const system = useSystemStatusContext();
+  const paused = system?.status?.indexingPaused ?? false;
   const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const now = useTick(open && liveRun !== null);
   const count = (liveRun ? 1 : 0) + jobs.length;
-
-  useEffect(() => {
-    if (jobs.length === 0) setPaused(false);
-  }, [jobs.length]);
 
   // Close on outside click and on Esc (focus returns to the button).
   useEffect(() => {
@@ -89,13 +86,22 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
     };
   }, [open]);
 
+  // One pause for all indexing, kept across restarts (`indexing_control.rs`).
   const togglePause = async () => {
-    const command = paused ? 'resume_indexing' : 'pause_indexing';
     try {
-      await invoke(command);
-      setPaused(!paused);
+      await system?.setPaused(!paused);
     } catch (error) {
       notify.error(paused ? 'Could not resume indexing' : 'Could not pause indexing', {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const cancelJob = async (job: IndexingJob) => {
+    try {
+      await system?.cancel(job.id);
+    } catch (error) {
+      notify.error(`Could not cancel indexing ${job.name}`, {
         description: error instanceof Error ? error.message : String(error),
       });
     }
@@ -228,6 +234,18 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                   )}
                 >
                   {paused ? <Play className="w-3 h-3" aria-hidden="true" /> : <Pause className="w-3 h-3" aria-hidden="true" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void cancelJob(job)}
+                  aria-label={`Cancel indexing ${job.name}`}
+                  title="Cancel"
+                  className={cn(
+                    'shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-md text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro',
+                    FOCUS_RING,
+                  )}
+                >
+                  <X className="w-3 h-3" aria-hidden="true" />
                 </button>
               </div>
             );

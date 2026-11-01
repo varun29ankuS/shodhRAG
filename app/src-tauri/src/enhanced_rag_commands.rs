@@ -95,6 +95,14 @@ fn finished_item(
             format!("{name} was removed from the Library"),
             "Indexing stopped when the folder was removed.".to_string(),
         ),
+        Ok(done) if done.stopped => (
+            InboxStatus::Done,
+            format!("Indexing {name} was cancelled"),
+            format!(
+                "{}. The rest of the folder was not indexed; index it again to finish.",
+                indexed_detail(done)
+            ),
+        ),
         Ok(done) if done.failures.is_empty() => (
             InboxStatus::Done,
             format!("{name} is indexed"),
@@ -119,7 +127,9 @@ fn finished_item(
         Some(detail),
         link,
     );
-    if removed {
+    // The user removed the folder, or cancelled its indexing (the Library
+    // already says so): no desktop notification for either.
+    if removed || matches!(result, Ok(done) if done.stopped) {
         item.data = serde_json::json!({ "quiet": true });
     }
     item
@@ -147,18 +157,6 @@ fn indexed_detail(done: &IndexingResult) -> String {
 }
 
 #[tauri::command]
-pub async fn pause_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
-    indexing_state.pause();
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn resume_indexing(indexing_state: State<'_, IndexingState>) -> Result<(), String> {
-    indexing_state.resume();
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn check_path_type(path: String) -> Result<serde_json::Value, String> {
     let (is_dir, is_file) = shodh_rag::indexing::check_path_type(&path)?;
     Ok(serde_json::json!({
@@ -181,12 +179,15 @@ pub async fn index_single_file(
     // Registered while it runs: removing the source waits for it, and a
     // removed source is not indexed again.
     let result = match indexing_state.begin_run_at(&space_id, &file_path) {
-        Some(_run) => {
-            shodh_rag::indexing::index_single_file(
+        // Paused: the file waits like every other run (also between the
+        // pages of a scan); cancelled, it is not indexed.
+        Some(run) => {
+            shodh_rag::indexing::index_single_file_in(
                 &file_path,
                 &space_id,
                 &state.rag,
                 Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+                Some(&run),
             )
             .await
         }
@@ -226,7 +227,31 @@ mod tests {
             failures,
             files_unchanged: unchanged,
             duration: 0,
+            stopped: false,
         }
+    }
+
+    #[test]
+    fn a_cancelled_run_says_what_it_indexed_and_that_the_rest_was_not() {
+        let mut cancelled = done(12, 3, 0);
+        cancelled.stopped = true;
+        let item = finished_item(
+            "indexing:s1".to_string(),
+            "Papers",
+            None,
+            false,
+            &Ok(cancelled),
+        );
+        assert_eq!(item.status, InboxStatus::Done);
+        assert_eq!(item.title, "Indexing Papers was cancelled");
+        assert_eq!(
+            item.data["quiet"], true,
+            "the user cancelled it: no notification"
+        );
+        assert_eq!(
+            item.detail.as_deref(),
+            Some("12 files indexed, 3 already indexed. The rest of the folder was not indexed; index it again to finish.")
+        );
     }
 
     #[test]

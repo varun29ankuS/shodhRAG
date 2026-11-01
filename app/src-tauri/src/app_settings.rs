@@ -198,6 +198,27 @@ impl Policy {
     }
 }
 
+/// Indexing (the status strip, the tray and Settings → Search). User-only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IndexingPrefs {
+    /// Indexing is paused: every run waits, also after a restart, until it
+    /// is resumed.
+    pub paused: bool,
+    /// The search model may run on a graphics card (on by default; off runs
+    /// it on the CPU).
+    pub use_gpu: bool,
+}
+
+impl Default for IndexingPrefs {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            use_gpu: true,
+        }
+    }
+}
+
 /// Background mode (see [`crate::background`]). User-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -476,6 +497,9 @@ pub struct AppSettings {
     pub connectors: crate::connectors::ConnectorsPrefs,
     /// Code mode (see [`CodePrefs`]). User-only.
     pub code: CodePrefs,
+    /// Indexing: paused or not, and whether search may use the graphics card
+    /// (see [`IndexingPrefs`]). User-only.
+    pub indexing: IndexingPrefs,
     /// The UI has copied its earlier local-storage preferences here.
     pub seeded: bool,
     /// Learning from conversations was moved, once, from Ask (the earlier default) to
@@ -562,7 +586,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 27] = [
+pub const AGENT_DENIED: [(&str, &str); 28] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -590,6 +614,7 @@ pub const AGENT_DENIED: [(&str, &str); 27] = [
     ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
     ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
     ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, and how many model calls they may spend; only the user may change that."),
+    ("use_gpu", "Whether search uses the graphics card is the user's call about their computer."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -1032,6 +1057,34 @@ mod tests {
         assert!(!off.answers.auto_repair);
         assert!(denied_reason("auto_repair").is_some());
         assert!(SettingKey::parse("auto_repair").is_none());
+    }
+
+    #[test]
+    fn indexing_runs_and_may_use_the_gpu_by_default_and_a_pause_is_kept() {
+        let defaults = AppSettings::default().indexing;
+        assert!(!defaults.paused);
+        assert!(defaults.use_gpu);
+        // Settings written before the section existed: running, GPU allowed.
+        let old: AppSettings = serde_json::from_str(r#"{"preferences":{"theme":"dark"}}"#).unwrap();
+        assert_eq!(old.indexing, IndexingPrefs::default());
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::in_dir(dir.path());
+        store
+            .update(|s| {
+                s.indexing.paused = true;
+                s.indexing.use_gpu = false;
+                Ok(())
+            })
+            .unwrap();
+        // A restart reads the pause and the CPU choice back.
+        let reloaded = SettingsStore::in_dir(dir.path()).load().unwrap();
+        assert!(reloaded.indexing.paused);
+        assert!(!reloaded.indexing.use_gpu);
+        let json = serde_json::to_value(&reloaded.indexing).unwrap();
+        assert_eq!(json["useGpu"], false);
+        // The assistant pauses and resumes with its own tools; the GPU is the user's call.
+        assert!(denied_reason("indexing_paused").is_none());
+        assert!(denied_reason("use_gpu").is_some());
     }
 
     #[test]

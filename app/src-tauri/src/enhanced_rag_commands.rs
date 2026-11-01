@@ -226,6 +226,7 @@ mod tests {
             failures,
             files_unchanged: unchanged,
             duration: 0,
+            stopped: false,
         }
     }
 

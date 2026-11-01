@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Pause, Play, Plug, ScanText, Square, X } from 'lucide-react';
+import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Pause, Play, Plug, ScanText, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
@@ -467,7 +467,7 @@ export function SystemStatusStrip({
               aria-label={`Cancel indexing ${job.name}`}
               title="Cancel indexing"
             >
-              <Square className="w-3 h-3" fill="currentColor" aria-hidden="true" />
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </div>
           <div

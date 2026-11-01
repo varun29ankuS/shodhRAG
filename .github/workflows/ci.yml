@@ -315,14 +315,20 @@ jobs:
           path: ${{ runner.temp }}/shodh-models
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
-      # The cutoff at which an answer counts as using a memory, measured on the labelled
-      # fixture (crates/shodh-rag/src/user_memory/fixtures/memory_use.json) with the real
-      # E5 model. SHODH_TEST_MODELS turns the model-backed tests on at compile time; the
-      # name filter runs this one only.
-      - name: Memory use cutoff (E5)
+      # The tests that need the real E5 model: the cutoff at which an answer counts as
+      # using a memory and the floor at which a memory is recalled, both measured on
+      # labelled fixtures (crates/shodh-rag/src/user_memory/fixtures/), and the
+      # embedder itself (batching, the CPU path and its calibration). SHODH_TEST_MODELS
+      # turns the model-backed tests on at compile time; the name filters run these only.
+      - name: Model tests (E5)
         env:
           SHODH_TEST_MODELS: ${{ runner.temp }}/shodh-models
-        run: cargo test --package shodh-rag --lib the_use_cutoff_separates_used_from_unused_memories_with_e5 -- --nocapture
+        run: >
+          cargo test --package shodh-rag --lib --
+          the_use_cutoff_separates_used_from_unused_memories_with_e5
+          the_default_floor_separates_related_from_unrelated_questions_with_e5
+          embeddings::e5::
+          --nocapture
 
       - name: Retrieval eval
         run: >

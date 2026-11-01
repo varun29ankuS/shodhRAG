@@ -49,7 +49,7 @@ use crate::embeddings::EmbeddingModel;
 /// On all 18 long pairs: 16 right (88.9%). The test requires at least 75% held out (one
 /// pair below the measurement). The fixture is small and written by hand: re-measure when
 /// the embedding model or the scoring changes.
-pub const DEFAULT_USE_CUTOFF: f64 = 0.595;
+pub const DEFAULT_USE_CUTOFF: f64 = 0.635;
 
 /// Words that say nothing about which memory an answer drew on, left out of
 /// [`content_overlap`]: function words, and the labels facts are rendered with

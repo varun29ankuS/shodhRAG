@@ -127,7 +127,9 @@ fn finished_item(
         Some(detail),
         link,
     );
-    if removed {
+    // The user removed the folder, or cancelled its indexing (the Library
+    // already says so): no desktop notification for either.
+    if removed || matches!(result, Ok(done) if done.stopped) {
         item.data = serde_json::json!({ "quiet": true });
     }
     item
@@ -242,6 +244,7 @@ mod tests {
         );
         assert_eq!(item.status, InboxStatus::Done);
         assert_eq!(item.title, "Indexing Papers was cancelled");
+        assert_eq!(item.data["quiet"], true, "the user cancelled it: no notification");
         assert_eq!(
             item.detail.as_deref(),
             Some("12 files indexed, 3 already indexed. The rest of the folder was not indexed; index it again to finish.")

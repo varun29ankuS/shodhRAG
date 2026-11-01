@@ -225,7 +225,9 @@ fn measure(
     passages: &[Vec<u32>],
 ) -> std::result::Result<f64, String> {
     let (warmup, timed) = passages.split_at(CALIBRATION_WARMUP.min(passages.len()));
-    let as_slices = |ids: &[Vec<u32>]| ids.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    fn as_slices(ids: &[Vec<u32>]) -> Vec<&[u32]> {
+        ids.iter().map(Vec::as_slice).collect()
+    }
     run_batch(session, pad_id, false, &as_slices(warmup)).map_err(|e| format!("{e:#}"))?;
     let tokens: usize = timed.iter().map(Vec::len).sum();
     let started = Instant::now();

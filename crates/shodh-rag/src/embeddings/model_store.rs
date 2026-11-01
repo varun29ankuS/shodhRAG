@@ -73,10 +73,10 @@ pub fn search_model_artifacts() -> Vec<ModelArtifact> {
     vec![
         ModelArtifact::new(
             "E5 embedding model",
-            "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model.onnx",
-            "84a4d426f7e87a6bf5bf195f0bae2c4a7d15f675b23ca96f42fab8326d7a77aa",
-            1_110_059_084,
-            "multilingual-e5-base/model.onnx",
+            "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_O4.onnx",
+            "f60256a833caee5c75a3903e589116752ee016ca7bc16f9b96e4db09984c5703",
+            554_948_118,
+            "multilingual-e5-base/model_O4.onnx",
         ),
         ModelArtifact::new(
             "E5 tokenizer",
@@ -1031,7 +1031,7 @@ mod tests {
         assert_eq!(ModelStore::ocr_model("x").total_bytes(), 31_191_354);
         assert_eq!(
             ModelStore::search_and_ocr_models("x").total_bytes(),
-            1_173_369_756 + 31_191_354
+            618_258_790 + 31_191_354
         );
         for a in artifacts.iter().chain(&answer_check).chain(&ocr) {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);

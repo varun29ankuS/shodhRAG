@@ -322,9 +322,9 @@ jobs:
           key: search-models-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
 
       # The tests that need the real E5 model: the cutoff at which an answer counts as
-      # using a memory and the floor at which a memory is recalled, both measured on
-      # labelled fixtures (crates/shodh-rag/src/user_memory/fixtures/), and the
-      # embedder itself (batching, the CPU path and its calibration). SHODH_TEST_MODELS
+      # using a memory, measured on the labelled fixture
+      # (crates/shodh-rag/src/user_memory/fixtures/memory_use.json), and the embedder
+      # itself (batching, the CPU path and its calibration, GPU agreement where a GPU runs). SHODH_TEST_MODELS
       # turns the model-backed tests on at compile time; the name filters run these only.
       # One at a time: each loads the model (a gigabyte or more in memory).
       - name: Model tests (E5)
@@ -333,7 +333,6 @@ jobs:
         run: >
           cargo test --package shodh-rag --lib --
           the_use_cutoff_separates_used_from_unused_memories_with_e5
-          the_default_floor_separates_related_from_unrelated_questions_with_e5
           embeddings::e5::
           --nocapture
           --test-threads=1

@@ -6317,6 +6317,89 @@ Language models trained on long documents reach lower perplexity.
         assert!(!engine.upgrade_in_place("no such source").await.unwrap());
     }
 
+    /// Files committed together are each stored with their own chunks, a
+    /// second commit replaces them (no copies), a failed write keeps every
+    /// file's previous chunks, and a failed removal is written down for
+    /// every file and settled by the next commit.
+    #[tokio::test]
+    async fn files_committed_together_replace_their_chunks_as_one_file_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let paths: Vec<std::path::PathBuf> = ["lease.md", "parking.md", "boiler.md"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        std::fs::write(&paths[0], LEASE).unwrap();
+        std::fs::write(
+            &paths[1],
+            "# Parking\n\nVisitors park on the street. Residents park in the garage below the courtyard.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &paths[2],
+            "# Boiler\n\nThe boiler is serviced every October and is eleven years old.\n",
+        )
+        .unwrap();
+        let stored_ids =
+            |chunks: Vec<crate::storage::SearchHit>| -> std::collections::BTreeSet<String> {
+                chunks.into_iter().map(|c| c.id).collect()
+            };
+        let prepare_all = |engine: &RAGEngine| -> Vec<PreparedFile> {
+            let preparer = engine.file_preparer().unwrap();
+            paths
+                .iter()
+                .map(|p| preparer.prepare(p, HashMap::new()).unwrap())
+                .collect()
+        };
+        let ids_of = |results: Vec<Result<Vec<Uuid>>>| -> std::collections::BTreeSet<String> {
+            results
+                .into_iter()
+                .flat_map(|r| r.unwrap())
+                .map(|id| id.to_string())
+                .collect()
+        };
+
+        let first = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            first
+        );
+        assert_eq!(engine.document_sources().await.unwrap().len(), 3);
+
+        // The write fails: every file keeps its previous chunks.
+        engine
+            .fail_next_store
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let failed = engine.commit_files(prepare_all(&engine)).await;
+        assert_eq!(failed.len(), 3);
+        assert!(failed.iter().all(|r| r.is_err()));
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            first
+        );
+        assert!(engine.replaced_chunks().unwrap().is_empty());
+
+        // Removing the old chunks fails: both copies stay, written down for
+        // every file, and the next commit removes the old ones.
+        engine
+            .fail_replaced_removal
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert!(second.is_disjoint(&first));
+        assert_eq!(engine.replaced_chunks().unwrap().len(), 3);
+        engine
+            .fail_replaced_removal
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let third = ids_of(engine.commit_files(prepare_all(&engine)).await);
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            third
+        );
+        assert!(engine.replaced_chunks().unwrap().is_empty());
+        assert_eq!(engine.text_search.count().unwrap(), third.len());
+        assert_eq!(engine.document_sources().await.unwrap().len(), 3);
+    }
+
     /// A commit stores the new chunks before it removes the old ones. A
     /// failure while storing leaves the old chunks; a failure while removing
     /// them leaves both copies, written down, until the next commit or start

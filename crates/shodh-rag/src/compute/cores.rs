@@ -9,6 +9,14 @@
 //! share one
 //! core's vector units, which the matrix kernels already saturate, so
 //! physical cores are counted, not logical processors.
+//!
+//! This sets how many threads a session starts, not where they run: the
+//! operating system still places them (a window in the background can be
+//! given efficiency cores by Windows power throttling or macOS quality of
+//! service). On AMD processors that mix full and compact cores (Zen 5 and
+//! Zen 5c), Windows reports the compact cores as a lower class, so only the
+//! full cores are counted, although compact cores are not much slower.
+//! None of this has been measured on a hybrid machine yet.
 
 /// Intra-op threads for an inference session that runs on the CPU: the
 /// performance cores of this machine (physical cores of the fastest class),
@@ -72,7 +80,6 @@ mod platform {
             buffer: *mut u8,
             returned_length: *mut u32,
         ) -> i32;
-        fn GetLastError() -> u32;
     }
 
     pub fn performance_cores() -> Option<usize> {
@@ -86,7 +93,8 @@ mod platform {
             )
         };
         // SAFETY: reads the calling thread's last error.
-        if first != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER || length == 0 {
+        let last_error = unsafe { windows::Win32::Foundation::GetLastError() }.0;
+        if first != 0 || last_error != ERROR_INSUFFICIENT_BUFFER || length == 0 {
             return None;
         }
         let mut buffer = vec![0u8; length as usize];

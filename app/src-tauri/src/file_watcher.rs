@@ -420,14 +420,27 @@ impl FolderSyncState {
         source: &FolderSourceRef,
         handed_over: bool,
         progress: impl Fn(usize, usize),
+        run: Option<&shodh_rag::indexing::IndexingRun<'_>>,
     ) -> Result<SyncReport, String> {
         if !handed_over {
             return Err(HANDOVER_PENDING.to_string());
         }
         let gave_way = std::sync::atomic::AtomicBool::new(false);
+        let paused = std::sync::atomic::AtomicBool::new(false);
         let stop = || {
             if !self.is_watched(source) {
                 return true;
+            }
+            // Cancelled: the sync ends after this file. Paused: it ends
+            // too, its progress saved, and goes on once resumed.
+            if let Some(run) = run {
+                if run.stopped() {
+                    return true;
+                }
+                if run.is_paused() {
+                    paused.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return true;
+                }
             }
             if self
                 .removals_pending
@@ -445,6 +458,11 @@ impl FolderSyncState {
         // Stopped for a removal: its progress is saved, and the folder is
         // synced again once the removal has had the turn.
         if gave_way.load(std::sync::atomic::Ordering::SeqCst) {
+            self.request_sync(source);
+        }
+        // Paused: the next sync, asked for now, waits for the resume before
+        // it takes the turn, and goes on from the progress saved.
+        if paused.load(std::sync::atomic::Ordering::SeqCst) {
             self.request_sync(source);
         }
         result
@@ -665,6 +683,10 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
     if !state.is_watched(source) {
         return;
     }
+    // Registered while it runs: shown in the status strip, paused and
+    // cancelled like every other indexing run.
+    let indexing = app.state::<IndexingState>();
+    let run = indexing.begin_run_at(&source.id, &source.path);
     let rag = app.state::<RagState>().rag.clone();
     let handed_over = state.hand_over_uploads_in_turn(app, &rag).await;
     let progress = |done: usize, total: usize| {
@@ -678,7 +700,7 @@ async fn sync_once(app: &AppHandle, source: &FolderSourceRef) {
         }
     };
     let result = state
-        .sync_in_turn(&rag, source, handed_over, progress)
+        .sync_in_turn(&rag, source, handed_over, progress, run.as_ref())
         .await;
     if let Err(e) = &result {
         tracing::warn!(source_id = %source.id, error = %e, "folder sync failed");
@@ -1493,7 +1515,9 @@ mod tests {
 
         // The handover failed: the sync is skipped, with a reason, and the
         // upload stays.
-        let skipped = state.sync_in_turn(&rag, &source, false, |_, _| {}).await;
+        let skipped = state
+            .sync_in_turn(&rag, &source, false, |_, _| {}, None)
+            .await;
         assert_eq!(skipped, Err(HANDOVER_PENDING.to_string()));
         assert_eq!(
             owners(rag.read().await.document_sources().await.unwrap()),
@@ -1511,7 +1535,7 @@ mod tests {
             .await
             .unwrap();
         state
-            .sync_in_turn(&rag, &source, true, |_, _| {})
+            .sync_in_turn(&rag, &source, true, |_, _| {}, None)
             .await
             .unwrap();
         assert_eq!(
@@ -1557,7 +1581,7 @@ mod tests {
         let sync = async {
             let _turn = state.running.lock().await;
             started.notify_one();
-            state.sync_in_turn(&rag, &a, true, |_, _| {}).await
+            state.sync_in_turn(&rag, &a, true, |_, _| {}, None).await
         };
         let removal = async {
             started.notified().await;
@@ -1577,7 +1601,10 @@ mod tests {
 
         // The sync asked for goes on with the rest.
         let _turn = state.running.lock().await;
-        let rest = state.sync_in_turn(&rag, &a, true, |_, _| {}).await.unwrap();
+        let rest = state
+            .sync_in_turn(&rag, &a, true, |_, _| {}, None)
+            .await
+            .unwrap();
         assert_eq!(synced.indexed + rest.indexed, names.len(), "{rest:?}");
         let rows = rag.read().await.document_sources().await.unwrap();
         assert_eq!(file_count(&rows, &a.id), names.len());

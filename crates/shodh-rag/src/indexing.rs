@@ -160,10 +160,12 @@ pub struct IndexingState {
     pause: PauseSwitch,
     /// The runs cancelled while in progress (their ids); an id goes when its
     /// run ends.
-    cancelled: Mutex<HashSet<u64>>,
+    cancelled: Arc<Mutex<HashSet<u64>>>,
     /// Sources removed from the Library: their runs stop before their next
     /// batch and none of theirs starts again.
-    removed: Mutex<HashSet<String>>,
+    removed: Arc<Mutex<HashSet<String>>>,
+    /// Wakes paused runs when a run is cancelled or a source removed.
+    stops: Arc<tokio::sync::Notify>,
     /// The runs in progress by source, each with the folder or file it
     /// indexes when it said so ([`Self::begin_run_at`]).
     runs: tokio::sync::watch::Sender<HashMap<String, Vec<RunEntry>>>,
@@ -173,6 +175,49 @@ pub struct IndexingState {
 impl Default for IndexingState {
     fn default() -> Self {
         Self::with_pause(PauseSwitch::default())
+    }
+}
+
+/// The pause and stop state of one run, owned (see [`IndexingRun::control`]).
+#[derive(Debug, Clone)]
+pub struct RunControl {
+    pause: PauseSwitch,
+    cancelled: Arc<Mutex<HashSet<u64>>>,
+    removed: Arc<Mutex<HashSet<String>>>,
+    source_id: String,
+    id: u64,
+}
+
+impl RunControl {
+    /// Whether the run stops: it was cancelled, or its source was removed.
+    pub fn stopped(&self) -> bool {
+        self.removed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&self.source_id)
+            || self
+                .cancelled
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&self.id)
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.pause.is_paused()
+    }
+
+    /// The gate OCR asks before each page of a scan this run reads.
+    pub fn page_gate(&self) -> crate::processing::ocr::gate::Gate {
+        let control = self.clone();
+        Arc::new(move || {
+            if control.stopped() {
+                crate::processing::ocr::gate::PageGate::Stop
+            } else if control.is_paused() {
+                crate::processing::ocr::gate::PageGate::Pause
+            } else {
+                crate::processing::ocr::gate::PageGate::Go
+            }
+        })
     }
 }
 
@@ -188,25 +233,48 @@ pub struct IndexingRun<'a> {
 impl IndexingRun<'_> {
     /// Whether this run stops: it was cancelled, or its source was removed.
     pub fn stopped(&self) -> bool {
-        self.state.is_removed(&self.source_id)
-            || self
-                .state
-                .cancelled
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains(&self.id)
+        self.control().stopped()
+    }
+
+    /// Whether indexing is paused.
+    pub fn is_paused(&self) -> bool {
+        self.state.is_paused()
+    }
+
+    /// This run's pause and stop state, for threads the run does not
+    /// outlive (a file read on a blocking thread, OCR between pages).
+    pub fn control(&self) -> RunControl {
+        RunControl {
+            pause: self.state.pause.clone(),
+            cancelled: self.state.cancelled.clone(),
+            removed: self.state.removed.clone(),
+            source_id: self.source_id.clone(),
+            id: self.id,
+        }
     }
 
     /// Waits while indexing is paused; returns early when the run stops.
     /// Returns whether the run stopped.
     pub async fn wait_while_paused(&self) -> bool {
-        while self.state.is_paused() {
+        loop {
             if self.stopped() {
                 return true;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            if !self.state.is_paused() {
+                return false;
+            }
+            let stop = self.state.stops.notified();
+            tokio::pin!(stop);
+            stop.as_mut().enable();
+            // A cancel between the checks above and `enable` is seen here.
+            if self.stopped() {
+                return true;
+            }
+            tokio::select! {
+                () = self.state.pause.wait_until_resumed() => {}
+                () = &mut stop => {}
+            }
         }
-        self.stopped()
     }
 }
 
@@ -233,8 +301,9 @@ impl IndexingState {
     pub fn with_pause(pause: PauseSwitch) -> Self {
         Self {
             pause,
-            cancelled: Mutex::new(HashSet::new()),
-            removed: Mutex::new(HashSet::new()),
+            cancelled: Arc::new(Mutex::new(HashSet::new())),
+            removed: Arc::new(Mutex::new(HashSet::new())),
+            stops: Arc::new(tokio::sync::Notify::new()),
             runs: tokio::sync::watch::Sender::new(HashMap::new()),
             next_run: std::sync::atomic::AtomicU64::new(1),
         }
@@ -269,6 +338,8 @@ impl IndexingState {
             .collect();
         let mut cancelled = self.cancelled.lock().unwrap_or_else(|e| e.into_inner());
         cancelled.extend(ids.iter().copied());
+        drop(cancelled);
+        self.stops.notify_waiters();
         ids.len()
     }
 
@@ -284,6 +355,8 @@ impl IndexingState {
             .unwrap_or_default();
         let mut cancelled = self.cancelled.lock().unwrap_or_else(|e| e.into_inner());
         cancelled.extend(ids.iter().copied());
+        drop(cancelled);
+        self.stops.notify_waiters();
         ids.len()
     }
 
@@ -368,6 +441,7 @@ impl IndexingState {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(source_id.to_string());
+        self.stops.notify_waiters();
         let mut runs = self.runs.subscribe();
         // The sender lives in `self`, so the wait ends only when the runs do.
         let _ = runs.wait_for(|runs| !runs.contains_key(source_id)).await;
@@ -412,6 +486,19 @@ pub async fn index_single_file(
     space_id: &str,
     rag: &RwLock<RAGEngine>,
     emitter: Option<&dyn EventEmitter>,
+) -> Result<IndexingResult, String> {
+    index_single_file_in(file_path, space_id, rag, emitter, None).await
+}
+
+/// [`index_single_file`] as part of `run` (registered by the caller): it
+/// waits while indexing is paused, also between the pages of a scan, and
+/// is not indexed once the run is cancelled.
+pub async fn index_single_file_in(
+    file_path: &str,
+    space_id: &str,
+    rag: &RwLock<RAGEngine>,
+    emitter: Option<&dyn EventEmitter>,
+    run: Option<&IndexingRun<'_>>,
 ) -> Result<IndexingResult, String> {
     if !rag.read().await.has_search_models() {
         return Err(SearchModelsMissing.to_string());
@@ -466,9 +553,13 @@ pub async fn index_single_file(
             (page, pages),
         );
     };
-    let ids = index_file_with_progress(rag, &path, metadata, Some(&on_page))
-        .await
-        .map_err(|e| format!("Failed to index file: {e}"))?;
+    let indexed = match run {
+        Some(run) => index_file_in_run(run, rag, &path, metadata, Some(&on_page)).await,
+        None => index_file_with_notice(rag, &path, metadata, Some(&on_page)).await,
+    };
+    let ids = indexed
+        .map_err(|e| format!("Failed to index file: {e}"))?
+        .ids;
 
     let chunks_created = ids.len();
 
@@ -515,10 +606,15 @@ pub async fn index_folder(
 /// Files are read and chunked one after another, up to `read_ahead` files
 /// ahead of the batch being embedded, so reading the next file overlaps with
 /// embedding the current batch while memory stays bounded. A batch takes the
-/// files that are ready, up to `max_files`, and no more once it has
-/// `max_chunks` chunks (a file is never split): the chunks of small files go
-/// to the model together, filling its batches, and the batch is stored with
-/// one write and one keyword-index commit ([`RAGEngine::commit_files`]).
+/// files already read when it starts (it never waits for one being read), up
+/// to `max_files`, and no more once it has `max_chunks` chunks (a file is
+/// never split, so one large file can exceed it): the chunks of small files
+/// go to the model together, filling its batches, and the batch is stored
+/// with one write and one keyword-index commit ([`RAGEngine::commit_files`]).
+/// A batch can hold at most `read_ahead` files (what the reader can have
+/// handed over), so `read_ahead` is at least `max_files`. When embedding is
+/// faster than reading (a GPU), batches are as large as reading allows,
+/// often one or two files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatchLimits {
     pub max_files: usize,
@@ -529,13 +625,13 @@ pub struct BatchLimits {
 impl Default for BatchLimits {
     /// 64 chunks fill the model's batches three times over (a batch holds
     /// about 21 chunks of 380 tokens, `embeddings::e5`); 16 files bound what
-    /// one failed write costs; 4 files of text read ahead are a few
-    /// megabytes at most.
+    /// one failed write costs; 16 files read ahead (so a full batch can be
+    /// waiting) are chunk text, a few megabytes for ordinary documents.
     fn default() -> Self {
         Self {
             max_files: 16,
             max_chunks: 64,
-            read_ahead: 4,
+            read_ahead: 16,
         }
     }
 }
@@ -659,6 +755,34 @@ pub async fn index_folder_batched(
     emitter: Option<&dyn EventEmitter>,
     adoption: Option<crate::folder_sync::Adoption<'_>>,
     limits: BatchLimits,
+) -> Result<IndexingResult, String> {
+    index_folder_observed(
+        folder_path,
+        space_id,
+        options,
+        rag,
+        indexing_state,
+        emitter,
+        adoption,
+        limits,
+        None,
+    )
+    .await
+}
+
+/// [`index_folder_batched`], telling `read_seen` how many files have been
+/// read and handed to the batches so far (tests).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn index_folder_observed(
+    folder_path: &str,
+    space_id: &str,
+    options: &IndexingOptions,
+    rag: &RwLock<RAGEngine>,
+    indexing_state: &IndexingState,
+    emitter: Option<&dyn EventEmitter>,
+    adoption: Option<crate::folder_sync::Adoption<'_>>,
+    limits: BatchLimits,
+    read_seen: Option<&(dyn Fn(usize) + Sync)>,
 ) -> Result<IndexingResult, String> {
     // Without the embedding model every file would be parsed and then fail.
     if !rag.read().await.has_search_models() {
@@ -793,6 +917,7 @@ pub async fn index_folder_batched(
     let indexing_started = Instant::now();
     let (tx, rx) = tokio::sync::mpsc::channel::<ReadFile>(limits.read_ahead.max(1));
 
+    let control = run.control();
     let reader = async {
         let tx = tx;
         // The first file is reported at once.
@@ -835,7 +960,24 @@ pub async fn index_folder_batched(
                     (page, pages),
                 );
             };
-            let outcome = read_folder_file(&preparer, rag, file, space_id, Some(&on_page)).await;
+            // A scan paused part way is read again from its first page once
+            // indexing resumes; a cancelled one is dropped.
+            let outcome = loop {
+                match read_folder_file(&preparer, rag, file, space_id, Some(&on_page), &control)
+                    .await
+                {
+                    Ok(Some(chunked)) => break Some(Ok(chunked)),
+                    Err(reason) => break Some(Err(reason)),
+                    Ok(None) => {
+                        if run.wait_while_paused().await {
+                            break None;
+                        }
+                    }
+                }
+            };
+            let Some(outcome) = outcome else {
+                break;
+            };
             let sent = tx
                 .send(ReadFile {
                     path: file.clone(),
@@ -845,6 +987,9 @@ pub async fn index_folder_batched(
             if sent.is_err() {
                 // The batches stopped: nothing more is read.
                 break;
+            }
+            if let Some(read) = read_seen {
+                read(index + 1);
             }
         }
     };
@@ -996,7 +1141,8 @@ async fn read_folder_file(
     path: &Path,
     space_id: &str,
     on_page: Option<&ScannedPageFn<'_>>,
-) -> Result<crate::rag_engine::ChunkedFile, String> {
+    control: &RunControl,
+) -> Result<Option<crate::rag_engine::ChunkedFile>, String> {
     if !path.exists() {
         return Err(format!("File does not exist: {}", path.display()));
     }
@@ -1004,11 +1150,16 @@ async fn read_folder_file(
     let reported = metadata.clone();
     let owned = path.to_path_buf();
     let reader = preparer.clone();
+    let gate = control.page_gate();
     let (pages_tx, mut pages_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, usize)>();
     let task = tokio::task::spawn_blocking(move || {
-        reader.chunk_with_progress(&owned, metadata, &|page, pages| {
-            // The receiver is gone only when the caller stopped waiting.
-            let _ = pages_tx.send((page, pages));
+        // OCR asks the run before each page: held while paused, ended when
+        // cancelled.
+        crate::processing::ocr::gate::with_gate(gate, || {
+            reader.chunk_with_progress(&owned, metadata, &|page, pages| {
+                // The receiver is gone only when the caller stopped waiting.
+                let _ = pages_tx.send((page, pages));
+            })
         })
     });
     tokio::pin!(task);
@@ -1034,8 +1185,10 @@ async fn read_folder_file(
             if let Some(notice) = chunked.notice() {
                 tracing::warn!(file = %crate::log_safe::file(&path), "Indexed with pages missing: {notice}");
             }
-            Ok(chunked)
+            Ok(Some(chunked))
         }
+        // Paused or cancelled in the middle of a scan: not read.
+        Err(e) if e.is::<crate::processing::ocr::gate::OcrInterrupted>() => Ok(None),
         Err(e) => {
             if e.is::<crate::processing::ocr::ScanReaderMissing>() && queued_when_refused(&reported)
             {
@@ -1189,6 +1342,45 @@ pub async fn index_file_with_notice(
     metadata: HashMap<String, String>,
     on_page: Option<&ScannedPageFn<'_>>,
 ) -> Result<IndexedFile, String> {
+    index_file_controlled(rag, path, metadata, on_page, None)
+        .await?
+        .ok_or_else(|| "reading the file was interrupted".to_string())
+}
+
+/// [`index_file_with_notice`] for a file of `run`: indexed only while the
+/// run is not paused (it waits) or cancelled (it is not indexed), also
+/// between the pages of a scan; a scan paused part way is read again once
+/// indexing resumes.
+pub async fn index_file_in_run(
+    run: &IndexingRun<'_>,
+    rag: &RwLock<RAGEngine>,
+    path: &Path,
+    metadata: HashMap<String, String>,
+    on_page: Option<&ScannedPageFn<'_>>,
+) -> Result<IndexedFile, String> {
+    let control = run.control();
+    loop {
+        if run.wait_while_paused().await {
+            return Err(format!("Indexing {} was cancelled", path.display()));
+        }
+        if let Some(indexed) =
+            index_file_controlled(rag, path, metadata.clone(), on_page, Some(&control)).await?
+        {
+            return Ok(indexed);
+        }
+    }
+}
+
+/// Indexes one file; with `control`, OCR asks it before each page, and a
+/// read it interrupts gives `None` (nothing stored).
+async fn index_file_controlled(
+    rag: &RwLock<RAGEngine>,
+    path: &Path,
+    metadata: HashMap<String, String>,
+    on_page: Option<&ScannedPageFn<'_>>,
+    control: Option<&RunControl>,
+) -> Result<Option<IndexedFile>, String> {
+    let gate = control.map(RunControl::page_gate);
     let preparer = rag
         .read()
         .await
@@ -1200,10 +1392,16 @@ pub async fn index_file_with_notice(
     // passed to `on_page` here, while the file is prepared.
     let (pages_tx, mut pages_rx) = tokio::sync::mpsc::unbounded_channel::<(usize, usize)>();
     let task = tokio::task::spawn_blocking(move || {
-        preparer.prepare_with_progress(&owned, metadata, &|page, pages| {
-            // The receiver is gone only when the caller stopped waiting.
-            let _ = pages_tx.send((page, pages));
-        })
+        let prepare = || {
+            preparer.prepare_with_progress(&owned, metadata, &|page, pages| {
+                // The receiver is gone only when the caller stopped waiting.
+                let _ = pages_tx.send((page, pages));
+            })
+        };
+        match gate {
+            Some(gate) => crate::processing::ocr::gate::with_gate(gate, prepare),
+            None => prepare(),
+        }
     });
     tokio::pin!(task);
     let joined = loop {
@@ -1222,6 +1420,7 @@ pub async fn index_file_with_notice(
     })?;
     let prepared = match prepared {
         Ok(prepared) => prepared,
+        Err(e) if e.is::<crate::processing::ocr::gate::OcrInterrupted>() => return Ok(None),
         Err(e) => {
             if e.is::<crate::processing::ocr::ScanReaderMissing>() && queued_when_refused(&reported)
             {
@@ -1243,7 +1442,7 @@ pub async fn index_file_with_notice(
         .commit_file(prepared)
         .await
         .map_err(|e| format!("{e:#}"))?;
-    Ok(IndexedFile { ids, notice })
+    Ok(Some(IndexedFile { ids, notice }))
 }
 
 /// Whether a file refused for want of the scan reader, indexed with
@@ -2056,5 +2255,135 @@ mod tests {
         assert_eq!(after, before + 1, "only the file counted was stored");
         // A run started after the cancel is not stopped by it.
         assert!(!state.should_stop("space-1"));
+    }
+
+    /// Embeds like the word embedder, records how many texts each
+    /// `embed_documents` call gets, and holds every call until released.
+    struct BatchRecorder {
+        words: crate::statements::testing::WordEmbedder,
+        sizes: std::sync::Mutex<Vec<usize>>,
+        entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::embeddings::EmbeddingModel for BatchRecorder {
+        fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            self.words.embed_query(text)
+        }
+        fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            self.words.embed_document(text)
+        }
+        fn embed_documents(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+            self.sizes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(texts.len());
+            let _ = self
+                .entered
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .send(());
+            let _ = self
+                .release
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .recv();
+            texts.iter().map(|t| self.words.embed_document(t)).collect()
+        }
+        fn dimension(&self) -> usize {
+            crate::statements::testing::DIM
+        }
+    }
+
+    /// While a batch embeds, the files read meanwhile wait together: the
+    /// next batch takes all of them in one call to the model.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_files_read_while_a_batch_embeds_go_to_the_model_together() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let recorder = Arc::new(BatchRecorder {
+            words: Default::default(),
+            sizes: std::sync::Mutex::new(Vec::new()),
+            entered: std::sync::Mutex::new(entered_tx),
+            release: std::sync::Mutex::new(release_rx),
+        });
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(
+                recorder.clone(),
+            ))
+            .expect("models");
+        let rag = Arc::new(RwLock::new(engine));
+        let folder = dir.path().join("folder");
+        std::fs::create_dir_all(&folder).expect("folder");
+        for i in 0..5 {
+            std::fs::write(
+                folder.join(format!("note-{i}.txt")),
+                format!("Note {i} records that the courtyard lights were repaired in week {i}."),
+            )
+            .expect("file");
+        }
+        let (read_tx, read_rx) = std::sync::mpsc::channel::<usize>();
+        let read_tx = std::sync::Mutex::new(read_tx);
+        // Every hold is released only once all five files have been read.
+        let releaser = std::thread::spawn(move || {
+            let mut read = 0;
+            while entered_rx.recv_timeout(Duration::from_secs(60)).is_ok() {
+                while read < 5 {
+                    match read_rx.recv_timeout(Duration::from_secs(60)) {
+                        Ok(n) => read = n,
+                        Err(_) => return,
+                    }
+                }
+                if release_tx.send(()).is_err() {
+                    return;
+                }
+            }
+        });
+        let state = IndexingState::default();
+        let folder_text = folder.to_string_lossy().to_string();
+        let seen = |n: usize| {
+            let _ = read_tx.lock().unwrap_or_else(|e| e.into_inner()).send(n);
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            index_folder_observed(
+                &folder_text,
+                "space-1",
+                &options(&[]),
+                &rag,
+                &state,
+                None,
+                None,
+                BatchLimits::default(),
+                Some(&seen),
+            ),
+        )
+        .await
+        .expect("the run ended")
+        .expect("indexed");
+        assert_eq!(result.files_processed, 5, "{:?}", result.failures);
+        let sizes = recorder
+            .sizes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        // One chunk a file: the first batch took what was read when it
+        // started; the second, everything read while the first embedded.
+        assert_eq!(sizes.iter().sum::<usize>(), 5, "{sizes:?}");
+        assert!(sizes.len() <= 2, "{sizes:?}");
+        assert!(
+            sizes.iter().max().is_some_and(|&n| n >= 3),
+            "no batch held several files: {sizes:?}"
+        );
+        drop(rag);
+        drop(recorder);
+        let _ = releaser.join();
     }
 }

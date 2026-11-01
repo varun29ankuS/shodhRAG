@@ -336,6 +336,7 @@ Run one instance per folder. WebView storage is separated on Windows, Linux and 
 | Notifications | Desktop notifications carry titles and counts only, never document or answer text. |
 | API keys | Stored in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux). They are never kept in the app's web storage or shown back in the UI. A key set through an environment variable applies to that session only. Subscription sign-ins are held by the agent runtime's own account store, in Shodh's app data folder. |
 | Audit log | Kept in `shodh.db` on this computer. |
+| Graphics card search (Windows) | Windows GPU search uses Microsoft's DirectML (`DirectML.dll`, installed with Shodh). Its licence says it "may collect information about you and your use of the software, and send that to Microsoft", and that you can opt out of many of these scenarios but not all. Turn off "Use the graphics card for search" (System status panel) and Shodh does not use DirectML: search runs on the CPU and stays fully local. The DLL is still loaded with the app, as it has been since ONNX Runtime was added; it is not called. On macOS, graphics card search uses Apple's Core ML, part of macOS. |
 
 **Known gaps.**
 - **Unencrypted storage:** released builds do not encrypt the local index (LanceDB, Tantivy) or the app database (`shodh.db`). Use OS full-disk encryption (BitLocker or FileVault).

@@ -139,6 +139,13 @@ impl TextSearch {
         Ok(())
     }
 
+    /// Drops what was added or deleted since the last commit.
+    pub fn rollback(&self) -> Result<()> {
+        let mut writer = self.writer.lock();
+        writer.rollback().context("Tantivy rollback failed")?;
+        Ok(())
+    }
+
     pub fn search(&self, query: &str, k: usize) -> Result<Vec<(String, f32)>> {
         self.search_filtered(query, k, None)
     }

@@ -1733,6 +1733,9 @@ pub struct RAGEngine {
     /// Tests: the next [`Self::commit_file`] fails before it stores anything.
     #[cfg(test)]
     fail_next_store: std::sync::atomic::AtomicBool,
+    /// Tests: the next keyword-index write of a commit fails (after LanceDB took the chunks).
+    #[cfg(test)]
+    fail_next_keyword_index: std::sync::atomic::AtomicBool,
     /// Tests: removing replaced chunks fails while set.
     #[cfg(test)]
     fail_replaced_removal: std::sync::atomic::AtomicBool,
@@ -1822,6 +1825,8 @@ impl RAGEngine {
             fail_text_removal: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_store: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_keyword_index: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_replaced_removal: std::sync::atomic::AtomicBool::new(false),
         };
@@ -1948,11 +1953,33 @@ impl RAGEngine {
         if self.config.embedding.compute == preference {
             return Ok(false);
         }
+        // The cards are tried again: a card that failed under the old
+        // setting gets another chance.
+        crate::compute::calibration::forget(&self.config.data_dir.join(SEARCH_SPEED_FILE));
+        let previous = self.config.embedding.compute;
         self.config.embedding.compute = preference;
         if self.embedder_e5 {
-            self.attach_search_models(SearchModels::load(&self.config)?)?;
+            // Only the embedder: the reranker and OCR do not depend on it.
+            match E5Config::auto_detect(&self.config.embedding.model_dir) {
+                Some(config) => self.set_embedder_loader(config),
+                None => {
+                    self.config.embedding.compute = previous;
+                    return Err(SearchModelsMissing.into());
+                }
+            }
         }
         Ok(true)
+    }
+
+    /// The E5 model of `config` loads on first use, on this engine's compute
+    /// setting, reporting to its status and calibration file.
+    fn set_embedder_loader(&mut self, mut config: E5Config) {
+        config.compute = self.config.embedding.compute;
+        config.status = Some(self.compute_status.clone());
+        config.calibration_file = Some(self.config.data_dir.join(SEARCH_SPEED_FILE));
+        self.embedder
+            .set_loader(move || E5Embeddings::new(config.clone()));
+        self.embedder_e5 = true;
     }
 
     /// Attach models loaded with [`SearchModels::load`]. Fails when the
@@ -1966,13 +1993,8 @@ impl RAGEngine {
             );
         }
         self.embeddings = Some(match models.embeddings {
-            EmbedderSource::E5(mut config) => {
-                config.compute = self.config.embedding.compute;
-                config.status = Some(self.compute_status.clone());
-                config.calibration_file = Some(self.config.data_dir.join(SEARCH_SPEED_FILE));
-                self.embedder
-                    .set_loader(move || E5Embeddings::new(config.clone()));
-                self.embedder_e5 = true;
+            EmbedderSource::E5(config) => {
+                self.set_embedder_loader(config);
                 Arc::new(LazyEmbeddings {
                     model: self.embedder.clone(),
                     dimension,
@@ -2110,7 +2132,8 @@ impl RAGEngine {
                 file.source
             );
         }
-        let ids = match self.store_document(file.document).await {
+        let before: std::collections::HashSet<String> = previous.iter().cloned().collect();
+        let ids = match self.store_document(&file.document, &before).await {
             Ok(ids) => ids,
             Err(e) => {
                 // Nothing was stored: the previous chunks are the file's still.
@@ -2164,10 +2187,10 @@ impl RAGEngine {
     /// their replacements written down in one record, their new chunks
     /// stored in one write to LanceDB and one keyword-index commit, and the
     /// replaced chunks removed in one more. A file is stored only when the
-    /// whole write is. When the lookup or the record fails, each file is
-    /// committed on its own instead; when the write itself fails, nothing
-    /// was stored and every file fails with its error, keeping its previous
-    /// chunks. Results are in input order.
+    /// whole write is. When the lookup, the record or the write fails, each
+    /// file is committed on its own instead, so a file the store rejects
+    /// fails alone. A write that LanceDB took and the keyword index did not is
+    /// undone ([`Self::write_chunks`]). Results are in input order.
     pub async fn commit_files(&mut self, files: Vec<PreparedFile>) -> Vec<Result<Vec<Uuid>>> {
         if files.len() < 2 {
             let mut results = Vec::with_capacity(files.len());
@@ -2218,10 +2241,24 @@ impl RAGEngine {
             return self.commit_each(files).await;
         }
         let replaced_sources: Vec<String> = replacing.into_iter().map(|(s, _)| s).collect();
-        let mut documents = Vec::with_capacity(files.len());
+        let before: std::collections::HashSet<String> =
+            previous.iter().flatten().cloned().collect();
+        let written = {
+            let documents: Vec<&PreparedDocument> = files.iter().map(|f| &f.document).collect();
+            self.store_documents(&documents, &before).await
+        };
+        let stored = match written {
+            Ok(stored) => stored,
+            Err(e) => {
+                // Nothing was stored. One file the store rejects must not fail
+                // the others: each is committed on its own.
+                tracing::warn!(error = %format!("{e:#}"), files = files.len(), "storing files together failed; committing each on its own");
+                self.end_replacements(&replaced_sources);
+                return self.commit_each(files).await;
+            }
+        };
         let mut rest = Vec::with_capacity(files.len());
         for file in files {
-            documents.push(file.document);
             rest.push((
                 file.path,
                 file.source,
@@ -2231,18 +2268,6 @@ impl RAGEngine {
                 file.embed_ms,
             ));
         }
-        let stored = match self.store_documents(documents).await {
-            Ok(stored) => stored,
-            Err(e) => {
-                // Nothing was stored: the previous chunks are the files' still.
-                self.end_replacements(&replaced_sources);
-                let error = format!("{e:#}");
-                return rest
-                    .iter()
-                    .map(|_| Err(anyhow::anyhow!("storing the chunks failed: {error}")))
-                    .collect();
-            }
-        };
         let mut obsolete = Vec::new();
         for (ids, previous) in stored.iter().zip(previous) {
             let kept: std::collections::HashSet<String> = ids.iter().map(Uuid::to_string).collect();
@@ -2773,7 +2798,11 @@ impl RAGEngine {
     /// Stores several prepared documents with one LanceDB write and one
     /// keyword-index commit (tests can make it fail). The ids of each
     /// document's chunks, in input order.
-    async fn store_documents(&mut self, prepared: Vec<PreparedDocument>) -> Result<Vec<Vec<Uuid>>> {
+    async fn store_documents(
+        &mut self,
+        prepared: &[&PreparedDocument],
+        previous: &std::collections::HashSet<String>,
+    ) -> Result<Vec<Vec<Uuid>>> {
         #[cfg(test)]
         if self
             .fail_next_store
@@ -2785,22 +2814,73 @@ impl RAGEngine {
         let mut fts_batch = Vec::new();
         let mut ids = Vec::with_capacity(prepared.len());
         for document in prepared {
-            records.extend(document.records);
-            fts_batch.extend(document.fts_batch);
-            ids.push(document.chunk_ids);
+            records.extend(document.records.iter().cloned());
+            fts_batch.extend(document.fts_batch.iter().cloned());
+            ids.push(document.chunk_ids.clone());
         }
         if records.is_empty() {
             return Ok(ids);
         }
         let chunks = records.len();
+        let fresh: Vec<String> = ids
+            .iter()
+            .flatten()
+            .map(Uuid::to_string)
+            .filter(|id| !previous.contains(id))
+            .collect();
+        self.write_chunks(records, &fts_batch, &fresh).await?;
+        tracing::info!(chunks, documents = ids.len(), "Ingested documents");
+        Ok(ids)
+    }
+
+    /// Writes `records` to LanceDB, then their keyword entries. When the
+    /// keyword index fails after LanceDB took the records, the keyword
+    /// changes are rolled back and the records of `fresh` (chunks that did
+    /// not exist before) are removed from LanceDB again: nothing stays half
+    /// stored, so the file keeps its previous chunks and no copy is left.
+    async fn write_chunks(
+        &mut self,
+        records: Vec<crate::types::ChunkRecord>,
+        fts_batch: &[(String, String, String, String)],
+        fresh: &[String],
+    ) -> Result<()> {
         self.store
             .upsert_chunks(records)
             .await
             .context("Failed to store chunks in LanceDB")?;
-        self.text_search.index_chunks_batch(&fts_batch)?;
-        self.text_search.commit()?;
-        tracing::info!(chunks, documents = ids.len(), "Ingested documents");
-        Ok(ids)
+        if let Err(e) = self.index_keywords(fts_batch) {
+            if let Err(rollback) = self.text_search.rollback() {
+                tracing::warn!(error = %format!("{rollback:#}"), "keyword index changes not rolled back");
+            }
+            for batch in fresh.chunks(500) {
+                let quoted: Vec<String> = batch
+                    .iter()
+                    .map(|id| format!("'{}'", id.replace('\x27', "''")))
+                    .collect();
+                if let Err(undo) = self
+                    .store
+                    .delete_where(&format!("id IN ({})", quoted.join(", ")))
+                    .await
+                {
+                    tracing::warn!(error = %format!("{undo:#}"), "chunks written before the keyword index failed were not removed");
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Adds keyword entries and commits them (tests can make it fail).
+    fn index_keywords(&mut self, fts_batch: &[(String, String, String, String)]) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_keyword_index
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("the keyword index failed (injected)");
+        }
+        self.text_search.index_chunks_batch(fts_batch)?;
+        self.text_search.commit()
     }
 
     /// The ids of the chunks stored under each of `sources`, in one query.
@@ -2861,15 +2941,13 @@ impl RAGEngine {
     }
 
     /// [`Self::store_prepared`] for a commit (tests can make it fail).
-    async fn store_document(&mut self, prepared: PreparedDocument) -> Result<Vec<Uuid>> {
-        #[cfg(test)]
-        if self
-            .fail_next_store
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            anyhow::bail!("storing the chunks failed (injected)");
-        }
-        self.store_prepared(prepared).await
+    async fn store_document(
+        &mut self,
+        prepared: &PreparedDocument,
+        previous: &std::collections::HashSet<String>,
+    ) -> Result<Vec<Uuid>> {
+        let mut ids = self.store_documents(&[prepared], previous).await?;
+        Ok(ids.pop().unwrap_or_default())
     }
 
     /// Write prepared records to LanceDB and Tantivy.
@@ -6315,6 +6393,94 @@ Language models trained on long documents reach lower perplexity.
         assert_eq!(old_ids, new_ids);
         assert!(engine.stale_sources().await.unwrap().is_empty());
         assert!(!engine.upgrade_in_place("no such source").await.unwrap());
+    }
+
+    /// A batch whose write fails is committed file by file, so one file the
+    /// store rejects fails alone; a write LanceDB took and the keyword index
+    /// did not is undone, leaving neither half-stored chunks nor copies.
+    #[tokio::test]
+    async fn a_failed_batch_write_fails_only_the_file_that_cannot_be_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = test_engine(dir.path()).await;
+        let paths: Vec<std::path::PathBuf> = ["lease.md", "parking.md", "boiler.md"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        std::fs::write(&paths[0], LEASE).unwrap();
+        std::fs::write(
+            &paths[1],
+            "# Parking\n\nVisitors park on the street. Residents park in the garage below the courtyard.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &paths[2],
+            "# Boiler\n\nThe boiler is serviced every October and is eleven years old.\n",
+        )
+        .unwrap();
+        let stored_ids =
+            |chunks: Vec<crate::storage::SearchHit>| -> std::collections::BTreeSet<String> {
+                chunks.into_iter().map(|c| c.id).collect()
+            };
+        let prepare_all = |engine: &RAGEngine| -> Vec<PreparedFile> {
+            let preparer = engine.file_preparer().unwrap();
+            paths
+                .iter()
+                .map(|p| preparer.prepare(p, HashMap::new()).unwrap())
+                .collect()
+        };
+        let first: Vec<Vec<Uuid>> = engine
+            .commit_files(prepare_all(&engine))
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // The keyword index fails once, for the whole batch: LanceDB's write
+        // is undone, each file is committed again on its own, and nothing is
+        // stored twice.
+        engine
+            .fail_next_keyword_index
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second: Vec<Vec<Uuid>> = engine
+            .commit_files(prepare_all(&engine))
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+        let expected: std::collections::BTreeSet<String> =
+            second.iter().flatten().map(Uuid::to_string).collect();
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            expected
+        );
+        assert_eq!(engine.text_search.count().unwrap(), expected.len());
+
+        // The batch fails, then the first file's own write fails in the
+        // keyword index: that file fails alone and keeps its chunks.
+        engine
+            .fail_next_store
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        engine
+            .fail_next_keyword_index
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let third = engine.commit_files(prepare_all(&engine)).await;
+        assert!(third[0].is_err(), "the first file fails");
+        assert!(
+            third[1].is_ok() && third[2].is_ok(),
+            "the others are stored"
+        );
+        let mut expected: std::collections::BTreeSet<String> =
+            second[0].iter().map(Uuid::to_string).collect();
+        for ids in third.into_iter().skip(1) {
+            expected.extend(ids.unwrap().iter().map(Uuid::to_string));
+        }
+        assert_eq!(
+            stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
+            expected
+        );
+        assert_eq!(engine.text_search.count().unwrap(), expected.len());
+        assert!(engine.replaced_chunks().unwrap().is_empty());
+        assert!(!first.is_empty());
     }
 
     /// Files committed together are each stored with their own chunks, a

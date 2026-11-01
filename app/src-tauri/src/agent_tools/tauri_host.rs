@@ -85,6 +85,30 @@ impl HostEffects for TauriEffects {
         crate::workspace_commands::broadcast_change(&self.app, Some(workspace_id));
     }
 
+    fn indexing_paused(&self) -> bool {
+        self.app.state::<IndexingState>().is_paused()
+    }
+
+    fn set_indexing_paused(&self, paused: bool) {
+        crate::indexing_control::set_paused(&self.app, paused);
+    }
+
+    fn cancel_indexing(&self, source_id: Option<&str>) -> usize {
+        let indexing = self.app.state::<IndexingState>();
+        match source_id {
+            Some(id) => indexing.cancel_source(id),
+            None => indexing.cancel(),
+        }
+    }
+
+    async fn system_status(&self) -> serde_json::Value {
+        crate::indexing_control::status_json(&self.app).await
+    }
+
+    fn show_system_status(&self, part: &str) {
+        crate::indexing_control::show(&self.app, part);
+    }
+
     fn settings_changed(&self, settings: &AppSettings) {
         crate::app_settings::broadcast(&self.app, settings);
     }
@@ -101,12 +125,14 @@ impl HostEffects for TauriEffects {
             // Registered while it runs: removing the source waits for it, and
             // a removed source is not indexed again.
             let result = match indexing.begin_run_at(&job.source_id, &job.path) {
-                Some(_run) => {
-                    shodh_rag::indexing::index_single_file(
+                // Paused or cancelled like every other run.
+                Some(run) => {
+                    shodh_rag::indexing::index_single_file_in(
                         &job.path,
                         &job.source_id,
                         &rag,
                         Some(&emitter as &dyn shodh_rag::chat::EventEmitter),
+                        Some(&run),
                     )
                     .await
                 }

@@ -93,6 +93,11 @@ impl ThroughputWatch {
         self.calibrated
     }
 
+    /// Forgets the recent batches.
+    pub fn clear(&mut self) {
+        self.recent.clear();
+    }
+
     /// Records a batch of `tokens` that took `elapsed`. Batches below
     /// [`MIN_WATCHED_TOKENS`] are ignored.
     pub fn record(&mut self, tokens: usize, elapsed: Duration) {

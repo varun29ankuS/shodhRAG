@@ -19,10 +19,14 @@ import type { ConnectionSnapshot } from '../../features/connection/connectionSta
 import { slackApi } from '../../features/connectors/api';
 import { telegramApi } from '../../features/connectors/telegramApi';
 import type { SlackState } from '../../features/connectors/slackModel';
+import { listen } from '@tauri-apps/api/event';
+import { Kbd, IS_MAC } from '../ui/Kbd';
+import { ariaKeyShortcuts, matchesShortcut, withShortcut } from '../../lib/shortcuts';
 import { useSystemStatusContext } from '../../features/status/SystemStatusContext';
 import type { FolderProgress } from '../../features/status/useSystemStatus';
 import {
   cpuNotice,
+  cpuReasonDetail,
   etaText,
   indexingText,
   pagesPerMinuteText,
@@ -52,6 +56,9 @@ const TONE_DOT: Record<Tone, string> = {
 };
 
 const PANEL_GAP = 8;
+
+/** DirectML (and its licence's data collection) is a Windows matter only. */
+const IS_WINDOWS = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform ?? '');
 
 /** A folder being indexed, as the sidebar knows it. */
 export interface StripJob {
@@ -115,16 +122,25 @@ function PartRow({
   name,
   tone,
   state,
+  highlighted = false,
   children,
 }: {
   icon: LucideIcon;
   name: string;
   tone: Tone;
   state: string;
+  /** The assistant just read or changed this part. */
+  highlighted?: boolean;
   children?: React.ReactNode;
 }) {
   return (
-    <li className="px-3.5 py-3 flex flex-col gap-1.5">
+    <li
+      className={cn(
+        'px-3.5 py-3 flex flex-col gap-1.5 transition-colors duration-panel',
+        highlighted && 'bg-shodh-accent-soft',
+      )}
+      aria-current={highlighted ? 'true' : undefined}
+    >
       <div className="flex items-center gap-2">
         <Icon className="w-4 h-4 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span className="text-small font-semibold text-shodh-text">{name}</span>
@@ -153,7 +169,15 @@ function SearchDetails({ status }: { status: SystemStatus }) {
           </>
         )}
         <dt>Measured speed</dt>
-        <dd className="m-0 text-shodh-text-secondary">{pagesPerMinuteText(report.pagesPerMinute)}</dd>
+        <dd className="m-0 text-shodh-text-secondary">
+          {report.pagesPerMinute === null ? 'Not measured' : pagesPerMinuteText(report.pagesPerMinute)}
+        </dd>
+        {cpuReasonDetail(report.cpuReason) && (
+          <>
+            <dt>Error</dt>
+            <dd className="m-0 text-shodh-text-secondary break-words">{cpuReasonDetail(report.cpuReason)}</dd>
+          </>
+        )}
         {report.recentPagesPerMinute !== null && (
           <>
             <dt>Recent speed</dt>
@@ -181,6 +205,7 @@ function SystemStatusPanel({
   onCancel,
   onUseGpu,
   onOpenLibrary,
+  highlight,
 }: {
   status: SystemStatus | null;
   jobs: readonly StripJob[];
@@ -189,6 +214,8 @@ function SystemStatusPanel({
   onCancel: (sourceId?: string) => void;
   onUseGpu: (useGpu: boolean) => void;
   onOpenLibrary: () => void;
+  /** The part the assistant just read or changed. */
+  highlight: string | null;
 }) {
   const [connection, setConnection] = useState<ConnectionSnapshot | null>(null);
   const [slack, setSlack] = useState<SlackState | null>(null);
@@ -222,6 +249,7 @@ function SystemStatusPanel({
   const notice = cpuNotice(status);
   const pill = pillView(connection);
   const paused = status?.indexingPaused ?? false;
+  const running = Math.max(status?.running.length ?? 0, jobs.length);
   const toggleId = useId();
 
   return (
@@ -240,7 +268,7 @@ function SystemStatusPanel({
         </div>
       )}
       <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle max-h-[60vh] overflow-y-auto scrollbar-thin" aria-live="polite">
-        <PartRow icon={Gauge} name="Search" tone={search.tone} state={search.sentence}>
+        <PartRow icon={Gauge} name="Search" tone={search.tone} state={search.sentence} highlighted={highlight === 'search'}>
           {status && <SearchDetails status={status} />}
           {status?.searchInstalled && (
             <label htmlFor={toggleId} className="flex items-center gap-2 text-caption text-shodh-text-secondary cursor-pointer w-fit">
@@ -253,6 +281,12 @@ function SystemStatusPanel({
               />
               Use the graphics card for search
             </label>
+          )}
+          {status?.searchInstalled && IS_WINDOWS && (
+            <p className="m-0 text-caption text-shodh-text-muted">
+              On Windows this uses Microsoft&rsquo;s DirectML. Its licence says it may send information about its use
+              to Microsoft, and not all of that can be turned off. Turn this off to keep search fully local.
+            </p>
           )}
         </PartRow>
         <PartRow
@@ -286,8 +320,9 @@ function SystemStatusPanel({
         <PartRow
           icon={ListOrdered}
           name="Indexing"
-          tone={paused ? 'warn' : jobs.length > 0 ? 'good' : 'idle'}
-          state={indexingText(status, jobs.length) || 'Checking'}
+          tone={paused ? 'warn' : running > 0 ? 'good' : 'idle'}
+          state={indexingText(status, running) || 'Checking'}
+          highlighted={highlight === 'indexing'}
         >
           {jobs.map(job => (
             <div key={job.id} className="flex items-center gap-2">
@@ -305,9 +340,15 @@ function SystemStatusPanel({
             </div>
           ))}
           <div className="flex flex-wrap gap-1.5 pt-0.5">
-            <button type="button" className={SMALL_BUTTON} onClick={() => onPause(!paused)}>
+            <button
+              type="button"
+              className={SMALL_BUTTON}
+              onClick={() => onPause(!paused)}
+              aria-keyshortcuts={ariaKeyShortcuts('toggleIndexingPause', IS_MAC)}
+            >
               {paused ? <Play className="w-3.5 h-3.5" aria-hidden="true" /> : <Pause className="w-3.5 h-3.5" aria-hidden="true" />}
               {paused ? 'Resume indexing' : 'Pause indexing'}
+              <Kbd shortcut="toggleIndexingPause" className="ml-1" />
             </button>
             <button type="button" className={SMALL_BUTTON} onClick={onOpenLibrary}>
               <ListOrdered className="w-3.5 h-3.5" aria-hidden="true" />
@@ -348,11 +389,52 @@ export function SystemStatusStrip({
   const panelId = useId();
   const headingId = useId();
 
+  const [highlight, setHighlight] = useState<string | null>(null);
   const status = system?.status ?? null;
   const refresh = system?.refresh;
+  const setPausedTo = system?.setPaused;
   const progress = system?.progress ?? {};
   const search = searchSummary(status);
   const paused = status?.indexingPaused ?? false;
+
+  // The assistant read or changed a part: the panel opens on it.
+  useEffect(() => {
+    const unlisten = listen<{ part?: string }>('show-system-status', event => {
+      setHighlight(typeof event.payload?.part === 'string' ? event.payload.part : null);
+      setOpen(true);
+    });
+    return () => {
+      unlisten.then(fn => fn()).catch(() => undefined);
+    };
+  }, []);
+
+  // The registry's shortcuts: open the panel, pause or resume indexing.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (matchesShortcut(e, 'openSystemStatus')) {
+        e.preventDefault();
+        setHighlight(null);
+        setOpen(o => !o);
+      } else if (matchesShortcut(e, 'toggleIndexingPause') && setPausedTo) {
+        e.preventDefault();
+        setPausedTo(!paused).catch(error =>
+          notify.error(paused ? 'Could not resume indexing' : 'Could not pause indexing', {
+            description: errorText(error),
+          }),
+        );
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paused, setPausedTo]);
+
+  // The highlight fades after a few seconds.
+  useEffect(() => {
+    if (!highlight) return;
+    const timer = window.setTimeout(() => setHighlight(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [highlight]);
 
   // Read again when opened; closed by a click outside.
   useEffect(() => {
@@ -408,7 +490,8 @@ export function SystemStatusStrip({
   const job = jobs[0] ?? null;
   const jobProgress = job ? progress[job.id] : undefined;
   const percent = job ? Math.max(0, Math.min(100, Math.round(job.progress ?? 0))) : 0;
-  const stripLabel = `System status. Search: ${search.sentence}${job ? ` ${indexingText(status, jobs.length)}.` : ''}`;
+  const running = Math.max(status?.running.length ?? 0, jobs.length);
+  const stripLabel = `System status. Search: ${search.sentence}${job || paused ? ` ${indexingText(status, running)}.` : ''}`;
   const SearchIcon = status?.search?.accelerator === 'cpu' ? Cpu : Gauge;
 
   return (
@@ -420,7 +503,8 @@ export function SystemStatusStrip({
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={stripLabel}
-        title={search.sentence}
+        aria-keyshortcuts={ariaKeyShortcuts('openSystemStatus', IS_MAC)}
+        title={withShortcut(search.sentence, 'openSystemStatus', IS_MAC)}
         className={cn(
           collapsed
             ? 'relative w-10 h-10 rounded-[10px] inline-flex items-center justify-center hover:bg-shodh-raised transition-colors duration-micro'
@@ -432,9 +516,40 @@ export function SystemStatusStrip({
         {!collapsed && (
           <span className="text-caption font-medium text-shodh-text-secondary truncate flex-1">Search · {search.short}</span>
         )}
+        {!collapsed && <Kbd shortcut="openSystemStatus" />}
         <ToneDot tone={search.tone} className={collapsed ? 'absolute top-1.5 right-1.5' : undefined} />
       </button>
 
+      {/* A pause is shown even with nothing waiting: it is kept across restarts. */}
+      {paused && !job && !collapsed && (
+        <div className="flex items-center gap-1 px-1">
+          <span className="min-w-0 flex-1 flex items-center gap-1.5 text-caption font-semibold text-shodh-text">
+            <Pause className="w-3.5 h-3.5 shrink-0 text-shodh-warning" aria-hidden="true" />
+            Indexing paused
+          </span>
+          <button
+            type="button"
+            className={ICON_BUTTON}
+            onClick={() => onPause(false)}
+            aria-label="Resume indexing"
+            aria-keyshortcuts={ariaKeyShortcuts('toggleIndexingPause', IS_MAC)}
+            title={withShortcut('Resume indexing', 'toggleIndexingPause', IS_MAC)}
+          >
+            <Play className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {paused && collapsed && (
+        <button
+          type="button"
+          className={ICON_BUTTON}
+          onClick={() => onPause(false)}
+          aria-label="Indexing paused. Resume indexing"
+          title={withShortcut('Indexing paused. Resume indexing', 'toggleIndexingPause', IS_MAC)}
+        >
+          <Pause className="w-3.5 h-3.5 text-shodh-warning" aria-hidden="true" />
+        </button>
+      )}
       {job && !collapsed && (
         <div className="flex flex-col gap-1 px-1">
           <div className="flex items-center gap-1">
@@ -447,7 +562,7 @@ export function SystemStatusStrip({
               <span className="text-caption font-semibold text-shodh-text truncate">
                 {paused ? 'Paused: ' : 'Indexing '}
                 {job.name}
-                {jobs.length > 1 ? ` and ${countOf(jobs.length - 1, 'more folder')}` : ''}
+                {jobs.length > 1 ? ` and ${countOf(jobs.length - 1, 'more', 'more')}` : ''}
               </span>
               <span className="text-caption text-shodh-text-faint tabular-nums truncate">{jobDetail(job, jobProgress)}</span>
             </button>
@@ -456,7 +571,8 @@ export function SystemStatusStrip({
               className={ICON_BUTTON}
               onClick={() => onPause(!paused)}
               aria-label={paused ? 'Resume indexing' : 'Pause indexing'}
-              title={paused ? 'Resume indexing' : 'Pause indexing'}
+              aria-keyshortcuts={ariaKeyShortcuts('toggleIndexingPause', IS_MAC)}
+              title={withShortcut(paused ? 'Resume indexing' : 'Pause indexing', 'toggleIndexingPause', IS_MAC)}
             >
               {paused ? <Play className="w-3.5 h-3.5" aria-hidden="true" /> : <Pause className="w-3.5 h-3.5" aria-hidden="true" />}
             </button>
@@ -514,6 +630,7 @@ export function SystemStatusStrip({
             onPause={onPause}
             onCancel={onCancel}
             onUseGpu={onUseGpu}
+            highlight={highlight}
             onOpenLibrary={() => {
               close(false);
               onOpenLibrary();

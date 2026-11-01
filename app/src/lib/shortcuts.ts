@@ -31,7 +31,9 @@ export type ShortcutId =
   | 'interrupt'
   | 'nextMatch'
   | 'prevMatch'
-  | 'close';
+  | 'close'
+  | 'openSystemStatus'
+  | 'toggleIndexingPause';
 
 export interface Shortcut {
   /** What it does, for lists of shortcuts. */
@@ -132,6 +134,8 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   nextMatch: plain('Next match', 'Enter', ENTER, ENTER_CODES),
   prevMatch: plain('Previous match', 'Enter', ENTER, ENTER_CODES, true),
   close: plain('Close', 'Esc', ['Escape'], ['Escape']),
+  openSystemStatus: letter('System status', 's', { shift: true, shownIn: ['components/shell/SystemStatusStrip.tsx'] }),
+  toggleIndexingPause: letter('Pause or resume indexing', 'p', { shift: true, shownIn: ['components/shell/SystemStatusStrip.tsx'] }),
 };
 
 /** Whether this computer is a Mac (⌘ instead of Ctrl). */

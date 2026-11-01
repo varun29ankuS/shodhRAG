@@ -24,3 +24,21 @@ Copyright 2025 Anthropic
 - crates/shodh-rag/src/harness/run_command/seatbelt.rs follows the read-rule
   layering (allow, deny, re-allow, deny again) and the directory metadata
   allowance for realpath of src/sandbox/macos-sandbox-utils.ts.
+
+Third-party components distributed with the app (not under Apache-2.0)
+
+ONNX Runtime
+https://github.com/microsoft/onnxruntime
+Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+Linked statically into the app, from the prebuilt libraries of the ort-sys
+crate (ort.pyke.io).
+
+Microsoft DirectX Machine Learning (DirectML), DirectML.dll (Windows only)
+https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4/License
+Copyright (c) Microsoft Corporation. Microsoft proprietary software,
+distributed with the Windows installer under the Microsoft Software License
+Terms for DirectML (section 1(a) permits distributing it in applications
+that run on Windows), not under Apache-2.0. Its terms (section 2(a)) say it
+may collect information about you and your use of the software and send it
+to Microsoft, and that not all of this can be turned off. Shodh uses it only
+while "Use the graphics card for search" is on.

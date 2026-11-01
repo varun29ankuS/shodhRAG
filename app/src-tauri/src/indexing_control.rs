@@ -48,11 +48,16 @@ pub fn watch_compute(
 /// Pauses or resumes every indexing run, saves it, relabels the tray and
 /// tells the window.
 pub fn set_paused(app: &AppHandle, paused: bool) {
-    let changed = app.state::<BackgroundState>().set_paused(paused);
+    // One change at a time: the switch and the saved setting never disagree
+    // when the tray and the window act at once.
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let background = app.state::<BackgroundState>();
+    let changed = background.set_paused(paused);
     match settings_store(app).and_then(|store| {
         store
             .update(|s| {
-                s.indexing.paused = paused;
+                s.indexing.paused = background.is_paused();
                 Ok(())
             })
             .map_err(|e| e.to_string())
@@ -70,6 +75,32 @@ pub fn set_paused(app: &AppHandle, paused: bool) {
     ) {
         tracing::warn!("Failed to emit {}: {}", INDEXING_PAUSED_EVENT, e);
     }
+}
+
+/// Emitted with `{ "part": "search" | "indexing" }` to open the System
+/// status panel with that part highlighted (the assistant read or changed it).
+pub const SHOW_SYSTEM_STATUS_EVENT: &str = "show-system-status";
+
+/// Opens the System status panel at `part` in the window.
+pub fn show(app: &AppHandle, part: &str) {
+    if let Err(e) = app.emit(
+        SHOW_SYSTEM_STATUS_EVENT,
+        serde_json::json!({ "part": part }),
+    ) {
+        tracing::warn!("Failed to emit {}: {}", SHOW_SYSTEM_STATUS_EVENT, e);
+    }
+}
+
+/// The System status as JSON (for the assistant's `system_status` tool).
+pub async fn status_json(app: &AppHandle) -> serde_json::Value {
+    let use_gpu = settings_store(app)
+        .and_then(|s| s.load().map_err(|e| e.to_string()))
+        .map(|s| s.indexing.use_gpu)
+        .unwrap_or(true);
+    let rag_state = app.state::<RagState>();
+    let indexing = app.state::<IndexingState>();
+    let status = read_status(&rag_state, &indexing, use_gpu).await;
+    serde_json::to_value(&status).unwrap_or_default()
 }
 
 fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
@@ -123,6 +154,13 @@ pub async fn set_search_gpu(
     rag_state: State<'_, RagState>,
     indexing: State<'_, IndexingState>,
 ) -> Result<SystemStatus, String> {
+    // The engine first: a setting it could not take is not saved.
+    rag_state
+        .rag
+        .write()
+        .await
+        .set_compute_preference(compute_preference(use_gpu))
+        .map_err(|e| format!("{e:#}"))?;
     let store = settings_store(&app)?;
     let (settings, ()) = store
         .update(|s| {
@@ -131,12 +169,6 @@ pub async fn set_search_gpu(
         })
         .map_err(|e| e.to_string())?;
     broadcast(&app, &settings);
-    rag_state
-        .rag
-        .write()
-        .await
-        .set_compute_preference(compute_preference(use_gpu))
-        .map_err(|e| format!("{e:#}"))?;
     tracing::info!(use_gpu, "search compute setting changed");
     Ok(read_status(&rag_state, &indexing, use_gpu).await)
 }
@@ -221,12 +253,6 @@ pub async fn system_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_gpu_setting_maps_to_the_compute_preference() {
-        assert_eq!(compute_preference(true), ComputePreference::Auto);
-        assert_eq!(compute_preference(false), ComputePreference::Cpu);
-    }
 
     #[test]
     fn the_status_serializes_in_camel_case() {

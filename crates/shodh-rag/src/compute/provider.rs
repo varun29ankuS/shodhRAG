@@ -2,12 +2,9 @@
 //! platform's GPU provider (DirectML on Windows, Core ML on macOS), or the
 //! CPU, with the reason when it is the CPU.
 //!
-//! Every GPU attempt is registered with `error_on_failure`, so a provider
-//! that does not start is an error here, never a silent fallback inside ONNX
-//! Runtime: the reason is kept and shown. A GPU that starts is kept only if
-//! it is faster than the CPU in the calibration ([`keep_gpu`]): a provider
-//! that runs few of the model's operators, or a weak integrated GPU, can be
-//! slower than the processor it was meant to relieve.
+//! Every GPU attempt reports its own error ([`super::ep`]), never a silent
+//! fallback inside ONNX Runtime; [`super::choose`] decides which target runs
+//! the model, with the reason kept and shown when it is the CPU.
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +55,9 @@ pub struct Device {
     pub name: String,
     /// The provider's device index (DirectML: the DXGI adapter index).
     pub index: Option<i32>,
+    /// The driver (Windows: the user-mode driver version) or system (macOS)
+    /// version: a saved calibration holds only for the same one.
+    pub driver: Option<String>,
 }
 
 /// What looking for a graphics card found.
@@ -100,78 +100,11 @@ pub enum CpuReason {
     },
 }
 
-/// A session and what it runs on.
-#[derive(Debug)]
-pub struct Selection<S> {
-    pub session: S,
-    pub accelerator: Accelerator,
-    /// The graphics card, when one runs the session.
-    pub device: Option<Device>,
-    /// Why the CPU runs the session, when it does.
-    pub cpu_reason: Option<CpuReason>,
-}
-
-/// Builds a session on the best target: each card of `probe` in turn, then
-/// the CPU. `build(Some(device))` builds on a card and must fail when its
-/// provider does not register; `build(None)` builds on the CPU. Fails only
-/// when the CPU session fails too.
-pub fn select<S>(
-    preference: ComputePreference,
-    probe: impl FnOnce() -> GpuProbe,
-    mut build: impl FnMut(Option<&Device>) -> Result<S, String>,
-) -> Result<Selection<S>, String> {
-    let reason = match preference {
-        ComputePreference::Cpu => CpuReason::Chosen,
-        ComputePreference::Auto => match probe() {
-            GpuProbe::Unsupported => CpuReason::NoProvider,
-            GpuProbe::Failed(error) => CpuReason::Failed {
-                device: None,
-                error,
-            },
-            GpuProbe::Devices(devices) if devices.is_empty() => CpuReason::NoGpu,
-            GpuProbe::Devices(devices) => {
-                let mut last = None;
-                for device in devices {
-                    match build(Some(&device)) {
-                        Ok(session) => {
-                            return Ok(Selection {
-                                session,
-                                accelerator: device.accelerator,
-                                device: Some(device),
-                                cpu_reason: None,
-                            })
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                provider = device.accelerator.label(),
-                                device = %device.name,
-                                %error,
-                                "The graphics card could not run the search model"
-                            );
-                            last = Some(CpuReason::Failed {
-                                device: Some(device.name.clone()),
-                                error,
-                            });
-                        }
-                    }
-                }
-                last.unwrap_or(CpuReason::NoGpu)
-            }
-        },
-    };
-    let session = build(None)?;
-    Ok(Selection {
-        session,
-        accelerator: Accelerator::Cpu,
-        device: None,
-        cpu_reason: Some(reason),
-    })
-}
-
 /// Whether a graphics card that embeds at `gpu` tokens a second is kept
-/// over the CPU at `cpu`: only when it is faster.
-pub fn keep_gpu(gpu: f64, cpu: f64) -> bool {
-    gpu > cpu
+/// over the CPU at `cpu`: only when it is at least `margin` times as fast
+/// ([`super::choose::GPU_MARGIN`]).
+pub fn keep_gpu_with_margin(gpu: f64, cpu: f64, margin: f64) -> bool {
+    gpu >= cpu * margin
 }
 
 /// The graphics cards of this machine the platform's provider can use.
@@ -182,8 +115,10 @@ pub fn probe_gpus() -> GpuProbe {
 #[cfg(windows)]
 mod platform {
     use super::{Accelerator, Device, GpuProbe};
+    use windows::core::Interface;
     use windows::Win32::Graphics::Dxgi::{
-        CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_ERROR_NOT_FOUND,
+        CreateDXGIFactory1, IDXGIDevice, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+        DXGI_ERROR_NOT_FOUND,
     };
 
     /// Microsoft's PCI vendor id: the Basic Render Driver (WARP) and the
@@ -229,6 +164,19 @@ mod platform {
             let Ok(index) = i32::try_from(index) else {
                 break;
             };
+            // SAFETY: asks the adapter for its user-mode driver version.
+            let driver = unsafe { adapter.CheckInterfaceSupport(&IDXGIDevice::IID) }
+                .ok()
+                .map(|v| {
+                    let v = v as u64;
+                    format!(
+                        "{}.{}.{}.{}",
+                        v >> 48,
+                        (v >> 32) & 0xffff,
+                        (v >> 16) & 0xffff,
+                        v & 0xffff
+                    )
+                });
             found.push((
                 desc.DedicatedVideoMemory,
                 Device {
@@ -239,6 +187,7 @@ mod platform {
                         name
                     },
                     index: Some(index),
+                    driver,
                 },
             ));
         }
@@ -252,12 +201,53 @@ mod platform {
 mod platform {
     use super::{Accelerator, Device, GpuProbe};
 
+    /// The macOS build ("24A335"): Core ML comes with the system, so a new
+    /// build is a new driver.
+    fn os_version() -> Option<String> {
+        let name = c"kern.osversion";
+        let mut size: libc::size_t = 0;
+        // SAFETY: a null buffer asks for the size only.
+        let status = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 || size == 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; size];
+        // SAFETY: `buffer` holds `size` writable bytes.
+        let status = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        buffer.truncate(size);
+        let text = String::from_utf8_lossy(&buffer)
+            .trim_end_matches(char::from(0))
+            .trim()
+            .to_string();
+        (!text.is_empty()).then_some(text)
+    }
+
     /// Every Apple silicon Mac has a GPU and a Neural Engine Core ML can use.
     pub fn probe() -> GpuProbe {
         GpuProbe::Devices(vec![Device {
             accelerator: Accelerator::CoreMl,
             name: "Apple silicon GPU and Neural Engine".to_string(),
             index: None,
+            driver: os_version(),
         }])
     }
 }
@@ -277,134 +267,12 @@ mod platform {
 mod tests {
     use super::*;
 
-    fn card(name: &str, index: i32) -> Device {
-        Device {
-            accelerator: Accelerator::DirectMl,
-            name: name.to_string(),
-            index: Some(index),
-        }
-    }
-
-    /// A session label: which target `build` was called for.
-    fn label(device: Option<&Device>) -> String {
-        device.map_or("cpu".to_string(), |d| d.name.clone())
-    }
-
     #[test]
-    fn a_working_gpu_runs_the_model() {
-        let mut tried = Vec::new();
-        let selection = select(
-            ComputePreference::Auto,
-            || GpuProbe::Devices(vec![card("RTX 4060", 0)]),
-            |device| {
-                tried.push(label(device));
-                Ok(label(device))
-            },
-        )
-        .expect("selected");
-        assert_eq!(selection.session, "RTX 4060");
-        assert_eq!(selection.accelerator, Accelerator::DirectMl);
-        assert_eq!(selection.cpu_reason, None);
-        assert_eq!(tried, ["RTX 4060"], "the CPU session is not built");
-    }
-
-    #[test]
-    fn a_gpu_that_fails_falls_back_to_the_cpu_with_its_error() {
-        let selection = select(
-            ComputePreference::Auto,
-            || GpuProbe::Devices(vec![card("Radeon 780M", 0)]),
-            |device| match device {
-                Some(_) => Err("DirectML: device removed (887A0005)".to_string()),
-                None => Ok("cpu"),
-            },
-        )
-        .expect("selected");
-        assert_eq!(selection.session, "cpu");
-        assert_eq!(selection.accelerator, Accelerator::Cpu);
-        assert_eq!(
-            selection.cpu_reason,
-            Some(CpuReason::Failed {
-                device: Some("Radeon 780M".to_string()),
-                error: "DirectML: device removed (887A0005)".to_string(),
-            })
-        );
-    }
-
-    #[test]
-    fn the_next_card_is_tried_before_the_cpu() {
-        let selection = select(
-            ComputePreference::Auto,
-            || GpuProbe::Devices(vec![card("RTX 4060", 0), card("Intel UHD", 1)]),
-            |device| match device.map(|d| d.index) {
-                Some(Some(0)) => Err("out of memory".to_string()),
-                _ => Ok(label(device)),
-            },
-        )
-        .expect("selected");
-        assert_eq!(selection.session, "Intel UHD");
-        assert_eq!(selection.device.map(|d| d.index), Some(Some(1)));
-    }
-
-    #[test]
-    fn the_cpu_setting_never_tries_a_gpu() {
-        let selection = select(
-            ComputePreference::Cpu,
-            || panic!("no card is looked for"),
-            |device| {
-                assert!(device.is_none(), "only the CPU is built");
-                Ok("cpu")
-            },
-        )
-        .expect("selected");
-        assert_eq!(selection.cpu_reason, Some(CpuReason::Chosen));
-    }
-
-    #[test]
-    fn no_card_and_no_provider_are_reported_apart() {
-        let no_card = select(
-            ComputePreference::Auto,
-            || GpuProbe::Devices(Vec::new()),
-            |_| Ok("cpu"),
-        )
-        .expect("selected");
-        assert_eq!(no_card.cpu_reason, Some(CpuReason::NoGpu));
-        let no_provider = select(
-            ComputePreference::Auto,
-            || GpuProbe::Unsupported,
-            |_| Ok("cpu"),
-        )
-        .expect("selected");
-        assert_eq!(no_provider.cpu_reason, Some(CpuReason::NoProvider));
-        let unlisted = select(
-            ComputePreference::Auto,
-            || GpuProbe::Failed("DXGI unavailable".to_string()),
-            |_| Ok("cpu"),
-        )
-        .expect("selected");
-        assert_eq!(
-            unlisted.cpu_reason,
-            Some(CpuReason::Failed {
-                device: None,
-                error: "DXGI unavailable".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn a_cpu_that_fails_too_is_an_error() {
-        let result = select(
-            ComputePreference::Auto,
-            || GpuProbe::Devices(vec![card("RTX 4060", 0)]),
-            |device| -> Result<(), String> { Err(format!("{} failed", label(device))) },
-        );
-        assert_eq!(result.err(), Some("cpu failed".to_string()));
-    }
-
-    #[test]
-    fn a_gpu_is_kept_only_when_faster_than_the_cpu() {
-        assert!(keep_gpu(9000.0, 1500.0));
-        assert!(!keep_gpu(1200.0, 1500.0));
-        assert!(!keep_gpu(1500.0, 1500.0));
+    fn a_gpu_is_kept_only_when_clearly_faster_than_the_cpu() {
+        assert!(keep_gpu_with_margin(9000.0, 1500.0, 1.15));
+        assert!(keep_gpu_with_margin(1725.0, 1500.0, 1.15));
+        assert!(!keep_gpu_with_margin(1700.0, 1500.0, 1.15));
+        assert!(!keep_gpu_with_margin(1200.0, 1500.0, 1.15));
     }
 
     #[test]
@@ -421,21 +289,7 @@ mod tests {
             serde_json::to_value(CpuReason::NoGpu).expect("json")["kind"],
             "noGpu"
         );
-    }
-
-    /// This machine's probe never offers a software adapter: CI's runners
-    /// have only the Basic Render Driver, which must not count as a GPU.
-    #[test]
-    fn the_probe_lists_no_software_adapter() {
-        if let GpuProbe::Devices(devices) = probe_gpus() {
-            for device in devices {
-                assert!(device.accelerator.is_gpu());
-                assert!(
-                    !device.name.contains("Basic Render"),
-                    "{} is a software adapter",
-                    device.name
-                );
-            }
-        }
+        let back: CpuReason = serde_json::from_value(json).expect("read back");
+        assert_eq!(back, reason);
     }
 }

@@ -101,7 +101,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
     try {
       await system?.cancel(job.id);
     } catch (error) {
-      notify.error(`Could not cancel indexing `, {
+      notify.error(`Could not cancel indexing ${job.name}`, {
         description: error instanceof Error ? error.message : String(error),
       });
     }
@@ -238,7 +238,7 @@ export function ActivityTray({ jobs, onOpenConversation }: ActivityTrayProps) {
                 <button
                   type="button"
                   onClick={() => void cancelJob(job)}
-                  aria-label={`Cancel indexing `}
+                  aria-label={`Cancel indexing ${job.name}`}
                   title="Cancel"
                   className={cn(
                     'shrink-0 w-7 h-7 inline-flex items-center justify-center rounded-md text-shodh-text-muted hover:bg-shodh-pressed hover:text-shodh-text transition-colors duration-micro',

@@ -586,7 +586,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 29] = [
+pub const AGENT_DENIED: [(&str, &str); 28] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -614,7 +614,6 @@ pub const AGENT_DENIED: [(&str, &str); 29] = [
     ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
     ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
     ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, and how many model calls they may spend; only the user may change that."),
-    ("indexing_paused", "Pausing and resuming indexing is the user's control over their computer's resources."),
     ("use_gpu", "Whether search uses the graphics card is the user's call about their computer."),
 ];
 
@@ -1083,7 +1082,8 @@ mod tests {
         assert!(!reloaded.indexing.use_gpu);
         let json = serde_json::to_value(&reloaded.indexing).unwrap();
         assert_eq!(json["useGpu"], false);
-        assert!(denied_reason("indexing_paused").is_some());
+        // The assistant pauses and resumes with its own tools; the GPU is the user's call.
+        assert!(denied_reason("indexing_paused").is_none());
         assert!(denied_reason("use_gpu").is_some());
     }
 

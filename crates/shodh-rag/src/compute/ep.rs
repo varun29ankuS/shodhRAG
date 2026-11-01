@@ -132,4 +132,22 @@ mod tests {
             "{providers:?}"
         );
     }
+
+    /// Core ML takes the options Shodh appends it with (on Apple silicon;
+    /// no model is needed to register the provider).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn core_ml_registers_with_shodhs_options() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut builder = ort::session::Session::builder().expect("session builder");
+        append_coreml(
+            &mut builder,
+            &[
+                ("ModelFormat", "MLProgram".to_string()),
+                ("MLComputeUnits", "ALL".to_string()),
+                ("ModelCacheDirectory", dir.path().display().to_string()),
+            ],
+        )
+        .expect("Core ML registered");
+    }
 }

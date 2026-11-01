@@ -502,6 +502,8 @@ jobs:
       - name: Check the installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          ORT_DIR: ${{ steps.ort.outputs.extract-dir }}
         run: |
           $ErrorActionPreference = 'Stop'
           $release = 'target/release'
@@ -539,6 +541,17 @@ jobs:
           # imports it, it must be installed next to the app.
           if (($deps -contains 'DirectML.dll') -and -not ($installed -contains 'DirectML.dll')) {
             throw 'The app imports DirectML.dll but the installer does not put it next to the app'
+          }
+          if ($installed -contains 'DirectML.dll') {
+            # The bundled copy is the archive's, for this architecture.
+            $bundled = Get-Item -LiteralPath 'app/src-tauri/directml/DirectML.dll'
+            $archive = Get-Item -LiteralPath (Join-Path $env:ORT_DIR 'DirectML.dll')
+            if ($bundled.VersionInfo.FileVersion -ne $archive.VersionInfo.FileVersion) {
+              throw "DirectML.dll is $($bundled.VersionInfo.FileVersion), not the archive's $($archive.VersionInfo.FileVersion)"
+            }
+            $headers = & $dumpbin.FullName /nologo /headers $bundled.FullName
+            if (-not ($headers -match 'machine \(x64\)')) { throw 'DirectML.dll is not an x64 library' }
+            Write-Host "DirectML.dll $($bundled.VersionInfo.FileVersion), x64, installed next to the app"
           }
           # API sets resolve inside Windows. The Visual C++ runtime may sit in
           # the runner's System32 (Visual Studio is installed) but not on a

@@ -18,6 +18,7 @@
 
 pub mod cache;
 pub mod det;
+pub mod gate;
 pub mod geometry;
 pub mod order;
 pub mod priority;
@@ -418,12 +419,14 @@ pub fn read_each_page(
     path: &Path,
     on_page: &dyn Fn(usize, usize),
     mut read_page: impl FnMut(usize) -> Result<String>,
-) -> OcrPages {
+) -> std::result::Result<OcrPages, gate::OcrInterrupted> {
     let mut read = OcrPages {
         texts: Vec::with_capacity(count),
         ..OcrPages::default()
     };
     for index in 0..count {
+        // Paused: held here; cancelled: the rest is not read.
+        gate::before_page()?;
         on_page(index + 1, count);
         match read_page(index) {
             Ok(text) => read.texts.push(text),
@@ -442,7 +445,7 @@ pub fn read_each_page(
             }
         }
     }
-    read
+    Ok(read)
 }
 
 /// Each page of the PDF in `bytes` rendered at `dpi` and read by `model`,
@@ -461,7 +464,7 @@ pub fn read_pdf(
             .render(index, dpi)
             .and_then(|img| model.read_page(&img))
             .map(|page| page.text())
-    }))
+    })?)
 }
 
 /// The image file at `path` read by `model`.
@@ -504,7 +507,8 @@ mod tests {
                 4 | 9 => bail!("page {} could not be rendered", index + 1),
                 page => Ok(format!("text of page {page}")),
             },
-        );
+        )
+        .expect("no gate");
         assert_eq!(read.failed, [4, 9]);
         assert_eq!(
             read.first_error.as_deref(),

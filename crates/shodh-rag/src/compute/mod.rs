@@ -4,6 +4,8 @@
 //! the app shows about it ([`status`]).
 
 pub mod calibration;
+pub mod choose;
+pub mod contention;
 pub mod cores;
 pub mod ep;
 pub mod provider;

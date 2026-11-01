@@ -29,11 +29,12 @@ export interface SearchReport {
   cpuReason: CpuReason | null;
   threads: number | null;
   modelFile: string;
-  pagesPerMinute: number;
-  speed: SpeedClass;
+  /** `null`: the speed could not be measured. */
+  pagesPerMinute: number | null;
+  speed: SpeedClass | null;
   recentPagesPerMinute: number | null;
   degraded: boolean;
-  calibratedAt: string;
+  calibratedAt: string | null;
   loaded: boolean;
 }
 
@@ -98,7 +99,7 @@ export function readSearchReport(value: unknown): SearchReport | null {
   const accelerator = oneOf(['directml', 'coreml', 'cpu'] as const, value.accelerator);
   const speed = oneOf(['fast', 'ok', 'slow'] as const, value.speed);
   const pagesPerMinute = count(value.pagesPerMinute);
-  if (!accelerator || !speed || pagesPerMinute === null) return null;
+  if (!accelerator) return null;
   return {
     accelerator,
     device: text(value.device),
@@ -109,7 +110,7 @@ export function readSearchReport(value: unknown): SearchReport | null {
     speed,
     recentPagesPerMinute: count(value.recentPagesPerMinute),
     degraded: value.degraded === true,
-    calibratedAt: text(value.calibratedAt) ?? '',
+    calibratedAt: text(value.calibratedAt),
     loaded: value.loaded === true,
   };
 }
@@ -157,32 +158,37 @@ export function runsOnText(report: SearchReport): string {
   }
 }
 
-/** Why the CPU runs search, in plain words. */
+/** Why the CPU runs search, in plain words (the technical error is in `cpuReasonDetail`). */
 export function cpuReasonText(reason: CpuReason | null): string {
   if (!reason) return 'No reason was reported.';
   switch (reason.kind) {
     case 'chosen':
-      return 'You chose the processor in the status panel.';
+      return 'You turned off "Use the graphics card for search".';
     case 'noProvider':
       return 'Shodh has no graphics card support on this system.';
     case 'noGpu':
       return 'No graphics card that Shodh can use was found.';
     case 'failed':
       return reason.device
-        ? `${reason.device} could not run the search model: ${reason.error}`
-        : `The graphics cards could not be checked: ${reason.error}`;
+        ? `${reason.device} could not run the search model.`
+        : 'The graphics cards could not be checked.';
     case 'slowerThanCpu':
       return `${reason.device} ran the search model slower than the processor.`;
   }
+}
+
+/** The technical error behind a failed graphics card, for the panel's details. */
+export function cpuReasonDetail(reason: CpuReason | null): string | null {
+  return reason?.kind === 'failed' ? reason.error : null;
 }
 
 /** What the user can do about search running on the CPU. */
 export function cpuAdvice(reason: CpuReason | null): string {
   switch (reason?.kind) {
     case 'chosen':
-      return 'Turn on "Use the graphics card" to try it again.';
+      return 'Turn on "Use the graphics card for search" to try it again.';
     case 'failed':
-      return 'Update the graphics driver, then restart Shodh.';
+      return 'Update the graphics driver; Shodh tries the card again after a driver or app update.';
     case 'noGpu':
     case 'noProvider':
     case 'slowerThanCpu':
@@ -201,6 +207,14 @@ export interface SearchSummary {
   tone: Tone;
 }
 
+/**
+ * "Slower than usual" is shown only while the model is in memory and
+ * indexing is not paused: an idle or unloaded model is not running slowly.
+ */
+function showsDegraded(status: SystemStatus, report: SearchReport): boolean {
+  return report.degraded && report.loaded && !status.indexingPaused;
+}
+
 export function searchSummary(status: SystemStatus | null): SearchSummary {
   if (!status) return { short: 'Checking', sentence: 'Checking what runs search.', tone: 'idle' };
   if (!status.searchInstalled) {
@@ -215,17 +229,24 @@ export function searchSummary(status: SystemStatus | null): SearchSummary {
     };
   }
   const where = report.accelerator === 'cpu' ? 'CPU' : 'GPU';
-  if (report.degraded) {
+  if (report.pagesPerMinute === null || report.speed === null) {
+    return {
+      short: `${where} · speed not measured`,
+      sentence: `Search runs on ${runsOnText(report)}; its speed could not be measured.`,
+      tone: report.accelerator === 'cpu' ? 'warn' : 'good',
+    };
+  }
+  if (showsDegraded(status, report)) {
     const recent = report.recentPagesPerMinute ?? report.pagesPerMinute;
     return {
       short: `${where} · slower than usual`,
-      sentence: `Search runs on ${runsOnText(report)} but slower than usual: ${pagesPerMinuteText(recent)} instead of ${pagesPerMinuteText(report.pagesPerMinute)}. The computer may be on battery or too warm.`,
+      sentence: `The search model runs on ${runsOnText(report)} but slower than usual: ${pagesPerMinuteText(recent)} instead of ${pagesPerMinuteText(report.pagesPerMinute)}. Other programs may be busy, or the computer may be on battery or too warm.`,
       tone: 'warn',
     };
   }
   return {
     short: `${where} · ${SPEED_WORD[report.speed]}`,
-    sentence: `Search runs on ${runsOnText(report)}, ${SPEED_WORD[report.speed]}: ${pagesPerMinuteText(report.pagesPerMinute)}.`,
+    sentence: `The search model runs on ${runsOnText(report)}, ${SPEED_WORD[report.speed]}: ${pagesPerMinuteText(report.pagesPerMinute)}.`,
     tone: report.speed === 'slow' ? 'bad' : report.accelerator === 'cpu' || report.speed === 'ok' ? 'warn' : 'good',
   };
 }
@@ -233,7 +254,8 @@ export function searchSummary(status: SystemStatus | null): SearchSummary {
 /**
  * The notice shown where indexing happens while search runs on the CPU:
  * what it means, why, and what helps. `null` on a GPU or before the first
- * measurement.
+ * load. The speed is the search model's; reading scans with OCR is slower
+ * still.
  */
 export interface CpuNotice {
   title: string;
@@ -245,23 +267,25 @@ export interface CpuNotice {
 export function cpuNotice(status: SystemStatus | null): CpuNotice | null {
   const report = status?.search;
   if (!report || report.accelerator !== 'cpu') return null;
-  const slow = report.speed !== 'fast';
+  const speed =
+    report.pagesPerMinute === null ? 'speed not measured' : `search model speed ${pagesPerMinuteText(report.pagesPerMinute)}`;
   return {
-    title: slow
-      ? `Search is using the CPU, so indexing will be slow (${pagesPerMinuteText(report.pagesPerMinute)}).`
-      : `Search is using the CPU (${pagesPerMinuteText(report.pagesPerMinute)}).`,
+    title:
+      report.speed === 'slow'
+        ? `Search is using the CPU, so indexing will be slow (${speed}).`
+        : `Search is using the CPU (${speed}).`,
     reason: `Reason: ${cpuReasonText(report.cpuReason)}`,
     advice: cpuAdvice(report.cpuReason),
     tone: report.speed === 'slow' ? 'bad' : 'warn',
   };
 }
 
-/** The indexing line of the status strip. */
-export function indexingText(status: SystemStatus | null, folders: number): string {
+/** The indexing line of the status strip: `items` is the folders and files being indexed. */
+export function indexingText(status: SystemStatus | null, items: number): string {
   if (!status) return '';
-  if (status.indexingPaused) return folders > 0 ? 'Indexing paused' : 'Indexing paused (nothing waiting)';
-  if (folders === 0) return 'Nothing indexing';
-  return folders === 1 ? 'Indexing 1 folder' : `Indexing ${folders} folders`;
+  if (status.indexingPaused) return items > 0 ? 'Indexing paused' : 'Indexing paused (nothing waiting)';
+  if (items === 0) return 'Nothing indexing';
+  return items === 1 ? 'Indexing 1 item' : `Indexing ${items} items`;
 }
 
 /** "about 3 min left" from seconds, or null when unknown. */

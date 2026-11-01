@@ -250,7 +250,7 @@ jobs:
       # the provider selection and the Core ML provider in the linked ONNX
       # Runtime; the same test binary as the OCR tests.
       - name: Compute tests (shodh-rag)
-        run: cargo test --package shodh-rag --lib compute::
+        run: cargo test --package shodh-rag --lib 'compute::'
 
       # Code mode's command runner on macOS (process group, CPU limit, memory
       # watchdog, the sweep of every process a command started), through the

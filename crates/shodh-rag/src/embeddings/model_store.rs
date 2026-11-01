@@ -73,10 +73,10 @@ pub fn search_model_artifacts() -> Vec<ModelArtifact> {
     vec![
         ModelArtifact::new(
             "E5 embedding model",
-            "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_O4.onnx",
-            "f60256a833caee5c75a3903e589116752ee016ca7bc16f9b96e4db09984c5703",
-            554_948_118,
-            "multilingual-e5-base/model_O4.onnx",
+            "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_qint8_avx512_vnni.onnx",
+            "2523551878658b305550d8759443822dbfda9ed9c8012ef2c354ba2c5b9de503",
+            278_686_411,
+            "multilingual-e5-base/model_qint8_avx512_vnni.onnx",
         ),
         ModelArtifact::new(
             "E5 tokenizer",

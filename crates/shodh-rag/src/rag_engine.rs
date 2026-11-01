@@ -6484,8 +6484,8 @@ Language models trained on long documents reach lower perplexity.
     }
 
     /// Files committed together are each stored with their own chunks, a
-    /// second commit replaces them (no copies), a failed write keeps every
-    /// file's previous chunks, and a failed removal is written down for
+    /// second commit replaces them (no copies), a failed batch write is
+    /// committed file by file, and a failed removal is written down for
     /// every file and settled by the next commit.
     #[tokio::test]
     async fn files_committed_together_replace_their_chunks_as_one_file_does() {
@@ -6532,13 +6532,12 @@ Language models trained on long documents reach lower perplexity.
         );
         assert_eq!(engine.document_sources().await.unwrap().len(), 3);
 
-        // The write fails: every file keeps its previous chunks.
+        // The write of the batch fails: each file is committed on its own
+        // instead, and every one is stored, replacing its chunks.
         engine
             .fail_next_store
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let failed = engine.commit_files(prepare_all(&engine)).await;
-        assert_eq!(failed.len(), 3);
-        assert!(failed.iter().all(|r| r.is_err()));
+        let first = ids_of(engine.commit_files(prepare_all(&engine)).await);
         assert_eq!(
             stored_ids(engine.store.list_chunks(None, 100).await.unwrap()),
             first

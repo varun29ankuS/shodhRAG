@@ -20,6 +20,7 @@
 export const VIEW_CACHE_KEYS = {
   slackStatus: 'connectors.slack.status',
   telegramStatus: 'connectors.telegram.status',
+  githubStatus: 'connectors.github.status',
   tasksSnapshot: 'tasks.snapshot',
   auditStats: 'activity.audit.stats',
   auditFirstPage: 'activity.audit.firstPage',

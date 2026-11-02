@@ -22,6 +22,11 @@ import { EMPTY_TELEGRAM_WIZARD, type TelegramWizardState } from './TelegramSetup
 import { FOCUS_RING, Skeleton, StatusPill } from './ui';
 import { useSlackStatus } from './useSlackStatus';
 import { useTelegramStatus } from './useTelegramStatus';
+import { githubPill, githubTileAction, type GitHubTabId } from './githubModel';
+import { GitHubMark } from './GitHubLogo';
+import { GitHubPage } from './GitHubPage';
+import { EMPTY_GITHUB_WIZARD, type GitHubWizardState } from './GitHubSetup';
+import { useGitHubStatus } from './useGitHubStatus';
 
 /** A connector in the gallery: its mark, name, one line, its state and one action. */
 function ConnectorTile({
@@ -109,6 +114,8 @@ function ConnectorTile({
 export default function ConnectorsView() {
   const slack = useSlackStatus();
   const telegram = useTelegramStatus();
+  const github = useGitHubStatus();
+  const [githubWizard, setGithubWizard] = useState<GitHubWizardState>(EMPTY_GITHUB_WIZARD);
   const [telegramWizard, setTelegramWizard] = useState<TelegramWizardState>(EMPTY_TELEGRAM_WIZARD);
   // Read, not taken, during render: the first render may run again before it shows.
   const [page, setPage] = useState<ConnectorPage | null>(() => peekRequestedConnectorPage() ?? lastConnectorPage());
@@ -156,6 +163,7 @@ export default function ConnectorsView() {
 
   const slackTab = (page?.connector === 'slack' ? page.tab : null) as SlackTabId | null;
   const telegramTab = (page?.connector === 'telegram' ? page.tab : null) as TelegramTabId | null;
+  const githubTab = (page?.connector === 'github' ? page.tab : null) as GitHubTabId | null;
 
   return (
     <div ref={rootRef} onKeyDown={onKeyDown} className="h-full overflow-y-auto scrollbar-thin bg-shodh-ground text-shodh-text">
@@ -168,6 +176,16 @@ export default function ConnectorsView() {
             tab={slackTab ?? 'overview'}
             onTab={next => show({ connector: 'slack', tab: next })}
             onBack={back}
+          />
+        ) : page?.connector === 'github' ? (
+          <GitHubPage
+            github={github}
+            wizard={githubWizard}
+            onWizard={setGithubWizard}
+            tab={githubTab ?? 'overview'}
+            onTab={next => show({ connector: 'github', tab: next })}
+            onBack={back}
+            highlight={page.item ?? null}
           />
         ) : page?.connector === 'telegram' ? (
           <TelegramPage
@@ -189,6 +207,20 @@ export default function ConnectorsView() {
             <ul ref={tilesRef} aria-label="Connectors" className="m-0 p-0 list-none grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
               {CONNECTORS.map(info => {
                 const open = () => show({ connector: info.id, tab: null });
+                if (info.id === 'github') {
+                  const status = github.status;
+                  return (
+                    <ConnectorTile
+                      key={info.id}
+                      info={info}
+                      mark={<GitHubMark size="md" />}
+                      pill={status ? githubPill(status, github.now) : null}
+                      action={status ? githubTileAction(status) : 'Open'}
+                      loadError={github.loadError}
+                      onOpen={open}
+                    />
+                  );
+                }
                 if (info.id === 'telegram') {
                   const status = telegram.status;
                   return (

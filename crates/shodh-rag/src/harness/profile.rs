@@ -310,6 +310,7 @@ impl AgentProfile {
         let allowed_tools = CORE_TOOLS
             .iter()
             .chain(app_tools::ALL.iter())
+            .chain(crate::connectors::github::tools::ASK_TOOLS.iter())
             .map(|s| s.to_string())
             .collect();
         Self {
@@ -378,9 +379,16 @@ mod tests {
         let p = AgentProfile::assistant();
         assert_eq!(
             p.allowed_tools.len(),
-            CORE_TOOLS.len() + app_tools::ALL.len()
+            CORE_TOOLS.len()
+                + app_tools::ALL.len()
+                + crate::connectors::github::tools::ASK_TOOLS.len()
         );
         assert!(p.allows("search_documents"));
+        assert!(p.allows("github_comment"));
+        assert!(
+            !p.allows("github_push"),
+            "pushes need a Code session's project"
+        );
         assert!(p.allows("remove_source"));
         assert!(!p.allows("bash"));
         assert!(!p.auto_approve_writes);

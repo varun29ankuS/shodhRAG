@@ -167,6 +167,7 @@ pub fn tool_group(name: &str) -> &'static str {
         | "organize_visual" => "Conversations and visuals",
         "update_plan" | "open_view" | "show_audit" | "audit_query" | "get_settings"
         | "update_setting" => "App",
+        name if name.starts_with("github_") => "GitHub",
         _ => "Other",
     }
 }
@@ -720,7 +721,11 @@ mod tests {
     #[test]
     fn every_built_in_tool_has_a_group() {
         use shodh_rag::harness::profile::{app_tools, CORE_TOOLS};
-        for name in CORE_TOOLS.iter().chain(app_tools::ALL.iter()) {
+        for name in CORE_TOOLS
+            .iter()
+            .chain(app_tools::ALL.iter())
+            .chain(shodh_rag::connectors::github::tools::ASK_TOOLS.iter())
+        {
             assert_ne!(tool_group(name), "Other", "{name} has no settings group");
         }
     }

@@ -150,6 +150,8 @@ pub fn release_everything(app: &AppHandle, reason: &'static str) {
     crate::connectors::slack::shutdown(app);
     // Telegram polling ends (bounded wait).
     crate::connectors::telegram::shutdown(app);
+    // A GitHub sign-in in progress stops polling.
+    crate::connectors::github::shutdown(app);
     // Code-mode commands end with every process they started (on macOS nothing else
     // would end them once Shodh is gone).
     let commands = shodh_rag::harness::run_command::stop_all();

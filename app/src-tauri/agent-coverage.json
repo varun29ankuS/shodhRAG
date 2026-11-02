@@ -274,6 +274,14 @@
     "telegram_set_group": { "excluded": "Allowing a Telegram group decides who outside this computer can read the chosen workspace; only the user may change that." },
     "telegram_remove_person": { "excluded": "Removing someone the user invited changes who may ask Shodh in Telegram; only the user may change that." },
     "telegram_set_daily_cap": { "excluded": "The daily limit of Telegram answers bounds what others may spend of the model quota; the agent must never raise a spending limit." },
-    "telegram_disconnect": { "excluded": "Disconnecting deletes the bot token, stops answers for everyone in Telegram and can remove every Telegram conversation; an account action only the user takes." }
+    "telegram_disconnect": { "excluded": "Disconnecting deletes the bot token, stops answers for everyone in Telegram and can remove every Telegram conversation; an account action only the user takes." },
+    "github_status": { "tool": "github_status" },
+    "github_activity": { "tool": "github_status" },
+    "github_sign_in_start": { "excluded": "Signing in gives Shodh the user's GitHub access: the user types the code on github.com themselves and the token goes straight to the OS credential store; an agent must never start, handle or supply a sign-in." },
+    "github_sign_in_cancel": { "excluded": "Stops a sign-in the user started on the GitHub page; the agent never starts one, so it has none to stop." },
+    "github_sign_out": { "excluded": "Signing out deletes the GitHub sign-in from this computer and stops all GitHub work; an account action only the user takes." },
+    "github_available_repos": { "excluded": "Lists every repository the Shodh app is installed on, for the user's picker; the agent reaches only the repositories on the user's list (github_status) and asks for a project's linked repository with github_request_access, which the user approves." },
+    "github_set_repo": { "excluded": "Decides what Shodh may do on a repository, including merging; widening Shodh's own permissions is the user's decision. The agent can only ask for read or write on a repository through github_request_access, which the user approves each time, and can never turn merging on." },
+    "github_remove_repo": { "excluded": "Taking a repository off the list is the user's choice about what Shodh may reach; the agent has no reason to change the user's list." }
   }
 }

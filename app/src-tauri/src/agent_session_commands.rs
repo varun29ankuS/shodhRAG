@@ -1457,6 +1457,10 @@ fn key_changed_since(llm: &LLMState, read: Option<KeyRead>) -> Option<ProviderId
     (now != generation).then_some(provider)
 }
 
+/// What a Code session is told about GitHub: its commands are offline, so remote git
+/// goes through Shodh's GitHub tools.
+const GITHUB_CODE_NOTE: &str = "\n\nGitHub: commands have no network and no credentials, so git fetch, pull and push in run_command fail. Use the GitHub tools instead: github_status (sign-in, which repositories Shodh may reach, this project's remotes), github_fetch (fetch only; merge or rebase afterwards with a local git command), github_push (pushes the current commit to a shodh/<topic> branch; commit first), github_open_pr, github_read_issue, github_read_pr, github_comment, github_merge_pr and github_delete_branch. If the project's remote is not on the user's list, ask with github_request_access. Every push, pull request, comment and merge asks the user. Never try to reach GitHub another way.";
+
 /// The system prompt's note on the tools from MCP servers and skills the
 /// user connected, `names`.
 fn extra_tools_note(names: &[String]) -> String {
@@ -1750,7 +1754,16 @@ async fn start_attempt(
     let evicted = sessions.evict_idle(&keep).await;
     counts.stopped(evicted);
 
-    let extra_tools = extra.map(|e| e.tools).unwrap_or_default();
+    let mut extra_tools = extra.map(|e| e.tools).unwrap_or_default();
+    // A Code session reaches GitHub only through Shodh: its commands have no network
+    // and no credentials. First, so no server or skill can take these names.
+    if let Some(folder) = &code_folder {
+        let github = shodh_rag::connectors::github::tools::code_tools(
+            Arc::new(crate::connectors::github::AppGitHub::new(app.clone())),
+            folder.root(),
+        );
+        extra_tools.splice(0..0, github);
+    }
     let extra_names: Vec<String> = extra_tools.iter().map(|t| t.name().to_string()).collect();
     let (registry, profile) =
         session_registry(&registry, profile, code_folder.is_some(), extra_tools);
@@ -1770,8 +1783,16 @@ async fn start_attempt(
     let system_prompt = match &code_folder {
         Some(folder) => {
             let mut prompt = code_system_prompt(folder, instructions.as_deref());
-            if !extra_names.is_empty() {
-                prompt.push_str(&extra_tools_note(&extra_names));
+            prompt.push_str(GITHUB_CODE_NOTE);
+            let others: Vec<String> = extra_names
+                .iter()
+                .filter(|n| {
+                    !shodh_rag::connectors::github::tools::all_names().contains(&n.as_str())
+                })
+                .cloned()
+                .collect();
+            if !others.is_empty() {
+                prompt.push_str(&extra_tools_note(&others));
             }
             prompt
         }
@@ -2870,6 +2891,7 @@ pub(crate) async fn base_registry(app: &AppHandle) -> CommandResult<Arc<ToolRegi
                     .printer
                     .clone(),
                 workspaces: app.state::<WorkspaceState>().inner().clone(),
+                github: Arc::new(crate::connectors::github::AppGitHub::new(app.clone())),
             });
             build_registry(host)
                 .map(Arc::new)
@@ -2904,11 +2926,16 @@ async fn chat_tools_with(
 ) -> crate::mcp::ChatTools {
     let manager = app.state::<crate::mcp_commands::McpState>().0.clone();
     let (mode, folder, reserved, builtin): (Mode, Option<String>, Vec<&str>, usize) = match code {
+        // Shodh's GitHub tools are a Code session's own too: no server or skill may
+        // take their names.
         Some(folder) => (
             Mode::Code,
             Some(folder.display()),
-            reserved_tool_names(),
-            CODE_BUILTIN_TOOLS,
+            reserved_tool_names()
+                .into_iter()
+                .chain(shodh_rag::connectors::github::tools::all_names())
+                .collect(),
+            CODE_BUILTIN_TOOLS + shodh_rag::connectors::github::tools::all_names().len(),
         ),
         None => {
             let names = registry.names();

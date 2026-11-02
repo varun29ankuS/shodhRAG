@@ -578,7 +578,10 @@ impl HostGit {
             .filter(|c| c.is_ascii_alphanumeric())
             .take(40)
             .collect();
-        let outgoing = format!("{OUTGOING}{}", if id.is_empty() { "next" } else { &id });
+        let outgoing = format!(
+            "{OUTGOING}{}",
+            if id.is_empty() { "next" } else { id.as_str() }
+        );
         let mirror_path = mirror.display().to_string();
         let copy = project_git(
             project,
@@ -774,6 +777,8 @@ pub fn settings_of(command: &Command) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
+
     use super::super::token::tests::TOKEN;
     use super::*;
 

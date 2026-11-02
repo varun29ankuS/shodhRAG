@@ -16,6 +16,11 @@
 //!   approved the agent's request, and tells the user about refused sign-ins, rejected
 //!   pushes and rate limits ([`super::github_notices`]).
 //! - **Activity**: the GitHub entries of the audit log.
+//!
+//! **Known limit (Windows):** commands Shodh runs are not sandboxed on Windows yet, so a
+//! command the user approves runs as the user and can read this sign-in from the
+//! credential store and change `app_settings.json`. The limits here bind Shodh's own
+//! tools, not such a command; the page says so (`commands_can_read_sign_in`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -28,7 +33,7 @@ use serde_json::{json, Value};
 use shodh_rag::audit::{AuditEventType, AuditQuery};
 use shodh_rag::connectors::github::api::{ApiError, GitHubApi};
 use shodh_rag::connectors::github::device::{
-    DeviceCode, DeviceError, DeviceFlow, Poll, APP_INSTALL_URL, AUTHORIZED_APPS_URL,
+    DeviceCode, DeviceError, DeviceFlow, Poll, APP_INSTALL_URL, AUTHORIZED_APPS_URL, MIN_INTERVAL,
 };
 use shodh_rag::connectors::github::git::HostGit;
 use shodh_rag::connectors::github::limits::{grant_of, RepoGrant};
@@ -286,6 +291,8 @@ pub struct GitHubStatus {
     pub install_url: &'static str,
     pub authorized_apps_url: &'static str,
     pub permissions_note: &'static str,
+    /// Commands Shodh runs can read this sign-in (Windows: commands are not sandboxed yet).
+    pub commands_can_read_sign_in: bool,
 }
 
 /// The page's state word.
@@ -356,6 +363,7 @@ fn status_of(settings: &AppSettings, state: &GitHubState) -> GitHubStatus {
         install_url: APP_INSTALL_URL,
         authorized_apps_url: AUTHORIZED_APPS_URL,
         permissions_note: GITHUB_PERMISSIONS_NOTE,
+        commands_can_read_sign_in: cfg!(windows),
     }
 }
 
@@ -412,7 +420,7 @@ fn device_error(error: &DeviceError) -> String {
 
 /// Polls until the user entered the code, then keeps the sign-in.
 async fn poll_sign_in(app: AppHandle, flow: DeviceFlow, code: DeviceCode, stop: CancellationToken) {
-    let mut interval = code.interval.min(MAX_POLL_INTERVAL);
+    let mut interval = code.interval.clamp(MIN_INTERVAL, MAX_POLL_INTERVAL);
     let outcome = loop {
         tokio::select! {
             _ = stop.cancelled() => return,
@@ -421,9 +429,9 @@ async fn poll_sign_in(app: AppHandle, flow: DeviceFlow, code: DeviceCode, stop: 
         if Utc::now() >= code.expires_at {
             break Err(DeviceError::Expired);
         }
-        match flow.poll(&code).await {
+        match flow.poll(&code, interval).await {
             Ok(Poll::Pending) => {}
-            Ok(Poll::SlowDown(next)) => interval = next.min(MAX_POLL_INTERVAL),
+            Ok(Poll::SlowDown(next)) => interval = next.clamp(MIN_INTERVAL, MAX_POLL_INTERVAL),
             Ok(Poll::Done(sign_in)) => break Ok(sign_in),
             // A dropped connection while waiting: the code is still good until it expires.
             Err(DeviceError::Network(e)) => {
@@ -719,13 +727,22 @@ pub async fn github_set_repo(
     let before = grant_of(&settings.connectors.github.repos, &repo).cloned();
     if before.is_none() {
         let session = session_of(&app).await?;
-        let info = session.api.repo(&session.token, &repo).await.map_err(|e| match e {
-            ApiError::NotFound(_) => format!(
-                "The Shodh GitHub app is not installed on {}. Install it there first ({APP_INSTALL_URL}).",
-                repo.full_name()
-            ),
-            other => page_error(&app, other),
-        })?;
+        // Only a repository of the user's own installations: a public repository answers
+        // anyone, so its page loading proves nothing about the app.
+        let installed = session
+            .api
+            .installation_repos(&session.token)
+            .await
+            .map_err(|e| page_error(&app, e))?;
+        let info = installed
+            .into_iter()
+            .find(|r| r.repo.same(&repo))
+            .ok_or_else(|| {
+                format!(
+                    "{} is not among the repositories you installed the Shodh GitHub app on. Install it there first ({APP_INSTALL_URL}).",
+                    repo.full_name()
+                )
+            })?;
         // GitHub's own spelling of the name.
         let canonical = RepoGrant {
             owner: info.repo.owner,

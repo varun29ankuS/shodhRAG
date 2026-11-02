@@ -45,6 +45,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SLOW_DOWN_STEP: Duration = Duration::from_secs(5);
 /// The interval when GitHub does not give one.
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
+/// The shortest wait between polls, whatever GitHub says (an interval of 0 would poll
+/// without pause).
+pub const MIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A device code to show the user.
 #[derive(Clone)]
@@ -205,7 +208,8 @@ impl DeviceFlow {
             .get("interval")
             .and_then(Value::as_u64)
             .map(Duration::from_secs)
-            .unwrap_or(DEFAULT_INTERVAL);
+            .unwrap_or(DEFAULT_INTERVAL)
+            .max(MIN_INTERVAL);
         Ok(DeviceCode {
             user_code,
             verification_uri,
@@ -217,7 +221,9 @@ impl DeviceFlow {
     }
 
     /// Asks once whether the user entered the code.
-    pub async fn poll(&self, code: &DeviceCode) -> Result<Poll, DeviceError> {
+    /// `current` is the wait the caller polls at now: a `slow_down` without a new interval
+    /// adds five seconds to it, so repeated slow-downs keep slowing down.
+    pub async fn poll(&self, code: &DeviceCode, current: Duration) -> Result<Poll, DeviceError> {
         let value = self
             .post(
                 "login/oauth/access_token",
@@ -236,7 +242,8 @@ impl DeviceFlow {
                     .get("interval")
                     .and_then(Value::as_u64)
                     .map(Duration::from_secs)
-                    .unwrap_or(code.interval + SLOW_DOWN_STEP),
+                    .unwrap_or(current + SLOW_DOWN_STEP)
+                    .max(current.max(MIN_INTERVAL)),
             )),
             Some(other) => Err(flow_error(other)),
             None => sign_in_of(&value, Utc::now()).map(Poll::Done),
@@ -348,12 +355,15 @@ mod tests {
         let code = flow.start().await.unwrap();
         assert_eq!(code.user_code, "WDJB-MJHT");
         assert_eq!(code.interval, Duration::from_secs(5));
-        assert_eq!(flow.poll(&code).await.unwrap(), Poll::Pending);
         assert_eq!(
-            flow.poll(&code).await.unwrap(),
+            flow.poll(&code, code.interval).await.unwrap(),
+            Poll::Pending
+        );
+        assert_eq!(
+            flow.poll(&code, code.interval).await.unwrap(),
             Poll::SlowDown(Duration::from_secs(10))
         );
-        let Poll::Done(sign_in) = flow.poll(&code).await.unwrap() else {
+        let Poll::Done(sign_in) = flow.poll(&code, code.interval).await.unwrap() else {
             panic!("signed in");
         };
         assert_eq!(sign_in.access.expose(), TOKEN);
@@ -391,8 +401,38 @@ mod tests {
         .await;
         let code = flow.start().await.unwrap();
         assert_eq!(
-            flow.poll(&code).await.unwrap(),
+            flow.poll(&code, code.interval).await.unwrap(),
             Poll::SlowDown(Duration::from_secs(10))
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_downs_escalate_and_an_interval_of_zero_is_floored() {
+        let mut zero = code_reply();
+        zero.body = zero.body.replace("\"interval\":5", "\"interval\":0");
+        let (flow, _) = client_of(vec![
+            zero,
+            Reply::json(200, json!({"error": "slow_down"})),
+            Reply::json(200, json!({"error": "slow_down"})),
+            Reply::json(200, json!({"error": "slow_down", "interval": 0})),
+        ])
+        .await;
+        let code = flow.start().await.unwrap();
+        assert_eq!(code.interval, MIN_INTERVAL);
+        let Poll::SlowDown(first) = flow.poll(&code, code.interval).await.unwrap() else {
+            panic!("slow down");
+        };
+        let Poll::SlowDown(second) = flow.poll(&code, first).await.unwrap() else {
+            panic!("slow down");
+        };
+        assert_eq!(
+            (first, second),
+            (Duration::from_secs(10), Duration::from_secs(15))
+        );
+        assert_eq!(
+            flow.poll(&code, second).await.unwrap(),
+            Poll::SlowDown(second),
+            "never faster than now"
         );
     }
 
@@ -413,7 +453,11 @@ mod tests {
             ])
             .await;
             let code = flow.start().await.unwrap();
-            assert_eq!(flow.poll(&code).await.unwrap_err(), expected, "{error}");
+            assert_eq!(
+                flow.poll(&code, code.interval).await.unwrap_err(),
+                expected,
+                "{error}"
+            );
         }
         let (flow, _) = client_of(vec![Reply::json(
             200,

@@ -9,6 +9,7 @@ import {
   GITHUB_STEPS,
   HARD_LIMITS,
   LEVEL_TEXT,
+  WINDOWS_COMMANDS_NOTE,
   codeCountdown,
   filterRepos,
   githubStep,
@@ -376,6 +377,11 @@ export function GitHubSetup({
               <Callout tone="error" role="alert">
                 <p className="m-0 text-shodh-error font-medium">Sign-in did not finish.</p>
                 <p className="m-0 mt-0.5 break-words">{status.signInError}</p>
+              </Callout>
+            )}
+            {status.commandsCanReadSignIn && (
+              <Callout tone="warning" role="status">
+                <p className="m-0">{WINDOWS_COMMANDS_NOTE}</p>
               </Callout>
             )}
             <Callout tone="neutral">

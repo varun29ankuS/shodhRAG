@@ -2,21 +2,30 @@
 //! with the user's GitHub sign-in that never touches the project.
 //!
 //! **Where the network git runs.** Not in the project: its `.git/config` can be changed
-//! by any command (`url.*.insteadOf`, `http.*.proxy`, `http.sslVerify=false`,
-//! `include.path`, a credential helper), and a git that sends the sign-in while reading
-//! that file could send it elsewhere. Every fetch and push to GitHub runs in a bare
-//! **mirror** Shodh owns (`<data>/connectors/github/mirrors/<owner>/<repo>.git`), whose
-//! config Shodh writes afresh before each use, with the system and global git config
-//! switched off. Objects move between the mirror and the project only by local git
-//! (`fetch`/`push` between two folders on this computer), which needs no sign-in.
+//! by any command (`url.*.insteadOf`, `remote.<x>.uploadpack`, `protocol.ext.allow`,
+//! `core.sshCommand`, `http.*.proxy`, `include.path`, a credential helper), and a git
+//! transport that reads that file could run a program or send data elsewhere. Every
+//! fetch and push to GitHub runs in a bare **mirror** Shodh owns
+//! (`<data>/connectors/github/mirrors/<owner>/<repo>.git`), whose config Shodh writes
+//! afresh before each use, with the system and global git config switched off.
+//!
+//! **How objects move between the project and the mirror.** Never by a git transport
+//! (`fetch`, `push`, `clone` or anything that takes a URL or a path to another
+//! repository): those apply the repository's own `insteadOf`, `remote.*`, `protocol.*`
+//! and `core.sshCommand` settings to the path. Instead, by plumbing that reads no
+//! transport setting: `pack-objects --revs --stdout` in one repository, piped into
+//! `index-pack --stdin` in the other, then `update-ref`. Objects coming from the project
+//! are checked as they enter the mirror (`index-pack --strict`).
 //!
 //! **How the sign-in is given.** As an `Authorization` header scoped to
 //! `https://github.com/`, through git's `GIT_CONFIG_COUNT` environment of that one git
-//! process: never on its command line (other programs can list command lines), never in
-//! a file, never in the project's or the mirror's config, never in a command's
-//! environment. Credential helpers, askpass programs and prompts are off, inherited
-//! `GIT_*` settings are dropped, hooks come from an empty folder, and only HTTPS may be
-//! used.
+//! process: never on its command line, never in a file, never in the project's or the
+//! mirror's config, never in a command's environment. Credential helpers, askpass
+//! programs and prompts are off, inherited `GIT_*` settings are dropped, hooks come from
+//! an empty folder, and only HTTPS may be used. Same-user programs can read a running
+//! process's environment on every system (on Windows, where Shodh's commands are not
+//! sandboxed yet, a command can also read the credential store directly); this keeps the
+//! token away from commands' own environments and from files, not from such a program.
 //!
 //! **What is pushed.** Exactly the commit the user approved
 //! (`<sha>:refs/heads/shodh/<topic>`), never `HEAD`, never with `+` or `--force`; a
@@ -26,6 +35,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -90,6 +100,8 @@ pub enum GitError {
     AuthFailed,
     #[error("GitHub rejected the push: {0}")]
     Rejected(String),
+    #[error("This repository moved on GitHub (it was renamed or transferred). Point the project's remote at its new name, then ask again.")]
+    Moved,
     #[error("{0}")]
     Failed(String),
     #[error("git took too long and was stopped")]
@@ -103,18 +115,22 @@ pub struct CommitLine {
     pub files: u64,
     pub insertions: u64,
     pub deletions: u64,
+    /// A merge commit (its numbers are against its first parent).
+    pub merge: bool,
 }
 
 impl CommitLine {
-    /// "Fix the login (2 files, +10 −3)".
+    /// `“Fix the login” · 2 files, +10 −3`: the title is quoted, so a title cannot pass
+    /// for the numbers Shodh adds.
     pub fn words(&self) -> String {
         let files = if self.files == 1 {
             "1 file".to_string()
         } else {
             format!("{} files", self.files)
         };
+        let merge = if self.merge { "merge commit, " } else { "" };
         format!(
-            "{} ({files}, +{} −{})",
+            "“{}” · {merge}{files}, +{} −{}",
             self.title, self.insertions, self.deletions
         )
     }
@@ -132,10 +148,14 @@ pub struct PushPlan {
     pub commits: Vec<CommitLine>,
     /// How many commits are not yet on GitHub.
     pub total: u64,
-    /// Every file those commits change.
+    /// Every file those commits change, merge commits diffed against each parent (so a
+    /// change made in a merge's resolution is listed too).
     pub files: Vec<String>,
     /// The mirror ref holding the commit until it is pushed.
     pub outgoing: String,
+    /// The repository's workflows (on its default branch) that run on a push to a new
+    /// branch, by path.
+    pub push_workflows: Vec<String>,
 }
 
 /// Shodh's git for one data folder.
@@ -158,13 +178,22 @@ fn dropped(name: &str) -> bool {
         || upper == "GITHUB_TOKEN"
 }
 
+/// The base64 of `x-access-token:<token>`, as the header carries it.
+fn encoded(secret: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{secret}"))
+}
+
+/// `text` without the token, raw or in the header's base64 form.
+fn scrub_all(text: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        return text.to_string();
+    }
+    scrub(&scrub(text, secret), &encoded(secret))
+}
+
 /// The `Authorization` header value git sends (`basic`, user `x-access-token`).
 fn auth_header(token: &UserToken) -> String {
-    let pair = format!("x-access-token:{}", token.expose());
-    format!(
-        "AUTHORIZATION: basic {}",
-        base64::engine::general_purpose::STANDARD.encode(pair)
-    )
+    format!("AUTHORIZATION: basic {}", encoded(token.expose()))
 }
 
 /// The `GIT_CONFIG_*` settings of a network git: what it may use and, for HTTPS, the
@@ -201,6 +230,22 @@ fn network_settings(
     settings
 }
 
+/// git's messages in English, whatever the user's language: Shodh reads them.
+fn english(command: &mut Command) {
+    command.env("LC_ALL", "C").env("LANGUAGE", "");
+}
+
+fn no_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 /// A network git in `mirror`, built from Shodh's environment `parent` (pure, so tests see
 /// exactly its arguments and environment).
 pub fn network_command(
@@ -233,21 +278,27 @@ pub fn network_command(
             .env(format!("GIT_CONFIG_KEY_{i}"), key)
             .env(format!("GIT_CONFIG_VALUE_{i}"), value);
     }
+    english(&mut command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    no_window(&mut command);
     command
 }
 
-/// The mirror's whole config, written before every use.
-const MIRROR_CONFIG: &str = "[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tlogallrefupdates = false\n[gc]\n\tauto = 0\n";
+/// The mirror's whole config, written before every use: hooks from the empty folder
+/// whatever runs in it.
+fn mirror_config(hooks: &Path) -> String {
+    let hooks = hooks
+        .display()
+        .to_string()
+        .replace('\\', "/")
+        .replace('"', "");
+    format!(
+        "[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tlogallrefupdates = false\n\thooksPath = \"{hooks}\"\n\tfsmonitor = false\n[gc]\n\tauto = 0\n"
+    )
+}
 
 /// What a git command printed.
 struct Output {
@@ -279,8 +330,8 @@ async fn run_full(
     };
     Ok(Output {
         ok: output.status.success(),
-        stdout: scrub(&String::from_utf8_lossy(&output.stdout), secret),
-        stderr: scrub(&String::from_utf8_lossy(&output.stderr), secret),
+        stdout: scrub_all(&String::from_utf8_lossy(&output.stdout), secret),
+        stderr: scrub_all(&String::from_utf8_lossy(&output.stderr), secret),
     })
 }
 
@@ -290,6 +341,131 @@ async fn run(command: Command, timeout: Duration, secret: &str) -> Result<String
         return Ok(output.stdout);
     }
     failure(&output)
+}
+
+/// Runs `command` with `input` on its stdin (local commands only).
+async fn run_input(mut command: Command, input: String) -> Result<String, GitError> {
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(GitError::Missing),
+        Err(e) => return Err(GitError::Failed(format!("git could not be started: {e}"))),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(input.as_bytes())
+            .await
+            .map_err(|e| GitError::Failed(format!("git could not be given its input: {e}")))?;
+    }
+    let output = match tokio::time::timeout(LOCAL_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(GitError::Failed(format!("git failed: {e}"))),
+        Err(_) => return Err(GitError::TimedOut),
+    };
+    let output = Output {
+        ok: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    };
+    if output.ok {
+        Ok(output.stdout)
+    } else {
+        failure(&output)
+    }
+}
+
+/// `producer`'s stdout (a pack) into `consumer`'s stdin, `revs` on the producer's stdin;
+/// both local. Blocking: run on a blocking thread.
+fn pipe_blocking(
+    mut producer: Command,
+    revs: String,
+    mut consumer: Command,
+) -> Result<String, GitError> {
+    let started = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            GitError::Missing
+        } else {
+            GitError::Failed(format!("git could not be started: {e}"))
+        }
+    };
+    producer
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut make = producer.spawn().map_err(started)?;
+    let (Some(mut stdin), Some(pack), Some(mut make_err)) =
+        (make.stdin.take(), make.stdout.take(), make.stderr.take())
+    else {
+        let _ = make.kill();
+        return Err(GitError::Failed("git's pipes could not be opened".into()));
+    };
+    let writer = std::thread::spawn(move || {
+        let written = stdin.write_all(revs.as_bytes());
+        drop(stdin);
+        written
+    });
+    let make_errors = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = make_err.read_to_string(&mut text);
+        text
+    });
+    consumer
+        .stdin(Stdio::from(pack))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let take = match consumer.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = make.kill();
+            let _ = make.wait();
+            return Err(started(e));
+        }
+    };
+    let taken = take
+        .wait_with_output()
+        .map_err(|e| GitError::Failed(format!("git failed: {e}")))?;
+    let made = make
+        .wait()
+        .map_err(|e| GitError::Failed(format!("git failed: {e}")))?;
+    let write_result = writer.join().unwrap_or(Ok(()));
+    let make_stderr = make_errors.join().unwrap_or_default();
+    if !made.success() {
+        return failure(&Output {
+            ok: false,
+            stdout: String::new(),
+            stderr: make_stderr,
+        });
+    }
+    if let Err(e) = write_result {
+        return Err(GitError::Failed(format!(
+            "git could not be given its input: {e}"
+        )));
+    }
+    let output = Output {
+        ok: taken.status.success(),
+        stdout: String::from_utf8_lossy(&taken.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&taken.stderr).to_string(),
+    };
+    if output.ok {
+        Ok(output.stdout)
+    } else {
+        failure(&output)
+    }
+}
+
+async fn pipe(producer: Command, revs: String, consumer: Command) -> Result<String, GitError> {
+    let task = tokio::task::spawn_blocking(move || pipe_blocking(producer, revs, consumer));
+    match tokio::time::timeout(LOCAL_TIMEOUT, task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => Err(GitError::Failed(format!("git failed: {e}"))),
+        Err(_) => Err(GitError::TimedOut),
+    }
 }
 
 /// The error of a failed git command.
@@ -315,6 +491,10 @@ fn failure<T>(output: &Output) -> Result<T, GitError> {
             "GitHub refused this: you, or the Shodh app on this repository, may not write to it. Check your access and where the app is installed.".to_string(),
         ));
     }
+    // Redirects are not followed (a renamed or transferred repository answers 301).
+    if lower.contains("error: 301") || lower.contains("http 301") || lower.contains("redirect") {
+        return Err(GitError::Moved);
+    }
     let message: String = if stderr.is_empty() {
         stdout.trim().chars().take(600).collect()
     } else {
@@ -328,11 +508,13 @@ fn failure<T>(output: &Output) -> Result<T, GitError> {
 }
 
 /// A local git in the project, hardened like Code mode's own git (no hooks, no file
-/// system monitor), without the project's ability to reach the network mattering: it
-/// only talks to the mirror folder.
+/// system monitor), with no transport allowed at all: Shodh never runs a fetch, push or
+/// clone in the project, and this makes any that slipped in fail.
 fn project_git(project: &Path, args: &[&str]) -> Result<Command, GitError> {
     let mut command = crate::harness::code_mode::git(project).map_err(GitError::Failed)?;
+    command.args(["-c", "protocol.allow=never"]);
     command.args(args);
+    english(&mut command);
     Ok(command)
 }
 
@@ -345,13 +527,15 @@ fn parse_version(text: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
-/// Parses `git log --format=%x1e%s --shortstat` output.
+/// Parses `git log --format=%x1e%P%x1f%s --shortstat` output.
 fn parse_commits(text: &str) -> Vec<CommitLine> {
     text.split('\u{1e}')
         .filter(|record| !record.trim().is_empty())
         .map(|record| {
             let mut lines = record.lines();
-            let title = lines.next().unwrap_or_default().trim().to_string();
+            let first = lines.next().unwrap_or_default();
+            let (parents, title) = first.split_once('\u{1f}').unwrap_or(("", first));
+            let title = title.trim();
             let mut line = CommitLine {
                 title: if title.is_empty() {
                     "(no title)".to_string()
@@ -361,6 +545,7 @@ fn parse_commits(text: &str) -> Vec<CommitLine> {
                 files: 0,
                 insertions: 0,
                 deletions: 0,
+                merge: parents.split_whitespace().count() > 1,
             };
             for stat in lines.filter(|l| l.contains("changed")) {
                 for part in stat.split(',') {
@@ -394,12 +579,110 @@ fn rejection(stdout: &str) -> Option<String> {
         }
         let _refs = fields.next()?;
         let summary = fields.next().unwrap_or("rejected").trim();
-        Some(if summary.contains("non-fast-forward") || summary.contains("fetch first") {
+        Some(if summary.contains("stale info") {
+            "the branch moved on GitHub since you approved, so it was kept.".to_string()
+        } else if summary.contains("non-fast-forward") || summary.contains("fetch first") {
             "the branch on GitHub has commits this one does not. Fetch, merge them in, then push again.".to_string()
         } else {
             summary.chars().take(200).collect()
         })
     })
+}
+
+/// Whether a workflow file's text runs it on a push to a new `shodh/…` branch: a `push`
+/// trigger with no `branches:` list, or one that does not exclude such a branch. Read
+/// conservatively: when unsure, it is taken to run.
+pub fn runs_on_push(text: &str) -> bool {
+    let lines: Vec<(usize, String)> = text
+        .lines()
+        .map(|raw| {
+            raw.split(" #")
+                .next()
+                .unwrap_or_default()
+                .trim_end()
+                .to_string()
+        })
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .map(|l| (l.len() - l.trim_start().len(), l.trim().to_string()))
+        .collect();
+    let is_on = |t: &str| {
+        ["on:", "\"on\":", "'on':", "true:"]
+            .iter()
+            .any(|p| t.starts_with(p))
+    };
+    let mentions_push = |t: &str| {
+        t.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|w| w == "push")
+    };
+    let mut i = 0;
+    while i < lines.len() {
+        let (indent, line) = &lines[i];
+        if *indent != 0 || !is_on(line) {
+            i += 1;
+            continue;
+        }
+        // `on: push` / `on: [push, pull_request]`: every branch.
+        let inline = line
+            .split_once(':')
+            .map(|(_, r)| r.trim())
+            .unwrap_or_default();
+        if !inline.is_empty() {
+            return mentions_push(inline);
+        }
+        let mut j = i + 1;
+        while j < lines.len() && lines[j].0 > 0 {
+            let (level, entry) = &lines[j];
+            // `- push` in a list of events: every branch.
+            if entry == "- push" {
+                return true;
+            }
+            let key = entry
+                .split(':')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .trim_matches(['"', '\'']);
+            if key == "push" {
+                let rest = entry
+                    .split_once(':')
+                    .map(|(_, r)| r.trim())
+                    .unwrap_or_default();
+                let mut body = rest.to_string();
+                let mut k = j + 1;
+                while k < lines.len() && lines[k].0 > *level {
+                    body.push(' ');
+                    body.push_str(&lines[k].1);
+                    k += 1;
+                }
+                return push_body_runs(&body);
+            }
+            j += 1;
+        }
+        return false;
+    }
+    false
+}
+
+/// Whether a `push:` trigger's settings run it for a new `shodh/…` branch.
+fn push_body_runs(body: &str) -> bool {
+    let b = body.trim();
+    if b.is_empty() || b == "{}" || b == "null" || b == "~" {
+        return true;
+    }
+    let has = |k: &str| b.contains(&format!("{k}:"));
+    if has("branches-ignore") {
+        // Runs for every branch it does not ignore.
+        return !b.contains("shodh");
+    }
+    if has("branches") {
+        return b.contains("**")
+            || b.contains("'*'")
+            || b.contains("\"*\"")
+            || b.contains("- *")
+            || b.contains("shodh");
+    }
+    // `tags:` without `branches:` runs only for tags; `paths:` alone runs for every branch.
+    !(has("tags") || has("tags-ignore"))
 }
 
 impl HostGit {
@@ -459,6 +742,8 @@ impl HostGit {
     pub async fn check_version(&self) -> Result<(), GitError> {
         let mut command = Command::new("git");
         command.arg("--version");
+        english(&mut command);
+        no_window(&mut command);
         let text = run(command, LOCAL_TIMEOUT, "").await?;
         match parse_version(&text) {
             Some(version) if version >= MIN_GIT => Ok(()),
@@ -477,7 +762,8 @@ impl HostGit {
             let init = self.network(&dir, None, &["init", "--bare", "--quiet", "--template="])?;
             run(init, LOCAL_TIMEOUT, "").await?;
         }
-        std::fs::write(dir.join("config"), MIRROR_CONFIG).map_err(|e| {
+        let hooks = crate::harness::code_mode::empty_hooks_dir().map_err(GitError::Failed)?;
+        std::fs::write(dir.join("config"), mirror_config(&hooks)).map_err(|e| {
             GitError::Failed(format!("Shodh's copy of {repo} could not be set up: {e}"))
         })?;
         Ok(dir)
@@ -505,6 +791,120 @@ impl HostGit {
         Ok(mirror)
     }
 
+    /// The mirror's branches, `(sha, name)` with the name after `refs/heads/`.
+    async fn mirror_heads(&self, mirror: &Path) -> Result<Vec<(String, String)>, GitError> {
+        let list = self.network(
+            mirror,
+            None,
+            &[
+                "for-each-ref",
+                "--format=%(objectname) %(refname)",
+                "refs/heads",
+            ],
+        )?;
+        Ok(run(list, LOCAL_TIMEOUT, "")
+            .await?
+            .lines()
+            .filter_map(|l| {
+                let (sha, name) = l.trim().split_once(' ')?;
+                let name = name.strip_prefix("refs/heads/")?;
+                Some((sha.to_string(), name.to_string()))
+            })
+            .collect())
+    }
+
+    /// Of `shas`, those the repository whose git `command` runs in has (`cat-file
+    /// --batch-check`: no transport, no filter).
+    async fn present(command: Command, shas: &[String]) -> Result<Vec<String>, GitError> {
+        if shas.is_empty() {
+            return Ok(Vec::new());
+        }
+        let input: String = shas.iter().map(|s| format!("{s}\n")).collect();
+        let out = run_input(command, input).await?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.ends_with(" missing"))
+            .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+            .collect())
+    }
+
+    /// The pack-objects input: `want`, then everything in `have` excluded.
+    fn revs(want: &[String], have: &[String]) -> String {
+        let mut text: String = want.iter().map(|s| format!("{s}\n")).collect();
+        if !have.is_empty() {
+            text.push_str("--not\n");
+            for s in have {
+                text.push_str(s);
+                text.push('\n');
+            }
+        }
+        text
+    }
+
+    /// Copies the mirror's branches into the project's `refs/remotes/<remote>/…`, by
+    /// pack (no transport in the project). Returns how many branches there are.
+    async fn copy_to_project(
+        &self,
+        mirror: &Path,
+        project: &Path,
+        remote: &str,
+    ) -> Result<usize, GitError> {
+        let heads = self.mirror_heads(mirror).await?;
+        let shas: Vec<String> = heads.iter().map(|(s, _)| s.clone()).collect();
+        let check = project_git(project, &["cat-file", "--batch-check"])?;
+        let known = Self::present(check, &shas).await?;
+        let want: Vec<String> = shas
+            .iter()
+            .filter(|s| !known.contains(s))
+            .cloned()
+            .collect();
+        if !want.is_empty() {
+            let make = self.network(
+                mirror,
+                None,
+                &["pack-objects", "--revs", "--stdout", "--quiet"],
+            )?;
+            let take = project_git(project, &["index-pack", "--stdin"])?;
+            pipe(make, Self::revs(&want, &known), take).await?;
+        }
+        let mut updates = String::new();
+        for (sha, name) in &heads {
+            if !super::remote::valid_remote_name(name.split('/').next().unwrap_or_default())
+                || name.contains("..")
+                || name.chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                continue;
+            }
+            updates.push_str(&format!("update refs/remotes/{remote}/{name} {sha}\n"));
+        }
+        if !updates.is_empty() {
+            let record = project_git(project, &["update-ref", "--stdin"])?;
+            run_input(record, updates).await?;
+        }
+        Ok(heads.len())
+    }
+
+    /// Copies commit `sha` of the project into the mirror under `outgoing`, by pack, its
+    /// objects checked as they enter (`index-pack --strict`).
+    async fn copy_to_mirror(
+        &self,
+        project: &Path,
+        mirror: &Path,
+        sha: &str,
+        outgoing: &str,
+    ) -> Result<(), GitError> {
+        let heads = self.mirror_heads(mirror).await?;
+        let shas: Vec<String> = heads.into_iter().map(|(s, _)| s).collect();
+        let check = project_git(project, &["cat-file", "--batch-check"])?;
+        let known = Self::present(check, &shas).await?;
+        let make = project_git(project, &["pack-objects", "--revs", "--stdout", "--quiet"])?;
+        let take = self.network(mirror, None, &["index-pack", "--stdin", "--strict"])?;
+        pipe(make, Self::revs(&[sha.to_string()], &known), take).await?;
+        let record = self.network(mirror, None, &["update-ref", outgoing, sha])?;
+        run(record, LOCAL_TIMEOUT, "").await?;
+        Ok(())
+    }
+
     /// Fetches `repo` from GitHub into the project's `refs/remotes/<remote>/…` (a fetch:
     /// the project's own branches and files do not change). Returns how many branches
     /// the remote has.
@@ -521,31 +921,47 @@ impl HostGit {
             )));
         }
         let mirror = self.update_mirror(repo, token).await?;
-        let mirror_path = mirror.display().to_string();
-        let spec = format!("+refs/heads/*:refs/remotes/{remote}/*");
-        let local = project_git(
-            project,
-            &[
-                "fetch",
-                "--quiet",
-                "--no-tags",
-                "--no-recurse-submodules",
-                "--no-write-fetch-head",
-                &mirror_path,
-                &spec,
-            ],
-        )?;
-        run(local, LOCAL_TIMEOUT, "").await?;
-        let list = self.network(
-            &mirror,
+        self.copy_to_project(&mirror, project, remote).await
+    }
+
+    /// The workflows of the mirror's `default` branch that run on a push to a new
+    /// branch, by path.
+    async fn push_workflows(&self, mirror: &Path, default: &str) -> Vec<String> {
+        let Ok(list) = self.network(
+            mirror,
             None,
-            &["for-each-ref", "--format=%(refname)", "refs/heads"],
-        )?;
-        Ok(run(list, LOCAL_TIMEOUT, "")
-            .await?
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count())
+            &[
+                "ls-tree",
+                "--name-only",
+                &format!("refs/heads/{default}"),
+                ".github/workflows/",
+            ],
+        ) else {
+            return Vec::new();
+        };
+        let Ok(names) = run(list, LOCAL_TIMEOUT, "").await else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for path in names.lines().map(str::trim).filter(|p| {
+            let p = p.to_ascii_lowercase();
+            p.ends_with(".yml") || p.ends_with(".yaml")
+        }) {
+            let Ok(show) = self.network(
+                mirror,
+                None,
+                &["cat-file", "blob", &format!("refs/heads/{default}:{path}")],
+            ) else {
+                continue;
+            };
+            match run(show, LOCAL_TIMEOUT, "").await {
+                Ok(text) if runs_on_push(&text) => out.push(path.to_string()),
+                Ok(_) => {}
+                // Unreadable: taken to run.
+                Err(_) => out.push(path.to_string()),
+            }
+        }
+        out
     }
 
     /// Prepares a push of the project's current commit to `repo`: brings GitHub's
@@ -555,6 +971,7 @@ impl HostGit {
         &self,
         project: &Path,
         repo: &RepoRef,
+        default_branch: &str,
         token: &UserToken,
         call: &str,
     ) -> Result<PushPlan, GitError> {
@@ -591,28 +1008,20 @@ impl HostGit {
             "{OUTGOING}{}",
             if id.is_empty() { "next" } else { id.as_str() }
         );
-        let mirror_path = mirror.display().to_string();
-        let copy = project_git(
-            project,
-            &[
-                "push",
-                "--quiet",
-                "--no-verify",
-                "--no-recurse-submodules",
-                &mirror_path,
-                &format!("{sha}:{outgoing}"),
-            ],
-        )?;
-        run(copy, LOCAL_TIMEOUT, "").await?;
+        self.copy_to_mirror(project, &mirror, &sha, &outgoing)
+            .await?;
 
+        // A merge commit's numbers are against its first parent (what it brings into
+        // its branch, the resolution included).
         let log = self.network(
             &mirror,
             None,
             &[
                 "log",
                 "--no-color",
-                "--format=%x1e%s",
+                "--format=%x1e%P%x1f%s",
                 "--shortstat",
+                "--diff-merges=first-parent",
                 &format!("--max-count={MAX_LISTED_COMMITS}"),
                 &sha,
                 "--not",
@@ -630,6 +1039,8 @@ impl HostGit {
             .trim()
             .parse::<u64>()
             .unwrap_or(commits.len() as u64);
+        // Files: a merge commit against each of its parents, so nothing a merge's
+        // resolution adds is left out.
         let names = self.network(
             &mirror,
             None,
@@ -639,6 +1050,7 @@ impl HostGit {
                 "--format=",
                 "--name-only",
                 "--no-renames",
+                "--diff-merges=separate",
                 &sha,
                 "--not",
                 "--branches",
@@ -653,6 +1065,7 @@ impl HostGit {
             .collect();
         files.sort();
         files.dedup();
+        let push_workflows = self.push_workflows(&mirror, default_branch).await;
         Ok(PushPlan {
             sha,
             local_branch,
@@ -660,6 +1073,7 @@ impl HostGit {
             total,
             files,
             outgoing,
+            push_workflows,
         })
     }
 
@@ -724,6 +1138,44 @@ impl HostGit {
         Ok(())
     }
 
+    /// Deletes `branch` of `repo` only while it still points at `sha` (a push with a
+    /// lease from the mirror: a branch that moved since the approval is kept).
+    async fn delete_branch_in(
+        &self,
+        repo: &RepoRef,
+        branch: &str,
+        sha: &str,
+        token: &UserToken,
+    ) -> Result<(), GitError> {
+        if !super::limits::is_shodh_branch(branch) {
+            return Err(GitError::Failed(
+                super::limits::Refusal::NotShodhBranch(branch.to_string()).to_string(),
+            ));
+        }
+        if sha.len() < 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(GitError::Failed(
+                "GitHub did not name the branch's commit".into(),
+            ));
+        }
+        let mirror = self.mirror(repo).await?;
+        let url = self.endpoint.url(repo);
+        let lease = format!("--force-with-lease=refs/heads/{branch}:{sha}");
+        let target = format!(":refs/heads/{branch}");
+        let delete = self.network(
+            &mirror,
+            Some(token),
+            &["push", "--porcelain", "--no-verify", &lease, &url, &target],
+        )?;
+        let output = run_full(delete, NETWORK_TIMEOUT, token.expose()).await?;
+        if !output.ok {
+            if let Some(reason) = rejection(&output.stdout) {
+                return Err(GitError::Rejected(reason));
+            }
+            return failure(&output);
+        }
+        Ok(())
+    }
+
     /// `error` without the mirror's folder (it holds the user's name): the model and the
     /// user are told "Shodh's copy of owner/repo" instead.
     fn hide(&self, repo: &RepoRef, error: GitError) -> GitError {
@@ -766,14 +1218,16 @@ impl HostGit {
     }
 
     /// Prepares a push (see [`Self::prepare_push_in`]); nothing is sent to GitHub.
+    /// `default_branch` is read for the workflows that a push to a new branch runs.
     pub async fn prepare_push(
         &self,
         project: &Path,
         repo: &RepoRef,
+        default_branch: &str,
         token: &UserToken,
         call: &str,
     ) -> Result<PushPlan, GitError> {
-        self.prepare_push_in(project, repo, token, call)
+        self.prepare_push_in(project, repo, default_branch, token, call)
             .await
             .map_err(|e| self.hide(repo, e))
     }
@@ -789,6 +1243,19 @@ impl HostGit {
         token: &UserToken,
     ) -> Result<(), GitError> {
         self.push_in(project, remote, repo, branch, plan, token)
+            .await
+            .map_err(|e| self.hide(repo, e))
+    }
+
+    /// Deletes `branch` while it still points at `sha` (see [`Self::delete_branch_in`]).
+    pub async fn delete_branch(
+        &self,
+        repo: &RepoRef,
+        branch: &str,
+        sha: &str,
+        token: &UserToken,
+    ) -> Result<(), GitError> {
+        self.delete_branch_in(repo, branch, sha, token)
             .await
             .map_err(|e| self.hide(repo, e))
     }
@@ -813,7 +1280,7 @@ impl HostGit {
     }
 }
 
-/// The project's remotes (`git config --get-regexp`), hardened like Code mode's git.
+/// The project's remotes (`git config --get-regexp`: reading config runs no program).
 pub async fn project_remotes(project: &Path) -> Result<Vec<super::remote::Remote>, GitError> {
     let command = project_git(project, &["config", "--get-regexp", r"^remote\..*\.url$"])?;
     match run(command, LOCAL_TIMEOUT, "").await {
@@ -1177,12 +1644,36 @@ mod tests {
         assert_eq!(parse_version("git version 2.31.0"), Some((2, 31)));
         assert!(parse_version("git version 2.31.0").unwrap() < MIN_GIT);
         assert_eq!(parse_version("nonsense"), None);
-        let log = "\u{1e}Fix the login\n\n 2 files changed, 10 insertions(+), 3 deletions(-)\n\u{1e}Add a test\n\n 1 file changed, 4 insertions(+)\n\u{1e}Merge branch 'x'\n";
+        let log = "\u{1e}aaa\u{1f}Fix the login\n\n 2 files changed, 10 insertions(+), 3 deletions(-)\n\u{1e}bbb\u{1f}Add a test\n\n 1 file changed, 4 insertions(+)\n\u{1e}ccc ddd\u{1f}Merge branch 'x'\n\n 1 file changed, 1 insertion(+)\n";
         let commits = parse_commits(log);
         assert_eq!(commits.len(), 3);
-        assert_eq!(commits[0].words(), "Fix the login (2 files, +10 −3)");
-        assert_eq!(commits[1].words(), "Add a test (1 file, +4 −0)");
-        assert_eq!(commits[2].files, 0);
+        assert_eq!(commits[0].words(), "“Fix the login” · 2 files, +10 −3");
+        assert_eq!(commits[1].words(), "“Add a test” · 1 file, +4 −0");
+        assert!(commits[2].merge);
+        assert_eq!(
+            commits[2].words(),
+            "“Merge branch 'x'” · merge commit, 1 file, +1 −0"
+        );
+        // A title cannot pass for Shodh's own numbers: it is always quoted.
+        let spoof = parse_commits(
+            "\u{1e}aaa\u{1f}Fix typo (1 file, +1 −1)\n\n 9 files changed, 900 insertions(+)\n",
+        );
+        assert_eq!(
+            spoof[0].words(),
+            "“Fix typo (1 file, +1 −1)” · 9 files, +900 −0"
+        );
+        assert_eq!(
+            rejection("!\tabc:refs/heads/shodh/x\t[rejected] (stale info)\n").unwrap(),
+            "the branch moved on GitHub since you approved, so it was kept."
+        );
+        assert_eq!(
+            failed("fatal: unable to update url base from redirection:\n  asked for: x"),
+            GitError::Moved
+        );
+        assert_eq!(
+            failed("error: RPC failed; HTTP 301 curl 22 The requested URL returned error: 301"),
+            GitError::Moved
+        );
         assert_eq!(
             rejection("To x\n!\tabc:refs/heads/shodh/x\t[rejected] (non-fast-forward)\nDone\n").unwrap(),
             "the branch on GitHub has commits this one does not. Fetch, merge them in, then push again."
@@ -1233,7 +1724,7 @@ mod tests {
         );
         let plan = w
             .host
-            .prepare_push(&w.project, &w.repo, &token(), "call-1")
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
             .await
             .unwrap();
         assert_eq!(plan.total, 1);
@@ -1291,7 +1782,7 @@ mod tests {
         commit(&w.project, "a.txt", "a\n", "Mine");
         let plan = w
             .host
-            .prepare_push(&w.project, &w.repo, &token(), "call-1")
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
             .await
             .unwrap();
         w.host
@@ -1325,7 +1816,7 @@ mod tests {
         );
         let plan = w
             .host
-            .prepare_push(&w.project, &w.repo, &token(), "call-2")
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-2")
             .await
             .unwrap();
         let error = w
@@ -1347,7 +1838,7 @@ mod tests {
         commit(&w.project, "a.txt", "a\n", "Mine");
         let plan = w
             .host
-            .prepare_push(&w.project, &w.repo, &token(), "call-1")
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
             .await
             .unwrap();
         for target in ["main", "refs/heads/main", "feature/x"] {
@@ -1396,5 +1887,330 @@ mod tests {
         let bare = tempfile::tempdir().unwrap();
         git(bare.path(), &["init", "-q"]);
         assert_eq!(project_remotes(bare.path()).await.unwrap(), Vec::new());
+    }
+
+    fn git_input(dir: &Path, args: &[&str], input: &str) -> String {
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A path as git config values and shell commands take it.
+    fn slashed(path: &Path) -> String {
+        path.display().to_string().replace('\\', "/")
+    }
+
+    /// What a sandboxed command could plant to make Shodh's own git, run in the project,
+    /// start a program or send the project's commits elsewhere: every way a transport
+    /// reads the repository's config for the mirror's path. None may take effect.
+    #[tokio::test]
+    async fn a_hostile_project_config_never_runs_anything_or_redirects_the_copy() {
+        let w = world();
+        let mirror = w.host.mirror_dir(&w.repo);
+        let base = w.project.parent().unwrap().to_path_buf();
+        let marker = base.join("ran.txt");
+        let elsewhere = base.join("elsewhere.git");
+        git(&base, &["init", "--bare", "-q", "elsewhere.git"]);
+        let touch = format!("sh -c 'echo ran > \"{}\"'", slashed(&marker));
+        for form in [mirror.display().to_string(), slashed(&mirror)] {
+            // (a) the mirror's path rewritten to another repository;
+            git(
+                &w.project,
+                &[
+                    "config",
+                    "--add",
+                    &format!("url.{}.insteadOf", slashed(&elsewhere)),
+                    &form,
+                ],
+            );
+            // (b) a remote named like the mirror's path, with its own programs;
+            git(
+                &w.project,
+                &["config", &format!("remote.{form}.uploadpack"), &touch],
+            );
+            git(
+                &w.project,
+                &["config", &format!("remote.{form}.receivepack"), &touch],
+            );
+        }
+        // (c) the ext:: transport, allowed, behind a rewrite of the mirror's path;
+        git(&w.project, &["config", "protocol.ext.allow", "always"]);
+        git(
+            &w.project,
+            &[
+                "config",
+                "--add",
+                &format!("url.ext::{touch} %S.insteadOf"),
+                &mirror.display().to_string(),
+            ],
+        );
+        // (d) an ssh command behind an ssh:// rewrite.
+        git(&w.project, &["config", "core.sshCommand", &touch]);
+        git(
+            &w.project,
+            &[
+                "config",
+                "--add",
+                "url.ssh://x/.insteadOf",
+                &slashed(&mirror),
+            ],
+        );
+        let config_before = std::fs::read(w.project.join(".git").join("config")).unwrap();
+
+        w.host
+            .fetch(&w.project, "origin", &w.repo, &token())
+            .await
+            .unwrap();
+        commit(&w.project, "a.txt", "a\n", "Mine");
+        let plan = w
+            .host
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
+            .await
+            .unwrap();
+        w.host
+            .push(&w.project, "origin", &w.repo, "shodh/x", &plan, &token())
+            .await
+            .unwrap();
+
+        assert!(!marker.exists(), "a program from the project's config ran");
+        assert_eq!(
+            git(&elsewhere, &["for-each-ref"]),
+            "",
+            "the copy went to the rewritten repository"
+        );
+        assert_eq!(
+            git(&w.remote, &["rev-parse", "refs/heads/shodh/x"]),
+            plan.sha
+        );
+        assert_eq!(
+            std::fs::read(w.project.join(".git").join("config")).unwrap(),
+            config_before
+        );
+    }
+
+    /// A crafted object from the project (here a commit without an author's email) is
+    /// refused as it enters the mirror, before anything reaches GitHub.
+    #[tokio::test]
+    async fn objects_from_the_project_are_checked_as_they_enter_the_mirror() {
+        let w = world();
+        let tree = git_input(&w.project, &["mktree"], "");
+        let parent = git(&w.project, &["rev-parse", "HEAD"]);
+        let bad = git_input(
+            &w.project,
+            &["hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
+            &format!(
+                "tree {tree}\nparent {parent}\nauthor nobody 1 +0000\ncommitter nobody 1 +0000\n\nBroken\n"
+            ),
+        );
+        git(&w.project, &["update-ref", "refs/heads/main", &bad]);
+        let error = w
+            .host
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, GitError::Failed(_)), "{error:?}");
+        assert_eq!(
+            git(
+                &w.remote,
+                &["for-each-ref", "--format=%(refname)", "refs/heads"]
+            ),
+            "refs/heads/main"
+        );
+    }
+
+    /// A merge commit's own changes (an "evil merge") are listed: its numbers are against
+    /// its first parent and its files against every parent.
+    #[tokio::test]
+    async fn a_merge_commits_own_changes_are_listed() {
+        let w = world();
+        git(&w.project, &["checkout", "-q", "-b", "side"]);
+        commit(&w.project, "side.txt", "side\n", "Side work");
+        git(&w.project, &["checkout", "-q", "main"]);
+        commit(&w.project, "main.txt", "main\n", "Main work");
+        git(
+            &w.project,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "merge",
+                "-q",
+                "--no-ff",
+                "--no-commit",
+                "side",
+            ],
+        );
+        std::fs::write(
+            w.project.join("package.json"),
+            "{\"scripts\":{\"test\":\"curl evil\"}}\n",
+        )
+        .unwrap();
+        git(&w.project, &["add", "-A"]);
+        git(
+            &w.project,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "Merge side",
+            ],
+        );
+        let plan = w
+            .host
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
+            .await
+            .unwrap();
+        assert_eq!(plan.total, 3);
+        let merge = plan
+            .commits
+            .iter()
+            .find(|c| c.merge)
+            .expect("the merge is listed");
+        assert!(merge.files >= 2, "{merge:?}");
+        for file in ["package.json", "side.txt", "main.txt"] {
+            assert!(
+                plan.files.iter().any(|f| f == file),
+                "{file}: {:?}",
+                plan.files
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn workflows_that_run_on_new_branches_are_found() {
+        let w = world();
+        let seed = w.project.parent().unwrap().join("seed");
+        std::fs::create_dir_all(seed.join(".github").join("workflows")).unwrap();
+        std::fs::write(
+            seed.join(".github/workflows/ci.yml"),
+            "on:\n  push:\n  pull_request:\njobs: {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            seed.join(".github/workflows/release.yml"),
+            "on:\n  push:\n    tags: ['v*']\njobs: {}\n",
+        )
+        .unwrap();
+        git(&seed, &["add", "-A"]);
+        git(
+            &seed,
+            &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "CI"],
+        );
+        git(
+            &seed,
+            &["push", "-q", w.remote.to_str().unwrap(), "main:main"],
+        );
+        commit(&w.project, "a.txt", "a\n", "Mine");
+        let plan = w
+            .host
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.push_workflows,
+            vec![".github/workflows/ci.yml".to_string()]
+        );
+    }
+
+    #[test]
+    fn push_triggers_are_read_conservatively() {
+        for runs in [
+            "on: push\n",
+            "on: [push, pull_request]\n",
+            "on:\n  - push\n",
+            "on:\n  push:\n",
+            "on:\n  push: {}\n",
+            "on:\n  push:\n    branches: ['**']\n",
+            "on:\n  push:\n    branches:\n      - 'shodh/**'\n",
+            "on:\n  push:\n    branches-ignore: [main]\n",
+            "on:\n  push:\n    paths: ['src/**']\n",
+            "\"on\":\n  push:\n",
+        ] {
+            assert!(runs_on_push(runs), "{runs}");
+        }
+        for quiet in [
+            "on: pull_request\n",
+            "on:\n  push:\n    branches: [main]\n",
+            "on:\n  push:\n    branches:\n      - main\n      - 'release/*'\n",
+            "on:\n  push:\n    tags: ['v*']\n",
+            "on:\n  workflow_dispatch:\n",
+            "name: push\non: schedule\n",
+        ] {
+            assert!(!runs_on_push(quiet), "{quiet}");
+        }
+    }
+
+    #[test]
+    fn the_token_is_scrubbed_raw_and_as_the_header_carries_it() {
+        let text = format!("x {TOKEN} y {}", encoded(TOKEN));
+        let clean = scrub_all(&text, TOKEN);
+        assert!(
+            !clean.contains(TOKEN) && !clean.contains(&encoded(TOKEN)),
+            "{clean}"
+        );
+    }
+
+    /// A branch is deleted only while it still points at the commit the approval named.
+    #[tokio::test]
+    async fn a_branch_is_deleted_only_while_it_points_where_it_did() {
+        let w = world();
+        commit(&w.project, "a.txt", "a\n", "Mine");
+        let plan = w
+            .host
+            .prepare_push(&w.project, &w.repo, "main", &token(), "call-1")
+            .await
+            .unwrap();
+        w.host
+            .push(&w.project, "origin", &w.repo, "shodh/x", &plan, &token())
+            .await
+            .unwrap();
+        let main = git(&w.remote, &["rev-parse", "refs/heads/main"]);
+        let stale = w
+            .host
+            .delete_branch(&w.repo, "shodh/x", &main, &token())
+            .await
+            .unwrap_err();
+        assert!(matches!(stale, GitError::Rejected(_)), "{stale:?}");
+        assert_eq!(
+            git(&w.remote, &["rev-parse", "refs/heads/shodh/x"]),
+            plan.sha
+        );
+        assert!(w
+            .host
+            .delete_branch(&w.repo, "main", &main, &token())
+            .await
+            .is_err());
+        w.host
+            .delete_branch(&w.repo, "shodh/x", &plan.sha, &token())
+            .await
+            .unwrap();
+        assert_eq!(
+            git(
+                &w.remote,
+                &["for-each-ref", "--format=%(refname)", "refs/heads"]
+            ),
+            "refs/heads/main"
+        );
     }
 }

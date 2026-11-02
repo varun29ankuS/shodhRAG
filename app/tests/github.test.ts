@@ -38,6 +38,7 @@ function status(over: Partial<GitHubStatus> = {}): GitHubStatus {
     installUrl: 'https://github.com/apps/shodh-rag/installations/new',
     authorizedAppsUrl: 'https://github.com/settings/apps/authorizations',
     permissionsNote: 'note',
+    commandsCanReadSignIn: false,
     ...over,
   };
 }

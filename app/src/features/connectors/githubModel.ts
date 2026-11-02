@@ -45,6 +45,8 @@ export interface GitHubStatus {
   installUrl: string;
   authorizedAppsUrl: string;
   permissionsNote: string;
+  /** Commands Shodh runs can read this sign-in (Windows: commands are not sandboxed yet). */
+  commandsCanReadSignIn: boolean;
 }
 
 /** A repository the Shodh app is installed on (`github_available_repos`). */
@@ -83,7 +85,15 @@ export const HARD_LIMITS: readonly string[] = [
 
 /** Code mode, in one line. */
 export const CODE_MODE_NOTE =
-  'In Code mode, commands have no network. Shodh fetches and pushes for the project itself, so no command ever sees your sign-in.';
+  'In Code mode, fetches and pushes go through Shodh itself: commands get no GitHub sign-in in their environment, and on macOS they have no network at all.';
+
+/** Said wherever the sign-in matters while commands are not sandboxed (Windows). */
+export const WINDOWS_COMMANDS_NOTE =
+  'On Windows, commands Shodh runs are not sandboxed yet: a command you approve runs as you and can read this GitHub sign-in and use it beyond the limits set here. Approve commands with that in mind.';
+
+/** What is not yet verified on macOS. */
+export const MACOS_NOTE =
+  'On macOS, commands run in a sandbox with no network. Whether a sandboxed command can read the environment of Shodh’s own git process, which carries the sign-in while a fetch or push runs, is not yet verified.';
 
 /** Why signing out does not revoke on GitHub. */
 export const REVOKE_NOTE =

@@ -5,6 +5,7 @@ import type { StepApproval } from './reducer';
 import { DiffView } from '../workspaces/DiffView';
 import { parseDiff } from '../workspaces/model';
 import { REVIEW_BLOCK_KEYS, reviewTokenFor, unreviewedFiles } from './reviewList';
+import { revealHidden } from './hiddenChars';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -20,7 +21,8 @@ function humanKey(key: string): string {
 
 function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—';
-  if (typeof value === 'string') return value;
+  // Text someone else wrote: characters that hide or reorder text are shown.
+  if (typeof value === 'string') return revealHidden(value);
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (Array.isArray(value)) {
     if (value.length === 0) return 'none';
@@ -167,7 +169,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
           {rows.map(([key, value]) => (
             <React.Fragment key={key}>
               <dt className="text-shodh-text-muted whitespace-nowrap">{key}</dt>
-              <dd className="text-shodh-text break-words whitespace-pre-wrap min-w-0">{value}</dd>
+              <dd className="text-shodh-text break-words whitespace-pre-wrap min-w-0 max-h-64 overflow-y-auto scrollbar-thin">{value}</dd>
             </React.Fragment>
           ))}
         </dl>

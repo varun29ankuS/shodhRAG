@@ -28,7 +28,7 @@ pub const SHODH_PREFIX: &str = "shodh/";
 /// Longest branch name Shodh creates.
 const MAX_BRANCH_CHARS: usize = 100;
 /// Files Shodh never pushes a change to (and the app may not write).
-pub const WORKFLOWS_DIR: &str = ".github/workflows/";
+pub const GITHUB_DIR: &str = ".github/";
 
 /// The user's permissions on one repository (the allowlist entry).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,7 +83,7 @@ pub enum Refusal {
         "{0} has no merged pull request with exactly what the branch holds, so Shodh keeps it."
     )]
     NotMerged(String),
-    #[error("These commits change {0}. Shodh never changes GitHub Actions workflows; push this yourself if you mean to.")]
+    #[error("These commits change {0}. Shodh never changes a repository's .github folder (Actions workflows and actions, Dependabot, CODEOWNERS); push this yourself if you mean to.")]
     Workflows(String),
     #[error("Pull request #{0} is {1}; only an open pull request can be merged.")]
     NotOpen(u64, String),
@@ -117,7 +117,7 @@ pub fn require(grants: &[RepoGrant], repo: &RepoRef, need: Need) -> Result<(), R
 }
 
 /// Whether `name` passes git's ref-name rules and Shodh's own stricter ones.
-fn valid_branch_name(name: &str) -> bool {
+pub fn valid_branch_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().count() <= MAX_BRANCH_CHARS
         && name
@@ -176,12 +176,54 @@ pub fn push_target_ok(
     Ok(())
 }
 
-/// The first workflow file among `paths` (files the pushed commits change).
-pub fn workflow_change<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<String> {
+/// The first file of the repository's `.github/` folder among `paths` (files the pushed
+/// commits change): workflows, actions, Dependabot and CODEOWNERS live there.
+pub fn github_change<'a>(paths: impl IntoIterator<Item = &'a str>) -> Option<String> {
     paths
         .into_iter()
         .map(|p| p.trim().trim_start_matches("./").replace('\\', "/"))
-        .find(|p| p.to_ascii_lowercase().starts_with(WORKFLOWS_DIR))
+        .find(|p| p.to_ascii_lowercase().starts_with(GITHUB_DIR))
+}
+
+/// Files among `paths` that build or test tooling runs (a CI job that runs on the pushed
+/// branch runs them too): build scripts, package manifests, task runners, scripts.
+pub fn build_files<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    const NAMES: [&str; 22] = [
+        "build.rs",
+        "cargo.toml",
+        "cargo.lock",
+        "makefile",
+        "gnumakefile",
+        "justfile",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        ".npmrc",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "tox.ini",
+        "noxfile.py",
+        "conftest.py",
+        "dockerfile",
+        "build.gradle",
+        "pom.xml",
+        "rakefile",
+    ];
+    paths
+        .into_iter()
+        .map(|p| p.trim().replace('\\', "/"))
+        .filter(|p| {
+            let lower = p.to_ascii_lowercase();
+            let name = lower.rsplit('/').next().unwrap_or_default();
+            NAMES.contains(&name)
+                || lower.starts_with("scripts/")
+                || lower.starts_with(".husky/")
+                || lower.ends_with(".mk")
+        })
+        .collect()
 }
 
 /// A merge method.
@@ -317,7 +359,7 @@ pub fn delete_ok(
             && pr
                 .head_repo
                 .as_ref()
-                .is_none_or(|r| r.owner.eq_ignore_ascii_case(head_owner))
+                .is_some_and(|r| r.owner.eq_ignore_ascii_case(head_owner))
     });
     if !merged {
         return Err(Refusal::NotMerged(branch.to_string()));
@@ -381,6 +423,7 @@ mod tests {
             author: "ann".into(),
             url: String::new(),
             head_repo: Some(repo("hello")),
+            head_owner: "octo-org".into(),
             head_ref: "shodh/fix".into(),
             head_sha: "abc".into(),
             base_ref: "main".into(),
@@ -483,20 +526,42 @@ mod tests {
     }
 
     #[test]
-    fn workflow_changes_are_found() {
+    fn changes_to_the_github_folder_are_found() {
         assert_eq!(
-            workflow_change(["src/a.rs", ".github/workflows/ci.yml"]),
+            github_change(["src/a.rs", ".github/workflows/ci.yml"]),
             Some(".github/workflows/ci.yml".into())
         );
         assert_eq!(
-            workflow_change([".GitHub/Workflows/x.yml"]),
+            github_change([".GitHub/Workflows/x.yml"]),
             Some(".GitHub/Workflows/x.yml".into())
         );
         assert_eq!(
-            workflow_change(["./.github/workflows/x.yml"]),
+            github_change(["./.github/workflows/x.yml"]),
             Some(".github/workflows/x.yml".into())
         );
-        assert_eq!(workflow_change(["src/a.rs", ".github/CODEOWNERS"]), None);
+        for other in [
+            ".github/CODEOWNERS",
+            ".github/dependabot.yml",
+            ".github/actions/setup/action.yml",
+        ] {
+            assert_eq!(github_change(["src/a.rs", other]), Some(other.into()));
+        }
+        assert_eq!(github_change(["src/a.rs", "docs/github.md"]), None);
+        assert_eq!(
+            build_files([
+                "src/a.rs",
+                "package.json",
+                "crates/x/build.rs",
+                "scripts/ci.sh",
+                "Makefile"
+            ]),
+            vec![
+                "package.json",
+                "crates/x/build.rs",
+                "scripts/ci.sh",
+                "Makefile"
+            ]
+        );
     }
 
     #[test]
@@ -613,8 +678,22 @@ mod tests {
             ..branch.clone()
         };
         assert!(matches!(
-            delete_ok("shodh/fix", &repo, &protected, "octo-org", &[merged]),
+            delete_ok(
+                "shodh/fix",
+                &repo,
+                &protected,
+                "octo-org",
+                &[merged.clone()]
+            ),
             Err(Refusal::Protected(_))
+        ));
+        // A pull request whose head repository GitHub no longer names (a deleted fork) is
+        // not proof the branch here was merged.
+        let mut orphan = merged;
+        orphan.head_repo = None;
+        assert!(matches!(
+            delete_ok("shodh/fix", &repo, &branch, "octo-org", &[orphan]),
+            Err(Refusal::NotMerged(_))
         ));
     }
 }

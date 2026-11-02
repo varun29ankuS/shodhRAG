@@ -10,7 +10,9 @@ import {
   CODE_MODE_NOTE,
   HARD_LIMITS,
   LEVEL_TEXT,
+  MACOS_NOTE,
   REVOKE_NOTE,
+  WINDOWS_COMMANDS_NOTE,
   activityTime,
   githubNextSteps,
   githubPill,
@@ -93,6 +95,12 @@ function OverviewTab({ status, now, onTab, onSignIn }: TabProps & { onTab: (tab:
           </button>
         </Panel>
       </div>
+
+      {status.commandsCanReadSignIn && (
+        <Callout tone="warning" role="status">
+          <p className="m-0">{WINDOWS_COMMANDS_NOTE}</p>
+        </Callout>
+      )}
 
       {steps.length > 0 && (
         <Section title="Next steps">
@@ -349,6 +357,12 @@ function SettingsTab({ status, busy, onSignOut, onSignIn }: TabProps & { onSignO
             <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" /> Choose where it is installed
           </button>
         </div>
+      </Section>
+      <Section title="Known limits" description="What these permissions do not cover yet, said plainly.">
+        <ul className="m-0 pl-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">
+          {status.commandsCanReadSignIn && <li>{WINDOWS_COMMANDS_NOTE}</li>}
+          <li>{MACOS_NOTE}</li>
+        </ul>
       </Section>
       <Section title="Never, whatever you allow">
         <ul className="m-0 pl-5 list-disc flex flex-col gap-1 text-small text-shodh-text-secondary max-w-[70ch]">

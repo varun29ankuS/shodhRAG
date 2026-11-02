@@ -41,6 +41,8 @@ pub enum ApiError {
     Forbidden(String),
     #[error("GitHub has no such {0}, or the Shodh app is not installed on it")]
     NotFound(String),
+    #[error("This repository moved on GitHub (it was renamed or transferred). Point the project's remote at its new name, then ask again.")]
+    Moved,
     #[error("GitHub refused this ({status}): {message}")]
     Refused { status: u16, message: String },
     #[error("GitHub could not be reached: {0}")]
@@ -122,6 +124,8 @@ pub struct PullRequest {
     pub url: String,
     /// The head's repository and branch.
     pub head_repo: Option<RepoRef>,
+    /// Who owns the head: the fork's owner for a pull request from a fork.
+    pub head_owner: String,
     pub head_ref: String,
     pub head_sha: String,
     pub base_ref: String,
@@ -295,6 +299,7 @@ impl GitHubApi {
             _ if rate_limited => ApiError::RateLimited { reset_at },
             403 => ApiError::Forbidden(message),
             404 => ApiError::NotFound(what.to_string()),
+            301 | 302 | 307 | 308 => ApiError::Moved,
             _ if status >= 500 => ApiError::Network(format!("GitHub answered HTTP {status}")),
             _ => ApiError::Refused { status, message },
         })
@@ -636,28 +641,63 @@ impl GitHubApi {
         .map(|_| ())
     }
 
-    /// Deletes branch `branch`.
-    pub async fn delete_branch(
+    /// The rules that apply to `branch` (`GET /repos/{o}/{r}/rules/branches/{branch}`,
+    /// readable with Metadata: read): rulesets only; classic branch protection settings
+    /// need Administration access and are not read. `None` when GitHub would not say.
+    pub async fn branch_rules(
         &self,
         token: &UserToken,
         repo: &RepoRef,
         branch: &str,
-    ) -> Result<(), ApiError> {
-        self.call(
-            token,
-            Method::DELETE,
-            &format!(
-                "repos/{}/{}/git/refs/heads/{}",
-                repo.owner,
-                repo.name,
-                segment(branch, true)
-            ),
-            None,
-            "branch",
-        )
-        .await
-        .map(|_| ())
+    ) -> Result<Option<BranchRules>, ApiError> {
+        let path = format!(
+            "repos/{}/{}/rules/branches/{}",
+            repo.owner,
+            repo.name,
+            segment(branch, true)
+        );
+        let v = match self.get(token, &path, "branch").await {
+            Ok(v) => v,
+            Err(ApiError::NotFound(_)) | Err(ApiError::Forbidden(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let mut rules = BranchRules::default();
+        for rule in v.as_array().cloned().unwrap_or_default() {
+            let kind = text(&rule, "type");
+            let params = rule.get("parameters").cloned().unwrap_or(Value::Null);
+            match kind.as_str() {
+                "pull_request" => {
+                    rules.required_reviews = rules
+                        .required_reviews
+                        .max(number(&params, "required_approving_review_count"));
+                    rules.pull_request_required = true;
+                }
+                "required_status_checks" => {
+                    for check in params
+                        .get("required_status_checks")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                    {
+                        let name = text(&check, "context");
+                        if !name.is_empty() && !rules.required_checks.contains(&name) {
+                            rules.required_checks.push(name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(Some(rules))
     }
+}
+
+/// What a branch's rulesets require before a merge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchRules {
+    pub pull_request_required: bool,
+    pub required_reviews: u64,
+    pub required_checks: Vec<String>,
 }
 
 fn repo_info(v: &Value) -> Option<RepoInfo> {
@@ -693,6 +733,12 @@ fn pull_of(v: &Value) -> PullRequest {
         author: login_of(v),
         url: text(v, "html_url"),
         head_repo: head.get("repo").and_then(repo_of),
+        head_owner: head
+            .get("user")
+            .map(|u| text(u, "login"))
+            .filter(|l| !l.is_empty())
+            .or_else(|| head.get("repo").and_then(repo_of).map(|r| r.owner))
+            .unwrap_or_default(),
         head_ref: text(&head, "ref"),
         head_sha: text(&head, "sha"),
         base_ref: text(&base, "ref"),
@@ -864,5 +910,41 @@ pub(crate) mod tests {
         assert_eq!(pr.head_repo, Some(RepoRef::new("ann", "hello").unwrap()));
         assert_eq!(pr.body, "");
         assert_eq!(pr.mergeable_state, "clean");
+        assert_eq!(pr.head_owner, "ann");
+    }
+
+    #[tokio::test]
+    async fn branch_rules_are_read_and_a_moved_repository_is_named() {
+        let (base, _) = serve(vec![
+            Reply::json(
+                200,
+                json!([
+                    {"type": "pull_request", "parameters": {"required_approving_review_count": 2}},
+                    {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci/test"}, {"context": "lint"}]}},
+                    {"type": "deletion"}
+                ]),
+            ),
+            Reply::json(404, json!({"message": "Not Found"})),
+            Reply::json(301, json!({"message": "Moved Permanently"})),
+        ])
+        .await;
+        let api = GitHubApi::with_base(&base).unwrap();
+        let repo = RepoRef::new("octo-org", "hello").unwrap();
+        let rules = api
+            .branch_rules(&token(), &repo, "main")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(rules.pull_request_required);
+        assert_eq!(rules.required_reviews, 2);
+        assert_eq!(rules.required_checks, vec!["ci/test", "lint"]);
+        assert_eq!(
+            api.branch_rules(&token(), &repo, "main").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            api.repo(&token(), &repo).await.unwrap_err(),
+            ApiError::Moved
+        );
     }
 }

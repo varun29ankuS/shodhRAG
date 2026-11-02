@@ -297,14 +297,23 @@ fn failure<T>(output: &Output) -> Result<T, GitError> {
     let stdout = output.stdout.as_str();
     let stderr = output.stderr.trim();
     let lower = stderr.to_ascii_lowercase();
+    // Only a refused sign-in is one: a 403 (the user may only read, or the app is not
+    // installed there) leaves the sign-in good and is said as a refusal.
     if lower.contains("authentication failed")
         || lower.contains("could not read username")
         || lower.contains("invalid username or password")
         || lower.contains("http 401")
-        || lower.contains("error: 403")
-        || (lower.contains("permission to ") && lower.contains("denied"))
+        || lower.contains("error: 401")
     {
         return Err(GitError::AuthFailed);
+    }
+    if lower.contains("error: 403")
+        || lower.contains("http 403")
+        || (lower.contains("permission to ") && lower.contains("denied"))
+    {
+        return Err(GitError::Failed(
+            "GitHub refused this: you, or the Shodh app on this repository, may not write to it. Check your access and where the app is installed.".to_string(),
+        ));
     }
     let message: String = if stderr.is_empty() {
         stdout.trim().chars().take(600).collect()
@@ -499,7 +508,7 @@ impl HostGit {
     /// Fetches `repo` from GitHub into the project's `refs/remotes/<remote>/…` (a fetch:
     /// the project's own branches and files do not change). Returns how many branches
     /// the remote has.
-    pub async fn fetch(
+    async fn fetch_in(
         &self,
         project: &Path,
         remote: &str,
@@ -542,7 +551,7 @@ impl HostGit {
     /// Prepares a push of the project's current commit to `repo`: brings GitHub's
     /// branches into the mirror, copies the commit there, and lists what GitHub does not
     /// have yet. Nothing is sent to GitHub.
-    pub async fn prepare_push(
+    async fn prepare_push_in(
         &self,
         project: &Path,
         repo: &RepoRef,
@@ -656,7 +665,7 @@ impl HostGit {
 
     /// Pushes exactly `plan.sha` to `refs/heads/<branch>` of `repo` (no force), and
     /// records it in the project's `refs/remotes/<remote>/<branch>`.
-    pub async fn push(
+    async fn push_in(
         &self,
         project: &Path,
         remote: &str,
@@ -713,6 +722,75 @@ impl HostGit {
             tracing::warn!(target: "shodh::github", error = %e, "the pushed branch was not recorded in the project");
         }
         Ok(())
+    }
+
+    /// `error` without the mirror's folder (it holds the user's name): the model and the
+    /// user are told "Shodh's copy of owner/repo" instead.
+    fn hide(&self, repo: &RepoRef, error: GitError) -> GitError {
+        let dir = self.mirror_dir(repo);
+        let shown = format!("Shodh's copy of {repo}");
+        let root = self.root.display().to_string();
+        let scrub = |text: String| {
+            let mut out = text;
+            for form in [
+                dir.display().to_string(),
+                dir.display().to_string().replace('\\', "/"),
+            ] {
+                out = out.replace(&form, &shown);
+            }
+            for form in [root.clone(), root.replace('\\', "/")] {
+                out = out.replace(&form, "Shodh's data folder");
+            }
+            out
+        };
+        match error {
+            GitError::Failed(text) => GitError::Failed(scrub(text)),
+            GitError::Rejected(text) => GitError::Rejected(scrub(text)),
+            other => other,
+        }
+    }
+
+    /// Fetches `repo` from GitHub into the project's `refs/remotes/<remote>/…` (a fetch:
+    /// the project's own branches and files do not change). Returns how many branches
+    /// the remote has.
+    pub async fn fetch(
+        &self,
+        project: &Path,
+        remote: &str,
+        repo: &RepoRef,
+        token: &UserToken,
+    ) -> Result<usize, GitError> {
+        self.fetch_in(project, remote, repo, token)
+            .await
+            .map_err(|e| self.hide(repo, e))
+    }
+
+    /// Prepares a push (see [`Self::prepare_push_in`]); nothing is sent to GitHub.
+    pub async fn prepare_push(
+        &self,
+        project: &Path,
+        repo: &RepoRef,
+        token: &UserToken,
+        call: &str,
+    ) -> Result<PushPlan, GitError> {
+        self.prepare_push_in(project, repo, token, call)
+            .await
+            .map_err(|e| self.hide(repo, e))
+    }
+
+    /// Pushes exactly `plan.sha` (see [`Self::push_in`]).
+    pub async fn push(
+        &self,
+        project: &Path,
+        remote: &str,
+        repo: &RepoRef,
+        branch: &str,
+        plan: &PushPlan,
+        token: &UserToken,
+    ) -> Result<(), GitError> {
+        self.push_in(project, remote, repo, branch, plan, token)
+            .await
+            .map_err(|e| self.hide(repo, e))
     }
 
     /// Removes every outgoing ref of the mirror.
@@ -1038,6 +1116,56 @@ mod tests {
                 .map(String::as_str),
             Some("always")
         );
+    }
+
+    fn failed(stderr: &str) -> GitError {
+        failure::<()>(&Output {
+            ok: false,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+        })
+        .unwrap_err()
+    }
+
+    #[test]
+    fn only_a_refused_sign_in_is_an_auth_failure_never_a_403() {
+        for refused in [
+            "fatal: Authentication failed for 'https://github.com/a/b.git/'",
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            "error: RPC failed; HTTP 401 curl 22 The requested URL returned error: 401",
+        ] {
+            assert_eq!(failed(refused), GitError::AuthFailed, "{refused}");
+        }
+        for forbidden in [
+            "remote: Permission to octo-org/hello.git denied to ann.\nfatal: unable to access 'https://github.com/octo-org/hello.git/': The requested URL returned error: 403",
+            "error: RPC failed; HTTP 403 curl 22",
+        ] {
+            let error = failed(forbidden);
+            assert!(
+                matches!(&error, GitError::Failed(text) if text.contains("may not write")),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_never_show_the_mirrors_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = HostGit::new(dir.path());
+        let repo = RepoRef::new("octo-org", "hello").unwrap();
+        let mirror = host.mirror_dir(&repo);
+        for path in [
+            mirror.display().to_string(),
+            mirror.display().to_string().replace('\\', "/"),
+        ] {
+            let error = host.hide(
+                &repo,
+                GitError::Failed(format!("fatal: '{path}' is broken")),
+            );
+            let text = error.to_string();
+            assert!(!text.contains(&dir.path().display().to_string()), "{text}");
+            assert!(text.contains("Shodh's copy of octo-org/hello"), "{text}");
+        }
     }
 
     #[test]

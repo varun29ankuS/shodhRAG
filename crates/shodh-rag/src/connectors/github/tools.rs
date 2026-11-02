@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -85,6 +86,9 @@ const MAX_COMMENT_CHARS: usize = 2_000;
 const COMMENTS_SHOWN: usize = 10;
 /// GitHub's own limit on a comment's length.
 const MAX_POST_CHARS: usize = 65_536;
+/// How long what a prompt showed is kept for its call: longer than any prompt waits.
+const PENDING_KEPT: Duration =
+    Duration::from_secs(crate::harness::tools::APPROVAL_TIMEOUT.as_secs() + 60);
 /// Longest pull request title.
 const MAX_TITLE_CHARS: usize = 256;
 
@@ -190,7 +194,7 @@ struct Shared {
     host: Arc<dyn GitHubHost>,
     /// The Code session's project, when there is one.
     folder: Option<PathBuf>,
-    pending: Mutex<HashMap<String, Pending>>,
+    pending: Mutex<HashMap<String, (Instant, Pending)>>,
 }
 
 /// One GitHub tool.
@@ -369,12 +373,16 @@ impl GitHubTool {
             .ok_or_else(|| invalid(self.kind, "number: the issue or pull request number"))
     }
 
+    /// Keeps what a prompt showed until its call runs. A prompt that was declined or
+    /// timed out never runs: its entry goes once it is older than any prompt can wait.
     fn stash(&self, ctx: &ToolContext, pending: Pending) {
-        self.shared
+        let mut map = self
+            .shared
             .pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(ctx.step_id.clone(), pending);
+            .unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, (at, _)| at.elapsed() <= PENDING_KEPT);
+        map.insert(ctx.step_id.clone(), (Instant::now(), pending));
     }
 
     fn take(&self, ctx: &ToolContext) -> Option<Pending> {
@@ -383,6 +391,8 @@ impl GitHubTool {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&ctx.step_id)
+            .filter(|(at, _)| at.elapsed() <= PENDING_KEPT)
+            .map(|(_, pending)| pending)
     }
 
     // ── Previews (each write's prompt) ─────────────────────────────

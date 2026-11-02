@@ -4,7 +4,7 @@
  * Pure, so `node --test` loads it directly.
  */
 
-export type ConnectorId = 'slack' | 'telegram';
+export type ConnectorId = 'slack' | 'telegram' | 'github';
 
 export interface ConnectorInfo {
   id: ConnectorId;
@@ -23,5 +23,10 @@ export const CONNECTORS: readonly ConnectorInfo[] = [
     id: 'telegram',
     name: 'Telegram',
     summary: 'Ask Shodh from your phone, with your whole library and memories. Others only if you invite them.',
+  },
+  {
+    id: 'github',
+    name: 'GitHub',
+    summary: 'Shodh fetches, pushes its own branches and opens pull requests on the repositories you choose, each write with your yes.',
   },
 ];

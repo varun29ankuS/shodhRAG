@@ -2045,7 +2045,7 @@ pub fn plan_change(state: &GitState, recorded: Option<&CodeBranch>, folder: &str
 /// The empty folder Shodh's git commands take their hooks from, so no hook
 /// of the repository (or of a `core.hooksPath` in its config) ever runs.
 /// Created on first use; `Err` when it cannot be, or has files in it.
-fn empty_hooks_dir() -> Result<PathBuf, String> {
+pub(crate) fn empty_hooks_dir() -> Result<PathBuf, String> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     let dir = DIR
         .get_or_init(|| dirs::data_local_dir().map(|base| base.join("shodh").join("git-no-hooks")))
@@ -2077,7 +2077,7 @@ fn hardening(hooks: &Path) -> [String; 3] {
 
 /// git in `folder` with [`hardening`]; [`run_git`] also switches content
 /// filters off.
-fn git(folder: &Path) -> Result<Command, String> {
+pub(crate) fn git(folder: &Path) -> Result<Command, String> {
     let hooks = empty_hooks_dir()?;
     let mut command = Command::new("git");
     command.arg("-C").arg(folder);

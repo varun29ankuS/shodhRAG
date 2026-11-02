@@ -202,6 +202,8 @@ pub struct AgentHost {
     pub pdf: Arc<dyn crate::pdf_export::PdfPrinter>,
     /// Workspaces (opened on first use).
     pub workspaces: WorkspaceState,
+    /// The GitHub connector: its sign-in and the user's list, read afresh for each call.
+    pub github: Arc<dyn shodh_rag::connectors::github::tools::GitHubHost>,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -245,6 +247,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     graph::register(&mut registry, &host)?;
     figures::register(&mut registry, &host)?;
     workspaces::register(&mut registry, &host)?;
+    shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
 
@@ -462,6 +465,7 @@ pub(crate) mod testing {
             visuals: VisualState::at(Some((dir.path().join("shodh.db"), None))),
             pdf: printer.clone(),
             workspaces: WorkspaceState::at(Some((dir.path().join("shodh.db"), None))),
+            github: Arc::new(NoGitHub),
         });
         TestHost {
             dir,
@@ -469,6 +473,30 @@ pub(crate) mod testing {
             effects,
             roots,
             printer,
+        }
+    }
+
+    /// A GitHub connector nobody signed in to (the tests never reach GitHub).
+    pub struct NoGitHub;
+
+    #[async_trait::async_trait]
+    impl shodh_rag::connectors::github::tools::GitHubHost for NoGitHub {
+        async fn session(&self) -> Result<shodh_rag::connectors::github::tools::Session, String> {
+            Err("Shodh is not signed in to GitHub.".to_string())
+        }
+        async fn grant(
+            &self,
+            _repo: &shodh_rag::connectors::github::remote::RepoRef,
+            _write: bool,
+        ) -> Result<(), String> {
+            Err("Shodh is not signed in to GitHub.".to_string())
+        }
+        fn notify(&self, _notice: shodh_rag::connectors::github::tools::GitHubNotice) {}
+        async fn activity(
+            &self,
+            _limit: usize,
+        ) -> Vec<shodh_rag::connectors::github::tools::ActivityItem> {
+            Vec::new()
         }
     }
 
@@ -533,6 +561,7 @@ pub(crate) mod testing {
             research: t.host.research.clone(),
             pdf: t.host.pdf.clone(),
             workspaces: t.host.workspaces.clone(),
+            github: t.host.github.clone(),
         });
         TestHost { host, ..t }
     }
@@ -551,6 +580,7 @@ pub(crate) mod testing {
             research: t.host.research.clone(),
             pdf: t.host.pdf.clone(),
             workspaces: t.host.workspaces.clone(),
+            github: t.host.github.clone(),
         })
     }
 
@@ -571,6 +601,7 @@ pub(crate) mod testing {
             research: t.host.research.clone(),
             pdf,
             workspaces: t.host.workspaces.clone(),
+            github: t.host.github.clone(),
         })
     }
 

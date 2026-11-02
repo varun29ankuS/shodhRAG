@@ -613,7 +613,7 @@ pub const AGENT_DENIED: [(&str, &str); 28] = [
     ("check_for_updates", "Whether Shodh contacts the update server, and which version of itself it runs, is the user's decision."),
     ("notifications", "Whether and when Shodh interrupts the user with desktop notifications is the user's decision."),
     ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
-    ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, and how many model calls they may spend; only the user may change that."),
+    ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, how many model calls they may spend, and which GitHub repositories Shodh may read, push to or merge in; only the user may change that."),
     ("use_gpu", "Whether search uses the graphics card is the user's call about their computer."),
 ];
 
@@ -817,6 +817,7 @@ pub fn broadcast(app: &AppHandle, settings: &AppSettings) {
     // Local-only mode switched on stops the Slack connection; off again resumes it.
     crate::connectors::slack::settings_changed(app, settings);
     crate::connectors::telegram::settings_changed(app, settings);
+    crate::connectors::github::settings_changed(app, settings);
     if let Err(e) = app.emit(APP_SETTINGS_CHANGED_EVENT, settings) {
         tracing::warn!("Failed to emit {}: {}", APP_SETTINGS_CHANGED_EVENT, e);
     }

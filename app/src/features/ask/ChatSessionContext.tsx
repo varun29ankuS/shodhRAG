@@ -36,6 +36,8 @@ import {
   toStoredCheckpoint,
 } from './messageStore';
 import type { SideSummaryRef } from '../focus/summary';
+import { requestConnectorPage } from '../connectors/navigation';
+import { githubFocus } from '../connectors/githubModel';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
 import { onApprovalAnswered } from '../inbox/approvalBus';
@@ -407,6 +409,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         } else if (nav.target) {
           publishTarget(nav.target);
         }
+        // A GitHub action opens the GitHub page, with the repository it concerns highlighted.
+        const github = tab === 'connectors' ? githubFocus(nav.focus) : null;
+        if (github) requestConnectorPage({ connector: 'github', tab: github.tab, item: github.item });
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
       }
     }

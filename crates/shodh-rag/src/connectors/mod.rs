@@ -2,5 +2,6 @@
 //! wires it to its settings, secrets and the Connectors view.
 
 pub mod delivery;
+pub mod github;
 pub mod slack;
 pub mod telegram;

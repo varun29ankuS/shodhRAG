@@ -2,6 +2,8 @@
 //! connector; their settings live under `connectors` in `app_settings.json`.
 
 pub mod conversations;
+pub mod github;
+pub mod github_notices;
 pub mod slack;
 pub mod slack_index;
 pub mod slack_notices;
@@ -19,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub struct ConnectorsPrefs {
     pub slack: slack::SlackPrefs,
     pub telegram: telegram::TelegramPrefs,
+    pub github: github::GitHubPrefs,
 }
 
 /// Waits up to `limit` for a connector's loop that was told to stop to end, and aborts it

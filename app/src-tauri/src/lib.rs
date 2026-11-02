@@ -59,7 +59,7 @@ use tauri::Manager;
 
 // The Slack card's commands are registered as `slack::…` (one module level, as the
 // agent coverage check reads them).
-use connectors::{slack, slack_index, telegram};
+use connectors::{github, slack, slack_index, telegram};
 
 use enhanced_rag_commands::IndexingState;
 use llm_commands::{ApiKeys, LLMState};
@@ -530,6 +530,9 @@ pub fn run() {
             // mode is off).
             app.manage(connectors::telegram::TelegramState::new(&app_data_dir));
             connectors::telegram::start_saved(app.handle());
+            // The GitHub connector: nothing runs until the user signs in; its tools ask for
+            // the sign-in afresh on every call.
+            app.manage(connectors::github::GitHubState::new(&app_data_dir));
             // Learning from conversations (needs the memory, LLM and audit states).
             memory_learn::manage(app, &app_data_dir);
 
@@ -862,6 +865,14 @@ pub fn run() {
             telegram::telegram_remove_person,
             telegram::telegram_set_daily_cap,
             telegram::telegram_disconnect,
+            github::github_status,
+            github::github_sign_in_start,
+            github::github_sign_in_cancel,
+            github::github_sign_out,
+            github::github_available_repos,
+            github::github_set_repo,
+            github::github_remove_repo,
+            github::github_activity,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,

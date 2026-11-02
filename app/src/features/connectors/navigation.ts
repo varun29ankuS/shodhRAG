@@ -11,6 +11,7 @@
 import type { ConnectorId } from './registry.ts';
 import type { SlackTabId } from './slackModel.ts';
 import type { TelegramTabId } from './telegramModel.ts';
+import type { GitHubTabId } from './githubModel.ts';
 import { OneShot } from '../../lib/oneShot.ts';
 
 /** The tabs of the Slack page, in order. */
@@ -33,20 +34,34 @@ export const TELEGRAM_TAB_LABELS: Record<TelegramTabId, string> = {
   settings: 'Settings',
 };
 
+/** The tabs of the GitHub page, in order. */
+export const GITHUB_TABS: readonly GitHubTabId[] = ['overview', 'repositories', 'activity', 'settings'];
+
+export const GITHUB_TAB_LABELS: Record<GitHubTabId, string> = {
+  overview: 'Overview',
+  repositories: 'Repositories',
+  activity: 'Activity',
+  settings: 'Settings',
+};
+
 /** Any connector's tab. */
-export type ConnectorTabId = SlackTabId | TelegramTabId;
+export type ConnectorTabId = SlackTabId | TelegramTabId | GitHubTabId;
 
 /** A connector's page, at a tab (its first when `null`). */
 export interface ConnectorPage {
   connector: ConnectorId;
   tab: ConnectorTabId | null;
+  /** An item the page highlights (a GitHub repository, `owner/name`), when the agent named one. */
+  item?: string | null;
 }
 
-const CONNECTOR_IDS: readonly ConnectorId[] = ['slack', 'telegram'];
+const CONNECTOR_IDS: readonly ConnectorId[] = ['slack', 'telegram', 'github'];
 
 /** The tabs of `connector`'s page. */
 export function tabsOf(connector: ConnectorId): readonly ConnectorTabId[] {
-  return connector === 'telegram' ? TELEGRAM_TABS : SLACK_TABS;
+  if (connector === 'telegram') return TELEGRAM_TABS;
+  if (connector === 'github') return GITHUB_TABS;
+  return SLACK_TABS;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

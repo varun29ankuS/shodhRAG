@@ -1784,6 +1784,11 @@ async fn start_attempt(
         Some(folder) => {
             let mut prompt = code_system_prompt(folder, instructions.as_deref());
             prompt.push_str(GITHUB_CODE_NOTE);
+            if !shodh_rag::harness::run_command::commands_sandboxed() {
+                prompt.push_str(
+                    " On this system commands are not sandboxed, so in Code mode the GitHub tools only read: github_push, github_open_pr, github_comment, github_merge_pr and github_delete_branch refuse. Tell the user to do those from a normal chat.",
+                );
+            }
             let others: Vec<String> = extra_names
                 .iter()
                 .filter(|n| {

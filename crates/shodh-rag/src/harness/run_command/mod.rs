@@ -407,10 +407,18 @@ pub const SANDBOX_WINDOWS: &str = "Not sandboxed on Windows yet — runs with yo
 /// What they say where commands do not run.
 pub const SANDBOX_NONE: &str = "Not sandboxed: commands do not run on this system.";
 
+/// Whether commands run in an operating-system sandbox on this system (macOS today:
+/// [`SANDBOX_MAC`]). Anything that holds back because commands are not contained (the
+/// GitHub connector's writes from Code mode) keys on this, so it lifts when a system's
+/// sandbox ships.
+pub fn commands_sandboxed() -> bool {
+    cfg!(target_os = "macos")
+}
+
 /// What the approval prompt and the live panel say about the sandbox
 /// commands run in on this system.
 pub fn sandbox_text() -> &'static str {
-    if cfg!(target_os = "macos") {
+    if commands_sandboxed() {
         SANDBOX_MAC
     } else if cfg!(windows) {
         SANDBOX_WINDOWS

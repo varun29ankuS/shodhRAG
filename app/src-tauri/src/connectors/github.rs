@@ -20,7 +20,11 @@
 //! **Known limit (Windows):** commands Shodh runs are not sandboxed on Windows yet, so a
 //! command the user approves runs as the user and can read this sign-in from the
 //! credential store and change `app_settings.json`. The limits here bind Shodh's own
-//! tools, not such a command; the page says so (`commands_can_read_sign_in`).
+//! tools, not such a command. So, while commands are not sandboxed there, Code mode is
+//! read-only for GitHub (the tools refuse every write); normal chats still write, each
+//! approved. A command can still read the token itself and use GitHub's API directly:
+//! the gate removes the agent-driven path, not that one. The page says so
+//! (`commands_can_read_sign_in`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -292,6 +296,7 @@ pub struct GitHubStatus {
     pub authorized_apps_url: &'static str,
     pub permissions_note: &'static str,
     /// Commands Shodh runs can read this sign-in (Windows: commands are not sandboxed yet).
+    /// Code mode is then read-only for GitHub (`code_tools`), and the page says so.
     pub commands_can_read_sign_in: bool,
 }
 
@@ -363,7 +368,8 @@ fn status_of(settings: &AppSettings, state: &GitHubState) -> GitHubStatus {
         install_url: APP_INSTALL_URL,
         authorized_apps_url: AUTHORIZED_APPS_URL,
         permissions_note: GITHUB_PERMISSIONS_NOTE,
-        commands_can_read_sign_in: cfg!(windows),
+        commands_can_read_sign_in: cfg!(windows)
+            && !shodh_rag::harness::run_command::commands_sandboxed(),
     }
 }
 

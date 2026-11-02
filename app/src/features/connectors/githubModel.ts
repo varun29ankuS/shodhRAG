@@ -89,7 +89,7 @@ export const CODE_MODE_NOTE =
 
 /** Said wherever the sign-in matters while commands are not sandboxed (Windows). */
 export const WINDOWS_COMMANDS_NOTE =
-  'On Windows, commands Shodh runs are not sandboxed yet: a command you approve runs as you and can read this GitHub sign-in and use it beyond the limits set here. Approve commands with that in mind.';
+  'On Windows, Code mode can’t write to GitHub yet: commands there aren’t sandboxed, so an approved command could reach your GitHub sign-in. In Code mode Shodh still fetches and reads issues and pull requests; pushes, pull requests, comments, merges and branch deletions work from a normal chat, each with your yes. One risk remains: a command you approve runs as you and could read the sign-in from Windows Credential Manager and use GitHub directly. Approve commands with that in mind.';
 
 /** What is not yet verified on macOS. */
 export const MACOS_NOTE =

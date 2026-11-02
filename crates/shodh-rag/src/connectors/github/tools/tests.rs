@@ -84,9 +84,18 @@ fn ask_registry(host: Arc<FakeHost>) -> Arc<ToolRegistry> {
     Arc::new(registry)
 }
 
+/// A Code session on a system whose commands are OS-sandboxed (macOS).
 fn code_registry(host: Arc<FakeHost>, folder: &Path) -> Arc<ToolRegistry> {
+    code_registry_sandboxed(host, folder, true)
+}
+
+fn code_registry_sandboxed(
+    host: Arc<FakeHost>,
+    folder: &Path,
+    sandboxed: bool,
+) -> Arc<ToolRegistry> {
     let mut registry = ToolRegistry::new();
-    for tool in code_tools(host, folder) {
+    for tool in code_tools_sandboxed(host, folder, sandboxed) {
         registry.register(tool).unwrap();
     }
     Arc::new(registry)
@@ -1176,4 +1185,104 @@ fn a_command_never_inherits_a_github_token() {
     for (name, value) in &env {
         assert!(!value.contains(TOKEN), "{name} carries the token");
     }
+}
+
+/// Where commands are not OS-sandboxed (Windows today) a Code session may read GitHub
+/// but not write to it; a normal chat and a sandboxed Code session (macOS) may write.
+#[tokio::test]
+async fn code_mode_without_a_sandbox_never_writes_to_github() {
+    let project = Project::new();
+    commit(&project.path(), "a.txt", "a\n", "Mine");
+    let fake = host(Some(session(
+        &nowhere(),
+        &project.data(),
+        &project.git_base,
+        vec![grant("octo-org", "hello", true, true)],
+    )));
+    let unsandboxed = code_registry_sandboxed(fake.clone(), &project.path(), false);
+    for (tool, args) in [
+        (GITHUB_PUSH, json!({"topic": "fix"})),
+        (
+            GITHUB_OPEN_PR,
+            json!({"repo": "octo-org/hello", "branch": "shodh/fix", "title": "T"}),
+        ),
+        (
+            GITHUB_COMMENT,
+            json!({"repo": "octo-org/hello", "number": 1, "body": "Hi"}),
+        ),
+        (
+            GITHUB_MERGE_PR,
+            json!({"repo": "octo-org/hello", "number": 1}),
+        ),
+        (
+            GITHUB_DELETE_BRANCH,
+            json!({"repo": "octo-org/hello", "branch": "shodh/fix"}),
+        ),
+    ] {
+        let (outcome, asked) = run(&unsandboxed, tool, args, None, false).await;
+        assert!(!outcome.ok && asked.is_empty(), "{tool} must not ask");
+        assert!(
+            outcome.text_for_model.contains(CODE_WRITES_BLOCKED),
+            "{tool}: {}",
+            outcome.text_for_model
+        );
+    }
+    // Reads are not held back there: a read reaches its own checks (here GitHub, which
+    // nothing answers), never the refusal.
+    let (read, _) = run(
+        &unsandboxed,
+        GITHUB_READ_ISSUE,
+        json!({"repo": "octo-org/hello", "number": 1}),
+        None,
+        false,
+    )
+    .await;
+    assert!(!read.ok);
+    assert!(!read.text_for_model.contains(CODE_WRITES_BLOCKED));
+    assert!(
+        read.text_for_model.contains("could not be reached"),
+        "{}",
+        read.text_for_model
+    );
+
+    // A sandboxed Code session (macOS) and a normal chat ask as designed.
+    let (base, _) = serve(vec![Reply::json(200, issue_json(1, "One"))]).await;
+    let writable = host(Some(session(
+        &base,
+        &project.data(),
+        &project.git_base,
+        vec![grant("octo-org", "hello", true, true)],
+    )));
+    let (outcome, asked) = run(
+        &code_registry_sandboxed(writable, &project.path(), true),
+        GITHUB_COMMENT,
+        json!({"repo": "octo-org/hello", "number": 1, "body": "Hi"}),
+        Some(false),
+        false,
+    )
+    .await;
+    assert!(!outcome.ok, "declined");
+    assert_eq!(asked.len(), 1, "the sandboxed Code session asks");
+    let (base, _) = serve(vec![Reply::json(200, issue_json(1, "One"))]).await;
+    let chat = host(Some(session(
+        &base,
+        &project.data(),
+        &project.git_base,
+        vec![grant("octo-org", "hello", true, true)],
+    )));
+    let (outcome, asked) = run(
+        &ask_registry(chat),
+        GITHUB_COMMENT,
+        json!({"repo": "octo-org/hello", "number": 1, "body": "Hi"}),
+        Some(false),
+        false,
+    )
+    .await;
+    assert!(!outcome.ok, "declined");
+    assert_eq!(asked.len(), 1, "a normal chat asks");
+    // The gate follows the command runner's own sandbox signal.
+    assert_eq!(
+        crate::harness::run_command::commands_sandboxed(),
+        cfg!(target_os = "macos")
+    );
 }

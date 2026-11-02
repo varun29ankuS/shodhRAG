@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   HARD_LIMITS,
+  WINDOWS_COMMANDS_NOTE,
   codeCountdown,
   filterRepos,
   githubFocus,
@@ -130,6 +131,8 @@ test('an Inbox item opens the GitHub page at its tab', () => {
 });
 
 test('the hard limits are stated in plain words', () => {
+  assert.match(WINDOWS_COMMANDS_NOTE, /Code mode can’t write to GitHub/);
+  assert.match(WINDOWS_COMMANDS_NOTE, /Credential Manager/);
   assert.ok(HARD_LIMITS.some(l => l.includes('force-pushes')));
   assert.ok(HARD_LIMITS.some(l => l.includes('default branch')));
   assert.ok(HARD_LIMITS.some(l => l.includes('workflows')));

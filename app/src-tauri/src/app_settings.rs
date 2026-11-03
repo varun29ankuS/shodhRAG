@@ -477,7 +477,21 @@ pub struct CodePrefs {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentPrefs {
+    /// A mode this version does not know (one a newer version saved) reads as Ask,
+    /// never as a looser one, and never makes the settings file unreadable.
+    #[serde(deserialize_with = "known_default_mode")]
     pub default_mode: AgentMode,
+}
+
+fn known_default_mode<'de, D>(deserializer: D) -> Result<AgentMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let stored = Value::deserialize(deserializer)?;
+    Ok(stored
+        .as_str()
+        .and_then(AgentMode::parse)
+        .unwrap_or(AgentMode::Ask))
 }
 
 /// Why a Code mode answer was refused while Code mode is off.
@@ -1312,10 +1326,22 @@ mod tests {
         assert_eq!(set.agent.default_mode, AgentMode::Auto);
         let text = serde_json::to_string(&set).unwrap();
         assert!(text.contains(r#""agent":{"defaultMode":"auto"}"#), "{text}");
-        // A mode that does not exist is not read as a looser one.
-        assert!(
-            serde_json::from_str::<AppSettings>(r#"{"agent": {"defaultMode": "bypass"}}"#).is_err()
-        );
+        // A mode this version does not know is Ask, and the rest of the file still loads.
+        for stored in [
+            r#""bypass""#,
+            r#""creator""#,
+            r#""Auto""#,
+            "7",
+            "null",
+            "{}",
+        ] {
+            let text = format!(
+                r#"{{"preferences": {{"theme": "light"}}, "agent": {{"defaultMode": {stored}}}}}"#
+            );
+            let read: AppSettings = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.agent.default_mode, AgentMode::Ask, "{stored}");
+            assert_eq!(read.preferences.theme, Theme::Light, "{stored}");
+        }
         for key in [
             "agent",
             "agent.defaultMode",

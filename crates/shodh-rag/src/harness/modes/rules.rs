@@ -900,7 +900,7 @@ fn read_files(program: &str, args: &[&str]) -> Result<Rule, String> {
         _ => &RG,
     };
     let positionals = accept(program, args, grammar)?;
-    let pattern_given = args.iter().any(|a| *a == "-e");
+    let pattern_given = args.contains(&"-e");
     let paths: Vec<String> = match program {
         "grep" | "rg" if !pattern_given => {
             positionals.iter().skip(1).map(|p| p.to_string()).collect()

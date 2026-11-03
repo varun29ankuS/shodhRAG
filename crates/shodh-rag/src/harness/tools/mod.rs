@@ -1488,7 +1488,6 @@ impl ToolRegistry {
                     "label": render_label(tool.label_template(), &args),
                     "decision": "auto_approved",
                     "who": SYSTEM_PRINCIPAL,
-                    "mode": profile.mode.as_str(),
                     "reason": format!("allowed for this conversation ({})", grant.label),
                 }),
             );

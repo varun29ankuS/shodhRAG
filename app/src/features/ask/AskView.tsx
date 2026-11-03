@@ -1407,7 +1407,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onCiteInstead={citeInstead}
         workspaceName={workspaceName}
         agentMode={index === messages.length - 1 ? agentMode : null}
-        modeActionsDisabled={isStreaming || busyElsewhere}
+        modeActionsDisabled={index === messages.length - 1 && (isStreaming || busyElsewhere)}
         onApprovePlan={approvePlan}
         onSwitchMode={changeAgentMode}
       />

@@ -1495,6 +1495,12 @@ const GITHUB_CODE_NOTE: &str = " Use the GitHub tools instead: github_status (si
 /// What a Code session in a mode that only reads is told about GitHub.
 const GITHUB_CODE_READ_NOTE: &str = "\n\nGitHub: commands do not run in this mode. github_status, github_read_issue and github_read_pr read; nothing is fetched, pushed, opened, commented on or merged in this mode. Never try to reach GitHub another way.";
 
+/// Why a Creator answer was refused while Code mode is off.
+pub(crate) const CREATOR_NEEDS_CODE_MODE: &str =
+    "Creator mode makes files and runs commands, so it needs \
+     Code mode, which is off. Turn it on in Settings → Privacy, or pick another mode in the \
+     message box.";
+
 /// What a Creator session is told after its prompt: no GitHub, and where its
 /// work shows.
 const CREATOR_CODE_NOTE: &str = "\n\nGitHub and other accounts are not available in Creator mode: \
@@ -1675,9 +1681,7 @@ async fn start_attempt(
         _ if creates => Some({
             // Creator mode changes files and runs commands: the same opt-in as Code mode.
             if !crate::app_settings::code_mode_enabled(&app_data_dir(&app)?) {
-                return Err(AgentCommandError::invalid(
-                    crate::app_settings::CODE_MODE_OFF,
-                ));
+                return Err(AgentCommandError::invalid(CREATOR_NEEDS_CODE_MODE));
             }
             let (folder, id) = creation_code_folder(&app, &conversation_id)
                 .await

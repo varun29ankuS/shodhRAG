@@ -13,8 +13,8 @@ import {
   normalizeViewTab,
 } from '../src/lib/viewTabs.ts';
 
-test('the shell has exactly the shipped views, in sidebar order', () => {
-  assert.deepEqual([...VIEW_TABS], ['ask', 'workspaces', 'library', 'connectors', 'tasks', 'activity', 'settings']);
+test('the shell has exactly the shipped views, in sidebar order (Artifacts right after Ask)', () => {
+  assert.deepEqual([...VIEW_TABS], ['ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'activity', 'settings']);
 });
 
 test('every view has a label, a description and keywords', () => {

@@ -368,7 +368,8 @@ mod tests {
     #[test]
     fn a_creator_session_gets_its_finish_card_and_the_artifact_tools() {
         let dir = tempfile::tempdir().unwrap();
-        let names: Vec<&str> = creator_tools(dir.path()).iter().map(|t| t.name()).collect();
+        let tools = creator_tools(dir.path());
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert_eq!(names, CREATOR_TOOL_NAMES);
         // None of them changes anything: they run in every mode, Plan included.
         for tool in creator_tools(dir.path()) {

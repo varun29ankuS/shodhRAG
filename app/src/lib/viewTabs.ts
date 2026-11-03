@@ -5,13 +5,14 @@
  * Pure module (no runtime imports) so it is unit-tested directly with Node
  * (`app/tests/viewTabs.test.ts`).
  */
-export const VIEW_TABS = ['ask', 'workspaces', 'library', 'connectors', 'tasks', 'activity', 'settings'] as const;
+export const VIEW_TABS = ['ask', 'artifacts', 'library', 'workspaces', 'connectors', 'tasks', 'activity', 'settings'] as const;
 
 export type ViewTab = typeof VIEW_TABS[number];
 
 /** Visible label for each view (sidebar, title bar, command palette). */
 export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
   ask: 'Ask',
+  artifacts: 'Artifacts',
   workspaces: 'Workspaces',
   library: 'Library',
   connectors: 'Connectors',
@@ -23,6 +24,7 @@ export const VIEW_TAB_LABELS: Record<ViewTab, string> = {
 /** One-line description of each view, used by the command palette. */
 export const VIEW_TAB_DESCRIPTIONS: Record<ViewTab, string> = {
   ask: 'Ask questions about your sources',
+  artifacts: 'What Shodh made: creations, diagrams, charts, tables and snippets',
   workspaces: 'Sources, instructions and chats for one piece of work',
   library: 'Folders and files Shodh can search',
   connectors: 'Slack and other tools Shodh answers in',
@@ -34,6 +36,7 @@ export const VIEW_TAB_DESCRIPTIONS: Record<ViewTab, string> = {
 /** Extra words the command palette matches for each view. */
 export const VIEW_TAB_KEYWORDS: Record<ViewTab, string> = {
   ask: 'ask chat messages conversation question',
+  artifacts: 'artifacts creations creator generated built apps sites games diagrams charts tables snippets gallery preview versions',
   workspaces: 'workspaces workspace project projects instructions sources scope',
   library: 'library documents files sources folders index',
   connectors: 'connectors connector slack integrations apps bot connect',

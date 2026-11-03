@@ -523,9 +523,10 @@ test('the daily cap accepts whole numbers in range only', () => {
   assert.equal(validCap('', s), null);
 });
 
-test('the Connectors view sits after Library and lists Slack, Telegram and GitHub', () => {
-  const library = VIEW_TABS.indexOf('library');
-  assert.equal(VIEW_TABS[library + 1], 'connectors');
+test('the Connectors view sits after Workspaces and lists Slack, Telegram and GitHub', () => {
+  // Ask · Artifacts · Library · Workspaces is the approved order (2026-11-03); Connectors follows.
+  const workspaces = VIEW_TABS.indexOf('workspaces');
+  assert.equal(VIEW_TABS[workspaces + 1], 'connectors');
   assert.equal(VIEW_TAB_LABELS.connectors, 'Connectors');
   assert.equal(normalizeViewTab('connectors'), 'connectors');
   assert.deepEqual(CONNECTORS.map(c => c.id), ['slack', 'telegram', 'github']);

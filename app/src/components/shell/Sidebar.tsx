@@ -2,6 +2,7 @@ import React, { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Activity,
+  Boxes,
   Bug,
   CalendarDays,
   ChevronDown,
@@ -84,6 +85,7 @@ interface SidebarProps {
 /** Icon for each view; shared with the command palette. */
 export const NAV_ICONS: Record<ViewTab, React.ElementType> = {
   ask: MessageCircle,
+  artifacts: Boxes,
   workspaces: Layers,
   library: Folder,
   connectors: Plug,

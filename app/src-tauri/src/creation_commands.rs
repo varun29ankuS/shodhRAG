@@ -113,6 +113,10 @@ pub async fn creations_prepare(
 ) -> CreationResult<Creation> {
     let conversation_id = checked_conversation(&conversation_id)?.to_string();
     let request: String = request.chars().take(MAX_REQUEST_CHARS).collect();
+    // No folder is made for an answer that could not run in it.
+    if !crate::app_settings::code_mode_enabled(&data_dir(&app)?) {
+        return Err(crate::agent_session_commands::CREATOR_NEEDS_CODE_MODE.into());
+    }
     let store = store(&app)?;
     let documents = documents(&app)?;
     let conversation = conversation_id.clone();

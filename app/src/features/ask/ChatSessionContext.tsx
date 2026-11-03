@@ -38,6 +38,8 @@ import {
 import type { SideSummaryRef } from '../focus/summary';
 import { requestConnectorPage } from '../connectors/navigation';
 import { githubFocus } from '../connectors/githubModel';
+import { creationsApi, errorText } from '../artifacts/api';
+import { startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
 import { resolveAgentMode } from '../agent/agentModes';
@@ -69,6 +71,10 @@ interface LiveRun {
   frame: number | null;
   settled: boolean;
   abortTimer: number | null;
+  /** A Creator answer's creation: the Artifacts tab opens on it when building starts. */
+  creationId?: string | null;
+  /** The Artifacts tab was opened for this answer. */
+  creationShown?: boolean;
 }
 
 /** The visible chat and what of it is still to be saved (see ./chatPersistence). */
@@ -417,6 +423,16 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
       }
     }
+    // A Creator answer started building: the Artifacts tab opens on its creation
+    // (preview, files filling in, progress), with the chat alongside in the dock.
+    if (event.type === 'step_started' && live.creationId && !live.creationShown && startsBuilding(event.tool)) {
+      live.creationShown = true;
+      const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: 'preview' };
+      navSeqRef.current += 1;
+      setNavigation({ view: 'artifacts', focus: null, target, seq: navSeqRef.current });
+      publishTarget(target);
+      window.dispatchEvent(new CustomEvent('switchTab', { detail: 'artifacts' }));
+    }
     // Lifecycle changes and the start of the answer's check are applied at
     // once; streamed content waits for the frame.
     enqueue(live, event, appliesAtOnce(event.type));
@@ -444,9 +460,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const defaultAgentMode = useDefaultAgentMode();
   const defaultAgentModeRef = useRef(defaultAgentMode);
   defaultAgentModeRef.current = defaultAgentMode;
+  const activeHasMessages = (activeConversation?.messages.length ?? 0) > 0;
   const activeAgentMode = resolveAgentMode(
     activeConversation?.agentMode,
-    (activeConversation?.messages.length ?? 0) > 0,
+    activeHasMessages,
     defaultAgentMode,
   );
   const streaming = liveRun !== null;
@@ -454,12 +471,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const activeReadOnly = isConnectorConversation(activeConversation);
   const prewarm = useCallback(() => {
     if (!activeConversationId || runtimeInstalled !== true || streaming || activeReadOnly || !activeAgentMode) return;
+    // A Creator conversation's folder is made with its first request: nothing to start before it.
+    if (activeAgentMode === 'creator' && !activeHasMessages) return;
     api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId, agentMode: activeAgentMode }).catch(error => {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
       // Other failures (no model configured, no code folder, …) surface when the user asks.
     });
-  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, activeAgentMode, runtimeInstalled, streaming, activeReadOnly]);
+  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, activeAgentMode, activeHasMessages, runtimeInstalled, streaming, activeReadOnly]);
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
   // `composed` for prompts the app builds (a side-thread summary request).
@@ -522,6 +541,15 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         workspaceId: conversation?.workspaceId ?? null,
         agentMode,
       } as const;
+      // Creator mode builds in the conversation's own folder, made fresh (and named)
+      // from its first request; later requests keep it.
+      if (agentMode === 'creator') {
+        const creation = await creationsApi.prepare(conversationId, prompt).catch((error: unknown) => {
+          throw new Error(errorText(error));
+        });
+        if (live.settled) return;
+        live.creationId = creation.id;
+      }
       const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null, mode);
       if (live.settled) return;
       live.sessionId = sessionId;

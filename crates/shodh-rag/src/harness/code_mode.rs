@@ -2038,6 +2038,10 @@ pub fn creator_command_reason(request: &GuardRequest, gate: &GateContext<'_>) ->
 pub const CREATION_UNDO: &str = "This stays in the creation folder. Each finished answer is saved \
      as a version in Artifacts, and \"Delete it\" removes the whole folder.";
 
+/// Preview key of why Creator mode asks about a command (the prompt shows it
+/// as "Creator mode: Asks because ...").
+pub const CREATOR_MODE_KEY: &str = "creator_mode";
+
 /// Preview key of what an approved package install gets in Creator mode.
 pub const NETWORK_KEY: &str = "network";
 

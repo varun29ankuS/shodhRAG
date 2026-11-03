@@ -9,7 +9,7 @@ import { parseNotificationPrefs, saveNotificationPrefs } from '../features/notif
 import type { NotificationPrefs } from '../features/notifications/notificationPrefs.ts';
 import { parseTextSize } from './textSize.ts';
 import type { TextSize } from './textSize.ts';
-import { DEFAULT_AGENT_MODE, parseAgentMode } from '../features/agent/agentModes.ts';
+import { DEFAULT_AGENT_MODE, DEFAULTABLE_MODES, parseAgentMode } from '../features/agent/agentModes.ts';
 import type { AgentMode } from '../features/agent/agentModes.ts';
 
 export const APP_SETTINGS_CHANGED = 'app-settings-changed';
@@ -137,9 +137,13 @@ export interface AgentPrefs {
   defaultMode: AgentMode;
 }
 
-/** The agent section; a missing or unknown mode reads as Ask (fail closed). */
+/**
+ * The agent section; a missing or unknown mode reads as Ask (fail closed), and so does
+ * Creator, which is never a default.
+ */
 export function parseAgentPrefs(value: unknown): AgentPrefs {
-  return { defaultMode: (isRecord(value) ? parseAgentMode(value.defaultMode) : null) ?? DEFAULT_AGENT_MODE };
+  const mode = isRecord(value) ? parseAgentMode(value.defaultMode) : null;
+  return { defaultMode: mode && DEFAULTABLE_MODES.includes(mode) ? mode : DEFAULT_AGENT_MODE };
 }
 
 export interface AppSettings {

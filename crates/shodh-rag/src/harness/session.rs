@@ -36,8 +36,8 @@ use super::code_mode::{
 };
 use super::code_mode::{
     approved_network, creator_command_reason, project_fingerprint, ProjectFingerprint,
-    CREATION_UNDO, INSTALL_NETWORK_TEXT, NETWORK_KEY, PROJECT_CODE_KEY, PROJECT_CODE_TEXT,
-    REVIEW_TOKEN_KEY,
+    CREATION_UNDO, CREATOR_MODE_KEY, INSTALL_NETWORK_TEXT, NETWORK_KEY, PROJECT_CODE_KEY,
+    PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -1099,8 +1099,8 @@ impl Inner {
         }
         if let (Some(reason), Some(map)) = (&creator_asks, approval.preview.as_object_mut()) {
             map.insert(
-                AUTO_MODE_KEY.to_string(),
-                json!(format!("Creator mode asks because {reason}.")),
+                CREATOR_MODE_KEY.to_string(),
+                json!(format!("Asks because {reason}.")),
             );
         }
         if let (true, Some(map)) = (network, approval.preview.as_object_mut()) {
@@ -5017,10 +5017,11 @@ mod tests {
         } else {
             let preview = asks(&inner, &exec, &mut events, &mut out, build, Answer::Deny).await;
             assert_eq!(
-                preview[AUTO_MODE_KEY],
-                "Creator mode asks because commands are not sandboxed on this system, so each \
-                 one waits for your approval."
+                preview[CREATOR_MODE_KEY],
+                "Asks because commands are not sandboxed on this system, so each one waits \
+                 for your approval."
             );
+            assert!(preview.get(AUTO_MODE_KEY).is_none());
         }
         // A destructive command asks everywhere, sandboxed or not.
         asks(

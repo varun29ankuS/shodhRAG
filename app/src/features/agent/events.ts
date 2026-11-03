@@ -266,6 +266,15 @@ export interface WorkspaceTarget {
   tab: string | null;
 }
 
+/** A creation in the Artifacts tab, at a version (the folder now when null) and a pane. */
+export interface ArtifactTarget {
+  kind: "artifact";
+  artifactId: string;
+  version: number | null;
+  /** "preview", "files" or "versions"; the preview when null. */
+  pane: string | null;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
@@ -273,7 +282,8 @@ export type NavigationTarget =
   | AuditTarget
   | SourceTarget
   | VisualTarget
-  | WorkspaceTarget;
+  | WorkspaceTarget
+  | ArtifactTarget;
 
 export interface NavigatedEvent {
   type: "navigated";

@@ -7,6 +7,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AGENT_MODES,
+  CONFIRMED_MODES,
+  CREATOR_CONFIRM_TEXT,
+  DEFAULTABLE_MODES,
   DEFAULT_AGENT_MODE,
   PLAN_RUN_MODES,
   isAgentMode,
@@ -18,17 +21,26 @@ import {
 import { parseAgentPrefs, parseAppSettings } from '../src/lib/appSettings.ts';
 import { matchesShortcut, shortcutText } from '../src/lib/shortcuts.ts';
 
-test('the modes are Ask, Accept edits, Plan and Auto; Shift+Tab never turns Auto on', () => {
-  assert.deepEqual(AGENT_MODES.map(m => m.id), ['ask', 'acceptEdits', 'plan', 'auto']);
+test('the modes are Ask, Accept edits, Plan, Auto and Creator; Shift+Tab never turns Auto or Creator on', () => {
+  assert.deepEqual(AGENT_MODES.map(m => m.id), ['ask', 'acceptEdits', 'plan', 'auto', 'creator']);
   assert.equal(DEFAULT_AGENT_MODE, 'ask');
   assert.equal(nextAgentMode('ask'), 'acceptEdits');
   assert.equal(nextAgentMode('acceptEdits'), 'plan');
   assert.equal(nextAgentMode('plan'), 'ask');
   assert.equal(nextAgentMode('auto'), 'ask');
-  for (const mode of AGENT_MODES) assert.notEqual(nextAgentMode(mode.id), 'auto');
+  assert.equal(nextAgentMode('creator'), 'ask');
+  for (const mode of AGENT_MODES) {
+    assert.notEqual(nextAgentMode(mode.id), 'auto');
+    assert.notEqual(nextAgentMode(mode.id), 'creator');
+  }
+  // Both take a confirming click, and the confirmation says what Creator does.
+  assert.deepEqual([...CONFIRMED_MODES].sort(), ['auto', 'creator']);
+  assert.match(CREATOR_CONFIRM_TEXT, /new folder/);
+  assert.match(CREATOR_CONFIRM_TEXT, /on Windows each one asks/);
+  assert.match(CREATOR_CONFIRM_TEXT, /Package installs, GitHub and anything outside the folder still ask/);
   for (const mode of AGENT_MODES) assert.ok(mode.hint.length > 0 && mode.label.length > 0);
   // There is no mode that bypasses everything.
-  for (const name of ['bypass', 'creator', 'yolo', 'Auto', '', null, 3]) {
+  for (const name of ['bypass', 'Creator', 'yolo', 'Auto', '', null, 3]) {
     assert.equal(isAgentMode(name), false, String(name));
     assert.equal(parseAgentMode(name), null, String(name));
   }
@@ -53,12 +65,16 @@ test('a conversation keeps its mode; only a new one takes the default', () => {
   // The default is not known yet: no mode, so nothing is sent on a guess.
   assert.equal(resolveAgentMode(undefined, false, null), null);
   // A mode this version does not know is not taken.
-  assert.equal(resolveAgentMode('creator', true, 'auto'), 'ask');
+  assert.equal(resolveAgentMode('bypass', true, 'auto'), 'ask');
+  // A conversation the user put in Creator stays in it; Creator is never a default.
+  assert.equal(resolveAgentMode('creator', true, 'auto'), 'creator');
+  assert.equal(resolveAgentMode(undefined, false, 'creator'), 'ask');
 });
 
 test('the default mode fails closed to Ask', () => {
   assert.deepEqual(parseAgentPrefs({ defaultMode: 'auto' }), { defaultMode: 'auto' });
-  for (const value of [undefined, null, {}, { defaultMode: 'bypass' }, { defaultMode: 1 }, []]) {
+  assert.deepEqual([...DEFAULTABLE_MODES], ['ask', 'acceptEdits', 'plan', 'auto']);
+  for (const value of [undefined, null, {}, { defaultMode: 'bypass' }, { defaultMode: 'creator' }, { defaultMode: 1 }, []]) {
     assert.deepEqual(parseAgentPrefs(value), { defaultMode: 'ask' }, JSON.stringify(value));
   }
   const base = {
@@ -84,6 +100,8 @@ test('the assistant\'s suggestion is read from its finished suggest_mode step on
     [step('suggest_mode', 'failed', { suggestedMode: 'auto' })],
     [step('search_documents', 'done', { suggestedMode: 'auto' })],
     [step('suggest_mode', 'done', { suggestedMode: 'bypass' })],
+    // Creator is the user's own pick, never a one-click suggestion.
+    [step('suggest_mode', 'done', { suggestedMode: 'creator' })],
     [step('suggest_mode', 'done', null)],
     [step('suggest_mode', 'done', 'auto')],
   ]) {

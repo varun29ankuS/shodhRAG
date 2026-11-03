@@ -2745,3 +2745,23 @@ fn commands_that_do_not_install_are_not_taken_for_installs() {
         );
     }
 }
+
+#[test]
+fn every_code_branch_is_listed_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeBranchStore::in_dir(dir.path());
+    assert!(store.list().unwrap().is_empty());
+    let mut older = branch("/a", "shodh/1");
+    older.created_at = "2026-10-01T00:00:00Z".into();
+    let mut newer = branch("/b", "shodh/2");
+    newer.created_at = "2026-11-01T00:00:00Z".into();
+    store.put("conv-old", older).unwrap();
+    store.put("conv-new", newer).unwrap();
+    let listed: Vec<String> = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(listed, ["conv-new", "conv-old"]);
+}

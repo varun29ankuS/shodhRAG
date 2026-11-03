@@ -110,14 +110,17 @@ impl HostTool for ListArtifactsTool {
         "List the creations Creator mode built (newest first): each with its id, title, \
          status (building, ready or kept), how many versions are saved and the conversation \
          that made it. Optionally only those whose title or summary contains `text`. Use an \
-         id with open_artifact. Diagrams, charts and tables are in list_visuals."
+         id with open_artifact. With `code`, also the code Code mode wrote: each \
+         conversation's branch, folder and base. Diagrams, charts and tables are in \
+         list_visuals."
     }
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
                 "text": {"type": "string", "minLength": 1, "maxLength": 200},
-                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS}
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RESULTS},
+                "code": {"type": "boolean"}
             },
             "additionalProperties": false
         })
@@ -157,12 +160,47 @@ impl HostTool for ListArtifactsTool {
             }
             text
         };
+        let mut text = text;
+        let mut code_json: Vec<Value> = Vec::new();
+        if args.get("code").and_then(Value::as_bool) == Some(true) {
+            let data_dir = self.data_dir.clone();
+            let changes = tokio::task::spawn_blocking(move || {
+                crate::creation_commands::code_changes(&data_dir)
+            })
+            .await
+            .map_err(|e| {
+                ToolError::Failed(format!("reading the code changes did not finish: {e}"))
+            })?
+            .map_err(ToolError::Failed)?;
+            if changes.is_empty() {
+                text.push_str("\nNo code changes from Code mode.");
+            } else {
+                text.push_str(&format!(
+                    "\n{} code change(s) from Code mode:",
+                    changes.len()
+                ));
+                for change in changes.iter().take(limit) {
+                    text.push_str(&format!(
+                        "\n- branch {} in {} (from {}, conversation {})",
+                        change.branch, change.folder, change.base, change.conversation_id
+                    ));
+                    code_json.push(json!({
+                        "conversationId": change.conversation_id,
+                        "folder": change.folder,
+                        "branch": change.branch,
+                        "base": change.base,
+                        "createdAt": change.created_at,
+                    }));
+                }
+            }
+        }
         Ok(ToolOutput {
             text_for_model: text,
             summary_for_ui: format!("{} creation(s)", matching.len()),
             detail: Some(json!({
                 "total": matching.len(),
                 "creations": shown.iter().map(|c| summary_json(c)).collect::<Vec<_>>(),
+                "codeChanges": code_json,
             })),
         })
     }
@@ -363,6 +401,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(none.text_for_model, "No creations match.");
+        // With `code`, Code mode's branches too.
+        shodh_rag::harness::code_mode::CodeBranchStore::in_dir(&tool.data_dir)
+            .put(
+                "conv-code",
+                shodh_rag::harness::code_mode::CodeBranch {
+                    folder: "C:/work/app".into(),
+                    branch: "shodh/fix-login".into(),
+                    base: "main".into(),
+                    base_is_commit: false,
+                    created_at: "2026-11-03T09:00:00Z".into(),
+                    auto_applied: Vec::new(),
+                },
+            )
+            .unwrap();
+        let with_code = tool.execute(json!({"code": true}), &ctx).await.unwrap();
+        assert!(with_code
+            .text_for_model
+            .contains("branch shodh/fix-login in C:/work/app"));
+        assert!(!out.text_for_model.contains("shodh/fix-login"));
     }
 
     #[test]

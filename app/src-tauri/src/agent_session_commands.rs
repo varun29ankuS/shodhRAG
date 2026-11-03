@@ -2043,6 +2043,7 @@ async fn start_attempt(
         thinking,
         // Set by the session from the profile's mode.
         code_reads_only: false,
+        code_no_git: false,
     };
 
     let audit_conversation = parent_conversation_id

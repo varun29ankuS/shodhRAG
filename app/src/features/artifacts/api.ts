@@ -6,7 +6,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { Creation, FileChange, FileContent, FileEntry, PreviewInfo } from './model';
+import type { CodeChange, Creation, FileChange, FileContent, FileEntry, PreviewInfo } from './model';
 
 export function errorText(error: unknown): string {
   if (typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string') {
@@ -36,6 +36,8 @@ export const creationsApi = {
   /** Writes a zip into Documents/Shodh exports; returns its path. */
   exportZip: (id: string, version: number | null) => invoke<string>('creation_export', { id, version }),
   remove: (id: string) => invoke<null>('creation_delete', { id }),
+  /** Code mode's branches, newest first (read only). */
+  codeChanges: () => invoke<CodeChange[]>('code_changes_list'),
 };
 
 /** `creations-changed`: a creation of a conversation changed (made, saved, kept, deleted). */

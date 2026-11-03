@@ -2452,6 +2452,7 @@ impl OmpSession {
             // its reading tools.
             let reads_only = profile.mode.reads_only();
             launch.code_reads_only = reads_only;
+            launch.code_no_git = profile.mode.creates();
             launch.host_tools = names
                 .into_iter()
                 .chain((!reads_only).then(|| RUN_COMMAND.to_string()))
@@ -5019,7 +5020,8 @@ mod tests {
             assert_eq!(
                 preview[CREATOR_MODE_KEY],
                 "Asks because commands are not sandboxed on this system, so each one waits \
-                 for your approval."
+                 for your approval. It can run files the assistant wrote in this folder (made \
+                 without asking), with your account and your network."
             );
             assert!(preview.get(AUTO_MODE_KEY).is_none());
         }

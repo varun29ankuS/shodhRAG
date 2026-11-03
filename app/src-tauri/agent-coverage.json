@@ -123,6 +123,7 @@
 
     "creations_prepare": { "excluded": "Makes the fresh creation folder of a Creator conversation from its first request, as the user sends it; only the user picks Creator mode (with a confirming click), and an agent that could make creation folders could start work nobody asked for." },
     "creations_list": { "tool": "list_artifacts" },
+    "code_changes_list": { "tool": "list_artifacts" },
     "creation_get": { "tools": ["list_artifacts", "open_artifact"] },
     "creation_for_conversation": { "tool": "list_artifacts" },
     "creation_files": { "tool": "open_artifact" },

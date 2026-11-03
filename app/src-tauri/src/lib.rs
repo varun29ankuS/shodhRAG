@@ -894,6 +894,7 @@ pub fn run() {
             creation_commands::creation_keep,
             creation_commands::creation_export,
             creation_commands::creation_delete,
+            creation_commands::code_changes_list,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,

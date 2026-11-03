@@ -172,6 +172,50 @@ pub async fn creation_get(app: AppHandle, id: String) -> CreationResult<Creation
         .ok_or_else(|| "That creation no longer exists.".into())
 }
 
+/// Code the agent wrote in Code mode: each conversation's branch in its
+/// workspace folder (read only; the branch and Discard live in that chat).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeChange {
+    pub conversation_id: String,
+    pub folder: String,
+    pub branch: String,
+    pub base: String,
+    pub created_at: String,
+    /// Files changed without asking (the modes that accept edits).
+    pub auto_applied: usize,
+}
+
+pub(crate) fn code_changes(data_dir: &std::path::Path) -> Result<Vec<CodeChange>, String> {
+    Ok(
+        shodh_rag::harness::code_mode::CodeBranchStore::in_dir(data_dir)
+            .list()?
+            .into_iter()
+            .map(|(conversation_id, record)| CodeChange {
+                conversation_id,
+                folder: record.folder,
+                branch: record.branch,
+                base: record.base,
+                created_at: record.created_at,
+                auto_applied: record.auto_applied.len(),
+            })
+            .collect(),
+    )
+}
+
+/// Code mode's branches, newest first, for the Artifacts tab.
+#[tauri::command]
+pub async fn code_changes_list(app: AppHandle) -> CreationResult<Vec<CodeChange>> {
+    let data_dir = data_dir(&app)?;
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || code_changes(&data_dir))
+            .await
+            .map_err(|e| {
+                CreationError::from(format!("Listing code changes did not finish ({e})"))
+            })??,
+    )
+}
+
 /// The creation of `conversation_id`, if it has one.
 #[tauri::command]
 pub async fn creation_for_conversation(

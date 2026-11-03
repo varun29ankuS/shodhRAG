@@ -60,6 +60,16 @@ export interface FileChange {
   hunks: { lines: DiffLine[] }[];
 }
 
+/** Code the agent wrote in Code mode: a conversation's branch in its workspace folder. */
+export interface CodeChange {
+  conversationId: string;
+  folder: string;
+  branch: string;
+  base: string;
+  createdAt: string;
+  autoApplied: number;
+}
+
 export interface PreviewInfo {
   url: string;
   network: boolean;

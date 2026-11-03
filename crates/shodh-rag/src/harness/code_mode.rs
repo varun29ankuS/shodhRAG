@@ -2001,7 +2001,9 @@ pub fn creator_command_reason(request: &GuardRequest, gate: &GateContext<'_>) ->
     let command = str_arg(&request.input, "command");
     if !gate.sandboxed {
         return Some(
-            "commands are not sandboxed on this system, so each one waits for your approval"
+            "commands are not sandboxed on this system, so each one waits for your approval. \
+             It can run files the assistant wrote in this folder (made without asking), with \
+             your account and your network"
                 .to_string(),
         );
     }
@@ -3188,6 +3190,15 @@ impl CodeBranchStore {
     pub fn get(&self, conversation_id: &str) -> Result<Option<CodeBranch>, String> {
         let _guard = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         Ok(self.read()?.remove(conversation_id))
+    }
+
+    /// Every conversation's branch, the newest first (the Artifacts tab's
+    /// "Code changes").
+    pub fn list(&self) -> Result<Vec<(String, CodeBranch)>, String> {
+        let _guard = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut records: Vec<(String, CodeBranch)> = self.read()?.into_iter().collect();
+        records.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+        Ok(records)
     }
 
     pub fn put(&self, conversation_id: &str, record: CodeBranch) -> Result<(), String> {

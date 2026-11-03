@@ -722,7 +722,17 @@ pub struct LaunchSpec {
     /// omp gets only its reading tools ([`super::code_mode::READ_TOOLS`]), and
     /// the guard refuses every edit and write.
     pub code_reads_only: bool,
+    /// Creator mode ([`super::modes::AgentMode::creates`]): omp's own git (if it
+    /// runs any) finds no repository, so a `.git` a sandboxed command wrote in
+    /// the creation folder (fsmonitor, hooks) is never run outside the sandbox.
+    /// Set by the session from the profile's mode.
+    pub code_no_git: bool,
 }
+
+/// Where a Creator session's omp is told git's folder is: a path in Shodh's
+/// data that nothing creates, so every git command there fails before it
+/// reads any configuration of the creation folder.
+pub const NO_GIT_DIR: &str = "creator-no-git";
 
 impl LaunchSpec {
     /// A loggable description: no environment values, no prompt text.
@@ -811,6 +821,17 @@ impl LaunchSpec {
             ));
             if self.code_reads_only {
                 env.push((READS_ONLY_ENV.to_string(), EnvValue::Plain("1".to_string())));
+            }
+            if self.code_no_git {
+                let missing = self.layout.overlay.with_file_name(NO_GIT_DIR);
+                env.push((
+                    "GIT_DIR".to_string(),
+                    EnvValue::Plain(missing.display().to_string()),
+                ));
+                env.push((
+                    "GIT_CEILING_DIRECTORIES".to_string(),
+                    EnvValue::Plain(folder.root().display().to_string()),
+                ));
             }
         }
         env
@@ -1273,6 +1294,7 @@ mod tests {
             host_tools: Vec::new(),
             thinking: Thinking::Off,
             code_reads_only: false,
+            code_no_git: false,
         };
         let text = spec.describe();
         assert!(text.contains("ANTHROPIC_API_KEY"));
@@ -1291,6 +1313,7 @@ mod tests {
             host_tools: Vec::new(),
             thinking: Thinking::default(),
             code_reads_only: false,
+            code_no_git: false,
         }
     }
 
@@ -1357,8 +1380,33 @@ mod tests {
         };
         assert_eq!(get(CODE_ROOT_ENV), Some(folder.display()));
         assert_eq!(get(EDIT_VARIANT_ENV.0).as_deref(), Some("replace"));
+        // Only a Creator session hides git from omp.
+        assert_eq!(get("GIT_DIR"), None);
         assert!(spec.describe().contains("code in"));
         assert_provider_overlay_is_last(&spec, &args);
+    }
+
+    #[test]
+    fn a_creator_session_gives_omp_no_git_repository() {
+        let data = tempfile::tempdir().unwrap();
+        let code = tempfile::tempdir().unwrap();
+        let folder = CodeFolder::open(code.path()).unwrap();
+        let launch = LaunchSpec {
+            code_no_git: true,
+            ..spec(data.path(), Some(folder.clone()))
+        };
+        let env = launch.environment();
+        let get = |k: &str| {
+            env.iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.as_str().to_string())
+        };
+        let git_dir = PathBuf::from(get("GIT_DIR").expect("GIT_DIR"));
+        // In Shodh's data, never in the creation folder, and never made.
+        assert!(git_dir.starts_with(data.path()));
+        assert!(!git_dir.starts_with(folder.root()));
+        assert!(!git_dir.exists());
+        assert_eq!(get("GIT_CEILING_DIRECTORIES"), Some(folder.display()));
     }
 
     #[test]

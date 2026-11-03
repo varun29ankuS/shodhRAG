@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useState } from 'react';
-import { Hammer, Loader2, Search } from 'lucide-react';
+import { GitBranch, Hammer, Loader2, MessageCircle, Search } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { VisualGallery } from '../visuals/VisualGallery';
@@ -7,7 +7,7 @@ import { useNavigationTarget } from '../agent/useNavigationTarget';
 import { creationsApi, errorText, onCreationsChanged } from './api';
 import { ArtifactPage } from './ArtifactPage';
 import { STATUS_LABELS, filterCreations, isArtifactPane } from './model';
-import type { ArtifactPane, Creation } from './model';
+import type { ArtifactPane, CodeChange, Creation } from './model';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -39,6 +39,15 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
   const [text, setText] = useState('');
   const [selection, setSelection] = useState<ArtifactSelection | null>(null);
   const searchId = useId();
+  const [codeChanges, setCodeChanges] = useState<CodeChange[]>([]);
+
+  // Code the agent wrote in Code mode (read once per visit; the branch lives in its chat).
+  useEffect(() => {
+    creationsApi
+      .codeChanges()
+      .then(setCodeChanges)
+      .catch(e => console.error('Code changes unavailable:', e));
+  }, []);
 
   const load = useCallback(() => {
     creationsApi
@@ -177,6 +186,40 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
             </ul>
           )}
         </section>
+
+        {codeChanges.length > 0 && (
+          <section aria-labelledby="artifacts-code" className="flex flex-col gap-3">
+            <div className="flex flex-col gap-0.5">
+              <h2 id="artifacts-code" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+                Code changes
+              </h2>
+              <p className="m-0 text-small text-shodh-text-muted">
+                Code the assistant wrote in Code mode, each on its own branch of the workspace folder. Review or discard it in its chat.
+              </p>
+            </div>
+            <ul className="list-none m-0 p-0 flex flex-col gap-1.5">
+              {codeChanges.map(change => (
+                <li key={change.conversationId} className="flex items-center gap-3 rounded-xl border border-shodh-border-subtle px-4 py-2.5">
+                  <GitBranch className="w-3.5 h-3.5 shrink-0 text-shodh-text-secondary" aria-hidden="true" />
+                  <span className="flex-1 min-w-0 flex flex-col">
+                    <span className="text-small font-medium text-shodh-text truncate">{change.branch}</span>
+                    <span className="text-caption text-shodh-text-muted truncate">
+                      {change.folder} · from {change.base} · {relativeTime(change.createdAt)}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onOpenChat(change.conversationId)}
+                    className={cn('h-8 px-2.5 inline-flex items-center gap-1.5 rounded-lg text-small text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text', FOCUS_RING)}
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                    Open chat
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section aria-labelledby="artifacts-generated" className="flex flex-col gap-3">
           <div className="flex flex-col gap-0.5">

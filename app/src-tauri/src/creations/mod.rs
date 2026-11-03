@@ -408,10 +408,32 @@ fn read_inside(root: &Path, relative: &Path, max: u64) -> io::Result<(Vec<u8>, u
     if !after.file_type().is_file() || !same(&opened, &before) || !same(&opened, &after) {
         return Err(refused("the file changed while it was opened"));
     }
+    if hard_linked(&opened) {
+        return Err(refused(
+            "the file is a hard link, which may be a file from outside the folder",
+        ));
+    }
     let size = opened.len();
     let mut bytes = Vec::new();
     file.take(max).read_to_end(&mut bytes)?;
     Ok((bytes, size))
+}
+
+/// Whether an open file has more than one name. A sandboxed command may
+/// change only the creation folder, but it could give a file from elsewhere
+/// (one the sandbox lets it read) a second name inside it; Shodh's own reads,
+/// which are not sandboxed, never take such a file. Where the system does not
+/// report links (Windows), commands are not sandboxed and every one was
+/// approved by the user.
+#[cfg(unix)]
+fn hard_linked(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn hard_linked(_meta: &fs::Metadata) -> bool {
+    false
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

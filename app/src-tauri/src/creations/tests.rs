@@ -301,6 +301,25 @@ fn links_in_a_creation_folder_are_never_followed() {
             "{relative}"
         );
     }
+    // A hard link gives an outside file a name in the folder: never read either.
+    fs::hard_link(s.documents.join("secret.txt"), folder.join("copy.txt")).unwrap();
+    assert!(s
+        .store
+        .file(&s.root, &creation.id, None, "copy.txt")
+        .is_err());
+    s.store.snapshot(&s.root, "conv", None, LATER).unwrap();
+    let kept: Vec<String> = s
+        .store
+        .files(
+            &s.root,
+            &creation.id,
+            s.store.get(&creation.id).unwrap().unwrap().latest_version(),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert!(!kept.contains(&"copy.txt".to_string()), "{kept:?}");
     // A creation folder swapped for a link is left alone.
     fs::remove_dir_all(&folder).unwrap();
     std::os::unix::fs::symlink(s.documents.join("private"), &folder).unwrap();

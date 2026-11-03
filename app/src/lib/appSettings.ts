@@ -9,6 +9,8 @@ import { parseNotificationPrefs, saveNotificationPrefs } from '../features/notif
 import type { NotificationPrefs } from '../features/notifications/notificationPrefs.ts';
 import { parseTextSize } from './textSize.ts';
 import type { TextSize } from './textSize.ts';
+import { DEFAULT_AGENT_MODE, parseAgentMode } from '../features/agent/agentModes.ts';
+import type { AgentMode } from '../features/agent/agentModes.ts';
 
 export const APP_SETTINGS_CHANGED = 'app-settings-changed';
 
@@ -130,10 +132,21 @@ export function parseCodePrefs(value: unknown): CodePrefs {
   return { enabled: isRecord(value) && value.enabled === true };
 }
 
+/** The mode new conversations answer in (`features/agent/agentModes`). User-only. */
+export interface AgentPrefs {
+  defaultMode: AgentMode;
+}
+
+/** The agent section; a missing or unknown mode reads as Ask (fail closed). */
+export function parseAgentPrefs(value: unknown): AgentPrefs {
+  return { defaultMode: (isRecord(value) ? parseAgentMode(value.defaultMode) : null) ?? DEFAULT_AGENT_MODE };
+}
+
 export interface AppSettings {
   preferences: Preferences;
   policy: Policy;
   code: CodePrefs;
+  agent: AgentPrefs;
   memory: MemoryPrefs;
   answers: AnswerPrefs;
   /** Desktop notifications by category. User-only. */
@@ -167,6 +180,7 @@ export function parseAppSettings(value: unknown): AppSettings | null {
     },
     policy: { localOnly: policy.localOnly, webAccess: policy.webAccess },
     code: parseCodePrefs(value.code),
+    agent: parseAgentPrefs(value.agent),
     memory,
     answers,
     notifications,
@@ -194,6 +208,11 @@ export async function setPolicy(policy: Policy): Promise<AppSettings | null> {
 
 export async function setCodeMode(enabled: boolean): Promise<AppSettings | null> {
   return parseAppSettings(await invoke<unknown>('set_code_mode', { enabled }));
+}
+
+/** Set the mode new conversations answer in (only the user; the agent cannot). */
+export async function setDefaultAgentMode(mode: AgentMode): Promise<AppSettings | null> {
+  return parseAppSettings(await invoke<unknown>('set_default_agent_mode', { mode }));
 }
 
 export async function setMemoryPreferences(memory: MemoryPrefs): Promise<AppSettings | null> {

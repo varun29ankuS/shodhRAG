@@ -3,25 +3,11 @@ import { Loader2, Save } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { agentApi, toAgentError } from '../agent/useAgentSession';
-import type { ApprovalLevel, CodeSettings } from '../agent/useAgentSession';
-import { FOCUS_RING, INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
+import type { CodeSettings } from '../agent/useAgentSession';
+import { INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
 import { desktopPlatform } from '../../lib/startupText';
 import { COMMAND_LIMITS, commandLimitHint, commandSandboxText, parseCommandLimit } from './commandLimits';
 import type { CommandLimitKey } from './commandLimits';
-
-export const APPROVAL_LEVELS: readonly { id: ApprovalLevel; label: string; hint: string }[] = [
-  { id: 'askEveryTime', label: 'Ask every time', hint: 'Every edit, file and command waits for you.' },
-  {
-    id: 'autoApplyEdits',
-    label: 'Auto-apply edits',
-    hint: "Edits and new files apply by themselves on the conversation's branch (Discard changes undoes them). Files git ignores, which Discard cannot restore, and files that can run programs (.vscode, .envrc, package.json, build and test settings such as Cargo.toml, build.rs, conftest.py, pyproject.toml, Makefile) still ask, and so do commands.",
-  },
-  {
-    id: 'trusted',
-    label: 'Trusted',
-    hint: 'As Auto-apply edits, and a command that is exactly one of the lines below runs without asking, unless files changed without your review (edits, or what other commands and tools wrote): then it asks and lists them, and approving it in the conversation marks them reviewed.',
-  },
-];
 
 const linesOf = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
 
@@ -43,13 +29,13 @@ function limitTexts(settings: CodeSettings): LimitTexts {
 const EMPTY_LIMITS: LimitTexts = { commandTimeoutSecs: '', memoryLimitMb: '', cpuPercent: '' };
 
 /**
- * How much of Code mode's work in this workspace runs without asking. Read
- * by every running Code session at its next change.
+ * This workspace's Code mode settings: the commands Auto mode also runs without asking,
+ * and the limits every command runs with. Read by every running Code session at its next
+ * decision. What runs without asking is each conversation's mode, picked in the composer.
  */
 export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
   const ids = { title: useId(), allowlist: useId(), help: useId(), limits: useId(), limitsHelp: useId() };
   const [saved, setSaved] = useState<CodeSettings | null>(null);
-  const [level, setLevel] = useState<ApprovalLevel>('askEveryTime');
   const [allowlist, setAllowlist] = useState('');
   const [limits, setLimits] = useState<LimitTexts>(EMPTY_LIMITS);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +50,6 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
       .then(settings => {
         if (!active) return;
         setSaved(settings);
-        setLevel(settings.approval);
         setAllowlist(settings.allowlist.join('\n'));
         setLimits(limitTexts(settings));
       })
@@ -77,7 +62,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
   const savedLimits = saved ? limitTexts(saved) : null;
   const limitsChanged = savedLimits !== null && COMMAND_LIMITS.some(spec => limits[spec.key].trim() !== savedLimits[spec.key]);
   const dirty = saved !== null
-    && (level !== saved.approval || linesOf(allowlist).join('\n') !== saved.allowlist.join('\n') || limitsChanged);
+    && (linesOf(allowlist).join('\n') !== saved.allowlist.join('\n') || limitsChanged);
 
   const save = async () => {
     if (!dirty) return;
@@ -89,14 +74,12 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
     setSaving(true);
     try {
       const next = await agentApi.setCodeSettings(workspaceId, {
-        approval: level,
         allowlist: linesOf(allowlist),
         commandTimeoutSecs: values.commandTimeoutSecs,
         memoryLimitMb: values.memoryLimitMb,
         cpuPercent: values.cpuPercent,
       });
       setSaved(next);
-      setLevel(next.approval);
       setAllowlist(next.allowlist.join('\n'));
       setLimits(limitTexts(next));
       notify.success('Code mode settings saved');
@@ -110,9 +93,10 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
   return (
     <section aria-labelledby={ids.title} className="flex flex-col gap-2">
       <div>
-        <h3 id={ids.title} className={SECTION_TITLE}>Code mode approvals</h3>
+        <h3 id={ids.title} className={SECTION_TITLE}>Code mode commands</h3>
         <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
-          Commands that delete files, reset or rewrite git history, or push always ask, whatever you choose.
+          Each conversation picks its mode in the message box: Ask, Accept edits, Plan or Auto. Commands that delete
+          files, reset or rewrite git history, or push always ask, whatever the mode.
         </p>
       </div>
       {error && <p role="alert" className="m-0 text-small text-shodh-error">The settings could not be read: {error}</p>}
@@ -124,48 +108,22 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
           void save();
         }}
       >
-        <fieldset className="m-0 p-0 border-0 flex flex-col gap-1" aria-describedby={ids.help} disabled={saved === null}>
-          <legend className="sr-only">When Code mode asks</legend>
-          {APPROVAL_LEVELS.map(option => (
-            <label
-              key={option.id}
-              className={cn(
-                'flex items-start gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors duration-micro',
-                level === option.id ? 'border-shodh-border-strong bg-shodh-raised' : 'border-transparent hover:bg-shodh-raised',
-              )}
-            >
-              <input
-                type="radio"
-                name={`${ids.title}-level`}
-                value={option.id}
-                checked={level === option.id}
-                onChange={() => setLevel(option.id)}
-                className={cn('mt-[3px] accent-shodh-accent', FOCUS_RING)}
-              />
-              <span className="flex flex-col">
-                <span className="text-small font-medium text-shodh-text">{option.label}</span>
-                <span className="text-caption text-shodh-text-muted">{option.hint}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        {level === 'trusted' && (
-          <div className="flex flex-col gap-1">
-            <label htmlFor={ids.allowlist} className={LABEL}>Commands that run without asking, one per line</label>
-            <textarea
-              id={ids.allowlist}
-              rows={4}
-              value={allowlist}
-              onChange={e => setAllowlist(e.target.value)}
-              spellCheck={false}
-              placeholder="cargo test"
-              className={cn(TEXTAREA, 'font-mono text-small')}
-            />
-            <p className="m-0 text-caption text-shodh-text-muted">
-              A command runs by itself only when it is exactly a line here, with nothing added, and has no ; | &amp; &gt; $ or backticks. It also needs no other options, must run in the code folder itself, and asks while another command is running. Tests run code the assistant may have changed, so after a change you did not review, the command asks first.
-            </p>
-          </div>
-        )}
+        <div className="flex flex-col gap-1">
+          <label htmlFor={ids.allowlist} className={LABEL}>More commands Auto mode runs without asking, one per line</label>
+          <textarea
+            id={ids.allowlist}
+            rows={4}
+            value={allowlist}
+            onChange={e => setAllowlist(e.target.value)}
+            spellCheck={false}
+            disabled={saved === null}
+            placeholder="make check"
+            className={cn(TEXTAREA, 'font-mono text-small')}
+          />
+          <p className="m-0 text-caption text-shodh-text-muted">
+            Auto mode already runs tests, builds, linters, and git and file commands that only read, when each is one plain command. A line here also runs by itself in Auto mode when the command is exactly that line, with nothing added, and has no ; | &amp; &gt; $ or backticks. It still asks while another command is running, and after a change you did not review: tests run code the assistant may have changed.
+          </p>
+        </div>
         <fieldset
           className="m-0 p-0 border-0 flex flex-col gap-2"
           aria-describedby={ids.limitsHelp}

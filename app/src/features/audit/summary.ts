@@ -1,5 +1,6 @@
 import { formatCost, formatMs, formatTokens } from '../agent/format';
 import type { AuditRow } from './types';
+import { agentModeInfo, parseAgentMode } from '../agent/agentModes';
 
 function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
@@ -81,7 +82,10 @@ export function summarise(row: AuditRow): string {
         refused: 'Refused',
         auto_approved: 'Ran without asking',
       };
-      return `${decided[decision] ?? decision}: ${clip(label, 100)}`;
+      // A call the mode let run says which mode it was ("Ran without asking · Auto mode").
+      const mode = decision === 'auto_approved' ? parseAgentMode(p.mode) : null;
+      const verdict = decided[decision] ?? decision;
+      return `${mode ? `${verdict} · ${agentModeInfo(mode).label} mode` : verdict}: ${clip(label, 100)}`;
     }
     case 'source_change': {
       const action = str(p.action) ?? 'changed';

@@ -436,17 +436,19 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const instructions = activeConversation?.systemPrompt?.trim() || null;
   const activeMode = activeConversation?.mode ?? 'research';
   const activeWorkspaceId = activeConversation?.workspaceId ?? null;
+  // The mode the user picked for the conversation; absent follows the default in Settings.
+  const activeAgentMode = activeConversation?.agentMode ?? null;
   const streaming = liveRun !== null;
   // A connector's conversation is read-only: no agent session for it.
   const activeReadOnly = isConnectorConversation(activeConversation);
   const prewarm = useCallback(() => {
     if (!activeConversationId || runtimeInstalled !== true || streaming || activeReadOnly) return;
-    api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId }).catch(error => {
+    api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId, agentMode: activeAgentMode }).catch(error => {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
       // Other failures (no model configured, no code folder, …) surface when the user asks.
     });
-  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, runtimeInstalled, streaming, activeReadOnly]);
+  }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, activeAgentMode, runtimeInstalled, streaming, activeReadOnly]);
 
   // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
   // `composed` for prompts the app builds (a side-thread summary request).
@@ -497,7 +499,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
     const conversationInstructions = conversation?.systemPrompt?.trim() || null;
     try {
-      const mode = { mode: conversation?.mode ?? 'research', workspaceId: conversation?.workspaceId ?? null } as const;
+      const mode = {
+        mode: conversation?.mode ?? 'research',
+        workspaceId: conversation?.workspaceId ?? null,
+        agentMode: conversation?.agentMode ?? null,
+      } as const;
       const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null, mode);
       if (live.settled) return;
       live.sessionId = sessionId;

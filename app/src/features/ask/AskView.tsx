@@ -72,6 +72,11 @@ import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../res
 import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
+import { ModePicker } from '../agent/ModePicker';
+import { ModeActions } from '../agent/ModeActions';
+import { PLAN_APPROVED_TEXT, modeSuggestion, nextAgentMode } from '../agent/agentModes';
+import type { AgentMode } from '../agent/agentModes';
+import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { DiagramHostContext } from './visual/diagramHost';
 import type { ConversationLogHandle } from './ConversationLog';
 import { CONVERSATION_TOP_PX, MESSAGE_INDEX_ATTR } from './windowLayout';
@@ -373,6 +378,15 @@ interface AssistantMessageProps {
   onCiteInstead: (messageId: string, check: ClaimCheck) => Promise<boolean>;
   /** Name of a workspace, by id (where a memory the answer was given applies). */
   workspaceName: (id: string) => string | undefined;
+  /**
+   * The conversation's mode, given to the newest answer only (null for the others):
+   * it shows "Approve plan" after a Plan answer and the mode the assistant suggested.
+   */
+  agentMode: AgentMode | null;
+  /** Sending is not possible right now (an answer runs elsewhere). */
+  modeActionsDisabled: boolean;
+  onApprovePlan: (mode: AgentMode) => void;
+  onSwitchMode: (mode: AgentMode) => void;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -396,6 +410,10 @@ function AssistantMessageView({
   onOpenThread,
   onCiteInstead,
   workspaceName,
+  agentMode,
+  modeActionsDisabled,
+  onApprovePlan,
+  onSwitchMode,
 }: AssistantMessageProps) {
   const transcript = message.transcript;
   const passages = transcript?.passages;
@@ -406,6 +424,13 @@ function AssistantMessageView({
   );
   const groups = useMemo(() => groupSources(hits, citedNumbers(message.content)), [hits, message.content]);
   const running = transcript ? isLive(transcript) : message.run?.status === 'running';
+  // The mode the assistant suggested in this answer (a button; it never switches).
+  const suggestion = useMemo(() => {
+    if (!transcript || !agentMode) return null;
+    const steps = transcript.blocks.flatMap(b => (b.kind === 'step' && transcript.steps[b.stepId] ? [transcript.steps[b.stepId]] : []));
+    return modeSuggestion(steps, agentMode);
+  }, [transcript, agentMode]);
+  const planDone = agentMode === 'plan' && transcript?.status === 'completed' && message.content.trim().length > 0;
   // Depend on the id only: the message object changes on every streamed
   // frame, and a new callback would rebuild the markdown component map.
   const messageId = message.id;
@@ -520,6 +545,17 @@ function AssistantMessageView({
       )}
 
       {!running && message.threads && <ThreadChips threads={message.threads} onOpen={openThread} />}
+
+      {!running && agentMode && (
+        <ModeActions
+          mode={agentMode}
+          plan={planDone}
+          suggestion={suggestion}
+          disabled={modeActionsDisabled}
+          onApprovePlan={onApprovePlan}
+          onSwitch={onSwitchMode}
+        />
+      )}
 
       {!running && (
         <div className="flex items-center gap-0.5 opacity-60 group-hover/msg:opacity-100 focus-within:opacity-100 transition-opacity duration-micro">
@@ -692,6 +728,28 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     const id = session.activeConversationId;
     if (id) updateConversationMeta(id, { mode: next });
   }, [session.activeConversationId, updateConversationMeta]);
+
+  // What runs without asking (Ask, Accept edits, Plan, Auto), per conversation; a
+  // conversation without its own mode follows the default in Settings. Only the user
+  // changes it: the picker, Shift+Tab in the composer, or a suggestion's button.
+  const defaultAgentMode = useDefaultAgentMode();
+  const agentMode: AgentMode = session.activeConversation?.agentMode ?? defaultAgentMode;
+  const changeAgentMode = useCallback((next: AgentMode) => {
+    const id = session.activeConversationId;
+    if (id) updateConversationMeta(id, { agentMode: next });
+  }, [session.activeConversationId, updateConversationMeta]);
+  const agentModeRef = useRef(agentMode);
+  agentModeRef.current = agentMode;
+  const cycleAgentMode = useCallback(() => changeAgentMode(nextAgentMode(agentModeRef.current)), [changeAgentMode]);
+  // "Approve plan · <mode>": the mode changes first; the approval is sent once the
+  // conversation answers in that mode, so the plan never runs in Plan mode's session.
+  const [planApproval, setPlanApproval] = useState<{ conversationId: string; mode: AgentMode } | null>(null);
+  const approvePlan = useCallback((next: AgentMode) => {
+    const id = session.activeConversationId;
+    if (!id) return;
+    changeAgentMode(next);
+    setPlanApproval({ conversationId: id, mode: next });
+  }, [session.activeConversationId, changeAgentMode]);
 
   const busyElsewhere = (streamingConversationId !== null && !isStreaming) || sideRun !== null;
   // A question asked before the search models and the answer engine are in place
@@ -954,6 +1012,20 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
       });
   }, [draft, isStreaming, busyElsewhere, send, sendOptions, workspace, searchAll, session.activeConversationId, queued.hold, fileScope]);
 
+  // A plan approved in another mode is sent once the conversation answers in that mode
+  // (the next render after the switch), as a question of the user's own.
+  useEffect(() => {
+    if (!planApproval) return;
+    if (planApproval.conversationId !== session.activeConversationId) {
+      setPlanApproval(null);
+      return;
+    }
+    if (session.activeConversation?.agentMode !== planApproval.mode) return;
+    setPlanApproval(null);
+    if (isStreaming || busyElsewhere) return;
+    if (send(PLAN_APPROVED_TEXT, sendOptions)) composerRef.current?.focus();
+  }, [planApproval, session.activeConversationId, session.activeConversation?.agentMode, isStreaming, busyElsewhere, send, sendOptions]);
+
   const submitSteer = useCallback(() => {
     const text = draft.trim();
     if (!text || !isStreaming) return;
@@ -1180,8 +1252,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         approvalPending={waitingStepId !== null}
         blockedReason={blockedReason}
         placeholder={messages.length === 0 ? 'Ask about your files…' : 'Ask a follow-up…'}
+        onCycleMode={conversationId ? cycleAgentMode : undefined}
         modelChip={(
           <>
+            {conversationId && <ModePicker mode={agentMode} onChange={changeAgentMode} answerRunning={isStreaming} />}
             <ModelChip answerRunning={isStreaming} onOpenSettings={() => onNavigate('settings')} />
             {(codeModeEnabled === true || mode === 'code') && <CodeModeSwitch
               conversationId={conversationId}
@@ -1332,6 +1406,10 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         onOpenThread={openThread}
         onCiteInstead={citeInstead}
         workspaceName={workspaceName}
+        agentMode={index === messages.length - 1 ? agentMode : null}
+        modeActionsDisabled={isStreaming || busyElsewhere}
+        onApprovePlan={approvePlan}
+        onSwitchMode={changeAgentMode}
       />
     );
     if (!learned || learned.length === 0) return answer;

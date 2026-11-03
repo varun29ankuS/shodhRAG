@@ -12,6 +12,7 @@ import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
 import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride, ProviderError } from '../modelPicker/modelTypes';
 import { readProviderError } from '../modelPicker/modelTypes';
+import type { AgentMode } from './agentModes';
 import type { ConversationMode } from '../../hooks/useConversations';
 import type { CarriedPassageWire } from '../focus/carriedPassages';
 import type { AttachedContext } from '../ask/imageAttachments';
@@ -83,6 +84,8 @@ export interface AnswerMode {
   mode: ConversationMode;
   /** The conversation's workspace: Code mode works in its one folder. */
   workspaceId: string | null;
+  /** The mode the user picked (`agentModes`); null follows the default in Settings. */
+  agentMode: AgentMode | null;
 }
 
 /** The branch a conversation's Code changes are on (`CodeBranch`). */
@@ -103,17 +106,11 @@ export interface CodeStatus {
   problem: string | null;
   /** The conversation's branch, while it is checked out. */
   branch: CodeBranch | null;
-  /** The workspace's approval level. */
-  approval: ApprovalLevel;
 }
-
-/** How much of a workspace's Code work runs without asking. */
-export type ApprovalLevel = 'askEveryTime' | 'autoApplyEdits' | 'trusted';
 
 /** A workspace's Code settings. */
 export interface CodeSettings {
-  approval: ApprovalLevel;
-  /** Command prefixes that run without asking at the Trusted level. */
+  /** Commands Auto mode runs without asking besides the tests, builds and linters it recognises (each exactly). */
   allowlist: string[];
   /** Wall-clock limit of one command, in seconds (10..=3600). */
   commandTimeoutSecs: number;
@@ -208,6 +205,7 @@ export const agentApi = {
     modelOverride,
     mode: mode?.mode ?? null,
     workspaceId: mode?.workspaceId ?? null,
+    agentMode: mode?.agentMode ?? null,
   }),
   /** Whether Code mode can work in the conversation's workspace, and its branch. */
   codeStatus: (conversationId: string, workspaceId: string | null) =>

@@ -3,7 +3,7 @@ import { ArrowUp, CornerDownRight, Folder, ImagePlus, Mic, MicOff, Square } from
 import { cn } from '../../lib/utils';
 import { useVoiceInput } from '../ask/useVoiceInput';
 import { pasteDecision } from '../ask/imageNotice';
-import { IS_MAC_PLATFORM, shortcutText, withShortcut } from '../../lib/shortcuts';
+import { IS_MAC_PLATFORM, matchesShortcut, shortcutText, withShortcut } from '../../lib/shortcuts';
 
 /** The engine grows the field with its content (no per-keystroke measuring). */
 const NATIVE_FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content');
@@ -65,6 +65,8 @@ interface AgentComposerProps {
   compact?: boolean;
   /** Placeholder while an answer runs and cannot be steered from here. */
   runningPlaceholder?: string;
+  /** Shift+Tab in the input: switch to the next mode (Ask only; the user's key, never the agent's). */
+  onCycleMode?: () => void;
 }
 
 /**
@@ -97,6 +99,7 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
     autoFocus = false,
     compact = false,
     runningPlaceholder,
+    onCycleMode,
   },
   ref,
 ) {
@@ -129,6 +132,11 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
   const canSteerNow = hasText && running && canSteer;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (onCycleMode && !e.nativeEvent.isComposing && matchesShortcut(e, 'cycleMode')) {
+      e.preventDefault();
+      onCycleMode();
+      return;
+    }
     if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
     if (running) {

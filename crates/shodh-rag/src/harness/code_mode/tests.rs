@@ -175,8 +175,28 @@ fn code_launch_args_enable_exactly_the_code_tools_with_the_guard() {
         Path::new("/data/omp/code/guard.js"),
         "Be careful.",
         crate::harness::sidecar::Thinking::Low,
+        false,
     );
     assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write".to_string()));
+    // Plan mode: only the reading tools, with the same guard.
+    let reading = code_launch_args(
+        "anthropic/claude-sonnet-4-5",
+        Path::new("/data/omp/overlay.yml"),
+        Path::new("/data/omp/code/overlay.yml"),
+        Path::new("/data/omp/code/guard.js"),
+        "Be careful.",
+        crate::harness::sidecar::Thinking::Low,
+        true,
+    );
+    assert!(reading.contains(&"--tools=read,grep,glob,ast_grep".to_string()));
+    assert!(reading.contains(&"--hook=/data/omp/code/guard.js".to_string()));
+    for change in CHANGE_TOOLS {
+        let tools = reading.iter().find(|a| a.starts_with("--tools=")).unwrap();
+        assert!(!tools
+            .trim_start_matches("--tools=")
+            .split(',')
+            .any(|t| t == change));
+    }
     // No omp tool that runs programs is enabled.
     let tools = args.iter().find(|a| a.starts_with("--tools=")).unwrap();
     for tool in OMP_EXECUTION_TOOLS {
@@ -271,6 +291,43 @@ fn the_tool_inventory_must_be_exact() {
     for tool in ["bash", "eval", "run_code"] {
         assert!(OMP_EXECUTION_TOOLS.contains(&tool), "{tool}");
     }
+    // A session that only reads: exactly the reading tools and its host tools, and no
+    // run_command at all, neither registered nor offered.
+    let reading: Vec<String> = READ_TOOLS.iter().map(|t| t.to_string()).collect();
+    assert!(inventory_matches_in(&reading, &[], true));
+    let mut reading_host = reading.clone();
+    reading_host.push("enola__explore".into());
+    assert!(inventory_matches_in(
+        &reading_host,
+        &["enola__explore".to_string()],
+        true
+    ));
+    assert!(
+        !inventory_matches_in(&exact, &host, true),
+        "change tools offered"
+    );
+    assert!(
+        !inventory_matches_in(&reading, &host, true),
+        "run_command registered"
+    );
+    let mut offered = reading.clone();
+    offered.push(run_command.clone());
+    assert!(
+        !inventory_matches_in(&offered, &[], true),
+        "run_command offered"
+    );
+    for change in CHANGE_TOOLS {
+        let mut with = reading.clone();
+        with.push(change.to_string());
+        assert!(!inventory_matches_in(&with, &[], true), "{change} offered");
+    }
+    for tool in OMP_EXECUTION_TOOLS {
+        let mut with = reading.clone();
+        with.push(tool.to_string());
+        assert!(!inventory_matches_in(&with, &[], true), "{tool} offered");
+    }
+    // And a full session never passes as one that only reads, nor the reverse.
+    assert!(!inventory_matches_in(&reading, &[], false));
 }
 
 #[test]
@@ -584,6 +641,19 @@ fn files_that_can_run_programs_are_recognised() {
         "global.json",
         "go.mod",
         "go.work",
+        "pnpm-workspace.yaml",
+        ".pnp.cjs",
+        ".pnp.loader.mjs",
+        ".yarn/releases/yarn-4.1.0.cjs",
+        ".yarn/plugins/plugin.cjs",
+        "mise.toml",
+        ".mise.toml",
+        ".tool-versions",
+        ".python-version",
+        ".node-version",
+        ".nvmrc",
+        "eslint.config.js",
+        ".eslintrc.cjs",
     ] {
         assert!(execution_risk(Path::new(risky)).is_some(), "{risky}");
     }
@@ -1084,7 +1154,6 @@ fn guarded(tool: &str, input: Value) -> GuardRequest {
 #[test]
 fn allowlisted_commands_match_exactly_without_shell_tricks() {
     let settings = CodeSettings {
-        approval: ApprovalLevel::Trusted,
         allowlist: vec![
             "cargo test".into(),
             "npm test".into(),
@@ -1134,7 +1203,6 @@ fn allowlisted_commands_match_exactly_without_shell_tricks() {
         assert!(!settings.allows(refused), "{refused:?}");
     }
     let cleaned = CodeSettings {
-        approval: ApprovalLevel::Trusted,
         allowlist: vec![
             "  cargo   test ".into(),
             "cargo test".into(),
@@ -1149,21 +1217,21 @@ fn allowlisted_commands_match_exactly_without_shell_tricks() {
 }
 
 #[test]
-fn approval_levels_decide_what_runs_without_asking() {
+fn modes_decide_what_runs_without_asking() {
     let edit = guarded(
         "edit",
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
     );
     let write = guarded("write", json!({"path": "b.rs", "content": "x"}));
     let test = guarded(RUN_COMMAND, json!({"command": "cargo test"}));
+    let listed = guarded(RUN_COMMAND, json!({"command": "make check"}));
     let wipe = guarded(
         RUN_COMMAND,
         json!({"command": "cargo test && git reset --hard"}),
     );
     let delete = guarded(RUN_COMMAND, json!({"command": "rm -rf target"}));
-    let level = |approval| CodeSettings {
-        approval,
-        allowlist: vec!["cargo test".into(), "rm -rf target".into()],
+    let settings = CodeSettings {
+        allowlist: vec!["make check".into(), "rm -rf target".into()],
         ..CodeSettings::default()
     };
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
@@ -1174,27 +1242,44 @@ fn approval_levels_decide_what_runs_without_asking() {
     let clear = gate(&reviewed);
     let none = ChangeTarget::Unknown;
 
-    let ask = level(ApprovalLevel::AskEveryTime);
-    for request in [&edit, &write, &test] {
+    // Ask and Plan: nothing runs without asking (Plan has no change tools at all).
+    for mode in [AgentMode::Ask, AgentMode::Plan] {
+        for request in [&edit, &write, &test, &listed] {
+            assert_eq!(
+                auto_approval(mode, &settings, request, &continuing, plain, &clear),
+                None,
+                "{mode:?}"
+            );
+        }
+    }
+
+    // Accept edits: edits run, commands ask.
+    let edits = AgentMode::AcceptEdits;
+    assert!(auto_approval(edits, &settings, &edit, &continuing, plain, &clear).is_some());
+    assert!(auto_approval(
+        edits,
+        &settings,
+        &write,
+        &ChangePlan::CreateBranch,
+        plain,
+        &clear
+    )
+    .is_some());
+    // Without git nothing can undo an edit, so it asks.
+    assert_eq!(
+        auto_approval(edits, &settings, &edit, &ChangePlan::NotRepo, plain, &clear),
+        None
+    );
+    assert_eq!(
+        auto_approval(edits, &settings, &edit, &refuse, plain, &clear),
+        None
+    );
+    for request in [&test, &listed] {
         assert_eq!(
-            auto_approval(&ask, request, &continuing, plain, &clear),
+            auto_approval(edits, &settings, request, &continuing, none, &clear),
             None
         );
     }
-
-    let edits = level(ApprovalLevel::AutoApplyEdits);
-    assert!(auto_approval(&edits, &edit, &continuing, plain, &clear).is_some());
-    assert!(auto_approval(&edits, &write, &ChangePlan::CreateBranch, plain, &clear).is_some());
-    // Without git nothing can undo an edit, so it asks.
-    assert_eq!(
-        auto_approval(&edits, &edit, &ChangePlan::NotRepo, plain, &clear),
-        None
-    );
-    assert_eq!(auto_approval(&edits, &edit, &refuse, plain, &clear), None);
-    assert_eq!(
-        auto_approval(&edits, &test, &continuing, none, &clear),
-        None
-    );
     // Files that can run programs, files Discard cannot restore and files
     // the guard did not name always ask.
     for target in [
@@ -1206,49 +1291,244 @@ fn approval_levels_decide_what_runs_without_asking() {
         ChangeTarget::Untracked,
         ChangeTarget::Unknown,
     ] {
-        for approval in [ApprovalLevel::AutoApplyEdits, ApprovalLevel::Trusted] {
+        for mode in [AgentMode::AcceptEdits, AgentMode::Auto] {
             assert_eq!(
-                auto_approval(&level_of(approval), &edit, &continuing, target, &clear),
+                auto_approval(mode, &settings, &edit, &continuing, target, &clear),
                 None,
                 "{target:?}"
             );
         }
     }
 
-    let trusted = level(ApprovalLevel::Trusted);
-    assert!(auto_approval(&trusted, &edit, &continuing, plain, &clear).is_some());
-    assert!(auto_approval(&trusted, &test, &continuing, none, &clear).is_some());
-    assert!(auto_approval(&trusted, &test, &ChangePlan::NotRepo, none, &clear).is_some());
-    assert_eq!(auto_approval(&trusted, &test, &refuse, none, &clear), None);
-    // Destructive commands always ask, even when the user listed them.
+    // Auto: edits, commands its rules recognise and the workspace's list run.
+    let auto = AgentMode::Auto;
+    assert!(auto_approval(auto, &settings, &edit, &continuing, plain, &clear).is_some());
+    for request in [&test, &listed] {
+        assert!(auto_approval(auto, &settings, request, &continuing, none, &clear).is_some());
+        assert!(
+            auto_approval(auto, &settings, request, &ChangePlan::NotRepo, none, &clear).is_some()
+        );
+        assert_eq!(
+            auto_approval(auto, &settings, request, &refuse, none, &clear),
+            None
+        );
+    }
+    // Something around the command makes Auto mode ask.
+    let outside = GateContext {
+        command_problem: Some("git's settings name core.fsmonitor"),
+        ..clear
+    };
     assert_eq!(
-        auto_approval(&trusted, &wipe, &continuing, none, &clear),
+        auto_approval(auto, &settings, &test, &continuing, none, &outside),
         None
     );
-    for approval in [
-        ApprovalLevel::AskEveryTime,
-        ApprovalLevel::AutoApplyEdits,
-        ApprovalLevel::Trusted,
-    ] {
+    // Destructive commands always ask, even when the user listed them.
+    assert_eq!(
+        auto_approval(auto, &settings, &wipe, &continuing, none, &clear),
+        None
+    );
+    for mode in AgentMode::ALL {
         assert_eq!(
-            auto_approval(&level(approval), &delete, &continuing, none, &clear),
-            None
+            auto_approval(mode, &settings, &delete, &continuing, none, &clear),
+            None,
+            "{mode:?}"
         );
     }
 }
 
 #[test]
-fn allowlisted_commands_ask_again_after_unreviewed_changes() {
+fn auto_mode_commands_say_why_they_ask() {
+    let settings = CodeSettings::default();
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let why = |command: &str| {
+        auto_command(
+            &settings,
+            &guarded(RUN_COMMAND, json!({ "command": command })),
+            &continuing,
+        )
+        .unwrap_err()
+    };
+    assert!(why("cargo test | sh").contains("pipes"));
+    assert!(why("rm -rf target").contains("destructive"));
+    let push = why("git push");
+    assert!(
+        push.contains("network") || push.contains("destructive"),
+        "{push}"
+    );
+    let detached = why("npm run dev &");
+    assert!(detached.contains("keeps running"), "{detached}");
+    let timed = auto_command(
+        &settings,
+        &guarded(
+            RUN_COMMAND,
+            json!({"command": "cargo test", "timeout_secs": 30}),
+        ),
+        &continuing,
+    )
+    .unwrap_err();
+    assert!(timed.contains("time limit"), "{timed}");
+    // Recognised commands carry what Auto mode still checks around them.
+    let cat = auto_command(
+        &settings,
+        &guarded(RUN_COMMAND, json!({"command": "cat src/lib.rs"})),
+        &continuing,
+    )
+    .unwrap();
+    assert_eq!(cat.reads, ["src/lib.rs"]);
+    assert!(!cat.git);
+    let status = auto_command(
+        &settings,
+        &guarded(RUN_COMMAND, json!({"command": "git status"})),
+        &continuing,
+    )
+    .unwrap();
+    assert!(status.git);
+    // A listed git command is checked like a recognised one.
+    let listed = CodeSettings {
+        allowlist: vec!["git fsck".into()],
+        ..CodeSettings::default()
+    };
+    assert!(
+        auto_command(
+            &listed,
+            &guarded(RUN_COMMAND, json!({"command": "git fsck"})),
+            &continuing
+        )
+        .unwrap()
+        .git
+    );
+}
+
+#[test]
+fn read_only_commands_must_stay_in_the_folder_links_included() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src").join("lib.rs"), "x").unwrap();
+    std::fs::write(outside.path().join("id_rsa"), "secret").unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let reads = |paths: &[&str]| AutoCommand {
+        what: "a command that only reads files",
+        git: false,
+        reads: paths.iter().map(|p| p.to_string()).collect(),
+        runs_project_code: false,
+    };
+    assert_eq!(
+        command_surroundings(
+            dir.path(),
+            home.path(),
+            &reads(&["src/lib.rs", "src", "new.txt"])
+        ),
+        None
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.path().join("id_rsa"), dir.path().join("key")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("elsewhere")).unwrap();
+        for path in ["key", "elsewhere", "elsewhere/id_rsa"] {
+            let problem = command_surroundings(dir.path(), home.path(), &reads(&[path]));
+            assert!(
+                problem.as_deref().is_some_and(|p| p.contains("outside")),
+                "{path}: {problem:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn git_commands_ask_while_git_settings_name_a_program() {
+    let dir = repo();
+    let home = tempfile::tempdir().unwrap();
+    let git = AutoCommand {
+        what: "a git command that only reads",
+        git: true,
+        reads: Vec::new(),
+        runs_project_code: false,
+    };
+    let baseline = command_surroundings(dir.path(), home.path(), &git);
+    assert_eq!(baseline, None, "{baseline:?}");
+    // A setting of the repository that runs a program.
+    git_ok(dir.path(), &["config", "core.fsmonitor", "evil"]);
+    let problem = command_surroundings(dir.path(), home.path(), &git).unwrap();
+    assert!(problem.contains("core.fsmonitor"), "{problem}");
+    git_ok(dir.path(), &["config", "--unset", "core.fsmonitor"]);
+    assert_eq!(command_surroundings(dir.path(), home.path(), &git), None);
+    // One in the commands' home, which an earlier command can write.
+    std::fs::write(
+        home.path().join(".gitconfig"),
+        "[diff \"x\"]\n\ttextconv = evil\n",
+    )
+    .unwrap();
+    let problem = command_surroundings(dir.path(), home.path(), &git).unwrap();
+    assert!(problem.contains("textconv"), "{problem}");
+    std::fs::write(
+        home.path().join(".gitconfig"),
+        "[include]\n\tpath = other\n",
+    )
+    .unwrap();
+    assert!(command_surroundings(dir.path(), home.path(), &git).is_some());
+    std::fs::write(
+        home.path().join(".gitconfig"),
+        "[user]\n\tname = A\n[remote \"origin\"]\n\turl = x\n",
+    )
+    .unwrap();
+    assert_eq!(command_surroundings(dir.path(), home.path(), &git), None);
+    // Not a git command: git's settings do not matter.
+    let cargo = AutoCommand {
+        what: "a test command",
+        git: false,
+        reads: Vec::new(),
+        runs_project_code: true,
+    };
+    std::fs::write(home.path().join(".gitconfig"), "[alias]\n\tst = !evil\n").unwrap();
+    assert_eq!(command_surroundings(dir.path(), home.path(), &cargo), None);
+    assert!(command_surroundings(dir.path(), home.path(), &git).is_some());
+}
+
+#[test]
+fn safe_git_keys_are_listed_exactly() {
+    for safe in [
+        "core.repositoryformatversion",
+        "core.bare",
+        "user.email",
+        "remote.origin.url",
+        "remote.my.fork.fetch",
+        "branch.main.merge",
+        "color.ui",
+        "Core.FileMode",
+    ] {
+        assert!(safe_git_key(safe), "{safe}");
+    }
+    for risky in [
+        "core.fsmonitor",
+        "core.pager",
+        "core.editor",
+        "core.sshcommand",
+        "core.hookspath",
+        "diff.x.textconv",
+        "diff.external",
+        "filter.lfs.smudge",
+        "alias.st",
+        "include.path",
+        "includeif.gitdir:x.path",
+        "pager.log",
+        "remote.url",
+        "remote.origin.uploadpack",
+        "credential.helper",
+        "gpg.program",
+    ] {
+        assert!(!safe_git_key(risky), "{risky}");
+    }
+}
+
+#[test]
+fn auto_mode_commands_ask_again_after_unreviewed_changes() {
     let edit = guarded(
         "edit",
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
     );
     let test = guarded(RUN_COMMAND, json!({"command": "pytest"}));
-    let settings = |approval| CodeSettings {
-        approval,
-        allowlist: vec!["pytest".into()],
-        ..CodeSettings::default()
-    };
+    let settings = CodeSettings::default();
     let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
     let reviewed = ReviewState::default();
     let changed = ReviewState {
@@ -1259,10 +1539,10 @@ fn allowlisted_commands_ask_again_after_unreviewed_changes() {
     let none = ChangeTarget::Unknown;
     let plain = ChangeTarget::Plain;
 
-    // Trusted: the allowlist runs by itself only while nothing changed
+    // Auto: a recognised command runs by itself only while nothing changed
     // without review, and an unreadable record counts as changed.
-    let trusted = settings(ApprovalLevel::Trusted);
-    assert!(auto_approval(&trusted, &test, &continuing, none, &gate(&reviewed)).is_some());
+    let auto = AgentMode::Auto;
+    assert!(auto_approval(auto, &settings, &test, &continuing, none, &gate(&reviewed)).is_some());
     for (state, plan) in [
         (&changed, &continuing),
         (&unknown, &continuing),
@@ -1270,28 +1550,24 @@ fn allowlisted_commands_ask_again_after_unreviewed_changes() {
         (&changed, &ChangePlan::CreateBranch),
     ] {
         assert_eq!(
-            auto_approval(&trusted, &test, plan, none, &gate(state)),
+            auto_approval(auto, &settings, &test, plan, none, &gate(state)),
             None,
             "{state:?} {plan:?}"
         );
     }
     // Edits are decided as before, whatever changed earlier.
     for state in [&reviewed, &changed, &unknown] {
-        assert!(auto_approval(&trusted, &edit, &continuing, plain, &gate(state)).is_some());
-        assert!(auto_approval(
-            &settings(ApprovalLevel::AutoApplyEdits),
-            &edit,
-            &continuing,
-            plain,
-            &gate(state)
-        )
-        .is_some());
+        for mode in [AgentMode::Auto, AgentMode::AcceptEdits] {
+            assert!(
+                auto_approval(mode, &settings, &edit, &continuing, plain, &gate(state)).is_some()
+            );
+        }
     }
-    // The other levels ask for every command, as before.
-    for approval in [ApprovalLevel::AskEveryTime, ApprovalLevel::AutoApplyEdits] {
+    // The other modes ask for every command, as before.
+    for mode in [AgentMode::Ask, AgentMode::AcceptEdits, AgentMode::Plan] {
         for state in [&reviewed, &changed, &unknown] {
             assert_eq!(
-                auto_approval(&settings(approval), &test, &continuing, none, &gate(state)),
+                auto_approval(mode, &settings, &test, &continuing, none, &gate(state)),
                 None
             );
         }
@@ -1306,7 +1582,6 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
         json!({"path": "a.rs", "old_string": "a", "new_string": "b"}),
     );
     let trusted = CodeSettings {
-        approval: ApprovalLevel::Trusted,
         allowlist: vec!["pytest".into()],
         ..CodeSettings::default()
     };
@@ -1320,6 +1595,7 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
     };
     assert_eq!(
         auto_approval(
+            AgentMode::Auto,
             &trusted,
             &test,
             &continuing,
@@ -1334,12 +1610,26 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
         ..base
     };
     assert_eq!(
-        auto_approval(&trusted, &test, &continuing, ChangeTarget::Unknown, &writer),
+        auto_approval(
+            AgentMode::Auto,
+            &trusted,
+            &test,
+            &continuing,
+            ChangeTarget::Unknown,
+            &writer
+        ),
         None
     );
     // While a command runs, edits ask: it may run what they change.
     assert_eq!(
-        auto_approval(&trusted, &edit, &continuing, ChangeTarget::Plain, &running),
+        auto_approval(
+            AgentMode::Auto,
+            &trusted,
+            &edit,
+            &continuing,
+            ChangeTarget::Plain,
+            &running
+        ),
         None
     );
     let mut approval = approval_for(&edit, None, ChangeTarget::Plain);
@@ -1357,6 +1647,7 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
     let background = gate(&started);
     assert_eq!(
         auto_approval(
+            AgentMode::Auto,
             &trusted,
             &edit,
             &continuing,
@@ -1366,6 +1657,7 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
         None
     );
     assert!(auto_approval(
+        AgentMode::Auto,
         &trusted,
         &test,
         &continuing,
@@ -1384,7 +1676,6 @@ fn allowlisted_commands_ask_while_anything_else_may_run_alongside() {
 #[test]
 fn only_a_plain_allowlisted_command_is_eligible() {
     let settings = CodeSettings {
-        approval: ApprovalLevel::Trusted,
         allowlist: vec!["npm test".into(), "nohup pytest".into()],
         ..CodeSettings::default()
     };
@@ -1396,6 +1687,8 @@ fn only_a_plain_allowlisted_command_is_eligible() {
         // Optional arguments some model layers send empty.
         json!({"command": "npm test", "timeout_secs": null}),
         json!({"command": "npm test", "timeout_secs": ""}),
+        // Not listed, but a command Auto mode's rules recognise.
+        json!({"command": "npm run build"}),
     ] {
         assert!(eligible(input.clone()), "{input}");
     }
@@ -1411,7 +1704,8 @@ fn only_a_plain_allowlisted_command_is_eligible() {
         json!({"command": "npm test", "anything": 1}),
         // Detaching is never eligible, even when listed.
         json!({"command": "nohup pytest"}),
-        json!({"command": "npm run build"}),
+        // Neither listed nor recognised.
+        json!({"command": "npm run deploy"}),
     ] {
         assert!(!eligible(input.clone()), "{input}");
     }
@@ -1514,7 +1808,6 @@ fn commands_that_use_the_users_accounts_are_flagged() {
     }
     // Flagged commands are never run without asking, even when listed.
     let settings = CodeSettings {
-        approval: ApprovalLevel::Trusted,
         allowlist: vec!["cargo publish".into()],
         ..CodeSettings::default()
     };
@@ -1764,24 +2057,18 @@ fn gate(review: &ReviewState) -> GateContext<'_> {
         review,
         running: None,
         unasked_writer: None,
-    }
-}
-
-fn level_of(approval: ApprovalLevel) -> CodeSettings {
-    CodeSettings {
-        approval,
-        ..CodeSettings::default()
+        command_problem: None,
+        project_code_cleared: true,
     }
 }
 
 #[test]
-fn code_settings_default_to_asking_and_survive_a_round_trip() {
+fn code_settings_default_and_survive_a_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let loaded = CodeSettings::load(dir.path()).unwrap();
-    assert_eq!(loaded.approval, ApprovalLevel::AskEveryTime);
+    assert_eq!(loaded, CodeSettings::default());
     assert_eq!(loaded.allowlist, DEFAULT_ALLOWLIST);
     let saved = CodeSettings {
-        approval: ApprovalLevel::AutoApplyEdits,
         allowlist: vec!["go test ./...".into(), "a | b".into()],
         ..CodeSettings::default()
     }
@@ -1789,11 +2076,14 @@ fn code_settings_default_to_asking_and_survive_a_round_trip() {
     .unwrap();
     assert_eq!(saved.allowlist, ["go test ./..."]);
     assert_eq!(CodeSettings::load(dir.path()).unwrap(), saved);
-    // Files without some keys load with the defaults for them.
+    // Files without some keys load with the defaults for them; a workspace
+    // approval level saved by an earlier version is replaced by the mode, and
+    // kept only for the one-time notice.
     std::fs::write(CodeSettings::path(dir.path()), r#"{"approval":"trusted"}"#).unwrap();
     let partial = CodeSettings::load(dir.path()).unwrap();
-    assert_eq!(partial.approval, ApprovalLevel::Trusted);
+    assert_eq!(partial.former_level.as_deref(), Some("trusted"));
     assert_eq!(partial.allowlist, DEFAULT_ALLOWLIST);
+    assert!(partial.build_trust.is_none(), "trust is never migrated");
     std::fs::write(CodeSettings::path(dir.path()), "not json").unwrap();
     assert!(CodeSettings::load(dir.path()).is_err());
 }
@@ -1892,12 +2182,26 @@ fn branch_records_are_kept_per_conversation() {
 fn the_system_prompt_names_the_folder_and_keeps_the_rules_first() {
     let dir = tempfile::tempdir().unwrap();
     let folder = CodeFolder::open(dir.path()).unwrap();
-    let prompt = code_system_prompt(&folder, Some("Use tabs."));
+    let prompt = code_system_prompt(&folder, Some("Use tabs."), AgentMode::Ask);
     assert!(prompt.contains(&folder.display()));
     let rules = prompt.find("destructive commands always do").unwrap();
     let extra = prompt.find("Use tabs.").unwrap();
     assert!(rules < extra);
-    assert!(!code_system_prompt(&folder, Some("  ")).contains("instructions for this conversation"));
+    assert!(!code_system_prompt(&folder, Some("  "), AgentMode::Ask)
+        .contains("instructions for this conversation"));
+    assert!(prompt.contains(AgentMode::Ask.prompt_note()));
+    // Plan mode: only the reading tools are named, and the plan note.
+    let plan = code_system_prompt(&folder, Some("Use tabs."), AgentMode::Plan);
+    assert!(plan.contains("cannot edit, write or run commands"));
+    assert!(!plan.contains("run_command ("));
+    assert!(plan.contains(AgentMode::Plan.prompt_note()));
+    assert!(plan.find("Use tabs.").unwrap() > plan.find("Mode: Plan").unwrap());
+    for mode in [AgentMode::AcceptEdits, AgentMode::Auto] {
+        let prompt = code_system_prompt(&folder, None, mode);
+        assert!(prompt.contains("run_command ("));
+        assert!(prompt.contains(mode.prompt_note()));
+        assert!(prompt.contains("suggest_mode"));
+    }
     // Diagrams: the checked graph, with file paths, and architecture from enola.
     assert!(prompt.contains("```diagram code blocks"));
     assert!(prompt.contains("\"path\" relative to the code folder"));
@@ -1915,4 +2219,219 @@ fn code_steps_have_labels_and_tiers() {
     assert_eq!(catalog[RUN_COMMAND].tier, RiskTier::Write);
     assert_eq!(catalog[RUN_COMMAND].label_template, "Running {command}");
     assert!(!catalog.contains_key("bash"));
+}
+
+#[test]
+fn builds_and_tests_need_the_project_cleared_and_inspecting_does_not() {
+    let settings = CodeSettings {
+        allowlist: vec!["make check".into()],
+        ..CodeSettings::default()
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let none = ChangeTarget::Unknown;
+    let reviewed = ReviewState::default();
+    let changed = ReviewState {
+        files: vec!["src/lib.rs".into()],
+        ..ReviewState::default()
+    };
+    fn uncleared(review: &ReviewState) -> GateContext<'_> {
+        GateContext {
+            project_code_cleared: false,
+            ..gate(review)
+        }
+    }
+    let auto = AgentMode::Auto;
+    // Builds, tests and the workspace's list need the project cleared.
+    for command in [
+        "cargo test",
+        "npm test",
+        "pytest",
+        "go vet ./...",
+        "make check",
+    ] {
+        let request = guarded(RUN_COMMAND, json!({ "command": command }));
+        assert_eq!(
+            auto_approval(
+                auto,
+                &settings,
+                &request,
+                &continuing,
+                none,
+                &uncleared(&reviewed)
+            ),
+            None,
+            "{command}"
+        );
+        assert!(
+            auto_approval(
+                auto,
+                &settings,
+                &request,
+                &continuing,
+                none,
+                &gate(&reviewed)
+            )
+            .is_some(),
+            "{command}"
+        );
+        assert!(
+            command_eligible(&settings, &request, &continuing),
+            "{command}"
+        );
+    }
+    // Commands that only inspect run without asking even then, and even after a
+    // change nobody reviewed: they run none of the project's code.
+    for command in [
+        "git status",
+        "git diff --stat",
+        "cat src/lib.rs",
+        "rg -n x src",
+        "ruff check src",
+    ] {
+        let request = guarded(RUN_COMMAND, json!({ "command": command }));
+        for review in [&reviewed, &changed] {
+            assert!(
+                auto_approval(
+                    auto,
+                    &settings,
+                    &request,
+                    &continuing,
+                    none,
+                    &uncleared(review)
+                )
+                .is_some(),
+                "{command}"
+            );
+        }
+        // Approving one marks nothing reviewed.
+        assert!(
+            !command_eligible(&settings, &request, &continuing),
+            "{command}"
+        );
+        // Ask and Accept edits still ask.
+        for mode in [AgentMode::Ask, AgentMode::AcceptEdits, AgentMode::Plan] {
+            assert_eq!(
+                auto_approval(
+                    mode,
+                    &settings,
+                    &request,
+                    &continuing,
+                    none,
+                    &gate(&reviewed)
+                ),
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn a_list_the_workspace_never_used_is_parked_when_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    for (level, used) in [
+        ("askEveryTime", false),
+        ("autoApplyEdits", false),
+        ("trusted", true),
+    ] {
+        let file = json!({"approval": level, "allowlist": ["./deploy.sh", "make release"]});
+        std::fs::write(CodeSettings::path(dir.path()), file.to_string()).unwrap();
+        let loaded = CodeSettings::load(dir.path()).unwrap();
+        assert_eq!(loaded.former_level.as_deref(), Some(level));
+        assert!(loaded.build_trust.is_none(), "{level}");
+        if used {
+            assert_eq!(loaded.allowlist, ["./deploy.sh", "make release"]);
+            assert!(loaded.parked_allowlist.is_empty());
+        } else {
+            assert!(
+                loaded.allowlist.is_empty(),
+                "{level}: a parked list never runs"
+            );
+            assert_eq!(loaded.parked_allowlist, ["./deploy.sh", "make release"]);
+        }
+        // Saved again, the level is not written back, and loading is stable.
+        let saved = loaded.clone().save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(CodeSettings::path(dir.path())).unwrap();
+        assert!(!text.contains("\"approval\""), "{text}");
+        assert_eq!(CodeSettings::load(dir.path()).unwrap(), saved);
+    }
+}
+
+#[test]
+fn trust_lapses_when_a_file_that_chooses_what_runs_changes() {
+    let dir = repo();
+    let root = dir.path();
+    let trusted = CodeSettings {
+        build_trust: Some(BuildTrust {
+            fingerprint: project_fingerprint(root).unwrap(),
+            trusted_at: "2026-11-03T00:00:00Z".into(),
+        }),
+        ..CodeSettings::default()
+    };
+    assert!(trusted
+        .build_trust_for(&project_fingerprint(root).unwrap())
+        .is_ok());
+    // Plain source changes keep it.
+    std::fs::write(root.join("lib.rs"), "fn b() {}\n").unwrap();
+    std::fs::write(root.join("notes.md"), "x").unwrap();
+    assert!(trusted
+        .build_trust_for(&project_fingerprint(root).unwrap())
+        .is_ok());
+    // Each of these revokes it, ignored by git or not.
+    std::fs::write(root.join(".gitignore"), ".npmrc\nnode_modules/\n.venv/\n").unwrap();
+    let cases: [(&str, &str); 9] = [
+        (".npmrc", "script-shell=evil"),
+        (".cargo/config.toml", "[build]\nrustc-wrapper = \"x\""),
+        ("rust-toolchain.toml", "[toolchain]\npath = \"tools/tc\""),
+        ("conftest.py", "import os"),
+        ("package.json", "{\"scripts\":{\"test\":\"x\"}}"),
+        ("sub/build.rs", "fn main() {}"),
+        ("node_modules/.bin/jest", "#!/bin/sh"),
+        (".venv/Scripts/pytest.exe", "x"),
+        (".yarnrc.yml", "yarnPath: x.cjs"),
+    ];
+    let mut before = project_fingerprint(root).unwrap();
+    for (file, content) in cases {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        let now = project_fingerprint(root).unwrap();
+        let changed = before.first_change(&now);
+        assert!(changed.is_some(), "{file} changed nothing");
+        let lapsed = trusted.build_trust_for(&now).unwrap_err();
+        assert!(lapsed.contains("changed since you trusted"), "{lapsed}");
+        before = now;
+    }
+    // Untrusted: says so.
+    let none = CodeSettings::default()
+        .build_trust_for(&before)
+        .unwrap_err();
+    assert!(none.contains("not trusted"), "{none}");
+    // Outside git there is nothing to trust.
+    let plain = tempfile::tempdir().unwrap();
+    assert!(project_fingerprint(plain.path()).is_err());
+}
+
+#[test]
+fn what_is_unreviewed_belongs_to_the_folder_and_old_records_are_kept() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ReviewStore::in_dir(data.path());
+    let dir = tempfile::tempdir().unwrap();
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    let key = ReviewStore::folder_key(&folder);
+    // A record an earlier version kept for a conversation.
+    store
+        .update("conv-a", |state| {
+            state.add_files(["src/old.rs".to_string()])
+        })
+        .unwrap();
+    store
+        .update(&key, |state| state.add_files(["src/new.rs".to_string()]))
+        .unwrap();
+    store.adopt("conv-a", &key).unwrap();
+    let state = store.get(&key).unwrap();
+    assert_eq!(state.files, ["src/new.rs", "src/old.rs"]);
+    assert_eq!(store.get("conv-a").unwrap(), ReviewState::default());
+    // Another conversation of the folder sees the same record.
+    store.adopt("conv-b", &key).unwrap();
+    assert_eq!(store.get(&key).unwrap().files.len(), 2);
 }

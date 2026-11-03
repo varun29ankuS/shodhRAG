@@ -14,6 +14,8 @@ import guard, {
   EXECUTION_TOOLS,
   GUARD_COMMAND,
   HOST_TOOLS_ENV,
+  READS_ONLY_ENV,
+  READS_ONLY_REASON,
   ROOT_ENV,
   checkPath,
   filePart,
@@ -377,6 +379,34 @@ test('changes wait for the approval answer; reads do not ask', async () => {
   } finally {
     if (previous === undefined) delete process.env[ROOT_ENV];
     else process.env[ROOT_ENV] = previous;
+    cleanup();
+  }
+});
+
+test('a session that only reads blocks every change without asking', async () => {
+  const { root, cleanup } = fixture();
+  const previous = { root: process.env[ROOT_ENV], only: process.env[READS_ONLY_ENV] };
+  process.env[ROOT_ENV] = root;
+  process.env[READS_ONLY_ENV] = '1';
+  try {
+    const guarded = loadGuard(async () => ALLOW);
+    assert.equal(await guarded.call(root, 'read', { path: 'src/lib.rs' }), undefined);
+    for (const [tool, input] of [
+      ['edit', { path: 'src/lib.rs', old_string: 'a', new_string: 'b' }],
+      ['write', { path: 'src/new.rs', content: 'x' }],
+    ] as const) {
+      assert.deepEqual(await guarded.call(root, tool, input), { block: true, reason: READS_ONLY_REASON }, tool);
+    }
+    // Nothing is asked: the user is never offered a change in this mode.
+    assert.equal(guarded.asked.length, 0);
+    process.env[READS_ONLY_ENV] = '0';
+    assert.equal(await guarded.call(root, 'write', { path: 'src/new.rs', content: 'x' }), undefined);
+    assert.equal(guarded.asked.length, 1);
+  } finally {
+    for (const [name, value] of [[ROOT_ENV, previous.root], [READS_ONLY_ENV, previous.only]] as const) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     cleanup();
   }
 });

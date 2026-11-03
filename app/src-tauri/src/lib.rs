@@ -766,6 +766,8 @@ pub fn run() {
             agent_session_commands::agent_code_paths,
             agent_session_commands::code_settings_get,
             agent_session_commands::code_settings_set,
+            agent_session_commands::code_build_trust,
+            agent_session_commands::code_trust_builds,
             agent_session_commands::agent_install_runtime,
             library_profile::library_profile,
             ui_state_commands::ui_state_get,
@@ -792,6 +794,7 @@ pub fn run() {
             app_settings::set_memory_preferences,
             app_settings::set_answer_preferences,
             app_settings::set_code_mode,
+            app_settings::set_default_agent_mode,
             // Desktop notifications (Settings → Notifications)
             notifications::set_notification_preferences,
             notifications::send_test_notification,

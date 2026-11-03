@@ -341,6 +341,9 @@ impl HostTool for OrganizeConversationTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
+    fn edits_locally(&self) -> bool {
+        true
+    }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::ORGANIZE_CONVERSATION;
         let (id, change) = organize_args(tool, args)?;
@@ -446,6 +449,7 @@ mod tests {
             source: None,
             seed: None,
             about_file: None,
+            agent_mode: None,
         }
     }
 

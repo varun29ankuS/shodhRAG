@@ -42,6 +42,10 @@ import * as path from "node:path";
 
 export const ROOT_ENV = "SHODH_CODE_ROOT";
 export const HOST_TOOLS_ENV = "SHODH_HOST_TOOLS";
+/** Set to "1" for a session that only reads (Plan mode, code_mode.rs `READS_ONLY_ENV`): every change is blocked. */
+export const READS_ONLY_ENV = "SHODH_READS_ONLY";
+export const READS_ONLY_REASON =
+  "This mode only reads: nothing is changed. Finish the plan instead; the user chooses the mode it runs in.";
 export const APPROVAL_TITLE = "shodh-approval";
 export const GUARD_COMMAND = "shodh-guard";
 export const ALLOW = "allow";
@@ -411,6 +415,7 @@ export default function guard(pi) {
     });
     if (problem) return { block: true, reason: problem };
     if (!CHANGE_TOOLS.has(event.toolName)) return undefined;
+    if (process.env[READS_ONLY_ENV] === "1") return { block: true, reason: READS_ONLY_REASON };
     if (!ctx.hasUI) return { block: true, reason: "No approval channel is available." };
     const request = { toolCallId: event.toolCallId, tool: event.toolName, input: event.input };
     if (target !== undefined) request.target = target;

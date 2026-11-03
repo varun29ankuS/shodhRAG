@@ -4,7 +4,8 @@
 //! session starts. Profiles are code-defined for now; user-defined profiles
 //! (spec §7.3) will be stored in SQLite and loaded into this same type.
 
-use super::tools::{documents, navigate, plan, search, sources, web};
+use super::modes::AgentMode;
+use super::tools::{documents, mode, navigate, plan, search, sources, web};
 
 /// Names of the app-layer tools (implemented in the Tauri crate).
 pub mod app_tools {
@@ -113,8 +114,9 @@ pub mod app_tools {
 }
 
 /// Tools implemented in this crate that the assistant profile allows.
-pub const CORE_TOOLS: [&str; 11] = [
+pub const CORE_TOOLS: [&str; 12] = [
     search::SEARCH_DOCUMENTS,
+    mode::SUGGEST_MODE,
     documents::OPEN_DOCUMENT,
     sources::LIST_SOURCES,
     plan::UPDATE_PLAN,
@@ -149,9 +151,10 @@ pub struct AgentProfile {
     /// System prompt for the session.
     pub instructions: String,
     pub allowed_tools: Vec<String>,
-    /// When true, `write` tools run without a prompt. `destructive` tools
-    /// always need approval.
-    pub auto_approve_writes: bool,
+    /// The mode the session answers in ([`AgentMode`]): which calls run
+    /// without asking, and in Plan mode which tools the model is given.
+    /// Fixed for the session; the agent can never change it.
+    pub mode: AgentMode,
     /// Maximum tool calls per answer (`update_plan` is not counted).
     pub max_tool_calls: u32,
 }
@@ -318,7 +321,7 @@ impl AgentProfile {
             name: "Assistant".to_string(),
             instructions: ASSISTANT_INSTRUCTIONS.to_string(),
             allowed_tools,
-            auto_approve_writes: false,
+            mode: AgentMode::Ask,
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
         }
     }
@@ -391,7 +394,7 @@ mod tests {
         );
         assert!(p.allows("remove_source"));
         assert!(!p.allows("bash"));
-        assert!(!p.auto_approve_writes);
+        assert_eq!(p.mode, AgentMode::Ask);
         assert_eq!(p.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
         assert_eq!(AgentProfile::builtin("assistant"), Some(p));
         assert_eq!(AgentProfile::builtin("../etc"), None);

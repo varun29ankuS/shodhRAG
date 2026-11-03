@@ -349,6 +349,11 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
 
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
+  // A side run of a conversation in Plan mode only reads too; any other answers in Ask.
+  const sideMode = (conversationId: string) =>
+    conversationsRef.current.find(c => c.id === conversationId)?.agentMode === 'plan'
+      ? ({ mode: 'research', workspaceId: null, agentMode: 'plan' } as const)
+      : null;
   /** The workspace of a conversation: side questions search what its chats search. */
   const workspaceOf = (conversationId: string): string | null =>
     conversationsRef.current.find(c => c.id === conversationId)?.workspaceId ?? null;
@@ -740,7 +745,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       : scope;
     const launch = async (override: ModelOverride | null) => {
       try {
-        const sessionId = await api.start(sideSessionKey(conversationId, threadId), instructions, conversationId, override);
+        const sessionId = await api.start(sideSessionKey(conversationId, threadId), instructions, conversationId, override, sideMode(conversationId));
         if (live.settled) return;
         live.sessionId = sessionId;
         setRuntimeInstalled(true);
@@ -782,7 +787,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       const key = sideSessionKey(level.conversationId, `${level.threadId}-summary`);
       const launch = async (override: ModelOverride | null) => {
         try {
-          const sessionId = await api.start(key, instructions, level.conversationId, override);
+          const sessionId = await api.start(key, instructions, level.conversationId, override, sideMode(level.conversationId));
           if (live.settled) return;
           live.sessionId = sessionId;
           setRuntimeInstalled(true);
@@ -829,7 +834,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
         const key = sideSessionKey(level.conversationId, `${level.threadId}-refine`);
         const launch = async (override: ModelOverride | null) => {
           try {
-            const sessionId = await api.start(key, instructions, level.conversationId, override);
+            const sessionId = await api.start(key, instructions, level.conversationId, override, sideMode(level.conversationId));
             if (live.settled) return;
             live.sessionId = sessionId;
             setRuntimeInstalled(true);
@@ -973,7 +978,7 @@ export function FocusProvider({ children }: { children: React.ReactNode }) {
       }, REPAIR_TIMEOUT_MS);
       const launch = async (override: ModelOverride | null) => {
         try {
-          const sessionId = await api.start(key, null, conversationId, override);
+          const sessionId = await api.start(key, null, conversationId, override, sideMode(conversationId));
           if (live.settled) {
             closeRepairSession();
             return;

@@ -12,6 +12,7 @@ import { AGENT_SESSIONS_EVENT, isSessionCounts } from './sessionCounts';
 import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride, ProviderError } from '../modelPicker/modelTypes';
 import { readProviderError } from '../modelPicker/modelTypes';
+import type { AgentMode } from './agentModes';
 import type { ConversationMode } from '../../hooks/useConversations';
 import type { CarriedPassageWire } from '../focus/carriedPassages';
 import type { AttachedContext } from '../ask/imageAttachments';
@@ -83,6 +84,8 @@ export interface AnswerMode {
   mode: ConversationMode;
   /** The conversation's workspace: Code mode works in its one folder. */
   workspaceId: string | null;
+  /** The mode the user picked (`agentModes`); null follows the default in Settings. */
+  agentMode: AgentMode | null;
 }
 
 /** The branch a conversation's Code changes are on (`CodeBranch`). */
@@ -103,24 +106,39 @@ export interface CodeStatus {
   problem: string | null;
   /** The conversation's branch, while it is checked out. */
   branch: CodeBranch | null;
-  /** The workspace's approval level. */
-  approval: ApprovalLevel;
 }
-
-/** How much of a workspace's Code work runs without asking. */
-export type ApprovalLevel = 'askEveryTime' | 'autoApplyEdits' | 'trusted';
 
 /** A workspace's Code settings. */
 export interface CodeSettings {
-  approval: ApprovalLevel;
-  /** Command prefixes that run without asking at the Trusted level. */
+  /**
+   * Commands Auto mode also runs (each exactly), like a build or test: by themselves only
+   * where commands are sandboxed or in a workspace the user trusts.
+   */
   allowlist: string[];
+  /** A list an earlier version kept while the workspace asked for everything: never run. */
+  parkedAllowlist?: string[];
+  /** The approval level an earlier version saved, until the one-time notice is dismissed. */
+  formerLevel?: string | null;
+  /** Kept by the backend as it is on disk; set only by `trustBuilds`. */
+  buildTrust?: unknown;
   /** Wall-clock limit of one command, in seconds (10..=3600). */
   commandTimeoutSecs: number;
   /** Memory a command and everything it starts may use, in MB (256..=65536). */
   memoryLimitMb: number;
   /** CPU a command may use, in percent of the whole machine (10..=100). */
   cpuPercent: number;
+}
+
+/** `code_build_trust`: whether a workspace's builds and tests may run without asking in Auto. */
+export interface BuildTrustStatus {
+  /** Commands are sandboxed on this system: builds and tests run by themselves anyway. */
+  sandboxed: boolean;
+  /** The user trusts the workspace, and its build files are as they were then. */
+  trusted: boolean;
+  /** Trust was given, but the project changed since (what changed). */
+  lapsed: string | null;
+  /** Why trust cannot be given (no code folder, not a git repository). */
+  problem: string | null;
 }
 
 /** The optional parts of `agentApi.send`. */
@@ -208,6 +226,7 @@ export const agentApi = {
     modelOverride,
     mode: mode?.mode ?? null,
     workspaceId: mode?.workspaceId ?? null,
+    agentMode: mode?.agentMode ?? null,
   }),
   /** Whether Code mode can work in the conversation's workspace, and its branch. */
   codeStatus: (conversationId: string, workspaceId: string | null) =>
@@ -218,6 +237,11 @@ export const agentApi = {
   codePaths: (workspaceId: string, paths: string[]) =>
     call<(string | null)[]>('agent_code_paths', { workspaceId, paths }),
   codeSettings: (workspaceId: string) => call<CodeSettings>('code_settings_get', { workspaceId }),
+  /** Whether Auto mode may run the workspace's own builds and tests without asking. */
+  buildTrust: (workspaceId: string) => call<BuildTrustStatus>('code_build_trust', { workspaceId }),
+  /** Trust (or stop trusting) the workspace's builds and tests, as its build files are now. */
+  trustBuilds: (workspaceId: string, trusted: boolean) =>
+    call<BuildTrustStatus>('code_trust_builds', { workspaceId, trusted }),
   /** Save a workspace's Code settings; returns them as saved. */
   setCodeSettings: (workspaceId: string, settings: CodeSettings) =>
     call<CodeSettings>('code_settings_set', { workspaceId, settings }),

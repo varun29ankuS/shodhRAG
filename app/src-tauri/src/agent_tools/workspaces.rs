@@ -2,7 +2,9 @@
 //! `create_workspace` and `update_workspace` (write), `add_to_workspace` and
 //! `remove_from_workspace` (write).
 //!
-//! Every change asks the user first. An instruction edit is shown as a diff against the
+//! Every change asks the user first, in every mode: a workspace's sources decide what
+//! later answers draw on, Slack and Telegram answers included, and its instructions steer
+//! them. An instruction edit is shown as a diff against the
 //! version the assistant read (`base_version`); if the instructions changed since, the
 //! edit is refused rather than applied over the user's newer text. The assistant cannot
 //! archive or delete a workspace.
@@ -302,7 +304,7 @@ impl HostTool for CreateWorkspaceTool {
         "Creating the workspace[ {name}]"
     }
     fn description(&self) -> &'static str {
-        "Create a workspace (asks the user first). A template fills starting instructions, \
+        "Create a workspace (always asks the user first). A template fills starting instructions, \
          icon and colour; instructions you give replace the template's. Add sources with \
          add_to_workspace afterwards."
     }
@@ -776,7 +778,7 @@ impl HostTool for AddToWorkspaceTool {
         "Adding sources to a workspace"
     }
     fn description(&self) -> &'static str {
-        "Add sources to a workspace (asks the user first): kind folder (id: a folder source id \
+        "Add sources to a workspace (always asks the user first): kind folder (id: a folder source id \
          from list_sources), file (id: an indexed file's name), snippet (id: a snippet id from \
          list_snippets) or paper (id: a paper id, title, DOI or arXiv id from the paper graph; \
          only papers in the library are searched). Chats in the workspace then search them."
@@ -940,7 +942,7 @@ impl HostTool for RemoveFromWorkspaceTool {
         "Removing a source from a workspace"
     }
     fn description(&self) -> &'static str {
-        "Remove one source from a workspace (asks the user first); kind and id as listed by \
+        "Remove one source from a workspace (always asks the user first); kind and id as listed by \
          list_workspaces. The source itself stays in the Library; only the workspace stops \
          searching it."
     }

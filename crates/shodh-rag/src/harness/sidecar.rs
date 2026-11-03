@@ -17,7 +17,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 use super::code_mode::{
     code_launch_args, code_overlay_config, host_tools_overlay_config, CodeFolder, CODE_ROOT_ENV,
-    DISABLED_DISCOVERY, EDIT_VARIANT_ENV, GUARD_HOOK, HOST_TOOLS_ENV,
+    DISABLED_DISCOVERY, EDIT_VARIANT_ENV, GUARD_HOOK, HOST_TOOLS_ENV, READS_ONLY_ENV,
 };
 use super::error::HarnessError;
 use super::model::{EnvValue, OmpModel};
@@ -718,6 +718,10 @@ pub struct LaunchSpec {
     pub host_tools: Vec<String>,
     /// Whether the model reasons before answering (the user's setting).
     pub thinking: Thinking,
+    /// Code mode in a mode that only reads ([`super::modes::AgentMode::Plan`]):
+    /// omp gets only its reading tools ([`super::code_mode::READ_TOOLS`]), and
+    /// the guard refuses every edit and write.
+    pub code_reads_only: bool,
 }
 
 impl LaunchSpec {
@@ -774,6 +778,7 @@ impl LaunchSpec {
                     &self.layout.guard_hook,
                     &self.system_prompt,
                     self.thinking,
+                    self.code_reads_only,
                 ),
                 folder.root().to_path_buf(),
             ),
@@ -804,6 +809,9 @@ impl LaunchSpec {
                 HOST_TOOLS_ENV.to_string(),
                 EnvValue::Plain(self.host_tools.join(",")),
             ));
+            if self.code_reads_only {
+                env.push((READS_ONLY_ENV.to_string(), EnvValue::Plain("1".to_string())));
+            }
         }
         env
     }
@@ -1264,6 +1272,7 @@ mod tests {
             code: None,
             host_tools: Vec::new(),
             thinking: Thinking::Off,
+            code_reads_only: false,
         };
         let text = spec.describe();
         assert!(text.contains("ANTHROPIC_API_KEY"));
@@ -1281,6 +1290,7 @@ mod tests {
             code,
             host_tools: Vec::new(),
             thinking: Thinking::default(),
+            code_reads_only: false,
         }
     }
 

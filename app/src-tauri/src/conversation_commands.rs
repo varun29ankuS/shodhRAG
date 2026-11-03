@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use shodh_rag::harness::modes::AgentMode;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::AppHandle;
@@ -82,6 +83,15 @@ pub struct ConversationRecord {
     /// view, which sends the path as each answer's search limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about_file: Option<serde_json::Value>,
+    /// The mode the user picked for the conversation ([`AgentMode`]); absent
+    /// follows the default in Settings. A mode this version does not know reads as
+    /// Ask, never as a looser one.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_agent_mode"
+    )]
+    pub agent_mode: Option<AgentMode>,
 }
 
 /// Where a connector conversation happened.
@@ -123,6 +133,22 @@ where
         Some("code") => Some(ConversationMode::Code),
         _ => None,
     })
+}
+
+/// A stored agent mode: one this version does not know (from a newer version) is
+/// Ask, the mode that asks for every change, and never stops the conversations from
+/// loading.
+fn known_agent_mode<'de, D>(deserializer: D) -> Result<Option<AgentMode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let stored: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(stored.map(|value| {
+        value
+            .as_str()
+            .and_then(AgentMode::parse)
+            .unwrap_or(AgentMode::Ask)
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +454,33 @@ mod tests {
         let unknown = old.replace(r#""pinned": false"#, r#""pinned": false, "mode": "turbo""#);
         let read: ConversationRecord = serde_json::from_str(&unknown).unwrap();
         assert_eq!(read.mode, None);
+    }
+
+    #[test]
+    fn a_conversation_keeps_its_agent_mode_and_unknown_ones_ask() {
+        let old = r#"{"id": "c1", "title": "Build", "messages": [],
+            "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-01T00:00:00Z",
+            "pinned": false}"#;
+        let record: ConversationRecord = serde_json::from_str(old).unwrap();
+        assert_eq!(record.agent_mode, None);
+        assert!(!serde_json::to_string(&record)
+            .unwrap()
+            .contains("agentMode"));
+        for mode in AgentMode::ALL {
+            let mut picked = record.clone();
+            picked.agent_mode = Some(mode);
+            let text = serde_json::to_string(&picked).unwrap();
+            let read: ConversationRecord = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.agent_mode, Some(mode));
+        }
+        for stored in [r#""creator""#, r#""bypass""#, r#""Auto""#, "7", "{}"] {
+            let text = old.replace(
+                r#""pinned": false"#,
+                &format!(r#""pinned": false, "agentMode": {stored}"#),
+            );
+            let read: ConversationRecord = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.agent_mode, Some(AgentMode::Ask), "{stored}");
+        }
     }
 
     fn record(id: &str) -> ConversationRecord {

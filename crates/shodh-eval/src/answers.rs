@@ -324,6 +324,7 @@ impl Answerer {
             host_tools: Vec::new(),
             // As the app answers by default ("Think before answering" off).
             thinking: Thinking::default(),
+            code_reads_only: false,
         };
         let (session, mut events) = OmpSession::start(SessionConfig {
             launch,

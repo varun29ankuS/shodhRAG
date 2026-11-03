@@ -33,6 +33,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use shodh_rag::audit::AuditLog;
 use shodh_rag::harness::tools::documents::OpenDocumentTool;
+use shodh_rag::harness::tools::mode::SuggestModeTool;
 use shodh_rag::harness::tools::navigate::{
     OpenViewTool, ShowAuditTool, ShowDocumentTool, ShowSourceTool,
 };
@@ -228,6 +229,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     registry.register(Arc::new(OpenDocumentTool::new(rag.clone())))?;
     registry.register(Arc::new(ListSourcesTool::new(rag.clone())))?;
     registry.register(Arc::new(UpdatePlanTool))?;
+    registry.register(Arc::new(SuggestModeTool))?;
     registry.register(Arc::new(OpenViewTool))?;
     registry.register(Arc::new(ShowDocumentTool))?;
     registry.register(Arc::new(ShowAuditTool))?;
@@ -773,7 +775,7 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shodh_rag::harness::profile::AgentProfile;
+    use shodh_rag::harness::profile::{app_tools, AgentProfile};
 
     #[tokio::test]
     async fn every_allowed_tool_is_registered_and_every_registered_tool_allowed() {
@@ -785,6 +787,96 @@ mod tests {
         let mut allowed: Vec<&str> = profile.allowed_tools.iter().map(String::as_str).collect();
         allowed.sort_unstable();
         assert_eq!(registered, allowed);
+    }
+
+    /// The tools the modes that accept edits run without asking: only changes that stay
+    /// on this computer, in the user's own data or workspace, and can be taken back.
+    /// What leaves the computer (downloads, GitHub), what the user approves by design
+    /// (memories) and what changes the library or the app (folders to index, settings)
+    /// never opts in.
+    #[tokio::test]
+    async fn only_local_edits_run_without_asking_in_accept_edits_and_auto() {
+        use shodh_rag::harness::modes::{decide, AgentMode, Gate, ToolClass};
+        use shodh_rag::harness::RiskTier;
+        let t = testing::host().await;
+        let registry = build_registry(t.host.clone()).unwrap();
+        let mut local: Vec<&str> = registry
+            .names()
+            .into_iter()
+            .filter(|name| registry.tool(name).is_some_and(|tool| tool.edits_locally()))
+            .collect();
+        local.sort_unstable();
+        let mut expected = vec![
+            app_tools::ORGANIZE_CONVERSATION,
+            app_tools::CREATE_FOLDER,
+            app_tools::EXPORT_DOCUMENT,
+        ];
+        expected.sort_unstable();
+        assert_eq!(local, expected);
+        for name in [
+            app_tools::DOWNLOAD_FILE,
+            app_tools::REMEMBER,
+            app_tools::UPDATE_MEMORY,
+            app_tools::FORGET,
+            app_tools::UPDATE_SETTING,
+            app_tools::ADD_FOLDER,
+            app_tools::REMOVE_SOURCE,
+            app_tools::DELETE_TASK,
+            app_tools::DELETE_EVENT,
+            // Workspace instructions steer later answers: changing them always asks.
+            app_tools::CREATE_WORKSPACE,
+            app_tools::UPDATE_WORKSPACE,
+            // A workspace's sources decide what Slack and Telegram answers draw on.
+            app_tools::ADD_TO_WORKSPACE,
+            app_tools::REMOVE_FROM_WORKSPACE,
+            // Tasks, events and snippets are indexed and read by later answers (and
+            // remind the user): the model's words there would steer them.
+            app_tools::CREATE_TASK,
+            app_tools::UPDATE_TASK,
+            app_tools::COMPLETE_TASK,
+            app_tools::CREATE_EVENT,
+            app_tools::UPDATE_EVENT,
+            app_tools::CREATE_SNIPPET,
+        ] {
+            assert!(!local.contains(&name), "{name} must ask in every mode");
+        }
+        // Every tool, in every mode: a write that is not a local edit and every
+        // destructive tool ask (or are hidden in Plan mode); nothing hidden in Plan
+        // mode is anything but a change.
+        for name in registry.names() {
+            let tool = registry.tool(name).unwrap();
+            let class = ToolClass::of(
+                tool.tier(),
+                tool.edits_locally(),
+                tool.changes_files_unasked() || tool.changes_state(),
+            );
+            for mode in AgentMode::ALL {
+                let gate = decide(mode, class);
+                match tool.tier() {
+                    RiskTier::Read if tool.changes_state() && mode == AgentMode::Plan => {
+                        assert_eq!(gate, Gate::Hidden, "{name} {mode:?}")
+                    }
+                    RiskTier::Read => assert_eq!(gate, Gate::Run, "{name} {mode:?}"),
+                    RiskTier::Write if tool.edits_locally() && mode != AgentMode::Ask => {
+                        assert_ne!(gate, Gate::Ask, "{name} {mode:?}")
+                    }
+                    RiskTier::Write | RiskTier::Destructive => {
+                        assert_ne!(gate, Gate::Run, "{name} {mode:?}")
+                    }
+                }
+                assert_eq!(
+                    registry.offers(
+                        name,
+                        &AgentProfile {
+                            mode,
+                            ..AgentProfile::assistant()
+                        }
+                    ),
+                    gate != Gate::Hidden,
+                    "{name} {mode:?}"
+                );
+            }
+        }
     }
 }
 

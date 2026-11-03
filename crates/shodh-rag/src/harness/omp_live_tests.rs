@@ -230,6 +230,7 @@ fn spec(data: &std::path::Path, provider: u16, proxy: u16, code: Option<CodeFold
         code,
         host_tools: Vec::new(),
         thinking: Thinking::Off,
+        code_reads_only: false,
     }
 }
 

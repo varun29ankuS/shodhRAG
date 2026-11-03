@@ -3,27 +3,109 @@ import { Loader2, Save } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { agentApi, toAgentError } from '../agent/useAgentSession';
-import type { ApprovalLevel, CodeSettings } from '../agent/useAgentSession';
-import { FOCUS_RING, INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
+import type { BuildTrustStatus, CodeSettings } from '../agent/useAgentSession';
+import { INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
 import { desktopPlatform } from '../../lib/startupText';
 import { COMMAND_LIMITS, commandLimitHint, commandSandboxText, parseCommandLimit } from './commandLimits';
 import type { CommandLimitKey } from './commandLimits';
 
-export const APPROVAL_LEVELS: readonly { id: ApprovalLevel; label: string; hint: string }[] = [
-  { id: 'askEveryTime', label: 'Ask every time', hint: 'Every edit, file and command waits for you.' },
-  {
-    id: 'autoApplyEdits',
-    label: 'Auto-apply edits',
-    hint: "Edits and new files apply by themselves on the conversation's branch (Discard changes undoes them). Files git ignores, which Discard cannot restore, and files that can run programs (.vscode, .envrc, package.json, build and test settings such as Cargo.toml, build.rs, conftest.py, pyproject.toml, Makefile) still ask, and so do commands.",
-  },
-  {
-    id: 'trusted',
-    label: 'Trusted',
-    hint: 'As Auto-apply edits, and a command that is exactly one of the lines below runs without asking, unless files changed without your review (edits, or what other commands and tools wrote): then it asks and lists them, and approving it in the conversation marks them reviewed.',
-  },
-];
-
 const linesOf = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
+
+/** The approval level an earlier version saved, in the words its setting used. */
+const FORMER_LEVELS: Record<string, string> = {
+  askEveryTime: 'Ask every time',
+  autoApplyEdits: 'Auto-apply edits',
+  trusted: 'Trusted',
+};
+
+/**
+ * Shown once to a workspace an earlier version had an approval level for: each
+ * conversation's mode now decides, and a list the workspace kept while it asked for
+ * everything was parked, not turned on.
+ */
+function FormerLevelNotice({ level, parked, onDone }: {
+  level: string;
+  parked: string[];
+  onDone: (restoreParked: boolean) => void;
+}) {
+  const name = FORMER_LEVELS[level] ?? level;
+  return (
+    <div role="status" className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
+      <p className="m-0 text-small font-semibold text-shodh-text">{`This workspace was set to “${name}”`}</p>
+      <p className="m-0 text-small text-shodh-text-secondary">
+        Each conversation now picks its mode in the message box (Ask, Accept edits, Plan or Auto), so this workspace
+        asks until you pick one. Builds and tests run without asking only where commands are sandboxed or after you
+        trust the workspace below.
+      </p>
+      {parked.length > 0 && (
+        <p className="m-0 text-small text-shodh-text-secondary">
+          {`These commands were on its list but never ran without asking, so they stay parked: ${parked.join(', ')}.`}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={OUTLINE_BUTTON} onClick={() => onDone(false)}>
+          Got it
+        </button>
+        {parked.length > 0 && (
+          <button type="button" className={OUTLINE_BUTTON} onClick={() => onDone(true)}>
+            Put the parked commands back on the list
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Whether Auto mode may run this workspace's own builds and tests without asking. Trust
+ * is given as the files that choose what they run are now; any change to them (a pull,
+ * a checkout, a command, an edit) ends it, and the next build or test asks again.
+ */
+function BuildTrustPanel({ workspaceId }: { workspaceId: string }) {
+  const [status, setStatus] = useState<BuildTrustStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setStatus(null);
+    agentApi
+      .buildTrust(workspaceId)
+      .then(next => { if (active) setStatus(next); })
+      .catch(() => { if (active) setStatus(null); });
+    return () => { active = false; };
+  }, [workspaceId]);
+  if (!status) return null;
+  const change = async (trusted: boolean) => {
+    setBusy(true);
+    try {
+      setStatus(await agentApi.trustBuilds(workspaceId, trusted));
+    } catch (err) {
+      notify.error('The trust was not changed', { description: toAgentError(err).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1.5 p-3 rounded-xl border border-shodh-border">
+      <p className="m-0 text-small font-semibold text-shodh-text">Builds and tests in Auto mode</p>
+      <p className="m-0 text-small text-shodh-text-secondary">
+        {status.sandboxed
+          ? 'Commands run in a sandbox on this computer, so Auto mode runs builds and tests by themselves.'
+          : status.trusted
+            ? 'You trust this workspace: Auto mode runs its builds and tests by themselves, with your account. Any change to the files that choose what they run ends the trust.'
+            : 'Builds and tests run the project\'s own code with your account and network: commands are not sandboxed on this computer. Auto mode asks before the first one in each conversation.'}
+      </p>
+      {status.lapsed && <p className="m-0 text-small text-shodh-warning">{`The trust ended: ${status.lapsed}.`}</p>}
+      {status.problem && <p className="m-0 text-small text-shodh-text-muted">{`Trust is not available: ${status.problem}.`}</p>}
+      {!status.sandboxed && !status.problem && (
+        <div>
+          <button type="button" className={OUTLINE_BUTTON} disabled={busy} onClick={() => void change(!status.trusted)}>
+            {status.trusted ? 'Stop trusting' : 'Trust this workspace to run its builds and tests'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** The command sandbox on this system, in words. */
 const SANDBOX_TEXT = commandSandboxText(desktopPlatform(typeof navigator !== 'undefined' ? navigator.platform : ''));
@@ -43,13 +125,13 @@ function limitTexts(settings: CodeSettings): LimitTexts {
 const EMPTY_LIMITS: LimitTexts = { commandTimeoutSecs: '', memoryLimitMb: '', cpuPercent: '' };
 
 /**
- * How much of Code mode's work in this workspace runs without asking. Read
- * by every running Code session at its next change.
+ * This workspace's Code mode settings: the commands Auto mode also runs without asking,
+ * and the limits every command runs with. Read by every running Code session at its next
+ * decision. What runs without asking is each conversation's mode, picked in the composer.
  */
 export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
   const ids = { title: useId(), allowlist: useId(), help: useId(), limits: useId(), limitsHelp: useId() };
   const [saved, setSaved] = useState<CodeSettings | null>(null);
-  const [level, setLevel] = useState<ApprovalLevel>('askEveryTime');
   const [allowlist, setAllowlist] = useState('');
   const [limits, setLimits] = useState<LimitTexts>(EMPTY_LIMITS);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +146,6 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
       .then(settings => {
         if (!active) return;
         setSaved(settings);
-        setLevel(settings.approval);
         setAllowlist(settings.allowlist.join('\n'));
         setLimits(limitTexts(settings));
       })
@@ -77,7 +158,7 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
   const savedLimits = saved ? limitTexts(saved) : null;
   const limitsChanged = savedLimits !== null && COMMAND_LIMITS.some(spec => limits[spec.key].trim() !== savedLimits[spec.key]);
   const dirty = saved !== null
-    && (level !== saved.approval || linesOf(allowlist).join('\n') !== saved.allowlist.join('\n') || limitsChanged);
+    && (linesOf(allowlist).join('\n') !== saved.allowlist.join('\n') || limitsChanged);
 
   const save = async () => {
     if (!dirty) return;
@@ -89,14 +170,14 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
     setSaving(true);
     try {
       const next = await agentApi.setCodeSettings(workspaceId, {
-        approval: level,
         allowlist: linesOf(allowlist),
+        parkedAllowlist: saved?.parkedAllowlist ?? [],
+        formerLevel: saved?.formerLevel ?? null,
         commandTimeoutSecs: values.commandTimeoutSecs,
         memoryLimitMb: values.memoryLimitMb,
         cpuPercent: values.cpuPercent,
       });
       setSaved(next);
-      setLevel(next.approval);
       setAllowlist(next.allowlist.join('\n'));
       setLimits(limitTexts(next));
       notify.success('Code mode settings saved');
@@ -110,12 +191,34 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
   return (
     <section aria-labelledby={ids.title} className="flex flex-col gap-2">
       <div>
-        <h3 id={ids.title} className={SECTION_TITLE}>Code mode approvals</h3>
+        <h3 id={ids.title} className={SECTION_TITLE}>Code mode commands</h3>
         <p id={ids.help} className="m-0 text-small text-shodh-text-muted">
-          Commands that delete files, reset or rewrite git history, or push always ask, whatever you choose.
+          Each conversation picks its mode in the message box: Ask, Accept edits, Plan or Auto. Commands that delete
+          files, reset or rewrite git history, or push always ask, whatever the mode.
         </p>
       </div>
       {error && <p role="alert" className="m-0 text-small text-shodh-error">The settings could not be read: {error}</p>}
+      {saved && saved.formerLevel && (
+        <FormerLevelNotice
+          level={saved.formerLevel}
+          parked={saved.parkedAllowlist ?? []}
+          onDone={async restore => {
+            try {
+              const next = await agentApi.setCodeSettings(workspaceId, {
+                ...saved,
+                allowlist: restore ? [...saved.allowlist, ...(saved.parkedAllowlist ?? [])] : saved.allowlist,
+                parkedAllowlist: restore ? [] : saved.parkedAllowlist ?? [],
+                formerLevel: null,
+              });
+              setSaved(next);
+              setAllowlist(next.allowlist.join('\n'));
+            } catch (err) {
+              notify.error('Code mode settings were not saved', { description: toAgentError(err).message });
+            }
+          }}
+        />
+      )}
+      <BuildTrustPanel workspaceId={workspaceId} />
       <form
         className="flex flex-col gap-3"
         aria-busy={saved === null && !error}
@@ -124,48 +227,22 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
           void save();
         }}
       >
-        <fieldset className="m-0 p-0 border-0 flex flex-col gap-1" aria-describedby={ids.help} disabled={saved === null}>
-          <legend className="sr-only">When Code mode asks</legend>
-          {APPROVAL_LEVELS.map(option => (
-            <label
-              key={option.id}
-              className={cn(
-                'flex items-start gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors duration-micro',
-                level === option.id ? 'border-shodh-border-strong bg-shodh-raised' : 'border-transparent hover:bg-shodh-raised',
-              )}
-            >
-              <input
-                type="radio"
-                name={`${ids.title}-level`}
-                value={option.id}
-                checked={level === option.id}
-                onChange={() => setLevel(option.id)}
-                className={cn('mt-[3px] accent-shodh-accent', FOCUS_RING)}
-              />
-              <span className="flex flex-col">
-                <span className="text-small font-medium text-shodh-text">{option.label}</span>
-                <span className="text-caption text-shodh-text-muted">{option.hint}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        {level === 'trusted' && (
-          <div className="flex flex-col gap-1">
-            <label htmlFor={ids.allowlist} className={LABEL}>Commands that run without asking, one per line</label>
-            <textarea
-              id={ids.allowlist}
-              rows={4}
-              value={allowlist}
-              onChange={e => setAllowlist(e.target.value)}
-              spellCheck={false}
-              placeholder="cargo test"
-              className={cn(TEXTAREA, 'font-mono text-small')}
-            />
-            <p className="m-0 text-caption text-shodh-text-muted">
-              A command runs by itself only when it is exactly a line here, with nothing added, and has no ; | &amp; &gt; $ or backticks. It also needs no other options, must run in the code folder itself, and asks while another command is running. Tests run code the assistant may have changed, so after a change you did not review, the command asks first.
-            </p>
-          </div>
-        )}
+        <div className="flex flex-col gap-1">
+          <label htmlFor={ids.allowlist} className={LABEL}>More commands Auto mode runs without asking, one per line</label>
+          <textarea
+            id={ids.allowlist}
+            rows={4}
+            value={allowlist}
+            onChange={e => setAllowlist(e.target.value)}
+            spellCheck={false}
+            disabled={saved === null}
+            placeholder="make check"
+            className={cn(TEXTAREA, 'font-mono text-small')}
+          />
+          <p className="m-0 text-caption text-shodh-text-muted">
+            Auto mode already runs tests, builds, linters, and git and file commands that only read, when each is one plain command. A line here also runs by itself in Auto mode when the command is exactly that line, with nothing added, and has no ; | &amp; &gt; $ or backticks. It still asks while another command is running, and after a change you did not review: tests run code the assistant may have changed.
+          </p>
+        </div>
         <fieldset
           className="m-0 p-0 border-0 flex flex-col gap-2"
           aria-describedby={ids.limitsHelp}

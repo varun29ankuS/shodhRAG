@@ -8,6 +8,7 @@ import { diagramLedger } from '../features/ask/visual/diagramLedger';
 import { diagramKeysToForget } from '../features/ask/visual/diagramKeys';
 import { APP_QUITTING_EVENT, ConversationSaves, FailureLatch, loadFailureNotice, quitRequestId, updateRecord } from './conversationSaves';
 import type { LoadFailureNotice } from './conversationSaves';
+import type { AgentMode } from '../features/agent/agentModes';
 import { firstAskConversation } from '../features/connectors/conversations';
 import type { ConversationSeed, ConversationSource } from '../features/connectors/conversations';
 
@@ -43,6 +44,11 @@ export interface Conversation {
   systemPrompt?: string;
   /** How answers work: Research (absent) or Code (the workspace's code folder). */
   mode?: ConversationMode;
+  /**
+   * What runs without asking (`features/agent/agentModes`), picked by the user; absent
+   * follows the default in Settings. The agent never sets it.
+   */
+  agentMode?: AgentMode;
   /**
    * Side discussions not tied to a message (e.g. about a task). Opaque here;
    * read and written through features/focus/threadStore. Saved with the
@@ -501,7 +507,7 @@ export function useConversations() {
     return id;
   }, [saves, setList]);
 
-  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode' | 'seed' | 'aboutFile'>>) => {
+  const updateConversationMeta = useCallback((id: string, meta: Partial<Pick<Conversation, 'workspaceId' | 'systemPrompt' | 'mode' | 'agentMode' | 'seed' | 'aboutFile'>>) => {
     const { list, updated } = updateRecord(listRef.current, id, c => ({ ...c, ...meta, updatedAt: new Date().toISOString() }));
     if (!updated) return;
     setList(list);

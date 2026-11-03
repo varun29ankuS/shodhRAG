@@ -1,7 +1,10 @@
 import React, { useEffect, useId, useState } from 'react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
-import { getAppSettings, onAppSettingsChanged, setCodeMode, setPolicy } from '../lib/appSettings';
+import { getAppSettings, onAppSettingsChanged, setCodeMode, setDefaultAgentMode, setPolicy } from '../lib/appSettings';
+import { AGENT_MODES, MODE_FLOOR } from '../features/agent/agentModes';
+import type { AgentMode } from '../features/agent/agentModes';
+import { MODE_ICONS } from '../features/agent/ModePicker';
 import type { Policy } from '../lib/appSettings';
 import { checkForUpdate, getUpdateStatus, setUpdateChecks } from '../lib/updates';
 import type { UpdateStatus } from '../lib/updates';
@@ -112,8 +115,91 @@ export default function PrivacySettings() {
         disabled={saving || policy.localOnly}
         onChange={webAccess => void change({ ...policy, webAccess })}
       />
+      <DefaultModeSettings />
       <CodeModeSettings />
       <UpdateSettings />
+    </div>
+  );
+}
+
+/**
+ * The mode new conversations answer in. Each conversation keeps the mode picked for it
+ * in the message box; one without its own follows this. Only the user changes it.
+ */
+function DefaultModeSettings() {
+  const [mode, setMode] = useState<AgentMode | null>(null);
+  const [saving, setSaving] = useState(false);
+  const titleId = useId();
+  const helpId = useId();
+
+  useEffect(() => {
+    let cancelled = false;
+    getAppSettings()
+      .then(settings => {
+        if (!cancelled && settings) setMode(settings.agent.defaultMode);
+      })
+      .catch(err => notify.error('The default mode could not be loaded', { description: String(err) }));
+    const unsubscribe = onAppSettingsChanged(settings => setMode(settings.agent.defaultMode));
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  const save = async (next: AgentMode) => {
+    setSaving(true);
+    try {
+      const saved = await setDefaultAgentMode(next);
+      if (saved) setMode(saved.agent.defaultMode);
+    } catch (err) {
+      notify.error('The default mode was not saved', { description: String(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (mode === null) return null;
+  return (
+    <div role="radiogroup" aria-labelledby={titleId} aria-describedby={helpId} className="flex flex-col gap-2 pt-5 border-t border-shodh-border">
+      <div>
+        <p id={titleId} className="m-0 text-body font-semibold text-shodh-text">Default mode</p>
+        <p id={helpId} className="m-0 mt-0.5 text-small text-shodh-text-muted">
+          The mode a new conversation starts in; a conversation keeps its mode, and a change here never changes one that
+          has started. You can change a conversation&apos;s mode in the message box at any time. {MODE_FLOOR}
+        </p>
+      </div>
+      <div className="flex flex-col gap-1">
+        {AGENT_MODES.map(info => {
+          const Icon = MODE_ICONS[info.id];
+          const selected = info.id === mode;
+          return (
+            <label
+              key={info.id}
+              className={cn(
+                'flex items-start gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors duration-micro',
+                selected ? 'border-shodh-border-strong bg-shodh-raised' : 'border-transparent hover:bg-shodh-raised',
+              )}
+            >
+              <input
+                type="radio"
+                name={`${titleId}-mode`}
+                value={info.id}
+                checked={selected}
+                disabled={saving}
+                onChange={() => void save(info.id)}
+                className={cn('mt-[3px] accent-shodh-accent', FOCUS_RING)}
+              />
+              <span className="flex flex-col">
+                <span className="inline-flex items-center gap-1.5 text-small font-medium text-shodh-text">
+                  <Icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  {info.label}
+                </span>
+                <span className="text-caption text-shodh-text-muted">{info.hint}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -170,8 +256,8 @@ function CodeModeSettings() {
           <p id={explainId} className="m-0 text-small font-semibold text-shodh-text">Turn on Code mode?</p>
           <p className="m-0 text-small text-shodh-text-secondary">
             In Code mode the assistant can change files in the workspace&apos;s code folder and run commands on this
-            computer, such as builds and tests. Each change and command asks you first unless you allow it in the
-            workspace&apos;s Overview, and the work goes on a separate branch you can discard. Only turn it on for code
+            computer, such as builds and tests. Each change and command asks you first unless the conversation&apos;s
+            mode lets it run (Accept edits, Auto), and the work goes on a separate branch you can discard. Only turn it on for code
             you are happy to have changed.
           </p>
           <div className="flex flex-wrap items-center gap-2">

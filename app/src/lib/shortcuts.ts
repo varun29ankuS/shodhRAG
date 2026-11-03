@@ -33,7 +33,8 @@ export type ShortcutId =
   | 'prevMatch'
   | 'close'
   | 'openSystemStatus'
-  | 'toggleIndexingPause';
+  | 'toggleIndexingPause'
+  | 'cycleMode';
 
 export interface Shortcut {
   /** What it does, for lists of shortcuts. */
@@ -136,6 +137,8 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   close: plain('Close', 'Esc', ['Escape'], ['Escape']),
   openSystemStatus: letter('System status', 's', { shift: true, shownIn: ['components/shell/SystemStatusStrip.tsx'] }),
   toggleIndexingPause: letter('Pause or resume indexing', 'p', { shift: true, shownIn: ['components/shell/SystemStatusStrip.tsx'] }),
+  // Shift+Tab in the empty composer: the next of Ask, Accept edits and Plan (never Auto).
+  cycleMode: { ...plain('Switch the mode', 'Tab', ['Tab'], ['Tab'], true), shownIn: ['features/agent/ModePicker.tsx'] },
 };
 
 /** Whether this computer is a Mac (⌘ instead of Ctrl). */

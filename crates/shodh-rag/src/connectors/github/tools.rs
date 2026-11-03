@@ -1732,6 +1732,11 @@ impl HostTool for GitHubTool {
         }
     }
 
+    /// A fetch writes the repository's objects and refs: not offered in Plan mode.
+    fn changes_state(&self) -> bool {
+        self.kind == Kind::Fetch
+    }
+
     /// Every write asks, even under a profile that approves writes by itself.
     async fn must_confirm(&self, _args: &Value) -> Result<bool, ToolError> {
         Ok(self.tier() != RiskTier::Read)

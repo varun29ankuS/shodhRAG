@@ -1762,8 +1762,9 @@ mod processes {
         let socket = socket_dir.path().join("agent.sock");
         let unix = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         unix.set_nonblocking(true).unwrap();
+        // Connect and exit at once (nc would wait for the listener to close).
         let reach = format!(
-            "/usr/bin/nc -U {} </dev/null && echo reached",
+            "/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Peer => $ARGV[0]) or exit 1' {} && echo reached",
             socket.display()
         );
         let direct = std::process::Command::new("/bin/bash")

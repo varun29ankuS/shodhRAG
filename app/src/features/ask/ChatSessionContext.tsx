@@ -125,6 +125,11 @@ export interface AgentNavigation {
   target: NavigationTarget | null;
   /** Increases with every navigation, so repeats are distinguishable. */
   seq: number;
+  /**
+   * Open the conversation dock beside the view for this visit: a Creator build the
+   * user just started opened the Artifacts tab, and they steer it from the chat.
+   */
+  openDock?: boolean;
 }
 
 export interface ChatSessionValue {
@@ -429,7 +434,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       live.creationShown = true;
       const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: 'preview' };
       navSeqRef.current += 1;
-      setNavigation({ view: 'artifacts', focus: null, target, seq: navSeqRef.current });
+      setNavigation({ view: 'artifacts', focus: null, target, seq: navSeqRef.current, openDock: true });
       publishTarget(target);
       window.dispatchEvent(new CustomEvent('switchTab', { detail: 'artifacts' }));
     }

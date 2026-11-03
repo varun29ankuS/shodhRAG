@@ -101,6 +101,18 @@ export const PREVIEW_SANDBOX = 'allow-scripts';
 /** No camera, microphone, location, clipboard or other powerful feature in the frame. */
 export const PREVIEW_ALLOW = "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; bluetooth 'none'; payment 'none'";
 
+/**
+ * What the preview says about itself, exactly as far as it goes. With the switch off the
+ * page cannot load or send anything through the web, WebRTC is gone and DNS look-ahead is
+ * off; a browser may still warm up a connection to a link the page shows, so it is not
+ * called a sealed network.
+ */
+export const PREVIEW_NETWORK_OFF_TEXT =
+  'The page runs in its own frame: it cannot use Shodh, read your files or reach your accounts. It cannot load or send anything over the internet, and WebRTC and DNS look-ahead are off. A hostile page might still make the browser connect ahead to a link it shows, which can reveal that it ran.';
+
+export const PREVIEW_NETWORK_ON_TEXT =
+  'The page runs in its own frame: it cannot use Shodh, read your files or reach your accounts. While this is on, it can load from and send to any secure (https) site.';
+
 /** Whether a frame's sandbox tokens keep an agent-built page isolated. */
 export function sandboxIsIsolated(sandbox: string): boolean {
   const tokens = sandbox.split(/\s+/).filter(Boolean);

@@ -281,7 +281,6 @@ export function LibraryView({
           </section>
         )}
 
-        {/* What Shodh generated (diagrams, charts, tables) lives in the Artifacts tab. */}
       </div>
     </div>
   );

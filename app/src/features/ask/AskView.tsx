@@ -76,7 +76,7 @@ import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
 import { CreatorFinishCard } from '../artifacts/CreatorFinishCard';
 import { CHANGE_DRAFT, finishCard } from '../artifacts/model';
-import { PLAN_APPROVED_TEXT, modeSuggestion, nextAgentMode, resolveAgentMode } from '../agent/agentModes';
+import { PLAN_APPROVED_TEXT, confirmCreator, creatorConfirmed, modeSuggestion, nextAgentMode, resolveAgentMode } from '../agent/agentModes';
 import type { AgentMode } from '../agent/agentModes';
 import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { DiagramHostContext } from './visual/diagramHost';
@@ -754,15 +754,24 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // conversation without its own mode follows the default in Settings. Only the user
   // changes it: the picker, Shift+Tab in the composer, or a suggestion's button.
   const defaultAgentMode = useDefaultAgentMode();
+  // Bumped when the user turns Creator on, so the view reads the confirmation.
+  const [creatorTurnedOn, setCreatorTurnedOn] = useState(0);
   // Null while the default is read (the picker says so, and nothing is sent).
   const agentMode: AgentMode | null = resolveAgentMode(
     session.activeConversation?.agentMode,
     messages.length > 0,
     defaultAgentMode,
+    creatorTurnedOn >= 0 && creatorConfirmed(session.activeConversationId),
   );
   const changeAgentMode = useCallback((next: AgentMode) => {
     const id = session.activeConversationId;
-    if (id) updateConversationMeta(id, { agentMode: next });
+    if (!id) return;
+    // The picker hands Creator over only after its confirming click.
+    if (next === 'creator') {
+      confirmCreator(id);
+      setCreatorTurnedOn(n => n + 1);
+    }
+    updateConversationMeta(id, { agentMode: next });
   }, [session.activeConversationId, updateConversationMeta]);
   const agentModeRef = useRef(agentMode);
   agentModeRef.current = agentMode;

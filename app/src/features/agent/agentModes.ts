@@ -97,12 +97,37 @@ export function nextAgentMode(mode: AgentMode): AgentMode {
  * started without a mode, answers in Ask: a later change of the default never changes
  * a conversation that has started.
  */
-export function resolveAgentMode(picked: unknown, hasMessages: boolean, defaultMode: AgentMode | null): AgentMode | null {
+export function resolveAgentMode(
+  picked: unknown,
+  hasMessages: boolean,
+  defaultMode: AgentMode | null,
+  creatorConfirmed = false,
+): AgentMode | null {
   const mode = parseAgentMode(picked);
+  // A conversation saved in Creator answers in Creator only after the user turned it on
+  // (with its confirming click) in this app session; until then it answers in Ask.
+  if (mode === 'creator' && !creatorConfirmed) return 'ask';
   if (mode) return mode;
   if (hasMessages) return 'ask';
   // Creator is never a default (a Settings file that says so reads as Ask).
   return defaultMode !== null && !DEFAULTABLE_MODES.includes(defaultMode) ? 'ask' : defaultMode;
+}
+
+/**
+ * Conversations whose Creator mode the user turned on (with the confirming click) in this
+ * app session. Kept in memory only: after a restart, a conversation saved in Creator asks
+ * for the click again before it builds.
+ */
+const creatorTurnedOn = new Set<string>();
+
+/** The user turned Creator on for `conversationId` (the picker's confirming click). */
+export function confirmCreator(conversationId: string): void {
+  creatorTurnedOn.add(conversationId);
+}
+
+/** Whether the user turned Creator on for `conversationId` in this app session. */
+export function creatorConfirmed(conversationId: string | null | undefined): boolean {
+  return typeof conversationId === 'string' && creatorTurnedOn.has(conversationId);
 }
 
 /** What turning Auto on says before it does. */

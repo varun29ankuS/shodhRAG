@@ -1493,6 +1493,11 @@ pub struct GateContext<'a> {
     /// run without asking only then. Passed in, so both answers are tested on
     /// every system.
     pub sandboxed: bool,
+    /// Creator mode where commands are not sandboxed: the command is one
+    /// Shodh's rules know only inspects (ls, cat, head, tail, wc, grep, rg,
+    /// pwd; never git), and every file it shows resolves inside the creation
+    /// folder, links followed ([`command_surroundings`]).
+    pub inspects: bool,
 }
 
 /// Preview key of what a command that runs the project's own code does, on
@@ -1975,6 +1980,17 @@ pub fn creator_approval(
             && gate.review.background.is_empty()
             && gate.running.is_none())
         .then_some("Creator mode makes files in its creation folder without asking"),
+        tool if tool == super::run_command::RUN_COMMAND && !gate.sandboxed => {
+            // Not sandboxed: only a command that inspects files of the folder.
+            (gate.inspects
+                && plain_command_input(&request.input)
+                && gate.running.is_none()
+                && gate.unasked_writer.is_none())
+            .then_some(
+                "Creator mode runs this without asking: it only reads files in its creation \
+                 folder",
+            )
+        }
         tool if tool == super::run_command::RUN_COMMAND => {
             let command = str_arg(&request.input, "command");
             (modes::code_commands(AgentMode::Creator) == CommandGate::Sandboxed
@@ -2000,6 +2016,18 @@ pub fn creator_approval(
 pub fn creator_command_reason(request: &GuardRequest, gate: &GateContext<'_>) -> Option<String> {
     let command = str_arg(&request.input, "command");
     if !gate.sandboxed {
+        if gate.inspects {
+            if let Some(running) = gate.running {
+                return Some(format!("{running} is still running"));
+            }
+            if let Some(writer) = gate.unasked_writer {
+                return Some(format!("the tool {writer} can change files without asking"));
+            }
+            if !plain_command_input(&request.input) {
+                return Some("it asks for its own time limit".to_string());
+            }
+            return None;
+        }
         return Some(
             "commands are not sandboxed on this system, so each one waits for your approval. \
              It can run files the assistant wrote in this folder (made without asking), with \
@@ -2048,10 +2076,26 @@ pub const CREATOR_MODE_KEY: &str = "creator_mode";
 pub const NETWORK_KEY: &str = "network";
 
 /// What the prompt of a recognised install says where commands are
-/// sandboxed: approving it gives this one command the network.
-pub const INSTALL_NETWORK_TEXT: &str = "Approving lets this one install reach the internet. It \
-     still runs in the sandbox, so it can change only the creation folder, but the packages it \
-     downloads run their own install scripts with that network.";
+/// sandboxed, when its packages run their own install scripts.
+pub const INSTALL_NETWORK_TEXT: &str = "Approving lets this one install reach the whole \
+     internet. It still runs in the sandbox, so it can change only the creation folder, but the \
+     packages it downloads run their own install scripts, with that same internet access and no \
+     further prompt. Their scripts run because the command does not skip them (npm, pnpm and \
+     yarn: --ignore-scripts; pip: --only-binary :all:).";
+
+/// The same prompt when the command skips the packages' install scripts.
+pub const INSTALL_NETWORK_NO_SCRIPTS_TEXT: &str = "Approving lets this one install reach the \
+     whole internet to download packages. It still runs in the sandbox, so it can change only \
+     the creation folder, and it skips the packages' own install scripts.";
+
+/// What an approved `command`'s prompt says about the network it gets
+/// ([`approved_network`]), by whether its packages' scripts run.
+pub fn install_network_text(command: &str) -> &'static str {
+    match modes::installs::install(command) {
+        Ok(install) if !install.scripts => INSTALL_NETWORK_NO_SCRIPTS_TEXT,
+        _ => INSTALL_NETWORK_TEXT,
+    }
+}
 
 /// Whether an approved command of a `mode` session runs with the network in
 /// its sandbox: only a package install Creator mode recognises

@@ -35,8 +35,8 @@ use super::code_mode::{
     CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::code_mode::{
-    approved_network, creator_command_reason, project_fingerprint, ProjectFingerprint,
-    CREATION_UNDO, CREATOR_MODE_KEY, INSTALL_NETWORK_TEXT, NETWORK_KEY, PROJECT_CODE_KEY,
+    approved_network, creator_command_reason, install_network_text, project_fingerprint,
+    ProjectFingerprint, CREATION_UNDO, CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY,
     PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
 };
 use super::error::HarnessError;
@@ -998,9 +998,18 @@ impl Inner {
         let unasked_writer = self.registry.unasked_file_writer(&self.profile);
         // In Auto mode, what is around a command its rules recognise: the
         // files it shows and git's settings.
-        let recognised = (mode == AgentMode::Auto && request.tool == RUN_COMMAND)
+        // Creator mode where commands are not sandboxed reads the same rules for
+        // one class only: commands that just inspect files of its folder.
+        let creator_unsandboxed =
+            mode.creates() && request.tool == RUN_COMMAND && !run_command::commands_sandboxed();
+        let recognised = ((mode == AgentMode::Auto || creator_unsandboxed)
+            && request.tool == RUN_COMMAND)
             .then(|| auto_command(&settings, request, &plan));
         let auto_asks = match &recognised {
+            // Shodh runs no git in a creation folder, not even to read its settings.
+            Some(Ok(command)) if creator_unsandboxed && command.git => {
+                Some("it runs git".to_string())
+            }
             Some(Ok(command)) => {
                 let folder = code.folder.root().to_path_buf();
                 let home = code.scratch.clone();
@@ -1016,7 +1025,12 @@ impl Inner {
         // are sandboxed, in a workspace the user trusts as its build files are
         // now, or after the user approved one in this conversation since they
         // last changed. Otherwise it asks, saying what it runs.
-        let runs_project_code = matches!(&recognised, Some(Ok(c)) if c.runs_project_code);
+        let runs_project_code =
+            mode == AgentMode::Auto && matches!(&recognised, Some(Ok(c)) if c.runs_project_code);
+        // A Creator command that only reads files that all resolve inside its folder.
+        let inspects = creator_unsandboxed
+            && auto_asks.is_none()
+            && matches!(&recognised, Some(Ok(c)) if !c.runs_project_code && !c.git);
         let (project_code_cleared, project_prompt) = if !runs_project_code
             || run_command::commands_sandboxed()
         {
@@ -1059,6 +1073,7 @@ impl Inner {
             command_problem: auto_asks.as_deref(),
             project_code_cleared,
             sandboxed,
+            inspects,
         };
         let command_text = request
             .input
@@ -1088,9 +1103,13 @@ impl Inner {
         }
         let shown = note_review(&mut approval, request, &gate, eligible, &token);
         // Why Auto mode asks about this command, on its prompt.
-        let why_asked = auto_asks
-            .as_ref()
-            .or(project_prompt.as_ref().map(|(_, why)| why));
+        let why_asked = (mode == AgentMode::Auto)
+            .then(|| {
+                auto_asks
+                    .as_ref()
+                    .or(project_prompt.as_ref().map(|(_, why)| why))
+            })
+            .flatten();
         if let (Some(reason), Some(map)) = (why_asked, approval.preview.as_object_mut()) {
             map.insert(
                 AUTO_MODE_KEY.to_string(),
@@ -1104,7 +1123,10 @@ impl Inner {
             );
         }
         if let (true, Some(map)) = (network, approval.preview.as_object_mut()) {
-            map.insert(NETWORK_KEY.to_string(), json!(INSTALL_NETWORK_TEXT));
+            map.insert(
+                NETWORK_KEY.to_string(),
+                json!(install_network_text(command_text)),
+            );
         }
         // The first build or test of a conversation says what it runs; only an
         // approval from this prompt (its token) lets the next ones run.
@@ -5010,6 +5032,27 @@ mod tests {
         .await;
         assert_eq!(preview["undo"], CREATION_UNDO);
 
+        // A command that only reads a file of the folder runs without asking
+        // everywhere. Where commands are not sandboxed, git still asks: Shodh runs
+        // no git in a creation folder by itself.
+        runs_unasked(
+            &inner,
+            &exec,
+            &mut out,
+            command_call("3a", json!({"command": "cat index.html"})),
+        )
+        .await;
+        if !run_command::commands_sandboxed() {
+            asks(
+                &inner,
+                &exec,
+                &mut events,
+                &mut out,
+                command_call("3b", json!({"command": "git status"})),
+                Answer::Deny,
+            )
+            .await;
+        }
         // A build: unasked only where commands are sandboxed; elsewhere it asks
         // and says why.
         let build = command_call("4", json!({"command": "npm run build"}));

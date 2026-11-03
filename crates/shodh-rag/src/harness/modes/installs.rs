@@ -30,6 +30,10 @@ const MAX_INSTALL_CHARS: usize = 300;
 pub struct Install {
     /// The package manager, as the prompt names it ("npm").
     pub manager: &'static str,
+    /// The packages it fetches run their own install scripts (npm, pnpm and yarn
+    /// lifecycle scripts unless `--ignore-scripts`; pip build steps unless
+    /// `--only-binary :all:`). cargo fetch and add, and go, run none.
+    pub scripts: bool,
 }
 
 /// Programs that download what they run, whatever follows.
@@ -275,7 +279,7 @@ const YARN_INSTALL: Grammar = Grammar {
 /// `--editable` and `--src` are not listed.
 const PIP_INSTALL: Grammar = Grammar {
     flags: &["-U", "--upgrade", "-q", "--quiet", "--no-cache-dir"],
-    valued: &["-r", "--requirement"],
+    valued: &["-r", "--requirement", "--only-binary"],
     positionals: Positionals::Any,
     ..NONE
 };
@@ -373,7 +377,9 @@ pub fn install(command: &str) -> Result<Install, String> {
     // pip's requirements file is a path of the folder (checked above); every
     // other positional is a package.
     let mut requirement_file = false;
-    for arg in rest {
+    let mut only_binary = false;
+    let mut words = rest.iter();
+    while let Some(arg) = words.next() {
         if requirement_file {
             requirement_file = false;
             continue;
@@ -381,6 +387,17 @@ pub fn install(command: &str) -> Result<Install, String> {
         if matches!(*arg, "-r" | "--requirement") {
             requirement_file = true;
             continue;
+        }
+        // pip's `--only-binary :all:` (wheels only: no build step runs); no
+        // other value is read.
+        if *arg == "--only-binary" {
+            match words.next() {
+                Some(&":all:") => {
+                    only_binary = true;
+                    continue;
+                }
+                _ => return Err("pip's --only-binary is read only as :all:".to_string()),
+            }
         }
         if arg.starts_with('-') {
             continue;
@@ -398,5 +415,10 @@ pub fn install(command: &str) -> Result<Install, String> {
         }
     }
     accept(manager, rest, grammar)?;
-    Ok(Install { manager })
+    let scripts = match manager {
+        "npm" | "pnpm" | "yarn" => !rest.contains(&"--ignore-scripts"),
+        "pip" => !only_binary,
+        _ => false,
+    };
+    Ok(Install { manager, scripts })
 }

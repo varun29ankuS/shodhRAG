@@ -130,8 +130,13 @@ pub fn app_data_dir<R: Runtime, M: Manager<R>>(app: &M) -> tauri::Result<PathBuf
 /// - `--disable-gpu`: pages are composited in software. The GPU process held
 ///   ~140 MB at idle (more than the page itself); Shodh draws text, SVG and
 ///   2D canvases (no WebGL), which software rendering handles.
+/// - `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`: WebRTC may
+///   use no direct UDP. Shodh uses no WebRTC; an agent-built preview page
+///   (creations/preview.rs) could otherwise reach STUN and TURN servers past
+///   its CSP. The page itself also loses the WebRTC interfaces.
 pub const WEBVIEW_BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu";
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu \
+     --force-webrtc-ip-handling-policy=disable_non_proxied_udp";
 
 /// WebView2's own variable for extra browser flags (for example a DevTools
 /// port when measuring the app).
@@ -277,6 +282,15 @@ pub fn webview_defaults<'a, R: Runtime, M: Manager<R>>(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn webrtc_may_use_no_direct_udp_in_any_window() {
+        let flags: Vec<&str> = WEBVIEW_BROWSER_ARGS.split(' ').collect();
+        assert!(flags.contains(&"--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+        assert!(flags.contains(&"--disable-gpu"));
+        assert!(!WEBVIEW_BROWSER_ARGS.contains(['\n', '\t']));
+        assert!(!WEBVIEW_BROWSER_ARGS.contains("  "));
+    }
 
     fn absolute(name: &str) -> PathBuf {
         std::env::temp_dir().join(name)

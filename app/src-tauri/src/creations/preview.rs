@@ -8,19 +8,26 @@
 //!   allow-scripts`, so the page runs in an opaque origin even if it were
 //!   opened some other way. It cannot read the app's DOM, storage or cookies.
 //! - **No Tauri IPC.** Tauri's IPC needs the invoke key its scripts put in
-//!   the app's main frame only, and checks the request's `Origin` header,
-//!   which an opaque origin sends as `null` (not a URL, so refused). The
-//!   response's `connect-src` names only this preview's own files, so the
-//!   IPC endpoints (`ipc://localhost`, `http://ipc.localhost`) are blocked
-//!   too.
+//!   the app's main frame only (16 random bytes per launch). On Windows the
+//!   IPC goes through a fetch whose `Origin` an opaque frame sends as `null`,
+//!   which Tauri refuses, and which `connect-src` blocks anyway. On macOS the
+//!   message channel accepts a subframe's messages, so there the key is the
+//!   one barrier. The frame stays in the main window on purpose: this app
+//!   has no app ACL manifest, so Tauri checks app commands for no window at
+//!   all, and a preview window of its own would receive the key in its own
+//!   main frame and could call every command.
 //! - **No files.** It is served only what the creation holds: by an
-//!   unguessable token per preview ([`grant`]), a relative path, links never
-//!   followed ([`super::CreationStore::read`]). One preview cannot fetch
-//!   another's files: its CSP names only its own token's path.
-//! - **No network unless the user allows it** for that preview: then
-//!   `https:` and `wss:` are added to what it may load and connect to, never
-//!   `http:`, which would reach `http://ipc.localhost` and this scheme's
-//!   other paths on Windows.
+//!   unguessable token per preview ([`grant`]), a relative path, read from
+//!   the open file and never through a link ([`super::handle`]). One preview
+//!   cannot fetch another's files: its CSP names only its own token's path.
+//! - **No loading or sending over the web unless the user allows it** for
+//!   that preview: then `https:` and `wss:` are added to what it may load and
+//!   connect to, never `http:`, which would reach `http://ipc.localhost` and
+//!   this scheme's other paths on Windows. CSP does not govern every channel:
+//!   each page loses the WebRTC interfaces before its own scripts run
+//!   ([`PAGE_GUARD`]), WebView2 allows WebRTC no direct UDP, and DNS look-ahead
+//!   is off. A browser may still connect ahead to a link the page shows; the
+//!   preview's text says so.
 //! - **Nowhere else.** The app's own CSP lets frames load only this scheme
 //!   (`frame-src`), so the frame cannot navigate itself to another site, and
 //!   without `allow-popups` or `allow-top-navigation` it opens no window and
@@ -258,11 +265,57 @@ pub fn serve(grants: &Grants, webview: &str, method: &str, path: &str) -> Served
         Ok((body, _)) => Served {
             status: 200,
             content_type: content_type(&file),
-            body: if method == "HEAD" { Vec::new() } else { body },
+            body: if method == "HEAD" {
+                Vec::new()
+            } else if content_type(&file).starts_with("text/html") {
+                with_guard(&body)
+            } else {
+                body
+            },
             csp: policy,
         },
         Err(_) => refused(404, "Not found.", policy),
     }
+}
+
+/// What every preview page gets first, before its own scripts: no DNS look-
+/// ahead, and no WebRTC (peer connections reach STUN and TURN servers outside
+/// what CSP governs). The interfaces are made undefined and unchangeable on
+/// the page's window; the frame cannot open another window or frame to get
+/// fresh ones (no `allow-popups`, `frame-src 'none'`), and workers have none.
+pub const PAGE_GUARD: &str = "<meta http-equiv=\"x-dns-prefetch-control\" content=\"off\">\
+<script>(function(){var w=window;['RTCPeerConnection','webkitRTCPeerConnection',\
+'RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCRtpSender','RTCRtpReceiver',\
+'RTCRtpTransceiver','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport',\
+'RTCCertificate'].forEach(function(n){try{Object.defineProperty(w,n,{value:undefined,\
+writable:false,configurable:false});}catch(e){}});})();</script>";
+
+/// `page` with [`PAGE_GUARD`] first: right after its doctype (so the page keeps
+/// its standards mode), else at the very start.
+pub fn with_guard(page: &[u8]) -> Vec<u8> {
+    let mut start = 0;
+    if page.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        start = 3;
+    }
+    while start < page.len() && page[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    let doctype = b"<!doctype";
+    let at = if page.len() >= start + doctype.len()
+        && page[start..start + doctype.len()].eq_ignore_ascii_case(doctype)
+    {
+        page[start..]
+            .iter()
+            .position(|&b| b == b'>')
+            .map_or(start, |end| start + end + 1)
+    } else {
+        start
+    };
+    let mut out = Vec::with_capacity(page.len() + PAGE_GUARD.len());
+    out.extend_from_slice(&page[..at]);
+    out.extend_from_slice(PAGE_GUARD.as_bytes());
+    out.extend_from_slice(&page[at..]);
+    out
 }
 
 /// [`serve`] as an HTTP response, with the headers every preview response
@@ -282,6 +335,8 @@ pub fn response(
         .header("Content-Type", served.content_type)
         .header("Content-Security-Policy", served.csp)
         .header("X-Content-Type-Options", "nosniff")
+        // No look-ahead DNS for the host names a page shows (a channel CSP does not govern).
+        .header("X-DNS-Prefetch-Control", "off")
         .header("Referrer-Policy", "no-referrer")
         .header("Cache-Control", "no-store")
         // The page's own requests come from its opaque origin.
@@ -407,7 +462,9 @@ mod tests {
         let get = |webview: &str, method: &str, path: &str| serve(&grants, webview, method, path);
         let page = get("main", "GET", &format!("/{token}/index.html"));
         assert_eq!(page.status, 200);
-        assert_eq!(page.body, b"<p>hi</p>");
+        // A page gets the guard (no WebRTC, no DNS look-ahead) before its own content.
+        assert_eq!(page.body, with_guard(b"<p>hi</p>"));
+        assert!(page.body.starts_with(PAGE_GUARD.as_bytes()));
         assert_eq!(page.content_type, "text/html; charset=utf-8");
         assert_eq!(page.csp, csp(&token, false));
         // Another window, another method, an unknown token, a missing file.
@@ -434,6 +491,44 @@ mod tests {
             get("main", "GET", &format!("/{token}/index.html")).status,
             404
         );
+    }
+
+    #[test]
+    fn the_guard_comes_first_and_keeps_the_doctype_first() {
+        let page = b"\xEF\xBB\xBF  <!DOCTYPE html><html><script>x()</script></html>";
+        let guarded = String::from_utf8(with_guard(page)).unwrap();
+        let guard = guarded
+            .find("<meta http-equiv=\"x-dns-prefetch-control\"")
+            .unwrap();
+        assert!(guarded.find("<!DOCTYPE html>").unwrap() < guard);
+        assert!(guard < guarded.find("x()").unwrap());
+        let bare = String::from_utf8(with_guard(b"<script>x()</script>")).unwrap();
+        assert!(bare.starts_with(PAGE_GUARD));
+        for name in [
+            "RTCPeerConnection",
+            "webkitRTCPeerConnection",
+            "RTCDataChannel",
+        ] {
+            assert!(PAGE_GUARD.contains(&format!("'{name}'")), "{name}");
+        }
+        assert!(PAGE_GUARD.contains("configurable:false"));
+    }
+
+    #[test]
+    fn every_response_turns_dns_look_ahead_off_and_stays_sandboxed() {
+        let request = tauri::http::Request::builder()
+            .method("GET")
+            .uri(format!("{}/{}/index.html", origin(), "f".repeat(32)))
+            .body(Vec::new())
+            .unwrap();
+        let answer = response("main", &request);
+        let headers = answer.headers();
+        assert_eq!(headers["X-DNS-Prefetch-Control"], "off");
+        assert_eq!(headers["X-Content-Type-Options"], "nosniff");
+        assert!(headers["Content-Security-Policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("sandbox allow-scripts;"));
     }
 
     #[test]

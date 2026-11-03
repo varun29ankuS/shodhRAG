@@ -20,6 +20,7 @@
 //!   `Shodh Creations` and not a link, then its versions and its record.
 
 pub mod diff;
+pub mod handle;
 pub mod preview;
 
 use std::collections::BTreeMap;
@@ -122,11 +123,37 @@ pub struct Creation {
     pub choices: Vec<String>,
     #[serde(default)]
     pub versions: Vec<VersionInfo>,
+    /// The folder's identity on disk when it was made ([`handle::identity`]):
+    /// a folder later made under the same name is not this creation's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
 }
 
 impl Creation {
     pub fn latest_version(&self) -> Option<u32> {
         self.versions.last().map(|v| v.number)
+    }
+
+    /// The creation's folder, resolved, while it is still a direct child of
+    /// `root`, not a link, and the very folder it was made in.
+    pub fn checked_folder(&self, root: &Path) -> Result<PathBuf, String> {
+        let folder = checked_folder(root, Path::new(&self.folder))?;
+        let Some(expected) = &self.folder_id else {
+            return Err(format!(
+                "Shodh cannot tell whether {} is still this creation's folder, so it leaves it \
+                 alone",
+                self.folder
+            ));
+        };
+        match handle::identity(&folder) {
+            Ok(now) if &now == expected => Ok(folder),
+            Ok(_) => Err(format!(
+                "{} is now another folder than the one this creation was made in, so Shodh \
+                 leaves it alone",
+                self.folder
+            )),
+            Err(e) => Err(format!("{} could not be checked ({e})", self.folder)),
+        }
     }
 }
 
@@ -379,61 +406,38 @@ fn walk(folder: &Path) -> (Vec<(String, PathBuf, u64)>, usize) {
     (found, left_out)
 }
 
-/// Read `relative` inside `root` (resolved), at most `max` bytes: refused
-/// when any part of it is a link, when it resolves outside `root`, or when
-/// what was opened is not the regular file checked (swapped in between).
+/// Read `relative` inside `root` (resolved), at most `max` bytes, with its
+/// full size. A link along the path is refused at once (a plain message);
+/// what decides is the open file itself ([`handle::open_inside`]): a regular
+/// file with one name whose real place is inside `root`, so a folder of the
+/// path swapped for a link after this check still reads nothing outside.
 fn read_inside(root: &Path, relative: &Path, max: u64) -> io::Result<(Vec<u8>, u64)> {
-    let refused = |what: &str| io::Error::new(io::ErrorKind::PermissionDenied, what.to_string());
+    read_inside_with(root, relative, max, || {})
+}
+
+/// [`read_inside`], with `before_open` run between the path check and the
+/// open (tests swap a folder for a link there).
+fn read_inside_with(
+    root: &Path,
+    relative: &Path,
+    max: u64,
+    before_open: impl FnOnce(),
+) -> io::Result<(Vec<u8>, u64)> {
     let mut at = root.to_path_buf();
     for part in relative.components() {
         at.push(part);
         if is_link(&at) {
-            return Err(refused("the path goes through a link"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the path goes through a link",
+            ));
         }
     }
-    let resolved = fs::canonicalize(&at).map(plain)?;
-    if !resolved.starts_with(root) {
-        return Err(refused("the path leads outside the creation folder"));
-    }
-    let before = fs::symlink_metadata(&at)?;
-    if !before.file_type().is_file() {
-        return Err(refused("it is not a file"));
-    }
-    let file = fs::File::open(&at)?;
-    let opened = file.metadata()?;
-    let after = fs::symlink_metadata(&at)?;
-    let same = |a: &fs::Metadata, b: &fs::Metadata| {
-        a.len() == b.len() && a.modified().ok() == b.modified().ok()
-    };
-    if !after.file_type().is_file() || !same(&opened, &before) || !same(&opened, &after) {
-        return Err(refused("the file changed while it was opened"));
-    }
-    if hard_linked(&opened) {
-        return Err(refused(
-            "the file is a hard link, which may be a file from outside the folder",
-        ));
-    }
-    let size = opened.len();
+    before_open();
+    let (file, size) = handle::open_inside(root, &at)?;
     let mut bytes = Vec::new();
     file.take(max).read_to_end(&mut bytes)?;
     Ok((bytes, size))
-}
-
-/// Whether an open file has more than one name. A sandboxed command may
-/// change only the creation folder, but it could give a file from elsewhere
-/// (one the sandbox lets it read) a second name inside it; Shodh's own reads,
-/// which are not sandboxed, never take such a file. Where the system does not
-/// report links (Windows), commands are not sandboxed and every one was
-/// approved by the user.
-#[cfg(unix)]
-fn hard_linked(meta: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    meta.nlink() > 1
-}
-
-#[cfg(not(unix))]
-fn hard_linked(_meta: &fs::Metadata) -> bool {
-    false
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -545,6 +549,8 @@ impl CreationStore {
                 return Ok(existing.clone());
             }
             let folder = new_folder(root, &slug_of(request))?;
+            let folder_id = handle::identity(&folder)
+                .map_err(|e| format!("{} could not be checked ({e})", folder.display()))?;
             let creation = Creation {
                 id: new_id(),
                 conversation_id: conversation_id.to_string(),
@@ -556,6 +562,7 @@ impl CreationStore {
                 summary: None,
                 choices: Vec::new(),
                 versions: Vec::new(),
+                folder_id: Some(folder_id),
             };
             creations.push(creation.clone());
             Ok(creation)
@@ -608,7 +615,7 @@ impl CreationStore {
         let Some(creation) = self.for_conversation(conversation_id)? else {
             return Ok(None);
         };
-        let folder = checked_folder(root, Path::new(&creation.folder))?;
+        let folder = creation.checked_folder(root)?;
         let (files, mut left_out) = walk(&folder);
         let mut manifest = Vec::with_capacity(files.len());
         let mut bytes_total = 0u64;
@@ -711,7 +718,7 @@ impl CreationStore {
                 })
                 .collect()),
             None => {
-                let folder = checked_folder(root, Path::new(&creation.folder))?;
+                let folder = creation.checked_folder(root)?;
                 Ok(walk(&folder)
                     .0
                     .into_iter()
@@ -749,7 +756,7 @@ impl CreationStore {
                 Ok((bytes, entry.size))
             }
             None => {
-                let folder = checked_folder(root, Path::new(&creation.folder))?;
+                let folder = creation.checked_folder(root)?;
                 if path
                     .components()
                     .any(|c| SKIPPED_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref()))
@@ -885,15 +892,28 @@ impl CreationStore {
         Ok(path)
     }
 
-    /// Remove `id`'s folder (when it is still a creation folder in `root`),
-    /// its versions and its record. A folder already gone is not an error.
+    /// Remove `id`'s folder (when it is still this creation's folder in
+    /// `root`), its versions and its record. A folder already gone is not an
+    /// error, and neither is one that another folder has since replaced under
+    /// the same name: that folder is not this creation's, so it stays.
     pub fn delete(&self, root: &Path, id: &str) -> Result<Creation, String> {
         let creation = self.creation(id)?;
         let folder = Path::new(&creation.folder);
         if fs::symlink_metadata(folder).is_ok() {
             let checked = checked_folder(root, folder)?;
-            fs::remove_dir_all(&checked)
-                .map_err(|e| format!("{} could not be removed ({e})", checked.display()))?;
+            let expected = creation.folder_id.as_deref().ok_or_else(|| {
+                format!(
+                    "Shodh cannot tell whether {} is still this creation's folder, so it leaves \
+                     it alone",
+                    creation.folder
+                )
+            })?;
+            let now = handle::identity(&checked)
+                .map_err(|e| format!("{} could not be checked ({e})", creation.folder))?;
+            if now == expected {
+                fs::remove_dir_all(&checked)
+                    .map_err(|e| format!("{} could not be removed ({e})", checked.display()))?;
+            }
         }
         let versions = self.versions_dir(id);
         if versions.exists() {

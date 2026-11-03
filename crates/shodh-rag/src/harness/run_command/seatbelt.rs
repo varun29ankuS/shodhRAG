@@ -69,11 +69,12 @@ const KEYCHAIN_SERVICES: &[&str] = &[
     "com.apple.security.authhost",
 ];
 
-/// What a policy with the network on adds after `(deny network*)`: sockets,
-/// outbound connections to any IP address and port, and the DNS resolver's
-/// socket. Seatbelt cannot name a host, so this is the whole internet.
-pub const NETWORK_ON: &str = "(allow system-socket)\n\
-     (allow network-outbound (remote ip \"*:*\"))\n\
+/// What a policy with the network on adds after `(deny network*)`: outbound
+/// connections to any IP address and port, and the DNS resolver's socket.
+/// Seatbelt cannot name a host, so this is the whole internet. No
+/// `system-socket` (kernel-control sockets): TCP and DNS need neither, which
+/// the macOS sandbox tests check by connecting with this profile.
+pub const NETWORK_ON: &str = "(allow network-outbound (remote ip \"*:*\"))\n\
      (allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n";
 
 /// A rendered profile: its text and the paths its parameters name.
@@ -345,6 +346,7 @@ mod tests {
         // Never every socket: no `network*` allow, and the only Unix socket is
         // the DNS resolver's.
         assert!(!on.text.contains("(allow network*)"));
+        assert!(!on.text.contains("system-socket"));
         assert_eq!(on.text.matches("unix-socket").count(), 1);
         assert!(added.contains("mDNSResponder"));
         // Nothing after the keychain rule allows a lookup.

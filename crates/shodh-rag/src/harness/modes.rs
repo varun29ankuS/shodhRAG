@@ -156,7 +156,9 @@ pub const CREATOR_NOTE: &str = "Mode: Creator. Build what the user asked for, en
      editing files in this folder runs without asking. Where commands are sandboxed, commands in \
      this folder run without asking too; elsewhere every command waits for the user's approval, \
      so run only the commands the build needs. Package installs reach the network, so they \
-     always wait for the user's approval: prefer no dependencies. Anything outside this folder \
+     always wait for the user's approval: prefer no dependencies, and when you do install with \
+     npm, pnpm or yarn add --ignore-scripts unless a package cannot work without its install \
+     scripts (with pip, --only-binary :all:). Anything outside this folder \
      is blocked, and anything that leaves this computer waits for the user's approval. When the \
      build is done, check it, then call finish_creation once with a one-line summary and every \
      choice you made that the user did not specify, and end your answer with a short section \

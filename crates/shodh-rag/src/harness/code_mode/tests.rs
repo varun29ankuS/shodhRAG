@@ -2060,6 +2060,7 @@ fn gate(review: &ReviewState) -> GateContext<'_> {
         command_problem: None,
         project_code_cleared: true,
         sandboxed: false,
+        inspects: false,
     }
 }
 
@@ -2764,4 +2765,87 @@ fn every_code_branch_is_listed_newest_first() {
         .map(|(id, _)| id)
         .collect();
     assert_eq!(listed, ["conv-new", "conv-old"]);
+}
+
+#[test]
+fn unsandboxed_creator_runs_only_commands_that_inspect_its_folder() {
+    let reviewed = ReviewState::default();
+    let inspecting = GateContext {
+        inspects: true,
+        ..creator_gate(&reviewed, false)
+    };
+    let ls = guarded(RUN_COMMAND, json!({"command": "ls src"}));
+    assert!(creator_approval(&ls, ChangeTarget::Unknown, &inspecting).is_some());
+    assert_eq!(creator_command_reason(&ls, &inspecting), None);
+    // A command the session did not find inspecting asks, saying why.
+    let build = guarded(RUN_COMMAND, json!({"command": "npm run build"}));
+    let not = creator_gate(&reviewed, false);
+    assert_eq!(creator_approval(&build, ChangeTarget::Unknown, &not), None);
+    assert!(creator_command_reason(&build, &not)
+        .unwrap()
+        .contains("your account and your network"));
+    // Something running, an unasked writer or its own time limit still ask.
+    let running = GateContext {
+        running: Some("`npm run build`"),
+        ..inspecting
+    };
+    let writer = GateContext {
+        unasked_writer: Some("files: write_file"),
+        ..inspecting
+    };
+    for gate in [&running, &writer] {
+        assert_eq!(creator_approval(&ls, ChangeTarget::Unknown, gate), None);
+        assert!(creator_command_reason(&ls, gate).is_some());
+    }
+    let timed = guarded(RUN_COMMAND, json!({"command": "ls", "timeout_secs": 900}));
+    assert_eq!(
+        creator_approval(&timed, ChangeTarget::Unknown, &inspecting),
+        None
+    );
+}
+
+#[test]
+fn an_install_prompt_says_whether_the_packages_run_their_scripts() {
+    for command in [
+        "npm install react",
+        "pnpm add vite",
+        "yarn",
+        "pip install flask",
+    ] {
+        assert_eq!(
+            install_network_text(command),
+            INSTALL_NETWORK_TEXT,
+            "{command}"
+        );
+    }
+    for command in [
+        "npm install --ignore-scripts react",
+        "pnpm add --ignore-scripts vite",
+        "yarn add three --ignore-scripts",
+        "pip install --only-binary :all: flask",
+        "cargo fetch",
+        "go mod download",
+    ] {
+        assert_eq!(
+            install_network_text(command),
+            INSTALL_NETWORK_NO_SCRIPTS_TEXT,
+            "{command}"
+        );
+        assert!(
+            approved_network(AgentMode::Creator, true, command),
+            "{command}"
+        );
+    }
+    assert!(INSTALL_NETWORK_TEXT.contains("run their own install scripts"));
+    assert!(INSTALL_NETWORK_TEXT.contains("whole internet"));
+    // pip's --only-binary is read only as :all:.
+    for command in [
+        "pip install --only-binary flask requests",
+        "pip install --only-binary",
+    ] {
+        assert!(
+            !approved_network(AgentMode::Creator, true, command),
+            "{command}"
+        );
+    }
 }

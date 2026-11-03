@@ -24,6 +24,8 @@ import {
   ARTIFACT_PANES,
   PANE_LABELS,
   PREVIEW_ALLOW,
+  PREVIEW_NETWORK_OFF_TEXT,
+  PREVIEW_NETWORK_ON_TEXT,
   PREVIEW_SANDBOX,
   STATUS_LABELS,
   buildProgress,
@@ -410,8 +412,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
               </button>
             </div>
             <p className="m-0 text-caption text-shodh-text-muted">
-              The page runs in a sealed frame: it cannot reach Shodh, your files or your accounts
-              {network ? ', and it may load from and send to the internet while this is on.' : ', or the internet.'}
+              {network ? PREVIEW_NETWORK_ON_TEXT : PREVIEW_NETWORK_OFF_TEXT}
             </p>
             {previewError ? (
               <p role="alert" className="m-0 text-small text-shodh-error">The preview could not open: {previewError}</p>

@@ -10,6 +10,8 @@ import {
   ARTIFACT_PANES,
   CHANGE_DRAFT,
   PREVIEW_ALLOW,
+  PREVIEW_NETWORK_OFF_TEXT,
+  PREVIEW_NETWORK_ON_TEXT,
   PREVIEW_SANDBOX,
   buildProgress,
   fileRows,
@@ -182,4 +184,17 @@ test('files list as a tree, each folder once before its files', () => {
   assert.equal(sizeLabel(2048), '2 KB');
   assert.equal(sizeLabel(12), '12 B');
   assert.equal(sizeLabel(3 * 1024 * 1024), '3.0 MB');
+});
+
+test('the preview never claims a sealed network, and says what the switch opens', () => {
+  assert.doesNotMatch(PREVIEW_NETWORK_OFF_TEXT, /cannot reach the internet|no network|sealed/i);
+  assert.match(PREVIEW_NETWORK_OFF_TEXT, /WebRTC and DNS look-ahead are off/);
+  assert.match(PREVIEW_NETWORK_OFF_TEXT, /might still/);
+  assert.match(PREVIEW_NETWORK_ON_TEXT, /https/);
+  const page = read('../src/features/artifacts/ArtifactPage.tsx');
+  assert.match(page, /network \? PREVIEW_NETWORK_ON_TEXT : PREVIEW_NETWORK_OFF_TEXT/);
+  // Every preview page and response turn the channels CSP misses off (preview.rs).
+  const rust = read('../src-tauri/src/creations/preview.rs');
+  assert.match(rust, /\.header\("X-DNS-Prefetch-Control", "off"\)/);
+  assert.match(rust, /'RTCPeerConnection'/);
 });

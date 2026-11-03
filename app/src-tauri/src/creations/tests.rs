@@ -410,3 +410,101 @@ fn an_export_is_a_zip_of_a_version_and_never_overwrites() {
         .unwrap();
     assert_eq!(text, "<p>one</p>");
 }
+
+/// The race the open-handle check closes: a folder of the path is swapped for
+/// a link to elsewhere after the path was checked and before the file opens.
+#[cfg(unix)]
+#[test]
+fn a_folder_swapped_for_a_link_between_the_check_and_the_open_reads_nothing() {
+    let s = setup();
+    let creation = s.store.prepare(&s.root, "conv", "a site", NOW).unwrap();
+    let folder = PathBuf::from(&creation.folder);
+    write(&folder, "src/page.html", "mine");
+    let outside = s.documents.join("private");
+    write(&outside, "page.html", "secret");
+    let page = Path::new("src/page.html");
+    let (bytes, _) = read_inside_with(&folder, page, 1024, || {}).unwrap();
+    assert_eq!(bytes, b"mine");
+    let swapped = read_inside_with(&folder, page, 1024, || {
+        fs::remove_dir_all(folder.join("src")).unwrap();
+        std::os::unix::fs::symlink(&outside, folder.join("src")).unwrap();
+    });
+    let error = swapped.expect_err("the swapped path must not be read");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+}
+
+/// The same race on Windows, with a junction (made without privileges).
+#[cfg(windows)]
+#[test]
+fn a_folder_swapped_for_a_junction_between_the_check_and_the_open_reads_nothing() {
+    let s = setup();
+    let creation = s.store.prepare(&s.root, "conv", "a site", NOW).unwrap();
+    let folder = PathBuf::from(&creation.folder);
+    write(&folder, "src/page.html", "mine");
+    let outside = s.documents.join("private");
+    write(&outside, "page.html", "secret");
+    let page = Path::new("src/page.html");
+    let swapped = read_inside_with(&folder, page, 1024, || {
+        fs::remove_dir_all(folder.join("src")).unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(folder.join("src"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    });
+    let error = swapped.expect_err("the swapped path must not be read");
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    // And a junction already there is refused by the path check too.
+    assert!(s
+        .store
+        .file(&s.root, &creation.id, None, "src/page.html")
+        .is_err());
+}
+
+#[test]
+fn a_hard_linked_file_is_never_read() {
+    let s = setup();
+    let creation = s.store.prepare(&s.root, "conv", "a site", NOW).unwrap();
+    let folder = PathBuf::from(&creation.folder);
+    write(&s.documents, "secret.txt", "secret");
+    fs::hard_link(s.documents.join("secret.txt"), folder.join("copy.txt")).unwrap();
+    write(&folder, "index.html", "ok");
+    assert!(s
+        .store
+        .file(&s.root, &creation.id, None, "copy.txt")
+        .is_err());
+    s.store.snapshot(&s.root, "conv", None, NOW).unwrap();
+    let kept: Vec<String> = s
+        .store
+        .files(&s.root, &creation.id, Some(1))
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(kept, ["index.html"]);
+}
+
+#[test]
+fn a_folder_made_later_under_the_same_name_is_never_taken_for_an_old_creation() {
+    let s = setup();
+    let old = s.store.prepare(&s.root, "conv-a", "a site", NOW).unwrap();
+    assert!(old.folder_id.is_some());
+    // Its folder is removed outside the app; a new creation gets the same name.
+    fs::remove_dir_all(&old.folder).unwrap();
+    let new = s.store.prepare(&s.root, "conv-b", "a site", LATER).unwrap();
+    assert_eq!(new.folder, old.folder);
+    write(Path::new(&new.folder), "index.html", "new");
+    // The old record no longer reaches the folder, and deleting it leaves the
+    // new creation's folder alone.
+    assert!(s.store.files(&s.root, &old.id, None).is_err());
+    assert!(s.store.snapshot(&s.root, "conv-a", None, LATER).is_err());
+    s.store.delete(&s.root, &old.id).unwrap();
+    assert!(s.store.get(&old.id).unwrap().is_none());
+    assert_eq!(
+        fs::read_to_string(Path::new(&new.folder).join("index.html")).unwrap(),
+        "new"
+    );
+    assert_eq!(s.store.files(&s.root, &new.id, None).unwrap().len(), 1);
+}

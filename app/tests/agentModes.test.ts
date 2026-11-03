@@ -5,9 +5,12 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   AGENT_MODES,
   CONFIRMED_MODES,
+  confirmCreator,
+  creatorConfirmed,
   CREATOR_CONFIRM_TEXT,
   DEFAULTABLE_MODES,
   DEFAULT_AGENT_MODE,
@@ -66,9 +69,27 @@ test('a conversation keeps its mode; only a new one takes the default', () => {
   assert.equal(resolveAgentMode(undefined, false, null), null);
   // A mode this version does not know is not taken.
   assert.equal(resolveAgentMode('bypass', true, 'auto'), 'ask');
-  // A conversation the user put in Creator stays in it; Creator is never a default.
-  assert.equal(resolveAgentMode('creator', true, 'auto'), 'creator');
+  // A conversation saved in Creator answers in Creator only once the user turned it on
+  // (the confirming click) in this app session; before that, in Ask. Never a default.
+  assert.equal(resolveAgentMode('creator', true, 'auto'), 'ask');
+  assert.equal(resolveAgentMode('creator', false, 'auto'), 'ask');
+  assert.equal(resolveAgentMode('creator', true, 'auto', true), 'creator');
   assert.equal(resolveAgentMode(undefined, false, 'creator'), 'ask');
+  assert.equal(resolveAgentMode(undefined, false, 'creator', true), 'ask');
+});
+
+test('the confirming click is remembered per conversation for this app session only', () => {
+  assert.equal(creatorConfirmed('c-new'), false);
+  assert.equal(creatorConfirmed(null), false);
+  confirmCreator('c-new');
+  assert.equal(creatorConfirmed('c-new'), true);
+  assert.equal(creatorConfirmed('c-other'), false);
+  // The picker confirms before it hands Creator over (ModePicker), and the view
+  // records it (AskView): a saved "creator" alone never starts a build.
+  const view = readFileSync(new URL('../src/features/ask/AskView.tsx', import.meta.url), 'utf8');
+  assert.match(view, /if \(next === 'creator'\) \{\s*confirmCreator\(id\);/);
+  const session = readFileSync(new URL('../src/features/ask/ChatSessionContext.tsx', import.meta.url), 'utf8');
+  assert.match(session, /creatorConfirmed\(conversationId\)\) \?\? 'ask'/);
 });
 
 test('the default mode fails closed to Ask', () => {

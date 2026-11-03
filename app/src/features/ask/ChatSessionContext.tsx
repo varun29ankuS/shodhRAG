@@ -42,7 +42,7 @@ import { creationsApi, errorText } from '../artifacts/api';
 import { startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
-import { resolveAgentMode } from '../agent/agentModes';
+import { creatorConfirmed, resolveAgentMode } from '../agent/agentModes';
 import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { onApprovalAnswered } from '../inbox/approvalBus';
 import {
@@ -470,6 +470,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     activeConversation?.agentMode,
     activeHasMessages,
     defaultAgentMode,
+    creatorConfirmed(activeConversationId),
   );
   const streaming = liveRun !== null;
   // A connector's conversation is read-only: no agent session for it.
@@ -521,7 +522,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // The mode this answer runs in, sent explicitly (Ask when nothing better is known)
     // and kept on the answer; a conversation without a mode of its own keeps this one
     // from now on, so a later change of the default never changes it.
-    const agentMode = resolveAgentMode(conversationNow?.agentMode, history.length > 0, defaultAgentModeRef.current) ?? 'ask';
+    const agentMode = resolveAgentMode(conversationNow?.agentMode, history.length > 0, defaultAgentModeRef.current, creatorConfirmed(conversationId)) ?? 'ask';
     transcript.agentMode = agentMode;
     if (conversationNow && !conversationNow.agentMode) conv.updateConversationMeta(conversationId, { agentMode });
     const live: LiveRun = {

@@ -1524,8 +1524,7 @@ async fn creation_code_folder(
             "Creator mode makes its folder with the conversation's first request. Send it again."
                 .to_string()
         })?;
-        let folder =
-            crate::creations::checked_folder(&root, std::path::Path::new(&creation.folder))?;
+        let folder = creation.checked_folder(&root)?;
         let folder = CodeFolder::open(&folder).map_err(|e| e.to_string())?;
         Ok((folder, creation.id))
     })
@@ -1933,7 +1932,10 @@ async fn start_attempt(
     // A Creator session gets its finish card and the Artifacts tab's tools, and
     // no GitHub tools: what it builds stays in its folder.
     if creates {
-        extra_tools.splice(0..0, crate::agent_tools::creator_tools(&app_data_dir));
+        extra_tools.splice(
+            0..0,
+            crate::agent_tools::creator_tools(&app_data_dir, &conversation_id),
+        );
     } else if let Some(folder) = &code_folder {
         // A Code session reaches GitHub only through Shodh: its commands have no
         // network and no credentials. First, so no server or skill can take these names.

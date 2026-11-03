@@ -740,6 +740,9 @@ impl HostTool for ExportDocumentTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
+    fn edits_locally(&self) -> bool {
+        true
+    }
 
     async fn must_confirm(&self, args: &Value) -> Result<bool, ToolError> {
         Ok(self.plan(args).await?.indexed_root.is_some())
@@ -1167,7 +1170,7 @@ mod tests {
             },
         }));
         let profile = AgentProfile {
-            auto_approve_writes: true,
+            mode: shodh_rag::harness::modes::AgentMode::Auto,
             ..AgentProfile::assistant()
         };
         let outcome = registry

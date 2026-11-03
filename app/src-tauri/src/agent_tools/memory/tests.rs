@@ -113,7 +113,7 @@ impl Harness {
 
 fn auto_approving() -> AgentProfile {
     AgentProfile {
-        auto_approve_writes: true,
+        mode: shodh_rag::harness::modes::AgentMode::Auto,
         ..AgentProfile::assistant()
     }
 }

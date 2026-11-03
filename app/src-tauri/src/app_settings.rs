@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use shodh_rag::audit::{AuditEventType, AuditRecord};
 use shodh_rag::harness::model_choice::ModelPrefs;
+use shodh_rag::harness::modes::AgentMode;
 use shodh_rag::user_memory::learn::{
     LearnCaps, LearnMode, DEFAULT_AUTO_MIN_CONFIDENCE, MAX_CALLS_PER_DAY_LIMIT,
     MAX_INPUT_CHARS_LIMIT, MAX_PROPOSALS_LIMIT,
@@ -470,6 +471,15 @@ pub struct CodePrefs {
     pub enabled: bool,
 }
 
+/// How answers work by default: the mode a new conversation answers in
+/// ([`AgentMode`]). Each conversation keeps its own mode, which only the user
+/// changes. User-only: the agent's settings tools refuse it ([`AGENT_DENIED`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentPrefs {
+    pub default_mode: AgentMode,
+}
+
 /// Why a Code mode answer was refused while Code mode is off.
 pub const CODE_MODE_OFF: &str =
     "Code mode is off, so answers cannot change files or run commands. \
@@ -497,6 +507,8 @@ pub struct AppSettings {
     pub connectors: crate::connectors::ConnectorsPrefs,
     /// Code mode (see [`CodePrefs`]). User-only.
     pub code: CodePrefs,
+    /// The mode new conversations answer in (see [`AgentPrefs`]). User-only.
+    pub agent: AgentPrefs,
     /// Indexing: paused or not, and whether search may use the graphics card
     /// (see [`IndexingPrefs`]). User-only.
     pub indexing: IndexingPrefs,
@@ -586,12 +598,15 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 28] = [
+pub const AGENT_DENIED: [(&str, &str); 31] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
     ("allow_stealth_models", "Stealth models may log prompts for training; only the user may accept that."),
     ("auto_approve_writes", "An agent that relaxes its own approvals makes the approval gate meaningless."),
+    ("agent", "The modes decide what runs without asking; an agent that picks its own mode makes the approval gate meaningless."),
+    ("agent_mode", "Only the user changes a conversation's mode; the agent may suggest one, never switch to it."),
+    ("default_mode", "The default mode decides what runs without asking in new conversations; only the user may change it."),
     ("approvals", "The agent must never approve its own actions."),
     ("audit_retention_days", "Shortening retention deletes the audit trail of what the agent did."),
     ("audit_export", "The audit log is the user's record of the agent; the agent must not move or prune it."),
@@ -981,6 +996,33 @@ pub async fn set_code_mode(
     Ok(settings)
 }
 
+/// Set the mode new conversations answer in. User-only: no agent tool calls this,
+/// and the agent's settings tools refuse it by name. A conversation already open
+/// keeps its own mode.
+#[tauri::command]
+pub async fn set_default_agent_mode(
+    app: AppHandle,
+    mode: AgentMode,
+    audit: State<'_, AuditState>,
+) -> Result<AppSettings, String> {
+    let (settings, before) = store(&app)?
+        .update(|s| Ok(std::mem::replace(&mut s.agent.default_mode, mode)))
+        .map_err(|e| e.to_string())?;
+    if before != mode {
+        audit.record(AuditRecord::new(
+            AuditEventType::SettingsChange,
+            json!({
+                "action": "default_mode_change",
+                "old": before.as_str(),
+                "new": mode.as_str(),
+                "via": "ui",
+            }),
+        ));
+    }
+    broadcast(&app, &settings);
+    Ok(settings)
+}
+
 /// Change how answers are grounded. User-only: no agent tool calls this, and
 /// the agent's settings tools refuse `auto_repair`.
 #[tauri::command]
@@ -1258,6 +1300,33 @@ mod tests {
         ] {
             assert!(denied_reason(key).is_some(), "{key} must be user-only");
         }
+    }
+
+    #[test]
+    fn the_default_mode_is_ask_and_only_the_user_changes_it() {
+        // Settings written before modes existed answer in Ask mode.
+        let old: AppSettings = serde_json::from_str(r#"{"seeded": true}"#).unwrap();
+        assert_eq!(old.agent.default_mode, AgentMode::Ask);
+        let set: AppSettings =
+            serde_json::from_str(r#"{"agent": {"defaultMode": "auto"}}"#).unwrap();
+        assert_eq!(set.agent.default_mode, AgentMode::Auto);
+        let text = serde_json::to_string(&set).unwrap();
+        assert!(text.contains(r#""agent":{"defaultMode":"auto"}"#), "{text}");
+        // A mode that does not exist is not read as a looser one.
+        assert!(
+            serde_json::from_str::<AppSettings>(r#"{"agent": {"defaultMode": "bypass"}}"#).is_err()
+        );
+        for key in [
+            "agent",
+            "agent.defaultMode",
+            "agent_mode",
+            "default_mode",
+            "auto_approve_writes",
+        ] {
+            assert!(denied_reason(key).is_some(), "{key} must be user-only");
+        }
+        assert!(SettingKey::parse("agent_mode").is_none());
+        assert!(SettingKey::parse("default_mode").is_none());
     }
 
     #[test]

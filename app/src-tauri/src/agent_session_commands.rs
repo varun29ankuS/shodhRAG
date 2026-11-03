@@ -21,15 +21,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord, RunAuditTap};
 use shodh_rag::harness::code_mode::{
-    code_system_prompt, discard_changes, reserved_tool_names, ApprovalLevel, CodeBranch,
-    CodeBranchStore, CodeFolder, CodeSettings, CODE_BUILTIN_TOOLS,
+    code_system_prompt, discard_changes, reserved_tool_names, CodeBranch, CodeBranchStore,
+    CodeFolder, CodeSettings, CODE_BUILTIN_TOOLS,
 };
 use shodh_rag::harness::mcp::Mode;
 use shodh_rag::harness::model::EnvValue;
 use shodh_rag::harness::model_catalog::ProviderId;
 use shodh_rag::harness::model_choice::base_url_var;
+use shodh_rag::harness::modes::AgentMode;
 use shodh_rag::harness::profile::{app_tools, is_valid_slug};
 use shodh_rag::harness::run_command::{self, ContainedExecutor};
+use shodh_rag::harness::tools::mode::{SuggestModeTool, SUGGEST_MODE};
 use shodh_rag::harness::tools::{
     carried_passages_block, CitedPassage, HostTool, RunScope, ToolRegistry,
 };
@@ -204,6 +206,10 @@ struct SessionEntry {
     instructions: Option<String>,
     /// Code mode's folder; `None` is a Research session.
     code_folder: Option<String>,
+    /// The mode the session answers in ([`AgentMode`]): fixed at launch (Plan mode
+    /// launches without change tools), so a change starts a new session for the next
+    /// answer.
+    agent_mode: AgentMode,
     /// Model and credentials the session was started with (see
     /// [`model_fingerprint`]); a change in settings restarts the session.
     model_fingerprint: u64,
@@ -1351,6 +1357,7 @@ pub async fn agent_start(
     model_override: Option<ModelOverride>,
     mode: Option<ConversationMode>,
     workspace_id: Option<String>,
+    agent_mode: Option<AgentMode>,
     sessions: State<'_, AgentSessions>,
     workspaces: State<'_, WorkspaceState>,
     rag: State<'_, RagState>,
@@ -1370,6 +1377,7 @@ pub async fn agent_start(
             model_override.clone(),
             mode,
             workspace_id.clone(),
+            agent_mode,
             sessions.clone(),
             workspaces.clone(),
             rag.clone(),
@@ -1461,6 +1469,29 @@ fn key_changed_since(llm: &LLMState, read: Option<KeyRead>) -> Option<ProviderId
 /// goes through Shodh's GitHub tools.
 const GITHUB_CODE_NOTE: &str = "\n\nGitHub: commands have no network and no credentials, so git fetch, pull and push in run_command fail. Use the GitHub tools instead: github_status (sign-in, which repositories Shodh may reach, this project's remotes), github_fetch (fetch only; merge or rebase afterwards with a local git command), github_push (pushes the current commit to a shodh/<topic> branch; commit first), github_open_pr, github_read_issue, github_read_pr, github_comment, github_merge_pr and github_delete_branch. If the project's remote is not on the user's list, ask with github_request_access. Every push, pull request, comment and merge asks the user. Never try to reach GitHub another way.";
 
+/// What a Code session in a mode that only reads is told about GitHub.
+const GITHUB_CODE_READ_NOTE: &str = "\n\nGitHub: commands do not run in this mode. github_status, github_read_issue and github_read_pr read; nothing is pushed, opened, commented on or merged in this mode. Never try to reach GitHub another way.";
+
+/// The mode a session answers in: the conversation's (`asked`), else the default
+/// in Settings (Ask when they cannot be read). A side thread (`side_thread`)
+/// always answers in Ask mode.
+fn session_mode(
+    asked: Option<AgentMode>,
+    side_thread: bool,
+    data_dir: &std::path::Path,
+) -> AgentMode {
+    if side_thread {
+        return AgentMode::Ask;
+    }
+    asked.unwrap_or_else(|| match SettingsStore::in_dir(data_dir).load() {
+        Ok(settings) => settings.agent.default_mode,
+        Err(e) => {
+            tracing::warn!(target: "shodh::harness", error = %e, "settings unreadable; the answer asks for every change");
+            AgentMode::Ask
+        }
+    })
+}
+
 /// The system prompt's note on the tools from MCP servers and skills the
 /// user connected, `names`.
 fn extra_tools_note(names: &[String]) -> String {
@@ -1482,6 +1513,7 @@ async fn start_attempt(
     model_override: Option<ModelOverride>,
     mode: Option<ConversationMode>,
     workspace_id: Option<String>,
+    agent_mode: Option<AgentMode>,
     sessions: State<'_, AgentSessions>,
     workspaces: State<'_, WorkspaceState>,
     rag: State<'_, RagState>,
@@ -1507,8 +1539,16 @@ async fn start_attempt(
     if !is_valid_slug(&profile_id) {
         return Err(HarnessError::UnknownProfile(profile_id).into());
     }
-    let profile = AgentProfile::builtin(&profile_id)
+    let mut profile = AgentProfile::builtin(&profile_id)
         .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?;
+    // The conversation's mode, which only the user sets (absent: the default in
+    // Settings). Side threads (summaries, refinements, follow-ups) always ask.
+    let agent_mode = session_mode(
+        agent_mode,
+        parent_conversation_id.is_some(),
+        &app_data_dir(&app)?,
+    );
+    profile.mode = agent_mode;
     let instructions = instructions
         .map(|i| i.trim().to_string())
         .filter(|i| !i.is_empty())
@@ -1710,6 +1750,7 @@ async fn start_attempt(
                 && e.profile_id == profile_id
                 && e.instructions == instructions
                 && e.code_folder == code_key
+                && e.agent_mode == agent_mode
                 && e.model_fingerprint == fingerprint
                 && e.tools_fingerprint == tools_fingerprint
                 && e.thinking == thinking;
@@ -1763,6 +1804,8 @@ async fn start_attempt(
             folder.root(),
         );
         extra_tools.splice(0..0, github);
+        // The agent may suggest another mode in Code sessions too (it never switches).
+        extra_tools.insert(0, Arc::new(SuggestModeTool));
     }
     let extra_names: Vec<String> = extra_tools.iter().map(|t| t.name().to_string()).collect();
     let (registry, profile) =
@@ -1782,9 +1825,13 @@ async fn start_attempt(
         .collect();
     let system_prompt = match &code_folder {
         Some(folder) => {
-            let mut prompt = code_system_prompt(folder, instructions.as_deref());
-            prompt.push_str(GITHUB_CODE_NOTE);
-            if !shodh_rag::harness::run_command::commands_sandboxed() {
+            let mut prompt = code_system_prompt(folder, instructions.as_deref(), agent_mode);
+            prompt.push_str(if agent_mode.reads_only() {
+                GITHUB_CODE_READ_NOTE
+            } else {
+                GITHUB_CODE_NOTE
+            });
+            if !agent_mode.reads_only() && !shodh_rag::harness::run_command::commands_sandboxed() {
                 prompt.push_str(
                     " On this system commands are not sandboxed, so in Code mode the GitHub tools only read: github_push, github_open_pr, github_comment, github_merge_pr and github_delete_branch refuse. Tell the user to do those from a normal chat.",
                 );
@@ -1793,6 +1840,7 @@ async fn start_attempt(
                 .iter()
                 .filter(|n| {
                     !shodh_rag::connectors::github::tools::all_names().contains(&n.as_str())
+                        && n.as_str() != SUGGEST_MODE
                 })
                 .cloned()
                 .collect();
@@ -1838,6 +1886,8 @@ async fn start_attempt(
         code: code_folder,
         host_tools: Vec::new(),
         thinking,
+        // Set by the session from the profile's mode.
+        code_reads_only: false,
     };
 
     let audit_conversation = parent_conversation_id
@@ -1939,6 +1989,7 @@ async fn start_attempt(
             profile_id,
             instructions,
             code_folder: code_key,
+            agent_mode,
             model_fingerprint: fingerprint,
             provider: answer_provider,
             tools_fingerprint,
@@ -2633,8 +2684,6 @@ pub struct CodeStatus {
     pub problem: Option<String>,
     /// The conversation's branch in that folder, while it is checked out.
     pub branch: Option<CodeBranch>,
-    /// The workspace's approval level.
-    pub approval: ApprovalLevel,
 }
 
 /// Whether Code mode can work for a conversation, in which folder, and on
@@ -2654,18 +2703,10 @@ pub async fn agent_code_status(
                 folder: None,
                 problem: Some(problem),
                 branch: None,
-                approval: ApprovalLevel::AskEveryTime,
             })
         }
     };
     let data_dir = app_data_dir(&app)?;
-    let approval = workspace_id
-        .as_deref()
-        .and_then(|id| workspace_data_dir(&data_dir, id))
-        .map(|dir| CodeSettings::load(&dir).map(|s| s.approval))
-        .transpose()
-        .unwrap_or(Some(ApprovalLevel::AskEveryTime))
-        .unwrap_or_default();
     let store = CodeBranchStore::in_dir(&data_dir);
     let shown = folder.display();
     let branch = tokio::task::spawn_blocking(move || -> Result<Option<CodeBranch>, String> {
@@ -2698,7 +2739,6 @@ pub async fn agent_code_status(
         folder: Some(shown),
         problem: None,
         branch,
-        approval,
     })
 }
 
@@ -2719,7 +2759,8 @@ fn workspace_settings_dir(
         .ok_or_else(|| AgentCommandError::invalid("invalid workspace id".to_string()))
 }
 
-/// A workspace's Code settings (approval level and command allowlist).
+/// A workspace's Code settings (the commands Auto mode also runs, and the
+/// command limits).
 #[tauri::command]
 pub async fn code_settings_get(
     app: AppHandle,
@@ -2743,11 +2784,11 @@ pub async fn code_settings_set(
         .await
         .map_err(|e| AgentCommandError::invalid(e.to_string()))?
         .map_err(AgentCommandError::invalid)?;
-    tracing::info!(target: "shodh::audit", event = "code_settings", workspace = %workspace_id.trim(), approval = ?saved.approval, "code approval level changed");
+    tracing::info!(target: "shodh::audit", event = "code_settings", workspace = %workspace_id.trim(), allowlist = ?saved.allowlist, "code settings changed");
     audit.record(AuditRecord::new(
         AuditEventType::SettingsChange,
         json!({
-            "action": "code_approval_change",
+            "action": "code_settings_change",
             "workspace": workspace_id.trim(),
             "new": saved,
             "via": "ui",
@@ -2939,8 +2980,9 @@ async fn chat_tools_with(
             reserved_tool_names()
                 .into_iter()
                 .chain(shodh_rag::connectors::github::tools::all_names())
+                .chain(std::iter::once(SUGGEST_MODE))
                 .collect(),
-            CODE_BUILTIN_TOOLS + shodh_rag::connectors::github::tools::all_names().len(),
+            CODE_BUILTIN_TOOLS + shodh_rag::connectors::github::tools::all_names().len() + 1,
         ),
         None => {
             let names = registry.names();

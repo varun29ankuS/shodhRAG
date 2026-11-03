@@ -27,12 +27,12 @@ use tokio::task::AbortHandle;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use super::code_mode::{
-    approval_for, auto_approval, change_target, changed_between, code_catalog, command_eligible,
-    create_branch, git_state, inventory_matches, note_review, parse_guard_request, plan_change,
-    starts_system_program, target_in_folder, tree_snapshot, ApprovalLevel, ChangePlan,
-    ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings, GateContext, GuardRequest,
-    ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, CODE_TOOLS, GUARD_COMMAND,
-    IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
+    approval_for, auto_approval, auto_command, change_target, changed_between, code_catalog,
+    command_eligible, command_surroundings, create_branch, git_state, inventory_matches_in,
+    note_review, parse_guard_request, plan_change, starts_system_program, target_in_folder,
+    tree_snapshot, ChangePlan, ChangeTarget, CodeBranch, CodeBranchStore, CodeFolder, CodeSettings,
+    GateContext, GuardRequest, ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, AUTO_MODE_KEY,
+    CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -43,6 +43,7 @@ use super::grounding::followup::{self, Next, Retrieval, RetrieveResult, Rounds};
 use super::grounding::verify::{check_needs, summarise, verify_answer, Thresholds};
 use super::grounding::{AnswerMessage, Evidence, GroundingConfig, OpenedText, VerifyInput};
 use super::model::EnvValue;
+use super::modes::{self, AgentMode};
 use super::omp::{normalise, HeldRun, NormaliserState, StepOutcome};
 use super::profile::AgentProfile;
 use super::protocol::{
@@ -239,19 +240,20 @@ impl CodeRuntime {
         }
     }
 
-    /// The workspace's Code settings now (asking for everything when they
-    /// cannot be read).
+    /// The workspace's Code settings now. Without them (none, or unreadable)
+    /// the default limits apply and no workspace list: only the mode and its
+    /// rules decide.
     fn settings(&self) -> CodeSettings {
-        let ask = || CodeSettings {
-            approval: ApprovalLevel::AskEveryTime,
+        let unlisted = || CodeSettings {
+            allowlist: Vec::new(),
             ..CodeSettings::default()
         };
         let Some(dir) = &self.settings_dir else {
-            return ask();
+            return unlisted();
         };
         CodeSettings::load(dir).unwrap_or_else(|e| {
-            tracing::warn!(target: "shodh::harness", error = %e, "code settings unreadable; every change asks");
-            ask()
+            tracing::warn!(target: "shodh::harness", error = %e, "code settings unreadable; the workspace's command list does not apply");
+            unlisted()
         })
     }
 
@@ -892,6 +894,18 @@ impl Inner {
         if let Some(event) = opened {
             self.emit(event);
         }
+        // A session that only reads has no change tools; the guard refuses
+        // them too. Should a change still reach Shodh, it is refused here.
+        let mode = self.profile.mode;
+        if mode.reads_only() {
+            let reason = format!(
+                "{} only reads: nothing is changed and no command runs. Finish the plan \
+                 instead; the user chooses the mode it runs in.",
+                mode.label()
+            );
+            self.refuse(&run_id, request, ChangeTarget::Unknown, &reason);
+            return Err(reason);
+        }
         let _turn = code.turn.lock().await;
         // What earlier commands and tools changed is listed before anything
         // is decided on it.
@@ -931,10 +945,29 @@ impl Inner {
         let review = code.review().await;
         let running = code.running_label();
         let unasked_writer = self.registry.unasked_file_writer(&self.profile);
+        // In Auto mode, what is around a command its rules recognise: the
+        // files it shows and git's settings.
+        let auto_asks = if mode == AgentMode::Auto && request.tool == RUN_COMMAND {
+            match auto_command(&settings, request, &plan) {
+                Ok(command) => {
+                    let folder = code.folder.root().to_path_buf();
+                    let home = code.scratch.clone();
+                    tokio::task::spawn_blocking(move || {
+                        command_surroundings(&folder, &home, &command)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Some(format!("Shodh could not check the command ({e})")))
+                }
+                Err(reason) => Some(reason),
+            }
+        } else {
+            None
+        };
         let gate = GateContext {
             review: &review,
             running: running.as_deref(),
             unasked_writer: unasked_writer.as_deref(),
+            command_problem: auto_asks.as_deref(),
         };
         // Decided once, before the prompt: the settings may change while it
         // waits, and what is cleared must match what was shown.
@@ -951,7 +984,14 @@ impl Inner {
             }
         }
         let shown = note_review(&mut approval, request, &gate, eligible, &token);
-        if let Some(reason) = auto_approval(&settings, request, &plan, target, &gate) {
+        // Why Auto mode asks about this command, on its prompt.
+        if let (Some(reason), Some(map)) = (&auto_asks, approval.preview.as_object_mut()) {
+            map.insert(
+                AUTO_MODE_KEY.to_string(),
+                json!(format!("Auto mode asks because {reason}.")),
+            );
+        }
+        if let Some(reason) = auto_approval(mode, &settings, request, &plan, target, &gate) {
             self.audit(
                 &run_id,
                 AuditEventType::Approval,
@@ -960,7 +1000,8 @@ impl Inner {
                     "label": approval.label,
                     "decision": "auto_approved",
                     "who": SYSTEM_PRINCIPAL,
-                    "reason": reason,
+                    "mode": mode.as_str(),
+                    "reason": modes::audit_reason(mode, reason),
                 }),
             );
             if plan == ChangePlan::CreateBranch {
@@ -2242,10 +2283,14 @@ impl OmpSession {
                     "the host tool {clash} has the name of a Code mode tool"
                 )));
             }
-            // Shodh's own command tool, which the session runs itself.
+            // Shodh's own command tool, which the session runs itself; a
+            // session that only reads (Plan mode) has none, and omp gets only
+            // its reading tools.
+            let reads_only = profile.mode.reads_only();
+            launch.code_reads_only = reads_only;
             launch.host_tools = names
                 .into_iter()
-                .chain(std::iter::once(RUN_COMMAND.to_string()))
+                .chain((!reads_only).then(|| RUN_COMMAND.to_string()))
                 .collect();
         }
         let started = std::time::Instant::now();
@@ -2395,8 +2440,11 @@ impl OmpSession {
         let inner = &self.inner;
         // The registry's tools (MCP servers, skills) and Shodh's own command
         // tool, which the session runs itself (`dispatch_run_command`).
+        let reads_only = inner.profile.mode.reads_only();
         let mut host = inner.registry.definitions(&inner.profile);
-        host.push(run_command::definition());
+        if !reads_only {
+            host.push(run_command::definition());
+        }
         let host_names: Vec<String> = host.iter().map(|d| d.name.clone()).collect();
         inner
             .command(OutboundFrame::SetEventFilter {
@@ -2418,7 +2466,7 @@ impl OmpSession {
             })
             .await?;
         let tools = tool_inventory(state.data.as_ref());
-        if !inventory_matches(&tools, &host_names) {
+        if !inventory_matches_in(&tools, &host_names, reads_only) {
             return Err(HarnessError::CodeGuard(format!(
                 "the runtime offered the tools {tools:?}"
             )));
@@ -2675,6 +2723,20 @@ mod tests {
         mpsc::UnboundedReceiver<AgentEvent>,
         mpsc::UnboundedReceiver<OutboundFrame>,
     ) {
+        offline_session_in_mode(grounding, code, registry, AgentMode::Ask)
+    }
+
+    /// [`offline_session_with`] answering in `mode`.
+    fn offline_session_in_mode(
+        grounding: Option<GroundingConfig>,
+        code: Option<Arc<CodeRuntime>>,
+        registry: ToolRegistry,
+        mode: AgentMode,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(registry);
@@ -2691,7 +2753,10 @@ mod tests {
                 state.set_hold_completion(grounding.is_some());
                 state
             }),
-            profile: AgentProfile::assistant(),
+            profile: AgentProfile {
+                mode,
+                ..AgentProfile::assistant()
+            },
             registry,
             audit: None,
             approvals: ApprovalGate::default(),
@@ -4533,7 +4598,6 @@ mod tests {
         git(&["add", "--all"]);
         git(&["commit", "--quiet", "-m", "first"]);
         CodeSettings {
-            approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
             ..CodeSettings::default()
         }
@@ -4542,7 +4606,12 @@ mod tests {
         let exec = TestExecutor::new();
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let root = code.folder.root().to_path_buf();
-        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, mut events, mut out) = offline_session_in_mode(
+            None,
+            Some(Arc::clone(&code)),
+            ToolRegistry::new(),
+            AgentMode::Auto,
+        );
         inner
             .start_run("Fix the build", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -4706,7 +4775,6 @@ mod tests {
         git(&["add", "--all"]);
         git(&["commit", "--quiet", "-m", "first"]);
         CodeSettings {
-            approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
             ..CodeSettings::default()
         }
@@ -4731,7 +4799,12 @@ mod tests {
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let root = code.folder.root().to_path_buf();
         let lib = root.join("lib.rs");
-        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, mut events, mut out) = offline_session_in_mode(
+            None,
+            Some(Arc::clone(&code)),
+            ToolRegistry::new(),
+            AgentMode::Auto,
+        );
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -5161,7 +5234,6 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         CodeSettings {
-            approval: ApprovalLevel::Trusted,
             allowlist: vec!["cargo test -p app".into()],
             ..CodeSettings::default()
         }
@@ -5169,7 +5241,12 @@ mod tests {
         .unwrap();
         let exec = TestExecutor::new();
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
-        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, mut events, mut out) = offline_session_in_mode(
+            None,
+            Some(Arc::clone(&code)),
+            ToolRegistry::new(),
+            AgentMode::Auto,
+        );
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();

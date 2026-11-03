@@ -14,6 +14,7 @@ use super::super::git::{GitEndpoint, HostGit};
 use super::super::token::tests::TOKEN;
 use super::*;
 use crate::harness::events::AgentEvent;
+use crate::harness::modes::AgentMode;
 use crate::harness::profile::AgentProfile;
 use crate::harness::tools::{ApprovalGate, DispatchOutcome, ToolCall};
 
@@ -104,13 +105,33 @@ fn code_registry_sandboxed(
 /// One call through the gate in run `run_id`; at its approval prompt `on_ask` runs
 /// (something changing while the prompt waits) and `decide` answers (a prompt with
 /// `None` fails the test). Returns the outcome and every prompt (label, preview).
+/// `auto`: the session answers in Auto mode, the mode that runs the most without asking
+/// (otherwise Ask mode).
 async fn run_in(
     registry: &Arc<ToolRegistry>,
     run_id: &str,
     tool: &str,
     args: Value,
     decide: Option<bool>,
-    auto_approve_writes: bool,
+    auto: bool,
+    on_ask: impl FnMut(),
+) -> (DispatchOutcome, Vec<(String, Value)>) {
+    let mode = if auto {
+        AgentMode::Auto
+    } else {
+        AgentMode::Ask
+    };
+    run_in_mode(registry, run_id, tool, args, decide, mode, on_ask).await
+}
+
+/// [`run_in`] in `mode`.
+async fn run_in_mode(
+    registry: &Arc<ToolRegistry>,
+    run_id: &str,
+    tool: &str,
+    args: Value,
+    decide: Option<bool>,
+    mode: AgentMode,
     mut on_ask: impl FnMut(),
 ) -> (DispatchOutcome, Vec<(String, Value)>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
@@ -118,7 +139,7 @@ async fn run_in(
     let gate = Arc::new(ApprovalGate::default());
     let profile = AgentProfile {
         allowed_tools: all_names().iter().map(|s| s.to_string()).collect(),
-        auto_approve_writes,
+        mode,
         ..AgentProfile::assistant()
     };
     let task = {
@@ -157,18 +178,9 @@ async fn run(
     tool: &str,
     args: Value,
     decide: Option<bool>,
-    auto_approve_writes: bool,
+    auto: bool,
 ) -> (DispatchOutcome, Vec<(String, Value)>) {
-    run_in(
-        registry,
-        "run-1",
-        tool,
-        args,
-        decide,
-        auto_approve_writes,
-        || {},
-    )
-    .await
+    run_in(registry, "run-1", tool, args, decide, auto, || {}).await
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -708,6 +720,69 @@ async fn a_declined_comment_is_never_posted() {
         requests(&log),
         vec!["GET /repos/octo-org/hello/issues/12".to_string()]
     );
+}
+
+/// The floor: in every mode a GitHub comment asks (and is never posted when declined);
+/// Plan mode does not offer it at all.
+#[tokio::test]
+async fn github_writes_ask_in_every_mode_and_plan_mode_hides_them() {
+    for mode in AgentMode::ALL {
+        let data = tempfile::tempdir().unwrap();
+        let (base, log) = serve(vec![Reply::json(200, issue_json(12, "Login fails"))]).await;
+        let fake = host(Some(session(
+            &base,
+            data.path(),
+            "file:///n/",
+            vec![grant("octo-org", "hello", true, true)],
+        )));
+        let registry = ask_registry(fake);
+        let (outcome, asked) = run_in_mode(
+            &registry,
+            "run-1",
+            GITHUB_COMMENT,
+            json!({"repo": "octo-org/hello", "number": 12, "body": "No"}),
+            Some(false),
+            mode,
+            || {},
+        )
+        .await;
+        assert!(!outcome.ok, "{mode:?}");
+        if mode == AgentMode::Plan {
+            assert!(asked.is_empty(), "{mode:?}");
+            assert!(
+                outcome
+                    .text_for_model
+                    .contains("not available in Plan mode"),
+                "{}",
+                outcome.text_for_model
+            );
+            assert!(requests(&log).is_empty());
+        } else {
+            assert_eq!(asked.len(), 1, "{mode:?}");
+            assert!(asked[0].1.get("allowForConversation").is_none());
+            assert_eq!(
+                requests(&log),
+                vec!["GET /repos/octo-org/hello/issues/12".to_string()],
+                "{mode:?}"
+            );
+        }
+        // Every write and destructive GitHub tool is decided the same way.
+        let profile = AgentProfile {
+            allowed_tools: all_names().iter().map(|s| s.to_string()).collect(),
+            mode,
+            ..AgentProfile::assistant()
+        };
+        for name in all_names() {
+            let tier = registry.describe(name).map(|(_, _, tier)| tier);
+            let Some(tier) = tier else { continue };
+            let offered = registry.offers(name, &profile);
+            assert_eq!(
+                offered,
+                tier == RiskTier::Read || mode != AgentMode::Plan,
+                "{mode:?} {name}"
+            );
+        }
+    }
 }
 
 /// The project's remote changes while the prompt waits: the comment still goes where the

@@ -281,6 +281,9 @@ impl HostTool for CreateFolderTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
+    fn edits_locally(&self) -> bool {
+        true
+    }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::CREATE_FOLDER;
         let target = create_folder_target(&self.host, tool, args).await?;

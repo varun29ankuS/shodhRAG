@@ -792,6 +792,7 @@ pub fn run() {
             app_settings::set_memory_preferences,
             app_settings::set_answer_preferences,
             app_settings::set_code_mode,
+            app_settings::set_default_agent_mode,
             // Desktop notifications (Settings → Notifications)
             notifications::set_notification_preferences,
             notifications::send_test_notification,

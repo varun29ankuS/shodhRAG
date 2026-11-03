@@ -410,6 +410,9 @@ impl HostTool for CreateSnippetTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
+    fn edits_locally(&self) -> bool {
+        true
+    }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let a = snippet_args(args)?;
         // The preview has no run context: a passage number is resolved when it runs.

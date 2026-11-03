@@ -195,6 +195,7 @@ pub fn add_exchange(
                 source: None,
                 seed: None,
                 about_file: None,
+                agent_mode: None,
             });
             conversations.len() - 1
         }

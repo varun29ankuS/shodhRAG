@@ -437,14 +437,14 @@ mod tests {
     async fn dispatch(
         tool: McpTool,
         args: Value,
-        auto_approve_writes: bool,
+        mode: AgentMode,
     ) -> (crate::harness::tools::DispatchOutcome, Vec<AgentEvent>) {
         let name = tool.name().to_string();
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(tool)).unwrap();
         let profile = AgentProfile {
             allowed_tools: vec![name.clone()],
-            auto_approve_writes,
+            mode,
             ..AgentProfile::assistant()
         };
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -677,7 +677,7 @@ mod tests {
                 is_error: false,
             },
         );
-        let (outcome, events) = dispatch(tool, json!({"q": "x"}), false).await;
+        let (outcome, events) = dispatch(tool, json!({"q": "x"}), AgentMode::Ask).await;
         assert!(outcome.ok, "{outcome:?}");
         assert!(outcome
             .text_for_model
@@ -702,7 +702,7 @@ mod tests {
                 is_error: false,
             },
         );
-        let (outcome, events) = dispatch(tool, json!({"q": "x"}), true).await;
+        let (outcome, events) = dispatch(tool, json!({"q": "x"}), AgentMode::Auto).await;
         assert!(!outcome.ok);
         assert!(outcome.text_for_model.starts_with("User declined"));
         assert!(events.iter().any(|e| matches!(
@@ -724,7 +724,7 @@ mod tests {
                 is_error: true,
             },
         );
-        let (outcome, _) = dispatch(tool, json!({"q": 5}), false).await;
+        let (outcome, _) = dispatch(tool, json!({"q": 5}), AgentMode::Ask).await;
         assert!(outcome.text_for_model.starts_with("Invalid arguments"));
         assert!(fake.calls.lock().unwrap().is_empty());
         let (tool, _) = one_tool(
@@ -734,7 +734,7 @@ mod tests {
                 is_error: true,
             },
         );
-        let (outcome, _) = dispatch(tool, json!({"q": "x"}), false).await;
+        let (outcome, _) = dispatch(tool, json!({"q": "x"}), AgentMode::Ask).await;
         assert!(!outcome.ok);
         assert_eq!(
             outcome.text_for_model,

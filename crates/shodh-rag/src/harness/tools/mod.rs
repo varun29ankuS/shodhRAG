@@ -13,6 +13,7 @@
 //! tool does not run.
 
 pub mod documents;
+pub mod mode;
 pub mod navigate;
 pub mod plan;
 pub mod search;
@@ -30,6 +31,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use super::events::{AgentEvent, NeedCheck, PlanItem, RiskTier};
+use super::modes::{self, Gate, ToolClass};
 use super::omp::{render_label, StepMeta, INVALID_ARGUMENTS_SUMMARY};
 use super::profile::AgentProfile;
 use super::protocol::{HostToolDefinition, OutboundFrame, ToolLoadMode, ToolResultPayload};
@@ -37,6 +39,16 @@ use super::truncate_chars;
 use crate::audit::{
     payload as audit_payload, AuditEventType, AuditLog, AuditScope, SYSTEM_PRINCIPAL,
 };
+
+/// What every system prompt adds after the mode's note: the mode is the
+/// user's to change.
+pub const MODE_IS_THE_USERS: &str =
+    " Only the user changes the mode, in the composer; never claim to have changed it.";
+
+/// Added when the session offers [`mode::SUGGEST_MODE`].
+pub const MODE_SUGGESTION: &str = " When another mode would suit the task better (Plan to look \
+     first, Accept edits or Auto to stop asking for every step), call suggest_mode once with the \
+     mode and one short reason: the user sees a button and decides.";
 
 /// How long an approval prompt waits before it counts as declined.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -559,6 +571,16 @@ pub trait HostTool: Send + Sync {
     }
     /// Whether it can do so without the user approving the call.
     fn changes_files_unasked(&self) -> bool {
+        false
+    }
+    /// Whether this `write` tool only changes the user's own data or files
+    /// on this computer, inside their library or workspace, in a way they
+    /// can take back (a task, an event, a workspace, a new folder or
+    /// document): the modes that accept edits ([`modes::AgentMode`]) run it
+    /// without asking. Ignored for the other tiers. `false` (the default)
+    /// asks in every mode: what leaves the computer, what Shodh cannot take
+    /// back, and what the user approves by design (memories) never sets it.
+    fn edits_locally(&self) -> bool {
         false
     }
     /// What the approval prompt shows. Runs after validation and before the
@@ -1174,7 +1196,7 @@ impl ToolRegistry {
     pub fn unasked_file_writer(&self, profile: &AgentProfile) -> Option<String> {
         self.tools
             .iter()
-            .find(|r| profile.allows(r.tool.name()) && r.tool.changes_files_unasked())
+            .find(|r| self.offered(r, profile) && r.tool.changes_files_unasked())
             .map(|r| r.tool.label().to_string())
     }
 
@@ -1187,11 +1209,36 @@ impl ToolRegistry {
         self.by_name.get(name).map(|&i| &self.tools[i])
     }
 
-    /// `set_host_tools` definitions for the tools a profile may use.
+    /// What the profile's mode does with a call of `tool`
+    /// ([`modes::decide`]), before the tool's own `must_confirm`.
+    fn gate(tool: &dyn HostTool, profile: &AgentProfile) -> Gate {
+        modes::decide(
+            profile.mode,
+            ToolClass::of(
+                tool.tier(),
+                tool.edits_locally(),
+                tool.changes_files_unasked(),
+            ),
+        )
+    }
+
+    /// Whether the model is given `r`: the profile allows it and its mode
+    /// does not hide it (Plan mode hides every tool that changes anything).
+    fn offered(&self, r: &Registered, profile: &AgentProfile) -> bool {
+        profile.allows(r.tool.name()) && Self::gate(r.tool.as_ref(), profile) != Gate::Hidden
+    }
+
+    /// Whether the model is given the tool `name` under `profile`.
+    pub fn offers(&self, name: &str, profile: &AgentProfile) -> bool {
+        self.get(name).is_some_and(|r| self.offered(r, profile))
+    }
+
+    /// `set_host_tools` definitions for the tools a profile may use in its
+    /// mode.
     pub fn definitions(&self, profile: &AgentProfile) -> Vec<HostToolDefinition> {
         self.tools
             .iter()
-            .filter(|r| profile.allows(r.tool.name()))
+            .filter(|r| self.offered(r, profile))
             .map(|r| HostToolDefinition {
                 name: r.tool.name().to_string(),
                 label: r.tool.label().to_string(),
@@ -1211,12 +1258,12 @@ impl ToolRegistry {
             "Your tools (exactly these; you have no other way to act on the user's computer, \
              files or the internet):\n",
         );
-        for r in self.tools.iter().filter(|r| profile.allows(r.tool.name())) {
-            let tier = match r.tool.tier() {
-                RiskTier::Read => "read",
-                RiskTier::Write if profile.auto_approve_writes => "write",
-                RiskTier::Write => "write, asks the user first",
-                RiskTier::Destructive => "destructive, always asks the user first",
+        for r in self.tools.iter().filter(|r| self.offered(r, profile)) {
+            let tier = match (r.tool.tier(), Self::gate(r.tool.as_ref(), profile)) {
+                (RiskTier::Read, _) => "read",
+                (RiskTier::Write, Gate::Run) => "write, runs without asking in this mode",
+                (RiskTier::Write, Gate::Ask | Gate::Hidden) => "write, asks the user first",
+                (RiskTier::Destructive, _) => "destructive, always asks the user first",
             };
             out.push_str(&format!(
                 "- {} ({tier}): {}\n",
@@ -1237,6 +1284,13 @@ impl ToolRegistry {
                  to the place in the app where they can do it themselves.\n",
             );
         }
+        out.push('\n');
+        out.push_str(profile.mode.prompt_note());
+        out.push_str(MODE_IS_THE_USERS);
+        if self.offers(mode::SUGGEST_MODE, profile) {
+            out.push_str(MODE_SUGGESTION);
+        }
+        out.push('\n');
         out
     }
 
@@ -1394,12 +1448,33 @@ impl ToolRegistry {
             });
         }
 
-        let needs_approval = match tool.tier() {
-            RiskTier::Read => false,
-            RiskTier::Write => !profile.auto_approve_writes,
-            RiskTier::Destructive => true,
+        let gate = Self::gate(tool.as_ref(), profile);
+        let needs_approval = match gate {
+            Gate::Run => false,
+            Gate::Ask => true,
+            Gate::Hidden => {
+                return Err(ToolError::Forbidden(format!(
+                    "{name} is not available in {}: it can change things, and this mode only \
+                     reads. Finish the plan instead; the user chooses the mode it runs in.",
+                    profile.mode.label()
+                )))
+            }
         };
         let confirm = !needs_approval && tool.must_confirm_in(&args, ctx).await?;
+        // A write the mode lets run is recorded as such, with the mode.
+        if !needs_approval && !confirm && tool.tier() != RiskTier::Read {
+            ctx.audit(
+                AuditEventType::Approval,
+                serde_json::json!({
+                    "tool": name,
+                    "label": render_label(tool.label_template(), &args),
+                    "decision": "auto_approved",
+                    "who": SYSTEM_PRINCIPAL,
+                    "mode": profile.mode.as_str(),
+                    "reason": modes::audit_reason(profile.mode, "an edit on this computer"),
+                }),
+            );
+        }
         let grant = if confirm {
             tool.session_grant(&args)
         } else {
@@ -1413,6 +1488,7 @@ impl ToolRegistry {
                     "label": render_label(tool.label_template(), &args),
                     "decision": "auto_approved",
                     "who": SYSTEM_PRINCIPAL,
+                    "mode": profile.mode.as_str(),
                     "reason": format!("allowed for this conversation ({})", grant.label),
                 }),
             );
@@ -1720,6 +1796,7 @@ pub(crate) fn req_str<'a>(args: &'a Value, key: &str, tool: &str) -> Result<&'a 
 mod tests {
     use super::*;
     use crate::harness::events::{PlanStatus, RiskTier};
+    use crate::harness::modes::AgentMode;
     use serde_json::json;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1884,6 +1961,10 @@ mod tests {
     struct Probe {
         tier: RiskTier,
         runs: Arc<AtomicU32>,
+        /// [`HostTool::edits_locally`].
+        local_edit: bool,
+        /// [`HostTool::changes_files_unasked`].
+        unasked: bool,
     }
 
     #[async_trait]
@@ -1911,6 +1992,12 @@ mod tests {
         fn tier(&self) -> RiskTier {
             self.tier
         }
+        fn edits_locally(&self) -> bool {
+            self.local_edit
+        }
+        fn changes_files_unasked(&self) -> bool {
+            self.unasked
+        }
         async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
             if args["target"] == "missing" {
                 return Err(ToolError::NotFound("No such target".into()));
@@ -1936,6 +2023,8 @@ mod tests {
         reg.register(Arc::new(Probe {
             tier,
             runs: runs.clone(),
+            local_edit: true,
+            unasked: false,
         }))
         .unwrap();
         reg.register(Arc::new(plan::UpdatePlanTool)).unwrap();
@@ -2111,7 +2200,7 @@ mod tests {
             tokio::spawn(async move {
                 // Destructive needs approval even when writes are auto-approved.
                 let p = AgentProfile {
-                    auto_approve_writes: true,
+                    mode: AgentMode::Auto,
                     ..profile(&["probe"])
                 };
                 reg.dispatch(call("probe", json!({"target": "x"})), &p, &gate, &ctx)
@@ -2163,7 +2252,7 @@ mod tests {
         let (reg, runs) = registry(RiskTier::Write);
         let (ctx, mut rx) = ctx();
         let p = AgentProfile {
-            auto_approve_writes: true,
+            mode: AgentMode::Auto,
             ..profile(&["probe"])
         };
         let outcome = reg
@@ -2177,6 +2266,164 @@ mod tests {
         assert!(outcome.ok);
         assert_eq!(runs.load(Ordering::SeqCst), 1);
         assert!(rx.try_recv().is_err());
+    }
+
+    /// A registry with one probe of `tier`, declared as a local edit or not, changing
+    /// files unasked or not.
+    fn probe_registry(
+        tier: RiskTier,
+        local_edit: bool,
+        unasked: bool,
+    ) -> (ToolRegistry, Arc<AtomicU32>) {
+        let runs = Arc::new(AtomicU32::new(0));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(Probe {
+            tier,
+            runs: runs.clone(),
+            local_edit,
+            unasked,
+        }))
+        .unwrap();
+        (reg, runs)
+    }
+
+    /// Dispatches one probe call in `mode`, answering a prompt with no. Returns whether
+    /// it asked, whether it ran, the outcome and the audit records.
+    async fn decided(
+        tier: RiskTier,
+        local_edit: bool,
+        unasked: bool,
+        mode: AgentMode,
+    ) -> (bool, bool, DispatchOutcome, Vec<Value>) {
+        let (reg, runs) = probe_registry(tier, local_edit, unasked);
+        use crate::audit::{AuditLog, AuditQuery, AuditRecord, AuditScope};
+        let reg = Arc::new(reg);
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let ctx = ToolContext::new("run-1", "step-1", tx).with_audit(Some(ToolAudit {
+            log: log.clone(),
+            scope: AuditScope {
+                principal: "local-owner".into(),
+                conversation_id: "conv-1".into(),
+                profile_id: "assistant".into(),
+            },
+        }));
+        let gate = Arc::new(ApprovalGate::default());
+        let p = AgentProfile {
+            mode,
+            ..profile(&["probe"])
+        };
+        let task = {
+            let (reg, gate) = (reg.clone(), gate.clone());
+            tokio::spawn(async move {
+                reg.dispatch(call("probe", json!({"target": "x"})), &p, &gate, &ctx)
+                    .await
+            })
+        };
+        let mut asked = false;
+        while let Some(event) = rx.recv().await {
+            if matches!(event, AgentEvent::ApprovalRequested { .. }) {
+                asked = true;
+                gate.resolve("step-1", false).unwrap();
+            }
+        }
+        let outcome = task.await.unwrap();
+        // A blocking append is queued behind the submitted events.
+        log.append(AuditRecord::new(AuditEventType::Question, json!({})))
+            .unwrap();
+        let approvals = log
+            .query(&AuditQuery::default())
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.event_type == "approval")
+            .map(|r| r.payload)
+            .collect();
+        (asked, runs.load(Ordering::SeqCst) == 1, outcome, approvals)
+    }
+
+    #[tokio::test]
+    async fn every_mode_decides_every_risk_tier() {
+        // (tier, local edit, changes files unasked) → per mode: Run, Ask or Hidden.
+        type Row = (RiskTier, bool, bool, [Gate; 4]);
+        use Gate::{Ask, Hidden, Run};
+        // Order: Ask, AcceptEdits, Plan, Auto (AgentMode::ALL).
+        let rows: [Row; 6] = [
+            (RiskTier::Read, false, false, [Run, Run, Run, Run]),
+            (RiskTier::Read, false, true, [Run, Run, Hidden, Run]),
+            (RiskTier::Write, true, false, [Ask, Run, Hidden, Run]),
+            (RiskTier::Write, false, false, [Ask, Ask, Hidden, Ask]),
+            (RiskTier::Destructive, false, false, [Ask, Ask, Hidden, Ask]),
+            (RiskTier::Destructive, true, false, [Ask, Ask, Hidden, Ask]),
+        ];
+        for (tier, local_edit, unasked, gates) in rows {
+            for (mode, gate) in AgentMode::ALL.into_iter().zip(gates) {
+                let (asked, ran, outcome, approvals) =
+                    decided(tier, local_edit, unasked, mode).await;
+                let case = format!("{tier:?} local_edit={local_edit} unasked={unasked} {mode:?}");
+                match gate {
+                    Run => {
+                        assert!(!asked && ran && outcome.ok, "{case}");
+                        // A write the mode let run is in Activity, with the mode.
+                        if tier != RiskTier::Read {
+                            assert_eq!(approvals.len(), 1, "{case}");
+                            assert_eq!(approvals[0]["decision"], "auto_approved", "{case}");
+                            assert_eq!(approvals[0]["mode"], mode.as_str(), "{case}");
+                        } else {
+                            assert!(approvals.is_empty(), "{case}");
+                        }
+                    }
+                    Ask => {
+                        assert!(asked && !ran && !outcome.ok, "{case}");
+                        assert_eq!(approvals[0]["decision"], "denied", "{case}");
+                    }
+                    Hidden => {
+                        assert!(!asked && !ran && !outcome.ok, "{case}");
+                        assert!(
+                            outcome
+                                .text_for_model
+                                .contains("not available in Plan mode"),
+                            "{case}: {}",
+                            outcome.text_for_model
+                        );
+                        assert!(approvals.is_empty(), "{case}");
+                    }
+                }
+                let (reg, _) = probe_registry(tier, local_edit, unasked);
+                let p = AgentProfile {
+                    mode,
+                    ..profile(&["probe"])
+                };
+                assert_eq!(reg.offers("probe", &p), gate != Hidden, "{case}");
+                assert_eq!(
+                    reg.definitions(&p).len(),
+                    usize::from(gate != Hidden),
+                    "{case}"
+                );
+                let manifest = reg.capability_manifest(&p, &[]);
+                assert_eq!(manifest.contains("- probe ("), gate != Hidden, "{case}");
+                assert!(manifest.contains(mode.prompt_note()), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_manifest_names_suggest_mode_only_when_it_is_offered() {
+        let (reg, _) = registry(RiskTier::Read);
+        let p = profile(&["probe"]);
+        let manifest = reg.capability_manifest(&p, &[]);
+        assert!(manifest.contains(MODE_IS_THE_USERS));
+        assert!(!manifest.contains("suggest_mode"));
+        let mut reg = reg;
+        reg.register(Arc::new(mode::SuggestModeTool)).unwrap();
+        for m in AgentMode::ALL {
+            let p = AgentProfile {
+                mode: m,
+                ..profile(&["probe", mode::SUGGEST_MODE])
+            };
+            assert!(reg.offers(mode::SUGGEST_MODE, &p), "{m:?}");
+            assert!(reg.capability_manifest(&p, &[]).contains(MODE_SUGGESTION));
+        }
     }
 
     #[tokio::test]

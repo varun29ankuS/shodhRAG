@@ -52,6 +52,7 @@ use serde_json::{json, Value};
 
 use super::error::HarnessError;
 use super::events::RiskTier;
+use super::modes::{self, AgentMode, CommandGate, Gate};
 use super::omp::StepMeta;
 use super::profile::DIAGRAM_GUIDE;
 use super::sidecar::Thinking;
@@ -65,6 +66,20 @@ pub const CODE_TOOLS: [&str; 6] = ["read", "grep", "glob", "ast_grep", "edit", "
 
 /// omp tools that change files; the guard asks for each call.
 pub const CHANGE_TOOLS: [&str; 2] = ["edit", "write"];
+
+/// omp's tools a Code session has in a mode that only reads
+/// ([`super::modes::AgentMode::Plan`]): [`CODE_TOOLS`] without
+/// [`CHANGE_TOOLS`], and no `run_command`.
+pub const READ_TOOLS: [&str; 4] = ["read", "grep", "glob", "ast_grep"];
+
+/// omp's tools of a Code session that only reads (`reads_only`) or not.
+pub fn omp_tools(reads_only: bool) -> &'static [&'static str] {
+    if reads_only {
+        &READ_TOOLS
+    } else {
+        &CODE_TOOLS
+    }
+}
 
 /// omp's tools that run programs or other agents (omp 18.4.10's
 /// `BUILTIN_TOOL_NAMES` and its extra tools). A Code session must offer none
@@ -115,6 +130,10 @@ pub const ALLOW_ANSWER: &str = "allow";
 
 /// Environment variable carrying the code folder to the guard.
 pub const CODE_ROOT_ENV: &str = "SHODH_CODE_ROOT";
+
+/// Environment variable telling the guard the session only reads (`1`): it
+/// blocks every edit and write without asking.
+pub const READS_ONLY_ENV: &str = "SHODH_READS_ONLY";
 
 /// Pins omp's edit tool to single-file replace edits (`path`, `old_string`,
 /// `new_string`), whose target the guard can check. The default hashline
@@ -305,7 +324,8 @@ fn insert_path(map: &mut serde_json::Map<String, Value>, key: &str, value: Value
 
 /// Launch flags of a Code session. Unlike Research sessions, omp's dialog
 /// channel stays on (no `--no-ui`): approvals travel over it. Reasoning
-/// follows the same setting as Research sessions ([`Thinking`]).
+/// follows the same setting as Research sessions ([`Thinking`]). A session
+/// that only reads (`reads_only`) gets only omp's reading tools.
 pub fn code_launch_args(
     model_arg: &str,
     base_overlay: &Path,
@@ -313,6 +333,7 @@ pub fn code_launch_args(
     guard_hook: &Path,
     system_prompt: &str,
     thinking: Thinking,
+    reads_only: bool,
 ) -> Vec<String> {
     let mut args: Vec<String> = [
         "--mode",
@@ -330,7 +351,7 @@ pub fn code_launch_args(
     .iter()
     .map(|s| s.to_string())
     .collect();
-    args.push(format!("--tools={}", CODE_TOOLS.join(",")));
+    args.push(format!("--tools={}", omp_tools(reads_only).join(",")));
     args.push(format!("--hook={}", guard_hook.display()));
     args.push(format!("--model={model_arg}"));
     args.push(format!("--config={}", base_overlay.display()));
@@ -355,29 +376,53 @@ guessing. Use only what enola reported.";
 
 /// The system prompt of a Code session. `instructions` are the
 /// conversation's own (they never override the rules).
-pub fn code_system_prompt(folder: &CodeFolder, instructions: Option<&str>) -> String {
-    let mut prompt = format!(
-        "You are Shodh's coding assistant, working in the code folder {folder}.\n\
-         \n\
-         Tools: read (files), grep (text search), glob (find files), ast_grep (syntax-aware \
-         search), edit (replace old_string with new_string in one file), write (create or \
-         replace a whole file) and run_command (run one bash command in the code folder, in \
-         its own process with a time limit; anything it starts in the background is stopped \
-         when it ends).\n\
-         \n\
-         Rules:\n\
-         - Work only inside the code folder. Paths outside it, URLs and other resources are \
-         blocked.\n\
-         - Edits, writes and commands may wait for the user's approval (the workspace's \
-         approval level decides; destructive commands always do). If one is declined, do not \
-         try it another way: say what you wanted to do and ask how to continue.\n\
-         - Read the relevant code before changing it, keep changes small and focused, and say \
-         what you changed and how to check it.\n\
-         - Prefer edit for changes to existing files; use write for new files.\n\
-         - Avoid destructive commands (deleting files, resetting or rewriting git history, \
-         force-pushing). Never commit or push unless the user asks.",
-        folder = folder.display()
-    );
+pub fn code_system_prompt(
+    folder: &CodeFolder,
+    instructions: Option<&str>,
+    mode: AgentMode,
+) -> String {
+    let mut prompt = if mode.reads_only() {
+        format!(
+            "You are Shodh's coding assistant, looking at the code folder {folder}.\n\
+             \n\
+             Tools: read (files), grep (text search), glob (find files) and ast_grep \
+             (syntax-aware search). You cannot edit, write or run commands in this mode.\n\
+             \n\
+             Rules:\n\
+             - Work only inside the code folder. Paths outside it, URLs and other resources \
+             are blocked.\n\
+             - Read the relevant code before planning a change, and name the files and \
+             commands each step involves.",
+            folder = folder.display()
+        )
+    } else {
+        format!(
+            "You are Shodh's coding assistant, working in the code folder {folder}.\n\
+             \n\
+             Tools: read (files), grep (text search), glob (find files), ast_grep (syntax-aware \
+             search), edit (replace old_string with new_string in one file), write (create or \
+             replace a whole file) and run_command (run one bash command in the code folder, in \
+             its own process with a time limit; anything it starts in the background is stopped \
+             when it ends).\n\
+             \n\
+             Rules:\n\
+             - Work only inside the code folder. Paths outside it, URLs and other resources are \
+             blocked.\n\
+             - Edits, writes and commands may wait for the user's approval (the mode the user \
+             chose decides; destructive commands always do). If one is declined, do not try it \
+             another way: say what you wanted to do and ask how to continue.\n\
+             - Read the relevant code before changing it, keep changes small and focused, and say \
+             what you changed and how to check it.\n\
+             - Prefer edit for changes to existing files; use write for new files.\n\
+             - Avoid destructive commands (deleting files, resetting or rewriting git history, \
+             force-pushing). Never commit or push unless the user asks.",
+            folder = folder.display()
+        )
+    };
+    prompt.push_str("\n\n");
+    prompt.push_str(mode.prompt_note());
+    prompt.push_str(super::tools::MODE_IS_THE_USERS);
+    prompt.push_str(super::tools::MODE_SUGGESTION);
     prompt.push_str("\n\n");
     prompt.push_str(DIAGRAM_GUIDE);
     prompt.push_str(CODE_DIAGRAMS);
@@ -428,9 +473,22 @@ pub fn code_catalog() -> HashMap<String, StepMeta> {
 /// omp's tools that run programs ([`OMP_EXECUTION_TOOLS`]), whatever the
 /// host tools are called. A runtime that adds an execution tool fails this.
 pub fn inventory_matches(tools: &[String], host: &[String]) -> bool {
+    inventory_matches_in(tools, host, false)
+}
+
+/// [`inventory_matches`] for a session that only reads (`reads_only`):
+/// exactly [`READ_TOOLS`] plus the host tools, and no `run_command`, neither
+/// registered nor offered.
+pub fn inventory_matches_in(tools: &[String], host: &[String], reads_only: bool) -> bool {
     let run_command = super::run_command::RUN_COMMAND;
-    if !host.iter().any(|name| name == run_command)
-        || !tools.iter().any(|name| name == run_command)
+    let registered = host.iter().any(|name| name == run_command);
+    let offered = tools.iter().any(|name| name == run_command);
+    let commands_fit = if reads_only {
+        !registered && !offered
+    } else {
+        registered && offered
+    };
+    if !commands_fit
         || tools
             .iter()
             .chain(host)
@@ -441,7 +499,7 @@ pub fn inventory_matches(tools: &[String], host: &[String]) -> bool {
     let mut have: Vec<&str> = tools.iter().map(String::as_str).collect();
     have.sort_unstable();
     have.dedup();
-    let mut want: Vec<&str> = CODE_TOOLS
+    let mut want: Vec<&str> = omp_tools(reads_only)
         .iter()
         .copied()
         .chain(host.iter().map(String::as_str))
@@ -518,22 +576,14 @@ pub fn parse_guard_request(
     })
 }
 
-// ── Approval levels ────────────────────────────────────────────────────────
-
-/// How much of a workspace's Code work runs without asking.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ApprovalLevel {
-    /// Every edit, write and command asks (the default).
-    #[default]
-    AskEveryTime,
-    /// Edits and writes run by themselves while the conversation's branch is
-    /// their undo; commands still ask.
-    AutoApplyEdits,
-    /// As [`ApprovalLevel::AutoApplyEdits`], and commands that are exactly
-    /// one of the allowlist's run by themselves.
-    Trusted,
-}
+// ── Approvals ──────────────────────────────────────────────────────────────
+//
+// How much runs without asking is the conversation's mode
+// ([`super::modes::AgentMode`]), chosen by the user per conversation. A
+// workspace adds its own list of commands Auto mode runs besides the ones its
+// rules recognise ([`CodeSettings::allowlist`]). Files saved by earlier
+// versions may still name a workspace approval level (`approval`); it is
+// ignored, so such a workspace asks until the user picks a mode.
 
 /// The commands a new workspace trusts.
 pub const DEFAULT_ALLOWLIST: [&str; 3] = ["cargo test", "npm test", "pytest"];
@@ -562,9 +612,9 @@ pub const CPU_PERCENT_RANGE: std::ops::RangeInclusive<u32> = 10..=100;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CodeSettings {
-    pub approval: ApprovalLevel,
-    /// Commands that run without asking at [`ApprovalLevel::Trusted`], each
-    /// exactly as listed (words separated by any whitespace).
+    /// Commands that run without asking in Auto mode besides the ones its
+    /// rules recognise ([`super::modes::rules`]), each exactly as listed
+    /// (words separated by any whitespace).
     pub allowlist: Vec<String>,
     /// Longest a command may run, in seconds ([`COMMAND_TIMEOUT_RANGE`]); the
     /// model may ask for less, never more.
@@ -580,7 +630,6 @@ pub struct CodeSettings {
 impl Default for CodeSettings {
     fn default() -> Self {
         Self {
-            approval: ApprovalLevel::default(),
             allowlist: DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
             command_timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
             memory_limit_mb: DEFAULT_MEMORY_LIMIT_MB,
@@ -1285,6 +1334,10 @@ pub const REVIEW_NOTE_KEY: &str = "review_note";
 /// it (the Inbox, a keyboard shortcut) runs the command and clears nothing.
 pub const REVIEW_TOKEN_KEY: &str = "review_token";
 
+/// Preview key of why Auto mode asks about a command it does not run by
+/// itself, in plain words.
+pub const AUTO_MODE_KEY: &str = "auto_mode";
+
 /// What is going on in the session that bears on a guarded call.
 #[derive(Debug, Clone, Copy)]
 pub struct GateContext<'a> {
@@ -1296,6 +1349,10 @@ pub struct GateContext<'a> {
     /// An MCP tool of the session that can change files without asking (its
     /// name): omp runs it in the same step as a command, at the same time.
     pub unasked_writer: Option<&'a str>,
+    /// Why what is around a command Auto mode recognises makes it ask
+    /// ([`command_surroundings`]): a file it shows leads outside the project,
+    /// or git's settings name a program.
+    pub command_problem: Option<&'a str>,
 }
 
 /// Command arguments that do nothing when given as these (some model layers
@@ -1438,34 +1495,88 @@ pub fn starts_background(command: &str) -> bool {
     })
 }
 
-/// Whether Trusted would run this command without asking if nothing were
-/// listed as unreviewed: exactly an allowlist entry with no other argument,
-/// not destructive, starting nothing meant to keep running. Only approving
-/// such a command marks files reviewed: it is the action the list protects.
+/// A command Auto mode may run without asking, as far as its words go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoCommand {
+    /// What it is, in plain words ("a test command").
+    pub what: &'static str,
+    /// It runs git ([`modes::rules::Rule::git`]).
+    pub git: bool,
+    /// What it reads and shows, relative to the code folder
+    /// ([`modes::rules::Rule::reads`]).
+    pub reads: Vec<String>,
+}
+
+/// Whether Auto mode would run this command without asking if nothing were
+/// listed as unreviewed: one that Shodh's rules recognise
+/// ([`modes::rules::check`]) or exactly a workspace list entry with no other
+/// argument, not destructive, starting nothing meant to keep running, with
+/// no argument but the command. `Err` says why it asks, in plain words.
+pub fn auto_command(
+    settings: &CodeSettings,
+    request: &GuardRequest,
+    plan: &ChangePlan,
+) -> Result<AutoCommand, String> {
+    let command = str_arg(&request.input, "command");
+    if request.tool != super::run_command::RUN_COMMAND {
+        return Err("it is not a command".to_string());
+    }
+    if let ChangePlan::Refuse(reason) = plan {
+        return Err(reason.clone());
+    }
+    if let Some(reason) = destructive_reason(command) {
+        return Err(format!(
+            "it is destructive ({})",
+            reason.trim_end_matches('.')
+        ));
+    }
+    if starts_background(command) {
+        return Err("it starts something that keeps running".to_string());
+    }
+    if !plain_command_input(&request.input) {
+        return Err("it asks for its own time limit".to_string());
+    }
+    if settings.allows(command) {
+        // A listed entry is a whole command of plain words: whether it is git
+        // decides the git settings check.
+        let git = command.split([' ', '\t']).find(|w| !w.is_empty()) == Some("git");
+        return Ok(AutoCommand {
+            what: "a command on the workspace's list",
+            git,
+            reads: Vec::new(),
+        });
+    }
+    modes::rules::check(command).map(|rule| AutoCommand {
+        what: rule.what,
+        git: rule.git,
+        reads: rule.reads,
+    })
+}
+
+/// Whether Auto mode would run this command by itself if nothing were listed
+/// as unreviewed ([`auto_command`]). Only approving such a command marks
+/// files reviewed: it is the action the list protects.
 pub fn command_eligible(
     settings: &CodeSettings,
     request: &GuardRequest,
     plan: &ChangePlan,
 ) -> bool {
-    let command = str_arg(&request.input, "command");
-    request.tool == super::run_command::RUN_COMMAND
-        && !matches!(plan, ChangePlan::Refuse(_))
-        && destructive_reason(command).is_none()
-        && !starts_background(command)
-        && plain_command_input(&request.input)
-        && settings.allows(command)
+    auto_command(settings, request, plan).is_ok()
 }
 
-/// Why a guarded call may run without asking under `settings`, or `None`
-/// when the user decides. Destructive commands always ask. Edits run by
-/// themselves only while a branch can undo them, only in files that cannot
-/// run programs (`target`, [`change_target`]) and only while no command of
-/// the conversation is running (or, from before commands ran in their own
-/// process, may still be). An allowlisted command ([`command_eligible`])
-/// runs by itself only while the user has seen every change
-/// ([`ReviewState::is_clear`]), nothing else is running and no MCP tool can
-/// change files without asking.
+/// Why a guarded call may run without asking in `mode`, or `None` when the
+/// user decides. Destructive commands always ask. Edits run by themselves
+/// only in the modes that accept edits ([`modes::code_edits`]), only while a
+/// branch can undo them, only in files that cannot run programs (`target`,
+/// [`change_target`]) and only while no command of the conversation is
+/// running (or, from before commands ran in their own process, may still
+/// be). A command runs by itself only in Auto mode ([`modes::code_commands`])
+/// when it is one Auto mode recognises ([`auto_command`]), while the user has
+/// seen every change ([`ReviewState::is_clear`]), nothing else is running, no
+/// MCP tool can change files without asking and nothing around the command
+/// makes it ask ([`GateContext::command_problem`]).
 pub fn auto_approval(
+    mode: AgentMode,
     settings: &CodeSettings,
     request: &GuardRequest,
     plan: &ChangePlan,
@@ -1475,20 +1586,200 @@ pub fn auto_approval(
     let undoable = matches!(plan, ChangePlan::Continue(_) | ChangePlan::CreateBranch);
     match request.tool.as_str() {
         "edit" | "write" => (undoable
-            && settings.approval != ApprovalLevel::AskEveryTime
+            && modes::code_edits(mode) == Gate::Run
             && target == ChangeTarget::Plain
             && gate.review.background.is_empty()
             && gate.running.is_none())
-        .then_some("the workspace applies edits automatically"),
-        tool if tool == super::run_command::RUN_COMMAND => (settings.approval
-            == ApprovalLevel::Trusted
+        .then_some("edits run without asking in this mode"),
+        tool if tool == super::run_command::RUN_COMMAND => (modes::code_commands(mode)
+            == CommandGate::Rules
             && command_eligible(settings, request, plan)
             && gate.review.is_clear()
             && gate.running.is_none()
-            && gate.unasked_writer.is_none())
-        .then_some("the command is on the workspace's allowlist"),
+            && gate.unasked_writer.is_none()
+            && gate.command_problem.is_none())
+        .then_some("Auto mode runs this command without asking"),
         _ => None,
     }
+}
+
+/// Why Auto mode asks about a command whose words it recognises
+/// ([`auto_command`]), from what is around it, or `None`. Every file a
+/// read-only command shows must resolve inside `folder`, links included (a
+/// link to a key elsewhere would send it to the model unasked); a git
+/// command runs by itself only while the git settings it reads name no
+/// program ([`git_config_problem`]). `home` is the commands' home folder.
+pub fn command_surroundings(folder: &Path, home: &Path, command: &AutoCommand) -> Option<String> {
+    for read in &command.reads {
+        if !resolves_inside(folder, read) {
+            return Some(format!("{read} leads outside the project"));
+        }
+    }
+    if command.git {
+        return git_config_problem(folder, home);
+    }
+    None
+}
+
+/// Whether `relative` (a path the command names, relative to `folder`)
+/// resolves inside `folder`, links followed. A path that does not exist
+/// resolves inside when its existing parent does.
+fn resolves_inside(folder: &Path, relative: &str) -> bool {
+    let Ok(root) = std::fs::canonicalize(folder) else {
+        return false;
+    };
+    let mut candidate = folder.join(relative);
+    loop {
+        match std::fs::canonicalize(&candidate) {
+            Ok(resolved) => return resolved.starts_with(&root),
+            Err(_) => match candidate.parent() {
+                Some(parent) if parent != candidate.as_path() => candidate = parent.to_path_buf(),
+                _ => return false,
+            },
+        }
+    }
+}
+
+/// git settings that name no program, by section (and, for a section with
+/// subsections, its key): every other setting of the repository or of the
+/// commands' home makes git commands ask, because git may run a program it
+/// names (`core.fsmonitor`, `core.pager`, `diff.<driver>.textconv`,
+/// `alias.*`, `include.path`, ...).
+const SAFE_GIT_KEYS: &[&str] = &[
+    "core.repositoryformatversion",
+    "core.filemode",
+    "core.bare",
+    "core.logallrefupdates",
+    "core.symlinks",
+    "core.ignorecase",
+    "core.precomposeunicode",
+    "core.autocrlf",
+    "core.eol",
+    "core.safecrlf",
+    "core.longpaths",
+    "core.quotepath",
+    "core.checkstat",
+    "core.trustctime",
+    "core.untrackedcache",
+    "core.abbrev",
+    "user.name",
+    "user.email",
+    "commit.gpgsign",
+    "tag.gpgsign",
+    "init.defaultbranch",
+    "extensions.worktreeconfig",
+    "extensions.objectformat",
+    "pull.rebase",
+    "pull.ff",
+    "push.default",
+    "push.autosetupremote",
+    "fetch.prune",
+    "gc.auto",
+    "index.version",
+    "status.showuntrackedfiles",
+];
+
+/// Subsection keys that name no program (`remote.<name>.url`).
+const SAFE_GIT_SUBSECTION_KEYS: &[(&str, &str)] = &[
+    ("remote", "url"),
+    ("remote", "fetch"),
+    ("remote", "pushurl"),
+    ("remote", "tagopt"),
+    ("remote", "prune"),
+    ("branch", "remote"),
+    ("branch", "merge"),
+    ("branch", "rebase"),
+    ("branch", "pushremote"),
+    ("submodule", "url"),
+    ("submodule", "active"),
+    ("submodule", "branch"),
+];
+
+/// Whether the git setting `key` (as `git config --name-only` lists it)
+/// names no program.
+pub fn safe_git_key(key: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    if SAFE_GIT_KEYS.contains(&key.as_str()) || key.starts_with("color.") {
+        return true;
+    }
+    match (key.split_once('.'), key.rsplit_once('.')) {
+        (Some((section, _)), Some((_, name))) => SAFE_GIT_SUBSECTION_KEYS
+            .iter()
+            .any(|(s, n)| *s == section && *n == name && key.matches('.').count() >= 2),
+        _ => false,
+    }
+}
+
+/// Why git commands ask in Auto mode: a setting of the repository (its
+/// config and the work tree's) or of the commands' `home` (`.gitconfig` and
+/// `.config/git/config`, which an earlier command can write) that may name a
+/// program, or settings Shodh cannot read. `None` when every one is safe
+/// ([`safe_git_key`]). The system's and the user's own settings are theirs.
+pub fn git_config_problem(folder: &Path, home: &Path) -> Option<String> {
+    let mut listed =
+        match config_values(folder, &["--local", "--includes", "--name-only", "--list"]) {
+            Ok(listed) => listed,
+            Err(e) => {
+                return Some(format!(
+                    "Shodh could not read the repository's git settings ({e})"
+                ))
+            }
+        };
+    match config_values(
+        folder,
+        &["--local", "--bool", "--get", "extensions.worktreeConfig"],
+    ) {
+        Ok(value) if value.trim() == "true" => {
+            match config_values(
+                folder,
+                &["--worktree", "--includes", "--name-only", "--list"],
+            ) {
+                Ok(more) => listed.push_str(&more),
+                Err(e) => {
+                    return Some(format!(
+                        "Shodh could not read the work tree's git settings ({e})"
+                    ))
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Some(format!(
+                "Shodh could not read the repository's git settings ({e})"
+            ))
+        }
+    }
+    for file in [
+        home.join(".gitconfig"),
+        home.join(".config").join("git").join("config"),
+    ] {
+        if !file.exists() {
+            continue;
+        }
+        let path = file.display().to_string();
+        match config_values(
+            folder,
+            &[
+                "--file",
+                path.as_str(),
+                "--includes",
+                "--name-only",
+                "--list",
+            ],
+        ) {
+            Ok(more) => listed.push_str(&more),
+            Err(e) => {
+                return Some(format!(
+                    "Shodh could not read the git settings in this conversation's home ({e})"
+                ))
+            }
+        }
+    }
+    listed
+        .lines()
+        .map(str::trim)
+        .find(|key| !key.is_empty() && !safe_git_key(key))
+        .map(|key| format!("git's settings name {key}, which can run a program"))
 }
 
 /// Add what the session knows to a prompt. A command prompt gets the files
@@ -1568,7 +1859,8 @@ pub fn note_review(
     } else {
         note.push_str(
             "Approving this command does not mark them reviewed; only approving a command \
-             on the workspace's allowlist does.",
+             Auto mode recognises (a test, build or linter, or one on the workspace's list) \
+             does.",
         );
     }
     map.insert(REVIEW_NOTE_KEY.to_string(), json!(note));

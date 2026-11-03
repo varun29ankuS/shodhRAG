@@ -165,8 +165,8 @@ pub fn tool_group(name: &str) -> &'static str {
         | "open_visual"
         | "revise_visual"
         | "organize_visual" => "Conversations and visuals",
-        "update_plan" | "open_view" | "show_audit" | "audit_query" | "get_settings"
-        | "update_setting" => "App",
+        "update_plan" | "suggest_mode" | "open_view" | "show_audit" | "audit_query"
+        | "get_settings" | "update_setting" => "App",
         name if name.starts_with("github_") => "GitHub",
         _ => "Other",
     }

@@ -324,6 +324,7 @@ pub fn server_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::modes::AgentMode;
     use crate::harness::profile::AgentProfile;
     use crate::harness::tools::{ApprovalGate, ToolCall, ToolRegistry};
     use crate::harness::AgentEvent;

@@ -12,6 +12,7 @@
 //! | [`AgentMode::AcceptEdits`] | + edits inside the project or workspace | commands, anything leaving the computer |
 //! | [`AgentMode::Plan`] | reads only: tools that change anything are not given to the model | — (the user approves the plan, then picks the mode it runs in) |
 //! | [`AgentMode::Auto`] | + commands that match Shodh's rules ([`rules`]): ones that only inspect everywhere; builds and tests where commands are sandboxed, in a workspace the user trusts, or after the conversation's first was approved | every other command, anything leaving the computer |
+//! | [`AgentMode::Creator`] | inside the conversation's own creation folder only: creating and editing files; where commands are sandboxed (the sandbox can change only that folder), its commands too | package installs (they reach the network), every command where commands are not sandboxed, anything outside the folder, anything leaving the computer |
 //!
 //! The floor no mode removes: destructive tools, tools that always confirm
 //! ([`super::tools::HostTool::must_confirm_in`]: GitHub pushes, pull
@@ -22,6 +23,7 @@
 //! Every decision is an exhaustive `match` on the mode (no wildcard arm), so a
 //! new mode fails to compile until each decision says what it does.
 
+pub mod installs;
 pub mod rules;
 #[cfg(test)]
 mod tests;
@@ -43,11 +45,29 @@ pub enum AgentMode {
     Plan,
     /// Edits and the commands Shodh's rules recognise as low-risk also run.
     Auto,
+    /// Builds what the user asks for in a fresh creation folder of its own,
+    /// without clarifying questions: files there are made without asking, and
+    /// commands there too where commands are sandboxed.
+    Creator,
 }
 
 impl AgentMode {
-    /// Every mode, in the order the picker shows and Shift+Tab cycles them.
-    pub const ALL: [AgentMode; 4] = [
+    /// Every mode, in the order the picker shows them (Shift+Tab cycles only
+    /// Ask, Accept edits and Plan; Auto and Creator each need a confirming
+    /// click).
+    pub const ALL: [AgentMode; 5] = [
+        AgentMode::Ask,
+        AgentMode::AcceptEdits,
+        AgentMode::Plan,
+        AgentMode::Auto,
+        AgentMode::Creator,
+    ];
+
+    /// The modes the agent may suggest (`suggest_mode`) and the user may make
+    /// the default in Settings: every mode but Creator, which starts a
+    /// creation folder of its own and is only ever picked for one
+    /// conversation, by the user.
+    pub const SUGGESTABLE: [AgentMode; 4] = [
         AgentMode::Ask,
         AgentMode::AcceptEdits,
         AgentMode::Plan,
@@ -61,6 +81,7 @@ impl AgentMode {
             AgentMode::AcceptEdits => "acceptEdits",
             AgentMode::Plan => "plan",
             AgentMode::Auto => "auto",
+            AgentMode::Creator => "creator",
         }
     }
 
@@ -76,6 +97,7 @@ impl AgentMode {
             AgentMode::AcceptEdits => "Accept edits mode",
             AgentMode::Plan => "Plan mode",
             AgentMode::Auto => "Auto mode",
+            AgentMode::Creator => "Creator mode",
         }
     }
 
@@ -84,7 +106,16 @@ impl AgentMode {
     pub fn reads_only(self) -> bool {
         match self {
             AgentMode::Plan => true,
-            AgentMode::Ask | AgentMode::AcceptEdits | AgentMode::Auto => false,
+            AgentMode::Ask | AgentMode::AcceptEdits | AgentMode::Auto | AgentMode::Creator => false,
+        }
+    }
+
+    /// Whether the mode works in a creation folder of its own (the
+    /// conversation's, never a workspace's).
+    pub fn creates(self) -> bool {
+        match self {
+            AgentMode::Creator => true,
+            AgentMode::Ask | AgentMode::AcceptEdits | AgentMode::Plan | AgentMode::Auto => false,
         }
     }
 
@@ -110,9 +141,26 @@ impl AgentMode {
                  waits for the user's approval. Run one plain command per call: chained, piped \
                  or redirected commands always ask."
             }
+            AgentMode::Creator => CREATOR_NOTE,
         }
     }
 }
+
+/// What a Creator mode answer is told: build it end to end, no questions,
+/// then say what was chosen.
+pub const CREATOR_NOTE: &str = "Mode: Creator. Build what the user asked for, end to end, in \
+     this creation folder, which is new and only for this request. Do not ask clarifying \
+     questions: when something is not specified, pick a sensible default (the simplest \
+     well-known way that runs without a server: plain HTML, CSS and JavaScript for anything \
+     shown in a browser, with index.html at the top of the folder) and carry on. Creating and \
+     editing files in this folder runs without asking. Where commands are sandboxed, commands in \
+     this folder run without asking too; elsewhere every command waits for the user's approval, \
+     so run only the commands the build needs. Package installs reach the network, so they \
+     always wait for the user's approval: prefer no dependencies. Anything outside this folder \
+     is blocked, and anything that leaves this computer waits for the user's approval. When the \
+     build is done, check it, then call finish_creation once with a one-line summary and every \
+     choice you made that the user did not specify, and end your answer with a short section \
+     headed \"Here's what I chose\" listing those choices.";
 
 /// What a Plan mode answer is told: investigate, then write the plan.
 const PLAN_NOTE: &str = "Mode: Plan. You can only read and search: tools that change anything \
@@ -182,15 +230,26 @@ pub fn decide(mode: AgentMode, class: ToolClass) -> Gate {
             | ToolClass::Write
             | ToolClass::Destructive => Gate::Hidden,
         },
+        // What runs without asking in Creator mode is the guarded work inside
+        // its folder ([`code_edits`], [`code_commands`]). A host tool's local
+        // edit (a folder in the library, an export, a conversation's folder)
+        // lands outside it, so it asks.
+        AgentMode::Creator => match class {
+            ToolClass::Read | ToolClass::UserAllowed => Gate::Run,
+            ToolClass::LocalEdit | ToolClass::Write | ToolClass::Destructive => Gate::Ask,
+        },
     }
 }
 
-/// Whether a Code session's edits and writes (in files that cannot run
-/// programs, while a branch can undo them) run without asking.
+/// Whether a Code session's edits and writes run without asking: in the
+/// modes that accept edits, files that cannot run programs while a branch can
+/// undo them; in Creator mode, any file inside the creation folder (the guard
+/// blocks every path outside it, links followed). See
+/// [`super::code_mode::auto_approval`].
 pub fn code_edits(mode: AgentMode) -> Gate {
     match mode {
         AgentMode::Ask => Gate::Ask,
-        AgentMode::AcceptEdits | AgentMode::Auto => Gate::Run,
+        AgentMode::AcceptEdits | AgentMode::Auto | AgentMode::Creator => Gate::Run,
         AgentMode::Plan => Gate::Hidden,
     }
 }
@@ -205,6 +264,13 @@ pub enum CommandGate {
     Rules,
     /// No command tool: the mode reads only.
     Hidden,
+    /// Creator mode: a command in the creation folder runs without asking
+    /// only where commands are OS-sandboxed
+    /// ([`super::run_command::commands_sandboxed`]), whose writable folder is
+    /// then the creation folder; package installs, destructive commands and
+    /// ones that start something that keeps running still ask. Where commands
+    /// are not sandboxed, every command asks.
+    Sandboxed,
 }
 
 /// The mode's decision for commands.
@@ -213,6 +279,7 @@ pub fn code_commands(mode: AgentMode) -> CommandGate {
         AgentMode::Ask | AgentMode::AcceptEdits => CommandGate::Ask,
         AgentMode::Auto => CommandGate::Rules,
         AgentMode::Plan => CommandGate::Hidden,
+        AgentMode::Creator => CommandGate::Sandboxed,
     }
 }
 

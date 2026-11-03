@@ -918,6 +918,7 @@ fn spec_in(folder: &Path, scratch: &Path, command: &str, secs: u64, memory_mb: u
         data_dir: scratch.ancestors().nth(2).unwrap().to_path_buf(),
         limits: CommandLimits::for_call(&settings(secs.max(10), memory_mb, 100), Some(secs)),
         offline: false,
+        network: false,
     }
 }
 
@@ -1733,6 +1734,58 @@ mod processes {
         // The result says why, in plain words.
         let note = outcome.note.clone().unwrap_or_default();
         assert!(note.contains("Network is blocked for commands"), "{note}");
+    }
+
+    /// An install the user approved in Creator mode gets the network: it
+    /// connects over IP, yet never reaches a local service's Unix socket (an
+    /// SSH agent, Docker).
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn an_approved_install_connects_over_ip_but_never_to_a_unix_socket() {
+        let _one = ONE_AT_A_TIME.lock().await;
+        let dirs = folders();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connect = format!("exec 3<>/dev/tcp/127.0.0.1/{port} && echo connected");
+        let mut spec = spec_in(&dirs.folder, &dirs.scratch, &connect, 30, 1024);
+        spec.network = true;
+        let (control, _started, _output) = run_control("sandbox-network-on");
+        let outcome = run_contained(spec, shell(), control).await;
+        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
+        assert_eq!(outcome.exit_code, Some(0), "{outcome:?}");
+        assert!(outcome.output.contains("connected"), "{}", outcome.output);
+
+        // A Unix socket outside the project, as an SSH agent's is: the same
+        // command connects outside the sandbox, never inside it.
+        let socket_dir = tempfile::tempdir().unwrap();
+        let socket = socket_dir.path().join("agent.sock");
+        let unix = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        unix.set_nonblocking(true).unwrap();
+        let reach = format!(
+            "/usr/bin/nc -U {} </dev/null && echo reached",
+            socket.display()
+        );
+        let direct = std::process::Command::new("/bin/bash")
+            .arg("-c")
+            .arg(&reach)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&direct.stdout).contains("reached"),
+            "the control's connection: {direct:?}"
+        );
+        while unix.accept().is_ok() {}
+        let mut spec = spec_in(&dirs.folder, &dirs.scratch, &reach, 30, 1024);
+        spec.network = true;
+        let (control, _started, _output) = run_control("sandbox-network-socket");
+        let outcome = run_contained(spec, shell(), control).await;
+        assert_eq!(outcome.state, CommandState::Done, "{outcome:?}");
+        assert!(!outcome.output.contains("reached"), "{}", outcome.output);
+        assert!(
+            unix.accept().is_err(),
+            "a connection reached the Unix socket"
+        );
     }
 
     /// Runs `/usr/bin/security` outside the sandbox.

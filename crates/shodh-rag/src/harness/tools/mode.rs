@@ -38,7 +38,7 @@ impl HostTool for SuggestModeTool {
          mode clearly fits the task better, with one short reason."
     }
     fn schema(&self) -> Value {
-        let modes: Vec<&str> = AgentMode::ALL.iter().map(|m| m.as_str()).collect();
+        let modes: Vec<&str> = AgentMode::SUGGESTABLE.iter().map(|m| m.as_str()).collect();
         json!({
             "type": "object",
             "properties": {
@@ -58,10 +58,14 @@ impl HostTool for SuggestModeTool {
 
     async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let name = req_str(&args, "mode", SUGGEST_MODE)?;
-        let mode = AgentMode::parse(name).ok_or_else(|| ToolError::InvalidArguments {
-            tool: SUGGEST_MODE.to_string(),
-            reasons: format!("`mode` must be one of ask, acceptEdits, plan or auto, not {name}"),
-        })?;
+        let mode = AgentMode::parse(name)
+            .filter(|mode| AgentMode::SUGGESTABLE.contains(mode))
+            .ok_or_else(|| ToolError::InvalidArguments {
+                tool: SUGGEST_MODE.to_string(),
+                reasons: format!(
+                    "`mode` must be one of ask, acceptEdits, plan or auto, not {name}"
+                ),
+            })?;
         let reason = req_str(&args, "reason", SUGGEST_MODE)?;
         let reason: String = reason.chars().take(MAX_REASON_CHARS).collect();
         Ok(ToolOutput {

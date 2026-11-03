@@ -270,7 +270,8 @@ pub fn prepare(
         env,
         tools: &tools,
     })
-    .map_err(|reason| format!("Shodh's sandbox cannot run this command: {reason}."))?;
+    .map_err(|reason| format!("Shodh's sandbox cannot run this command: {reason}."))?
+    .with_network(spec.network);
     let profile = seatbelt::render(&policy);
     seatbelt::check(&boundary.sandbox_exec, &profile)?;
     Ok(profile)

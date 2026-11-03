@@ -83,6 +83,8 @@ hex = "0.4"
 flate2 = "1"
 tar = "0.4"
 walkdir = "2"
+# Exports of a creation's versions (creations/mod.rs).
+zip = "2"
 
 # Windows OCR
 [target.'cfg(windows)'.dependencies]
@@ -103,7 +105,6 @@ windows = { version = "0.58", features = [
 
 [dev-dependencies]
 tempfile = "3"
-zip = "2"
 bytes = "1"
 # Time zones with daylight saving for the reminder scheduler tests
 chrono-tz = "0.10"

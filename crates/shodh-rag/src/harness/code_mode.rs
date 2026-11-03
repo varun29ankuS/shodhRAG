@@ -381,7 +381,32 @@ pub fn code_system_prompt(
     instructions: Option<&str>,
     mode: AgentMode,
 ) -> String {
-    let mut prompt = if mode.reads_only() {
+    let mut prompt = if mode.creates() {
+        format!(
+            "You are Shodh's builder, making what the user asks for in its own new creation \
+             folder {folder}.\n\
+             \n\
+             Tools: read (files), grep (text search), glob (find files), ast_grep (syntax-aware \
+             search), edit (replace old_string with new_string in one file), write (create or \
+             replace a whole file), run_command (run one bash command in the creation folder, in \
+             its own process with a time limit; anything it starts in the background is stopped \
+             when it ends) and finish_creation (record what you built and the choices you made, \
+             once, at the end).\n\
+             \n\
+             Rules:\n\
+             - Work only inside the creation folder. Paths outside it, URLs and other resources \
+             are blocked.\n\
+             - Build the whole thing, not a sketch: every file it needs, no placeholders, no \
+             TODOs. Anything a browser shows starts at index.html at the top of the folder and \
+             loads its scripts, styles and images by relative paths, so Shodh's preview can show \
+             it; it must work offline unless the user asked for something online.\n\
+             - Prefer write for new files and edit for changes to them.\n\
+             - If the user declines something, do not try it another way: say what you wanted to \
+             do and carry on without it.\n\
+             - Never commit or push, and never delete files you did not make.",
+            folder = folder.display()
+        )
+    } else if mode.reads_only() {
         format!(
             "You are Shodh's coding assistant, looking at the code folder {folder}.\n\
              \n\
@@ -422,7 +447,10 @@ pub fn code_system_prompt(
     prompt.push_str("\n\n");
     prompt.push_str(mode.prompt_note());
     prompt.push_str(super::tools::MODE_IS_THE_USERS);
-    prompt.push_str(super::tools::MODE_SUGGESTION);
+    // A Creator session is offered no mode suggestion: it builds what was asked.
+    if !mode.creates() {
+        prompt.push_str(super::tools::MODE_SUGGESTION);
+    }
     prompt.push_str("\n\n");
     prompt.push_str(DIAGRAM_GUIDE);
     prompt.push_str(CODE_DIAGRAMS);
@@ -1460,6 +1488,11 @@ pub struct GateContext<'a> {
     /// workspace's builds and tests as its build files are now, or approved one
     /// in this conversation since they last changed ([`project_fingerprint`]).
     pub project_code_cleared: bool,
+    /// Commands run in an operating-system sandbox on this system
+    /// ([`super::run_command::commands_sandboxed`]): Creator mode's commands
+    /// run without asking only then. Passed in, so both answers are tested on
+    /// every system.
+    pub sandboxed: bool,
 }
 
 /// Preview key of what a command that runs the project's own code does, on
@@ -1868,7 +1901,8 @@ pub fn command_eligible(
 /// when it is one Auto mode recognises ([`auto_command`]), while the user has
 /// seen every change ([`ReviewState::is_clear`]), nothing else is running, no
 /// MCP tool can change files without asking and nothing around the command
-/// makes it ask ([`GateContext::command_problem`]).
+/// makes it ask ([`GateContext::command_problem`]). Creator mode decides by
+/// its own rules ([`creator_approval`]).
 pub fn auto_approval(
     mode: AgentMode,
     settings: &CodeSettings,
@@ -1877,6 +1911,9 @@ pub fn auto_approval(
     target: ChangeTarget,
     gate: &GateContext<'_>,
 ) -> Option<&'static str> {
+    if mode.creates() {
+        return creator_approval(request, target, gate);
+    }
     let undoable = matches!(plan, ChangePlan::Continue(_) | ChangePlan::CreateBranch);
     match request.tool.as_str() {
         "edit" | "write" => (undoable
@@ -1905,6 +1942,117 @@ pub fn auto_approval(
         }
         _ => None,
     }
+}
+
+/// Why a guarded call of a Creator session may run without asking, or `None`
+/// when the user decides.
+///
+/// - An edit or write runs by itself when it lands inside the creation folder
+///   (`target` is named and not the folder's `.git`; the guard has already
+///   blocked every path outside the folder, links followed), while no command
+///   of the conversation runs and none it had the system start may still.
+///   Files that choose what builds run (package.json, build.rs, ...) are made
+///   without asking too: the folder is new and the agent writes all of it, and
+///   where commands are not sandboxed every command asks anyway.
+/// - A command runs by itself only where commands are sandboxed
+///   ([`GateContext::sandboxed`]: the sandbox can change only the creation
+///   folder and the conversation's scratch folder, and has no network), as one
+///   plain call that is not destructive, starts nothing that keeps running or
+///   that the system starts for it (`open`, `launchctl`, `osascript` leave the
+///   sandbox), installs no package ([`modes::installs::mentions_install`]: an
+///   install needs the network), with nothing else running and no MCP tool
+///   that changes files without asking. Auto mode's trust and review checks do
+///   not apply: the sandbox bounds what a command can reach, and the folder
+///   holds only what this conversation made.
+pub fn creator_approval(
+    request: &GuardRequest,
+    target: ChangeTarget,
+    gate: &GateContext<'_>,
+) -> Option<&'static str> {
+    match request.tool.as_str() {
+        "edit" | "write" => (modes::code_edits(AgentMode::Creator) == Gate::Run
+            && !matches!(target, ChangeTarget::Unknown | ChangeTarget::GitFolder)
+            && gate.review.background.is_empty()
+            && gate.running.is_none())
+        .then_some("Creator mode makes files in its creation folder without asking"),
+        tool if tool == super::run_command::RUN_COMMAND => {
+            let command = str_arg(&request.input, "command");
+            (modes::code_commands(AgentMode::Creator) == CommandGate::Sandboxed
+                && gate.sandboxed
+                && !command.trim().is_empty()
+                && destructive_reason(command).is_none()
+                && !starts_background(command)
+                && !modes::installs::mentions_install(command)
+                && plain_command_input(&request.input)
+                && gate.running.is_none()
+                && gate.unasked_writer.is_none())
+            .then_some(
+                "Creator mode runs this command without asking: it is sandboxed to the creation \
+                 folder, with no network",
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Why Creator mode asks about a command, in plain words, for its prompt
+/// (`None` when it would run by itself, [`creator_approval`]).
+pub fn creator_command_reason(request: &GuardRequest, gate: &GateContext<'_>) -> Option<String> {
+    let command = str_arg(&request.input, "command");
+    if !gate.sandboxed {
+        return Some(
+            "commands are not sandboxed on this system, so each one waits for your approval"
+                .to_string(),
+        );
+    }
+    if modes::installs::mentions_install(command) {
+        return Some(
+            "it installs or downloads packages, which needs the network: the sandbox cannot \
+             limit that to a package registry"
+                .to_string(),
+        );
+    }
+    if let Some(reason) = destructive_reason(command) {
+        return Some(format!(
+            "it is destructive ({})",
+            reason.trim_end_matches('.')
+        ));
+    }
+    if starts_background(command) {
+        return Some("it starts something that keeps running".to_string());
+    }
+    if !plain_command_input(&request.input) {
+        return Some("it asks for its own time limit".to_string());
+    }
+    if let Some(running) = gate.running {
+        return Some(format!("{running} is still running"));
+    }
+    if let Some(writer) = gate.unasked_writer {
+        return Some(format!("the tool {writer} can change files without asking"));
+    }
+    None
+}
+
+/// What a Creator prompt says about undoing a change: there is no branch, so
+/// the creation folder's saved versions and "Delete it" take its place.
+pub const CREATION_UNDO: &str = "This stays in the creation folder. Each finished answer is saved \
+     as a version in Artifacts, and \"Delete it\" removes the whole folder.";
+
+/// Preview key of what an approved package install gets in Creator mode.
+pub const NETWORK_KEY: &str = "network";
+
+/// What the prompt of a recognised install says where commands are
+/// sandboxed: approving it gives this one command the network.
+pub const INSTALL_NETWORK_TEXT: &str = "Approving lets this one install reach the internet. It \
+     still runs in the sandbox, so it can change only the creation folder, but the packages it \
+     downloads run their own install scripts with that network.";
+
+/// Whether an approved command of a `mode` session runs with the network in
+/// its sandbox: only a package install Creator mode recognises
+/// ([`modes::installs::install`]), where commands are sandboxed (elsewhere
+/// commands are not contained, and the network is not Shodh's to give).
+pub fn approved_network(mode: AgentMode, sandboxed: bool, command: &str) -> bool {
+    mode.creates() && sandboxed && modes::installs::install(command).is_ok()
 }
 
 /// Why Auto mode asks about a command whose words it recognises

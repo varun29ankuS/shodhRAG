@@ -473,7 +473,8 @@ mod tests {
             let read: ConversationRecord = serde_json::from_str(&text).unwrap();
             assert_eq!(read.agent_mode, Some(mode));
         }
-        for stored in [r#""creator""#, r#""bypass""#, r#""Auto""#, "7", "{}"] {
+        // Creator is a known mode now (kept above); these never were.
+        for stored in [r#""bypass""#, r#""Creator""#, r#""Auto""#, "7", "{}"] {
             let text = old.replace(
                 r#""pinned": false"#,
                 &format!(r#""pinned": false, "agentMode": {stored}"#),

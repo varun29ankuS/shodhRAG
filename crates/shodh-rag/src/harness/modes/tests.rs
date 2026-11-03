@@ -12,12 +12,16 @@ const CLASSES: [ToolClass; 5] = [
 #[test]
 fn every_mode_decides_every_class() {
     use Gate::{Ask, Hidden, Run};
-    let expected: [(AgentMode, [Gate; 5]); 4] = [
+    let expected: [(AgentMode, [Gate; 5]); 5] = [
         (AgentMode::Ask, [Run, Run, Ask, Ask, Ask]),
         (AgentMode::AcceptEdits, [Run, Run, Run, Ask, Ask]),
         (AgentMode::Plan, [Run, Hidden, Hidden, Hidden, Hidden]),
         (AgentMode::Auto, [Run, Run, Run, Ask, Ask]),
+        // Creator runs unasked only inside its folder (the guarded calls); a host
+        // tool's local edit lands outside it.
+        (AgentMode::Creator, [Run, Run, Ask, Ask, Ask]),
     ];
+    assert_eq!(expected.len(), AgentMode::ALL.len());
     for (mode, gates) in expected {
         for (class, gate) in CLASSES.into_iter().zip(gates) {
             assert_eq!(decide(mode, class), gate, "{mode:?} {class:?}");
@@ -45,7 +49,12 @@ fn plan_mode_hides_everything_that_changes_anything() {
     assert_eq!(code_edits(AgentMode::Plan), Gate::Hidden);
     assert_eq!(code_commands(AgentMode::Plan), CommandGate::Hidden);
     assert!(AgentMode::Plan.reads_only());
-    for mode in [AgentMode::Ask, AgentMode::AcceptEdits, AgentMode::Auto] {
+    for mode in [
+        AgentMode::Ask,
+        AgentMode::AcceptEdits,
+        AgentMode::Auto,
+        AgentMode::Creator,
+    ] {
         assert!(!mode.reads_only());
     }
 }
@@ -55,9 +64,26 @@ fn code_edits_and_commands_per_mode() {
     assert_eq!(code_edits(AgentMode::Ask), Gate::Ask);
     assert_eq!(code_edits(AgentMode::AcceptEdits), Gate::Run);
     assert_eq!(code_edits(AgentMode::Auto), Gate::Run);
+    assert_eq!(code_edits(AgentMode::Creator), Gate::Run);
     assert_eq!(code_commands(AgentMode::Ask), CommandGate::Ask);
     assert_eq!(code_commands(AgentMode::AcceptEdits), CommandGate::Ask);
     assert_eq!(code_commands(AgentMode::Auto), CommandGate::Rules);
+    assert_eq!(code_commands(AgentMode::Creator), CommandGate::Sandboxed);
+}
+
+#[test]
+fn only_creator_mode_makes_a_folder_and_it_asks_no_questions() {
+    for mode in AgentMode::ALL {
+        assert_eq!(mode.creates(), mode == AgentMode::Creator, "{mode:?}");
+    }
+    let note = AgentMode::Creator.prompt_note();
+    assert!(note.contains("Do not ask clarifying questions"));
+    assert!(note.contains("sensible default"));
+    assert!(note.contains("Here's what I chose"));
+    assert!(note.contains("finish_creation"));
+    // It never claims a network or a sandbox it does not have.
+    assert!(note.contains("Package installs reach the network"));
+    assert!(note.contains("Where commands are sandboxed"));
 }
 
 #[test]
@@ -94,7 +120,12 @@ fn modes_round_trip_by_name_and_serde() {
     assert_eq!(AgentMode::default(), AgentMode::Ask);
     assert_eq!(AgentMode::parse("bypass"), None);
     assert_eq!(AgentMode::parse("Auto"), None);
-    assert!(serde_json::from_value::<AgentMode>(serde_json::json!("creator")).is_err());
+    assert!(serde_json::from_value::<AgentMode>(serde_json::json!("Creator")).is_err());
+    // Creator is never suggested or a default; every other mode can be.
+    assert!(!AgentMode::SUGGESTABLE.contains(&AgentMode::Creator));
+    for mode in AgentMode::ALL.into_iter().filter(|m| !m.creates()) {
+        assert!(AgentMode::SUGGESTABLE.contains(&mode), "{mode:?}");
+    }
 }
 
 #[test]

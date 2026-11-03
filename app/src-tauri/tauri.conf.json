@@ -31,7 +31,7 @@
         "font-src": "'self' data:",
         "connect-src": "'self' ipc: http://ipc.localhost",
         "worker-src": "'self'",
-        "frame-src": "blob:",
+        "frame-src": "blob: shodh-preview: http://shodh-preview.localhost",
         "object-src": "blob:",
         "base-uri": "'self'",
         "form-action": "'none'"
@@ -44,7 +44,7 @@
         "font-src": "'self' data: http://localhost:5173",
         "connect-src": "'self' ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 ws://localhost:5174",
         "worker-src": "'self' blob: http://localhost:5173",
-        "frame-src": "blob:",
+        "frame-src": "blob: shodh-preview: http://shodh-preview.localhost",
         "object-src": "blob:",
         "base-uri": "'self'",
         "form-action": "'none'"

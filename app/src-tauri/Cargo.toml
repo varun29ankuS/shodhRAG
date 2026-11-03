@@ -83,6 +83,8 @@ hex = "0.4"
 flate2 = "1"
 tar = "0.4"
 walkdir = "2"
+# Exports of a creation's versions (creations/mod.rs).
+zip = "2"
 
 # Windows OCR
 [target.'cfg(windows)'.dependencies]
@@ -99,11 +101,19 @@ windows = { version = "0.58", features = [
     "Win32_Globalization",
     # The account's display name, kept out of Slack answers (connectors/slack.rs).
     "Win32_Security_Authentication_Identity",
+    # A creation file's real path, links and identity, read from its open handle
+    # (creations/handle.rs).
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
 ] }
+
+# A creation file opened without following a final link, and its real path read
+# from the open descriptor (creations/handle.rs).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 tempfile = "3"
-zip = "2"
 bytes = "1"
 # Time zones with daylight saving for the reminder scheduler tests
 chrono-tz = "0.10"

@@ -15,7 +15,6 @@ import { cn } from '../../lib/utils';
 import { relativeTime } from '../../utils/time';
 import { SetupCard } from '../setup/SetupCard';
 import { CpuSearchNotice } from '../status/CpuSearchNotice';
-import { VisualGallery } from '../visuals/VisualGallery';
 import { SnippetShelf } from '../research/SnippetShelf';
 import { CompareResults } from '../research/CompareResults';
 import { PaperGraphView } from '../research/PaperGraphView';
@@ -282,17 +281,6 @@ export function LibraryView({
           </section>
         )}
 
-        <section aria-labelledby="library-generated" className="flex flex-col gap-3">
-          <div className="flex flex-col gap-0.5">
-            <h2 id="library-generated" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
-              Generated
-            </h2>
-            <p className="text-small text-shodh-text-muted">
-              Diagrams, charts, sketches, plots, simulations, equations and tables from every conversation, with your snippets.
-            </p>
-          </div>
-          <VisualGallery conversationId={null} />
-        </section>
       </div>
     </div>
   );

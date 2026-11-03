@@ -2,7 +2,7 @@ import React, { useEffect, useId, useState } from 'react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
 import { getAppSettings, onAppSettingsChanged, setCodeMode, setDefaultAgentMode, setPolicy } from '../lib/appSettings';
-import { AGENT_MODES, MODE_FLOOR } from '../features/agent/agentModes';
+import { AGENT_MODES, DEFAULTABLE_MODES, MODE_FLOOR } from '../features/agent/agentModes';
 import type { AgentMode } from '../features/agent/agentModes';
 import { MODE_ICONS } from '../features/agent/ModePicker';
 import type { Policy } from '../lib/appSettings';
@@ -169,7 +169,7 @@ function DefaultModeSettings() {
         </p>
       </div>
       <div className="flex flex-col gap-1">
-        {AGENT_MODES.map(info => {
+        {AGENT_MODES.filter(info => DEFAULTABLE_MODES.includes(info.id)).map(info => {
           const Icon = MODE_ICONS[info.id];
           const selected = info.id === mode;
           return (

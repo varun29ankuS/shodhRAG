@@ -325,6 +325,7 @@ impl Answerer {
             // As the app answers by default ("Think before answering" off).
             thinking: Thinking::default(),
             code_reads_only: false,
+            code_no_git: false,
         };
         let (session, mut events) = OmpSession::start(SessionConfig {
             launch,

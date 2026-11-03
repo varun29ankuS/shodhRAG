@@ -488,9 +488,11 @@ where
     D: serde::Deserializer<'de>,
 {
     let stored = Value::deserialize(deserializer)?;
+    // Creator mode is never a default: it makes a folder for one request.
     Ok(stored
         .as_str()
         .and_then(AgentMode::parse)
+        .filter(|mode| AgentMode::SUGGESTABLE.contains(mode))
         .unwrap_or(AgentMode::Ask))
 }
 
@@ -1019,6 +1021,12 @@ pub async fn set_default_agent_mode(
     mode: AgentMode,
     audit: State<'_, AuditState>,
 ) -> Result<AppSettings, String> {
+    if !AgentMode::SUGGESTABLE.contains(&mode) {
+        return Err(format!(
+            "{} cannot be the default: pick it for one conversation in the composer.",
+            mode.label()
+        ));
+    }
     let (settings, before) = store(&app)?
         .update(|s| Ok(std::mem::replace(&mut s.agent.default_mode, mode)))
         .map_err(|e| e.to_string())?;
@@ -1327,6 +1335,8 @@ mod tests {
         let text = serde_json::to_string(&set).unwrap();
         assert!(text.contains(r#""agent":{"defaultMode":"auto"}"#), "{text}");
         // A mode this version does not know is Ask, and the rest of the file still loads.
+        // Creator mode is known but never a default: it reads as Ask too.
+        assert_eq!(AgentMode::parse("creator"), Some(AgentMode::Creator));
         for stored in [
             r#""bypass""#,
             r#""creator""#,

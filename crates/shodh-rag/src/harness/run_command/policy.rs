@@ -20,7 +20,10 @@
 //!   folder such as `~/.config` keeps `~/.config/gh` closed). The one
 //!   exception is a writable folder inside one of them: the scratch folder
 //!   lives in Shodh's data folder and stays writable.
-//! - **No network**, in either direction, loopback included.
+//! - **No network**, in either direction, loopback included. The one
+//!   exception is a package install the user approved in Creator mode
+//!   ([`SandboxPolicy::with_network`]): outbound connections over IP and the
+//!   DNS resolver, never another Unix socket.
 //!
 //! A code folder the policy cannot bound is refused, never widened: a drive
 //! root, the home folder or a folder that contains it, a folder that contains
@@ -80,7 +83,8 @@ pub struct SandboxPolicy {
     /// a writable folder that lies inside one of them is open (the scratch
     /// folder in Shodh's data folder, which is among them).
     pub deny_read: Vec<PathBuf>,
-    /// Network access. Always `false`: commands have no network.
+    /// Network access. `false` from [`SandboxPolicy::for_command`]: commands
+    /// have no network; only [`SandboxPolicy::with_network`] turns it on.
     pub network: bool,
 }
 
@@ -250,6 +254,15 @@ impl SandboxPolicy {
         })
     }
 
+    /// The same policy with the network `network`: on only for a package
+    /// install the user approved in Creator mode
+    /// ([`crate::harness::code_mode::approved_network`]). What the command may
+    /// read and change does not move.
+    pub fn with_network(mut self, network: bool) -> Self {
+        self.network = network;
+        self
+    }
+
     /// The never-readable folders that lie inside a writable folder (a
     /// credentials folder inside the code folder): closed again after the
     /// writable folders are opened.
@@ -407,6 +420,13 @@ mod tests {
             vec![tree.project.clone(), tree.scratch.clone()]
         );
         assert!(!policy.network);
+        // Turning the network on for an approved install moves nothing else.
+        let online = policy.clone().with_network(true);
+        assert!(online.network);
+        assert_eq!(online.writable, policy.writable);
+        assert_eq!(online.readable, policy.readable);
+        assert_eq!(online.deny_read, policy.deny_read);
+        assert!(!online.clone().with_network(false).network);
         // The toolchain is readable; the PATH entry inside it adds nothing,
         // and one outside the home needs no grant.
         assert_eq!(policy.readable, vec![cargo.clone()]);

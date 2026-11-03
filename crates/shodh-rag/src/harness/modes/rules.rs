@@ -111,7 +111,7 @@ pub fn check(command: &str) -> Result<Rule, String> {
 }
 
 /// A word as an explanation shows it: at most 40 characters.
-fn shown(word: &str) -> String {
+pub(super) fn shown(word: &str) -> String {
     let kept: String = word.chars().take(40).collect();
     if kept.len() < word.len() {
         format!("{kept}…")
@@ -122,7 +122,7 @@ fn shown(word: &str) -> String {
 
 /// Why a character of `command` makes it ask, or `None` when every
 /// character is plain.
-fn special_reason(command: &str) -> Option<&'static str> {
+pub(super) fn special_reason(command: &str) -> Option<&'static str> {
     let odd = command.chars().find(|&c| !plain_char(c))?;
     Some(match odd {
         ';' | '&' => "it runs more than one command, or one in the background",
@@ -142,7 +142,7 @@ fn special_reason(command: &str) -> Option<&'static str> {
 
 /// Why an argument reaches outside the project: an absolute path, a drive,
 /// or a `..` part.
-fn outside_project(arg: &str) -> Option<&'static str> {
+pub(super) fn outside_project(arg: &str) -> Option<&'static str> {
     let bytes = arg.as_bytes();
     if arg.starts_with('/') {
         return Some("it names a path outside the project");
@@ -189,27 +189,27 @@ fn program_reason(program: &str) -> Option<&'static str> {
 
 /// Which positional arguments a subcommand takes.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Positionals {
+pub(super) enum Positionals {
     None,
     Any,
 }
 
 /// What a program or subcommand accepts after its name.
-struct Grammar {
+pub(super) struct Grammar {
     /// Options taking no value.
-    flags: &'static [&'static str],
+    pub(super) flags: &'static [&'static str],
     /// Options taking the next word as their value.
-    valued: &'static [&'static str],
+    pub(super) valued: &'static [&'static str],
     /// Letters that may be combined into one short option (`-la`).
-    combined: &'static str,
+    pub(super) combined: &'static str,
     /// `-5` (a count) is accepted.
-    numeric: bool,
-    positionals: Positionals,
+    pub(super) numeric: bool,
+    pub(super) positionals: Positionals,
     /// What may follow `--`; `None`: `--` is not accepted.
-    after_dashes: Option<&'static Grammar>,
+    pub(super) after_dashes: Option<&'static Grammar>,
 }
 
-const NONE: Grammar = Grammar {
+pub(super) const NONE: Grammar = Grammar {
     flags: &[],
     valued: &[],
     combined: "",
@@ -230,7 +230,11 @@ fn plain_value(word: &str) -> bool {
 }
 
 /// Checks `args` against `grammar`; the positional arguments are returned.
-fn accept<'a>(program: &str, args: &[&'a str], grammar: &Grammar) -> Result<Vec<&'a str>, String> {
+pub(super) fn accept<'a>(
+    program: &str,
+    args: &[&'a str],
+    grammar: &Grammar,
+) -> Result<Vec<&'a str>, String> {
     let mut positionals = Vec::new();
     let mut at = 0;
     while at < args.len() {

@@ -35,7 +35,9 @@ use super::code_mode::{
     CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::code_mode::{
-    project_fingerprint, ProjectFingerprint, PROJECT_CODE_KEY, PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
+    approved_network, creator_command_reason, install_network_text, project_fingerprint,
+    ProjectFingerprint, CREATION_UNDO, CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY,
+    PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -186,6 +188,10 @@ impl Drop for PendingCompare {
 struct Decided {
     settings: CodeSettings,
     auto_ran: bool,
+    /// The user approved a package install Creator mode recognises, where
+    /// commands are sandboxed: this one command gets the network
+    /// ([`super::code_mode::approved_network`]).
+    network: bool,
 }
 
 /// A Code session's state: its folder and branch, the guard's presence,
@@ -224,9 +230,21 @@ struct CodeRuntime {
     executor: Arc<dyn CommandExecutor>,
     scratch: std::path::PathBuf,
     data_dir: std::path::PathBuf,
+    /// A Creator session's creation folder ([`AgentMode::creates`]): Shodh
+    /// never runs git in it (no branch, no comparison of what changed), so
+    /// nothing a command writes there (a `.git` with settings that name
+    /// programs) is ever run by Shodh outside the sandbox, and a creation
+    /// folder inside someone's repository never gets branches.
+    creates: bool,
 }
 
 impl CodeRuntime {
+    /// This runtime works in a creation folder ([`CodeRuntime::creates`]).
+    fn creating(mut self, creates: bool) -> Self {
+        self.creates = creates;
+        self
+    }
+
     fn new(folder: CodeFolder, session: CodeSession) -> Self {
         let CodeSession {
             conversation_id,
@@ -254,6 +272,7 @@ impl CodeRuntime {
             running: Mutex::new(HashMap::new()),
             live: Mutex::new(HashMap::new()),
             compares: tokio::sync::watch::channel(0).0,
+            creates: false,
         }
     }
 
@@ -276,6 +295,11 @@ impl CodeRuntime {
 
     /// What the next change needs (git and the store are read off the runtime).
     async fn plan(&self) -> ChangePlan {
+        // A creation folder has no branch: "Delete it" and the saved versions
+        // take its place, and git is never asked about it.
+        if self.creates {
+            return ChangePlan::NotRepo;
+        }
         let root = self.folder.root().to_path_buf();
         let folder = self.folder.display();
         let store = self.branches.clone();
@@ -398,6 +422,9 @@ impl CodeRuntime {
 
     /// What git shows of the folder now (off the runtime).
     async fn snapshot(&self) -> Result<TreeSnapshot, String> {
+        if self.creates {
+            return Err("Shodh does not run git in a creation folder".to_string());
+        }
         let root = self.folder.root().to_path_buf();
         tokio::task::spawn_blocking(move || tree_snapshot(&root))
             .await
@@ -946,6 +973,7 @@ impl Inner {
             ChangePlan::CreateBranch => "Shodh first switches to a new branch, so this can be \
                                          undone with \"Discard changes\"."
                 .to_string(),
+            ChangePlan::NotRepo if code.creates => CREATION_UNDO.to_string(),
             ChangePlan::NotRepo => {
                 "Not possible: the code folder is not a git repository.".to_string()
             }
@@ -970,9 +998,18 @@ impl Inner {
         let unasked_writer = self.registry.unasked_file_writer(&self.profile);
         // In Auto mode, what is around a command its rules recognise: the
         // files it shows and git's settings.
-        let recognised = (mode == AgentMode::Auto && request.tool == RUN_COMMAND)
+        // Creator mode where commands are not sandboxed reads the same rules for
+        // one class only: commands that just inspect files of its folder.
+        let creator_unsandboxed =
+            mode.creates() && request.tool == RUN_COMMAND && !run_command::commands_sandboxed();
+        let recognised = ((mode == AgentMode::Auto || creator_unsandboxed)
+            && request.tool == RUN_COMMAND)
             .then(|| auto_command(&settings, request, &plan));
         let auto_asks = match &recognised {
+            // Shodh runs no git in a creation folder, not even to read its settings.
+            Some(Ok(command)) if creator_unsandboxed && command.git => {
+                Some("it runs git".to_string())
+            }
             Some(Ok(command)) => {
                 let folder = code.folder.root().to_path_buf();
                 let home = code.scratch.clone();
@@ -988,7 +1025,12 @@ impl Inner {
         // are sandboxed, in a workspace the user trusts as its build files are
         // now, or after the user approved one in this conversation since they
         // last changed. Otherwise it asks, saying what it runs.
-        let runs_project_code = matches!(&recognised, Some(Ok(c)) if c.runs_project_code);
+        let runs_project_code =
+            mode == AgentMode::Auto && matches!(&recognised, Some(Ok(c)) if c.runs_project_code);
+        // A Creator command that only reads files that all resolve inside its folder.
+        let inspects = creator_unsandboxed
+            && auto_asks.is_none()
+            && matches!(&recognised, Some(Ok(c)) if !c.runs_project_code && !c.git);
         let (project_code_cleared, project_prompt) = if !runs_project_code
             || run_command::commands_sandboxed()
         {
@@ -1023,13 +1065,28 @@ impl Inner {
                 ),
             }
         };
+        let sandboxed = run_command::commands_sandboxed();
         let gate = GateContext {
             review: &review,
             running: running.as_deref(),
             unasked_writer: unasked_writer.as_deref(),
             command_problem: auto_asks.as_deref(),
             project_code_cleared,
+            sandboxed,
+            inspects,
         };
+        let command_text = request
+            .input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        // Creator mode: why a command asks, and whether an approved install gets
+        // the network in its sandbox (said on the prompt).
+        let creator_asks = (mode.creates() && request.tool == RUN_COMMAND)
+            .then(|| creator_command_reason(request, &gate))
+            .flatten();
+        let network =
+            request.tool == RUN_COMMAND && approved_network(mode, sandboxed, command_text);
         // Decided once, before the prompt: the settings may change while it
         // waits, and what is cleared must match what was shown.
         let eligible = command_eligible(&settings, request, &plan);
@@ -1046,13 +1103,29 @@ impl Inner {
         }
         let shown = note_review(&mut approval, request, &gate, eligible, &token);
         // Why Auto mode asks about this command, on its prompt.
-        let why_asked = auto_asks
-            .as_ref()
-            .or(project_prompt.as_ref().map(|(_, why)| why));
+        let why_asked = (mode == AgentMode::Auto)
+            .then(|| {
+                auto_asks
+                    .as_ref()
+                    .or(project_prompt.as_ref().map(|(_, why)| why))
+            })
+            .flatten();
         if let (Some(reason), Some(map)) = (why_asked, approval.preview.as_object_mut()) {
             map.insert(
                 AUTO_MODE_KEY.to_string(),
                 json!(format!("Auto mode asks because {reason}.")),
+            );
+        }
+        if let (Some(reason), Some(map)) = (&creator_asks, approval.preview.as_object_mut()) {
+            map.insert(
+                CREATOR_MODE_KEY.to_string(),
+                json!(format!("Asks because {reason}.")),
+            );
+        }
+        if let (true, Some(map)) = (network, approval.preview.as_object_mut()) {
+            map.insert(
+                NETWORK_KEY.to_string(),
+                json!(install_network_text(command_text)),
             );
         }
         // The first build or test of a conversation says what it runs; only an
@@ -1083,12 +1156,16 @@ impl Inner {
                 self.announce_branch(&run_id, &branch);
             }
             if matches!(request.tool.as_str(), "edit" | "write") {
-                code.remember_auto_applied(request).await.map_err(|e| {
-                    format!(
-                        "Shodh could not record the change for \"Discard changes\", so it was \
-                         not made: {e}"
-                    )
-                })?;
+                // A creation folder has no "Discard changes" to record for: its
+                // versions are saved at the end of each answer.
+                if !code.creates {
+                    code.remember_auto_applied(request).await.map_err(|e| {
+                        format!(
+                            "Shodh could not record the change for \"Discard changes\", so it \
+                             was not made: {e}"
+                        )
+                    })?;
+                }
             } else {
                 code.command_allowed(request).await.map_err(|e| {
                     format!("Shodh could not record this command, so it was not run: {e}")
@@ -1097,6 +1174,7 @@ impl Inner {
             return Ok(Decided {
                 settings,
                 auto_ran: true,
+                network: false,
             });
         }
         if let Some(ui_id) = &request.ui_id {
@@ -1173,6 +1251,7 @@ impl Inner {
             return Ok(Decided {
                 settings,
                 auto_ran: false,
+                network: false,
             });
         }
         // Only the prompt that showed every listed file sends the token back
@@ -1195,6 +1274,7 @@ impl Inner {
         Ok(Decided {
             settings,
             auto_ran: false,
+            network,
         })
     }
 
@@ -1533,6 +1613,7 @@ impl Inner {
             data_dir: code.data_dir.clone(),
             limits,
             offline: decided.auto_ran,
+            network: decided.network,
         };
         // Registered before the process exists, so Stop, a cancel or the end
         // of the run reaches the command from now on.
@@ -2362,9 +2443,9 @@ impl OmpSession {
         } = config;
         let code = match (&launch.code, code) {
             (None, None) => None,
-            (Some(folder), Some(session)) => {
-                Some(Arc::new(CodeRuntime::new(folder.clone(), session)))
-            }
+            (Some(folder), Some(session)) => Some(Arc::new(
+                CodeRuntime::new(folder.clone(), session).creating(profile.mode.creates()),
+            )),
             _ => {
                 return Err(HarnessError::CodeGuard(
                     "the code folder and its conversation must be set together".to_string(),
@@ -2393,6 +2474,7 @@ impl OmpSession {
             // its reading tools.
             let reads_only = profile.mode.reads_only();
             launch.code_reads_only = reads_only;
+            launch.code_no_git = profile.mode.creates();
             launch.host_tools = names
                 .into_iter()
                 .chain((!reads_only).then(|| RUN_COMMAND.to_string()))
@@ -4165,6 +4247,8 @@ mod tests {
     #[derive(Debug)]
     struct TestExecutor {
         ran: Mutex<Vec<String>>,
+        /// Whether each command ran with the network ([`CommandSpec::network`]).
+        online: Mutex<Vec<bool>>,
         started: tokio::sync::watch::Sender<usize>,
         hold: AtomicBool,
         release: tokio::sync::Semaphore,
@@ -4176,6 +4260,7 @@ mod tests {
         fn new() -> Arc<Self> {
             Arc::new(TestExecutor {
                 ran: Mutex::new(Vec::new()),
+                online: Mutex::new(Vec::new()),
                 started: tokio::sync::watch::channel(0).0,
                 hold: AtomicBool::new(false),
                 release: tokio::sync::Semaphore::new(0),
@@ -4191,6 +4276,10 @@ mod tests {
 
         fn ran(&self) -> Vec<String> {
             lock(&self.ran).clone()
+        }
+
+        fn online(&self) -> Vec<bool> {
+            lock(&self.online).clone()
         }
 
         fn count(&self) -> usize {
@@ -4228,6 +4317,7 @@ mod tests {
         async fn run(&self, spec: CommandSpec, control: RunControl) -> run_command::CommandOutcome {
             let hold = self.holding();
             lock(&self.ran).push(spec.command.clone());
+            lock(&self.online).push(spec.network);
             (control.on_started)();
             self.started.send_modify(|count| *count += 1);
             (control.on_output)(format!("ran {}\n", spec.command));
@@ -4866,6 +4956,149 @@ mod tests {
             Answer::Deny,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn creator_mode_works_unasked_only_in_its_folder_and_never_runs_git() {
+        // A plain new folder, as a creation folder is; the workspace settings
+        // beside it list a command Creator mode must not take from them.
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        CodeSettings {
+            allowlist: vec!["make deploy".into()],
+            ..CodeSettings::default()
+        }
+        .save(data.path())
+        .unwrap();
+        let exec = TestExecutor::new();
+        let code = Arc::new(
+            CodeRuntime::new(
+                CodeFolder::open(folder.path()).unwrap(),
+                CodeSession {
+                    conversation_id: "conv-1".into(),
+                    branches: CodeBranchStore::in_dir(data.path()),
+                    settings_dir: Some(data.path().to_path_buf()),
+                    executor: Arc::clone(&exec) as Arc<dyn CommandExecutor>,
+                    scratch: data.path().join("scratch"),
+                    data_dir: data.path().to_path_buf(),
+                },
+            )
+            .creating(true),
+        );
+        let root = code.folder.root().to_path_buf();
+        let (inner, mut events, mut out) = offline_session_in_mode(
+            None,
+            Some(Arc::clone(&code)),
+            ToolRegistry::new(),
+            AgentMode::Creator,
+        );
+        inner
+            .start_run(
+                "A pomodoro timer",
+                Some("run-1".into()),
+                RunScope::default(),
+            )
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+
+        // Files of the folder are made without asking, those that choose what a
+        // build runs included.
+        for (n, path) in [("1", "index.html"), ("2", "package.json")] {
+            runs_unasked(
+                &inner,
+                &exec,
+                &mut out,
+                guard_request(
+                    n,
+                    "write",
+                    json!({"path": path, "content": "x"}),
+                    Some(&root.join(path)),
+                ),
+            )
+            .await;
+        }
+        // No branch, no record for Discard, no git in the folder.
+        assert!(code.branches.get("conv-1").unwrap().is_none());
+        assert!(!root.join(".git").exists());
+        // A change the guard named no file for asks, and says how to undo here.
+        let preview = asks(
+            &inner,
+            &exec,
+            &mut events,
+            &mut out,
+            guard_request("3", "write", json!({"path": "x", "content": "x"}), None),
+            Answer::Deny,
+        )
+        .await;
+        assert_eq!(preview["undo"], CREATION_UNDO);
+
+        // A command that only reads a file of the folder runs without asking
+        // everywhere. Where commands are not sandboxed, git still asks: Shodh runs
+        // no git in a creation folder by itself.
+        runs_unasked(
+            &inner,
+            &exec,
+            &mut out,
+            command_call("3a", json!({"command": "cat index.html"})),
+        )
+        .await;
+        if !run_command::commands_sandboxed() {
+            asks(
+                &inner,
+                &exec,
+                &mut events,
+                &mut out,
+                command_call("3b", json!({"command": "git status"})),
+                Answer::Deny,
+            )
+            .await;
+        }
+        // A build: unasked only where commands are sandboxed; elsewhere it asks
+        // and says why.
+        let build = command_call("4", json!({"command": "npm run build"}));
+        if run_command::commands_sandboxed() {
+            runs_unasked(&inner, &exec, &mut out, build).await;
+        } else {
+            let preview = asks(&inner, &exec, &mut events, &mut out, build, Answer::Deny).await;
+            assert_eq!(
+                preview[CREATOR_MODE_KEY],
+                "Asks because commands are not sandboxed on this system, so each one waits \
+                 for your approval. It can run files the assistant wrote in this folder (made \
+                 without asking), with your account and your network."
+            );
+            assert!(preview.get(AUTO_MODE_KEY).is_none());
+        }
+        // A destructive command asks everywhere, sandboxed or not.
+        asks(
+            &inner,
+            &exec,
+            &mut events,
+            &mut out,
+            command_call("5", json!({"command": "rm -rf dist"})),
+            Answer::Deny,
+        )
+        .await;
+        // An install asks everywhere. Approved where commands are sandboxed, that
+        // one command gets the network, and its prompt says so.
+        let preview = asks(
+            &inner,
+            &exec,
+            &mut events,
+            &mut out,
+            command_call("6", json!({"command": "npm install react"})),
+            Answer::ApproveElsewhere,
+        )
+        .await;
+        let sandboxed = run_command::commands_sandboxed();
+        assert_eq!(preview.get(NETWORK_KEY).is_some(), sandboxed);
+        assert_eq!(
+            exec.ran().last().map(String::as_str),
+            Some("npm install react")
+        );
+        assert_eq!(exec.online().last(), Some(&sandboxed));
+        // Every other command ran without the network.
+        let online = exec.online();
+        assert!(online[..online.len() - 1].iter().all(|on| !on));
     }
 
     /// The files a command prompt listed as changed without review.

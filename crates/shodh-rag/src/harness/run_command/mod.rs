@@ -505,6 +505,11 @@ pub struct CommandSpec {
     /// Auto mode ran it without asking: it gets [`OFFLINE_ENV`], so the tools
     /// that honour it do not download dependencies, toolchains or packages.
     pub offline: bool,
+    /// The user approved this command as a package install of Creator mode
+    /// ([`crate::harness::code_mode::approved_network`]): where commands are
+    /// sandboxed, its sandbox lets it connect over IP (it still changes only
+    /// the code folder and the scratch folder). Always `false` otherwise.
+    pub network: bool,
 }
 
 /// What a command Auto mode runs without asking gets on top of its

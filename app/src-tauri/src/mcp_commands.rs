@@ -152,6 +152,7 @@ pub fn tool_group(name: &str) -> &'static str {
             "Tasks and calendar"
         }
         "remember" | "recall" | "update_memory" | "forget" => "Memory",
+        "list_artifacts" | "open_artifact" | "finish_creation" => "Artifacts",
         "list_workspaces"
         | "open_workspace"
         | "create_workspace"

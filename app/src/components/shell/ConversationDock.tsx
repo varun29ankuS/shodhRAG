@@ -180,6 +180,9 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
     if (!navigation || navigation.seq === lastNavSeq.current) return;
     lastNavSeq.current = navigation.seq;
     setDismissed(false);
+    // A Creator build the user just started opened Artifacts: the chat opens
+    // alongside it (for this visit), so they can steer while they watch.
+    if (navigation.openDock) setOverride({ tab: navigation.view, open: true });
   }, [navigation]);
   useEffect(() => {
     if (offAsk && isStreaming) setDismissed(false);

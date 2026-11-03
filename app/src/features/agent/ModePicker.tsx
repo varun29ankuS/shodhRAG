@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
-import { Check, ChevronDown, FilePen, ListChecks, ShieldCheck, Zap } from 'lucide-react';
+import { Check, ChevronDown, FilePen, Hammer, ListChecks, ShieldCheck, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { IS_MAC_PLATFORM, ariaKeyShortcuts, withShortcut } from '../../lib/shortcuts';
 import { Kbd } from '../../components/ui/Kbd';
-import { AGENT_MODES, AUTO_CONFIRM_TEXT, MODE_FLOOR, agentModeInfo } from './agentModes';
+import { AGENT_MODES, AUTO_CONFIRM_TEXT, CONFIRMED_MODES, CREATOR_CONFIRM_TEXT, MODE_FLOOR, agentModeInfo } from './agentModes';
 import type { AgentMode } from './agentModes';
 
 const FOCUS_RING =
@@ -17,6 +17,7 @@ export const MODE_ICONS: Record<AgentMode, LucideIcon> = {
   acceptEdits: FilePen,
   plan: ListChecks,
   auto: Zap,
+  creator: Hammer,
 };
 
 interface ModePickerProps {
@@ -34,14 +35,14 @@ interface ModePickerProps {
  */
 export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
   const [open, setOpen] = useState(false);
-  // Auto is turned on only after one more click that says what it does.
-  const [confirmingAuto, setConfirmingAuto] = useState(false);
+  // Auto and Creator are turned on only after one more click that says what they do.
+  const [confirming, setConfirming] = useState<AgentMode | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
   useEffect(() => {
-    if (!open) setConfirmingAuto(false);
+    if (!open) setConfirming(null);
   }, [open]);
   useEffect(() => {
     if (!open) return;
@@ -74,8 +75,8 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
   };
 
   const pick = (next: AgentMode) => {
-    if (next === 'auto' && mode !== 'auto' && !confirmingAuto) {
-      setConfirmingAuto(true);
+    if (CONFIRMED_MODES.includes(next) && next !== mode && confirming !== next) {
+      setConfirming(next);
       return;
     }
     close(true);
@@ -159,21 +160,30 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
               );
             })}
           </div>
-          {confirmingAuto && (
-            <div role="group" aria-label="Turn on Auto" className="flex flex-col gap-2 px-3 py-2 border-t border-shodh-border-subtle">
-              <p className="m-0 text-caption text-shodh-text-secondary">{AUTO_CONFIRM_TEXT}</p>
+          {confirming && (
+            <div
+              role="group"
+              aria-label={`Turn on ${agentModeInfo(confirming).label}`}
+              className="flex flex-col gap-2 px-3 py-2 border-t border-shodh-border-subtle"
+            >
+              <p className="m-0 text-caption text-shodh-text-secondary">
+                {confirming === 'creator' ? CREATOR_CONFIRM_TEXT : AUTO_CONFIRM_TEXT}
+              </p>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => pick('auto')}
+                  onClick={() => pick(confirming)}
                   className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-caption font-medium bg-shodh-accent text-white hover:opacity-90', FOCUS_RING)}
                 >
-                  <Zap className="w-3 h-3 shrink-0" aria-hidden="true" />
-                  Turn on Auto
+                  {(() => {
+                    const ConfirmIcon = MODE_ICONS[confirming];
+                    return <ConfirmIcon className="w-3 h-3 shrink-0" aria-hidden="true" />;
+                  })()}
+                  Turn on {agentModeInfo(confirming).label}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setConfirmingAuto(false)}
+                  onClick={() => setConfirming(null)}
                   className={cn('inline-flex items-center h-7 px-2.5 rounded-full text-caption font-medium border border-shodh-border text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
                 >
                   Cancel

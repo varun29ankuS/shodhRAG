@@ -112,7 +112,8 @@ import { useCommandPalette } from './hooks/useCommandPalette';
 import CommandPalette from './components/CommandPalette';
 import type { PaletteAction } from './components/CommandPalette';
 import { ViewSkeleton } from './components/shell/ViewSkeleton';
-import { ActivityView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
+import { ActivityView, ArtifactsView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
+import { CHANGE_DRAFT } from './features/artifacts/model';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
 import { clearViewCache } from './lib/viewCache';
 import { shownView } from './lib/viewSwitch';
@@ -1863,6 +1864,18 @@ function AppSplitView() {
                 onDragOver: handleDragOver,
                 onDragEnter: handleDragEnter,
                 onDragLeave: handleDragLeave,
+              }}
+            />
+          )}
+
+          {/* Artifacts: what Shodh made (Creator builds, diagrams, charts, tables) */}
+          {viewTab === 'artifacts' && (
+            <ArtifactsView
+              onOpenChat={id => { switchConversation(id); setActiveTab('ask'); }}
+              onChange={id => {
+                switchConversation(id);
+                setAskDraft(prev => ({ text: CHANGE_DRAFT, seq: (prev?.seq ?? 0) + 1 }));
+                setActiveTab('ask');
               }}
             />
           )}

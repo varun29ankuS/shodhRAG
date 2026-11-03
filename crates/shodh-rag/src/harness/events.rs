@@ -297,6 +297,14 @@ pub enum NavigationTarget {
         workspace_id: String,
         tab: Option<String>,
     },
+    /// Open a creation in the Artifacts tab, at a version (the folder as it is
+    /// now when absent) and a pane (`preview`, `files` or `versions`; the
+    /// preview when absent).
+    Artifact {
+        artifact_id: String,
+        version: Option<u32>,
+        pane: Option<String>,
+    },
 }
 
 /// A normalised agent event. Produced from omp frames and from host-tool
@@ -984,6 +992,15 @@ mod tests {
                 },
                 "workspace",
                 vec!["workspaceId", "tab"],
+            ),
+            (
+                NavigationTarget::Artifact {
+                    artifact_id: "cr_1".into(),
+                    version: Some(3),
+                    pane: Some("files".into()),
+                },
+                "artifact",
+                vec!["artifactId", "version", "pane"],
             ),
         ]
     }

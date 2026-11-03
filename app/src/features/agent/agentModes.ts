@@ -9,7 +9,7 @@
  * (`app/tests/agentModes.test.ts`).
  */
 
-export type AgentMode = 'ask' | 'acceptEdits' | 'plan' | 'auto';
+export type AgentMode = 'ask' | 'acceptEdits' | 'plan' | 'auto' | 'creator';
 
 export interface AgentModeInfo {
   id: AgentMode;
@@ -19,7 +19,7 @@ export interface AgentModeInfo {
   hint: string;
 }
 
-/** Every mode, in the order the picker lists them and Shift+Tab cycles them. */
+/** Every mode, in the order the picker lists them (Shift+Tab cycles only `CYCLED_MODES`). */
 export const AGENT_MODES: readonly AgentModeInfo[] = [
   { id: 'ask', label: 'Ask', hint: 'Reads and searches run by themselves; every change asks you first.' },
   {
@@ -37,7 +37,26 @@ export const AGENT_MODES: readonly AgentModeInfo[] = [
     label: 'Auto',
     hint: 'Edits and commands that only read run by themselves. Builds and tests run your project\'s own code: by themselves only where commands are sandboxed or in a workspace you trust; otherwise the first one asks.',
   },
+  {
+    id: 'creator',
+    label: 'Creator',
+    hint: 'Builds what you ask for in a new folder of its own, without questions, and tells you what it chose. Files there are made by themselves; commands too where they are sandboxed (on Windows each one asks). Installs and anything outside the folder ask.',
+  },
 ];
+
+/**
+ * The modes Settings may make the default and the agent may suggest: every mode but
+ * Creator, which makes a folder for one request (the Rust side refuses it too,
+ * `AgentMode::SUGGESTABLE`).
+ */
+export const DEFAULTABLE_MODES: readonly AgentMode[] = ['ask', 'acceptEdits', 'plan', 'auto'];
+
+/** Modes turned on only after one more click that says what they do. */
+export const CONFIRMED_MODES: readonly AgentMode[] = ['auto', 'creator'];
+
+/** What turning Creator on says before it does. */
+export const CREATOR_CONFIRM_TEXT =
+  'Creator builds what you ask for in a new folder in Documents/Shodh Creations, without asking you questions. Files in that folder are made without asking; commands there run by themselves only where they are sandboxed (on Windows each one asks). Package installs, GitHub and anything outside the folder still ask. It needs Code mode turned on in Settings.';
 
 /** What always asks, whatever the mode, and what never does. */
 export const MODE_FLOOR =
@@ -60,12 +79,12 @@ export function agentModeInfo(mode: AgentMode): AgentModeInfo {
 }
 
 /**
- * The modes Shift+Tab cycles through: Auto is not among them, so no keystroke turns it
- * on; it is picked in the menu, which asks once to confirm.
+ * The modes Shift+Tab cycles through: Auto and Creator are not among them, so no
+ * keystroke turns either on; each is picked in the menu, which asks once to confirm.
  */
 export const CYCLED_MODES: readonly AgentMode[] = ['ask', 'acceptEdits', 'plan'];
 
-/** The mode after `mode` (Shift+Tab), wrapping around; from Auto, back to Ask. */
+/** The mode after `mode` (Shift+Tab), wrapping around; from Auto or Creator, back to Ask. */
 export function nextAgentMode(mode: AgentMode): AgentMode {
   const at = CYCLED_MODES.indexOf(mode);
   return at < 0 ? 'ask' : CYCLED_MODES[(at + 1) % CYCLED_MODES.length];
@@ -78,10 +97,37 @@ export function nextAgentMode(mode: AgentMode): AgentMode {
  * started without a mode, answers in Ask: a later change of the default never changes
  * a conversation that has started.
  */
-export function resolveAgentMode(picked: unknown, hasMessages: boolean, defaultMode: AgentMode | null): AgentMode | null {
+export function resolveAgentMode(
+  picked: unknown,
+  hasMessages: boolean,
+  defaultMode: AgentMode | null,
+  creatorConfirmed = false,
+): AgentMode | null {
   const mode = parseAgentMode(picked);
+  // A conversation saved in Creator answers in Creator only after the user turned it on
+  // (with its confirming click) in this app session; until then it answers in Ask.
+  if (mode === 'creator' && !creatorConfirmed) return 'ask';
   if (mode) return mode;
-  return hasMessages ? 'ask' : defaultMode;
+  if (hasMessages) return 'ask';
+  // Creator is never a default (a Settings file that says so reads as Ask).
+  return defaultMode !== null && !DEFAULTABLE_MODES.includes(defaultMode) ? 'ask' : defaultMode;
+}
+
+/**
+ * Conversations whose Creator mode the user turned on (with the confirming click) in this
+ * app session. Kept in memory only: after a restart, a conversation saved in Creator asks
+ * for the click again before it builds.
+ */
+const creatorTurnedOn = new Set<string>();
+
+/** The user turned Creator on for `conversationId` (the picker's confirming click). */
+export function confirmCreator(conversationId: string): void {
+  creatorTurnedOn.add(conversationId);
+}
+
+/** Whether the user turned Creator on for `conversationId` in this app session. */
+export function creatorConfirmed(conversationId: string | null | undefined): boolean {
+  return typeof conversationId === 'string' && creatorTurnedOn.has(conversationId);
 }
 
 /** What turning Auto on says before it does. */
@@ -120,7 +166,8 @@ export function modeSuggestion(steps: readonly StepLike[], current: AgentMode): 
     if (typeof detail !== 'object' || detail === null) continue;
     const { suggestedMode, reason } = detail as { suggestedMode?: unknown; reason?: unknown };
     const mode = parseAgentMode(suggestedMode);
-    if (!mode || mode === current) return null;
+    // Creator is the user's own pick: never offered as a one-click switch.
+    if (!mode || mode === current || !DEFAULTABLE_MODES.includes(mode)) return null;
     return { mode, reason: typeof reason === 'string' ? reason.slice(0, 160) : '' };
   }
   return null;

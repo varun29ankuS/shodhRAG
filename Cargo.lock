@@ -9318,6 +9318,7 @@ dependencies = [
  "qrcode",
  "regex",
  "reqwest 0.11.27",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",

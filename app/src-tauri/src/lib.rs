@@ -6,6 +6,8 @@ mod background;
 mod connect_commands;
 mod connection_health;
 mod connectors;
+mod creation_commands;
+mod creations;
 mod database_commands;
 mod document_upload_commands;
 mod durable_file;
@@ -194,6 +196,11 @@ pub fn run() {
                 app_settings::on_page_loaded(webview);
             }
         })
+        // Creator mode's previews: agent-built pages in a sandboxed frame (creations/preview.rs).
+        .register_asynchronous_uri_scheme_protocol(
+            creations::preview::SCHEME,
+            creation_commands::preview_protocol,
+        )
         .manage(shutdown::ShutdownState::default())
         .setup(|app| {
             // Installed builds have no console: from here on the log is also kept in
@@ -876,6 +883,18 @@ pub fn run() {
             github::github_set_repo,
             github::github_remove_repo,
             github::github_activity,
+            creation_commands::creations_prepare,
+            creation_commands::creations_list,
+            creation_commands::creation_get,
+            creation_commands::creation_for_conversation,
+            creation_commands::creation_files,
+            creation_commands::creation_file,
+            creation_commands::creation_diff,
+            creation_commands::creation_preview,
+            creation_commands::creation_keep,
+            creation_commands::creation_export,
+            creation_commands::creation_delete,
+            creation_commands::code_changes_list,
             visual_commands::visuals_backfill_status,
             visual_commands::visuals_backfill,
             visual_commands::visuals_list,

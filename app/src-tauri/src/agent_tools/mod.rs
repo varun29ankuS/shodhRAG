@@ -9,9 +9,10 @@
 //! tests use a recording implementation against temporary storage, so the
 //! whole registry can be built and exercised without a window.
 
+mod artifacts;
 mod audit;
 mod calendar;
-mod export;
+pub(crate) mod export;
 mod figures;
 pub(crate) mod files;
 mod graph;
@@ -52,6 +53,7 @@ use crate::research_commands::ResearchState;
 use crate::visual_commands::VisualState;
 use crate::workspace_commands::WorkspaceState;
 
+pub use artifacts::{creator_tools, CREATOR_TOOL_NAMES};
 pub use files::{IndexedRoots, SourceRoots};
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
@@ -249,6 +251,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     graph::register(&mut registry, &host)?;
     figures::register(&mut registry, &host)?;
     workspaces::register(&mut registry, &host)?;
+    artifacts::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
@@ -857,6 +860,11 @@ mod tests {
                         assert_eq!(gate, Gate::Hidden, "{name} {mode:?}")
                     }
                     RiskTier::Read => assert_eq!(gate, Gate::Run, "{name} {mode:?}"),
+                    // Creator mode runs unasked only inside its creation folder: a
+                    // host tool's local edit lands outside it, so it asks.
+                    RiskTier::Write if tool.edits_locally() && mode.creates() => {
+                        assert_eq!(gate, Gate::Ask, "{name} {mode:?}")
+                    }
                     RiskTier::Write if tool.edits_locally() && mode != AgentMode::Ask => {
                         assert_ne!(gate, Gate::Ask, "{name} {mode:?}")
                     }

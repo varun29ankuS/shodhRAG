@@ -31,6 +31,7 @@ use shodh_rag::harness::model_choice::base_url_var;
 use shodh_rag::harness::modes::AgentMode;
 use shodh_rag::harness::profile::{app_tools, is_valid_slug};
 use shodh_rag::harness::run_command::{self, ContainedExecutor};
+use shodh_rag::harness::tools::creation::FINISH_CREATION;
 use shodh_rag::harness::tools::mode::{SuggestModeTool, SUGGEST_MODE};
 use shodh_rag::harness::tools::{
     carried_passages_block, CitedPassage, HostTool, RunScope, ToolRegistry,
@@ -563,6 +564,20 @@ impl AgentSessions {
         entry.session.shutdown().await;
         tracing::info!(target: "shodh::harness", session = %session_id, "{reason}");
         true
+    }
+
+    /// Whether an answer of `conversation_id` is running now.
+    pub fn answering(&self, conversation_id: &str) -> bool {
+        let Some(session_id) = self
+            .by_conversation
+            .get(conversation_id)
+            .map(|sid| sid.value().clone())
+        else {
+            return false;
+        };
+        self.sessions
+            .get(&session_id)
+            .is_some_and(|e| e.session.active_run_id().is_some())
     }
 
     /// Stop the session of `conversation_id` unless an answer is running in it.
@@ -1480,6 +1495,43 @@ const GITHUB_CODE_NOTE: &str = " Use the GitHub tools instead: github_status (si
 /// What a Code session in a mode that only reads is told about GitHub.
 const GITHUB_CODE_READ_NOTE: &str = "\n\nGitHub: commands do not run in this mode. github_status, github_read_issue and github_read_pr read; nothing is fetched, pushed, opened, commented on or merged in this mode. Never try to reach GitHub another way.";
 
+/// Why a Creator answer was refused while Code mode is off.
+pub(crate) const CREATOR_NEEDS_CODE_MODE: &str =
+    "Creator mode makes files and runs commands, so it needs \
+     Code mode, which is off. Turn it on in Settings → Privacy, or pick another mode in the \
+     message box.";
+
+/// What a Creator session is told after its prompt: no GitHub, and where its
+/// work shows.
+const CREATOR_CODE_NOTE: &str = "\n\nGitHub and other accounts are not available in Creator mode: \
+     what you build stays in the creation folder. The user watches the build in the Artifacts \
+     tab (a live preview of index.html, the files and the versions); open_artifact shows them a \
+     version or a pane there, and list_artifacts finds earlier creations.";
+
+/// The creation folder of `conversation_id` (made by `creations_prepare` with
+/// its first request), when it is still a folder in `Shodh Creations`, with
+/// the creation's id.
+async fn creation_code_folder(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<(CodeFolder, String), String> {
+    let data_dir = crate::profile::app_data_dir(app).map_err(|e| e.to_string())?;
+    let root = crate::creation_commands::root(app)?;
+    let conversation = conversation_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = crate::creations::CreationStore::in_dir(&data_dir);
+        let creation = store.for_conversation(&conversation)?.ok_or_else(|| {
+            "Creator mode makes its folder with the conversation's first request. Send it again."
+                .to_string()
+        })?;
+        let folder = creation.checked_folder(&root)?;
+        let folder = CodeFolder::open(&folder).map_err(|e| e.to_string())?;
+        Ok((folder, creation.id))
+    })
+    .await
+    .map_err(|e| format!("Opening the creation folder did not finish: {e}"))?
+}
+
 /// The mode a session answers in: the conversation's (`asked`), else Ask. A side
 /// thread (`side_thread`) answers in Plan when it or its conversation
 /// (`parent_mode`, from the conversation's live session) does, else in Ask.
@@ -1500,6 +1552,61 @@ fn session_mode(
     // The app always sends the conversation's mode (fixed when the conversation
     // started); without one, every change asks.
     asked.unwrap_or(AgentMode::Ask)
+}
+
+/// The summary and choices of a finished `finish_creation` step's detail.
+fn finish_detail(detail: Option<&serde_json::Value>) -> Option<(String, Vec<String>)> {
+    let detail = detail?;
+    let summary = detail.get("summary")?.as_str()?.to_string();
+    let choices = detail
+        .get("choices")?
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect();
+    Some((summary, choices))
+}
+
+/// A Creator conversation's events: its `finish_creation` is kept with the
+/// creation, and each finished answer saves the folder as a version.
+fn track_creation(
+    app: &AppHandle,
+    conversation_id: &str,
+    finish_steps: &mut HashSet<String>,
+    event: &AgentEvent,
+) {
+    match event {
+        AgentEvent::StepStarted { step_id, tool, .. } if tool == FINISH_CREATION => {
+            finish_steps.insert(step_id.clone());
+        }
+        AgentEvent::StepFinished {
+            step_id,
+            ok,
+            detail,
+            ..
+        } => {
+            if finish_steps.remove(step_id) && *ok {
+                if let Some((summary, choices)) = finish_detail(detail.as_ref()) {
+                    tauri::async_runtime::spawn(crate::creation_commands::record_finish(
+                        app.clone(),
+                        conversation_id.to_string(),
+                        summary,
+                        choices,
+                    ));
+                }
+            }
+        }
+        AgentEvent::RunFinished { run_id, .. } => {
+            finish_steps.clear();
+            tauri::async_runtime::spawn(crate::creation_commands::snapshot_after_run(
+                app.clone(),
+                conversation_id.to_string(),
+                run_id.clone(),
+            ));
+        }
+        _ => {}
+    }
 }
 
 /// The system prompt's note on the tools from MCP servers and skills the
@@ -1564,8 +1671,23 @@ async fn start_attempt(
         .map(|i| i.trim().to_string())
         .filter(|i| !i.is_empty())
         .map(|i| truncate(&i, MAX_INSTRUCTIONS_CHARS));
-    // Side threads always answer in Research mode.
+    // Side threads always answer in Research mode. Creator mode works in the
+    // conversation's own creation folder, whatever the workspace.
+    let creates = agent_mode.creates() && parent_conversation_id.is_none();
+    // The creation this conversation builds (its id goes in the prompt).
+    let mut creation_id: Option<String> = None;
     let code_folder = match (mode.unwrap_or_default(), &parent_conversation_id) {
+        _ if creates => Some({
+            // Creator mode changes files and runs commands: the same opt-in as Code mode.
+            if !crate::app_settings::code_mode_enabled(&app_data_dir(&app)?) {
+                return Err(AgentCommandError::invalid(CREATOR_NEEDS_CODE_MODE));
+            }
+            let (folder, id) = creation_code_folder(&app, &conversation_id)
+                .await
+                .map_err(HarnessError::CodeFolder)?;
+            creation_id = Some(id);
+            folder
+        }),
         (ConversationMode::Code, None) => Some({
             // Opt-in: an answer may change files and run commands only once the user
             // turned Code mode on in Settings.
@@ -1807,9 +1929,16 @@ async fn start_attempt(
     counts.stopped(evicted);
 
     let mut extra_tools = extra.map(|e| e.tools).unwrap_or_default();
-    // A Code session reaches GitHub only through Shodh: its commands have no network
-    // and no credentials. First, so no server or skill can take these names.
-    if let Some(folder) = &code_folder {
+    // A Creator session gets its finish card and the Artifacts tab's tools, and
+    // no GitHub tools: what it builds stays in its folder.
+    if creates {
+        extra_tools.splice(
+            0..0,
+            crate::agent_tools::creator_tools(&app_data_dir, &conversation_id),
+        );
+    } else if let Some(folder) = &code_folder {
+        // A Code session reaches GitHub only through Shodh: its commands have no
+        // network and no credentials. First, so no server or skill can take these names.
         let github = shodh_rag::connectors::github::tools::code_tools(
             Arc::new(crate::connectors::github::AppGitHub::new(app.clone())),
             folder.root(),
@@ -1837,7 +1966,12 @@ async fn start_attempt(
     let system_prompt = match &code_folder {
         Some(folder) => {
             let mut prompt = code_system_prompt(folder, instructions.as_deref(), agent_mode);
-            if agent_mode.reads_only() {
+            if creates {
+                prompt.push_str(CREATOR_CODE_NOTE);
+                if let Some(id) = &creation_id {
+                    prompt.push_str(&format!(" This creation's id is {id}."));
+                }
+            } else if agent_mode.reads_only() {
                 prompt.push_str(GITHUB_CODE_READ_NOTE);
             } else {
                 prompt.push_str(if shodh_rag::harness::run_command::commands_sandboxed() {
@@ -1847,7 +1981,10 @@ async fn start_attempt(
                 });
                 prompt.push_str(GITHUB_CODE_NOTE);
             }
-            if !agent_mode.reads_only() && !shodh_rag::harness::run_command::commands_sandboxed() {
+            if !creates
+                && !agent_mode.reads_only()
+                && !shodh_rag::harness::run_command::commands_sandboxed()
+            {
                 prompt.push_str(
                     " On this system commands are not sandboxed, so in Code mode the GitHub tools only read: github_push, github_open_pr, github_comment, github_merge_pr and github_delete_branch refuse. Tell the user to do those from a normal chat.",
                 );
@@ -1857,6 +1994,7 @@ async fn start_attempt(
                 .filter(|n| {
                     !shodh_rag::connectors::github::tools::all_names().contains(&n.as_str())
                         && n.as_str() != SUGGEST_MODE
+                        && !crate::agent_tools::CREATOR_TOOL_NAMES.contains(&n.as_str())
                 })
                 .cloned()
                 .collect();
@@ -1879,8 +2017,11 @@ async fn start_attempt(
     let code = code_folder.as_ref().map(|_| CodeSession {
         conversation_id: conversation_id.clone(),
         branches: CodeBranchStore::in_dir(&app_data_dir),
+        // A creation folder never uses a workspace's command list or build
+        // trust: only Creator mode's own rules decide, with the default limits.
         settings_dir: workspace_id
             .as_deref()
+            .filter(|_| !creates)
             .and_then(|id| workspace_data_dir(&app_data_dir, id)),
         executor: Arc::new(ContainedExecutor),
         // A side thread's commands share its conversation's scratch folder,
@@ -1904,6 +2045,7 @@ async fn start_attempt(
         thinking,
         // Set by the session from the profile's mode.
         code_reads_only: false,
+        code_no_git: false,
     };
 
     let audit_conversation = parent_conversation_id
@@ -1947,11 +2089,16 @@ async fn start_attempt(
     // A finished answer of the conversation itself is announced when the window is not
     // in front; a side thread's work (summaries, follow-ups) is not.
     let forward_announces = parent_conversation_id.is_none();
+    // A Creator conversation's folder is saved as a version when each answer
+    // ends, and its finish card's choices are kept with it.
+    let forward_creates = agent_mode.creates() && parent_conversation_id.is_none();
     tauri::async_runtime::spawn(async move {
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();
         // Steps of the export tool, so a finished export reaches the Inbox.
         let mut export_steps: HashSet<String> = HashSet::new();
+        // Steps of `finish_creation`, whose summary and choices are kept.
+        let mut finish_steps: HashSet<String> = HashSet::new();
         while let Some(event) = events.recv().await {
             // An answer in progress keeps its session in use.
             forward_used.store(now_ms(), Ordering::Relaxed);
@@ -1982,6 +2129,14 @@ async fn start_attempt(
                 &event,
             )
             .await;
+            if forward_creates {
+                track_creation(
+                    &forward_app,
+                    &forward_conversation,
+                    &mut finish_steps,
+                    &event,
+                );
+            }
             if forward_announces {
                 crate::notifications::answer_finished(&forward_app, &forward_conversation, &event);
             }
@@ -3138,8 +3293,12 @@ async fn chat_tools_with(
                 .into_iter()
                 .chain(shodh_rag::connectors::github::tools::all_names())
                 .chain(std::iter::once(SUGGEST_MODE))
+                .chain(crate::agent_tools::CREATOR_TOOL_NAMES)
                 .collect(),
-            CODE_BUILTIN_TOOLS + shodh_rag::connectors::github::tools::all_names().len() + 1,
+            CODE_BUILTIN_TOOLS
+                + shodh_rag::connectors::github::tools::all_names().len()
+                + 1
+                + crate::agent_tools::CREATOR_TOOL_NAMES.len(),
         ),
         None => {
             let names = registry.names();

@@ -58,9 +58,11 @@ pub mod app_tools {
     pub const RESUME_INDEXING: &str = "resume_indexing";
     pub const CANCEL_INDEXING: &str = "cancel_indexing";
     pub const SYSTEM_STATUS: &str = "system_status";
+    pub const LIST_ARTIFACTS: &str = "list_artifacts";
+    pub const OPEN_ARTIFACT: &str = "open_artifact";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 49] = [
+    pub const ALL: [&str; 51] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -110,6 +112,8 @@ pub mod app_tools {
         RESUME_INDEXING,
         CANCEL_INDEXING,
         SYSTEM_STATUS,
+        LIST_ARTIFACTS,
+        OPEN_ARTIFACT,
     ];
 }
 

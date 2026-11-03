@@ -147,3 +147,21 @@ test('workspace targets carry the workspace and a known tab', () => {
   });
   assert.equal(parseTarget({ kind: 'workspace', workspaceId: '', tab: null }), null);
 });
+
+test('artifact targets carry the creation, a version and a known pane', () => {
+  const id = 'cr_0123456789abcdef0123456789abcdef';
+  assert.deepEqual(parseTarget({ kind: 'artifact', artifactId: id, version: 2, pane: 'files' }), {
+    kind: 'artifact',
+    artifactId: id,
+    version: 2,
+    pane: 'files',
+  });
+  // An unknown pane or a bad version falls back; the creation is still shown.
+  assert.deepEqual(parseTarget({ kind: 'artifact', artifactId: id, version: 0, pane: 'settings' }), {
+    kind: 'artifact',
+    artifactId: id,
+    version: null,
+    pane: null,
+  });
+  assert.equal(parseTarget({ kind: 'artifact', artifactId: '', version: 1, pane: 'preview' }), null);
+});

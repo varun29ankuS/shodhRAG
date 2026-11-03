@@ -74,7 +74,9 @@ import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
-import { PLAN_APPROVED_TEXT, modeSuggestion, nextAgentMode, resolveAgentMode } from '../agent/agentModes';
+import { CreatorFinishCard } from '../artifacts/CreatorFinishCard';
+import { CHANGE_DRAFT, finishCard } from '../artifacts/model';
+import { PLAN_APPROVED_TEXT, confirmCreator, creatorConfirmed, modeSuggestion, nextAgentMode, resolveAgentMode } from '../agent/agentModes';
 import type { AgentMode } from '../agent/agentModes';
 import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { DiagramHostContext } from './visual/diagramHost';
@@ -387,6 +389,8 @@ interface AssistantMessageProps {
   modeActionsDisabled: boolean;
   onApprovePlan: (mode: AgentMode) => void;
   onSwitchMode: (mode: AgentMode) => void;
+  /** Change something (a Creator answer's finish card): the composer starts a change. */
+  onChangeCreation: () => void;
 }
 
 /** How long an answer reached with "Go to message" stays highlighted. */
@@ -414,6 +418,7 @@ function AssistantMessageView({
   modeActionsDisabled,
   onApprovePlan,
   onSwitchMode,
+  onChangeCreation,
 }: AssistantMessageProps) {
   const transcript = message.transcript;
   const passages = transcript?.passages;
@@ -432,6 +437,12 @@ function AssistantMessageView({
   }, [transcript, agentMode]);
   // Keyed to the mode the answer was written in, never to the picker now.
   const planDone = transcript?.agentMode === 'plan' && transcript.status === 'completed' && message.content.trim().length > 0;
+  // A Creator answer's finish card: what it built and the choices it made.
+  const finished = useMemo(() => {
+    if (!transcript || transcript.agentMode !== 'creator') return null;
+    const steps = transcript.blocks.flatMap(b => (b.kind === 'step' && transcript.steps[b.stepId] ? [transcript.steps[b.stepId]] : []));
+    return finishCard(steps);
+  }, [transcript]);
   // Depend on the id only: the message object changes on every streamed
   // frame, and a new callback would rebuild the markdown component map.
   const messageId = message.id;
@@ -546,6 +557,15 @@ function AssistantMessageView({
       )}
 
       {!running && message.threads && <ThreadChips threads={message.threads} onOpen={openThread} />}
+
+      {!running && finished && conversationId && (
+        <CreatorFinishCard
+          conversationId={conversationId}
+          card={finished}
+          onChange={onChangeCreation}
+          disabled={modeActionsDisabled}
+        />
+      )}
 
       {!running && agentMode && (
         <ModeActions
@@ -734,15 +754,24 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // conversation without its own mode follows the default in Settings. Only the user
   // changes it: the picker, Shift+Tab in the composer, or a suggestion's button.
   const defaultAgentMode = useDefaultAgentMode();
+  // Bumped when the user turns Creator on, so the view reads the confirmation.
+  const [creatorTurnedOn, setCreatorTurnedOn] = useState(0);
   // Null while the default is read (the picker says so, and nothing is sent).
   const agentMode: AgentMode | null = resolveAgentMode(
     session.activeConversation?.agentMode,
     messages.length > 0,
     defaultAgentMode,
+    creatorTurnedOn >= 0 && creatorConfirmed(session.activeConversationId),
   );
   const changeAgentMode = useCallback((next: AgentMode) => {
     const id = session.activeConversationId;
-    if (id) updateConversationMeta(id, { agentMode: next });
+    if (!id) return;
+    // The picker hands Creator over only after its confirming click.
+    if (next === 'creator') {
+      confirmCreator(id);
+      setCreatorTurnedOn(n => n + 1);
+    }
+    updateConversationMeta(id, { agentMode: next });
   }, [session.activeConversationId, updateConversationMeta]);
   const agentModeRef = useRef(agentMode);
   agentModeRef.current = agentMode;
@@ -1036,6 +1065,12 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
     if (isStreaming || busyElsewhere) return;
     if (send(PLAN_APPROVED_TEXT, sendOptions)) composerRef.current?.focus();
   }, [planApproval, session.activeConversationId, session.activeConversation?.agentMode, isStreaming, busyElsewhere, send, sendOptions]);
+
+  // Change something on a Creator answer's finish card: the next request changes the build.
+  const changeCreation = useCallback(() => {
+    setDraft(CHANGE_DRAFT);
+    composerRef.current?.focus();
+  }, [setDraft]);
 
   const submitSteer = useCallback(() => {
     const text = draft.trim();
@@ -1421,6 +1456,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         modeActionsDisabled={index === messages.length - 1 && (isStreaming || busyElsewhere)}
         onApprovePlan={approvePlan}
         onSwitchMode={changeAgentMode}
+        onChangeCreation={changeCreation}
       />
     );
     if (!learned || learned.length === 0) return answer;

@@ -37,6 +37,9 @@ function reqString(value: unknown): string | null {
 /** Tabs of a workspace page a target may open. */
 const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results', 'tables'];
 
+/** Panes of an artifact a target may open (`open_artifact`). */
+export const ARTIFACT_PANES: readonly string[] = ['preview', 'files', 'versions'];
+
 /** A valid target, or null for anything malformed or unknown. */
 export function parseTarget(value: unknown): NavigationTarget | null {
   if (!isRecord(value)) return null;
@@ -83,6 +86,14 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const tab = optString(value.tab);
       return workspaceId
         ? { kind: 'workspace', workspaceId, tab: tab && WORKSPACE_TABS.includes(tab) ? tab : null }
+        : null;
+    }
+    case 'artifact': {
+      const artifactId = reqString(value.artifactId);
+      const version = typeof value.version === 'number' && Number.isInteger(value.version) && value.version > 0 ? value.version : null;
+      const pane = optString(value.pane);
+      return artifactId
+        ? { kind: 'artifact', artifactId, version, pane: pane && ARTIFACT_PANES.includes(pane) ? pane : null }
         : null;
     }
     default:

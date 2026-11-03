@@ -69,6 +69,14 @@ const KEYCHAIN_SERVICES: &[&str] = &[
     "com.apple.security.authhost",
 ];
 
+/// What a policy with the network on adds after `(deny network*)`: outbound
+/// connections to any IP address and port, and the DNS resolver's socket.
+/// Seatbelt cannot name a host, so this is the whole internet. No
+/// `system-socket` (kernel-control sockets): TCP and DNS need neither, which
+/// the macOS sandbox tests check by connecting with this profile.
+pub const NETWORK_ON: &str = "(allow network-outbound (remote ip \"*:*\"))\n\
+     (allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n";
+
 /// A rendered profile: its text and the paths its parameters name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
@@ -209,11 +217,12 @@ pub fn render(policy: &SandboxPolicy) -> Profile {
         text.push_str(&format!(" (global-name \"{service}\")"));
     }
     text.push_str(")\n(deny mach-lookup (xpc-service-name-prefix \"\"))\n");
-    text.push_str("\n; Shodh: network\n");
+    text.push_str("\n; Shodh: network\n(deny network*)\n");
     if policy.network {
-        text.push_str("(allow network*)\n");
-    } else {
-        text.push_str("(deny network*)\n");
+        // An install the user approved (Creator mode): connections over IP and
+        // the system's DNS resolver only. Never another Unix socket: one reaches
+        // a local service outside the sandbox (an SSH agent, Docker).
+        text.push_str(NETWORK_ON);
     }
     Profile {
         text,
@@ -323,6 +332,29 @@ mod tests {
         // Nothing after the rule allows a lookup again.
         assert!(!profile.text[rule..].contains("(allow mach-lookup"));
         assert!(profile.text.trim_end().ends_with("(deny network*)"));
+    }
+
+    #[test]
+    fn an_approved_install_gets_ip_and_dns_only_and_the_profile_is_accepted() {
+        let off = render(&policy());
+        let on = render(&policy().with_network(true));
+        // Everything but the network section is the same.
+        assert!(on.text.starts_with(&off.text));
+        assert_eq!(on.params, off.params);
+        let added = &on.text[off.text.len()..];
+        assert_eq!(added, NETWORK_ON);
+        // Never every socket: no `network*` allow, and the only Unix socket is
+        // the DNS resolver's.
+        assert!(!on.text.contains("(allow network*)"));
+        assert!(!on.text.contains("system-socket"));
+        assert_eq!(on.text.matches("unix-socket").count(), 1);
+        assert!(added.contains("mDNSResponder"));
+        // Nothing after the keychain rule allows a lookup.
+        let rule = on.text.find("(deny mach-lookup (global-name").unwrap();
+        assert!(!on.text[rule..].contains("(allow mach-lookup"));
+        // macOS accepts the profile.
+        check(Path::new(SANDBOX_EXEC), &on).unwrap();
+        check(Path::new(SANDBOX_EXEC), &off).unwrap();
     }
 
     #[test]

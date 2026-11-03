@@ -12,6 +12,7 @@
 //! Failures at any step become a structured error result for the model; the
 //! tool does not run.
 
+pub mod creation;
 pub mod documents;
 pub mod mode;
 pub mod navigate;
@@ -2350,17 +2351,30 @@ mod tests {
     #[tokio::test]
     async fn every_mode_decides_every_risk_tier() {
         // (tier, local edit, changes files unasked) → per mode: Run, Ask or Hidden.
-        type Row = (RiskTier, bool, bool, [Gate; 4]);
+        type Row = (RiskTier, bool, bool, [Gate; 5]);
         use Gate::{Ask, Hidden, Run};
-        // Order: Ask, AcceptEdits, Plan, Auto (AgentMode::ALL).
+        // Order: Ask, AcceptEdits, Plan, Auto, Creator (AgentMode::ALL). Creator
+        // runs a host tool's local edit only after asking: it lands outside the
+        // creation folder.
         let rows: [Row; 6] = [
-            (RiskTier::Read, false, false, [Run, Run, Run, Run]),
-            (RiskTier::Read, false, true, [Run, Run, Hidden, Run]),
-            (RiskTier::Write, true, false, [Ask, Run, Hidden, Run]),
-            (RiskTier::Write, false, false, [Ask, Ask, Hidden, Ask]),
-            (RiskTier::Destructive, false, false, [Ask, Ask, Hidden, Ask]),
-            (RiskTier::Destructive, true, false, [Ask, Ask, Hidden, Ask]),
+            (RiskTier::Read, false, false, [Run, Run, Run, Run, Run]),
+            (RiskTier::Read, false, true, [Run, Run, Hidden, Run, Run]),
+            (RiskTier::Write, true, false, [Ask, Run, Hidden, Run, Ask]),
+            (RiskTier::Write, false, false, [Ask, Ask, Hidden, Ask, Ask]),
+            (
+                RiskTier::Destructive,
+                false,
+                false,
+                [Ask, Ask, Hidden, Ask, Ask],
+            ),
+            (
+                RiskTier::Destructive,
+                true,
+                false,
+                [Ask, Ask, Hidden, Ask, Ask],
+            ),
         ];
+        assert_eq!(AgentMode::ALL.len(), 5);
         for (tier, local_edit, unasked, gates) in rows {
             for (mode, gate) in AgentMode::ALL.into_iter().zip(gates) {
                 let (asked, ran, outcome, approvals) =

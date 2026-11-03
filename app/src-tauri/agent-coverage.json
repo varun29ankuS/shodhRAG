@@ -199,6 +199,7 @@
     "table_model_status": { "excluded": "Reports whether the optional table structure model is installed (Settings); tables are refined with it automatically, so the assistant has nothing to act on." },
     "install_table_model": { "excluded": "Downloads the table structure model (about 212 MB); a user-started install of a local model, like the other model downloads." },
     "set_code_mode": { "excluded": "Code mode lets answers change files and run commands on this computer; user-only (AGENT_DENIED: code_mode), and an agent that could turn it on would widen its own powers." },
+    "set_default_agent_mode": { "excluded": "The default mode decides what runs without asking in new conversations; user-only (AGENT_DENIED: default_mode, agent), and an agent that could change it would relax its own approvals." },
     "set_answer_preferences": { "excluded": "Whether flagged statements are re-checked guards the assistant's own answers; user-only, and the settings tools refuse auto_repair." },
     "set_notification_preferences": { "excluded": "Whether and when Shodh interrupts the user with desktop notifications is the user's decision (AGENT_DENIED: notifications); an agent that could change it could silence its own approval requests." },
     "send_test_notification": { "excluded": "Checks that the system shows Shodh's notifications, for the user looking at Settings; the assistant has nothing to learn from a notification only the user can see." },

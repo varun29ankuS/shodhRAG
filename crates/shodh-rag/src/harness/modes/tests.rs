@@ -420,3 +420,62 @@ fn explanations_cut_untrusted_words() {
     let reason = asks(&format!("{} x", "z".repeat(200)));
     assert!(reason.chars().count() < 100, "{reason}");
 }
+
+#[test]
+fn response_files_ask_for_every_program() {
+    for command in [
+        "pytest @ci-args.txt",
+        "pytest -q @args",
+        "cargo test @flags",
+        "cargo build -- @x",
+        "go test @x",
+        "ruff check @x",
+        "grep -rn x @list",
+        "git log @",
+    ] {
+        let reason = asks(command);
+        assert!(reason.contains("@file"), "{command:?}: {reason}");
+    }
+    // An @ inside a word is not a response file.
+    runs("git show HEAD@");
+}
+
+#[test]
+fn commands_are_told_apart_inspecting_from_running_project_code() {
+    for command in [
+        "git status",
+        "git log --oneline -5",
+        "ls -la src",
+        "cat README.md",
+        "grep -rn TODO src",
+        "rg -n x src",
+        "pwd",
+        "ruff check src",
+        "ruff format --check .",
+        "ruff format --diff src",
+    ] {
+        assert!(!check(command).unwrap().runs_project_code, "{command}");
+    }
+    for command in [
+        "cargo test",
+        "cargo fmt --check",
+        "cargo check",
+        "cargo clippy -- -D warnings",
+        "npm test",
+        "pnpm run lint",
+        "yarn run build",
+        "pytest -q",
+        "go vet ./...",
+        "go test ./...",
+        "ruff check --fix src",
+        "ruff format src",
+    ] {
+        assert!(check(command).unwrap().runs_project_code, "{command}");
+    }
+}
+
+#[test]
+fn rg_files_checks_every_path() {
+    assert_eq!(check("rg --files src docs").unwrap().reads, ["src", "docs"]);
+    assert_eq!(check("rg needle src").unwrap().reads, ["src"]);
+}

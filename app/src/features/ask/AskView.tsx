@@ -74,7 +74,7 @@ import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
-import { PLAN_APPROVED_TEXT, modeSuggestion, nextAgentMode } from '../agent/agentModes';
+import { PLAN_APPROVED_TEXT, modeSuggestion, nextAgentMode, resolveAgentMode } from '../agent/agentModes';
 import type { AgentMode } from '../agent/agentModes';
 import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { DiagramHostContext } from './visual/diagramHost';
@@ -430,7 +430,8 @@ function AssistantMessageView({
     const steps = transcript.blocks.flatMap(b => (b.kind === 'step' && transcript.steps[b.stepId] ? [transcript.steps[b.stepId]] : []));
     return modeSuggestion(steps, agentMode);
   }, [transcript, agentMode]);
-  const planDone = agentMode === 'plan' && transcript?.status === 'completed' && message.content.trim().length > 0;
+  // Keyed to the mode the answer was written in, never to the picker now.
+  const planDone = transcript?.agentMode === 'plan' && transcript.status === 'completed' && message.content.trim().length > 0;
   // Depend on the id only: the message object changes on every streamed
   // frame, and a new callback would rebuild the markdown component map.
   const messageId = message.id;
@@ -733,14 +734,22 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   // conversation without its own mode follows the default in Settings. Only the user
   // changes it: the picker, Shift+Tab in the composer, or a suggestion's button.
   const defaultAgentMode = useDefaultAgentMode();
-  const agentMode: AgentMode = session.activeConversation?.agentMode ?? defaultAgentMode;
+  // Null while the default is read (the picker says so, and nothing is sent).
+  const agentMode: AgentMode | null = resolveAgentMode(
+    session.activeConversation?.agentMode,
+    messages.length > 0,
+    defaultAgentMode,
+  );
   const changeAgentMode = useCallback((next: AgentMode) => {
     const id = session.activeConversationId;
     if (id) updateConversationMeta(id, { agentMode: next });
   }, [session.activeConversationId, updateConversationMeta]);
   const agentModeRef = useRef(agentMode);
   agentModeRef.current = agentMode;
-  const cycleAgentMode = useCallback(() => changeAgentMode(nextAgentMode(agentModeRef.current)), [changeAgentMode]);
+  const cycleAgentMode = useCallback(() => {
+    const current = agentModeRef.current;
+    if (current) changeAgentMode(nextAgentMode(current));
+  }, [changeAgentMode]);
   // "Approve plan · <mode>": the mode changes first; the approval is sent once the
   // conversation answers in that mode, so the plan never runs in Plan mode's session.
   const [planApproval, setPlanApproval] = useState<{ conversationId: string; mode: AgentMode } | null>(null);
@@ -757,6 +766,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
   const queued = useQueuedQuestion(session.activeConversationId);
   const blockedReason = queued.waiting
     ? 'Your question is sent as soon as Shodh is ready.'
+    : agentMode === null
+    ? 'Reading your default mode…'
     : sideRun
     ? `Answering your side question about “${sideRun.label}”. You can send once it finishes; to stop it, reopen that discussion and press Esc.`
     : busyElsewhere

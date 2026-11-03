@@ -917,6 +917,7 @@ fn spec_in(folder: &Path, scratch: &Path, command: &str, secs: u64, memory_mb: u
         scratch: scratch.to_path_buf(),
         data_dir: scratch.ancestors().nth(2).unwrap().to_path_buf(),
         limits: CommandLimits::for_call(&settings(secs.max(10), memory_mb, 100), Some(secs)),
+        offline: false,
     }
 }
 
@@ -1926,5 +1927,71 @@ mod processes {
             assert_eq!(outcome.state, CommandState::Done, "{command}: {outcome:?}");
             assert_eq!(outcome.exit_code, Some(0), "{command}: {outcome:?}");
         }
+    }
+}
+
+#[test]
+fn path_entries_a_project_could_stand_in_for_are_dropped() {
+    let folder = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let sep = PATH_SEPARATOR;
+    let keep = outside.path().display().to_string();
+    let path = [
+        String::new(),
+        ".".to_string(),
+        "node_modules/.bin".to_string(),
+        "bin".to_string(),
+        folder.path().display().to_string(),
+        folder
+            .path()
+            .join("node_modules")
+            .join(".bin")
+            .display()
+            .to_string(),
+        scratch.path().join("bin").display().to_string(),
+        keep.clone(),
+        "  ".to_string(),
+    ]
+    .join(&sep.to_string());
+    assert_eq!(
+        sanitized_path(&path, folder.path(), scratch.path(), sep),
+        keep
+    );
+    // A PATH that ends with its separator (an empty last entry) loses it.
+    assert_eq!(
+        sanitized_path(&format!("{keep}{sep}"), folder.path(), scratch.path(), sep),
+        keep
+    );
+}
+
+#[test]
+fn an_auto_run_home_starts_empty() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = fresh_scratch(scratch.path()).unwrap();
+    assert_eq!(home, scratch.path().join(AUTO_RUN_HOME));
+    std::fs::create_dir_all(home.join(".config")).unwrap();
+    std::fs::write(home.join(".npmrc"), "script-shell=evil").unwrap();
+    std::fs::write(scratch.path().join("kept.txt"), "x").unwrap();
+    let again = fresh_scratch(scratch.path()).unwrap();
+    assert!(!again.exists(), "what an earlier command left is gone");
+    assert!(
+        scratch.path().join("kept.txt").exists(),
+        "the conversation's own home is kept"
+    );
+}
+
+#[test]
+fn auto_runs_are_offline_where_tools_allow() {
+    let names: Vec<&str> = OFFLINE_ENV.iter().map(|(name, _)| *name).collect();
+    for name in [
+        "CARGO_NET_OFFLINE",
+        "RUSTUP_AUTO_INSTALL",
+        "npm_config_offline",
+        "GOPROXY",
+        "GOTOOLCHAIN",
+        "PIP_NO_INDEX",
+    ] {
+        assert!(names.contains(&name), "{name}");
     }
 }

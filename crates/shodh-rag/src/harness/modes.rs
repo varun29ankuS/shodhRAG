@@ -11,7 +11,7 @@
 //! | [`AgentMode::Ask`] | reads, searches | every change, command and outward action |
 //! | [`AgentMode::AcceptEdits`] | + edits inside the project or workspace | commands, anything leaving the computer |
 //! | [`AgentMode::Plan`] | reads only: tools that change anything are not given to the model | — (the user approves the plan, then picks the mode it runs in) |
-//! | [`AgentMode::Auto`] | + commands that match Shodh's rules ([`rules`]) | every other command, anything leaving the computer |
+//! | [`AgentMode::Auto`] | + commands that match Shodh's rules ([`rules`]): ones that only inspect everywhere; builds and tests where commands are sandboxed, in a workspace the user trusts, or after the conversation's first was approved | every other command, anything leaving the computer |
 //!
 //! The floor no mode removes: destructive tools, tools that always confirm
 //! ([`super::tools::HostTool::must_confirm_in`]: GitHub pushes, pull
@@ -102,11 +102,13 @@ impl AgentMode {
             }
             AgentMode::Plan => PLAN_NOTE,
             AgentMode::Auto => {
-                "Mode: Auto. Edits and low-risk commands (tests, builds, linters, read-only git \
-                 and file commands, each a single plain command) run without asking; any other \
-                 command, and anything that leaves this computer, still waits for the user's \
-                 approval. Run one plain command per call: chained, piped or redirected \
-                 commands always ask."
+                "Mode: Auto. Edits and commands that only read (git status, diff and log, ls, \
+                 cat, grep, a linter that changes nothing) run without asking. Builds and tests \
+                 run the project's own code: they run without asking only where commands are \
+                 sandboxed or in a workspace the user trusts, and otherwise the first one in a \
+                 conversation asks. Any other command, and anything that leaves this computer, \
+                 waits for the user's approval. Run one plain command per call: chained, piped \
+                 or redirected commands always ask."
             }
         }
     }

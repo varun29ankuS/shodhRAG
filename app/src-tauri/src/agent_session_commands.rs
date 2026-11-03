@@ -1467,29 +1467,39 @@ fn key_changed_since(llm: &LLMState, read: Option<KeyRead>) -> Option<ProviderId
 
 /// What a Code session is told about GitHub: its commands are offline, so remote git
 /// goes through Shodh's GitHub tools.
-const GITHUB_CODE_NOTE: &str = "\n\nGitHub: commands have no network and no credentials, so git fetch, pull and push in run_command fail. Use the GitHub tools instead: github_status (sign-in, which repositories Shodh may reach, this project's remotes), github_fetch (fetch only; merge or rebase afterwards with a local git command), github_push (pushes the current commit to a shodh/<topic> branch; commit first), github_open_pr, github_read_issue, github_read_pr, github_comment, github_merge_pr and github_delete_branch. If the project's remote is not on the user's list, ask with github_request_access. Every push, pull request, comment and merge asks the user. Never try to reach GitHub another way.";
+/// What a Code session is told about GitHub where commands are sandboxed (no network).
+const GITHUB_CODE_NOTE_SANDBOXED: &str = "\n\nGitHub: commands have no network and no credentials, so git fetch, pull and push in run_command fail.";
+
+/// Where commands are not sandboxed: they may reach the network, but have no
+/// GitHub credentials.
+const GITHUB_CODE_NOTE_UNSANDBOXED: &str = "\n\nGitHub: commands are not sandboxed on this system and may reach the network, but they get no GitHub credentials, so git fetch, pull and push in run_command fail. Never use a command to reach GitHub or to download anything the user did not ask for.";
+
+/// The GitHub tools, after the note on commands.
+const GITHUB_CODE_NOTE: &str = " Use the GitHub tools instead: github_status (sign-in, which repositories Shodh may reach, this project's remotes), github_fetch (fetch only; merge or rebase afterwards with a local git command), github_push (pushes the current commit to a shodh/<topic> branch; commit first), github_open_pr, github_read_issue, github_read_pr, github_comment, github_merge_pr and github_delete_branch. If the project's remote is not on the user's list, ask with github_request_access. Every push, pull request, comment and merge asks the user. Never try to reach GitHub another way.";
 
 /// What a Code session in a mode that only reads is told about GitHub.
-const GITHUB_CODE_READ_NOTE: &str = "\n\nGitHub: commands do not run in this mode. github_status, github_read_issue and github_read_pr read; nothing is pushed, opened, commented on or merged in this mode. Never try to reach GitHub another way.";
+const GITHUB_CODE_READ_NOTE: &str = "\n\nGitHub: commands do not run in this mode. github_status, github_read_issue and github_read_pr read; nothing is fetched, pushed, opened, commented on or merged in this mode. Never try to reach GitHub another way.";
 
-/// The mode a session answers in: the conversation's (`asked`), else the default
-/// in Settings (Ask when they cannot be read). A side thread (`side_thread`)
-/// always answers in Ask mode.
+/// The mode a session answers in: the conversation's (`asked`), else Ask. A side
+/// thread (`side_thread`) answers in Plan when it or its conversation
+/// (`parent_mode`, from the conversation's live session) does, else in Ask.
 fn session_mode(
     asked: Option<AgentMode>,
+    parent_mode: Option<AgentMode>,
     side_thread: bool,
-    data_dir: &std::path::Path,
 ) -> AgentMode {
     if side_thread {
-        return AgentMode::Ask;
-    }
-    asked.unwrap_or_else(|| match SettingsStore::in_dir(data_dir).load() {
-        Ok(settings) => settings.agent.default_mode,
-        Err(e) => {
-            tracing::warn!(target: "shodh::harness", error = %e, "settings unreadable; the answer asks for every change");
+        // A side run (summary, refinement, diagram fix) of a conversation that only
+        // reads only reads too; any other asks for every change.
+        return if asked == Some(AgentMode::Plan) || parent_mode == Some(AgentMode::Plan) {
+            AgentMode::Plan
+        } else {
             AgentMode::Ask
-        }
-    })
+        };
+    }
+    // The app always sends the conversation's mode (fixed when the conversation
+    // started); without one, every change asks.
+    asked.unwrap_or(AgentMode::Ask)
 }
 
 /// The system prompt's note on the tools from MCP servers and skills the
@@ -1543,11 +1553,12 @@ async fn start_attempt(
         .ok_or_else(|| HarnessError::UnknownProfile(profile_id.clone()))?;
     // The conversation's mode, which only the user sets (absent: the default in
     // Settings). Side threads (summaries, refinements, follow-ups) always ask.
-    let agent_mode = session_mode(
-        agent_mode,
-        parent_conversation_id.is_some(),
-        &app_data_dir(&app)?,
-    );
+    let parent_mode = parent_conversation_id.as_deref().and_then(|parent| {
+        let session_id = sessions.by_conversation.get(parent)?.value().clone();
+        let mode = sessions.sessions.get(&session_id)?.agent_mode;
+        Some(mode)
+    });
+    let agent_mode = session_mode(agent_mode, parent_mode, parent_conversation_id.is_some());
     profile.mode = agent_mode;
     let instructions = instructions
         .map(|i| i.trim().to_string())
@@ -1826,11 +1837,16 @@ async fn start_attempt(
     let system_prompt = match &code_folder {
         Some(folder) => {
             let mut prompt = code_system_prompt(folder, instructions.as_deref(), agent_mode);
-            prompt.push_str(if agent_mode.reads_only() {
-                GITHUB_CODE_READ_NOTE
+            if agent_mode.reads_only() {
+                prompt.push_str(GITHUB_CODE_READ_NOTE);
             } else {
-                GITHUB_CODE_NOTE
-            });
+                prompt.push_str(if shodh_rag::harness::run_command::commands_sandboxed() {
+                    GITHUB_CODE_NOTE_SANDBOXED
+                } else {
+                    GITHUB_CODE_NOTE_UNSANDBOXED
+                });
+                prompt.push_str(GITHUB_CODE_NOTE);
+            }
             if !agent_mode.reads_only() && !shodh_rag::harness::run_command::commands_sandboxed() {
                 prompt.push_str(
                     " On this system commands are not sandboxed, so in Code mode the GitHub tools only read: github_push, github_open_pr, github_comment, github_merge_pr and github_delete_branch refuse. Tell the user to do those from a normal chat.",
@@ -2780,6 +2796,12 @@ pub async fn code_settings_set(
     audit: State<'_, AuditState>,
 ) -> CommandResult<CodeSettings> {
     let dir = workspace_settings_dir(&app, &workspace_id)?;
+    // Trust in the workspace's builds is given only by `code_trust_builds`: a save
+    // of the other settings keeps what is on disk, whatever it sends.
+    let mut settings = settings;
+    settings.build_trust = CodeSettings::load(&dir)
+        .map_err(AgentCommandError::invalid)?
+        .build_trust;
     let saved = tokio::task::spawn_blocking(move || settings.save(&dir))
         .await
         .map_err(|e| AgentCommandError::invalid(e.to_string()))?
@@ -2795,6 +2817,141 @@ pub async fn code_settings_set(
         }),
     ));
     Ok(saved)
+}
+
+/// Whether Auto mode may run a workspace's own builds and tests without asking,
+/// as Code settings show it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildTrustStatus {
+    /// Commands are sandboxed on this system: builds and tests run without
+    /// asking in Auto mode whatever the trust.
+    pub sandboxed: bool,
+    /// The user trusts the workspace, and its build files are as they were then.
+    pub trusted: bool,
+    /// Trust was given, but the project changed since (what changed).
+    pub lapsed: Option<String>,
+    /// Why trust cannot be given (no code folder, not a git repository).
+    pub problem: Option<String>,
+}
+
+/// The workspace's code folder and settings folder.
+async fn trust_target(
+    app: &AppHandle,
+    workspaces: &WorkspaceState,
+    workspace_id: &str,
+) -> CommandResult<(Result<CodeFolder, String>, std::path::PathBuf)> {
+    let dir = workspace_settings_dir(app, workspace_id)?;
+    Ok((
+        workspace_code_folder(workspaces, Some(workspace_id)).await,
+        dir,
+    ))
+}
+
+/// The trust status of `settings` for `folder` now.
+async fn trust_status(
+    folder: Result<CodeFolder, String>,
+    settings: &CodeSettings,
+) -> BuildTrustStatus {
+    let sandboxed = run_command::commands_sandboxed();
+    let folder = match folder {
+        Ok(folder) => folder,
+        Err(problem) => {
+            return BuildTrustStatus {
+                sandboxed,
+                trusted: false,
+                lapsed: None,
+                problem: Some(problem),
+            }
+        }
+    };
+    let root = folder.root().to_path_buf();
+    let now = tokio::task::spawn_blocking(move || {
+        shodh_rag::harness::code_mode::project_fingerprint(&root)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match now {
+        Err(problem) => BuildTrustStatus {
+            sandboxed,
+            trusted: false,
+            lapsed: None,
+            problem: Some(problem),
+        },
+        Ok(now) => {
+            let held = settings.build_trust_for(&now);
+            BuildTrustStatus {
+                sandboxed,
+                trusted: held.is_ok(),
+                lapsed: settings.build_trust.as_ref().and(held.err()),
+                problem: None,
+            }
+        }
+    }
+}
+
+/// Whether the user trusts the workspace to run its own builds and tests.
+#[tauri::command]
+pub async fn code_build_trust(
+    app: AppHandle,
+    workspace_id: String,
+    workspaces: State<'_, WorkspaceState>,
+) -> CommandResult<BuildTrustStatus> {
+    let (folder, dir) = trust_target(&app, &workspaces, workspace_id.trim()).await?;
+    let settings = CodeSettings::load(&dir).map_err(AgentCommandError::invalid)?;
+    Ok(trust_status(folder, &settings).await)
+}
+
+/// Trust (or stop trusting) the workspace to run its own builds and tests without
+/// asking in Auto mode, as its build files are now. User-only: no agent tool calls
+/// this. Any later change to those files (a pull, a checkout, a command, an edit)
+/// revokes the trust until the user gives it again.
+#[tauri::command]
+pub async fn code_trust_builds(
+    app: AppHandle,
+    workspace_id: String,
+    trusted: bool,
+    workspaces: State<'_, WorkspaceState>,
+    audit: State<'_, AuditState>,
+) -> CommandResult<BuildTrustStatus> {
+    let workspace_id = workspace_id.trim().to_string();
+    let (folder, dir) = trust_target(&app, &workspaces, &workspace_id).await?;
+    let mut settings = CodeSettings::load(&dir).map_err(AgentCommandError::invalid)?;
+    settings.build_trust = if trusted {
+        let root = folder
+            .as_ref()
+            .map_err(|problem| AgentCommandError::invalid(problem.clone()))?
+            .root()
+            .to_path_buf();
+        let fingerprint = tokio::task::spawn_blocking(move || {
+            shodh_rag::harness::code_mode::project_fingerprint(&root)
+        })
+        .await
+        .map_err(|e| AgentCommandError::invalid(e.to_string()))?
+        .map_err(AgentCommandError::invalid)?;
+        Some(shodh_rag::harness::code_mode::BuildTrust {
+            fingerprint,
+            trusted_at: chrono::Utc::now().to_rfc3339(),
+        })
+    } else {
+        None
+    };
+    let save_dir = dir.clone();
+    let saved = tokio::task::spawn_blocking(move || settings.save(&save_dir))
+        .await
+        .map_err(|e| AgentCommandError::invalid(e.to_string()))?
+        .map_err(AgentCommandError::invalid)?;
+    tracing::info!(target: "shodh::audit", event = "code_build_trust", workspace = %workspace_id, trusted, "workspace build trust changed");
+    audit.record(AuditRecord::new(
+        AuditEventType::SettingsChange,
+        json!({
+            "action": "code_build_trust",
+            "workspace": workspace_id,
+            "trusted": trusted,
+            "via": "ui",
+        }),
+    ));
+    Ok(trust_status(folder, &saved).await)
 }
 
 /// Most paths one check takes.
@@ -3191,6 +3348,40 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn side_runs_of_a_plan_conversation_only_read_and_no_mode_asks() {
+        // A side run of a Plan conversation, known from its live session or sent.
+        assert_eq!(
+            session_mode(None, Some(AgentMode::Plan), true),
+            AgentMode::Plan
+        );
+        assert_eq!(
+            session_mode(Some(AgentMode::Plan), None, true),
+            AgentMode::Plan
+        );
+        // Any other side run asks, whatever the conversation or the request says.
+        for mode in [AgentMode::Ask, AgentMode::AcceptEdits, AgentMode::Auto] {
+            assert_eq!(session_mode(Some(mode), Some(mode), true), AgentMode::Ask);
+        }
+        assert_eq!(session_mode(None, None, true), AgentMode::Ask);
+        // A conversation answers in its own mode; without one, every change asks.
+        for mode in AgentMode::ALL {
+            assert_eq!(session_mode(Some(mode), None, false), mode);
+        }
+        assert_eq!(
+            session_mode(None, Some(AgentMode::Auto), false),
+            AgentMode::Ask
+        );
+    }
+
+    #[test]
+    fn the_github_note_never_claims_no_network_where_commands_are_not_sandboxed() {
+        assert!(GITHUB_CODE_NOTE_SANDBOXED.contains("no network"));
+        assert!(!GITHUB_CODE_NOTE_UNSANDBOXED.contains("no network"));
+        assert!(GITHUB_CODE_NOTE_UNSANDBOXED.contains("may reach the network"));
+        assert!(GITHUB_CODE_READ_NOTE.contains("fetched"));
+    }
 
     #[test]
     fn turning_code_mode_off_stops_every_code_session_and_only_those() {

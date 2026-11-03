@@ -2,9 +2,9 @@
 //! `create_workspace` and `update_workspace` (write), `add_to_workspace` and
 //! `remove_from_workspace` (write).
 //!
-//! Every change asks the user first. Adding sources to a workspace or removing one runs
-//! without asking in the modes that accept edits; creating a workspace or changing its
-//! instructions (which later answers follow) always asks. An instruction edit is shown as a diff against the
+//! Every change asks the user first, in every mode: a workspace's sources decide what
+//! later answers draw on, Slack and Telegram answers included, and its instructions steer
+//! them. An instruction edit is shown as a diff against the
 //! version the assistant read (`base_version`); if the instructions changed since, the
 //! edit is refused rather than applied over the user's newer text. The assistant cannot
 //! archive or delete a workspace.
@@ -778,7 +778,7 @@ impl HostTool for AddToWorkspaceTool {
         "Adding sources to a workspace"
     }
     fn description(&self) -> &'static str {
-        "Add sources to a workspace (asks the user first unless the mode accepts edits): kind folder (id: a folder source id \
+        "Add sources to a workspace (always asks the user first): kind folder (id: a folder source id \
          from list_sources), file (id: an indexed file's name), snippet (id: a snippet id from \
          list_snippets) or paper (id: a paper id, title, DOI or arXiv id from the paper graph; \
          only papers in the library are searched). Chats in the workspace then search them."
@@ -809,9 +809,6 @@ impl HostTool for AddToWorkspaceTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Write
-    }
-    fn edits_locally(&self) -> bool {
-        true
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let (d, sources) = self.resolved(args).await?;
@@ -945,7 +942,7 @@ impl HostTool for RemoveFromWorkspaceTool {
         "Removing a source from a workspace"
     }
     fn description(&self) -> &'static str {
-        "Remove one source from a workspace (asks the user first unless the mode accepts edits); kind and id as listed by \
+        "Remove one source from a workspace (always asks the user first); kind and id as listed by \
          list_workspaces. The source itself stays in the Library; only the workspace stops \
          searching it."
     }
@@ -963,9 +960,6 @@ impl HostTool for RemoveFromWorkspaceTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Write
-    }
-    fn edits_locally(&self) -> bool {
-        true
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::REMOVE_FROM_WORKSPACE;

@@ -5,7 +5,7 @@ import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { IS_MAC_PLATFORM, ariaKeyShortcuts, withShortcut } from '../../lib/shortcuts';
 import { Kbd } from '../../components/ui/Kbd';
-import { AGENT_MODES, MODE_FLOOR, agentModeInfo } from './agentModes';
+import { AGENT_MODES, AUTO_CONFIRM_TEXT, MODE_FLOOR, agentModeInfo } from './agentModes';
 import type { AgentMode } from './agentModes';
 
 const FOCUS_RING =
@@ -20,7 +20,8 @@ export const MODE_ICONS: Record<AgentMode, LucideIcon> = {
 };
 
 interface ModePickerProps {
-  mode: AgentMode;
+  /** Null while the default mode is being read: the pill says so, never a guess. */
+  mode: AgentMode | null;
   /** The user picked a mode (the agent never calls this). */
   onChange: (mode: AgentMode) => void;
   /** An answer is running: a change applies to the next one. */
@@ -33,13 +34,15 @@ interface ModePickerProps {
  */
 export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
   const [open, setOpen] = useState(false);
+  // Auto is turned on only after one more click that says what it does.
+  const [confirmingAuto, setConfirmingAuto] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const current = agentModeInfo(mode);
-  const Icon = MODE_ICONS[mode];
-
+  useEffect(() => {
+    if (!open) setConfirmingAuto(false);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const items = menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]');
@@ -52,12 +55,29 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
     return () => document.removeEventListener('pointerdown', onPointer);
   }, [open]);
 
+  if (mode === null) {
+    return (
+      <span
+        className="inline-flex items-center h-[30px] px-2.5 rounded-full text-caption font-medium bg-shodh-raised-2 text-shodh-text-muted shrink-0"
+        aria-live="polite"
+      >
+        Mode: loading…
+      </span>
+    );
+  }
+  const current = agentModeInfo(mode);
+  const Icon = MODE_ICONS[mode];
+
   const close = (restore: boolean) => {
     setOpen(false);
     if (restore) buttonRef.current?.focus();
   };
 
   const pick = (next: AgentMode) => {
+    if (next === 'auto' && mode !== 'auto' && !confirmingAuto) {
+      setConfirmingAuto(true);
+      return;
+    }
     close(true);
     if (next !== mode) onChange(next);
   };
@@ -139,11 +159,33 @@ export function ModePicker({ mode, onChange, answerRunning }: ModePickerProps) {
               );
             })}
           </div>
+          {confirmingAuto && (
+            <div role="group" aria-label="Turn on Auto" className="flex flex-col gap-2 px-3 py-2 border-t border-shodh-border-subtle">
+              <p className="m-0 text-caption text-shodh-text-secondary">{AUTO_CONFIRM_TEXT}</p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => pick('auto')}
+                  className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-caption font-medium bg-shodh-accent text-white hover:opacity-90', FOCUS_RING)}
+                >
+                  <Zap className="w-3 h-3 shrink-0" aria-hidden="true" />
+                  Turn on Auto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingAuto(false)}
+                  className={cn('inline-flex items-center h-7 px-2.5 rounded-full text-caption font-medium border border-shodh-border text-shodh-text-secondary hover:text-shodh-text', FOCUS_RING)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           <div className="flex flex-col gap-1 px-3 py-2 border-t border-shodh-border-subtle">
             <p className="m-0 text-caption text-shodh-text-muted">{MODE_FLOOR}</p>
             <p className="m-0 flex items-center gap-1.5 text-caption text-shodh-text-muted">
               <Kbd shortcut="cycleMode" />
-              <span>in the message box picks the next mode</span>
+              <span>in an empty message box switches between Ask, Accept edits and Plan</span>
             </p>
           </div>
         </div>

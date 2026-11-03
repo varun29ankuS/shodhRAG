@@ -27,17 +27,21 @@ export const AGENT_MODES: readonly AgentModeInfo[] = [
     label: 'Accept edits',
     hint: 'Edits in the project or workspace run by themselves; commands and anything that leaves this computer ask.',
   },
-  { id: 'plan', label: 'Plan', hint: 'Only reads: the assistant looks into it and writes a plan. You approve it and pick the mode it runs in.' },
+  {
+    id: 'plan',
+    label: 'Plan',
+    hint: 'Changes nothing: the assistant reads your files, searches and reads the web, and writes a plan. You approve it and pick the mode it runs in.',
+  },
   {
     id: 'auto',
     label: 'Auto',
-    hint: 'Edits, tests, builds and other low-risk commands run by themselves; risky commands and anything that leaves this computer ask.',
+    hint: 'Edits and commands that only read run by themselves. Builds and tests run your project\'s own code: by themselves only where commands are sandboxed or in a workspace you trust; otherwise the first one asks.',
   },
 ];
 
-/** What always asks, whatever the mode. */
+/** What always asks, whatever the mode, and what never does. */
 export const MODE_FLOOR =
-  'In every mode, pushes, pull requests, comments and merges on GitHub, deleting, downloads and memories ask you first.';
+  'In every mode, pushes, pull requests, comments and merges on GitHub, deleting, downloads, memories, tasks, events and workspace changes ask you first. Web searches and page reads run without asking in every mode.';
 
 export const DEFAULT_AGENT_MODE: AgentMode = 'ask';
 
@@ -55,11 +59,34 @@ export function agentModeInfo(mode: AgentMode): AgentModeInfo {
   return AGENT_MODES.find(m => m.id === mode) ?? AGENT_MODES[0];
 }
 
-/** The mode after `mode` (Shift+Tab), wrapping around. */
+/**
+ * The modes Shift+Tab cycles through: Auto is not among them, so no keystroke turns it
+ * on; it is picked in the menu, which asks once to confirm.
+ */
+export const CYCLED_MODES: readonly AgentMode[] = ['ask', 'acceptEdits', 'plan'];
+
+/** The mode after `mode` (Shift+Tab), wrapping around; from Auto, back to Ask. */
 export function nextAgentMode(mode: AgentMode): AgentMode {
-  const at = AGENT_MODES.findIndex(m => m.id === mode);
-  return AGENT_MODES[(at + 1) % AGENT_MODES.length].id;
+  const at = CYCLED_MODES.indexOf(mode);
+  return at < 0 ? 'ask' : CYCLED_MODES[(at + 1) % CYCLED_MODES.length];
 }
+
+/**
+ * The mode a conversation answers in: the one picked for it, else, for a conversation
+ * that has not asked anything yet, the default in Settings (null while it is being
+ * read), else Ask. A conversation from before modes existed, or one whose first answer
+ * started without a mode, answers in Ask: a later change of the default never changes
+ * a conversation that has started.
+ */
+export function resolveAgentMode(picked: unknown, hasMessages: boolean, defaultMode: AgentMode | null): AgentMode | null {
+  const mode = parseAgentMode(picked);
+  if (mode) return mode;
+  return hasMessages ? 'ask' : defaultMode;
+}
+
+/** What turning Auto on says before it does. */
+export const AUTO_CONFIRM_TEXT =
+  'Auto runs edits and commands that only read without asking. Builds and tests run your project\'s own code; where commands are not sandboxed they run by themselves only in a workspace you trust.';
 
 /** The modes a plan can be approved to run in: every mode that can change anything. */
 export const PLAN_RUN_MODES: readonly AgentMode[] = ['acceptEdits', 'auto', 'ask'];

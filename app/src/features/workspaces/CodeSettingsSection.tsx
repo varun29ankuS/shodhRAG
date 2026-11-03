@@ -3,13 +3,109 @@ import { Loader2, Save } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { agentApi, toAgentError } from '../agent/useAgentSession';
-import type { CodeSettings } from '../agent/useAgentSession';
+import type { BuildTrustStatus, CodeSettings } from '../agent/useAgentSession';
 import { INPUT, LABEL, OUTLINE_BUTTON, SECTION_TITLE, TEXTAREA } from './ui';
 import { desktopPlatform } from '../../lib/startupText';
 import { COMMAND_LIMITS, commandLimitHint, commandSandboxText, parseCommandLimit } from './commandLimits';
 import type { CommandLimitKey } from './commandLimits';
 
 const linesOf = (text: string) => text.split('\n').map(l => l.trim()).filter(Boolean);
+
+/** The approval level an earlier version saved, in the words its setting used. */
+const FORMER_LEVELS: Record<string, string> = {
+  askEveryTime: 'Ask every time',
+  autoApplyEdits: 'Auto-apply edits',
+  trusted: 'Trusted',
+};
+
+/**
+ * Shown once to a workspace an earlier version had an approval level for: each
+ * conversation's mode now decides, and a list the workspace kept while it asked for
+ * everything was parked, not turned on.
+ */
+function FormerLevelNotice({ level, parked, onDone }: {
+  level: string;
+  parked: string[];
+  onDone: (restoreParked: boolean) => void;
+}) {
+  const name = FORMER_LEVELS[level] ?? level;
+  return (
+    <div role="status" className="flex flex-col gap-2 p-3 rounded-xl border border-shodh-border bg-shodh-raised">
+      <p className="m-0 text-small font-semibold text-shodh-text">{`This workspace was set to “${name}”`}</p>
+      <p className="m-0 text-small text-shodh-text-secondary">
+        Each conversation now picks its mode in the message box (Ask, Accept edits, Plan or Auto), so this workspace
+        asks until you pick one. Builds and tests run without asking only where commands are sandboxed or after you
+        trust the workspace below.
+      </p>
+      {parked.length > 0 && (
+        <p className="m-0 text-small text-shodh-text-secondary">
+          {`These commands were on its list but never ran without asking, so they stay parked: ${parked.join(', ')}.`}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" className={OUTLINE_BUTTON} onClick={() => onDone(false)}>
+          Got it
+        </button>
+        {parked.length > 0 && (
+          <button type="button" className={OUTLINE_BUTTON} onClick={() => onDone(true)}>
+            Put the parked commands back on the list
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Whether Auto mode may run this workspace's own builds and tests without asking. Trust
+ * is given as the files that choose what they run are now; any change to them (a pull,
+ * a checkout, a command, an edit) ends it, and the next build or test asks again.
+ */
+function BuildTrustPanel({ workspaceId }: { workspaceId: string }) {
+  const [status, setStatus] = useState<BuildTrustStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setStatus(null);
+    agentApi
+      .buildTrust(workspaceId)
+      .then(next => { if (active) setStatus(next); })
+      .catch(() => { if (active) setStatus(null); });
+    return () => { active = false; };
+  }, [workspaceId]);
+  if (!status) return null;
+  const change = async (trusted: boolean) => {
+    setBusy(true);
+    try {
+      setStatus(await agentApi.trustBuilds(workspaceId, trusted));
+    } catch (err) {
+      notify.error('The trust was not changed', { description: toAgentError(err).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1.5 p-3 rounded-xl border border-shodh-border">
+      <p className="m-0 text-small font-semibold text-shodh-text">Builds and tests in Auto mode</p>
+      <p className="m-0 text-small text-shodh-text-secondary">
+        {status.sandboxed
+          ? 'Commands run in a sandbox on this computer, so Auto mode runs builds and tests by themselves.'
+          : status.trusted
+            ? 'You trust this workspace: Auto mode runs its builds and tests by themselves, with your account. Any change to the files that choose what they run ends the trust.'
+            : 'Builds and tests run the project\'s own code with your account and network: commands are not sandboxed on this computer. Auto mode asks before the first one in each conversation.'}
+      </p>
+      {status.lapsed && <p className="m-0 text-small text-shodh-warning">{`The trust ended: ${status.lapsed}.`}</p>}
+      {status.problem && <p className="m-0 text-small text-shodh-text-muted">{`Trust is not available: ${status.problem}.`}</p>}
+      {!status.sandboxed && !status.problem && (
+        <div>
+          <button type="button" className={OUTLINE_BUTTON} disabled={busy} onClick={() => void change(!status.trusted)}>
+            {status.trusted ? 'Stop trusting' : 'Trust this workspace to run its builds and tests'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** The command sandbox on this system, in words. */
 const SANDBOX_TEXT = commandSandboxText(desktopPlatform(typeof navigator !== 'undefined' ? navigator.platform : ''));
@@ -75,6 +171,8 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
     try {
       const next = await agentApi.setCodeSettings(workspaceId, {
         allowlist: linesOf(allowlist),
+        parkedAllowlist: saved?.parkedAllowlist ?? [],
+        formerLevel: saved?.formerLevel ?? null,
         commandTimeoutSecs: values.commandTimeoutSecs,
         memoryLimitMb: values.memoryLimitMb,
         cpuPercent: values.cpuPercent,
@@ -100,6 +198,27 @@ export function CodeSettingsSection({ workspaceId }: { workspaceId: string }) {
         </p>
       </div>
       {error && <p role="alert" className="m-0 text-small text-shodh-error">The settings could not be read: {error}</p>}
+      {saved && saved.formerLevel && (
+        <FormerLevelNotice
+          level={saved.formerLevel}
+          parked={saved.parkedAllowlist ?? []}
+          onDone={async restore => {
+            try {
+              const next = await agentApi.setCodeSettings(workspaceId, {
+                ...saved,
+                allowlist: restore ? [...saved.allowlist, ...(saved.parkedAllowlist ?? [])] : saved.allowlist,
+                parkedAllowlist: restore ? [] : saved.parkedAllowlist ?? [],
+                formerLevel: null,
+              });
+              setSaved(next);
+              setAllowlist(next.allowlist.join('\n'));
+            } catch (err) {
+              notify.error('Code mode settings were not saved', { description: toAgentError(err).message });
+            }
+          }}
+        />
+      )}
+      <BuildTrustPanel workspaceId={workspaceId} />
       <form
         className="flex flex-col gap-3"
         aria-busy={saved === null && !error}

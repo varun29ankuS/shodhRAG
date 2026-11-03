@@ -51,6 +51,11 @@ pub struct Rule {
     /// It runs git: it runs by itself only while the repository's git
     /// settings name no program.
     pub git: bool,
+    /// It runs the project's own code (build scripts, package scripts,
+    /// conftest.py, test binaries) or tools the project's files choose
+    /// (`rust-toolchain.toml`, `.npmrc`, `.yarnrc.yml`). Otherwise it only
+    /// inspects: git reads, file reads, a linter that changes nothing.
+    pub runs_project_code: bool,
     /// Files and folders the command reads and shows (a read-only command's
     /// arguments, relative to the code folder): each must resolve inside it,
     /// links included.
@@ -81,6 +86,11 @@ pub fn check(command: &str) -> Result<Rule, String> {
         return Err(reason.to_string());
     }
     for arg in args {
+        // `@file` is a response file to cargo, rustc, pytest (8.2 and later) and many
+        // others: arguments read from a file, which no option list could check.
+        if arg.starts_with('@') {
+            return Err("it reads its arguments from a file (@file)".to_string());
+        }
         if let Some(reason) = outside_project(arg) {
             return Err(reason.to_string());
         }
@@ -526,6 +536,7 @@ fn git(args: &[&str]) -> Result<Rule, String> {
     Ok(Rule {
         what,
         git: true,
+        runs_project_code: false,
         reads: Vec::new(),
     })
 }
@@ -669,6 +680,7 @@ fn cargo(args: &[&str]) -> Result<Rule, String> {
     Ok(Rule {
         what,
         git: false,
+        runs_project_code: true,
         reads: Vec::new(),
     })
 }
@@ -724,6 +736,7 @@ fn package_script(program: &str, args: &[&str]) -> Result<Rule, String> {
     Ok(Rule {
         what: "a project script (test, build, lint or check)",
         git: false,
+        runs_project_code: true,
         reads: Vec::new(),
     })
 }
@@ -763,6 +776,7 @@ fn pytest(args: &[&str]) -> Result<Rule, String> {
     Ok(Rule {
         what: "a test command",
         git: false,
+        runs_project_code: true,
         reads: Vec::new(),
     })
 }
@@ -787,6 +801,7 @@ fn go(args: &[&str]) -> Result<Rule, String> {
     Ok(Rule {
         what,
         git: false,
+        runs_project_code: true,
         reads: Vec::new(),
     })
 }
@@ -814,9 +829,16 @@ fn ruff(args: &[&str]) -> Result<Rule, String> {
     ];
     let (what, rest, grammar) = subcommand("ruff", args, &table)?;
     accept("ruff", rest, grammar)?;
+    // Checking without fixing, or formatting with --check or --diff, changes nothing.
+    let reads_only = match args.first().copied() {
+        Some("check") => !rest.contains(&"--fix"),
+        Some("format") => rest.contains(&"--check") || rest.contains(&"--diff"),
+        _ => false,
+    };
     Ok(Rule {
         what,
         git: false,
+        runs_project_code: !reads_only,
         reads: Vec::new(),
     })
 }
@@ -900,7 +922,8 @@ fn read_files(program: &str, args: &[&str]) -> Result<Rule, String> {
         _ => &RG,
     };
     let positionals = accept(program, args, grammar)?;
-    let pattern_given = args.contains(&"-e");
+    // `rg --files` takes no pattern: every positional is a path.
+    let pattern_given = args.contains(&"-e") || (program == "rg" && args.contains(&"--files"));
     let paths: Vec<String> = match program {
         "grep" | "rg" if !pattern_given => {
             positionals.iter().skip(1).map(|p| p.to_string()).collect()
@@ -910,6 +933,7 @@ fn read_files(program: &str, args: &[&str]) -> Result<Rule, String> {
     Ok(Rule {
         what: "a command that only reads files",
         git: false,
+        runs_project_code: false,
         reads: paths,
     })
 }

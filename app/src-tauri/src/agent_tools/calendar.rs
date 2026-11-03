@@ -329,9 +329,6 @@ impl HostTool for CreateTaskTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
-    fn edits_locally(&self) -> bool {
-        true
-    }
     /// The card shows the workspace the task will be saved in, decided by
     /// the same function the write uses: the one the call names, else the
     /// chat's workspace.
@@ -440,9 +437,6 @@ impl HostTool for CreateEventTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Write
-    }
-    fn edits_locally(&self) -> bool {
-        true
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         Ok(ApprovalPreview {
@@ -843,9 +837,6 @@ impl HostTool for UpdateTaskTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Write
     }
-    fn edits_locally(&self) -> bool {
-        true
-    }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::UPDATE_TASK;
         let task_id =
@@ -914,9 +905,6 @@ impl HostTool for CompleteTaskTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Write
-    }
-    fn edits_locally(&self) -> bool {
-        true
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::COMPLETE_TASK;
@@ -1006,9 +994,6 @@ impl HostTool for UpdateEventTool {
     }
     fn tier(&self) -> RiskTier {
         RiskTier::Write
-    }
-    fn edits_locally(&self) -> bool {
-        true
     }
     async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
         let tool = app_tools::UPDATE_EVENT;

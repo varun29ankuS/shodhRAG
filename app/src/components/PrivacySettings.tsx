@@ -164,8 +164,8 @@ function DefaultModeSettings() {
       <div>
         <p id={titleId} className="m-0 text-body font-semibold text-shodh-text">Default mode</p>
         <p id={helpId} className="m-0 mt-0.5 text-small text-shodh-text-muted">
-          What runs without asking in a conversation where you have not picked a mode. You can change a conversation&apos;s
-          mode in the message box at any time. {MODE_FLOOR}
+          The mode a new conversation starts in; a conversation keeps its mode, and a change here never changes one that
+          has started. You can change a conversation&apos;s mode in the message box at any time. {MODE_FLOOR}
         </p>
       </div>
       <div className="flex flex-col gap-1">

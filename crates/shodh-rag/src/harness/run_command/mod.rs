@@ -502,7 +502,77 @@ pub struct CommandSpec {
     /// read the rest of it.
     pub data_dir: PathBuf,
     pub limits: CommandLimits,
+    /// Auto mode ran it without asking: it gets [`OFFLINE_ENV`], so the tools
+    /// that honour it do not download dependencies, toolchains or packages.
+    pub offline: bool,
 }
+
+/// What a command Auto mode runs without asking gets on top of its
+/// environment: the package managers and toolchains Auto mode runs stay off
+/// the network and do not install toolchains. Defence in depth only: the
+/// project's own code can still open connections where commands are not
+/// sandboxed (Windows today).
+pub const OFFLINE_ENV: [(&str, &str); 10] = [
+    ("CARGO_NET_OFFLINE", "true"),
+    ("RUSTUP_AUTO_INSTALL", "0"),
+    ("npm_config_offline", "true"),
+    ("YARN_ENABLE_NETWORK", "0"),
+    ("COREPACK_ENABLE_NETWORK", "0"),
+    ("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0"),
+    ("GOPROXY", "off"),
+    ("GOTOOLCHAIN", "local"),
+    ("PIP_NO_INDEX", "1"),
+    ("UV_OFFLINE", "1"),
+];
+
+/// The folder of a conversation's `scratch` that a command Auto mode runs
+/// without asking uses as its home and temporary folder.
+pub const AUTO_RUN_HOME: &str = "auto-run";
+
+/// An empty home for a command Auto mode runs without asking, inside the
+/// conversation's `scratch` folder: whatever an earlier command left there
+/// is removed first, so it cannot steer this one. Fails when it cannot be
+/// emptied (the command is then not run).
+pub fn fresh_scratch(scratch: &Path) -> Result<PathBuf, String> {
+    let dir = scratch.join(AUTO_RUN_HOME);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(dir),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(dir),
+        Err(e) => Err(format!(
+            "Shodh could not empty the home of commands that run without asking ({e}), so \
+             the command was not run."
+        )),
+    }
+}
+
+/// `PATH` without the entries a project could use to stand in for a program:
+/// empty and relative entries (bash reads them from the command's working
+/// folder, the code folder) and entries inside the code `folder` or the
+/// `scratch` folder. `separator` is the system's (`;` on Windows, `:`
+/// elsewhere).
+pub fn sanitized_path(path: &str, folder: &Path, scratch: &Path, separator: char) -> String {
+    let inside = |entry: &Path, root: &Path| {
+        entry.starts_with(root)
+            || match (std::fs::canonicalize(entry), std::fs::canonicalize(root)) {
+                (Ok(entry), Ok(root)) => entry.starts_with(root),
+                _ => false,
+            }
+    };
+    path.split(separator)
+        .filter(|entry| {
+            let trimmed = entry.trim().trim_matches('"');
+            if trimmed.is_empty() {
+                return false;
+            }
+            let entry = Path::new(trimmed);
+            entry.is_absolute() && !inside(entry, folder) && !inside(entry, scratch)
+        })
+        .collect::<Vec<_>>()
+        .join(&separator.to_string())
+}
+
+/// The system's `PATH` separator.
+pub const PATH_SEPARATOR: char = if cfg!(windows) { ';' } else { ':' };
 
 /// How a command ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1302,12 +1372,24 @@ pub async fn run_bounded(
     }
     let registration = &control.registration;
     let home = dirs::home_dir();
-    let env = command_env(
+    let mut env = command_env(
         &spec.scratch,
         &control.command_id,
         |name| std::env::var(name).ok(),
         home.as_deref(),
     );
+    for (name, value) in env.iter_mut() {
+        if name.eq_ignore_ascii_case("PATH") {
+            *value = sanitized_path(value, &spec.folder, &spec.scratch, PATH_SEPARATOR);
+        }
+    }
+    if spec.offline {
+        env.extend(
+            OFFLINE_ENV
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string())),
+        );
+    }
     // The sandbox's profile reads the file system and runs `sandbox-exec`
     // once: off the async workers.
     let prepared = {

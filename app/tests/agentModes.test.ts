@@ -13,17 +13,19 @@ import {
   modeSuggestion,
   nextAgentMode,
   parseAgentMode,
+  resolveAgentMode,
 } from '../src/features/agent/agentModes.ts';
 import { parseAgentPrefs, parseAppSettings } from '../src/lib/appSettings.ts';
 import { matchesShortcut, shortcutText } from '../src/lib/shortcuts.ts';
 
-test('the modes are Ask, Accept edits, Plan and Auto, and Shift+Tab cycles them', () => {
+test('the modes are Ask, Accept edits, Plan and Auto; Shift+Tab never turns Auto on', () => {
   assert.deepEqual(AGENT_MODES.map(m => m.id), ['ask', 'acceptEdits', 'plan', 'auto']);
   assert.equal(DEFAULT_AGENT_MODE, 'ask');
   assert.equal(nextAgentMode('ask'), 'acceptEdits');
   assert.equal(nextAgentMode('acceptEdits'), 'plan');
-  assert.equal(nextAgentMode('plan'), 'auto');
+  assert.equal(nextAgentMode('plan'), 'ask');
   assert.equal(nextAgentMode('auto'), 'ask');
+  for (const mode of AGENT_MODES) assert.notEqual(nextAgentMode(mode.id), 'auto');
   for (const mode of AGENT_MODES) assert.ok(mode.hint.length > 0 && mode.label.length > 0);
   // There is no mode that bypasses everything.
   for (const name of ['bypass', 'creator', 'yolo', 'Auto', '', null, 3]) {
@@ -41,6 +43,17 @@ test('Shift+Tab is the registry\'s mode shortcut', () => {
   assert.ok(!matchesShortcut({ ...chord, shiftKey: false }, 'cycleMode', false), 'Tab alone moves the focus');
   assert.ok(!matchesShortcut({ ...chord, ctrlKey: true }, 'cycleMode', false));
   assert.equal(shortcutText('cycleMode', false), 'Shift+Tab');
+});
+
+test('a conversation keeps its mode; only a new one takes the default', () => {
+  assert.equal(resolveAgentMode('plan', true, 'auto'), 'plan');
+  assert.equal(resolveAgentMode(undefined, false, 'auto'), 'auto');
+  // Started before it had a mode: Ask, whatever the default says now.
+  assert.equal(resolveAgentMode(undefined, true, 'auto'), 'ask');
+  // The default is not known yet: no mode, so nothing is sent on a guess.
+  assert.equal(resolveAgentMode(undefined, false, null), null);
+  // A mode this version does not know is not taken.
+  assert.equal(resolveAgentMode('creator', true, 'auto'), 'ask');
 });
 
 test('the default mode fails closed to Ask', () => {

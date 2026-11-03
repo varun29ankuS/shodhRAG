@@ -65,7 +65,10 @@ interface AgentComposerProps {
   compact?: boolean;
   /** Placeholder while an answer runs and cannot be steered from here. */
   runningPlaceholder?: string;
-  /** Shift+Tab in the input: switch to the next mode (Ask only; the user's key, never the agent's). */
+  /**
+   * Shift+Tab in the empty input: switch to the next of Ask, Accept edits and Plan (the
+   * user's key, never the agent's; Auto is picked in the menu).
+   */
   onCycleMode?: () => void;
 }
 
@@ -132,7 +135,9 @@ export const AgentComposer = forwardRef<AgentComposerHandle, AgentComposerProps>
   const canSteerNow = hasText && running && canSteer;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (onCycleMode && !e.nativeEvent.isComposing && matchesShortcut(e, 'cycleMode')) {
+    // Only in an empty message box: with text in it, Shift+Tab moves the focus back as
+    // everywhere else.
+    if (onCycleMode && value.trim() === '' && !e.nativeEvent.isComposing && matchesShortcut(e, 'cycleMode')) {
       e.preventDefault();
       onCycleMode();
       return;

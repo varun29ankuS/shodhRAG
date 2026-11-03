@@ -575,12 +575,18 @@ pub trait HostTool: Send + Sync {
     }
     /// Whether this `write` tool only changes the user's own data or files
     /// on this computer, inside their library or workspace, in a way they
-    /// can take back (a task, an event, a workspace, a new folder or
-    /// document): the modes that accept edits ([`modes::AgentMode`]) run it
+    /// can take back, that no later answer reads as content (a new folder, a
+    /// conversation renamed, an export into Shodh exports): the modes that accept edits ([`modes::AgentMode`]) run it
     /// without asking. Ignored for the other tiers. `false` (the default)
     /// asks in every mode: what leaves the computer, what Shodh cannot take
     /// back, and what the user approves by design (memories) never sets it.
     fn edits_locally(&self) -> bool {
+        false
+    }
+    /// Whether a `read` tool still changes something on this computer or reaches
+    /// out to change it (a fetch writes the repository's objects and refs): a mode
+    /// that only reads does not offer it.
+    fn changes_state(&self) -> bool {
         false
     }
     /// What the approval prompt shows. Runs after validation and before the
@@ -1217,7 +1223,7 @@ impl ToolRegistry {
             ToolClass::of(
                 tool.tier(),
                 tool.edits_locally(),
-                tool.changes_files_unasked(),
+                tool.changes_files_unasked() || tool.changes_state(),
             ),
         )
     }

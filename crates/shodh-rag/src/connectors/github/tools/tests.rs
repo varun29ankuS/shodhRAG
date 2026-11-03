@@ -1361,3 +1361,24 @@ async fn code_mode_without_a_sandbox_never_writes_to_github() {
         cfg!(target_os = "macos")
     );
 }
+
+/// A fetch writes the repository's objects and refs: a mode that only reads does not
+/// offer it; the other modes run it without asking, as before.
+#[test]
+fn plan_mode_does_not_offer_github_fetch() {
+    let project = Project::new();
+    let code = code_registry(host(None), &project.path());
+    for mode in AgentMode::ALL {
+        let profile = AgentProfile {
+            allowed_tools: all_names().iter().map(|s| s.to_string()).collect(),
+            mode,
+            ..AgentProfile::assistant()
+        };
+        assert_eq!(
+            code.offers(GITHUB_FETCH, &profile),
+            mode != AgentMode::Plan,
+            "{mode:?}"
+        );
+        assert!(code.offers(GITHUB_STATUS, &profile), "{mode:?}");
+    }
+}

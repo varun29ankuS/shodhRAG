@@ -40,6 +40,8 @@ import { requestConnectorPage } from '../connectors/navigation';
 import { githubFocus } from '../connectors/githubModel';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
+import { resolveAgentMode } from '../agent/agentModes';
+import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { onApprovalAnswered } from '../inbox/approvalBus';
 import {
   appliesAtOnce,
@@ -436,13 +438,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const instructions = activeConversation?.systemPrompt?.trim() || null;
   const activeMode = activeConversation?.mode ?? 'research';
   const activeWorkspaceId = activeConversation?.workspaceId ?? null;
-  // The mode the user picked for the conversation; absent follows the default in Settings.
-  const activeAgentMode = activeConversation?.agentMode ?? null;
+  // The mode the conversation answers in: its own, else (a new conversation) the
+  // default in Settings, else Ask. Null while the default is being read: nothing
+  // starts on a guess.
+  const defaultAgentMode = useDefaultAgentMode();
+  const defaultAgentModeRef = useRef(defaultAgentMode);
+  defaultAgentModeRef.current = defaultAgentMode;
+  const activeAgentMode = resolveAgentMode(
+    activeConversation?.agentMode,
+    (activeConversation?.messages.length ?? 0) > 0,
+    defaultAgentMode,
+  );
   const streaming = liveRun !== null;
   // A connector's conversation is read-only: no agent session for it.
   const activeReadOnly = isConnectorConversation(activeConversation);
   const prewarm = useCallback(() => {
-    if (!activeConversationId || runtimeInstalled !== true || streaming || activeReadOnly) return;
+    if (!activeConversationId || runtimeInstalled !== true || streaming || activeReadOnly || !activeAgentMode) return;
     api.start(activeConversationId, instructions, null, null, { mode: activeMode, workspaceId: activeWorkspaceId, agentMode: activeAgentMode }).catch(error => {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
@@ -482,6 +493,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     );
     const { message } = started;
     const transcript = message.transcript as TranscriptState;
+    const conversationNow = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
+    // The mode this answer runs in, sent explicitly (Ask when nothing better is known)
+    // and kept on the answer; a conversation without a mode of its own keeps this one
+    // from now on, so a later change of the default never changes it.
+    const agentMode = resolveAgentMode(conversationNow?.agentMode, history.length > 0, defaultAgentModeRef.current) ?? 'ask';
+    transcript.agentMode = agentMode;
+    if (conversationNow && !conversationNow.agentMode) conv.updateConversationMeta(conversationId, { agentMode });
     const live: LiveRun = {
       runId,
       conversationId,
@@ -502,7 +520,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const mode = {
         mode: conversation?.mode ?? 'research',
         workspaceId: conversation?.workspaceId ?? null,
-        agentMode: conversation?.agentMode ?? null,
+        agentMode,
       } as const;
       const sessionId = await api.start(conversationId, conversationInstructions, null, fallback?.override ?? null, mode);
       if (live.settled) return;
@@ -528,7 +546,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         providerError: failure.cooling?.providerError ?? null,
       }, true);
     }
-  }, [api, enqueue, publish, setRuntimeInstalled]);
+  }, [api, enqueue, publish, setRuntimeInstalled, conv.updateConversationMeta]);
 
   const send = useCallback((text: string, options: SendOptions, extra?: SendExtra): boolean => {
     const content = text.trim();

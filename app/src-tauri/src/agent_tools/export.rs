@@ -649,6 +649,26 @@ struct Plan {
 }
 
 impl ExportDocumentTool {
+    /// Whether `folder` is the default `Documents/Shodh exports` folder, which is
+    /// not a link (a link there could lead anywhere).
+    fn in_default_exports(&self, folder: &std::path::Path) -> bool {
+        let Some(documents) = self.host.effects.documents_dir() else {
+            return false;
+        };
+        let default = documents.join(EXPORTS_FOLDER);
+        if std::fs::symlink_metadata(&default).is_ok_and(|m| m.file_type().is_symlink()) {
+            return false;
+        }
+        match (
+            std::fs::canonicalize(folder),
+            std::fs::canonicalize(&default),
+        ) {
+            (Ok(folder), Ok(default)) => folder == default,
+            // Not created yet: it is created inside Documents on export.
+            _ => folder == default,
+        }
+    }
+
     async fn plan(&self, args: &Value) -> Result<Plan, ToolError> {
         let tool = app_tools::EXPORT_DOCUMENT;
         let title = str_arg(args, "title").ok_or_else(|| invalid(tool, "`title` is required"))?;
@@ -705,7 +725,7 @@ impl HostTool for ExportDocumentTool {
          Markdown (md) or PDF (pdf: printed like the app shows it, with math, diagrams, charts \
          and figures). Citations are resolved into a Sources section listing each file and page \
          or web page; citations from earlier answers need an entry in sources. Saves to \
-         Documents/Shodh exports unless you pass an existing folder; never overwrites (adds (2), \
+         Documents/Shodh exports unless you pass an existing folder (another folder asks the user first); never overwrites (adds (2), \
          (3)…). Saving inside an indexed folder always asks the user."
     }
     fn schema(&self) -> Value {
@@ -744,8 +764,14 @@ impl HostTool for ExportDocumentTool {
         true
     }
 
+    /// Asks for a save inside an indexed folder, and for any folder but the
+    /// default `Documents/Shodh exports` (resolved, and not a link): a document
+    /// written elsewhere can be picked up by other programs (an instructions file
+    /// another assistant loads), so the modes that accept edits never write there
+    /// unasked.
     async fn must_confirm(&self, args: &Value) -> Result<bool, ToolError> {
-        Ok(self.plan(args).await?.indexed_root.is_some())
+        let plan = self.plan(args).await?;
+        Ok(plan.indexed_root.is_some() || !self.in_default_exports(&plan.folder))
     }
 
     async fn preview_in(
@@ -1010,6 +1036,27 @@ mod tests {
         assert!(p1.ends_with("Lease_ notes_.md"), "{p1}");
         assert!(p2.ends_with("Lease_ notes_ (2).md"), "{p2}");
         assert!(Path::new(&p1).starts_with(t.effects.documents.join(EXPORTS_FOLDER)));
+        // Naming the default folder is the same; any other folder asks.
+        let default = t
+            .effects
+            .documents
+            .join(EXPORTS_FOLDER)
+            .display()
+            .to_string();
+        let named = json!({"title": "A", "markdown": BODY, "format": "md", "folder": default});
+        assert!(!tool.must_confirm(&named).await.unwrap());
+        let elsewhere = t.dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let other = json!({
+            "title": "CLAUDE",
+            "markdown": "instructions",
+            "format": "md",
+            "folder": elsewhere.display().to_string(),
+        });
+        assert!(
+            tool.must_confirm(&other).await.unwrap(),
+            "a folder outside the exports asks"
+        );
     }
 
     #[tokio::test]

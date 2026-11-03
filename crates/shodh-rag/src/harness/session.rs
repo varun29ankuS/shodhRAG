@@ -34,6 +34,9 @@ use super::code_mode::{
     GateContext, GuardRequest, ReviewState, ReviewStore, TreeSnapshot, ALLOW_ANSWER, AUTO_MODE_KEY,
     CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
+use super::code_mode::{
+    project_fingerprint, ProjectFingerprint, PROJECT_CODE_KEY, PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
+};
 use super::error::HarnessError;
 use super::events::{
     AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RevisionReason, RiskTier, ScoringMethod,
@@ -165,13 +168,9 @@ impl Drop for PendingCompare {
                 self.what
             );
             let id = self.id.clone();
-            if let Err(e) = self
-                .code
-                .reviews
-                .update(&self.code.conversation_id, |state| {
-                    state.compared(&id, Err(reason))
-                })
-            {
+            if let Err(e) = self.code.reviews.update(&self.code.review_key, |state| {
+                state.compared(&id, Err(reason))
+            }) {
                 tracing::warn!(target: "shodh::harness", error = %e, "could not record an unknown change; the record is unreadable, so commands ask");
             }
         }
@@ -179,6 +178,14 @@ impl Drop for PendingCompare {
             .compares
             .send_modify(|pending| *pending = pending.saturating_sub(1));
     }
+}
+
+/// A guarded call Shodh let run: the settings it was decided under (a command
+/// runs with the limits its prompt showed), and whether Auto mode ran it
+/// without asking (it then runs offline where tools allow, with a fresh home).
+struct Decided {
+    settings: CodeSettings,
+    auto_ran: bool,
 }
 
 /// A Code session's state: its folder and branch, the guard's presence,
@@ -189,6 +196,14 @@ struct CodeRuntime {
     conversation_id: String,
     branches: CodeBranchStore,
     reviews: ReviewStore,
+    /// The folder's record in [`ReviewStore`]: what is unreviewed is shared by
+    /// every conversation that works in the folder.
+    review_key: String,
+    /// The project's build files when the user last approved, in this
+    /// conversation, a command that runs the project's own code (the prompt
+    /// with [`PROJECT_CODE_KEY`]). While they are unchanged, its builds and
+    /// tests run without asking in Auto mode. Never saved: a new session asks.
+    project_code_approved: Mutex<Option<ProjectFingerprint>>,
     settings_dir: Option<std::path::PathBuf>,
     /// One change decision at a time: planning, the prompt and the branch
     /// switch of a change finish before the next change is considered.
@@ -222,6 +237,8 @@ impl CodeRuntime {
             data_dir,
         } = session;
         CodeRuntime {
+            review_key: ReviewStore::folder_key(&folder),
+            project_code_approved: Mutex::new(None),
             folder,
             conversation_id,
             reviews: ReviewStore::beside(&branches),
@@ -300,9 +317,11 @@ impl CodeRuntime {
     async fn review(&self) -> ReviewState {
         let store = self.reviews.clone();
         let conversation = self.conversation_id.clone();
+        let key = self.review_key.clone();
         tokio::task::spawn_blocking(move || {
             store
-                .get(&conversation)
+                .adopt(&conversation, &key)
+                .and_then(|()| store.get(&key))
                 .unwrap_or_else(|e| ReviewState::unreadable(&e))
         })
         .await
@@ -316,9 +335,13 @@ impl CodeRuntime {
     {
         let store = self.reviews.clone();
         let conversation = self.conversation_id.clone();
-        tokio::task::spawn_blocking(move || store.update(&conversation, change).map(|_| ()))
-            .await
-            .map_err(|e| format!("recording what changed did not finish: {e}"))?
+        let key = self.review_key.clone();
+        tokio::task::spawn_blocking(move || {
+            store.adopt(&conversation, &key)?;
+            store.update(&key, change).map(|_| ())
+        })
+        .await
+        .map_err(|e| format!("recording what changed did not finish: {e}"))?
     }
 
     /// `request`'s file relative to the folder (`/`-separated), when the
@@ -876,7 +899,7 @@ impl Inner {
         &self,
         code: &CodeRuntime,
         request: &GuardRequest,
-    ) -> Result<CodeSettings, String> {
+    ) -> Result<Decided, String> {
         let (run_id, opened) = {
             let mut state = lock(&self.state);
             let run_id = state.active_run_id().map(str::to_string);
@@ -947,27 +970,65 @@ impl Inner {
         let unasked_writer = self.registry.unasked_file_writer(&self.profile);
         // In Auto mode, what is around a command its rules recognise: the
         // files it shows and git's settings.
-        let auto_asks = if mode == AgentMode::Auto && request.tool == RUN_COMMAND {
-            match auto_command(&settings, request, &plan) {
-                Ok(command) => {
-                    let folder = code.folder.root().to_path_buf();
-                    let home = code.scratch.clone();
-                    tokio::task::spawn_blocking(move || {
-                        command_surroundings(&folder, &home, &command)
-                    })
+        let recognised = (mode == AgentMode::Auto && request.tool == RUN_COMMAND)
+            .then(|| auto_command(&settings, request, &plan));
+        let auto_asks = match &recognised {
+            Some(Ok(command)) => {
+                let folder = code.folder.root().to_path_buf();
+                let home = code.scratch.clone();
+                let command = command.clone();
+                tokio::task::spawn_blocking(move || command_surroundings(&folder, &home, &command))
                     .await
                     .unwrap_or_else(|e| Some(format!("Shodh could not check the command ({e})")))
-                }
-                Err(reason) => Some(reason),
             }
+            Some(Err(reason)) => Some(reason.clone()),
+            None => None,
+        };
+        // A command that runs the project's own code: cleared where commands
+        // are sandboxed, in a workspace the user trusts as its build files are
+        // now, or after the user approved one in this conversation since they
+        // last changed. Otherwise it asks, saying what it runs.
+        let runs_project_code = matches!(&recognised, Some(Ok(c)) if c.runs_project_code);
+        let (project_code_cleared, project_prompt) = if !runs_project_code
+            || run_command::commands_sandboxed()
+        {
+            (true, None)
         } else {
-            None
+            let folder = code.folder.root().to_path_buf();
+            let now = tokio::task::spawn_blocking(move || project_fingerprint(&folder))
+                .await
+                .unwrap_or_else(|e| Err(format!("reading them did not finish: {e}")));
+            match now {
+                Ok(now) => {
+                    let trusted = settings.build_trust_for(&now);
+                    let approved_here = lock(&code.project_code_approved).as_ref() == Some(&now);
+                    if trusted.is_ok() || approved_here {
+                        (true, None)
+                    } else {
+                        let why = match (&settings.build_trust, trusted) {
+                            (Some(_), Err(lapsed)) => lapsed,
+                            _ => "it runs the project's own code, and nothing in this \
+                                  conversation has approved that yet"
+                                .to_string(),
+                        };
+                        (false, Some((Some(now), why)))
+                    }
+                }
+                Err(e) => (
+                    false,
+                    Some((
+                        None,
+                        format!("Shodh could not read the project's build files ({e})"),
+                    )),
+                ),
+            }
         };
         let gate = GateContext {
             review: &review,
             running: running.as_deref(),
             unasked_writer: unasked_writer.as_deref(),
             command_problem: auto_asks.as_deref(),
+            project_code_cleared,
         };
         // Decided once, before the prompt: the settings may change while it
         // waits, and what is cleared must match what was shown.
@@ -985,11 +1046,20 @@ impl Inner {
         }
         let shown = note_review(&mut approval, request, &gate, eligible, &token);
         // Why Auto mode asks about this command, on its prompt.
-        if let (Some(reason), Some(map)) = (&auto_asks, approval.preview.as_object_mut()) {
+        let why_asked = auto_asks
+            .as_ref()
+            .or(project_prompt.as_ref().map(|(_, why)| why));
+        if let (Some(reason), Some(map)) = (why_asked, approval.preview.as_object_mut()) {
             map.insert(
                 AUTO_MODE_KEY.to_string(),
                 json!(format!("Auto mode asks because {reason}.")),
             );
+        }
+        // The first build or test of a conversation says what it runs; only an
+        // approval from this prompt (its token) lets the next ones run.
+        if let (Some(_), Some(map)) = (&project_prompt, approval.preview.as_object_mut()) {
+            map.insert(PROJECT_CODE_KEY.to_string(), json!(PROJECT_CODE_TEXT));
+            map.insert(REVIEW_TOKEN_KEY.to_string(), json!(token));
         }
         if let Some(reason) = auto_approval(mode, &settings, request, &plan, target, &gate) {
             self.audit(
@@ -1024,7 +1094,10 @@ impl Inner {
                     format!("Shodh could not record this command, so it was not run: {e}")
                 })?;
             }
-            return Ok(settings);
+            return Ok(Decided {
+                settings,
+                auto_ran: true,
+            });
         }
         if let Some(ui_id) = &request.ui_id {
             lock(&code.dialogs).insert(ui_id.clone(), request.tool_call_id.clone());
@@ -1052,7 +1125,12 @@ impl Inner {
             audit_payload::approval(&request.tool, &approval.label, approval.tier, decision, who),
         );
         match decision {
-            ApprovalDecision::Approved => {}
+            ApprovalDecision::Approved => {
+                let from_prompt = token_back.as_deref() == Some(token.as_str());
+                if let (true, Some((Some(now), _))) = (from_prompt, &project_prompt) {
+                    *lock(&code.project_code_approved) = Some(now.clone());
+                }
+            }
             ApprovalDecision::Denied => {
                 return Err(
                     "The user declined this. Do not attempt it another way; ask the \
@@ -1092,7 +1170,10 @@ impl Inner {
                     )
                 })?;
             }
-            return Ok(settings);
+            return Ok(Decided {
+                settings,
+                auto_ran: false,
+            });
         }
         // Only the prompt that showed every listed file sends the token back
         // (not the Inbox, not a shortcut): then exactly what it showed counts
@@ -1111,7 +1192,10 @@ impl Inner {
         code.command_allowed(request)
             .await
             .map_err(|e| format!("Shodh could not record this command, so it was not run: {e}"))?;
-        Ok(settings)
+        Ok(Decided {
+            settings,
+            auto_ran: false,
+        })
     }
 
     /// Audit a guarded call Shodh refuses without asking.
@@ -1401,8 +1485,8 @@ impl Inner {
             input: input.clone(),
             target: None,
         };
-        let settings = match self.decide_guarded(code, &request).await {
-            Ok(settings) => settings,
+        let decided = match self.decide_guarded(code, &request).await {
+            Ok(decided) => decided,
             Err(reason) => {
                 let summary = reason
                     .lines()
@@ -1420,14 +1504,35 @@ impl Inner {
                 return (outcome, input);
             }
         };
-        let limits = CommandLimits::for_call(&settings, args.timeout_secs);
+        let limits = CommandLimits::for_call(&decided.settings, args.timeout_secs);
+        // A command Auto mode ran without asking gets an empty home of its own,
+        // so nothing an earlier command left in the conversation's home (an
+        // .npmrc, a Go env file, a .gitconfig) can steer it.
+        let scratch = if decided.auto_ran {
+            match run_command::fresh_scratch(&code.scratch) {
+                Ok(fresh) => fresh,
+                Err(reason) => {
+                    let outcome = DispatchOutcome {
+                        ok: false,
+                        text_for_model: reason.clone(),
+                        summary: truncate_chars(&reason, 160),
+                        detail: None,
+                        invalid_arguments: false,
+                    };
+                    return (outcome, input);
+                }
+            }
+        } else {
+            code.scratch.clone()
+        };
         let command_id = uuid::Uuid::new_v4().simple().to_string();
         let spec = CommandSpec {
             command: args.command.clone(),
             folder: code.folder.root().to_path_buf(),
-            scratch: code.scratch.clone(),
+            scratch,
             data_dir: code.data_dir.clone(),
             limits,
+            offline: decided.auto_ran,
         };
         // Registered before the process exists, so Stop, a cancel or the end
         // of the run reaches the command from now on.
@@ -4624,6 +4729,7 @@ mod tests {
         git(&["commit", "--quiet", "-m", "first"]);
         CodeSettings {
             allowlist: vec!["cargo test -p app".into()],
+            build_trust: Some(trust_now(folder.path())),
             ..CodeSettings::default()
         }
         .save(data.path())
@@ -4740,7 +4846,7 @@ mod tests {
         }
         assert_eq!(exec.ran(), ["cargo test -p app"]);
 
-        // Back to "Ask every time": the running session asks again.
+        // Settings without the trust: the running session asks again.
         CodeSettings::default().save(data.path()).unwrap();
         asks(
             &inner,
@@ -4778,6 +4884,14 @@ mod tests {
 
     /// A git repository with one commit (`lib.rs`), at Trusted with
     /// `cargo test -p app` allowed.
+    /// The user's trust of `folder`'s builds and tests as it is now.
+    fn trust_now(folder: &std::path::Path) -> crate::harness::code_mode::BuildTrust {
+        crate::harness::code_mode::BuildTrust {
+            fingerprint: crate::harness::code_mode::project_fingerprint(folder).unwrap(),
+            trusted_at: "2026-11-03T00:00:00Z".into(),
+        }
+    }
+
     fn trusted_repo() -> (tempfile::TempDir, tempfile::TempDir) {
         let folder = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
@@ -4801,6 +4915,7 @@ mod tests {
         git(&["commit", "--quiet", "-m", "first"]);
         CodeSettings {
             allowlist: vec!["cargo test -p app".into()],
+            build_trust: Some(trust_now(folder.path())),
             ..CodeSettings::default()
         }
         .save(data.path())
@@ -5278,7 +5393,26 @@ mod tests {
         let _ = sent_prompt(&mut out);
         let (x, ev, o) = (&*exec, &mut events, &mut out);
 
-        runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        // Outside git there is no fingerprint to trust: where commands are not
+        // sandboxed, the first build asks (and its yes cannot carry over).
+        if run_command::commands_sandboxed() {
+            runs_unasked(&inner, x, o, command_call("1", test_command())).await;
+        } else {
+            let preview = asks(
+                &inner,
+                x,
+                ev,
+                o,
+                command_call("1", test_command()),
+                Answer::ApproveInPrompt,
+            )
+            .await;
+            assert_eq!(preview[PROJECT_CODE_KEY], PROJECT_CODE_TEXT);
+            assert!(preview[AUTO_MODE_KEY]
+                .as_str()
+                .unwrap()
+                .contains("could not read the project's build files"));
+        }
         x.hold(true);
         let preview = asks(
             &inner,
@@ -5295,7 +5429,7 @@ mod tests {
             .contains("not a git repository"));
         // The prompt's yes cleared what it showed; the command it allowed is
         // listed while it runs...
-        let state = code.reviews.get("conv-1").unwrap();
+        let state = code.reviews.get(&code.review_key).unwrap();
         assert!(state.unknown.is_none() && state.files.is_empty());
         assert_eq!(state.uncompared.keys().collect::<Vec<_>>(), ["call-2"]);
         // ...and once the command ends, what it changed is unknown again.
@@ -5379,7 +5513,7 @@ mod tests {
         assert!(text.contains("stopped"), "{text}");
         assert_eq!(x.stops(), 1, "the command saw the stop");
         code.settled().await;
-        let state = code.reviews.get("conv-1").unwrap();
+        let state = code.reviews.get(&code.review_key).unwrap();
         assert!(state.uncompared.is_empty(), "{state:?}");
 
         // The run ends (stopped by the user) while a command runs: the same.

@@ -641,6 +641,19 @@ fn files_that_can_run_programs_are_recognised() {
         "global.json",
         "go.mod",
         "go.work",
+        "pnpm-workspace.yaml",
+        ".pnp.cjs",
+        ".pnp.loader.mjs",
+        ".yarn/releases/yarn-4.1.0.cjs",
+        ".yarn/plugins/plugin.cjs",
+        "mise.toml",
+        ".mise.toml",
+        ".tool-versions",
+        ".python-version",
+        ".node-version",
+        ".nvmrc",
+        "eslint.config.js",
+        ".eslintrc.cjs",
     ] {
         assert!(execution_risk(Path::new(risky)).is_some(), "{risky}");
     }
@@ -1398,6 +1411,7 @@ fn read_only_commands_must_stay_in_the_folder_links_included() {
         what: "a command that only reads files",
         git: false,
         reads: paths.iter().map(|p| p.to_string()).collect(),
+        runs_project_code: false,
     };
     assert_eq!(
         command_surroundings(
@@ -1429,6 +1443,7 @@ fn git_commands_ask_while_git_settings_name_a_program() {
         what: "a git command that only reads",
         git: true,
         reads: Vec::new(),
+        runs_project_code: false,
     };
     let baseline = command_surroundings(dir.path(), home.path(), &git);
     assert_eq!(baseline, None, "{baseline:?}");
@@ -1463,6 +1478,7 @@ fn git_commands_ask_while_git_settings_name_a_program() {
         what: "a test command",
         git: false,
         reads: Vec::new(),
+        runs_project_code: true,
     };
     std::fs::write(home.path().join(".gitconfig"), "[alias]\n\tst = !evil\n").unwrap();
     assert_eq!(command_surroundings(dir.path(), home.path(), &cargo), None);
@@ -2042,6 +2058,7 @@ fn gate(review: &ReviewState) -> GateContext<'_> {
         running: None,
         unasked_writer: None,
         command_problem: None,
+        project_code_cleared: true,
     }
 }
 
@@ -2060,11 +2077,13 @@ fn code_settings_default_and_survive_a_round_trip() {
     assert_eq!(saved.allowlist, ["go test ./..."]);
     assert_eq!(CodeSettings::load(dir.path()).unwrap(), saved);
     // Files without some keys load with the defaults for them; a workspace
-    // approval level saved by an earlier version is ignored (the mode decides).
+    // approval level saved by an earlier version is replaced by the mode, and
+    // kept only for the one-time notice.
     std::fs::write(CodeSettings::path(dir.path()), r#"{"approval":"trusted"}"#).unwrap();
     let partial = CodeSettings::load(dir.path()).unwrap();
-    assert_eq!(partial, CodeSettings::default());
+    assert_eq!(partial.former_level.as_deref(), Some("trusted"));
     assert_eq!(partial.allowlist, DEFAULT_ALLOWLIST);
+    assert!(partial.build_trust.is_none(), "trust is never migrated");
     std::fs::write(CodeSettings::path(dir.path()), "not json").unwrap();
     assert!(CodeSettings::load(dir.path()).is_err());
 }
@@ -2200,4 +2219,219 @@ fn code_steps_have_labels_and_tiers() {
     assert_eq!(catalog[RUN_COMMAND].tier, RiskTier::Write);
     assert_eq!(catalog[RUN_COMMAND].label_template, "Running {command}");
     assert!(!catalog.contains_key("bash"));
+}
+
+#[test]
+fn builds_and_tests_need_the_project_cleared_and_inspecting_does_not() {
+    let settings = CodeSettings {
+        allowlist: vec!["make check".into()],
+        ..CodeSettings::default()
+    };
+    let continuing = ChangePlan::Continue(branch("/a", "shodh/1"));
+    let none = ChangeTarget::Unknown;
+    let reviewed = ReviewState::default();
+    let changed = ReviewState {
+        files: vec!["src/lib.rs".into()],
+        ..ReviewState::default()
+    };
+    fn uncleared(review: &ReviewState) -> GateContext<'_> {
+        GateContext {
+            project_code_cleared: false,
+            ..gate(review)
+        }
+    }
+    let auto = AgentMode::Auto;
+    // Builds, tests and the workspace's list need the project cleared.
+    for command in [
+        "cargo test",
+        "npm test",
+        "pytest",
+        "go vet ./...",
+        "make check",
+    ] {
+        let request = guarded(RUN_COMMAND, json!({ "command": command }));
+        assert_eq!(
+            auto_approval(
+                auto,
+                &settings,
+                &request,
+                &continuing,
+                none,
+                &uncleared(&reviewed)
+            ),
+            None,
+            "{command}"
+        );
+        assert!(
+            auto_approval(
+                auto,
+                &settings,
+                &request,
+                &continuing,
+                none,
+                &gate(&reviewed)
+            )
+            .is_some(),
+            "{command}"
+        );
+        assert!(
+            command_eligible(&settings, &request, &continuing),
+            "{command}"
+        );
+    }
+    // Commands that only inspect run without asking even then, and even after a
+    // change nobody reviewed: they run none of the project's code.
+    for command in [
+        "git status",
+        "git diff --stat",
+        "cat src/lib.rs",
+        "rg -n x src",
+        "ruff check src",
+    ] {
+        let request = guarded(RUN_COMMAND, json!({ "command": command }));
+        for review in [&reviewed, &changed] {
+            assert!(
+                auto_approval(
+                    auto,
+                    &settings,
+                    &request,
+                    &continuing,
+                    none,
+                    &uncleared(review)
+                )
+                .is_some(),
+                "{command}"
+            );
+        }
+        // Approving one marks nothing reviewed.
+        assert!(
+            !command_eligible(&settings, &request, &continuing),
+            "{command}"
+        );
+        // Ask and Accept edits still ask.
+        for mode in [AgentMode::Ask, AgentMode::AcceptEdits, AgentMode::Plan] {
+            assert_eq!(
+                auto_approval(
+                    mode,
+                    &settings,
+                    &request,
+                    &continuing,
+                    none,
+                    &gate(&reviewed)
+                ),
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn a_list_the_workspace_never_used_is_parked_when_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    for (level, used) in [
+        ("askEveryTime", false),
+        ("autoApplyEdits", false),
+        ("trusted", true),
+    ] {
+        let file = json!({"approval": level, "allowlist": ["./deploy.sh", "make release"]});
+        std::fs::write(CodeSettings::path(dir.path()), file.to_string()).unwrap();
+        let loaded = CodeSettings::load(dir.path()).unwrap();
+        assert_eq!(loaded.former_level.as_deref(), Some(level));
+        assert!(loaded.build_trust.is_none(), "{level}");
+        if used {
+            assert_eq!(loaded.allowlist, ["./deploy.sh", "make release"]);
+            assert!(loaded.parked_allowlist.is_empty());
+        } else {
+            assert!(
+                loaded.allowlist.is_empty(),
+                "{level}: a parked list never runs"
+            );
+            assert_eq!(loaded.parked_allowlist, ["./deploy.sh", "make release"]);
+        }
+        // Saved again, the level is not written back, and loading is stable.
+        let saved = loaded.clone().save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(CodeSettings::path(dir.path())).unwrap();
+        assert!(!text.contains("\"approval\""), "{text}");
+        assert_eq!(CodeSettings::load(dir.path()).unwrap(), saved);
+    }
+}
+
+#[test]
+fn trust_lapses_when_a_file_that_chooses_what_runs_changes() {
+    let dir = repo();
+    let root = dir.path();
+    let trusted = CodeSettings {
+        build_trust: Some(BuildTrust {
+            fingerprint: project_fingerprint(root).unwrap(),
+            trusted_at: "2026-11-03T00:00:00Z".into(),
+        }),
+        ..CodeSettings::default()
+    };
+    assert!(trusted
+        .build_trust_for(&project_fingerprint(root).unwrap())
+        .is_ok());
+    // Plain source changes keep it.
+    std::fs::write(root.join("lib.rs"), "fn b() {}\n").unwrap();
+    std::fs::write(root.join("notes.md"), "x").unwrap();
+    assert!(trusted
+        .build_trust_for(&project_fingerprint(root).unwrap())
+        .is_ok());
+    // Each of these revokes it, ignored by git or not.
+    std::fs::write(root.join(".gitignore"), ".npmrc\nnode_modules/\n.venv/\n").unwrap();
+    let cases: [(&str, &str); 9] = [
+        (".npmrc", "script-shell=evil"),
+        (".cargo/config.toml", "[build]\nrustc-wrapper = \"x\""),
+        ("rust-toolchain.toml", "[toolchain]\npath = \"tools/tc\""),
+        ("conftest.py", "import os"),
+        ("package.json", "{\"scripts\":{\"test\":\"x\"}}"),
+        ("sub/build.rs", "fn main() {}"),
+        ("node_modules/.bin/jest", "#!/bin/sh"),
+        (".venv/Scripts/pytest.exe", "x"),
+        (".yarnrc.yml", "yarnPath: x.cjs"),
+    ];
+    let mut before = project_fingerprint(root).unwrap();
+    for (file, content) in cases {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        let now = project_fingerprint(root).unwrap();
+        let changed = before.first_change(&now);
+        assert!(changed.is_some(), "{file} changed nothing");
+        let lapsed = trusted.build_trust_for(&now).unwrap_err();
+        assert!(lapsed.contains("changed since you trusted"), "{lapsed}");
+        before = now;
+    }
+    // Untrusted: says so.
+    let none = CodeSettings::default()
+        .build_trust_for(&before)
+        .unwrap_err();
+    assert!(none.contains("not trusted"), "{none}");
+    // Outside git there is nothing to trust.
+    let plain = tempfile::tempdir().unwrap();
+    assert!(project_fingerprint(plain.path()).is_err());
+}
+
+#[test]
+fn what_is_unreviewed_belongs_to_the_folder_and_old_records_are_kept() {
+    let data = tempfile::tempdir().unwrap();
+    let store = ReviewStore::in_dir(data.path());
+    let dir = tempfile::tempdir().unwrap();
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    let key = ReviewStore::folder_key(&folder);
+    // A record an earlier version kept for a conversation.
+    store
+        .update("conv-a", |state| {
+            state.add_files(["src/old.rs".to_string()])
+        })
+        .unwrap();
+    store
+        .update(&key, |state| state.add_files(["src/new.rs".to_string()]))
+        .unwrap();
+    store.adopt("conv-a", &key).unwrap();
+    let state = store.get(&key).unwrap();
+    assert_eq!(state.files, ["src/new.rs", "src/old.rs"]);
+    assert_eq!(store.get("conv-a").unwrap(), ReviewState::default());
+    // Another conversation of the folder sees the same record.
+    store.adopt("conv-b", &key).unwrap();
+    assert_eq!(store.get(&key).unwrap().files.len(), 2);
 }

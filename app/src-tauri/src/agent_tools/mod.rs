@@ -807,15 +807,7 @@ mod tests {
             .collect();
         local.sort_unstable();
         let mut expected = vec![
-            app_tools::CREATE_TASK,
-            app_tools::UPDATE_TASK,
-            app_tools::COMPLETE_TASK,
-            app_tools::CREATE_EVENT,
-            app_tools::UPDATE_EVENT,
-            app_tools::CREATE_SNIPPET,
             app_tools::ORGANIZE_CONVERSATION,
-            app_tools::ADD_TO_WORKSPACE,
-            app_tools::REMOVE_FROM_WORKSPACE,
             app_tools::CREATE_FOLDER,
             app_tools::EXPORT_DOCUMENT,
         ];
@@ -834,6 +826,17 @@ mod tests {
             // Workspace instructions steer later answers: changing them always asks.
             app_tools::CREATE_WORKSPACE,
             app_tools::UPDATE_WORKSPACE,
+            // A workspace's sources decide what Slack and Telegram answers draw on.
+            app_tools::ADD_TO_WORKSPACE,
+            app_tools::REMOVE_FROM_WORKSPACE,
+            // Tasks, events and snippets are indexed and read by later answers (and
+            // remind the user): the model's words there would steer them.
+            app_tools::CREATE_TASK,
+            app_tools::UPDATE_TASK,
+            app_tools::COMPLETE_TASK,
+            app_tools::CREATE_EVENT,
+            app_tools::UPDATE_EVENT,
+            app_tools::CREATE_SNIPPET,
         ] {
             assert!(!local.contains(&name), "{name} must ask in every mode");
         }
@@ -845,11 +848,14 @@ mod tests {
             let class = ToolClass::of(
                 tool.tier(),
                 tool.edits_locally(),
-                tool.changes_files_unasked(),
+                tool.changes_files_unasked() || tool.changes_state(),
             );
             for mode in AgentMode::ALL {
                 let gate = decide(mode, class);
                 match tool.tier() {
+                    RiskTier::Read if tool.changes_state() && mode == AgentMode::Plan => {
+                        assert_eq!(gate, Gate::Hidden, "{name} {mode:?}")
+                    }
                     RiskTier::Read => assert_eq!(gate, Gate::Run, "{name} {mode:?}"),
                     RiskTier::Write if tool.edits_locally() && mode != AgentMode::Ask => {
                         assert_ne!(gate, Gate::Ask, "{name} {mode:?}")

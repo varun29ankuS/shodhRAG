@@ -153,6 +153,12 @@ export interface TranscriptState {
   memoryIds?: string[];
   sessionId: string | null;
   model: string | null;
+  /**
+   * The mode the answer was written in (`agentModes`), set when it starts: "Approve
+   * plan" follows it, not the mode the picker shows later. Absent in transcripts saved
+   * before modes, and for answers from outside the Ask view.
+   */
+  agentMode?: string;
   /** Data-handling warning for the model, shown for the whole run. */
   warning: string | null;
   status: TranscriptStatus;

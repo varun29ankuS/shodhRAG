@@ -2726,6 +2726,31 @@ mod tests {
         offline_session_in_mode(grounding, code, registry, AgentMode::Ask)
     }
 
+    /// [`offline_session`] in Auto mode (a workspace whose commands run without asking).
+    fn offline_session_auto(
+        grounding: Option<GroundingConfig>,
+        code: Option<Arc<CodeRuntime>>,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
+        offline_session_in_mode(grounding, code, ToolRegistry::new(), AgentMode::Auto)
+    }
+
+    /// [`offline_session_with`] in Auto mode.
+    fn offline_session_with_auto(
+        grounding: Option<GroundingConfig>,
+        code: Option<Arc<CodeRuntime>>,
+        registry: ToolRegistry,
+    ) -> (
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
+        offline_session_in_mode(grounding, code, registry, AgentMode::Auto)
+    }
+
     /// [`offline_session_with`] answering in `mode`.
     fn offline_session_in_mode(
         grounding: Option<GroundingConfig>,
@@ -4649,7 +4674,7 @@ mod tests {
         // no file for.
         let changes = [
             command_call("3", json!({"command": "cargo test; rm -rf src"})),
-            command_call("4", json!({"command": "cargo build"})),
+            command_call("4", json!({"command": "make build"})),
             command_call(
                 "5",
                 json!({"command": "cargo test -p app --config build.rustc-wrapper=x"}),
@@ -4884,7 +4909,7 @@ mod tests {
             x,
             ev,
             o,
-            command_call("8", json!({"command": "git status"})),
+            command_call("8", json!({"command": "make lint"})),
             Answer::ApproveInPrompt,
         )
         .await;
@@ -5019,7 +5044,7 @@ mod tests {
         finish(x, o, "17").await;
         code.settled().await;
         let again_exec = TestExecutor::new();
-        let (again, mut again_events, mut again_out) = offline_session(
+        let (again, mut again_events, mut again_out) = offline_session_auto(
             None,
             Some(code_runtime_with(
                 folder.path(),
@@ -5051,7 +5076,7 @@ mod tests {
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let root = code.folder.root().to_path_buf();
         let lib = root.join("lib.rs");
-        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, mut events, mut out) = offline_session_auto(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -5185,7 +5210,7 @@ mod tests {
             .unwrap()
             .contains("npm run dev"));
         let again_exec = TestExecutor::new();
-        let (again, mut again_events, mut again_out) = offline_session(
+        let (again, mut again_events, mut again_out) = offline_session_auto(
             None,
             Some(code_runtime_with(
                 folder.path(),
@@ -5213,7 +5238,7 @@ mod tests {
         let (folder, data) = trusted_repo();
         let exec = TestExecutor::new();
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
-        let (inner, _events, mut out) = offline_session(None, Some(code));
+        let (inner, _events, mut out) = offline_session_auto(None, Some(code));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -5293,7 +5318,7 @@ mod tests {
         let (folder, data) = trusted_repo();
         let exec = TestExecutor::new();
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
-        let (inner, _events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, _events, mut out) = offline_session_auto(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -5302,7 +5327,7 @@ mod tests {
         exec.hold(true);
         runs_unasked(&inner, &exec, &mut out, command_call("1", test_command())).await;
         let again_exec = TestExecutor::new();
-        let (again, mut again_events, mut again_out) = offline_session(
+        let (again, mut again_events, mut again_out) = offline_session_auto(
             None,
             Some(code_runtime_with(
                 folder.path(),
@@ -5334,7 +5359,7 @@ mod tests {
         let (folder, data) = trusted_repo();
         let exec = TestExecutor::new();
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
-        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, mut events, mut out) = offline_session_auto(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -5378,7 +5403,7 @@ mod tests {
         let code = code_runtime_with(folder.path(), data.path(), Arc::clone(&exec));
         let root = code.folder.root().to_path_buf();
         let lib = root.join("lib.rs");
-        let (inner, mut events, mut out) = offline_session(None, Some(Arc::clone(&code)));
+        let (inner, mut events, mut out) = offline_session_auto(None, Some(Arc::clone(&code)));
         inner
             .start_run("Fix the tests", Some("run-1".into()), RunScope::default())
             .unwrap();
@@ -5421,7 +5446,7 @@ mod tests {
         let exec2 = TestExecutor::new();
         exec2.escape.store(true, Ordering::SeqCst);
         let code2 = code_runtime_with(folder2.path(), data2.path(), Arc::clone(&exec2));
-        let (inner2, mut events2, mut out2) = offline_session(None, Some(Arc::clone(&code2)));
+        let (inner2, mut events2, mut out2) = offline_session_auto(None, Some(Arc::clone(&code2)));
         inner2
             .start_run("Run the tests", Some("run-2".into()), RunScope::default())
             .unwrap();
@@ -5505,7 +5530,7 @@ mod tests {
             }))
             .unwrap();
         let (inner, mut events, mut out) =
-            offline_session_with(None, Some(Arc::clone(&code)), registry);
+            offline_session_with_auto(None, Some(Arc::clone(&code)), registry);
         inner
             .start_run("Add a test", Some("run-1".into()), RunScope::default())
             .unwrap();

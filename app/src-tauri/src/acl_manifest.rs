@@ -12,17 +12,26 @@
 //!   frontend modules that `main.tsx` loads for the app shell. A command is
 //!   named when a string literal equals it, as in `agent_coverage.rs`, so
 //!   wrappers around `invoke` count too; that file's test allows non-literal
-//!   commands only in files it declares.
+//!   commands only in files it declares. Comments are stripped first, so a
+//!   command mentioned in a comment is not a use.
 //! - **Print windows.** `print-window` allows only commands named in the
 //!   print view's modules, and every command named in the modules only the
 //!   print view loads.
 //! - Every registered command is granted to some window, and the permission
 //!   files name no other command.
-//! - Each capability names its windows (never webviews), allows local pages
-//!   only, grants no file reads and no window management, and the windows
-//!   the app opens are exactly the ones the capabilities name.
-//! - No module calls `invoke` at its top level: `main.tsx` imports the whole
-//!   app shell, so every module is evaluated in print windows too.
+//! - Each capability is keyed by webview label, never by window label: Tauri
+//!   grants a window-keyed capability to every webview inside that window,
+//!   so a child webview added to `main` (for example an agent-built preview)
+//!   would inherit everything `main` has. Each allows local pages only and
+//!   grants no file reads and no window management, and the webviews the app
+//!   opens are exactly the ones the capabilities name.
+//! - No module calls `invoke` or `listen` while it is evaluated: `main.tsx`
+//!   imports the whole app shell, so every module is evaluated in print
+//!   windows too. Code inside functions, methods and arrow functions counts
+//!   as deferred unless the function is passed to a call made at load (a
+//!   `.then` callback, an IIFE-like `new Promise(..)`), except for the React
+//!   wrappers that only store it (`memo`, `forwardRef`, `lazy`). A top-level
+//!   call to some other function that invokes inside is not seen.
 //!
 //! The last test loads the compiled ACL into a mock app and sends requests
 //! from each window and origin.
@@ -207,6 +216,319 @@ mod tests {
         }
     }
 
+    /// `text` with its `//` and `/* */` comments removed (newlines kept, so
+    /// line numbers hold). A `'` or `"` string ends at its line's end at the
+    /// latest, as in JS, so a quote in a regex literal cannot swallow the
+    /// rest of the file; escapes are skipped everywhere, so `\/\/` in a regex
+    /// is not a comment.
+    pub(super) fn strip_comments(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            match c {
+                '\'' | '"' | '`' => {
+                    out.push(c);
+                    i += 1;
+                    while i < chars.len() {
+                        let d = chars[i];
+                        if d == '\\' {
+                            out.push(d);
+                            if let Some(&e) = chars.get(i + 1) {
+                                out.push(e);
+                            }
+                            i += 2;
+                            continue;
+                        }
+                        if d == '\n' && c != '`' {
+                            break;
+                        }
+                        out.push(d);
+                        i += 1;
+                        if d == c {
+                            break;
+                        }
+                    }
+                }
+                '\\' => {
+                    out.push(c);
+                    if let Some(&e) = chars.get(i + 1) {
+                        out.push(e);
+                    }
+                    i += 2;
+                }
+                '/' if chars.get(i + 1) == Some(&'/') => {
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                }
+                '/' if chars.get(i + 1) == Some(&'*') => {
+                    i += 2;
+                    while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                        if chars[i] == '\n' {
+                            out.push('\n');
+                        }
+                        i += 1;
+                    }
+                    i += 2;
+                }
+                _ => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// `text` (comments already stripped) with every string's contents
+    /// blanked to spaces, quotes and newlines kept.
+    fn blank_strings(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in text.chars() {
+            match quote {
+                None => {
+                    if matches!(c, '\'' | '"' | '`') {
+                        quote = Some(c);
+                    }
+                    out.push(c);
+                }
+                Some(q) => {
+                    if escaped {
+                        escaped = false;
+                        out.push(if c == '\n' { '\n' } else { ' ' });
+                    } else if c == '\\' {
+                        escaped = true;
+                        out.push(' ');
+                    } else if c == q || (c == '\n' && q != '`') {
+                        quote = None;
+                        out.push(c);
+                    } else {
+                        out.push(if c == '\n' { '\n' } else { ' ' });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Runs {
+        /// Runs while the module is evaluated.
+        AtLoad,
+        /// Runs only when something calls it later.
+        Later,
+    }
+
+    struct Frame {
+        close: char,
+        runs: Runs,
+        /// The arguments of a call (not a grouping or a signature's params).
+        call_args: bool,
+        /// The word before this `(`, e.g. `if` or a function's name.
+        head: String,
+        /// A concise arrow body, which ends at `,` `;` or its enclosing closer.
+        concise: bool,
+    }
+
+    /// Calls that keep a function for later instead of calling it.
+    const DEFERRING_CALLS: &[&str] = &["memo", "forwardRef", "lazy"];
+    /// `kw (...) {` opens a block of the enclosing code, not a function.
+    const BLOCK_HEADS: &[&str] = &["if", "for", "while", "switch", "catch", "with"];
+
+    fn is_word(c: char) -> bool {
+        c.is_alphanumeric() || c == '_' || c == '$'
+    }
+
+    /// `(line, callee)` of every call to one of `callees` that runs while the
+    /// module is evaluated.
+    pub(super) fn calls_at_load(source: &str, callees: &[String]) -> Vec<(usize, String)> {
+        let text: Vec<char> = blank_strings(&strip_comments(source)).chars().collect();
+        let class = Regex::new(r"\bclass\b").unwrap();
+        let prev_sig = |i: usize| -> Option<(usize, char)> {
+            (0..i)
+                .rev()
+                .map(|j| (j, text[j]))
+                .find(|(_, c)| !c.is_whitespace())
+        };
+        let word_ending_at = |end: usize| -> String {
+            let mut start = end;
+            while start > 0 && is_word(text[start - 1]) {
+                start -= 1;
+            }
+            text[start..end].iter().collect()
+        };
+        let arrow_runs = |frame: &Frame| {
+            if frame.call_args && frame.runs == Runs::AtLoad {
+                Runs::AtLoad
+            } else {
+                Runs::Later
+            }
+        };
+        let mut stack = vec![Frame {
+            close: '\0',
+            runs: Runs::AtLoad,
+            call_args: false,
+            head: String::new(),
+            concise: false,
+        }];
+        // The last `)` closed: where it was and the word before its `(`.
+        let mut last_paren: Option<(usize, String)> = None;
+        let mut line = 1;
+        let mut found = Vec::new();
+        let mut i = 0;
+        while i < text.len() {
+            let c = text[i];
+            let top = stack.last().expect("the module frame stays");
+            match c {
+                '\n' => {
+                    line += 1;
+                    // A statement starting at column 0 ends any concise
+                    // arrow body left open at module level.
+                    if text.get(i + 1).is_some_and(|n| is_word(*n)) {
+                        while stack.len() > 1 && stack.last().is_some_and(|f| f.concise) {
+                            stack.pop();
+                        }
+                    }
+                }
+                // An escaped character (in a regex literal) is never a bracket.
+                '\\' => {
+                    i += 2;
+                    continue;
+                }
+                ',' | ';' if top.concise => {
+                    stack.pop();
+                }
+                '(' => {
+                    let before = prev_sig(i);
+                    let head = before
+                        .filter(|(_, p)| is_word(*p))
+                        .map(|(j, _)| word_ending_at(j + 1))
+                        .unwrap_or_default();
+                    let call = before.is_some_and(|(_, p)| is_word(p) || p == ')' || p == ']')
+                        && !BLOCK_HEADS.contains(&head.as_str())
+                        && head != "function";
+                    let runs = if call && DEFERRING_CALLS.contains(&head.as_str()) {
+                        Runs::Later
+                    } else {
+                        top.runs
+                    };
+                    stack.push(Frame {
+                        close: ')',
+                        runs,
+                        call_args: call,
+                        head,
+                        concise: false,
+                    });
+                }
+                '[' => {
+                    let runs = top.runs;
+                    stack.push(Frame {
+                        close: ']',
+                        runs,
+                        call_args: false,
+                        head: String::new(),
+                        concise: false,
+                    });
+                }
+                '{' => {
+                    let before = prev_sig(i);
+                    let after_arrow =
+                        before.is_some_and(|(j, p)| p == '>' && j > 0 && text[j - 1] == '=');
+                    // `) {` or `): Type {` after a parameter list.
+                    let after_params = last_paren.as_ref().filter(|(end, _)| {
+                        let between: String = text[end + 1..i].iter().collect();
+                        let between = between.trim();
+                        between.is_empty() || (between.starts_with(':') && !between.contains(';'))
+                    });
+                    let word_before = before
+                        .filter(|(_, p)| is_word(*p))
+                        .map(|(j, _)| word_ending_at(j + 1))
+                        .unwrap_or_default();
+                    let statement_start = (0..i)
+                        .rev()
+                        .find(|&j| matches!(text[j], ';' | '{' | '}'))
+                        .map_or(0, |j| j + 1);
+                    let statement: String = text[statement_start..i].iter().collect();
+                    let runs = if after_arrow {
+                        arrow_runs(top)
+                    } else if let Some((_, head)) = after_params {
+                        if BLOCK_HEADS.contains(&head.as_str()) {
+                            top.runs
+                        } else {
+                            arrow_runs(top)
+                        }
+                    } else if matches!(word_before.as_str(), "else" | "try" | "finally" | "do") {
+                        top.runs
+                    } else if class.is_match(&statement) {
+                        Runs::Later
+                    } else {
+                        top.runs
+                    };
+                    stack.push(Frame {
+                        close: '}',
+                        runs,
+                        call_args: false,
+                        head: String::new(),
+                        concise: false,
+                    });
+                }
+                ')' | ']' | '}' => {
+                    while stack.len() > 1 && stack.last().is_some_and(|f| f.concise) {
+                        stack.pop();
+                    }
+                    if stack.len() > 1 && stack.last().is_some_and(|f| f.close == c) {
+                        let frame = stack.pop().expect("checked");
+                        if c == ')' {
+                            last_paren = Some((i, frame.head));
+                        }
+                    }
+                }
+                '=' if text.get(i + 1) == Some(&'>') => {
+                    let next = (i + 2..text.len())
+                        .map(|j| text[j])
+                        .find(|c| !c.is_whitespace());
+                    if next != Some('{') {
+                        let runs = arrow_runs(top);
+                        stack.push(Frame {
+                            close: '\0',
+                            runs,
+                            call_args: false,
+                            head: String::new(),
+                            concise: true,
+                        });
+                    }
+                    i += 2;
+                    continue;
+                }
+                _ if is_word(c) && (i == 0 || !(is_word(text[i - 1]) || text[i - 1] == '.')) => {
+                    let mut end = i;
+                    while end < text.len() && is_word(text[end]) {
+                        end += 1;
+                    }
+                    let word: String = text[i..end].iter().collect();
+                    let next = (end..text.len())
+                        .map(|j| text[j])
+                        .find(|c| !c.is_whitespace());
+                    if top.runs == Runs::AtLoad
+                        && matches!(next, Some('(' | '<'))
+                        && callees.iter().any(|callee| *callee == word)
+                    {
+                        found.push((line, word));
+                    }
+                    i = end;
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        found
+    }
+
     /// Every module reachable from `roots` by static or dynamic import, as
     /// paths relative to `app/src`, never entering `excluded`. Type-only
     /// imports count too, which can only add modules.
@@ -224,7 +546,7 @@ mod tests {
             if excluded.contains(&name.as_str()) || !seen.insert(name) {
                 continue;
             }
-            for cap in import.captures_iter(&read(&file)) {
+            for cap in import.captures_iter(&strip_comments(&read(&file))) {
                 match resolve(&file, &root, &cap[1]) {
                     Some(Ok(next)) => queue.push_back(next),
                     Some(Err(problem)) => problems.push(problem),
@@ -244,7 +566,7 @@ mod tests {
         let literal = Regex::new(r#"["'`]([A-Za-z_][A-Za-z0-9_]*)["'`]"#).unwrap();
         let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for file in files {
-            for cap in literal.captures_iter(&read(&root.join(file))) {
+            for cap in literal.captures_iter(&strip_comments(&read(&root.join(file)))) {
                 if commands.contains(&cap[1]) {
                     out.entry(cap[1].to_string())
                         .or_default()
@@ -374,33 +696,39 @@ mod tests {
         for (file, capability) in capabilities() {
             let object = capability.as_object().expect("a capability is an object");
             for key in object.keys() {
-                if !matches!(
-                    key.as_str(),
-                    "$schema" | "identifier" | "description" | "local" | "windows" | "permissions"
-                ) {
-                    problems.push(format!(
-                        "{file}: `{key}` is not allowed (no webviews, remote URLs or platform splits: a grant follows a window label on the app's own pages)"
-                    ));
+                match key.as_str() {
+                    "$schema" | "identifier" | "description" | "local" | "webviews"
+                    | "permissions" => {}
+                    // Tauri grants a window-keyed capability to every webview
+                    // in that window (`resolve_access` matches window OR
+                    // webview label), so a child webview added to `main`
+                    // would get all of main's grants.
+                    "windows" => problems.push(format!(
+                        "{file}: key the capability by `webviews`, not `windows`: a window's grants reach every webview it hosts"
+                    )),
+                    _ => problems.push(format!(
+                        "{file}: `{key}` is not allowed (no remote URLs or platform splits: a grant follows a webview label on the app's own pages)"
+                    )),
                 }
             }
             if capability.get("local") != Some(&Value::Bool(true)) {
                 problems.push(format!("{file}: must say \"local\": true"));
             }
-            let windows: Vec<String> = capability["windows"]
+            let windows: Vec<String> = capability["webviews"]
                 .as_array()
                 .map(|w| {
                     w.iter()
-                        .map(|w| w.as_str().expect("window label").to_string())
+                        .map(|w| w.as_str().expect("webview label").to_string())
                         .collect()
                 })
                 .unwrap_or_default();
             if windows.is_empty() {
-                problems.push(format!("{file}: names no window"));
+                problems.push(format!("{file}: names no webview"));
             }
             for window in &windows {
                 if window != MAIN_WINDOW && *window != print_windows {
                     problems.push(format!(
-                        "{file}: window `{window}` is not one the app opens (main, {print_windows})"
+                        "{file}: webview `{window}` is not one the app opens (main, {print_windows})"
                     ));
                 }
                 windows_named.insert(window.clone());
@@ -433,7 +761,7 @@ mod tests {
             match app_grants.get(id).map(Vec::as_slice) {
                 Some([windows]) if windows.len() == 1 && windows[0] == window => {}
                 other => problems.push(format!(
-                    "{id} must be granted by exactly one capability, for window `{window}` only; found {other:?}"
+                    "{id} must be granted by exactly one capability, for webview `{window}` only; found {other:?}"
                 )),
             }
         };
@@ -480,10 +808,12 @@ mod tests {
                 }
             }
         }
+        // Each window the app opens is a WebviewWindow, whose one webview
+        // carries the window's label.
         let expected: BTreeSet<String> = [MAIN_WINDOW.to_string(), print_windows.clone()].into();
         if windows_named != expected {
             problems.push(format!(
-                "capabilities name {windows_named:?}, the app opens {expected:?}"
+                "capabilities name the webviews {windows_named:?}, the app opens {expected:?}"
             ));
         }
 
@@ -496,26 +826,72 @@ mod tests {
 
     #[test]
     fn no_module_calls_invoke_at_its_top_level() {
-        // Print windows evaluate every module main.tsx imports, so a
-        // top-level call would run there with the print grants.
-        let top_level = Regex::new(
-            r"^(?:export\s+)?(?:(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*)?(?:void\s+|await\s+)?invoke\s*(?:<[^()]*>)?\s*\(",
-        )
-        .unwrap();
+        // Print windows evaluate every module main.tsx imports, so a call
+        // made at load would run there with the print grants.
+        let alias = Regex::new(r"\binvoke\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)").unwrap();
         let root = frontend_root();
         let (files, _) = module_graph(&["main.tsx"], &[]);
         let mut problems = Vec::new();
         for file in files {
-            for (n, line) in read(&root.join(&file)).lines().enumerate() {
-                if top_level.is_match(line) {
-                    problems.push(format!("{file}:{}: {line}", n + 1));
-                }
+            let text = read(&root.join(&file));
+            let mut callees = vec!["invoke".to_string(), "listen".to_string()];
+            callees.extend(alias.captures_iter(&text).map(|c| c[1].to_string()));
+            for (line, callee) in calls_at_load(&text, &callees) {
+                problems.push(format!("{file}:{line}: {callee}"));
             }
         }
         assert!(
             problems.is_empty(),
-            "invoke at module top level (call it from a component or a function):\n- {}",
+            "calls made while the module loads (call them from a component or a function):\n- {}",
             problems.join("\n- ")
+        );
+    }
+
+    #[test]
+    fn the_load_time_scan_tells_load_from_later() {
+        let callees = vec!["invoke".to_string(), "listen".to_string()];
+        let lines = |src: &str| -> Vec<usize> {
+            calls_at_load(src, &callees)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect()
+        };
+        // Deferred: functions, methods, arrows kept for later, React wrappers,
+        // class members, comments and strings.
+        let later = [
+            "export async function load(): Promise<X> {\n  return invoke('a');\n}",
+            "const f = async () => invoke<T>('a');\nconst g = () => {\n  listen('e', h);\n};",
+            "export const api = {\n  async get() { return invoke('a'); },\n  put: (x) => invoke('b', { x }),\n};",
+            "export default memo(function Card() {\n  useEffect(() => { invoke('a'); }, []);\n  return null;\n});",
+            "const C = forwardRef((p, r) => {\n  useEffect(() => { void invoke('a'); });\n});",
+            "class A extends B<P> {\n  x = () => invoke('a');\n  m() { invoke('b'); }\n}",
+            "// invoke('a');\n/* invoke('b'); */\nconst s = \"invoke('c')\";\nconst re = /\\/\\//;",
+            "if (ok) {\n  const h = () => invoke('a');\n}",
+        ];
+        for src in later {
+            assert!(lines(src).is_empty(), "{src}: {:?}", lines(src));
+        }
+        // At load: top-level calls, inside top-level blocks, callbacks run
+        // by a call made at load, and an initializer.
+        assert_eq!(lines("invoke('a');"), vec![1]);
+        assert_eq!(
+            lines("const x = 1;\nexport const v = await invoke<T>('a');"),
+            vec![2]
+        );
+        assert_eq!(
+            lines("if (import.meta.env.DEV) {\n  invoke('a');\n}"),
+            vec![2]
+        );
+        assert_eq!(lines("start().then(() => invoke('a'));"), vec![1]);
+        assert_eq!(
+            lines("new Promise((r) => {\n  listen('e', r);\n});"),
+            vec![2]
+        );
+        assert_eq!(lines("const f = () => 1;\nlisten('e', f);"), vec![2]);
+        let aliased = vec!["call".to_string()];
+        assert_eq!(
+            calls_at_load("call('a');", &aliased),
+            vec![(1, "call".to_string())]
         );
     }
 
@@ -565,12 +941,18 @@ mod tests {
         .map_err(|e| e.to_string())
     }
 
-    /// Refused by the ACL itself: every rejection Tauri's ACL check sends
-    /// (debug builds, `RuntimeAuthority::resolve_access_message`) says "not
-    /// allowed". Any other error, e.g. a plugin the mock app does not
-    /// register or a missing argument, means the request got past the ACL.
+    /// Refused by the ACL itself. Tauri's ACL rejections (debug builds,
+    /// `RuntimeAuthority::resolve_access_message`) say "not allowed", or
+    /// "explicitly denied" for a deny rule.
     fn refused(result: &Result<String, String>) -> bool {
-        matches!(result, Err(e) if e.contains("not allowed"))
+        matches!(result, Err(e) if e.contains("not allowed") || e.contains("explicitly denied"))
+    }
+
+    /// Got past the ACL to the plugin, which then failed for the reason
+    /// given: the mock app registers no app plugins, and the core plugins
+    /// get no arguments here.
+    fn past_the_acl(result: &Result<String, String>, reason: &str) -> bool {
+        !refused(result) && matches!(result, Err(e) if e.contains(reason))
     }
 
     #[test]
@@ -597,17 +979,22 @@ mod tests {
         let local = local_page();
         let preview = preview_page();
         let reached = Ok(REACHED.to_string());
+        const NO_ARGUMENT: &str = "missing required key";
 
-        // The main window, on the app's pages: its commands and plugin
-        // calls get past the ACL (a plugin call then fails for another
-        // reason: no argument, or a plugin the mock app lacks), the print
-        // view's command and fs reads do not.
+        // The main window, on the app's pages: its commands and plugin calls
+        // get past the ACL; the print view's command and fs reads do not.
         assert_eq!(call(&main, "get_app_settings", local), reached);
         assert_eq!(call(&main, "creation_delete", local), reached);
-        for cmd in ["plugin:event|listen", "plugin:fs|write_file"] {
-            let result = call(&main, cmd, local);
-            assert!(!refused(&result), "main window: {cmd}: {result:?}");
-        }
+        let result = call(&main, "plugin:event|listen", local);
+        assert!(
+            past_the_acl(&result, NO_ARGUMENT),
+            "main window: listen: {result:?}"
+        );
+        let result = call(&main, "plugin:fs|write_file", local);
+        assert!(
+            past_the_acl(&result, "write_file not found"),
+            "main window: fs write: {result:?}"
+        );
         for cmd in [
             "print_job",
             "plugin:fs|read_file",
@@ -629,7 +1016,10 @@ mod tests {
         assert_eq!(call(&print, "print_job", local), reached);
         assert_eq!(call(&print, "read_source_bytes", local), reached);
         let result = call(&print, "plugin:event|listen", local);
-        assert!(!refused(&result), "print window: listen: {result:?}");
+        assert!(
+            past_the_acl(&result, NO_ARGUMENT),
+            "print window: listen: {result:?}"
+        );
         for cmd in [
             "get_app_settings",
             "creation_delete",
@@ -643,8 +1033,8 @@ mod tests {
             assert!(refused(&result), "print window: {cmd}: {result:?}");
         }
 
-        // A window no capability names, e.g. a preview of its own label:
-        // nothing, from the preview origin or the app's.
+        // A webview no capability names, e.g. a preview window of its own
+        // label: nothing, from the preview origin or the app's.
         for url in [preview.as_str(), local] {
             for cmd in [
                 "creation_delete",
@@ -657,15 +1047,31 @@ mod tests {
             }
         }
 
-        // The Artifacts preview frame lives in the main window, and Tauri 2.9
-        // counts every registered custom scheme as a local origin, so the ACL
-        // grants it what it grants the main window; the invoke key is the
-        // barrier there (creations/preview.rs). If this starts failing, Tauri
-        // tells the frame apart now: deny it here and update preview.rs.
-        assert_eq!(
-            call(&main, "get_app_settings", &preview),
-            reached,
-            "the ACL no longer treats the preview origin as the app's own"
-        );
+        // On Windows the scheme counts as local only over the protocol the
+        // app serves it with (http); the https form is a remote origin.
+        if cfg!(windows) {
+            let https = preview.replacen("http://", "https://", 1);
+            let result = call(&main, "get_app_settings", &https);
+            assert!(refused(&result), "{https}: {result:?}");
+        }
+
+        // Tripwire, not a guarantee: the Artifacts preview frame lives in the
+        // main webview, and Tauri 2.9 counts every registered custom scheme
+        // as a local origin (`Webview::is_local_url`, on macOS by scheme, on
+        // Windows as http://<scheme>.localhost), so the ACL grants the frame
+        // what it grants main; the invoke key is the barrier there
+        // (creations/preview.rs). This bypasses the key on purpose. A Tauri
+        // that classes the frame as remote refuses it, since no capability
+        // allows remote origins: that is an improvement, reported here, not
+        // a failure. Anything else is unexpected.
+        match call(&main, "get_app_settings", &preview) {
+            Ok(answer) if answer == REACHED => {}
+            result if refused(&result) => eprintln!(
+                "NOTE: the ACL now refuses the preview origin {preview} in the main webview. \
+                 The preview is no longer a local origin: update creations/preview.rs and \
+                 remove this tripwire."
+            ),
+            other => panic!("unexpected answer from the preview origin: {other:?}"),
+        }
     }
 }

@@ -35,6 +35,7 @@ mod rag_commands;
 mod reminders;
 mod research_commands;
 mod scan_reader;
+mod search_model_switch;
 mod search_models_commands;
 mod shutdown;
 mod source_viewer_commands;
@@ -596,6 +597,10 @@ pub fn run() {
             }
             app.manage(indexing_state);
             app.manage(folder_sync);
+            // Re-indexing for faster search: one that Shodh closed in the middle of
+            // goes on (and waits while indexing is paused).
+            app.manage(search_model_switch::SearchModelSwitchState::default());
+            search_model_switch::resume_at_start(app.handle());
             // Task reminders: native notifications while the app runs.
             app.manage(reminders::ReminderState::default());
             reminders::spawn(app.handle().clone());
@@ -697,6 +702,9 @@ pub fn run() {
             indexing_control::cancel_indexing,
             indexing_control::set_search_gpu,
             indexing_control::system_status,
+            search_model_switch::start_search_model_switch,
+            search_model_switch::cancel_search_model_switch,
+            search_model_switch::restart_for_search_model_switch,
             enhanced_rag_commands::check_path_type,
             // PDF export and printing
             pdf_export::export_pdf,

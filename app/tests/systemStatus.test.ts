@@ -11,12 +11,14 @@ import {
   cpuReasonText,
   etaText,
   indexingText,
+  modelSwitchView,
   pagesPerMinuteText,
   readCpuReason,
+  readModelSwitch,
   readSystemStatus,
   searchSummary,
 } from '../src/features/status/systemStatus.ts';
-import type { SearchReport, SystemStatus } from '../src/features/status/systemStatus.ts';
+import type { ModelSwitch, SearchReport, SystemStatus } from '../src/features/status/systemStatus.ts';
 
 function report(extra: Partial<SearchReport> = {}): SearchReport {
   return {
@@ -44,9 +46,84 @@ function status(extra: Partial<SystemStatus> = {}): SystemStatus {
     scanReaderInstalled: true,
     indexingPaused: false,
     running: [],
+    modelSwitch: readModelSwitch(null),
     ...extra,
   };
 }
+
+function modelSwitch(extra: Partial<ModelSwitch> = {}): ModelSwitch {
+  return { ...readModelSwitch(null), indexVariant: 'fp16', ...extra };
+}
+
+test('the faster model switch is read field by field, and junk is dropped', () => {
+  const read = readModelSwitch({
+    indexVariant: 'fp16',
+    offered: true,
+    phase: 'building',
+    done: 120,
+    total: 4000,
+    etaSeconds: 600,
+    downloadedBytes: -3,
+    downloadBytes: 'x',
+    modelBytes: 278_686_411,
+    error: '',
+  });
+  assert.deepEqual(read, {
+    indexVariant: 'fp16',
+    offered: true,
+    phase: 'building',
+    done: 120,
+    total: 4000,
+    etaSeconds: 600,
+    downloadedBytes: 0,
+    downloadBytes: 0,
+    modelBytes: 278_686_411,
+    error: null,
+  });
+  assert.equal(readModelSwitch({ phase: 'exploded' }).phase, 'idle');
+  assert.equal(readSystemStatus({})?.modelSwitch.phase, 'idle');
+});
+
+test('the faster model switch says what happens, in plain words', () => {
+  assert.equal(modelSwitchView(status()), null, 'nothing offered, nothing shown');
+  const offered = modelSwitchView(status({ modelSwitch: modelSwitch({ offered: true, modelBytes: 278_686_411 }) }));
+  assert.equal(offered?.title, 'A faster search model is available for this computer.');
+  assert.match(offered?.detail ?? '', /about 3 times faster/);
+  assert.match(offered?.detail ?? '', /search keeps working meanwhile/);
+  assert.match(offered?.detail ?? '', /\(279 MB\)/);
+  assert.deepEqual(offered?.actions, ['start']);
+  const installed = modelSwitchView(status({ modelSwitch: modelSwitch({ offered: true }) }));
+  assert.doesNotMatch(installed?.detail ?? '', /downloads/);
+
+  const downloading = modelSwitchView(
+    status({ modelSwitch: modelSwitch({ phase: 'downloading', downloadedBytes: 120_000_000, downloadBytes: 278_686_411 }) }),
+  );
+  assert.equal(downloading?.detail, '120 MB of 279 MB');
+  assert.deepEqual(downloading?.actions, ['cancel']);
+
+  const building = modelSwitchView(
+    status({ modelSwitch: modelSwitch({ phase: 'building', done: 1200, total: 40_000, etaSeconds: 480 }) }),
+  );
+  assert.equal(building?.title, 'Re-indexing for faster search');
+  assert.equal(building?.detail, '1,200 of 40,000 passages · about 8 min left. Search keeps working meanwhile.');
+  const paused = modelSwitchView(
+    status({ indexingPaused: true, modelSwitch: modelSwitch({ phase: 'building', done: 1200, total: 40_000, etaSeconds: 480 }) }),
+  );
+  assert.equal(paused?.title, 'Re-indexing for faster search (paused)');
+  assert.doesNotMatch(paused?.detail ?? '', /left/);
+
+  const stopped = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'stopped', done: 5, total: 9 }) }));
+  assert.deepEqual(stopped?.actions, ['continue', 'discard']);
+  assert.match(stopped?.detail ?? '', /5 of 9 passages/);
+
+  const ready = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'ready' }) }));
+  assert.equal(ready?.title, 'The faster search model is ready.');
+  assert.deepEqual(ready?.actions, ['restart']);
+
+  const failed = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'failed', error: 'disk full' }) }));
+  assert.equal(failed?.detail, 'Reason: disk full');
+  assert.equal(failed?.tone, 'bad');
+});
 
 test('the backend report is read field by field, and junk is dropped', () => {
   const read = readSystemStatus({

@@ -392,10 +392,22 @@ impl MemoryState {
                 .await
                 .map_err(|e| format!("Opening memory failed: {e}"))?
                 .map_err(|e| format!("Opening memory failed: {e}"))?;
-                let dimension = deps.rag.read().await.config().embedding.dimension;
+                let (dimension, data_dir) = {
+                    let engine = deps.rag.read().await;
+                    (
+                        engine.config().embedding.dimension,
+                        engine.config().data_dir.clone(),
+                    )
+                };
+                // The statement table the index record names: its vectors are in
+                // the export the engine's model embeds with.
+                let (_, statements_table) =
+                    shodh_rag::embeddings::index_model::tables(&data_dir)
+                        .map_err(|e| format!("Opening memory failed: {e:#}"))?;
                 let ontology = Arc::new(memory_ontology()?);
-                let store = StatementStore::open(
+                let store = StatementStore::open_table(
                     &deps.lance_dir,
+                    &statements_table,
                     dimension,
                     ontology,
                     Arc::new(dynamics),

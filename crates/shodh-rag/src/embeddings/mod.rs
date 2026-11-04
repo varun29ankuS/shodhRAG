@@ -1,6 +1,7 @@
 pub mod e5;
 pub mod index_model;
 pub mod model_store;
+pub mod model_switch;
 pub mod tokenizer;
 
 use anyhow::Result;

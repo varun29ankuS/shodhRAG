@@ -17,7 +17,9 @@
 //!   that is faster than the CPU's int8 runs fp16, else int8).
 //!
 //! It is replaced, atomically, only when everything has been embedded again
-//! in another export.
+//! in another export ([`super::model_switch`]): the record also names the
+//! LanceDB tables that hold the vectors, so a switch builds new tables beside
+//! the old ones and the record's rename is the moment search moves to them.
 
 use std::path::Path;
 
@@ -30,6 +32,16 @@ use crate::compute::provider::{ComputePreference, GpuProbe};
 
 /// The record's file in the data folder.
 pub const INDEX_MODEL_FILE: &str = "search-index-model.json";
+/// The library's chunk table before any switch.
+pub const DOCUMENTS_TABLE: &str = "documents";
+
+fn documents_table() -> String {
+    DOCUMENTS_TABLE.to_string()
+}
+
+fn statements_table() -> String {
+    crate::statements::STATEMENTS_TABLE.to_string()
+}
 
 /// The export an index was built with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +53,35 @@ pub struct IndexModel {
     pub recorded_at: DateTime<Utc>,
     /// Why it was recorded ("first vectors", "built before records").
     pub reason: String,
+    /// The LanceDB table (in `lance_data`) of the library's chunks.
+    #[serde(default = "documents_table")]
+    pub documents_table: String,
+    /// The LanceDB table (in `lance_data`) of the memory statements.
+    #[serde(default = "statements_table")]
+    pub statements_table: String,
+}
+
+impl IndexModel {
+    /// A record of `variant` in the original tables.
+    pub fn new(variant: E5Variant, reason: &str) -> Self {
+        Self {
+            model: E5_DIR.to_string(),
+            variant,
+            recorded_at: Utc::now(),
+            reason: reason.to_string(),
+            documents_table: documents_table(),
+            statements_table: statements_table(),
+        }
+    }
+}
+
+/// The chunk and statement tables of the index in `data_dir`: the record's,
+/// or the original ones when there is no record yet.
+pub fn tables(data_dir: &Path) -> Result<(String, String)> {
+    Ok(match read(data_dir)? {
+        Some(record) => (record.documents_table, record.statements_table),
+        None => (documents_table(), statements_table()),
+    })
 }
 
 /// The record in `data_dir`; `None` when there is none. A record that exists
@@ -66,21 +107,35 @@ pub fn read(data_dir: &Path) -> Result<Option<IndexModel>> {
     Ok(Some(record))
 }
 
-/// Records `variant` as the export of the index in `data_dir`: written beside
-/// it, flushed, then renamed over it, so a crash leaves the old record or the
-/// new one.
+/// Records `variant` (in the original tables) as the export of the index in
+/// `data_dir`.
 pub fn write(data_dir: &Path, variant: E5Variant, reason: &str) -> Result<IndexModel> {
-    let record = IndexModel {
-        model: E5_DIR.to_string(),
-        variant,
-        recorded_at: Utc::now(),
-        reason: reason.to_string(),
-    };
-    std::fs::create_dir_all(data_dir)
-        .with_context(|| format!("creating {}", data_dir.display()))?;
-    let path = data_dir.join(INDEX_MODEL_FILE);
-    let partial = data_dir.join(format!("{INDEX_MODEL_FILE}.part"));
-    let json = serde_json::to_vec_pretty(&record)?;
+    let record = IndexModel::new(variant, reason);
+    write_record(data_dir, &record)?;
+    Ok(record)
+}
+
+/// Writes `record` in `data_dir`: beside the old one, flushed, then renamed
+/// over it, so a crash leaves the old record or the new one.
+pub fn write_record(data_dir: &Path, record: &IndexModel) -> Result<()> {
+    write_json_atomically(data_dir, INDEX_MODEL_FILE, record)?;
+    tracing::info!(
+        variant = record.variant.label(),
+        reason = %record.reason,
+        documents = %record.documents_table,
+        statements = %record.statements_table,
+        "Recorded the search model this index is built with"
+    );
+    Ok(())
+}
+
+/// Writes `value` as `name` in `dir` through a flushed `.part` file and a
+/// rename.
+pub(crate) fn write_json_atomically<T: Serialize>(dir: &Path, name: &str, value: &T) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.join(name);
+    let partial = dir.join(format!("{name}.part"));
+    let json = serde_json::to_vec_pretty(value)?;
     {
         use std::io::Write;
         let mut file = std::fs::File::create(&partial)
@@ -88,13 +143,7 @@ pub fn write(data_dir: &Path, variant: E5Variant, reason: &str) -> Result<IndexM
         file.write_all(&json)?;
         file.sync_all()?;
     }
-    std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))?;
-    tracing::info!(
-        variant = variant.label(),
-        reason,
-        "Recorded the search model this index is built with"
-    );
-    Ok(record)
+    std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))
 }
 
 /// The E5 exports search setup installs on this machine:

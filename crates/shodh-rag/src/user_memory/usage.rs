@@ -48,13 +48,15 @@ use crate::embeddings::EmbeddingModel;
 /// the memory but score above the cutoff (two of them long), so the cutoff errs towards
 /// reinforcing a memory that did not help. On all 18 long pairs: 16 right (88.9%).
 ///
-/// int8 (`model_qint8_avx512_vnni.onnx`, each text embedded alone) on a processor with
-/// exact int8 kernels (VNNI; CI run 41812434379 on an AVX512-VNNI runner): 39 of 42 right
-/// (92.9%), best from 0.595 to 0.620, so the same rule (the first best) gives the same
-/// cutoff; 0.575 to 0.635 is within one pair. Held out 19 of 24 (79.2%), long 16 of 18
-/// (88.9%), as with fp16. On a runner without VNNI (CI run 41815024189) the same int8
-/// scores ran about 0.03 higher (best 0.610 to 0.645): its kernels round differently,
-/// which is why Shodh builds int8 indexes only on processors with exact int8 kernels
+/// int8 (`model_qint8_avx512_vnni.onnx`, each text embedded alone) on processors with
+/// exact int8 kernels (AVX512-VNNI; CI runs 41812434379 and 41818552734, the second an
+/// AMD64 Family 25 Model 17, both giving the same scores): 39 of 42 right (92.9%), best
+/// from 0.595 to 0.620, so the same rule (the first best) gives the same cutoff; 0.575 to
+/// 0.635 is within one pair. Held out 19 of 24 (79.2%), long 16 of 18 (88.9%), as with
+/// fp16. On another runner (CI run 41815024189; its processor was not logged, and the
+/// likely difference is a processor without VNNI) the same int8 scores ran about 0.03
+/// higher (best 0.610 to 0.645) while fp16 was unchanged: that is why Shodh builds int8
+/// indexes only on processors with exact int8 kernels
 /// ([`crate::embeddings::e5::int8_exact`]), and the test checks int8 only there.
 ///
 /// The test requires at least 75% held out (one pair below the measurement). The fixture

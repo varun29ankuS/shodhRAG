@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Pause, Play, Plug, ScanText, X } from 'lucide-react';
+import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Pause, Play, Plug, RotateCcw, ScanText, X, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
@@ -29,11 +29,12 @@ import {
   cpuReasonDetail,
   etaText,
   indexingText,
+  modelSwitchView,
   pagesPerMinuteText,
   runsOnText,
   searchSummary,
 } from '../../features/status/systemStatus';
-import type { SystemStatus, Tone } from '../../features/status/systemStatus';
+import type { SwitchAction, SystemStatus, Tone } from '../../features/status/systemStatus';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-sidebar';
@@ -197,6 +198,61 @@ function SearchDetails({ status }: { status: SystemStatus }) {
   );
 }
 
+const SWITCH_ACTION_LABEL: Record<SwitchAction, string> = {
+  start: 'Re-index for faster search',
+  continue: 'Continue',
+  cancel: 'Cancel',
+  discard: 'Discard',
+  restart: 'Restart Shodh now',
+  retry: 'Try again',
+};
+
+/** Re-indexing for the faster search model: the offer, its progress, or the restart it waits for. */
+function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction: (action: SwitchAction) => void }) {
+  const view = modelSwitchView(status);
+  if (!view) return null;
+  const s = status.modelSwitch;
+  const percent = s.total > 0 ? Math.max(0, Math.min(100, Math.round((s.done / s.total) * 100))) : 0;
+  return (
+    <div
+      className={cn(
+        'rounded-lg border px-3 py-2.5 flex flex-col gap-1.5',
+        view.tone === 'bad' ? 'border-shodh-error/40 bg-shodh-error/10' : 'border-shodh-border bg-shodh-raised',
+      )}
+    >
+      <p className="m-0 text-small font-semibold text-shodh-text flex items-center gap-1.5">
+        <Zap className="w-3.5 h-3.5 shrink-0 text-shodh-accent" aria-hidden="true" />
+        {view.title}
+      </p>
+      {view.detail && <p className="m-0 text-caption text-shodh-text-secondary tabular-nums">{view.detail}</p>}
+      {s.phase === 'building' && s.total > 0 && (
+        <div
+          role="progressbar"
+          aria-label="Re-indexing for faster search"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          className="h-[3px] rounded-[3px] bg-shodh-border overflow-hidden"
+        >
+          <div
+            className={cn('h-full origin-left transition-transform duration-panel ease-standard', status.indexingPaused ? 'bg-shodh-text-faint' : 'bg-shodh-accent')}
+            style={{ transform: `scaleX(${percent / 100})` }}
+          />
+        </div>
+      )}
+      <div className="flex flex-wrap gap-1.5 pt-0.5">
+        {view.actions.map(action => (
+          <button key={action} type="button" className={SMALL_BUTTON} onClick={() => onAction(action)}>
+            {action === 'restart' && <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />}
+            {(action === 'cancel' || action === 'discard') && <X className="w-3.5 h-3.5" aria-hidden="true" />}
+            {SWITCH_ACTION_LABEL[action]}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SystemStatusPanel({
   status,
   jobs,
@@ -204,6 +260,7 @@ function SystemStatusPanel({
   onPause,
   onCancel,
   onUseGpu,
+  onModelSwitch,
   onOpenLibrary,
   highlight,
 }: {
@@ -213,6 +270,7 @@ function SystemStatusPanel({
   onPause: (paused: boolean) => void;
   onCancel: (sourceId?: string) => void;
   onUseGpu: (useGpu: boolean) => void;
+  onModelSwitch: (action: SwitchAction) => void;
   onOpenLibrary: () => void;
   /** The part the assistant just read or changed. */
   highlight: string | null;
@@ -270,6 +328,7 @@ function SystemStatusPanel({
       <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle max-h-[60vh] overflow-y-auto scrollbar-thin" aria-live="polite">
         <PartRow icon={Gauge} name="Search" tone={search.tone} state={search.sentence} highlighted={highlight === 'search'}>
           {status && <SearchDetails status={status} />}
+          {status && <ModelSwitchBlock status={status} onAction={onModelSwitch} />}
           {status?.searchInstalled && (
             <label htmlFor={toggleId} className="flex items-center gap-2 text-caption text-shodh-text-secondary cursor-pointer w-fit">
               <input
@@ -486,6 +545,24 @@ export function SystemStatusStrip({
     void run('cancel indexing', () => system?.cancel(sourceId) ?? Promise.resolve());
   const onUseGpu = (useGpu: boolean) =>
     void run(useGpu ? 'use the graphics card' : 'switch search to the processor', () => system?.setUseGpu(useGpu) ?? Promise.resolve());
+  const onModelSwitch = (action: SwitchAction) => {
+    switch (action) {
+      case 'start':
+      case 'continue':
+      case 'retry':
+        void run('re-index for faster search', () => system?.startModelSwitch() ?? Promise.resolve());
+        break;
+      case 'cancel':
+      case 'discard':
+        void run('cancel re-indexing', () => system?.cancelModelSwitch() ?? Promise.resolve());
+        break;
+      case 'restart':
+        void run('restart Shodh', () => system?.restartForModelSwitch() ?? Promise.resolve());
+        break;
+    }
+  };
+  const switchView = modelSwitchView(status);
+  const switchBusy = status?.modelSwitch.phase === 'building' || status?.modelSwitch.phase === 'downloading';
 
   const job = jobs[0] ?? null;
   const jobProgress = job ? progress[job.id] : undefined;
@@ -602,6 +679,34 @@ export function SystemStatusStrip({
         </div>
       )}
 
+      {/* Re-indexing for faster search, when no folder is shown above: its progress, or the restart it waits for. */}
+      {switchView && !job && !collapsed && (switchBusy || status?.modelSwitch.phase === 'ready') && (
+        <div className="flex items-center gap-1 px-1">
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-label={`${switchView.title}. ${switchView.detail ?? ''} Open System status`}
+            className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+          >
+            <span className="text-caption font-semibold text-shodh-text truncate">{switchView.title}</span>
+            {switchView.detail && (
+              <span className="text-caption text-shodh-text-faint tabular-nums truncate">{switchView.detail}</span>
+            )}
+          </button>
+          {switchBusy && (
+            <button
+              type="button"
+              className={ICON_BUTTON}
+              onClick={() => onModelSwitch('cancel')}
+              aria-label="Cancel re-indexing for faster search"
+              title="Cancel re-indexing"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
+
       {open && position && createPortal(
         <section
           ref={panelRef}
@@ -630,6 +735,7 @@ export function SystemStatusStrip({
             onPause={onPause}
             onCancel={onCancel}
             onUseGpu={onUseGpu}
+            onModelSwitch={onModelSwitch}
             highlight={highlight}
             onOpenLibrary={() => {
               close(false);

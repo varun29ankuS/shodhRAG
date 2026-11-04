@@ -695,18 +695,32 @@ fn rerank_context(result: &ComprehensiveResult) -> String {
     if let Some(context) = result.metadata.get(CHUNK_CONTEXT_KEY) {
         return context.clone();
     }
-    let mut context = format!("Document: \"{}\". ", result.citation.title.trim());
-    if let Some(heading) = result
-        .metadata
-        .get("heading")
-        .map(|h| h.trim())
-        .filter(|h| !h.is_empty())
-    {
+    format1_context(&result.citation.title, result.metadata.get("heading"))
+}
+
+/// The context a chunk of [`INDEX_FORMAT`] 1 was embedded with: its
+/// document's title and section.
+fn format1_context(title: &str, heading: Option<&String>) -> String {
+    let mut context = format!("Document: \"{}\". ", title.trim());
+    if let Some(heading) = heading.map(|h| h.trim()).filter(|h| !h.is_empty()) {
         context.push_str("Section: ");
         context.push_str(heading);
         context.push_str(". ");
     }
     context
+}
+
+/// The text a stored chunk's vector was embedded from (as a passage): the
+/// context stored with it and its text, or, for a chunk of [`INDEX_FORMAT`]
+/// 1, its document's title and section and its text. Used to embed stored
+/// chunks again in another export ([`crate::embeddings::model_switch`]).
+pub(crate) fn embedded_text(text: &str, title: &str, metadata_json: &str) -> String {
+    let metadata: HashMap<String, String> = serde_json::from_str(metadata_json).unwrap_or_default();
+    let context = match metadata.get(CHUNK_CONTEXT_KEY) {
+        Some(context) => context.clone(),
+        None => format1_context(title, metadata.get("heading")),
+    };
+    format!("{context}{text}")
 }
 
 /// How a chunk's context names the file `source`: its file name. The folders
@@ -1720,6 +1734,17 @@ fn load_for_index(
     }
 }
 
+/// The E5 model of `variant` under the model root `model_dir`, on the CPU, for
+/// a search model switch (it embeds beside the model search uses, and at
+/// start before search runs).
+pub fn switch_model(model_dir: &Path, variant: E5Variant) -> Result<Arc<dyn EmbeddingModel>> {
+    let config = E5Config::auto_detect(model_dir)
+        .ok_or(SearchModelsMissing)?
+        .with_rule(VariantRule::Index(variant))
+        .with_compute(crate::compute::provider::ComputePreference::Cpu);
+    Ok(Arc::new(E5Embeddings::new(config)?))
+}
+
 /// Records fp16 for an index in `data_dir` that holds vectors (chunks in
 /// `store`, or memory statements beside them) and has no record: it was
 /// built before records existed, when fp16 was the only export. Returns
@@ -1851,10 +1876,41 @@ impl RAGEngine {
     pub async fn new(config: RAGConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir).ok();
 
-        let lance_path = config.data_dir.join("lance_data");
-        let store = LanceStore::new(
+        // A switch to another search model whose tables are built completes
+        // before anything opens them (see `model_switch`).
+        let model_dir = config.embedding.model_dir.clone();
+        match crate::embeddings::model_switch::finish_pending(&config.data_dir, move |variant| {
+            switch_model(&model_dir, variant)
+        })
+        .await
+        {
+            Ok(Some(record)) => tracing::info!(
+                variant = record.variant.label(),
+                "The library now searches with the new search model"
+            ),
+            Ok(None) => {}
+            Err(e) => tracing::error!(
+                error = %format!("{e:#}"),
+                "The search model switch did not complete; the library keeps its current model"
+            ),
+        }
+        let documents_table = match index_model::tables(&config.data_dir) {
+            Ok((documents, _)) => documents,
+            Err(e) => {
+                // The model refuses to load on such a record, so nothing is
+                // embedded; the chunks stay listable.
+                tracing::error!(error = %format!("{e:#}"), "The search index's model record is unreadable");
+                index_model::DOCUMENTS_TABLE.to_string()
+            }
+        };
+
+        let lance_path = config
+            .data_dir
+            .join(crate::embeddings::model_switch::LANCE_DIR);
+        let store = LanceStore::open(
             lance_path.to_str().unwrap_or("./lance_data"),
             config.embedding.dimension,
+            &documents_table,
         )
         .await
         .context("Failed to initialize LanceDB store")?;

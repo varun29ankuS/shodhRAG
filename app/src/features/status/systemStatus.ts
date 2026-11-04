@@ -44,6 +44,25 @@ export interface RunningIndex {
   path: string;
 }
 
+export type SwitchPhase = 'idle' | 'downloading' | 'building' | 'stopped' | 'ready' | 'failed';
+
+/** Re-indexing for the faster search model (`search_model_switch::SwitchStatus`). */
+export interface ModelSwitch {
+  /** The library's search model, once recorded. */
+  indexVariant: 'fp16' | 'int8' | null;
+  /** Offered: the library uses the fp16 model and search runs on the processor. */
+  offered: boolean;
+  phase: SwitchPhase;
+  done: number;
+  total: number;
+  etaSeconds: number | null;
+  downloadedBytes: number;
+  downloadBytes: number;
+  /** The faster model's download size when it is not installed (0 when it is). */
+  modelBytes: number;
+  error: string | null;
+}
+
 /** `indexing_control::SystemStatus`. */
 export interface SystemStatus {
   searchInstalled: boolean;
@@ -53,6 +72,7 @@ export interface SystemStatus {
   scanReaderInstalled: boolean;
   indexingPaused: boolean;
   running: RunningIndex[];
+  modelSwitch: ModelSwitch;
 }
 
 /** The colour a state is shown in. */
@@ -135,7 +155,117 @@ export function readSystemStatus(value: unknown): SystemStatus | null {
     scanReaderInstalled: value.scanReaderInstalled === true,
     indexingPaused: value.indexingPaused === true,
     running,
+    modelSwitch: readModelSwitch(value.modelSwitch),
   };
+}
+
+const NO_SWITCH: ModelSwitch = {
+  indexVariant: null,
+  offered: false,
+  phase: 'idle',
+  done: 0,
+  total: 0,
+  etaSeconds: null,
+  downloadedBytes: 0,
+  downloadBytes: 0,
+  modelBytes: 0,
+  error: null,
+};
+
+export function readModelSwitch(value: unknown): ModelSwitch {
+  if (!isRecord(value)) return NO_SWITCH;
+  return {
+    indexVariant: oneOf(['fp16', 'int8'] as const, value.indexVariant),
+    offered: value.offered === true,
+    phase: oneOf(['idle', 'downloading', 'building', 'stopped', 'ready', 'failed'] as const, value.phase) ?? 'idle',
+    done: count(value.done) ?? 0,
+    total: count(value.total) ?? 0,
+    etaSeconds: count(value.etaSeconds),
+    downloadedBytes: count(value.downloadedBytes) ?? 0,
+    downloadBytes: count(value.downloadBytes) ?? 0,
+    modelBytes: count(value.modelBytes) ?? 0,
+    error: text(value.error),
+  };
+}
+
+/** "279 MB" (decimal megabytes, as downloads are usually shown). */
+export function megabytesText(bytes: number): string {
+  return `${Math.max(1, Math.round(bytes / 1_000_000)).toLocaleString('en-US')} MB`;
+}
+
+/** What the user can do about the switch. */
+export type SwitchAction = 'start' | 'continue' | 'cancel' | 'discard' | 'restart' | 'retry';
+
+/** The switch in plain words for the Search part of the panel; `null` when there is nothing to show. */
+export interface SwitchView {
+  title: string;
+  detail: string | null;
+  actions: SwitchAction[];
+  tone: Tone;
+}
+
+export function modelSwitchView(status: SystemStatus | null): SwitchView | null {
+  const s = status?.modelSwitch;
+  if (!s) return null;
+  const passages = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'passage' : 'passages'}`;
+  const counted = s.total > 0 ? `${s.done.toLocaleString('en-US')} of ${passages(s.total)}` : null;
+  switch (s.phase) {
+    case 'idle':
+      if (!s.offered) return null;
+      return {
+        title: 'A faster search model is available for this computer.',
+        detail: [
+          'It indexes new files about 3 times faster on the processor, with nearly the same search quality.',
+          'Shodh embeds your library’s saved text again once, in the background; search keeps working meanwhile, and the switch happens the next time Shodh starts.',
+          s.modelBytes > 0 ? `It downloads the model first (${megabytesText(s.modelBytes)}).` : null,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        actions: ['start'],
+        tone: 'idle',
+      };
+    case 'downloading':
+      return {
+        title: 'Downloading the faster search model',
+        detail:
+          s.downloadBytes > 0
+            ? `${megabytesText(s.downloadedBytes)} of ${megabytesText(s.downloadBytes)}`
+            : 'Checking the model',
+        actions: ['cancel'],
+        tone: 'good',
+      };
+    case 'building': {
+      const paused = status?.indexingPaused ?? false;
+      const left = paused ? null : etaText(s.etaSeconds);
+      return {
+        title: paused ? 'Re-indexing for faster search (paused)' : 'Re-indexing for faster search',
+        detail: [counted ?? 'Starting', left].filter(Boolean).join(' · ') + '. Search keeps working meanwhile.',
+        actions: ['cancel'],
+        tone: paused ? 'warn' : 'good',
+      };
+    }
+    case 'stopped':
+      return {
+        title: 'Re-indexing for faster search stopped before it finished.',
+        detail: counted ? `It got to ${counted}; Continue picks up from there.` : 'Continue picks up where it stopped.',
+        actions: ['continue', 'discard'],
+        tone: 'warn',
+      };
+    case 'ready':
+      return {
+        title: 'The faster search model is ready.',
+        detail: 'Restart Shodh to switch to it. Starting takes a few seconds longer this once.',
+        actions: ['restart'],
+        tone: 'good',
+      };
+    case 'failed':
+      return {
+        title: 'Re-indexing for faster search did not finish.',
+        detail: s.error ? `Reason: ${s.error}` : null,
+        actions: ['retry'],
+        tone: 'bad',
+      };
+  }
 }
 
 /** "≈1,200 pages a minute", rounded to two significant figures. */

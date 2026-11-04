@@ -90,9 +90,11 @@ pub enum Int8Kernels {
     Arm,
     /// Any other x86 (AVX2 without VNNI, as on AMD Zen 3 and Intel before
     /// Ice Lake / Alder Lake): `vpmaddubsw` sums pairs into 16 bits and
-    /// clamps them, so the int8 export's vectors come out different. Measured
-    /// on CI: the memory-use scores of the same fixture moved by about 0.03
-    /// between runners, with fp16 identical. Not used for int8 here.
+    /// clamps them (ONNX Runtime's documented U8S8 saturation), so the int8
+    /// export's vectors come out different. On CI the int8 memory-use scores
+    /// of one fixture ran about 0.03 higher on one runner while fp16 stayed
+    /// identical; two runners with AVX512-VNNI gave the same scores. Not used
+    /// for new int8 indexes.
     Saturating,
 }
 

@@ -18,6 +18,17 @@ pub struct LanceStore {
 
 impl LanceStore {
     pub async fn new(path: &str, dimension: usize) -> Result<Self> {
+        Self::open(
+            path,
+            dimension,
+            crate::embeddings::index_model::DOCUMENTS_TABLE,
+        )
+        .await
+    }
+
+    /// The chunk table `table_name` in the LanceDB folder `path` (the one
+    /// the index record names; see [`crate::embeddings::index_model`]).
+    pub async fn open(path: &str, dimension: usize, table_name: &str) -> Result<Self> {
         std::fs::create_dir_all(path).ok();
         let db = lancedb::connect(path)
             .execute()
@@ -27,7 +38,7 @@ impl LanceStore {
         let store = Self {
             db,
             dimension,
-            table_name: "documents".to_string(),
+            table_name: table_name.to_string(),
         };
 
         store.ensure_table().await?;

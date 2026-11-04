@@ -3,7 +3,8 @@
   "dataset_id": "scanned-v1",
   "dataset_hash": "139dc06603bf2b1fdbf2a22c66b8cd347cd81ef843727ff8e6ae38526c50a3dc",
   "corpus_hash": "423a73008fb06466e06da8d586087134dcfff31c0e62be7dba855fcac99fcb13",
-  "recorded_at": "2026-10-29T16:53:05.348790+00:00",
+  "recorded_at": "2026-11-04T11:23:37.829492300+00:00",
+  "approval": "int8 search model on the processor (model_qint8_avx512_vnni.onnx, each passage embedded alone so a vector never depends on its batch), used only on processors whose int8 kernels are exact (VNNI); elsewhere the eval runs fp16 against baseline.json. The user approved switching CPU search to int8 and accepting a small quality dip on 2026-11-02 (\"int8 model is fine\"), on the measurement then (passages batched): papers mrr 0.9520 -> 0.9515, ndcg@10 0.9479 -> 0.9476. Recorded from CI run 41818552734 (AMD64 Family 25 Model 17, AVX512-VNNI). Every metric equals fp16 (baseline.json).",
   "settings": {
     "candidate_multiplier": "5",
     "chunk_max_tokens": "380",
@@ -20,7 +21,7 @@
     "reranker": "ms-marco-MiniLM-L6-v2",
     "reranking": "true",
     "rrf_k": "60",
-    "runs": "3",
+    "runs": "1",
     "score_weight": "0.3",
     "source_decay": "0.5",
     "system_ocr_render_dpi": "96 (page size)",
@@ -32,133 +33,133 @@
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "hit@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "hit@5": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "ingest_ok": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "mrr": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "multi_files@10": {
       "mean": 9.0,
       "stddev": 0.0,
       "min": 9.0,
       "max": 9.0,
-      "runs": 3
+      "runs": 1
     },
     "multi_ndcg@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "multi_recall@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "multi_recall@5": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "ndcg@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "page_hit@1": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "page_hit@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "page_hit@5": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "passage_hit@1": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "passage_hit@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "passage_hit@5": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "recall@10": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "recall@20": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     },
     "recall@5": {
       "mean": 1.0,
       "stddev": 0.0,
       "min": 1.0,
       "max": 1.0,
-      "runs": 3
+      "runs": 1
     }
   }
 }

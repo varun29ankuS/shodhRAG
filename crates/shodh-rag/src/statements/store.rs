@@ -193,10 +193,34 @@ impl StatementStore {
         embedder: Arc<dyn EmbedderSource>,
         clock: Arc<dyn Clock>,
     ) -> StatementResult<Self> {
+        Self::open_table(
+            lance_dir,
+            STATEMENTS_TABLE,
+            dimension,
+            ontology,
+            dynamics,
+            embedder,
+            clock,
+        )
+        .await
+    }
+
+    /// [`Self::open`] on the table `table`: the one the index record names
+    /// (see [`crate::embeddings::index_model`]), whose vectors are in the
+    /// export the engine's model embeds with.
+    pub async fn open_table(
+        lance_dir: &Path,
+        table: &str,
+        dimension: usize,
+        ontology: Arc<Ontology>,
+        dynamics: Arc<DynamicsStore>,
+        embedder: Arc<dyn EmbedderSource>,
+        clock: Arc<dyn Clock>,
+    ) -> StatementResult<Self> {
         std::fs::create_dir_all(lance_dir).map_err(|e| StatementError::Lance(e.to_string()))?;
         let uri = lance_dir.to_string_lossy().to_string();
         let db = lancedb::connect(&uri).execute().await?;
-        let table = StatementTable::open(&db, STATEMENTS_TABLE, dimension).await?;
+        let table = StatementTable::open(&db, table, dimension).await?;
         Ok(Self {
             ontology,
             table,

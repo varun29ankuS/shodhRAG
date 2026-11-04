@@ -49,6 +49,7 @@ mod visual_commands;
 mod workspace_commands;
 
 // Unified chat system modules
+mod acl_manifest;
 mod agent_coverage;
 mod agent_session_commands;
 mod agent_tools;

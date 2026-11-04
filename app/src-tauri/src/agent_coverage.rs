@@ -15,7 +15,7 @@
 //! at runtime to slip past the check.
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
@@ -34,7 +34,7 @@ mod tests {
     }
 
     /// Command names in `generate_handler![...]` of lib.rs.
-    fn registered_commands() -> BTreeSet<String> {
+    pub(crate) fn registered_commands() -> BTreeSet<String> {
         let lib = read(&manifest_dir().join("src").join("lib.rs"));
         let start = lib
             .find("generate_handler![")

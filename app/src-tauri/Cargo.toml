@@ -117,5 +117,7 @@ tempfile = "3"
 bytes = "1"
 # Time zones with daylight saving for the reminder scheduler tests
 chrono-tz = "0.10"
+# The mock runtime, for the app ACL test (acl_manifest.rs)
+tauri = { version = "2.0", features = ["test"] }
 # Paused time for the connector stop tests (connectors/mod.rs)
 tokio = { version = "1", features = ["test-util"] }

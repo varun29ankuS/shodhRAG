@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::agent_session_commands::AgentSessions;
 use crate::agent_tools::export::EXPORTS_FOLDER;
 use crate::creations::preview::{self, Grant, PREVIEWS};
+use crate::creations::preview_window;
 use crate::creations::{
     creations_root, valid_id, Creation, CreationStore, FileChange, FileContent, FileEntry,
     MAX_TITLE_CHARS,
@@ -287,25 +288,29 @@ pub async fn creation_diff(
     )
 }
 
-/// A preview of a version, or of the folder now: the URL its sandboxed frame
-/// loads ([`preview`]). `network` lets this preview reach the internet; only
-/// the user's switch sets it.
+/// A preview of a version, or of the folder now, shown in its own window
+/// over the tab's preview area ([`preview_window`]). `network` lets this
+/// preview reach the internet; only the user's switch sets it.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewInfo {
-    pub url: String,
+    /// The preview window, for moving, reloading and closing it.
+    pub label: String,
     pub network: bool,
     /// The page the preview opens.
     pub page: &'static str,
 }
 
+/// Show a preview over `area`; the one shown before closes.
 #[tauri::command]
 pub async fn creation_preview(
     app: AppHandle,
     id: String,
     version: Option<u32>,
     network: bool,
+    area: preview_window::Area,
 ) -> CreationResult<PreviewInfo> {
+    let area = area.checked()?;
     let id = checked_id(&id)?.to_string();
     let data_dir = data_dir(&app)?;
     let root = root(&app)?;
@@ -324,18 +329,54 @@ pub async fn creation_preview(
             return Err(format!("{} has no version {number}.", creation.title).into());
         }
     }
-    let (_, url) = PREVIEWS.grant(Grant {
+    let _changing = preview_window::changing().await;
+    preview_window::close(&app, None);
+    let label = preview_window::new_label();
+    let (token, url) = PREVIEWS.grant(Grant {
         creation_id: id,
         version,
         network,
         data_dir,
         root,
+        webview: label.clone(),
     });
+    if let Err(e) = preview_window::open(&app, &label, &token, &url, area) {
+        PREVIEWS.end(&label);
+        return Err(e.into());
+    }
     Ok(PreviewInfo {
-        url,
+        label,
         network,
         page: "index.html",
     })
+}
+
+/// Move the preview window `label` over `area` (the tab's layout changed).
+#[tauri::command]
+pub async fn creation_preview_place(
+    app: AppHandle,
+    label: String,
+    area: preview_window::Area,
+) -> CreationResult<()> {
+    Ok(preview_window::place(&app, &label, area)?)
+}
+
+/// Load the preview window `label` again (its files changed, or Reload).
+#[tauri::command]
+pub async fn creation_preview_reload(app: AppHandle, label: String) -> CreationResult<()> {
+    Ok(preview_window::reload(&app, &label)?)
+}
+
+/// Close the preview window `label` (the tab left the preview); its token
+/// stops working.
+#[tauri::command]
+pub async fn creation_preview_close(app: AppHandle, label: String) -> CreationResult<()> {
+    if !preview::is_preview_webview(&label) {
+        return Err("That is not a preview window.".into());
+    }
+    let _changing = preview_window::changing().await;
+    preview_window::close(&app, Some(&label));
+    Ok(())
 }
 
 /// Keep: the creation stays, marked kept.
@@ -395,7 +436,10 @@ pub async fn creation_delete(
     }
     sessions.close_conversation(&creation.conversation_id).await;
     let root = root(&app)?;
-    PREVIEWS.revoke(&id);
+    if let Some(window) = PREVIEWS.revoke(&id) {
+        let _changing = preview_window::changing().await;
+        preview_window::close(&app, Some(&window));
+    }
     let removed = tauri::async_runtime::spawn_blocking(move || store.delete(&root, &id))
         .await
         .map_err(|e| CreationError::from(format!("Deleting did not finish ({e})")))??;

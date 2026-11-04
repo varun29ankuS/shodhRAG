@@ -11,30 +11,34 @@ import {
   MessageCircle,
   Pencil,
   RefreshCw,
+  ShieldAlert,
   Trash2,
 } from 'lucide-react';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { relativeTime } from '../../utils/time';
 import { showInFolder } from '../library/fileActions';
 import { useChatSession } from '../ask/ChatSessionContext';
 import { isLive } from '../agent/reducer';
-import { creationsApi, errorText, onCreationsChanged } from './api';
+import { creationsApi, errorText, onCreationsChanged, onPreviewEvent } from './api';
 import {
   ARTIFACT_PANES,
+  FLOATING_LAYER_SELECTOR,
   PANE_LABELS,
-  PREVIEW_ALLOW,
+  PREVIEW_BLOCKED_TEXT,
   PREVIEW_NETWORK_OFF_TEXT,
   PREVIEW_NETWORK_ON_TEXT,
-  PREVIEW_SANDBOX,
   STATUS_LABELS,
   buildProgress,
   fileRows,
+  previewPlacement,
   previousVersion,
   progressLine,
+  samePlacement,
   sizeLabel,
 } from './model';
-import type { ArtifactPane, Creation, FileChange, FileContent, FileEntry } from './model';
+import type { ArtifactPane, Box, Creation, FileChange, FileContent, FileEntry, FloatingLayer, PreviewArea, PreviewEvent } from './model';
 import type { ArtifactSelection } from './ArtifactsView';
 
 const FOCUS_RING =
@@ -64,10 +68,10 @@ interface ArtifactPageProps {
 }
 
 /**
- * One creation: its live preview (agent-built code in a sandboxed frame with no access
- * to the app, its files or the network unless the user allows it), its files, its saved
- * versions with what changed, and Keep · Change something · Delete it, Open folder and
- * Export.
+ * One creation: its live preview (agent-built code in a window of its own, placed over the
+ * preview pane, with no access to the app, its files or the network unless the user allows
+ * it), its files, its saved versions with what changed, and Keep · Change something ·
+ * Delete it, Open folder and Export.
  */
 export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDeleted }: ArtifactPageProps) {
   const [creation, setCreation] = useState<Creation | null>(null);
@@ -75,9 +79,8 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
   const [pane, setPane] = useState<ArtifactPane>(selection.pane);
   const [version, setVersion] = useState<number | null>(selection.version);
   const [network, setNetwork] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [reloadSeq, setReloadSeq] = useState(0);
+  const scrollRoot = useRef<HTMLDivElement>(null);
   const [files, setFiles] = useState<FileEntry[] | null>(null);
   const [openFile, setOpenFile] = useState<FileContent | null>(null);
   const [changes, setChanges] = useState<FileChange[] | null>(null);
@@ -129,23 +132,6 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
   );
   const progress = useMemo(() => buildProgress(steps), [steps]);
   const doneChanges = steps.filter(s => (s.tool === 'write' || s.tool === 'edit' || s.tool === 'run_command') && s.status === 'done').length;
-
-  // The preview: a token-scoped URL of this version (or of the folder now).
-  useEffect(() => {
-    let cancelled = false;
-    setPreviewError(null);
-    creationsApi
-      .preview(id, version, network)
-      .then(info => {
-        if (!cancelled) setPreviewUrl(info.url);
-      })
-      .catch(e => {
-        if (!cancelled) setPreviewError(errorText(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id, version, network]);
 
   // The files of the version shown (the folder now while building).
   const loadFiles = useCallback(() => {
@@ -267,8 +253,8 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
   const versionLabel = version === null ? 'Now' : `Version ${version}`;
 
   return (
-    <div className="h-full overflow-y-auto scrollbar-thin">
-      <div className="max-w-6xl mx-auto px-8 py-6 flex flex-col gap-4">
+    <div ref={scrollRoot} className="h-full overflow-y-auto scrollbar-thin">
+      <div className="max-w-6xl min-h-full mx-auto px-8 py-6 flex flex-col gap-4">
         <button type="button" onClick={onBack} className={cn(QUIET_BUTTON, 'self-start -ml-2.5')}>
           <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" />
           All artifacts
@@ -394,7 +380,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
         </div>
 
         {pane === 'preview' && (
-          <div className="flex flex-col gap-2">
+          <div className="flex-1 min-h-0 flex flex-col gap-2">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <label className="inline-flex items-center gap-2 text-small text-shodh-text-secondary">
                 <input
@@ -414,9 +400,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             <p className="m-0 text-caption text-shodh-text-muted">
               {network ? PREVIEW_NETWORK_ON_TEXT : PREVIEW_NETWORK_OFF_TEXT}
             </p>
-            {previewError ? (
-              <p role="alert" className="m-0 text-small text-shodh-error">The preview could not open: {previewError}</p>
-            ) : !hasPage ? (
+            {!hasPage ? (
               <div className="flex items-center justify-center h-[420px] rounded-xl border border-dashed border-shodh-border text-small text-shodh-text-muted px-6 text-center">
                 {files === null
                   ? 'Looking for the page'
@@ -424,17 +408,16 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                     ? 'The preview appears once the build writes index.html.'
                     : 'There is no index.html at the top of this folder, so there is no page to show. Its files are in Files.'}
               </div>
-            ) : previewUrl ? (
-              <iframe
-                key={`${previewUrl}#${reloadSeq}`}
-                title={`Preview of ${creation.title}`}
-                src={previewUrl}
-                sandbox={PREVIEW_SANDBOX}
-                allow={PREVIEW_ALLOW}
-                referrerPolicy="no-referrer"
-                className="w-full h-[min(70vh,720px)] rounded-xl border border-shodh-border bg-white"
+            ) : (
+              <PreviewPane
+                creationId={id}
+                title={creation.title}
+                version={version}
+                network={network}
+                reloadSeq={reloadSeq}
+                scrollRoot={scrollRoot}
               />
-            ) : null}
+            )}
           </div>
         )}
 
@@ -543,6 +526,190 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function boxOf(rect: DOMRect): Box {
+  return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+}
+
+/**
+ * Whether a modal dialog is open: the app's own set `aria-modal`; a Radix modal dialog
+ * sets none, but turns off pointer events on <body> while it is open.
+ */
+function modalOpen(): boolean {
+  return document.querySelector('[aria-modal="true"]') !== null || document.body.style.pointerEvents === 'none';
+}
+
+/** The layers drawn over the page now, outside this page's own content. */
+function floatingLayers(page: HTMLElement): FloatingLayer[] {
+  const viewport: Box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+  if (modalOpen()) return [{ box: viewport, modal: true }];
+  const layers: FloatingLayer[] = [];
+  document.querySelectorAll<HTMLElement>(FLOATING_LAYER_SELECTOR).forEach(element => {
+    if (page.contains(element)) return;
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) layers.push({ box: boxOf(rect), modal: false });
+  });
+  return layers;
+}
+
+type PreviewStatus = 'opening' | 'loaded' | 'blocked';
+
+interface PreviewPaneProps {
+  creationId: string;
+  title: string;
+  version: number | null;
+  network: boolean;
+  /** Increases when the preview should load again. */
+  reloadSeq: number;
+  /** The page's scrolling area: the preview shows only where it is visible. */
+  scrollRoot: React.RefObject<HTMLDivElement | null>;
+}
+
+/**
+ * The preview pane. The page runs in a window of its own that Rust places over this box
+ * (`creations/preview_window.rs`); this component keeps it there as the layout moves,
+ * makes room for the dock and toasts, and closes it while a dialog is open, when the pane
+ * or tab is left, and when the version or the internet switch changes.
+ */
+function PreviewPane({ creationId, title, version, network, reloadSeq, scrollRoot }: PreviewPaneProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const areaRef = useRef<PreviewArea | null>(null);
+  const labelRef = useRef<string | null>(null);
+  const reloadedAt = useRef(reloadSeq);
+  // What Rust said about each window, kept so a report that comes before the window's
+  // label is known still counts.
+  const reports = useRef(new Map<string, PreviewEvent['state']>());
+  const [area, setArea] = useState<PreviewArea | null>(null);
+  const [label, setLabel] = useState<string | null>(null);
+  const [status, setStatus] = useState<PreviewStatus>('opening');
+  const [error, setError] = useState<string | null>(null);
+
+  // Where the window goes, measured every frame: layout, scrolling, the dock, toasts and
+  // dialogs all move or cover the pane.
+  useEffect(() => {
+    let frame = 0;
+    const measure = () => {
+      frame = window.requestAnimationFrame(measure);
+      const host = hostRef.current;
+      const page = scrollRoot.current;
+      if (!host || !page) return;
+      const next = previewPlacement(
+        boxOf(host.getBoundingClientRect()),
+        boxOf(page.getBoundingClientRect()),
+        { width: window.innerWidth, height: window.innerHeight },
+        floatingLayers(page),
+      );
+      if (!samePlacement(areaRef.current, next)) {
+        areaRef.current = next;
+        setArea(next);
+      }
+    };
+    frame = window.requestAnimationFrame(measure);
+    return () => window.cancelAnimationFrame(frame);
+  }, [scrollRoot]);
+
+  // Rust's reports on the preview window: it loaded, or it was stopped.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    onPreviewEvent(event => {
+      const merged = reports.current.get(event.label) === 'blocked' ? 'blocked' : event.state;
+      reports.current.set(event.label, merged);
+      if (event.label === labelRef.current) setStatus(merged);
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(e => console.error('Failed to listen for the preview window:', e));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // The window itself: open while there is room for it, closed otherwise. A new version
+  // or a change of the internet switch is a new window on a new address.
+  const showing = area !== null;
+  useEffect(() => {
+    const start = areaRef.current;
+    if (!showing || !start) return;
+    let cancelled = false;
+    let opened: string | null = null;
+    setError(null);
+    setStatus('opening');
+    creationsApi
+      .preview(creationId, version, network, start)
+      .then(info => {
+        if (cancelled) {
+          creationsApi.closePreview(info.label).catch(e => console.error('The preview window could not close:', e));
+          return;
+        }
+        opened = info.label;
+        labelRef.current = info.label;
+        setLabel(info.label);
+        const early = reports.current.get(info.label);
+        if (early) setStatus(early);
+      })
+      .catch(e => {
+        if (!cancelled) setError(errorText(e));
+      });
+    return () => {
+      cancelled = true;
+      labelRef.current = null;
+      setLabel(null);
+      if (opened) {
+        reports.current.delete(opened);
+        creationsApi.closePreview(opened).catch(e => console.error('The preview window could not close:', e));
+      }
+    };
+  }, [creationId, version, network, showing]);
+
+  // Keep the window over the pane.
+  useEffect(() => {
+    if (!label || !area) return;
+    creationsApi.placePreview(label, area).catch(e => console.error('The preview window could not move:', e));
+  }, [label, area]);
+
+  // Load it again when the files change or on Reload. A window still opening loads the
+  // files as they are when it opens, so it needs no reload.
+  useEffect(() => {
+    if (reloadSeq === reloadedAt.current) return;
+    reloadedAt.current = reloadSeq;
+    const current = labelRef.current;
+    if (!current) return;
+    creationsApi.reloadPreview(current).catch(e => notify.error('The preview could not reload', { description: errorText(e) }));
+  }, [reloadSeq]);
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2">
+      {status === 'blocked' && (
+        <p role="status" className="m-0 inline-flex items-center gap-1.5 text-caption text-shodh-warning">
+          <ShieldAlert className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          {PREVIEW_BLOCKED_TEXT}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="m-0 text-small text-shodh-error">The preview could not open: {error}</p>
+      )}
+      <div
+        ref={hostRef}
+        role="region"
+        aria-label={`Preview of ${title}`}
+        className="flex-1 min-h-[360px] flex items-center justify-center rounded-xl border border-shodh-border bg-shodh-surface px-6 text-center text-small text-shodh-text-muted"
+      >
+        {area === null ? (
+          'The preview is hidden while a dialog or panel covers this space.'
+        ) : error ? null : status === 'opening' ? (
+          <span className="inline-flex items-center gap-2">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+            Opening the preview
+          </span>
+        ) : null}
       </div>
     </div>
   );

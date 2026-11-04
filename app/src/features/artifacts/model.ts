@@ -1,7 +1,7 @@
 /**
  * The Artifacts tab's data and the rules it shows them by: Creator mode's creations
- * (`creation_commands.rs`), the progress of a build, the finish card's choices and the
- * preview frame's isolation.
+ * (`creation_commands.rs`), the progress of a build, the finish card's choices and where
+ * the preview window goes.
  *
  * Pure (no React, no Tauri) so it is unit-tested directly with Node
  * (`app/tests/artifacts.test.ts`).
@@ -70,8 +70,10 @@ export interface CodeChange {
   autoApplied: number;
 }
 
+/** A preview shown in its own window (`creations/preview_window.rs`). */
 export interface PreviewInfo {
-  url: string;
+  /** The preview window, for moving, reloading and closing it. */
+  label: string;
   network: boolean;
   page: string;
 }
@@ -91,38 +93,120 @@ export function isArtifactPane(value: unknown): value is ArtifactPane {
 }
 
 /**
- * The preview frame's `sandbox`: scripts run, nothing else. Never `allow-same-origin`
- * (the page would share an origin it could reach the app from), never popups, top
- * navigation, forms, downloads or modals. The page also gets `sandbox allow-scripts`
- * in its own CSP (`creations/preview.rs`).
- */
-export const PREVIEW_SANDBOX = 'allow-scripts';
-
-/** No camera, microphone, location, clipboard or other powerful feature in the frame. */
-export const PREVIEW_ALLOW = "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; bluetooth 'none'; payment 'none'";
-
-/**
  * What the preview says about itself, exactly as far as it goes. With the switch off the
  * page cannot load or send anything through the web, WebRTC is gone and DNS look-ahead is
  * off; a browser may still warm up a connection to a link the page shows, so it is not
  * called a sealed network.
  */
 export const PREVIEW_NETWORK_OFF_TEXT =
-  'The page runs in its own frame: it cannot use Shodh, read your files or reach your accounts. It cannot load or send anything over the internet, and WebRTC and DNS look-ahead are off. A hostile page might still make the browser connect ahead to a link it shows, which can reveal that it ran.';
+  'The page runs in a window of its own: it cannot use Shodh, read your files or reach your accounts. It cannot load or send anything over the internet, and WebRTC and DNS look-ahead are off. A hostile page might still make the browser connect ahead to a link it shows, which can reveal that it ran.';
 
 export const PREVIEW_NETWORK_ON_TEXT =
-  'The page runs in its own frame: it cannot use Shodh, read your files or reach your accounts. While this is on, it can load from and send to any secure (https) site.';
+  'The page runs in a window of its own: it cannot use Shodh, read your files or reach your accounts. While this is on, it can load from and send to any secure (https) site.';
 
-/** Whether a frame's sandbox tokens keep an agent-built page isolated. */
-export function sandboxIsIsolated(sandbox: string): boolean {
-  const tokens = sandbox.split(/\s+/).filter(Boolean);
-  return tokens.every(token => token === 'allow-scripts');
+/**
+ * The preview area, in CSS pixels of the app's page, and the page's size: Rust turns it
+ * into screen pixels by the page's size on screen (`preview_window.rs` `Area`).
+ */
+export interface PreviewArea {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
 }
 
-/** Whether `url` is a preview of this app's scheme (`creations/preview.rs` `origin()`). */
-export function isPreviewUrl(url: string): boolean {
-  return /^(?:shodh-preview:\/\/localhost|http:\/\/shodh-preview\.localhost)\/[0-9a-f]{32}\//.test(url);
+/** A box on the page, in CSS pixels. */
+export interface Box {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
+
+/**
+ * Something drawn over the page: a dialog, menu, toast or the conversation dock. The
+ * preview is a window above the page, so it would hide these; it makes room or closes.
+ */
+export interface FloatingLayer {
+  box: Box;
+  /** A modal dialog: the preview closes while it is open. */
+  modal: boolean;
+}
+
+/** Below this the preview closes rather than show a sliver (CSS pixels). */
+export const MIN_PREVIEW_HEIGHT = 160;
+export const MIN_PREVIEW_WIDTH = 200;
+
+/** Space kept between the preview and a layer it makes room for. */
+const LAYER_GAP = 8;
+
+/** The elements that float over the page (portaled dialogs, menus, toasts, the dock). */
+export const FLOATING_LAYER_SELECTOR =
+  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"], [data-sonner-toast], [data-floating-layer]';
+
+function overlaps(a: Box, b: Box): boolean {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+/**
+ * Where the preview window goes: the preview pane's box, cut to what the page shows of it
+ * (`visible`, the scrolling area) and to the window, ending above any layer over its lower
+ * part. Null (the preview closes) while a modal dialog is open, when a layer covers its top,
+ * or when too little is left.
+ */
+export function previewPlacement(
+  pane: Box,
+  visible: Box,
+  viewport: { width: number; height: number },
+  layers: readonly FloatingLayer[],
+): PreviewArea | null {
+  if (layers.some(layer => layer.modal)) return null;
+  let box: Box = {
+    left: Math.max(pane.left, visible.left, 0),
+    top: Math.max(pane.top, visible.top, 0),
+    right: Math.min(pane.right, visible.right, viewport.width),
+    bottom: Math.min(pane.bottom, visible.bottom, viewport.height),
+  };
+  for (const layer of layers) {
+    if (!overlaps(box, layer.box)) continue;
+    const bottom = layer.box.top - LAYER_GAP;
+    if (bottom - box.top < MIN_PREVIEW_HEIGHT) return null;
+    box = { ...box, bottom: Math.min(box.bottom, bottom) };
+  }
+  const x = Math.max(0, Math.round(box.left));
+  const y = Math.max(0, Math.round(box.top));
+  const width = Math.min(Math.round(box.right), viewport.width) - x;
+  const height = Math.min(Math.round(box.bottom), viewport.height) - y;
+  if (width < MIN_PREVIEW_WIDTH || height < MIN_PREVIEW_HEIGHT) return null;
+  return { x, y, width, height, viewportWidth: viewport.width, viewportHeight: viewport.height };
+}
+
+export function samePlacement(a: PreviewArea | null, b: PreviewArea | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+    && a.viewportWidth === b.viewportWidth && a.viewportHeight === b.viewportHeight;
+}
+
+/** The event Rust sends the main window about its preview window (`preview_window.rs`). */
+export const PREVIEW_EVENT = 'creation-preview';
+
+export interface PreviewEvent {
+  label: string;
+  /** Loaded: the first page finished. Blocked: it tried to leave its files, open a window or download. */
+  state: 'loaded' | 'blocked';
+}
+
+export function parsePreviewEvent(payload: unknown): PreviewEvent | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const { label, state } = payload as { label?: unknown; state?: unknown };
+  if (typeof label !== 'string' || (state !== 'loaded' && state !== 'blocked')) return null;
+  return { label, state };
+}
+
+/** What the preview area says under the window, in plain words. */
+export const PREVIEW_BLOCKED_TEXT = 'The page tried to open another address, a window or a download. Shodh stopped it.';
 
 /** Tools whose start means the agent began building: the tab opens. */
 const BUILDING_TOOLS: readonly string[] = ['write', 'edit', 'run_command'];

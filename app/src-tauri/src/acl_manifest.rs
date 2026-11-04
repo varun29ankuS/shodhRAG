@@ -565,11 +565,19 @@ mod tests {
         .map_err(|e| e.to_string())
     }
 
+    /// Refused by the ACL itself: every rejection Tauri's ACL check sends
+    /// (debug builds, `RuntimeAuthority::resolve_access_message`) says "not
+    /// allowed". Any other error, e.g. a plugin the mock app does not
+    /// register or a missing argument, means the request got past the ACL.
+    fn refused(result: &Result<String, String>) -> bool {
+        matches!(result, Err(e) if e.contains("not allowed"))
+    }
+
     #[test]
     fn the_compiled_acl_refuses_every_other_window_and_origin() {
         // The real context: this app's capabilities and permissions as the
-        // build compiled them. The handler answers any command, so a request
-        // that reaches it got past the ACL.
+        // build compiled them. The handler answers any app command, so an app
+        // command that reaches it got past the ACL.
         let app = mock_builder()
             .register_uri_scheme_protocol(crate::creations::preview::SCHEME, |_ctx, _request| {
                 tauri::http::Response::new(Vec::<u8>::new())
@@ -590,28 +598,38 @@ mod tests {
         let preview = preview_page();
         let reached = Ok(REACHED.to_string());
 
-        // The main window, on the app's pages: its commands, not the print view's.
+        // The main window, on the app's pages: its commands and plugin
+        // calls get past the ACL (a plugin call then fails for another
+        // reason: no argument, or a plugin the mock app lacks), the print
+        // view's command and fs reads do not.
         assert_eq!(call(&main, "get_app_settings", local), reached);
         assert_eq!(call(&main, "creation_delete", local), reached);
-        assert!(
-            call(&main, "print_job", local).is_err(),
-            "print_job is the print view's"
-        );
-        assert!(
-            call(&main, "plugin:fs|read_file", local).is_err(),
-            "the webview reads no files through the fs plugin"
-        );
+        for cmd in ["plugin:event|listen", "plugin:fs|write_file"] {
+            let result = call(&main, cmd, local);
+            assert!(!refused(&result), "main window: {cmd}: {result:?}");
+        }
+        for cmd in [
+            "print_job",
+            "plugin:fs|read_file",
+            "plugin:fs|read_text_file",
+        ] {
+            let result = call(&main, cmd, local);
+            assert!(refused(&result), "main window: {cmd}: {result:?}");
+        }
 
         // Any remote page, even in the main window: nothing.
         for url in ["https://example.com/", "http://localhost.evil.example/"] {
-            assert!(call(&main, "get_app_settings", url).is_err(), "{url}");
-            assert!(call(&main, "agent_approve", url).is_err(), "{url}");
-            assert!(call(&main, "plugin:event|listen", url).is_err(), "{url}");
+            for cmd in ["get_app_settings", "agent_approve", "plugin:event|listen"] {
+                let result = call(&main, cmd, url);
+                assert!(refused(&result), "{cmd} from {url}: {result:?}");
+            }
         }
 
         // A print window: its job and figure reads only.
         assert_eq!(call(&print, "print_job", local), reached);
         assert_eq!(call(&print, "read_source_bytes", local), reached);
+        let result = call(&print, "plugin:event|listen", local);
+        assert!(!refused(&result), "print window: listen: {result:?}");
         for cmd in [
             "get_app_settings",
             "creation_delete",
@@ -619,8 +637,10 @@ mod tests {
             "update_app_preferences",
             "plugin:fs|write_file",
             "plugin:dialog|save",
+            "plugin:opener|open_url",
         ] {
-            assert!(call(&print, cmd, local).is_err(), "print window: {cmd}");
+            let result = call(&print, cmd, local);
+            assert!(refused(&result), "print window: {cmd}: {result:?}");
         }
 
         // A window no capability names, e.g. a preview of its own label:
@@ -632,7 +652,8 @@ mod tests {
                 "get_app_settings",
                 "plugin:event|listen",
             ] {
-                assert!(call(&other, cmd, url).is_err(), "{cmd} from {url}");
+                let result = call(&other, cmd, url);
+                assert!(refused(&result), "{cmd} from {url}: {result:?}");
             }
         }
 

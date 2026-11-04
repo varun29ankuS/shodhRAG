@@ -336,7 +336,8 @@ async fn run_switch(app: &AppHandle) -> Result<SwitchPhase, String> {
         .ok_or("Re-indexing for faster search could not start.")?;
     changed(app);
     let (data_dir, model_dir) = {
-        let engine = app.state::<RagState>().rag.read().await;
+        let rag_state = app.state::<RagState>();
+        let engine = rag_state.rag.read().await;
         (
             engine.config().data_dir.clone(),
             engine.config().embedding.model_dir.clone(),

@@ -344,6 +344,18 @@ impl LanceStore {
         Ok(count)
     }
 
+    /// Rows of the table `name` in the same LanceDB directory (another
+    /// store's table, such as the memory statements); 0 when it does not
+    /// exist.
+    pub async fn count_table(&self, name: &str) -> Result<usize> {
+        let names = self.db.table_names().execute().await?;
+        if !names.iter().any(|n| n == name) {
+            return Ok(0);
+        }
+        let table = self.db.open_table(name).execute().await?;
+        Ok(table.count_rows(None).await?)
+    }
+
     /// Count distinct documents (unique doc_ids) in the store.
     pub async fn count_documents(&self) -> Result<usize> {
         let table = self.db.open_table(&self.table_name).execute().await?;

@@ -51,7 +51,7 @@ pub use recall::{
     DEFAULT_MIN_SIMILARITY, MAX_INJECTION_CHARS, MEMORY_BLOCK_TITLE,
 };
 pub use standing::{render_core_counted, CORE_BLOCK_TITLE, CORE_MAX_CHARS, CORE_MAX_ITEMS};
-pub use usage::DEFAULT_USE_CUTOFF;
+pub use usage::{use_cutoff, FP16_USE_CUTOFF, INT8_USE_CUTOFF};
 
 /// Most memories one "Not relevant" weakens links to (the others of the same answer).
 pub const MAX_FEEDBACK_CO_INJECTED: usize = 32;
@@ -881,7 +881,7 @@ impl MemoryService {
 
     /// The end of answer `run_id`, whose question memories `injected` (ids, in injection
     /// order) were put in front of: the ones `answer` used ([`usage::judge_use`] at
-    /// [`DEFAULT_USE_CUTOFF`]) are reinforced and linked to each other, and the use is
+    /// [`use_cutoff`]) are reinforced and linked to each other, and the use is
     /// audited as `memory_use` with their ids only. `prior_run_ids` are earlier tries of the
     /// same question (Retry): a memory one of them already reinforced is not reinforced
     /// again, so one question strengthens a memory at most once. Returns the ids reinforced.
@@ -922,7 +922,12 @@ impl MemoryService {
         };
         let answer = answer.to_string();
         let judged = tokio::task::spawn_blocking(move || {
-            usage::judge_use(&*embedder, &memories, &answer, DEFAULT_USE_CUTOFF)
+            usage::judge_use(
+                &*embedder,
+                &memories,
+                &answer,
+                use_cutoff(embedder.e5_variant()),
+            )
         })
         .await
         .map_err(|e| MemoryError::Statement(StatementError::Task(e.to_string())))?;

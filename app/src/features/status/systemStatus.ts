@@ -20,7 +20,8 @@ export type CpuReason =
   | { kind: 'noProvider' }
   | { kind: 'noGpu' }
   | { kind: 'failed'; device: string | null; error: string }
-  | { kind: 'slowerThanCpu'; device: string; gpuTokensPerSecond: number; cpuTokensPerSecond: number };
+  | { kind: 'slowerThanCpu'; device: string; gpuTokensPerSecond: number; cpuTokensPerSecond: number }
+  | { kind: 'cpuModel' };
 
 /** `compute::status::EmbedderReport`. */
 export interface SearchReport {
@@ -79,6 +80,7 @@ export function readCpuReason(value: unknown): CpuReason | null {
     case 'chosen':
     case 'noProvider':
     case 'noGpu':
+    case 'cpuModel':
       return { kind: value.kind };
     case 'failed':
       return { kind: 'failed', device: text(value.device), error: text(value.error) ?? 'unknown error' };
@@ -174,6 +176,8 @@ export function cpuReasonText(reason: CpuReason | null): string {
         : 'The graphics cards could not be checked.';
     case 'slowerThanCpu':
       return `${reason.device} ran the search model slower than the processor.`;
+    case 'cpuModel':
+      return 'Your library was indexed with the search model made for the processor, which runs only there.';
   }
 }
 
@@ -192,6 +196,7 @@ export function cpuAdvice(reason: CpuReason | null): string {
     case 'noGpu':
     case 'noProvider':
     case 'slowerThanCpu':
+    case 'cpuModel':
       return 'Index fewer folders at a time, or let large folders index while you are away.';
     default:
       return 'Restart Shodh to check again.';

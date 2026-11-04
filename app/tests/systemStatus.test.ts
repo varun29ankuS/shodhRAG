@@ -12,6 +12,7 @@ import {
   etaText,
   indexingText,
   pagesPerMinuteText,
+  readCpuReason,
   readSystemStatus,
   searchSummary,
 } from '../src/features/status/systemStatus.ts';
@@ -141,6 +142,8 @@ test('every reason has its own words', () => {
   );
   assert.equal(cpuReasonText({ kind: 'failed', device: null, error: 'DXGI' }), 'The graphics cards could not be checked.');
   assert.equal(cpuReasonDetail({ kind: 'noGpu' }), null);
+  assert.match(cpuReasonText({ kind: 'cpuModel' }), /indexed with the search model made for the processor/);
+  assert.deepEqual(readCpuReason({ kind: 'cpuModel' }), { kind: 'cpuModel' });
 });
 
 test('speeds round to two figures and times left to minutes', () => {

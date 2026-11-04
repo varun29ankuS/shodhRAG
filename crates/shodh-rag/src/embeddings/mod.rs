@@ -1,4 +1,5 @@
 pub mod e5;
+pub mod index_model;
 pub mod model_store;
 pub mod tokenizer;
 
@@ -35,6 +36,12 @@ pub trait EmbeddingModel: Send + Sync {
     /// special tokens and any instruction prefix. `None` when the model has
     /// no tokenizer to ask; callers then estimate.
     fn count_tokens(&self, _text: &str) -> Option<usize> {
+        None
+    }
+
+    /// The E5 export the vectors are in; `None` for a model that is no E5
+    /// export (the deterministic embedders of tests).
+    fn e5_variant(&self) -> Option<e5::E5Variant> {
         None
     }
 }

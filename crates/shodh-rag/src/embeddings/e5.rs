@@ -3,6 +3,7 @@ use ort::session::builder::{GraphOptimizationLevel, SessionBuilder};
 use ort::session::Session;
 use ort::value::Value;
 use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -16,9 +17,86 @@ use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, 
 use crate::compute::speed;
 use crate::compute::status::{ComputeStatus, EmbedderReport};
 
+/// The folder (under the model root) holding the E5 model's files.
+pub const E5_DIR: &str = "multilingual-e5-base";
+/// The dimension of multilingual-e5-base's vectors (either export).
+pub const E5_DIMENSION: usize = 768;
+
+/// The exports of multilingual-e5-base Shodh runs. Their vectors are close
+/// but not the same, so an index holds vectors of one export only
+/// ([`crate::embeddings::index_model`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum E5Variant {
+    /// `model_O4.onnx` (optimum O4: fp16 weights), 555 MB. Runs on a
+    /// graphics card or the CPU, with sequences batched.
+    Fp16,
+    /// `model_qint8_avx512_vnni.onnx` (int8 weights, activations quantised
+    /// while it runs), 279 MB: about 3x faster than fp16 on the CPU. The CPU
+    /// only, and each sequence is embedded on its own ([`Self::batches`]).
+    Int8,
+}
+
+impl E5Variant {
+    pub const ALL: [E5Variant; 2] = [E5Variant::Fp16, E5Variant::Int8];
+
+    /// The export's file name in [`E5_DIR`].
+    pub fn file_name(self) -> &'static str {
+        match self {
+            E5Variant::Fp16 => "model_O4.onnx",
+            E5Variant::Int8 => "model_qint8_avx512_vnni.onnx",
+        }
+    }
+
+    /// "fp16" / "int8", as records and reports name it.
+    pub fn label(self) -> &'static str {
+        match self {
+            E5Variant::Fp16 => "fp16",
+            E5Variant::Int8 => "int8",
+        }
+    }
+
+    /// Whether a graphics card may run it. The int8 export's integer
+    /// operators are a CPU design (DirectML and Core ML were never measured
+    /// on it), so it stays on the CPU.
+    pub fn runs_on_gpu(self) -> bool {
+        matches!(self, E5Variant::Fp16)
+    }
+
+    /// Whether several sequences may share one inference batch. The int8
+    /// export quantises activations with `DynamicQuantizeLinear`, whose
+    /// scale is taken over the whole input tensor: in a batch, a text's
+    /// vector would depend on the other texts and on the padding. Embedded
+    /// alone (no other rows, no padding), its vector depends only on the
+    /// text.
+    pub fn batches(self) -> bool {
+        matches!(self, E5Variant::Fp16)
+    }
+
+    /// The variant whose file is named `file`.
+    pub fn of_file(file: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.file_name() == file)
+    }
+}
+
+/// Which export the vectors must be in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariantRule {
+    /// Vectors of this export exist (an index built with it): it is the
+    /// one used, on whatever runs it (fp16: a graphics card or the CPU;
+    /// int8: the CPU).
+    Index(E5Variant),
+    /// No vectors exist yet: a graphics card runs fp16, the CPU int8, and
+    /// whichever [`choose`] keeps decides the export
+    /// ([`E5Embeddings::variant`]).
+    Fastest,
+}
+
 #[derive(Clone)]
 pub struct E5Config {
-    pub model_path: PathBuf,
+    /// The [`E5_DIR`] folder: its tokenizer and the installed exports.
+    pub model_dir: PathBuf,
+    pub rule: VariantRule,
     pub dimension: usize,
     pub max_length: usize,
     pub normalize: bool,
@@ -32,38 +110,30 @@ pub struct E5Config {
     pub calibration_file: Option<PathBuf>,
 }
 
+/// The exports installed in `dir` (an [`E5_DIR`] folder with its tokenizer).
+pub fn installed_variants(dir: &Path) -> Vec<E5Variant> {
+    if !dir.join("tokenizer.json").exists() {
+        return Vec::new();
+    }
+    E5Variant::ALL
+        .into_iter()
+        .filter(|v| dir.join(v.file_name()).exists())
+        .collect()
+}
+
 impl E5Config {
-    /// The installed E5 model under `model_dir`: the pinned fp16 export
-    /// (`model_O4.onnx`), else the fp32 one (`model.onnx`). An int8 export
-    /// found there is not used: it quantizes activations per batch, so a
-    /// file's vectors would depend on which files shared its batch.
+    /// The E5 model under the model root `model_dir` when its tokenizer and
+    /// at least one export are installed, with [`VariantRule::Fastest`]
+    /// (the engine sets the rule its index needs).
     pub fn auto_detect(model_dir: &Path) -> Option<Self> {
-        let base_path = if model_dir.join("multilingual-e5-base").exists() {
-            model_dir.join("multilingual-e5-base")
-        } else if model_dir.join("multilingual-e5-large-instruct").exists() {
-            model_dir.join("multilingual-e5-large-instruct")
-        } else {
-            return None;
-        };
-
-        let (dimension, model_file) = if base_path.to_string_lossy().contains("e5-base") {
-            if base_path.join("model_O4.onnx").exists() {
-                (768, "model_O4.onnx")
-            } else {
-                (768, "model.onnx")
-            }
-        } else {
-            (1024, "model.onnx")
-        };
-
-        let model_path = base_path.join(model_file);
-        if !model_path.exists() {
+        let dir = model_dir.join(E5_DIR);
+        if installed_variants(&dir).is_empty() {
             return None;
         }
-
         Some(Self {
-            model_path,
-            dimension,
+            model_dir: dir,
+            rule: VariantRule::Fastest,
+            dimension: E5_DIMENSION,
             max_length: 512,
             normalize: true,
             compute: ComputePreference::Auto,
@@ -78,13 +148,71 @@ impl E5Config {
         self
     }
 
-    /// The model file's name ("model_O4.onnx").
-    pub fn model_file(&self) -> String {
-        self.model_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
+    /// This config with `rule` as the variant rule.
+    pub fn with_rule(mut self, rule: VariantRule) -> Self {
+        self.rule = rule;
+        self
     }
+
+    /// Whether the files `rule` needs are installed.
+    pub fn can_load(&self) -> bool {
+        let installed = installed_variants(&self.model_dir);
+        match self.rule {
+            VariantRule::Index(variant) => installed.contains(&variant),
+            VariantRule::Fastest => !installed.is_empty(),
+        }
+    }
+
+    fn path_of(&self, variant: E5Variant) -> PathBuf {
+        self.model_dir.join(variant.file_name())
+    }
+
+    /// What may run on a graphics card and what on the CPU under the rule,
+    /// given the installed exports.
+    fn plan(&self) -> Result<Plan> {
+        let installed = installed_variants(&self.model_dir);
+        match self.rule {
+            VariantRule::Index(variant) => {
+                if !installed.contains(&variant) {
+                    return Err(anyhow!(
+                        "the search model this library was indexed with ({}, {}) is not installed in {}",
+                        variant.label(),
+                        variant.file_name(),
+                        self.model_dir.display()
+                    ));
+                }
+                Ok(Plan {
+                    gpu: variant.runs_on_gpu().then_some(variant),
+                    cpu: variant,
+                })
+            }
+            VariantRule::Fastest => {
+                let has = |v: E5Variant| installed.contains(&v);
+                let cpu = if has(E5Variant::Int8) {
+                    E5Variant::Int8
+                } else if has(E5Variant::Fp16) {
+                    E5Variant::Fp16
+                } else {
+                    return Err(anyhow!(
+                        "no E5 search model is installed in {}",
+                        self.model_dir.display()
+                    ));
+                };
+                Ok(Plan {
+                    gpu: has(E5Variant::Fp16).then_some(E5Variant::Fp16),
+                    cpu,
+                })
+            }
+        }
+    }
+}
+
+/// The export each target runs: `gpu` on a graphics card (none: the CPU
+/// only), `cpu` on the processor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Plan {
+    gpu: Option<E5Variant>,
+    cpu: E5Variant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,20 +259,24 @@ pub struct E5Embeddings {
     in_flight: AtomicUsize,
     tokenizer: Arc<SentencePieceTokenizer>,
     config: E5Config,
+    /// The export every vector of this load is in; a CPU that takes over
+    /// from a failed graphics card runs the same one.
+    variant: E5Variant,
+    model_path: PathBuf,
     cache: Arc<RwLock<lru::LruCache<String, Vec<f32>>>>,
     status: Option<Arc<ComputeStatus>>,
     /// This load's generation in the status.
     generation: u64,
     threads: usize,
     key: CalibrationKey,
-    core_ml_cache: PathBuf,
 }
 
 /// A session over the model at `model_path` on `device` (a graphics card)
 /// or the CPU (`None`). A GPU provider that does not register is an error.
+/// `core_ml_cache` is where Core ML keeps its compiled model.
 fn build_session(
     model_path: &Path,
-    core_ml_cache: &Path,
+    core_ml_cache: Option<&Path>,
     device: Option<&Device>,
     threads: usize,
 ) -> std::result::Result<Session, String> {
@@ -170,7 +302,7 @@ fn build_session(
 
 fn with_provider(
     builder: SessionBuilder,
-    core_ml_cache: &Path,
+    core_ml_cache: Option<&Path>,
     device: Option<&Device>,
 ) -> std::result::Result<SessionBuilder, String> {
     match device.map(|d| d.accelerator) {
@@ -180,7 +312,10 @@ fn with_provider(
             .with_execution_providers([ort::ep::CPU::default().with_arena_allocator(false).build()])
             .map_err(|e| format!("CPU provider: {e}")),
         Some(Accelerator::DirectMl) => direct_ml(builder, device),
-        Some(Accelerator::CoreMl) => core_ml(builder, core_ml_cache),
+        Some(Accelerator::CoreMl) => match core_ml_cache {
+            Some(cache) => core_ml(builder, cache),
+            None => Err("Core ML: no folder for its compiled model".to_string()),
+        },
     }
 }
 
@@ -264,20 +399,22 @@ fn as_slices(ids: &[Vec<u32>]) -> Vec<&[u32]> {
     ids.iter().map(Vec::as_slice).collect()
 }
 
-/// Tokens a second `session` embeds `passages` at: one untimed run at the
+/// Tokens a second `session` (of `variant`) embeds `passages` at, run the
+/// way that export always runs ([`run_sequences`]): one untimed run at the
 /// same shape, then the median of [`CALIBRATION_RUNS`] timed runs.
 fn measure(
     session: &mut Session,
+    variant: E5Variant,
     pad_id: u32,
     passages: &[Vec<u32>],
 ) -> std::result::Result<f64, String> {
     let batch = as_slices(passages);
     let tokens: usize = passages.iter().map(Vec::len).sum();
-    run_batch(session, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
+    run_sequences(session, variant, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
     let mut rates = Vec::with_capacity(CALIBRATION_RUNS);
     for _ in 0..CALIBRATION_RUNS {
         let (_, elapsed) =
-            run_batch(session, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
+            run_sequences(session, variant, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
         rates.push(
             speed::rate(tokens, elapsed)
                 .ok_or_else(|| "the calibration batch took no measurable time".to_string())?,
@@ -287,23 +424,73 @@ fn measure(
     Ok(rates[rates.len() / 2])
 }
 
-/// Builds and times sessions of the model for [`choose::choose`].
+/// A session and the export it runs.
+struct Built {
+    session: Session,
+    variant: E5Variant,
+}
+
+/// Builds and times sessions of the model for [`choose::choose`]: a
+/// graphics card runs the plan's `gpu` export, the CPU its `cpu` export.
 struct E5Candidate<'a> {
-    model_path: &'a Path,
-    core_ml_cache: &'a Path,
+    config: &'a E5Config,
+    plan: Plan,
+    core_ml_cache: Option<&'a Path>,
     threads: usize,
     pad_id: u32,
     passages: &'a [Vec<u32>],
 }
 
 impl Candidate for E5Candidate<'_> {
-    type Session = Session;
-    fn build(&mut self, device: Option<&Device>) -> std::result::Result<Session, String> {
-        build_session(self.model_path, self.core_ml_cache, device, self.threads)
+    type Session = Built;
+    fn build(&mut self, device: Option<&Device>) -> std::result::Result<Built, String> {
+        let variant = match device {
+            Some(_) => self
+                .plan
+                .gpu
+                .ok_or_else(|| "no search model for a graphics card is installed".to_string())?,
+            None => self.plan.cpu,
+        };
+        let session = build_session(
+            &self.config.path_of(variant),
+            self.core_ml_cache,
+            device,
+            self.threads,
+        )?;
+        Ok(Built { session, variant })
     }
-    fn time(&mut self, session: &mut Session) -> std::result::Result<f64, String> {
-        measure(session, self.pad_id, self.passages)
+    fn time(&mut self, built: &mut Built) -> std::result::Result<f64, String> {
+        measure(
+            &mut built.session,
+            built.variant,
+            self.pad_id,
+            self.passages,
+        )
     }
+}
+
+/// Embeds token sequences with `session` the way `variant` must run: in one
+/// padded batch, or (int8, [`E5Variant::batches`]) each sequence on its own,
+/// so a text's vector never depends on the texts it was sent with. The time
+/// is the inference's alone.
+fn run_sequences(
+    session: &mut Session,
+    variant: E5Variant,
+    pad_id: u32,
+    normalize: bool,
+    all_token_ids: &[&[u32]],
+) -> Result<(Vec<Vec<f32>>, Duration)> {
+    if variant.batches() || all_token_ids.len() <= 1 {
+        return run_batch(session, pad_id, normalize, all_token_ids);
+    }
+    let mut vectors = Vec::with_capacity(all_token_ids.len());
+    let mut elapsed = Duration::ZERO;
+    for ids in all_token_ids {
+        let (mut one, took) = run_batch(session, pad_id, normalize, std::slice::from_ref(ids))?;
+        vectors.append(&mut one);
+        elapsed += took;
+    }
+    Ok((vectors, elapsed))
 }
 
 /// Run one padded batch of token sequences through `session` and pool.
@@ -418,24 +605,34 @@ impl E5Embeddings {
     pub fn new(config: E5Config) -> Result<Self> {
         ort::init().with_name("e5_embeddings").commit();
 
-        if !config.model_path.exists() {
-            return Err(anyhow!(
-                "Model file not found at: {}",
-                config.model_path.display()
-            ));
+        let plan = config.plan()?;
+        // The calibration holds for the files the targets run: one export,
+        // or (no index yet) the graphics card's and the CPU's together, since
+        // a card's verdict is a comparison with the CPU's export.
+        let files: Vec<E5Variant> = match plan.gpu {
+            Some(gpu) if gpu != plan.cpu => vec![gpu, plan.cpu],
+            _ => vec![plan.cpu],
+        };
+        let mut model_size = 0;
+        for variant in &files {
+            model_size += std::fs::metadata(config.path_of(*variant))
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to read the search model {}: {e}",
+                        variant.file_name()
+                    )
+                })?
+                .len();
         }
-        let model_size = std::fs::metadata(&config.model_path)
-            .map_err(|e| anyhow!("Failed to read model: {e}"))?
-            .len();
-        let model_dir = config
-            .model_path
-            .parent()
-            .ok_or_else(|| anyhow!("Invalid model path"))?;
+        let key_file = files
+            .iter()
+            .map(|v| v.file_name())
+            .collect::<Vec<_>>()
+            .join("+");
 
-        let tokenizer = SentencePieceTokenizer::from_model_dir(model_dir)?;
+        let tokenizer = SentencePieceTokenizer::from_model_dir(&config.model_dir)?;
         let threads = crate::compute::cores::inference_threads();
-        let model_file = config.model_file();
-        let key = CalibrationKey::new(&model_file, model_size, threads);
+        let key = CalibrationKey::new(&key_file, model_size, threads);
         let mut saved = config
             .calibration_file
             .as_deref()
@@ -443,21 +640,36 @@ impl E5Embeddings {
             .unwrap_or_default();
         let now = chrono::Utc::now();
         let passages = calibration_batch(&tokenizer)?;
-        let core_ml_cache = core_ml_cache(&config.model_path);
+        let core_ml_cache = plan.gpu.map(|v| core_ml_cache(&config.path_of(v)));
         let mut candidate = E5Candidate {
-            model_path: &config.model_path,
-            core_ml_cache: &core_ml_cache,
+            config: &config,
+            plan,
+            core_ml_cache: core_ml_cache.as_deref(),
             threads,
             pad_id: tokenizer.pad_id(),
             passages: &passages,
         };
-        let chosen = choose::choose(
+        // An export no graphics card runs: the CPU, for that reason when the
+        // setting would have allowed a card.
+        let (preference, cpu_model) = match plan.gpu {
+            Some(_) => (config.compute, false),
+            None => (
+                ComputePreference::Cpu,
+                config.compute == ComputePreference::Auto,
+            ),
+        };
+        let mut chosen = choose::choose(
             &mut candidate,
-            config.compute,
+            preference,
             provider::probe_gpus,
             &|device: Option<&Device>| saved.known(&key, device, now),
         )
         .map_err(|e| anyhow!("Failed to load model: {e}"))?;
+        if cpu_model {
+            chosen.cpu_reason = Some(CpuReason::CpuModel);
+        }
+        let variant = chosen.session.variant;
+        let model_file = variant.file_name().to_string();
 
         // A speed measured while OCR competed for the cores is used for this
         // load but not kept; a card's failure is kept all the same.
@@ -502,6 +714,7 @@ impl E5Embeddings {
             cpu_reason = ?chosen.cpu_reason,
             threads,
             model = %model_file,
+            variant = variant.label(),
             pages_per_minute = chosen.tokens_per_second.map(|t| speed::pages_per_minute(t).round()),
             "Search model loaded"
         );
@@ -525,9 +738,10 @@ impl E5Embeddings {
             None => 0,
         };
 
+        let model_path = config.path_of(variant);
         Ok(Self {
             active: Mutex::new(Active {
-                session: chosen.session,
+                session: chosen.session.session,
                 on_gpu: chosen.accelerator.is_gpu(),
                 accelerator: chosen.accelerator,
                 device: chosen.device,
@@ -536,19 +750,25 @@ impl E5Embeddings {
             tokenizer: Arc::new(tokenizer),
             status: config.status.clone(),
             config,
+            variant,
+            model_path,
             cache: Arc::new(RwLock::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(1000).unwrap(),
             ))),
             generation,
             threads,
             key,
-            core_ml_cache,
         })
     }
 
     /// What runs the model now.
     pub fn accelerator(&self) -> Accelerator {
         self.active.lock().accelerator
+    }
+
+    /// The export every vector of this load is in.
+    pub fn variant(&self) -> E5Variant {
+        self.variant
     }
 
     /// A graphics card failed while embedding and the CPU took over: kept
@@ -593,9 +813,8 @@ impl E5Embeddings {
             return Ok(cached.clone());
         }
 
-        // The sequence is embedded unpadded, like passages (which are batched
-        // with texts of similar length): the int8 model quantizes
-        // activations per batch, so padding changes the vector.
+        // Alone and unpadded: the same vector the text gets inside a batch
+        // of passages for the int8 export (each sequence runs alone there).
         let mut token_ids = self.tokenizer.encode(&prefixed, true)?;
         token_ids.truncate(self.config.max_length.min(512));
         let embedding = self
@@ -681,22 +900,17 @@ impl E5Embeddings {
                 session,
                 on_gpu,
                 |s| {
-                    run_batch(
+                    run_sequences(
                         s,
+                        self.variant,
                         self.tokenizer.pad_id(),
                         self.config.normalize,
                         all_token_ids,
                     )
                     .map_err(|e| format!("{e:#}"))
                 },
-                || {
-                    build_session(
-                        &self.config.model_path,
-                        &self.core_ml_cache,
-                        None,
-                        self.threads,
-                    )
-                },
+                // The same export on the CPU: the vectors stay in it.
+                || build_session(&self.model_path, None, None, self.threads),
             );
             match ran {
                 Ok((value, Some(error))) => {
@@ -754,12 +968,18 @@ impl EmbeddingModel for E5Embeddings {
             .ok()
             .map(|ids| ids.len())
     }
+
+    fn e5_variant(&self) -> Option<E5Variant> {
+        Some(self.variant)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The installed E5 model on the CPU, with no index yet (the int8
+    /// export when it is installed, as on a new library).
     fn model_config() -> E5Config {
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory");
@@ -768,16 +988,186 @@ mod tests {
             .with_compute(ComputePreference::Cpu)
     }
 
+    /// `variant` on the CPU, as for an index built with it. CI installs both.
+    fn variant_config(variant: E5Variant) -> E5Config {
+        let config = model_config().with_rule(VariantRule::Index(variant));
+        assert!(
+            config.can_load(),
+            "{} is not installed under SHODH_TEST_MODELS",
+            variant.file_name()
+        );
+        config
+    }
+
+    #[test]
+    fn the_variants_name_their_files_and_how_they_run() {
+        assert_eq!(E5Variant::Fp16.file_name(), "model_O4.onnx");
+        assert_eq!(E5Variant::Int8.file_name(), "model_qint8_avx512_vnni.onnx");
+        for variant in E5Variant::ALL {
+            assert_eq!(E5Variant::of_file(variant.file_name()), Some(variant));
+        }
+        assert_eq!(E5Variant::of_file("model.onnx"), None);
+        assert!(E5Variant::Fp16.batches() && E5Variant::Fp16.runs_on_gpu());
+        assert!(!E5Variant::Int8.batches() && !E5Variant::Int8.runs_on_gpu());
+        assert_eq!(serde_json::to_value(E5Variant::Int8).unwrap(), "int8");
+    }
+
+    /// Which export runs where: an index's export everywhere it can run, and
+    /// with no index the card's fp16 and the CPU's int8 (fp16 on the CPU
+    /// only when int8 is missing).
+    #[test]
+    fn the_plan_follows_the_index_and_the_installed_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let e5 = dir.path().join(E5_DIR);
+        std::fs::create_dir_all(&e5).unwrap();
+        assert!(
+            E5Config::auto_detect(dir.path()).is_none(),
+            "nothing installed"
+        );
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        assert!(E5Config::auto_detect(dir.path()).is_none(), "no export");
+        std::fs::write(e5.join(E5Variant::Fp16.file_name()), b"fp16").unwrap();
+        let config = E5Config::auto_detect(dir.path()).expect("fp16 installed");
+        assert_eq!(config.rule, VariantRule::Fastest);
+        let plan = |rule| config.clone().with_rule(rule).plan();
+        assert_eq!(
+            plan(VariantRule::Fastest).unwrap(),
+            Plan {
+                gpu: Some(E5Variant::Fp16),
+                cpu: E5Variant::Fp16
+            }
+        );
+        assert!(plan(VariantRule::Index(E5Variant::Int8)).is_err());
+        assert!(!config
+            .clone()
+            .with_rule(VariantRule::Index(E5Variant::Int8))
+            .can_load());
+
+        std::fs::write(e5.join(E5Variant::Int8.file_name()), b"int8").unwrap();
+        assert_eq!(
+            installed_variants(&e5),
+            vec![E5Variant::Fp16, E5Variant::Int8]
+        );
+        assert_eq!(
+            plan(VariantRule::Fastest).unwrap(),
+            Plan {
+                gpu: Some(E5Variant::Fp16),
+                cpu: E5Variant::Int8
+            }
+        );
+        assert_eq!(
+            plan(VariantRule::Index(E5Variant::Fp16)).unwrap(),
+            Plan {
+                gpu: Some(E5Variant::Fp16),
+                cpu: E5Variant::Fp16
+            },
+            "an fp16 index stays fp16 on the CPU"
+        );
+        assert_eq!(
+            plan(VariantRule::Index(E5Variant::Int8)).unwrap(),
+            Plan {
+                gpu: None,
+                cpu: E5Variant::Int8
+            }
+        );
+
+        std::fs::remove_file(e5.join(E5Variant::Fp16.file_name())).unwrap();
+        assert_eq!(
+            plan(VariantRule::Fastest).unwrap(),
+            Plan {
+                gpu: None,
+                cpu: E5Variant::Int8
+            }
+        );
+        assert!(plan(VariantRule::Index(E5Variant::Fp16)).is_err());
+    }
+
+    /// The int8 export quantises activations over its whole input, so its
+    /// vectors would move with their batch; each sequence runs alone
+    /// instead. A text's vector is the same, bit for bit, alone, in batches
+    /// of other texts (shorter, longer, more than one inference batch, any
+    /// order), as a single document and after the model is loaded again.
+    /// Bit-identical holds on one machine with one thread count (the same
+    /// kernels on the same shapes); another processor may round differently,
+    /// as with any export.
+    #[test]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
+    )]
+    fn an_int8_vector_does_not_depend_on_the_texts_it_is_embedded_with() {
+        let model = E5Embeddings::new(variant_config(E5Variant::Int8)).expect("load int8");
+        assert_eq!(model.variant(), E5Variant::Int8);
+        let target = "Negative eigenvalues let linear RNNs track parity.";
+        let alone = model
+            .embed_batch_with_mode(&[target], E5Mode::Passage)
+            .expect("alone")
+            .remove(0);
+        let long = "Linear attention replaces softmax with a kernel feature map. ".repeat(30);
+        let many: Vec<String> = (0..80)
+            .map(|i| {
+                format!("Item {i}: the delta rule updates the state with a rank-one correction.")
+            })
+            .collect();
+        let mut crowded: Vec<&str> = many.iter().map(String::as_str).collect();
+        crowded.insert(37, target);
+        let batches: Vec<Vec<&str>> = vec![
+            vec![long.as_str(), target],
+            vec![target, "[12] Long short-term memory. 1997.", long.as_str()],
+            vec![
+                "Short.",
+                target,
+                "A medium sentence about state space models and gating.",
+            ],
+            crowded,
+        ];
+        let same_bits = |a: &[f32], b: &[f32]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+        };
+        for batch in &batches {
+            let index = batch.iter().position(|t| *t == target).unwrap();
+            let vectors = model
+                .embed_batch_with_mode(batch, E5Mode::Passage)
+                .expect("batch");
+            assert_eq!(vectors.len(), batch.len());
+            let max_diff = vectors[index]
+                .iter()
+                .zip(&alone)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max);
+            assert!(
+                same_bits(&vectors[index], &alone),
+                "in a batch of {} the vector moved (largest difference {max_diff:e})",
+                batch.len()
+            );
+        }
+        let document = model.embed_document(target).expect("document");
+        assert!(same_bits(&document, &alone), "embedded as one document");
+        drop(model);
+        let again = E5Embeddings::new(variant_config(E5Variant::Int8)).expect("load again");
+        let reloaded = again
+            .embed_batch_with_mode(&[long.as_str(), target], E5Mode::Passage)
+            .expect("reloaded");
+        assert!(same_bits(&reloaded[1], &alone), "after loading again");
+    }
+
     /// Length-sorted, token-budgeted batching returns vectors in input order:
     /// each batched vector matches its own single embedding, and matches it
-    /// better than any other text's.
+    /// better than any other text's. For both exports.
     #[test]
     #[cfg_attr(
         not(shodh_test_models),
         ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
     )]
     fn batched_embeddings_match_single_embeddings_in_input_order() {
-        let model = E5Embeddings::new(model_config()).expect("load E5");
+        for variant in E5Variant::ALL {
+            batched_embeddings_match_single_embeddings(variant);
+        }
+    }
+
+    fn batched_embeddings_match_single_embeddings(variant: E5Variant) {
+        let model = E5Embeddings::new(variant_config(variant)).expect("load E5");
+        assert_eq!(model.variant(), variant);
         let long = "Linear attention replaces softmax with a kernel feature map. ".repeat(30);
         let texts = [
             long.as_str(),
@@ -832,7 +1222,15 @@ mod tests {
         config.calibration_file = Some(file.clone());
         let model = E5Embeddings::new(config.clone()).expect("load E5");
         assert_eq!(model.accelerator(), Accelerator::Cpu);
+        // No index yet and the CPU: the int8 export, when installed.
+        let expected = if installed_variants(&config.model_dir).contains(&E5Variant::Int8) {
+            E5Variant::Int8
+        } else {
+            E5Variant::Fp16
+        };
+        assert_eq!(model.variant(), expected);
         let report = status.embedder().expect("reported");
+        assert_eq!(report.model_file, expected.file_name());
         assert!(report.loaded);
         assert_eq!(report.cpu_reason, Some(CpuReason::Chosen));
         assert!(report.pages_per_minute.is_some_and(|p| p > 0.0));
@@ -864,9 +1262,11 @@ mod tests {
     #[test]
     #[ignore = "needs a graphics card DirectML or Core ML starts on; CI has none"]
     fn a_graphics_card_embeds_like_the_cpu() {
-        let cpu = E5Embeddings::new(model_config()).expect("load E5 on the CPU");
-        let gpu =
-            E5Embeddings::new(model_config().with_compute(ComputePreference::Auto)).expect("load");
+        let cpu = E5Embeddings::new(variant_config(E5Variant::Fp16)).expect("load E5 on the CPU");
+        let gpu = E5Embeddings::new(
+            variant_config(E5Variant::Fp16).with_compute(ComputePreference::Auto),
+        )
+        .expect("load");
         assert!(gpu.accelerator().is_gpu(), "no graphics card ran the model");
         let texts = [
             "The heating system was serviced in October.",

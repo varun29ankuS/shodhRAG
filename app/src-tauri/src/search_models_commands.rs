@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::embeddings::index_model;
 use shodh_rag::embeddings::model_store::{
     ArtifactStatus, HttpByteSource, InstallPhase, InstallProgress, ModelStore,
 };
@@ -48,8 +49,19 @@ impl SearchModelsState {
         }
     }
 
-    fn store(&self) -> ModelStore {
-        ModelStore::search_and_ocr_models(self.model_dir.clone())
+    /// The files setup installs for this engine: the E5 export its index was
+    /// built with, or, for a new library, the processor's int8 export plus
+    /// the graphics card's fp16 export when a card may run search
+    /// (`index_model::setup_variants`).
+    async fn store(&self, rag_state: &RagState) -> ModelStore {
+        let config = rag_state.rag.read().await.config().clone();
+        let index = SearchModels::index_variant(&config);
+        let variants = index_model::setup_variants(
+            index,
+            config.embedding.compute,
+            shodh_rag::compute::provider::probe_gpus,
+        );
+        ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants)
     }
 }
 
@@ -72,7 +84,7 @@ async fn read_status(
 ) -> Result<SearchModelsStatus, String> {
     let ready = rag_state.rag.read().await.has_search_models();
     let installing = state.install_lock.try_lock().is_err();
-    let store = state.store();
+    let store = state.store(rag_state).await;
     // Hash unstamped files only when the result matters (not ready) and no
     // install is writing them.
     let verify = verify && !ready && !installing;
@@ -112,7 +124,7 @@ pub async fn install_search_models(
         format!("{INSTALL_IN_PROGRESS_CODE}: the search models are already being installed")
     })?;
 
-    let store = state.store();
+    let store = state.store(&rag_state).await;
     let source = HttpByteSource::new().map_err(|e| e.to_string())?;
     let emitter = app.clone();
     let last_emit = std::sync::Mutex::new(None::<(Instant, InstallPhase)>);

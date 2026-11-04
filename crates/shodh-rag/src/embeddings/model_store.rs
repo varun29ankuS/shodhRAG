@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
+use super::e5::E5Variant;
+
 /// Directory (under the model root) holding the E5 embedding model.
 pub const E5_DIR: &str = "multilingual-e5-base";
 /// Directory (under the model root) holding the cross-encoder reranker.
@@ -64,20 +66,56 @@ impl ModelArtifact {
     }
 }
 
-/// The pinned E5 + reranker artifacts the search engine needs (≈618 MB).
+/// The pinned file of one E5 export ([`E5Variant`]).
 ///
-/// Hashes are SHA-256 of the file contents, measured from these exact
+/// fp16 (`model_O4.onnx`, 555 MB) runs on a graphics card or the CPU; int8
+/// (`model_qint8_avx512_vnni.onnx`, 279 MB) on the CPU, about 3x faster
+/// there. Hashes are SHA-256 of the file contents, measured from these exact
 /// revision URLs (they equal Hugging Face's LFS object ids, not the Xet
 /// storage ids that appear in CDN redirect URLs).
-pub fn search_model_artifacts() -> Vec<ModelArtifact> {
-    vec![
-        ModelArtifact::new(
-            "E5 embedding model",
+pub fn e5_model_artifact(variant: E5Variant) -> ModelArtifact {
+    match variant {
+        E5Variant::Fp16 => ModelArtifact::new(
+            "E5 embedding model (graphics card)",
             "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_O4.onnx",
             "f60256a833caee5c75a3903e589116752ee016ca7bc16f9b96e4db09984c5703",
             554_948_118,
             "multilingual-e5-base/model_O4.onnx",
         ),
+        E5Variant::Int8 => ModelArtifact::new(
+            "E5 embedding model (processor)",
+            "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/model_qint8_avx512_vnni.onnx",
+            "2523551878658b305550d8759443822dbfda9ed9c8012ef2c354ba2c5b9de503",
+            278_686_411,
+            "multilingual-e5-base/model_qint8_avx512_vnni.onnx",
+        ),
+    }
+}
+
+/// The pinned E5 + reranker artifacts with both E5 exports (≈897 MB): what
+/// the evals and model-backed tests install. The app installs only the
+/// exports its machine and index need ([`search_model_artifacts_for`]).
+pub fn search_model_artifacts() -> Vec<ModelArtifact> {
+    search_model_artifacts_for(&E5Variant::ALL)
+}
+
+/// The E5 files of `variants` (in [`E5Variant::ALL`] order, each once), the
+/// E5 tokenizer and the reranker: ≈342 MB with int8 only, ≈618 MB with fp16
+/// only.
+pub fn search_model_artifacts_for(variants: &[E5Variant]) -> Vec<ModelArtifact> {
+    let mut artifacts: Vec<ModelArtifact> = E5Variant::ALL
+        .into_iter()
+        .filter(|v| variants.contains(v))
+        .map(e5_model_artifact)
+        .collect();
+    artifacts.extend(shared_search_artifacts());
+    artifacts
+}
+
+/// The files every set of search models has: the E5 tokenizer (both exports
+/// read it) and the reranker.
+fn shared_search_artifacts() -> Vec<ModelArtifact> {
+    vec![
         ModelArtifact::new(
             "E5 tokenizer",
             "https://huggingface.co/intfloat/multilingual-e5-base/resolve/d128750597153bb5987e10b1c3493a34e5a4502a/onnx/tokenizer.json",
@@ -495,10 +533,16 @@ impl ModelStore {
         Self::with_artifacts(root, ocr_model_artifacts())
     }
 
-    /// The search models and the OCR model under `root`: what the app's
-    /// search setup installs.
+    /// The search models (both E5 exports) and the OCR model under `root`:
+    /// what the evals install.
     pub fn search_and_ocr_models(root: impl Into<PathBuf>) -> Self {
-        let mut artifacts = search_model_artifacts();
+        Self::search_and_ocr_models_for(root, &E5Variant::ALL)
+    }
+
+    /// The search models with the E5 exports `variants`, and the OCR model,
+    /// under `root`: what the app's search setup installs.
+    pub fn search_and_ocr_models_for(root: impl Into<PathBuf>, variants: &[E5Variant]) -> Self {
+        let mut artifacts = search_model_artifacts_for(variants);
         artifacts.extend(ocr_model_artifacts());
         Self::with_artifacts(root, artifacts)
     }
@@ -1001,7 +1045,34 @@ mod tests {
     #[test]
     fn pinned_artifacts_are_well_formed() {
         let artifacts = search_model_artifacts();
-        assert_eq!(artifacts.len(), 4);
+        assert_eq!(artifacts.len(), 5);
+        let int8 = search_model_artifacts_for(&[E5Variant::Int8]);
+        assert_eq!(
+            int8.iter()
+                .map(|a| a.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "multilingual-e5-base/model_qint8_avx512_vnni.onnx",
+                "multilingual-e5-base/tokenizer.json",
+                "ms-marco-MiniLM-L6-v2/model_O4.onnx",
+                "ms-marco-MiniLM-L6-v2/tokenizer.json",
+            ]
+        );
+        assert_eq!(int8.iter().map(|a| a.size).sum::<u64>(), 341_997_083);
+        let fp16 = search_model_artifacts_for(&[E5Variant::Fp16]);
+        assert_eq!(fp16.iter().map(|a| a.size).sum::<u64>(), 618_258_790);
+        assert_eq!(
+            search_model_artifacts_for(&[E5Variant::Int8, E5Variant::Fp16, E5Variant::Int8]),
+            artifacts,
+            "each export once, in a fixed order"
+        );
+        for variant in E5Variant::ALL {
+            assert_eq!(
+                e5_model_artifact(variant).relative_path,
+                format!("{}/{}", super::super::e5::E5_DIR, variant.file_name()),
+                "installed where the loader looks"
+            );
+        }
         let answer_check = answer_check_artifacts();
         assert_eq!(answer_check.len(), 3);
         assert!(answer_check
@@ -1031,7 +1102,11 @@ mod tests {
         assert_eq!(ModelStore::ocr_model("x").total_bytes(), 31_191_354);
         assert_eq!(
             ModelStore::search_and_ocr_models("x").total_bytes(),
-            618_258_790 + 31_191_354
+            896_945_201 + 31_191_354
+        );
+        assert_eq!(
+            ModelStore::search_and_ocr_models_for("x", &[E5Variant::Int8]).total_bytes(),
+            341_997_083 + 31_191_354
         );
         for a in artifacts.iter().chain(&answer_check).chain(&ocr) {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
@@ -1053,7 +1128,7 @@ mod tests {
             assert!(a.size > 0);
         }
         let store = ModelStore::search_models("x");
-        assert_eq!(store.total_bytes(), 618_258_790);
+        assert_eq!(store.total_bytes(), 896_945_201);
     }
 
     #[test]

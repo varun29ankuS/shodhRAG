@@ -98,6 +98,9 @@ pub enum CpuReason {
         gpu_tokens_per_second: f64,
         cpu_tokens_per_second: f64,
     },
+    /// The library was indexed with the search model made for the CPU
+    /// (int8), which no graphics card runs; no card was tried.
+    CpuModel,
 }
 
 /// Whether a graphics card that embeds at `gpu` tokens a second is kept
@@ -288,6 +291,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CpuReason::NoGpu).expect("json")["kind"],
             "noGpu"
+        );
+        assert_eq!(
+            serde_json::to_value(CpuReason::CpuModel).expect("json")["kind"],
+            "cpuModel"
         );
         let back: CpuReason = serde_json::from_value(json).expect("read back");
         assert_eq!(back, reason);

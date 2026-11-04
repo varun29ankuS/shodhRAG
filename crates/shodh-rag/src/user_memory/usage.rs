@@ -10,7 +10,7 @@
 //! similarity(m, w) = cos(E(m), E(w))
 //! overlap(m, w)    = share of m's content words that appear in w
 //! score(m)         = max over windows w of (similarity(m, w) + overlap(m, w)) / 2
-//! used             = score ≥ DEFAULT_USE_CUTOFF
+//! used             = score ≥ use_cutoff(the E5 export)
 //! ```
 //!
 //! Both signals are taken from the same window, so a long answer gains nothing from its
@@ -19,7 +19,7 @@
 //! the maximum over; the fixture's long answers measure what that costs.)
 //!
 //! Similarity alone does not separate use from topic: an answer about the same subject
-//! scores almost as high as one that relies on the memory (see [`DEFAULT_USE_CUTOFF`]).
+//! scores almost as high as one that relies on the memory (see [`FP16_USE_CUTOFF`]).
 //! An answer that uses a memory usually repeats its specifics (a name, a date, a value),
 //! which the word overlap sees; one that paraphrases it is caught by the similarity. The
 //! two are weighted equally (not tuned), so only the cutoff is fitted.
@@ -29,10 +29,11 @@
 
 use std::collections::HashSet;
 
+use crate::embeddings::e5::E5Variant;
 use crate::embeddings::EmbeddingModel;
 
-/// Score at which an answer counts as using a memory (see the module docs). Measured with
-/// multilingual-e5-base on `fixtures/memory_use.json`
+/// Score at which an answer counts as using a memory (see the module docs), with
+/// multilingual-e5-base's fp16 export (`model_O4.onnx`). Measured on `fixtures/memory_use.json`
 /// (`the_use_cutoff_separates_used_from_unused_memories_with_e5`): 66 hand-labelled
 /// memory–answer pairs, each memory once used (often paraphrased) and once in an answer on
 /// the same topic that does not use it; 18 of them have long answers (166–187 words) that
@@ -49,7 +50,21 @@ use crate::embeddings::EmbeddingModel;
 /// On all 18 long pairs: 16 right (88.9%). The test requires at least 75% held out (one
 /// pair below the measurement). The fixture is small and written by hand: re-measure when
 /// the embedding model or the scoring changes.
-pub const DEFAULT_USE_CUTOFF: f64 = 0.595;
+pub const FP16_USE_CUTOFF: f64 = 0.595;
+
+/// [`FP16_USE_CUTOFF`] for the int8 export (`model_qint8_avx512_vnni.onnx`, each text
+/// embedded alone), chosen the same way on the same tuning pairs. Its similarities run
+/// higher than fp16's, so its plateau sits higher.
+pub const INT8_USE_CUTOFF: f64 = 0.635;
+
+/// The cutoff for vectors of `variant`; [`FP16_USE_CUTOFF`] for a model that is no E5
+/// export (tests).
+pub fn use_cutoff(variant: Option<E5Variant>) -> f64 {
+    match variant {
+        Some(E5Variant::Int8) => INT8_USE_CUTOFF,
+        Some(E5Variant::Fp16) | None => FP16_USE_CUTOFF,
+    }
+}
 
 /// Words that say nothing about which memory an answer drew on, left out of
 /// [`content_overlap`]: function words, and the labels facts are rendered with
@@ -326,7 +341,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
 }
 
 /// Scores each of `memories` (`(id, text)`) against the windows of `answer` with
-/// `embedder` (see the module docs) and judges it used at `cutoff` (normally [`DEFAULT_USE_CUTOFF`]). Blocking
+/// `embedder` (see the module docs) and judges it used at `cutoff` (normally [`use_cutoff`] of its export). Blocking
 /// (it runs the embedder); call it off the async executor. An answer with no sentence to
 /// compare uses nothing.
 pub fn judge_use(
@@ -565,13 +580,32 @@ mod tests {
         ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
     )]
     fn the_use_cutoff_separates_used_from_unused_memories_with_e5() {
-        /// Share of the held-out pairs the shipped cutoff must classify right.
-        const HELD_OUT_FLOOR: f64 = 0.75;
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory to run this test");
         let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
             .expect("multilingual-e5-base under SHODH_TEST_MODELS")
             .with_compute(crate::compute::provider::ComputePreference::Cpu);
+        // Each export has its own cutoff; CI installs both.
+        for variant in E5Variant::ALL {
+            let config = config
+                .clone()
+                .with_rule(crate::embeddings::e5::VariantRule::Index(variant));
+            assert!(
+                config.can_load(),
+                "{} is not installed",
+                variant.file_name()
+            );
+            eprintln!("== {} ({})", variant.label(), variant.file_name());
+            the_use_cutoff_separates_used_from_unused_memories(config, use_cutoff(Some(variant)));
+        }
+    }
+
+    fn the_use_cutoff_separates_used_from_unused_memories(
+        config: crate::embeddings::e5::E5Config,
+        shipped: f64,
+    ) {
+        /// Share of the held-out pairs the shipped cutoff must classify right.
+        const HELD_OUT_FLOOR: f64 = 0.75;
         let e5 = crate::embeddings::e5::E5Embeddings::new(config).expect("load E5");
         let (mut tuning, mut held_out, mut long, mut short) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -580,7 +614,7 @@ mod tests {
                 &e5,
                 &[("m".to_string(), p.memory.clone())],
                 &p.answer,
-                DEFAULT_USE_CUTOFF,
+                shipped,
             )
             .expect("embed");
             let j = &judged[0];
@@ -630,13 +664,13 @@ mod tests {
             .filter(|(_, acc)| *acc >= best - one_pair - 1e-9)
             .map(|(cutoff, _)| *cutoff)
             .collect();
-        let shipped_tuning = accuracy(&tuning, DEFAULT_USE_CUTOFF);
-        let shipped_held_out = accuracy(&held_out, DEFAULT_USE_CUTOFF);
+        let shipped_tuning = accuracy(&tuning, shipped);
+        let shipped_held_out = accuracy(&held_out, shipped);
         eprintln!(
-            "best tuning {best:.3}; plateau {:.3}-{:.3}; shipped {DEFAULT_USE_CUTOFF:.3}: tuning {shipped_tuning:.3}, held out {shipped_held_out:.3}, long {:.3}",
+            "best tuning {best:.3}; plateau {:.3}-{:.3}; shipped {shipped:.3}: tuning {shipped_tuning:.3}, held out {shipped_held_out:.3}, long {:.3}",
             plateau.first().copied().unwrap_or(f64::NAN),
             plateau.last().copied().unwrap_or(f64::NAN),
-            accuracy(&long, DEFAULT_USE_CUTOFF),
+            accuracy(&long, shipped),
         );
         assert!(
             shipped_tuning >= best - one_pair - 1e-9,

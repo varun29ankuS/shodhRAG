@@ -33,7 +33,7 @@ export interface PrintDocument {
   sources: PrintSource[];
 }
 
-/** What the print view receives from `print_job`. */
+/** What the print view receives from the print job command. */
 export interface PrintJob {
   document: PrintDocument;
   /** The app writes the PDF itself (Windows); otherwise the print dialog opens. */

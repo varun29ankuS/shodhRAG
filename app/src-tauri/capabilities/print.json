@@ -1,9 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "print-view",
-  "description": "Capability for the print windows of PDF export (labels print-*). They render one document with the answer renderer and read nothing but the app's own commands (paper figures come from read_source_bytes and the paper-object commands); no file system, dialog, clipboard or window-management permissions.",
+  "description": "The print windows of PDF export (labels print-*), only on the app's own pages (local: true, no remote URLs). They render one document with the answer renderer. App commands: the print-window permission (permissions/print-window.json), their job and ready report and the paper-figure reads. Plugins: listen/unlisten only (the renderer follows settings events). No file system, dialog, opener, clipboard or window-management permissions.",
+  "local": true,
   "windows": ["print-*"],
   "permissions": [
-    "core:default"
+    "print-window",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

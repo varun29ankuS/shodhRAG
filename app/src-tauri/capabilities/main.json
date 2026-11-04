@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The main window (label main) and nothing else: no other window or webview, and only the app's own pages (local: true, no remote URLs). App commands: the main-window permission (permissions/main-window.json), the commands the app shell's frontend calls. Plugins: only the calls the frontend makes. listen/unlisten for backend events and the drag-drop event; homeDir; the debug-build devtools shortcut. ask/open/save dialogs. Opening http(s)/mailto/tel links and revealing a file in its folder (opener:default). Writing a file only where the user picked it in a save dialog: the write permissions have no static scope, and the dialog adds the chosen path to the runtime scope. Webview data folders stay denied (fs:deny-default). The webview reads no files through the fs plugin: documents are read through read_source_bytes and the other source commands, which serve indexed files only. Copy image of a snippet (clipboard write-image). The notification plugin's own page script asks whether notifications are allowed on macOS; notifications themselves are sent from Rust. The Artifacts preview frame (shodh-preview scheme) lives in this window, and Tauri 2.9 treats every registered custom scheme as a local origin, so this capability cannot exclude it: there the per-launch invoke key is the barrier (creations/preview.rs).",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "main-window",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:path:allow-resolve-directory",
+    "core:webview:allow-internal-toggle-devtools",
+    "dialog:allow-ask",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:default",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "fs:deny-default",
+    "clipboard-manager:allow-write-image",
+    "notification:allow-is-permission-granted"
+  ]
+}

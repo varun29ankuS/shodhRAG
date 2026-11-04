@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { readSourceBytes } from '../features/ask/viewer/sourceAccess';
 import { FileText, AlertCircle } from 'lucide-react';
 
 interface PDFArtifactProps {
@@ -37,8 +37,8 @@ export const PDFArtifact: React.FC<PDFArtifactProps> = ({ artifact }) => {
 
         console.log('Loading PDF from path:', filePath);
 
-        // Read the PDF file as binary data
-        const fileData = await readFile(filePath);
+        // Indexed documents only: the backend refuses any other path.
+        const fileData = await readSourceBytes(filePath);
         console.log('Read PDF file, size:', fileData.length, 'bytes');
 
         // Convert to blob URL

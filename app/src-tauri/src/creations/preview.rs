@@ -12,10 +12,16 @@
 //!   IPC goes through a fetch whose `Origin` an opaque frame sends as `null`,
 //!   which Tauri refuses, and which `connect-src` blocks anyway. On macOS the
 //!   message channel accepts a subframe's messages, so there the key is the
-//!   one barrier. The frame stays in the main window on purpose: this app
-//!   has no app ACL manifest, so Tauri checks app commands for no window at
-//!   all, and a preview window of its own would receive the key in its own
-//!   main frame and could call every command.
+//!   one barrier. The app ACL (capabilities/, permissions/) cannot add a
+//!   second one here: Tauri 2.9 resolves a command by window label, webview
+//!   label and local or remote origin, the frame shares the label `main`,
+//!   and every registered custom scheme, this one included, counts as a
+//!   local origin (`Webview::is_local_url`). So the frame's requests resolve
+//!   exactly like the app's own; `acl_manifest.rs` pins this. A preview in a
+//!   webview of its own label would be refused every command by the ACL
+//!   (the same test shows it), but a top-level page loses the frame's
+//!   sandbox limits on navigation, so that move needs its own navigation
+//!   lock first.
 //! - **No files.** It is served only what the creation holds: by an
 //!   unguessable token per preview ([`grant`]), a relative path, read from
 //!   the open file and never through a link ([`super::handle`]). One preview

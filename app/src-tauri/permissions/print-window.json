@@ -1,0 +1,17 @@
+{
+  "permission": [
+    {
+      "identifier": "print-window",
+      "description": "The app commands a PDF export print window (labels print-*) calls while it renders one document: its job and its ready report (PrintView), and paper figures, which are cropped from the indexed PDF (paper_objects, get_source_file_info, read_source_bytes). Nothing that changes data.",
+      "commands": {
+        "allow": [
+          "get_source_file_info",
+          "paper_objects",
+          "print_job",
+          "print_job_ready",
+          "read_source_bytes"
+        ]
+      }
+    }
+  ]
+}

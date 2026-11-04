@@ -256,11 +256,10 @@ fn locked_builder<'a, R: Runtime, M: Manager<R>>(
     .on_navigation(move |url| {
         let (app, label, token, blocked) = &on_navigation;
         let allowed = navigation_allowed(url, token);
-        if !allowed {
+        // Logged and reported once per window: a page looping on it floods nothing.
+        if !allowed && !blocked.swap(true, Ordering::SeqCst) {
             tracing::info!(window = %label, "a preview tried to leave its own files; stopped");
-            if !blocked.swap(true, Ordering::SeqCst) {
-                tell_main(app, label, PreviewState::Blocked);
-            }
+            tell_main(app, label, PreviewState::Blocked);
         }
         allowed
     })
@@ -269,8 +268,8 @@ fn locked_builder<'a, R: Runtime, M: Manager<R>>(
         if new_window_allowed(&url) {
             return NewWindowResponse::Allow;
         }
-        tracing::info!(window = %label, "a preview tried to open a window; stopped");
         if !blocked.swap(true, Ordering::SeqCst) {
+            tracing::info!(window = %label, "a preview tried to open a window; stopped");
             tell_main(app, label, PreviewState::Blocked);
         }
         NewWindowResponse::Deny
@@ -278,11 +277,12 @@ fn locked_builder<'a, R: Runtime, M: Manager<R>>(
     .on_download(move |_webview, event| {
         let (app, label, blocked) = &on_download;
         let allowed = download_allowed(&event);
-        if !allowed && matches!(event, DownloadEvent::Requested { .. }) {
+        if !allowed
+            && matches!(event, DownloadEvent::Requested { .. })
+            && !blocked.swap(true, Ordering::SeqCst)
+        {
             tracing::info!(window = %label, "a preview tried to download a file; stopped");
-            if !blocked.swap(true, Ordering::SeqCst) {
-                tell_main(app, label, PreviewState::Blocked);
-            }
+            tell_main(app, label, PreviewState::Blocked);
         }
         allowed
     })

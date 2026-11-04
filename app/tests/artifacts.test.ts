@@ -84,8 +84,19 @@ test('the preview window covers the visible pane and makes room for what floats 
   // A layer elsewhere changes nothing.
   const aside = { box: box(0, 0, 200, 900), modal: false };
   assert.equal(previewPlacement(pane, page, viewport, [aside])?.height, 540);
-  // A layer over its top, a modal dialog anywhere, or too little room: no window.
-  assert.equal(previewPlacement(pane, page, viewport, [{ box: box(400, 300, 700, 400), modal: false }]), null);
+  // The expanded dock (fixed bottom-4 right-4, 380 wide, 470 tall): too tall to end above,
+  // so the preview stays beside it, full height.
+  const dock = { box: box(1400 - 16 - 380, 900 - 16 - 470, 1400 - 16, 900 - 16), modal: false };
+  assert.deepEqual(previewPlacement(pane, page, viewport, [dock]), {
+    x: 300, y: 320, width: 1004 - 8 - 300, height: 540, viewportWidth: 1400, viewportHeight: 900,
+  });
+  // A popover over its top left: beside it, on the far side.
+  assert.equal(previewPlacement(pane, page, viewport, [{ box: box(400, 300, 700, 400), modal: false }])?.x, 708);
+  // The dock and a toast above it: clear of both.
+  const toast = { box: box(1020, 340, 1384, 404), modal: false };
+  assert.equal(previewPlacement(pane, page, viewport, [dock, toast])?.width, 1004 - 8 - 300);
+  // A layer across its whole top, a modal dialog anywhere, or too little room: no window.
+  assert.equal(previewPlacement(pane, page, viewport, [{ box: box(300, 300, 1200, 400), modal: false }]), null);
   assert.equal(previewPlacement(pane, page, viewport, [{ box: box(0, 0, 10, 10), modal: true }]), null);
   assert.equal(previewPlacement(box(300, 800, 1200, 1300), page, viewport, []), null);
   assert.equal(previewPlacement(box(300, 320, 400, 860), page, viewport, []), null);

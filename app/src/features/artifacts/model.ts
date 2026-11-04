@@ -150,11 +150,33 @@ function overlaps(a: Box, b: Box): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
+function fits(box: Box): boolean {
+  return box.right - box.left >= MIN_PREVIEW_WIDTH && box.bottom - box.top >= MIN_PREVIEW_HEIGHT;
+}
+
+function areaOf(box: Box): number {
+  return (box.right - box.left) * (box.bottom - box.top);
+}
+
+/**
+ * `box` cut clear of `layer`: ending above it, or beside it (on the side away from it),
+ * whichever leaves more; null when neither leaves enough.
+ */
+function clearOf(box: Box, layer: Box): Box | null {
+  const above: Box = { ...box, bottom: Math.min(box.bottom, layer.top - LAYER_GAP) };
+  const onRight = (layer.left + layer.right) / 2 >= (box.left + box.right) / 2;
+  const beside: Box = onRight
+    ? { ...box, right: Math.min(box.right, layer.left - LAYER_GAP) }
+    : { ...box, left: Math.max(box.left, layer.right + LAYER_GAP) };
+  const options = [above, beside].filter(fits).sort((a, b) => areaOf(b) - areaOf(a));
+  return options[0] ?? null;
+}
+
 /**
  * Where the preview window goes: the preview pane's box, cut to what the page shows of it
- * (`visible`, the scrolling area) and to the window, ending above any layer over its lower
- * part. Null (the preview closes) while a modal dialog is open, when a layer covers its top,
- * or when too little is left.
+ * (`visible`, the scrolling area) and to the window, then clear of each layer over it
+ * (above it or beside it, whichever leaves more). Null (the preview closes) while a modal
+ * dialog is open, or when too little is left.
  */
 export function previewPlacement(
   pane: Box,
@@ -169,12 +191,17 @@ export function previewPlacement(
     right: Math.min(pane.right, visible.right, viewport.width),
     bottom: Math.min(pane.bottom, visible.bottom, viewport.height),
   };
-  for (const layer of layers) {
-    if (!overlaps(box, layer.box)) continue;
-    const bottom = layer.box.top - LAYER_GAP;
-    if (bottom - box.top < MIN_PREVIEW_HEIGHT) return null;
-    box = { ...box, bottom: Math.min(box.bottom, bottom) };
+  // Each cut only shrinks the box, so a layer it was already clear of stays clear; a later
+  // cut can bring the box clear of an earlier one too, so the layers are checked until none
+  // overlaps.
+  for (let pass = 0; pass <= layers.length; pass++) {
+    const covering = layers.find(layer => overlaps(box, layer.box));
+    if (!covering) break;
+    const cut = clearOf(box, covering.box);
+    if (!cut) return null;
+    box = cut;
   }
+  if (layers.some(layer => overlaps(box, layer.box))) return null;
   const x = Math.max(0, Math.round(box.left));
   const y = Math.max(0, Math.round(box.top));
   const width = Math.min(Math.round(box.right), viewport.width) - x;

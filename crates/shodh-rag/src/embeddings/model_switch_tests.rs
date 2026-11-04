@@ -633,7 +633,10 @@ async fn the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right() 
         for (question, source) in questions {
             let results = engine.search(question, 3).await.unwrap();
             assert_eq!(
-                results.first().map(|r| r.source.as_str()),
+                results
+                    .first()
+                    .and_then(|r| r.metadata.get("source"))
+                    .map(String::as_str),
                 Some(*source),
                 "{question}"
             );

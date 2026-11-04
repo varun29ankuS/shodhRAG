@@ -17,11 +17,14 @@
 //!   label and local or remote origin, the frame shares the label `main`,
 //!   and every registered custom scheme, this one included, counts as a
 //!   local origin (`Webview::is_local_url`). So the frame's requests resolve
-//!   exactly like the app's own; `acl_manifest.rs` pins this. A preview in a
-//!   webview of its own label would be refused every command by the ACL
-//!   (the same test shows it), but a top-level page loses the frame's
-//!   sandbox limits on navigation, so that move needs its own navigation
-//!   lock first.
+//!   exactly like the app's own; `acl_manifest.rs` pins this. The way out is
+//!   a preview in a webview of its own label: a top-level `WebviewWindow`, or
+//!   a child webview, which is safe only because the capabilities are keyed
+//!   by webview label (a window-keyed capability reaches every webview the
+//!   window hosts). The ACL refuses such a label every command (the same
+//!   test shows it). The preview page is then a main frame that receives
+//!   the invoke key, and it loses the frame's sandbox limits on navigation,
+//!   so that move needs a navigation, new-window and download lock first.
 //! - **No files.** It is served only what the creation holds: by an
 //!   unguessable token per preview ([`grant`]), a relative path, read from
 //!   the open file and never through a link ([`super::handle`]). One preview

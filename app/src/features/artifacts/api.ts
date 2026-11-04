@@ -6,8 +6,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import { PREVIEW_EVENT, parsePreviewEvent } from './model';
-import type { CodeChange, Creation, FileChange, FileContent, FileEntry, PreviewArea, PreviewEvent, PreviewInfo } from './model';
+import { PREVIEW_EVENT, parsePreviewEvent, parsePreviewShown } from './model';
+import type { CodeChange, Creation, FileChange, FileContent, FileEntry, PreviewEvent, PreviewInfo } from './model';
 
 export function errorText(error: unknown): string {
   if (typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string') {
@@ -31,13 +31,16 @@ export const creationsApi = {
     invoke<FileContent>('creation_file', { id, version, path }),
   diff: (id: string, from: number, to: number) => invoke<FileChange[]>('creation_diff', { id, from, to }),
   /**
-   * Show a preview of a version or of the folder now in its own window over `area` (the one
-   * shown before closes); `network` only from the user's switch.
+   * Show a preview of a version or of the folder now in its own window and bring it to the
+   * front (the same one already open keeps its page; any other closes); `network` only from
+   * the user's switch, `dark` for the window before its page paints.
    */
-  preview: (id: string, version: number | null, network: boolean, area: PreviewArea) =>
-    invoke<PreviewInfo>('creation_preview', { id, version, network, area }),
-  /** Keep the preview window over the preview area as the layout moves. */
-  placePreview: (label: string, area: PreviewArea) => invoke<null>('creation_preview_place', { label, area }),
+  preview: (id: string, version: number | null, network: boolean, dark: boolean) =>
+    invoke<PreviewInfo>('creation_preview', { id, version, network, dark }),
+  /** The preview open now, if any. */
+  previewStatus: () => invoke<unknown>('creation_preview_status').then(parsePreviewShown),
+  /** Bring the preview window to the front, with the keyboard focus. */
+  focusPreview: (label: string) => invoke<null>('creation_preview_focus', { label }),
   /** Load the preview again (its files changed, or Reload). */
   reloadPreview: (label: string) => invoke<null>('creation_preview_reload', { label }),
   /** Close the preview window; its address stops working. */
@@ -51,8 +54,8 @@ export const creationsApi = {
 };
 
 /**
- * What Rust says about the preview window (it loaded, or it was stopped from leaving its
- * files). Only Rust sends this, to the main window; the preview itself can send nothing.
+ * What Rust says about the preview window: it loaded, was stopped from leaving its files,
+ * closed or crashed. Only Rust sends this, to the main window; the preview can send nothing.
  */
 export function onPreviewEvent(handler: (event: PreviewEvent) => void): Promise<UnlistenFn> {
   return listen<unknown>(PREVIEW_EVENT, event => {

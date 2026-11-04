@@ -191,14 +191,12 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
-            // The Artifacts preview window follows the main window and closes with it.
+            // The Artifacts preview window: its place, its end, and closing with Shodh.
             creations::preview_window::on_window_event(window, event);
             background::on_window_event(window, event);
         })
         // Each page load (the first, and any reload) is drawn at the saved text size.
-        // A reload of the app's page also closes the preview its tab showed.
         .on_page_load(|webview, payload| {
-            creations::preview_window::on_main_page_load(webview, payload.event());
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 app_settings::on_page_loaded(webview);
             }
@@ -899,7 +897,8 @@ pub fn run() {
             creation_commands::creation_file,
             creation_commands::creation_diff,
             creation_commands::creation_preview,
-            creation_commands::creation_preview_place,
+            creation_commands::creation_preview_status,
+            creation_commands::creation_preview_focus,
             creation_commands::creation_preview_reload,
             creation_commands::creation_preview_close,
             creation_commands::creation_keep,

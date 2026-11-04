@@ -429,10 +429,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       }
     }
     // A Creator answer started building: the Artifacts tab opens on its creation
-    // (preview, files filling in, progress), with the chat alongside in the dock.
+    // (preview pane, files filling in, progress), with the chat alongside in the dock. The
+    // pane opens without the preview window (pane null): the user opens it, and nothing
+    // takes the focus from the chat.
     if (event.type === 'step_started' && live.creationId && !live.creationShown && startsBuilding(event.tool)) {
       live.creationShown = true;
-      const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: 'preview' };
+      const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: null };
       navSeqRef.current += 1;
       setNavigation({ view: 'artifacts', focus: null, target, seq: navSeqRef.current, openDock: true });
       publishTarget(target);

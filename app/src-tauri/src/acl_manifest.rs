@@ -914,18 +914,29 @@ mod tests {
             "WebviewWindowBuilder::new(",
             ".incognito(true)",
             ".devtools(cfg!(debug_assertions))",
-            ".initialization_script(preview::GUARD_SCRIPT)",
+            ".initialization_script_for_all_frames(preview::GUARD_SCRIPT)",
             ".on_navigation(",
             ".on_new_window(",
             ".on_download(",
-            ".parent(&main)",
-            "crate::profile::webview_defaults(",
+            ".data_directory(opening.data_dir.clone())",
+            ".additional_browser_args(&browser_args(",
+            "crate::profile::process_browser_args()",
+            "COREWEBVIEW2_PERMISSION_STATE_DENY",
+            "add_ProcessFailed",
+            "WindowEvent::Destroyed => on_preview_destroyed(",
         ] {
             if !preview_source.contains(lock) {
                 problems.push(format!(
                     "creations/preview_window.rs no longer builds its window with {lock}"
                 ));
             }
+        }
+        // A normal window: the user's own close keys close it.
+        if preview_source.contains("prevent_close(") {
+            problems.push(
+                "creations/preview_window.rs swallows a close request: Alt+F4 and Cmd+W must close the preview"
+                    .to_string(),
+            );
         }
         for child in [".add_child(", "WebviewBuilder::new(", "WindowBuilder::new("] {
             let found = preview_source
@@ -1331,6 +1342,87 @@ mod tests {
             problems.is_empty(),
             "the app shell would load agent code itself:\n- {}",
             problems.join("\n- ")
+        );
+    }
+
+    /// Every Rust source of the app, but this file.
+    fn app_sources() -> Vec<(PathBuf, String)> {
+        let mut out = Vec::new();
+        let mut stack = vec![manifest_dir().join("src")];
+        while let Some(dir) = stack.pop() {
+            for path in files_in(&dir) {
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && path.file_name().is_some_and(|n| n != "acl_manifest.rs")
+                {
+                    let text = read(&path);
+                    out.push((path, text));
+                }
+            }
+        }
+        out
+    }
+
+    /// Tauri answers `plugin:__TAURI_CHANNEL__|fetch` without asking the ACL
+    /// (`ipc::channel::FETCH_CHANNEL_DATA_COMMAND`), and channel data is
+    /// app-wide by id. The preview window's page holds the invoke key, so
+    /// once any command used an `ipc::Channel` the page could poll its ids.
+    /// Before adopting channels, give them a check of their own.
+    #[test]
+    fn no_command_uses_an_ipc_channel_the_acl_does_not_check() {
+        let channel =
+            Regex::new(r"\bipc::Channel\b|\bChannel\s*<|ipc::\{[^}]*\bChannel\b").unwrap();
+        let found: Vec<String> = app_sources()
+            .into_iter()
+            .filter(|(_, text)| channel.is_match(text))
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert!(
+            found.is_empty(),
+            "these use tauri::ipc::Channel, whose data fetch skips the ACL (an Artifacts preview could read it): {found:?}"
+        );
+    }
+
+    /// On macOS the webview grants every camera and microphone request
+    /// without asking (wry's UI delegate), and the preview window cannot turn
+    /// that off; only the absence of the usage keys keeps macOS from giving
+    /// a page the device. Adding a key (meeting capture) needs a per-webview
+    /// denial for previews first.
+    #[test]
+    fn no_media_usage_key_ships_while_previews_could_get_devices() {
+        let keys = ["NSMicrophoneUsageDescription", "NSCameraUsageDescription"];
+        let mut found = Vec::new();
+        let mut stack = vec![manifest_dir()];
+        while let Some(dir) = stack.pop() {
+            for path in files_in(&dir) {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                if path.is_dir() {
+                    if !["target", "gen", "node_modules", "icons"].contains(&name.as_str()) {
+                        stack.push(path);
+                    }
+                } else if name.ends_with(".plist")
+                    || name.ends_with(".entitlements")
+                    || name == "tauri.conf.json"
+                    || (name.starts_with("tauri.") && name.ends_with(".conf.json"))
+                {
+                    let text = read(&path);
+                    for key in keys {
+                        if text.contains(key) {
+                            found.push(format!("{} names {key}", path.display()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "a media usage key would let every Artifacts preview page use the device without a prompt on macOS: deny media capture in the preview webview first.\n- {}",
+            found.join("\n- ")
         );
     }
 }

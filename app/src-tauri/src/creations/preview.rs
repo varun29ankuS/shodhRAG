@@ -31,15 +31,18 @@
 //! - **No loading or sending over the web unless the user allows it** for
 //!   that preview: then `https:` and `wss:` are added to what it may load and
 //!   connect to, never `http:`, which would reach `http://ipc.localhost` and
-//!   this scheme's other paths on Windows. CSP does not govern every channel:
-//!   each page loses the WebRTC interfaces before its own scripts run
-//!   ([`PAGE_GUARD`], and [`GUARD_SCRIPT`] in every document the window
-//!   loads), WebView2 allows WebRTC no direct UDP (the window shares the
-//!   app's browser arguments), and DNS look-ahead is off. A browser may still
-//!   connect ahead to a link the page shows; the preview's text says so.
+//!   this scheme's other paths on Windows. CSP does not govern every channel.
+//!   On Windows the preview window has its own browser process whose traffic,
+//!   while the switch is off, goes to a dead proxy, and WebRTC may use no
+//!   direct UDP ([`super::preview_window`]). On macOS no engine setting
+//!   closes WebRTC; there a page script guard ([`GUARD_SCRIPT`], defence in
+//!   depth only) is all there is, and the preview's text says a hostile page
+//!   may still reach the internet that way. DNS look-ahead is off.
 //! - **No devices.** `Permissions-Policy` turns off the camera, microphone,
-//!   location, clipboard, payment and the other powerful features for every
-//!   page ([`PERMISSIONS_POLICY`]).
+//!   location, clipboard, payment and every other powerful feature
+//!   ([`PERMISSIONS_POLICY`]); on Windows the window also denies every
+//!   permission request, and the guard removes media capture (macOS's
+//!   webview would grant it without asking).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -325,24 +328,64 @@ pub fn serve(grants: &Grants, webview: &str, method: &str, path: &str) -> Served
     }
 }
 
-/// The script of [`PAGE_GUARD`], as one literal for both uses.
+/// The script of [`PAGE_GUARD`], as one literal for both uses. It holds no
+/// `<` (it is inlined in a `<script>` tag) and no `"#`.
 macro_rules! guard_script {
     () => {
-        "(function(){var w=window;['RTCPeerConnection','webkitRTCPeerConnection',\
-'RTCDataChannel','RTCIceCandidate','RTCSessionDescription','RTCRtpSender','RTCRtpReceiver',\
-'RTCRtpTransceiver','RTCDtlsTransport','RTCIceTransport','RTCSctpTransport',\
-'RTCCertificate'].forEach(function(n){try{Object.defineProperty(w,n,{value:undefined,\
-writable:false,configurable:false});}catch(e){}});})();"
+        r#"(function(){
+var R=['RTCPeerConnection','webkitRTCPeerConnection','RTCDataChannel','RTCIceCandidate',
+'RTCSessionDescription','RTCRtpSender','RTCRtpReceiver','RTCRtpTransceiver','RTCDtlsTransport',
+'RTCIceTransport','RTCSctpTransport','RTCCertificate','RTCIceGatherer','RTCRtpScriptTransform',
+'RTCEncodedAudioFrame','RTCEncodedVideoFrame'];
+var M=['mediaDevices','getUserMedia','webkitGetUserMedia','mozGetUserMedia','getDisplayMedia'];
+var D=Object.defineProperty,G=Object.getOwnPropertyDescriptor;
+function off(o,n){try{D(o,n,{value:undefined,writable:false,configurable:false});}catch(e){}}
+function getter(p,n,after){try{var d=G(p,n);if(!d||!d.get)return;var g=d.get;
+D(p,n,{configurable:false,enumerable:d.enumerable,get:function(){var v=g.call(this);after(v);return v;}});}catch(e){}}
+function setter(p,n,after){try{var d=G(p,n);if(!d||!d.set)return;var s=d.set;
+D(p,n,{configurable:false,enumerable:d.enumerable,get:d.get,set:function(v){try{s.call(this,v);}finally{after();}}});}catch(e){}}
+function method(p,n,after){try{var f=p[n];if(typeof f!=='function')return;
+D(p,n,{configurable:false,writable:false,value:function(){try{return f.apply(this,arguments);}finally{after();}}});}catch(e){}}
+function seal(w){
+try{if(!w||w.__shodhGuard===true)return;D(w,'__shodhGuard',{value:true});}catch(e){return;}
+R.forEach(function(n){off(w,n);});
+try{M.forEach(function(n){off(w.navigator,n);});}catch(e){}
+try{var NP=w.Navigator&&w.Navigator.prototype;if(NP)M.forEach(function(n){off(NP,n);});}catch(e){}
+try{var MP=w.MediaDevices&&w.MediaDevices.prototype;if(MP){off(MP,'getUserMedia');off(MP,'getDisplayMedia');}}catch(e){}
+function sweep(){try{var f=w.frames;for(var i=0;i!==f.length;i++){seal(f[i]);}}catch(e){}}
+function child(v){try{if(v)seal(v.defaultView||v);}catch(e){}sweep();}
+['HTMLIFrameElement','HTMLFrameElement','HTMLObjectElement','HTMLEmbedElement'].forEach(function(c){
+var P=w[c]&&w[c].prototype;if(P){getter(P,'contentWindow',child);getter(P,'contentDocument',child);}});
+var N=w.Node&&w.Node.prototype,E=w.Element&&w.Element.prototype,DP=w.Document&&w.Document.prototype,
+RP=w.Range&&w.Range.prototype,SP=w.ShadowRoot&&w.ShadowRoot.prototype;
+[[N,['appendChild','insertBefore','replaceChild']],
+[E,['append','prepend','after','before','replaceWith','replaceChildren','insertAdjacentElement','insertAdjacentHTML','setHTMLUnsafe']],
+[DP,['write','writeln','append','prepend','replaceChildren']],[RP,['insertNode','surroundContents']]].forEach(function(x){
+if(x[0])x[1].forEach(function(n){method(x[0],n,sweep);});});
+[E,SP].forEach(function(p){if(p){setter(p,'innerHTML',sweep);setter(p,'outerHTML',sweep);}});
+try{new w.MutationObserver(sweep).observe(w.document,{childList:true,subtree:true});}catch(e){}
+sweep();}
+seal(window);})();"#
     };
 }
 
-/// No WebRTC (peer connections reach STUN and TURN servers outside what CSP
-/// governs): the interfaces are made undefined and unchangeable on the
-/// page's window. The preview window runs it before every document's own
-/// scripts, whatever the document's type ([`super::preview_window`]); the
-/// page cannot open another window or frame to get fresh interfaces (no
-/// `allow-popups`, `frame-src 'none'`, new windows denied), and workers have
-/// none.
+/// A guard against WebRTC and media capture, the channels CSP and the
+/// webview do not close by themselves. Peer connections reach STUN and TURN
+/// servers outside what CSP governs, and on macOS the webview grants every
+/// camera and microphone request without asking. The script makes the
+/// WebRTC interfaces and `navigator.mediaDevices` / `getUserMedia`
+/// undefined and unchangeable on the page's window, and on every frame
+/// window the page reaches: a frame's window is guarded when it is read
+/// (`contentWindow`, `contentDocument`), and after every DOM insertion and
+/// on every DOM change all of `window.frames` is. The preview window also
+/// runs it in every frame that loads a document
+/// ([`super::preview_window`]).
+///
+/// This is defence in depth, not a seal: page scripts have broken JS guards
+/// before. On Windows the preview window's own browser arguments are the
+/// real block while the internet switch is off (its traffic goes to a dead
+/// proxy and WebRTC may use no direct UDP); on macOS nothing below this
+/// script closes WebRTC, and the preview says so.
 pub const GUARD_SCRIPT: &str = guard_script!();
 
 /// What every preview HTML page gets first, before its own scripts: no DNS
@@ -354,12 +397,18 @@ pub const PAGE_GUARD: &str = concat!(
     "</script>"
 );
 
-/// The powerful features no preview page may use. The window is top-level,
-/// so it has no frame `allow` list to rely on; this header is the list.
-pub const PERMISSIONS_POLICY: &str = "camera=(), microphone=(), geolocation=(), \
-clipboard-read=(), clipboard-write=(), display-capture=(), usb=(), serial=(), bluetooth=(), \
-hid=(), midi=(), payment=(), publickey-credentials-get=(), fullscreen=(), idle-detection=(), \
-window-management=()";
+/// Every powerful feature, off for every preview page. The window is
+/// top-level, so it has no frame `allow` list to rely on; this header is
+/// the list. Chromium honours it; WebKit only in part, which is why the
+/// guard also removes media capture.
+pub const PERMISSIONS_POLICY: &str = "accelerometer=(), bluetooth=(), browsing-topics=(), \
+camera=(), clipboard-read=(), clipboard-write=(), compute-pressure=(), display-capture=(), \
+encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), \
+identity-credentials-get=(), idle-detection=(), keyboard-map=(), local-fonts=(), \
+magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), \
+picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), \
+screen-wake-lock=(), serial=(), storage-access=(), usb=(), web-share=(), \
+window-management=(), xr-spatial-tracking=()";
 
 /// `page` with [`PAGE_GUARD`] first: right after its doctype (so the page keeps
 /// its standards mode), else at the very start.
@@ -628,6 +677,21 @@ mod tests {
             assert!(GUARD_SCRIPT.contains(&format!("'{name}'")), "{name}");
         }
         assert!(PAGE_GUARD.contains("configurable:false"));
+        // Frames the page makes are guarded too, and media capture is gone
+        // (app/tests/artifacts.test.ts runs the script against such frames).
+        for part in [
+            "getter(P,'contentWindow',child)",
+            "getter(P,'contentDocument',child)",
+            "'appendChild'",
+            "'innerHTML'",
+            "MutationObserver",
+            "'mediaDevices'",
+            "'getUserMedia'",
+            "'getDisplayMedia'",
+            "seal(window)",
+        ] {
+            assert!(GUARD_SCRIPT.contains(part), "{part}");
+        }
         // The page's guard is the window's start-up script, in a script tag.
         assert!(PAGE_GUARD.contains(&format!("<script>{GUARD_SCRIPT}</script>")));
         assert!(!GUARD_SCRIPT.contains('<'));
@@ -665,6 +729,23 @@ mod tests {
             "bluetooth",
             "payment",
             "fullscreen",
+            "publickey-credentials-create",
+            "local-fonts",
+            "screen-wake-lock",
+            "web-share",
+            "storage-access",
+            "picture-in-picture",
+            "gamepad",
+            "accelerometer",
+            "gyroscope",
+            "magnetometer",
+            "encrypted-media",
+            "otp-credentials",
+            "identity-credentials-get",
+            "compute-pressure",
+            "browsing-topics",
+            "keyboard-map",
+            "xr-spatial-tracking",
         ] {
             let off = format!("{feature}=()");
             assert!(features.contains(&off.as_str()), "{feature}");

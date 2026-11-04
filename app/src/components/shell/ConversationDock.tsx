@@ -393,7 +393,6 @@ export function ConversationDock({ activeTab, sources, onExpand }: ConversationD
       <button
         ref={pillRef}
         type="button"
-        data-floating-layer=""
         onClick={expand}
         aria-label={`Open the conversation${waiting ? ', needs your approval' : working ? `, working: ${working.label}` : live ? ', working' : ''}${unread > 0 ? `, ${unread} new` : ''}`}
         aria-keyshortcuts={ariaKeyShortcuts('toggleDock', IS_MAC)}

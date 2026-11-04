@@ -17,6 +17,11 @@ export interface ArtifactSelection {
   id: string;
   version: number | null;
   pane: ArtifactPane;
+  /**
+   * Open the preview window too: the request named the preview pane (the assistant's
+   * open_artifact, or the user's "see it"). A build that starts opens the page only.
+   */
+  showPreview: boolean;
   /** Increases with each request, so repeating one re-applies it. */
   seq: number;
 }
@@ -81,6 +86,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
       id: target.artifactId,
       version: target.version,
       pane: isArtifactPane(target.pane) ? target.pane : 'preview',
+      showPreview: target.pane === 'preview',
       seq: (prev?.seq ?? 0) + 1,
     }));
   });
@@ -163,7 +169,7 @@ export default function ArtifactsView({ onOpenChat, onChange }: ArtifactsViewPro
                 <li key={creation.id}>
                   <button
                     type="button"
-                    onClick={() => setSelection(prev => ({ id: creation.id, version: null, pane: 'preview', seq: (prev?.seq ?? 0) + 1 }))}
+                    onClick={() => setSelection(prev => ({ id: creation.id, version: null, pane: 'preview', showPreview: false, seq: (prev?.seq ?? 0) + 1 }))}
                     className={cn(
                       'w-full h-full text-left flex flex-col gap-1.5 rounded-xl border border-shodh-border bg-shodh-surface px-4 py-3 hover:border-shodh-border-strong hover:bg-shodh-raised transition-colors duration-micro',
                       FOCUS_RING,

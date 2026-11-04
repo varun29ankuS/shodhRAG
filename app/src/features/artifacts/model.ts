@@ -1,7 +1,7 @@
 /**
  * The Artifacts tab's data and the rules it shows them by: Creator mode's creations
- * (`creation_commands.rs`), the progress of a build, the finish card's choices and where
- * the preview window goes.
+ * (`creation_commands.rs`), the progress of a build, the finish card's choices and what
+ * the preview window says.
  *
  * Pure (no React, no Tauri) so it is unit-tested directly with Node
  * (`app/tests/artifacts.test.ts`).
@@ -92,148 +92,102 @@ export function isArtifactPane(value: unknown): value is ArtifactPane {
   return typeof value === 'string' && (ARTIFACT_PANES as readonly string[]).includes(value);
 }
 
+
 /**
- * What the preview says about itself, exactly as far as it goes. With the switch off the
- * page cannot load or send anything through the web, WebRTC is gone and DNS look-ahead is
- * off; a browser may still warm up a connection to a link the page shows, so it is not
- * called a sealed network.
+ * What the preview says about itself, exactly as far as it goes.
+ *
+ * With the switch off, on Windows the preview window's own browser sends everything to a
+ * closed address and lets WebRTC use no direct route, so nothing it sends leaves the
+ * computer. On a Mac no engine setting closes WebRTC; a page script guard is all there is,
+ * and guards can be broken, so the text says so plainly (`creations/preview.rs`).
  */
-export const PREVIEW_NETWORK_OFF_TEXT =
-  'The page runs in a window of its own: it cannot use Shodh, read your files or reach your accounts. It cannot load or send anything over the internet, and WebRTC and DNS look-ahead are off. A hostile page might still make the browser connect ahead to a link it shows, which can reveal that it ran.';
+const ISOLATION = 'The page runs in a window of its own: it cannot use Shodh, read your files or reach your accounts.';
+
+export const PREVIEW_NETWORK_OFF_TEXT_WINDOWS =
+  `${ISOLATION} Its traffic goes to a closed address, so it cannot load or send anything over the internet, WebRTC included. Camera, microphone and other devices are refused.`;
+
+export const PREVIEW_NETWORK_OFF_TEXT_MAC =
+  `${ISOLATION} It cannot load pages or send requests over the internet. On a Mac a hostile page might still reach the internet through WebRTC, which Shodh can only partly block there, and that can reveal that it ran.`;
 
 export const PREVIEW_NETWORK_ON_TEXT =
-  'The page runs in a window of its own: it cannot use Shodh, read your files or reach your accounts. While this is on, it can load from and send to any secure (https) site.';
+  `${ISOLATION} While this is on, it can load from and send to any secure (https) site, and use WebRTC.`;
 
-/**
- * The preview area, in CSS pixels of the app's page, and the page's size: Rust turns it
- * into screen pixels by the page's size on screen (`preview_window.rs` `Area`).
- */
-export interface PreviewArea {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  viewportWidth: number;
-  viewportHeight: number;
+/** The line under the internet switch, for this computer. */
+export function previewNetworkText(network: boolean, mac: boolean): string {
+  if (network) return PREVIEW_NETWORK_ON_TEXT;
+  return mac ? PREVIEW_NETWORK_OFF_TEXT_MAC : PREVIEW_NETWORK_OFF_TEXT_WINDOWS;
 }
 
-/** A box on the page, in CSS pixels. */
-export interface Box {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
+/** The preview open now (`creation_preview_status`), if any. */
+export interface PreviewShown {
+  label: string;
+  creationId: string;
+  version: number | null;
+  network: boolean;
 }
 
-/**
- * Something drawn over the page: a dialog, menu, toast or the conversation dock. The
- * preview is a window above the page, so it would hide these; it makes room or closes.
- */
-export interface FloatingLayer {
-  box: Box;
-  /** A modal dialog: the preview closes while it is open. */
-  modal: boolean;
-}
-
-/** Below this the preview closes rather than show a sliver (CSS pixels). */
-export const MIN_PREVIEW_HEIGHT = 160;
-export const MIN_PREVIEW_WIDTH = 200;
-
-/** Space kept between the preview and a layer it makes room for. */
-const LAYER_GAP = 8;
-
-/** The elements that float over the page (portaled dialogs, menus, toasts, the dock). */
-export const FLOATING_LAYER_SELECTOR =
-  '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"], [data-sonner-toast], [data-floating-layer]';
-
-function overlaps(a: Box, b: Box): boolean {
-  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-}
-
-function fits(box: Box): boolean {
-  return box.right - box.left >= MIN_PREVIEW_WIDTH && box.bottom - box.top >= MIN_PREVIEW_HEIGHT;
-}
-
-function areaOf(box: Box): number {
-  return (box.right - box.left) * (box.bottom - box.top);
-}
-
-/**
- * `box` cut clear of `layer`: ending above it, or beside it (on the side away from it),
- * whichever leaves more; null when neither leaves enough.
- */
-function clearOf(box: Box, layer: Box): Box | null {
-  const above: Box = { ...box, bottom: Math.min(box.bottom, layer.top - LAYER_GAP) };
-  const onRight = (layer.left + layer.right) / 2 >= (box.left + box.right) / 2;
-  const beside: Box = onRight
-    ? { ...box, right: Math.min(box.right, layer.left - LAYER_GAP) }
-    : { ...box, left: Math.max(box.left, layer.right + LAYER_GAP) };
-  const options = [above, beside].filter(fits).sort((a, b) => areaOf(b) - areaOf(a));
-  return options[0] ?? null;
-}
-
-/**
- * Where the preview window goes: the preview pane's box, cut to what the page shows of it
- * (`visible`, the scrolling area) and to the window, then clear of each layer over it
- * (above it or beside it, whichever leaves more). Null (the preview closes) while a modal
- * dialog is open, or when too little is left.
- */
-export function previewPlacement(
-  pane: Box,
-  visible: Box,
-  viewport: { width: number; height: number },
-  layers: readonly FloatingLayer[],
-): PreviewArea | null {
-  if (layers.some(layer => layer.modal)) return null;
-  let box: Box = {
-    left: Math.max(pane.left, visible.left, 0),
-    top: Math.max(pane.top, visible.top, 0),
-    right: Math.min(pane.right, visible.right, viewport.width),
-    bottom: Math.min(pane.bottom, visible.bottom, viewport.height),
-  };
-  // Each cut only shrinks the box, so a layer it was already clear of stays clear; a later
-  // cut can bring the box clear of an earlier one too, so the layers are checked until none
-  // overlaps.
-  for (let pass = 0; pass <= layers.length; pass++) {
-    const covering = layers.find(layer => overlaps(box, layer.box));
-    if (!covering) break;
-    const cut = clearOf(box, covering.box);
-    if (!cut) return null;
-    box = cut;
-  }
-  if (layers.some(layer => overlaps(box, layer.box))) return null;
-  const x = Math.max(0, Math.round(box.left));
-  const y = Math.max(0, Math.round(box.top));
-  const width = Math.min(Math.round(box.right), viewport.width) - x;
-  const height = Math.min(Math.round(box.bottom), viewport.height) - y;
-  if (width < MIN_PREVIEW_WIDTH || height < MIN_PREVIEW_HEIGHT) return null;
-  return { x, y, width, height, viewportWidth: viewport.width, viewportHeight: viewport.height };
-}
-
-export function samePlacement(a: PreviewArea | null, b: PreviewArea | null): boolean {
-  if (a === null || b === null) return a === b;
-  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
-    && a.viewportWidth === b.viewportWidth && a.viewportHeight === b.viewportHeight;
+export function parsePreviewShown(value: unknown): PreviewShown | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { label, creationId, version, network } = value as Record<string, unknown>;
+  if (typeof label !== 'string' || typeof creationId !== 'string' || typeof network !== 'boolean') return null;
+  const at = typeof version === 'number' && Number.isInteger(version) && version > 0 ? version : null;
+  return { label, creationId, version: at, network };
 }
 
 /** The event Rust sends the main window about its preview window (`preview_window.rs`). */
 export const PREVIEW_EVENT = 'creation-preview';
 
+export type PreviewState = 'loaded' | 'blocked' | 'closed' | 'stopped';
+
 export interface PreviewEvent {
   label: string;
-  /** Loaded: the first page finished. Blocked: it tried to leave its files, open a window or download. */
-  state: 'loaded' | 'blocked';
+  /**
+   * Loaded: the first page finished. Blocked: it tried to leave its files, open a window or
+   * download. Closed: the window went (the user, the page or Shodh closed it). Stopped: the
+   * page's browser process crashed or hung.
+   */
+  state: PreviewState;
 }
+
+const PREVIEW_STATES: readonly string[] = ['loaded', 'blocked', 'closed', 'stopped'];
 
 export function parsePreviewEvent(payload: unknown): PreviewEvent | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const { label, state } = payload as { label?: unknown; state?: unknown };
-  if (typeof label !== 'string' || (state !== 'loaded' && state !== 'blocked')) return null;
-  return { label, state };
+  if (typeof label !== 'string' || typeof state !== 'string' || !PREVIEW_STATES.includes(state)) return null;
+  return { label, state: state as PreviewState };
 }
 
-/** What the preview area says under the window, in plain words. */
+/** What the card says when the page was stopped from leaving its files. */
 export const PREVIEW_BLOCKED_TEXT = 'The page tried to open another address, a window or a download. Shodh stopped it.';
+
+/** Why the preview window closed, when the tab closed it or saw it go. */
+export type PreviewEnd = 'closed' | 'stopped' | 'version' | 'network';
+
+export const PREVIEW_END_TEXT: Record<PreviewEnd, string> = {
+  closed: 'The preview closed.',
+  stopped: 'The preview stopped working. Open it again to restart it.',
+  version: 'The preview closed because you picked another version. Open it again to see that version.',
+  network: 'The preview closed because you changed the internet switch. Open it again to use the new setting.',
+};
+
+/** What the card says about the window it shows. */
+export function previewShowingText(version: number | null): string {
+  return version === null
+    ? 'Showing the folder as it is now, in its own window.'
+    : `Showing version ${version}, in its own window.`;
+}
+
+/**
+ * Whether the open preview no longer matches what the page asks for, and why: another
+ * version or a changed switch closes it (with a note), anything else keeps it.
+ */
+export function previewEndFor(shown: PreviewShown, creationId: string, version: number | null, network: boolean): PreviewEnd | null {
+  if (shown.creationId !== creationId) return null;
+  if (shown.version !== version) return 'version';
+  if (shown.network !== network) return 'network';
+  return null;
+}
 
 /** Tools whose start means the agent began building: the tab opens. */
 const BUILDING_TOOLS: readonly string[] = ['write', 'edit', 'run_command'];

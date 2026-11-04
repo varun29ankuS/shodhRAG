@@ -60,6 +60,12 @@ mod tests {
         "components/ErrorBoundary.tsx",
     ];
     const CODE_EXTENSIONS: &[&str] = &["ts", "tsx", "js", "jsx", "mjs", "cjs"];
+    /// Registered commands no webview is granted, with the reason. The ACL
+    /// refuses them to every window.
+    const UNGRANTED: &[(&str, &str)] = &[(
+        "search_documents",
+        "no frontend module calls it (only a comment in features/agent/reducer.ts names it); the agent searches through its own search_documents tool, which runs in Rust",
+    )];
 
     fn manifest_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -216,54 +222,148 @@ mod tests {
         }
     }
 
-    /// `text` with its `//` and `/* */` comments removed (newlines kept, so
-    /// line numbers hold). A `'` or `"` string ends at its line's end at the
-    /// latest, as in JS, so a quote in a regex literal cannot swallow the
-    /// rest of the file; escapes are skipped everywhere, so `\/\/` in a regex
-    /// is not a comment.
-    pub(super) fn strip_comments(text: &str) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        let mut out = String::with_capacity(text.len());
-        let mut i = 0;
+    /// Index just past the `'…'` or `"…"` string at `start`. Such a string
+    /// ends at its line's end at the latest, as in JS.
+    fn quote_end(chars: &[char], start: usize) -> usize {
+        let quote = chars[start];
+        let mut i = start + 1;
+        while i < chars.len() {
+            match chars[i] {
+                '\\' => i += 2,
+                '\n' => return i,
+                c if c == quote => return i + 1,
+                _ => i += 1,
+            }
+        }
+        chars.len()
+    }
+
+    /// Index just past the template literal at `start`, `${…}` included.
+    fn template_end(chars: &[char], start: usize) -> usize {
+        let mut i = start + 1;
+        while i < chars.len() {
+            match chars[i] {
+                '\\' => i += 2,
+                '`' => return i + 1,
+                '$' if chars.get(i + 1) == Some(&'{') => i = expression_end(chars, i + 2),
+                _ => i += 1,
+            }
+        }
+        chars.len()
+    }
+
+    /// Index just past the `}` closing a `${` expression whose code starts
+    /// at `start`.
+    fn expression_end(chars: &[char], start: usize) -> usize {
+        let mut depth = 0usize;
+        let mut prev: Option<char> = None;
+        let mut i = start;
         while i < chars.len() {
             let c = chars[i];
             match c {
-                '\'' | '"' | '`' => {
-                    out.push(c);
+                '\\' => i += 2,
+                '`' => i = template_end(chars, i),
+                '\'' | '"' => i = quote_end(chars, i),
+                '/' if regex_can_start(prev, "", chars.get(i + 1).copied()) => {
+                    i = regex_end(chars, i)
+                }
+                '{' => {
+                    depth += 1;
                     i += 1;
-                    while i < chars.len() {
-                        let d = chars[i];
-                        if d == '\\' {
-                            out.push(d);
-                            if let Some(&e) = chars.get(i + 1) {
-                                out.push(e);
-                            }
-                            i += 2;
-                            continue;
-                        }
-                        if d == '\n' && c != '`' {
-                            break;
-                        }
-                        out.push(d);
+                }
+                '}' if depth == 0 => return i + 1,
+                '}' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+            if !c.is_whitespace() {
+                prev = Some(c);
+            }
+        }
+        chars.len()
+    }
+
+    /// Whether a `/` after `prev` (the last code character) and `word` (the
+    /// last word) starts a regex literal rather than dividing. `</` closes a
+    /// JSX tag and `/>` ends one, so neither is a regex.
+    fn regex_can_start(prev: Option<char>, word: &str, next: Option<char>) -> bool {
+        if matches!(next, Some('>' | '/' | '*')) {
+            return false;
+        }
+        match prev {
+            None => true,
+            Some('<') => false,
+            Some(p) if is_word(p) => matches!(
+                word,
+                "return"
+                    | "typeof"
+                    | "case"
+                    | "do"
+                    | "else"
+                    | "in"
+                    | "of"
+                    | "void"
+                    | "yield"
+                    | "await"
+            ),
+            Some(p) => !matches!(p, ')' | ']' | '\'' | '"' | '`'),
+        }
+    }
+
+    /// Index just past the regex literal (flags included) at `start`; a `/`
+    /// with no closing `/` on its line is only a slash.
+    fn regex_end(chars: &[char], start: usize) -> usize {
+        let mut i = start + 1;
+        let mut in_class = false;
+        while i < chars.len() {
+            match chars[i] {
+                '\\' => i += 2,
+                '\n' => return start + 1,
+                '[' => {
+                    in_class = true;
+                    i += 1;
+                }
+                ']' => {
+                    in_class = false;
+                    i += 1;
+                }
+                '/' if !in_class => {
+                    i += 1;
+                    while i < chars.len() && chars[i].is_ascii_alphabetic() {
                         i += 1;
-                        if d == c {
-                            break;
-                        }
                     }
+                    return i;
                 }
-                '\\' => {
-                    out.push(c);
-                    if let Some(&e) = chars.get(i + 1) {
-                        out.push(e);
-                    }
-                    i += 2;
-                }
-                '/' if chars.get(i + 1) == Some(&'/') => {
+                _ => i += 1,
+            }
+        }
+        start + 1
+    }
+
+    /// `text` with its comments removed (newlines kept, so line numbers
+    /// hold). With `blank`, the contents of strings, template literals and
+    /// regex literals become spaces too. Template expressions (`${…}`) and
+    /// regex literals are followed, so a quote, backtick or `//` inside one
+    /// neither opens a string nor starts a comment.
+    pub(super) fn scrub(text: &str, blank: bool) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut prev: Option<char> = None;
+        let mut word = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            let end = match c {
+                '/' if next == Some('/') => {
                     while i < chars.len() && chars[i] != '\n' {
                         i += 1;
                     }
+                    continue;
                 }
-                '/' if chars.get(i + 1) == Some(&'*') => {
+                '/' if next == Some('*') => {
                     i += 2;
                     while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
                         if chars[i] == '\n' {
@@ -272,45 +372,38 @@ mod tests {
                         i += 1;
                     }
                     i += 2;
+                    continue;
                 }
+                '\'' | '"' => quote_end(&chars, i),
+                '`' => template_end(&chars, i),
+                '/' if regex_can_start(prev, &word, next) => regex_end(&chars, i),
                 _ => {
                     out.push(c);
+                    if is_word(c) {
+                        if i == 0 || !is_word(chars[i - 1]) {
+                            word.clear();
+                        }
+                        word.push(c);
+                    }
+                    if !c.is_whitespace() {
+                        prev = Some(c);
+                    }
                     i += 1;
+                    continue;
+                }
+            };
+            let end = end.min(chars.len()).max(i + 1);
+            for (k, &ch) in chars.iter().enumerate().take(end).skip(i) {
+                if !blank || k == i || ch == '\n' {
+                    out.push(ch);
+                } else {
+                    out.push(' ');
                 }
             }
-        }
-        out
-    }
-
-    /// `text` (comments already stripped) with every string's contents
-    /// blanked to spaces, quotes and newlines kept.
-    fn blank_strings(text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut quote: Option<char> = None;
-        let mut escaped = false;
-        for c in text.chars() {
-            match quote {
-                None => {
-                    if matches!(c, '\'' | '"' | '`') {
-                        quote = Some(c);
-                    }
-                    out.push(c);
-                }
-                Some(q) => {
-                    if escaped {
-                        escaped = false;
-                        out.push(if c == '\n' { '\n' } else { ' ' });
-                    } else if c == '\\' {
-                        escaped = true;
-                        out.push(' ');
-                    } else if c == q || (c == '\n' && q != '`') {
-                        quote = None;
-                        out.push(c);
-                    } else {
-                        out.push(if c == '\n' { '\n' } else { ' ' });
-                    }
-                }
-            }
+            // A literal is an operand: a `/` after it divides.
+            prev = Some(c);
+            word.clear();
+            i = end;
         }
         out
     }
@@ -346,7 +439,7 @@ mod tests {
     /// `(line, callee)` of every call to one of `callees` that runs while the
     /// module is evaluated.
     pub(super) fn calls_at_load(source: &str, callees: &[String]) -> Vec<(usize, String)> {
-        let text: Vec<char> = blank_strings(&strip_comments(source)).chars().collect();
+        let text: Vec<char> = scrub(source, true).chars().collect();
         let class = Regex::new(r"\bclass\b").unwrap();
         let prev_sig = |i: usize| -> Option<(usize, char)> {
             (0..i)
@@ -376,7 +469,7 @@ mod tests {
             concise: false,
         }];
         // The last `)` closed: where it was and the word before its `(`.
-        let mut last_paren: Option<(usize, String)> = None;
+        let mut last_paren: Option<(usize, String, usize)> = None;
         let mut line = 1;
         let mut found = Vec::new();
         let mut i = 0;
@@ -438,11 +531,13 @@ mod tests {
                     let before = prev_sig(i);
                     let after_arrow =
                         before.is_some_and(|(j, p)| p == '>' && j > 0 && text[j - 1] == '=');
-                    // `) {` or `): Type {` after a parameter list.
-                    let after_params = last_paren.as_ref().filter(|(end, _)| {
+                    // `) {` or `): Type {` after a parameter list closed at
+                    // this depth (a return type may hold `{ a: T; b: U }`).
+                    let depth = stack.len();
+                    let after_params = last_paren.as_ref().filter(|(end, _, closed_at)| {
                         let between: String = text[end + 1..i].iter().collect();
                         let between = between.trim();
-                        between.is_empty() || (between.starts_with(':') && !between.contains(';'))
+                        *closed_at == depth && (between.is_empty() || between.starts_with(':'))
                     });
                     let word_before = before
                         .filter(|(_, p)| is_word(*p))
@@ -455,7 +550,7 @@ mod tests {
                     let statement: String = text[statement_start..i].iter().collect();
                     let runs = if after_arrow {
                         arrow_runs(top)
-                    } else if let Some((_, head)) = after_params {
+                    } else if let Some((_, head, _)) = after_params {
                         if BLOCK_HEADS.contains(&head.as_str()) {
                             top.runs
                         } else {
@@ -483,7 +578,7 @@ mod tests {
                     if stack.len() > 1 && stack.last().is_some_and(|f| f.close == c) {
                         let frame = stack.pop().expect("checked");
                         if c == ')' {
-                            last_paren = Some((i, frame.head));
+                            last_paren = Some((i, frame.head, stack.len()));
                         }
                     }
                 }
@@ -546,7 +641,7 @@ mod tests {
             if excluded.contains(&name.as_str()) || !seen.insert(name) {
                 continue;
             }
-            for cap in import.captures_iter(&strip_comments(&read(&file))) {
+            for cap in import.captures_iter(&scrub(&read(&file), false)) {
                 match resolve(&file, &root, &cap[1]) {
                     Some(Ok(next)) => queue.push_back(next),
                     Some(Err(problem)) => problems.push(problem),
@@ -566,7 +661,7 @@ mod tests {
         let literal = Regex::new(r#"["'`]([A-Za-z_][A-Za-z0-9_]*)["'`]"#).unwrap();
         let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for file in files {
-            for cap in literal.captures_iter(&strip_comments(&read(&root.join(file)))) {
+            for cap in literal.captures_iter(&scrub(&read(&root.join(file)), false)) {
                 if commands.contains(&cap[1]) {
                     out.entry(cap[1].to_string())
                         .or_default()
@@ -667,11 +762,26 @@ mod tests {
         }
 
         for command in &commands {
-            if !main.contains(command) && !print.contains(command) {
+            let ungranted = UNGRANTED.iter().any(|(c, _)| c == command);
+            let granted = main.contains(command) || print.contains(command);
+            if !granted && !ungranted {
                 problems.push(format!(
-                    "{command} is registered, but no window is granted it: grant it to the window that calls it, or unregister it"
+                    "{command} is registered, but no window is granted it: grant it to the window that calls it, or list it in UNGRANTED with the reason"
                 ));
             }
+            if granted && ungranted {
+                problems.push(format!(
+                    "{command} is granted now: remove it from UNGRANTED"
+                ));
+            }
+        }
+        for (command, why) in UNGRANTED {
+            if !commands.contains(*command) {
+                problems.push(format!(
+                    "UNGRANTED lists {command}, which is not a registered command"
+                ));
+            }
+            assert!(why.len() >= 20, "UNGRANTED.{command} needs a reason");
         }
 
         assert!(
@@ -867,6 +977,12 @@ mod tests {
             "class A extends B<P> {\n  x = () => invoke('a');\n  m() { invoke('b'); }\n}",
             "// invoke('a');\n/* invoke('b'); */\nconst s = \"invoke('c')\";\nconst re = /\\/\\//;",
             "if (ok) {\n  const h = () => invoke('a');\n}",
+            // A return type holding `;`, and a template expression whose
+            // regex holds a backtick and a quote.
+            "export async function f(p: string): Promise<{ a: string; b: number }> {\n  return invoke('a', { p });\n}",
+            "function g(x) {\n  const d = x ? `a: \\`${x.replace(/`/g, \"'\")}\\`` : '';\n  return invoke('a', { d });\n}",
+            // JSX: closing tags, self-closing tags and an apostrophe in text.
+            "export function C() {\n  useEffect(() => { listen('e', h); }, []);\n  return <div className=\"a\">it's <b>{x}</b><br /></div>;\n}",
         ];
         for src in later {
             assert!(lines(src).is_empty(), "{src}: {:?}", lines(src));
@@ -888,6 +1004,16 @@ mod tests {
             vec![2]
         );
         assert_eq!(lines("const f = () => 1;\nlisten('e', f);"), vec![2]);
+        // Brackets inside literals do not shift the frames: code after them
+        // is still seen at its true level.
+        assert_eq!(
+            lines("function g(x) {\n  return `${x.replace(/`/g, \"(\")}` + ')';\n}\ninvoke('a');"),
+            vec![4]
+        );
+        assert_eq!(
+            lines("const re = /[\"'{(]/g;\nconst s = '}';\ninvoke('a');"),
+            vec![3]
+        );
         let aliased = vec!["call".to_string()];
         assert_eq!(
             calls_at_load("call('a');", &aliased),
@@ -992,11 +1118,12 @@ mod tests {
         );
         let result = call(&main, "plugin:fs|write_file", local);
         assert!(
-            past_the_acl(&result, "write_file not found"),
+            past_the_acl(&result, "plugin fs not found"),
             "main window: fs write: {result:?}"
         );
         for cmd in [
             "print_job",
+            "search_documents",
             "plugin:fs|read_file",
             "plugin:fs|read_text_file",
         ] {

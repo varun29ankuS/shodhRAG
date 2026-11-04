@@ -2,7 +2,7 @@
   "permission": [
     {
       "identifier": "main-window",
-      "description": "Every app command the main window (label main) calls: the commands named in the frontend modules that main.tsx loads for the app shell. Print-only commands (print_job, print_job_ready) are not here. Kept equal to the frontend scan by acl_manifest.rs.",
+      "description": "Every app command the main webview (label main) calls: the commands named in the frontend modules that main.tsx loads for the app shell. Print-only commands (print_job, print_job_ready) are not here. Kept equal to the frontend scan by acl_manifest.rs.",
       "commands": {
         "allow": [
           "add_subtask",
@@ -178,7 +178,6 @@
           "run_command_stop",
           "save_conversation",
           "save_temp_file",
-          "search_documents",
           "search_models_status",
           "send_test_notification",
           "set_agent_idle_minutes",

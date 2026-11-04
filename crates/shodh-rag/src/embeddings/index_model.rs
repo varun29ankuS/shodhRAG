@@ -100,17 +100,23 @@ pub fn write(data_dir: &Path, variant: E5Variant, reason: &str) -> Result<IndexM
 /// The E5 exports search setup installs on this machine:
 /// - the index's own export, when it is recorded (`index`): nothing else can
 ///   search it;
-/// - otherwise (a new library) int8 for the processor, plus fp16 when a
-///   graphics card may run search (`preference` allows it and `probe` finds a
-///   card a provider can use), so the first load can compare the card's fp16
-///   with the processor's int8 and keep the faster.
+/// - otherwise (a new library), on a processor that runs int8 exactly
+///   (`int8_exact`, [`super::e5::int8_exact`]): int8 for the processor, plus
+///   fp16 when a graphics card may run search (`preference` allows it and
+///   `probe` finds a card a provider can use), so the first load can compare
+///   the card's fp16 with the processor's int8 and keep the faster;
+/// - on any other processor fp16, which both the card and the processor run.
 pub fn setup_variants(
     index: Option<E5Variant>,
     preference: ComputePreference,
+    int8_exact: bool,
     probe: impl FnOnce() -> GpuProbe,
 ) -> Vec<E5Variant> {
     if let Some(variant) = index {
         return vec![variant];
+    }
+    if !int8_exact {
+        return vec![E5Variant::Fp16];
     }
     let card = preference == ComputePreference::Auto
         && matches!(probe(), GpuProbe::Devices(devices) if !devices.is_empty());
@@ -137,21 +143,25 @@ mod tests {
             }])
         };
         let auto = ComputePreference::Auto;
+        for exact in [true, false] {
+            assert_eq!(
+                setup_variants(Some(E5Variant::Fp16), auto, exact, card),
+                vec![E5Variant::Fp16],
+                "an existing fp16 library needs no int8 download"
+            );
+            assert_eq!(
+                setup_variants(Some(E5Variant::Int8), auto, exact, card),
+                vec![E5Variant::Int8]
+            );
+        }
         assert_eq!(
-            setup_variants(Some(E5Variant::Fp16), auto, card),
-            vec![E5Variant::Fp16],
-            "an existing fp16 library needs no int8 download"
-        );
-        assert_eq!(
-            setup_variants(Some(E5Variant::Int8), auto, card),
-            vec![E5Variant::Int8]
-        );
-        assert_eq!(
-            setup_variants(None, auto, card),
+            setup_variants(None, auto, true, card),
             vec![E5Variant::Fp16, E5Variant::Int8]
         );
         assert_eq!(
-            setup_variants(None, ComputePreference::Cpu, || unreachable!("no probe")),
+            setup_variants(None, ComputePreference::Cpu, true, || unreachable!(
+                "no probe"
+            )),
             vec![E5Variant::Int8]
         );
         for probe in [
@@ -160,10 +170,21 @@ mod tests {
             GpuProbe::Failed("DXGI".to_string()),
         ] {
             assert_eq!(
-                setup_variants(None, auto, || probe.clone()),
+                setup_variants(None, auto, true, || probe.clone()),
                 vec![E5Variant::Int8]
             );
         }
+        // Without exact int8 kernels a new library is fp16, card or not.
+        assert_eq!(
+            setup_variants(None, auto, false, card),
+            vec![E5Variant::Fp16]
+        );
+        assert_eq!(
+            setup_variants(None, ComputePreference::Cpu, false, || unreachable!(
+                "no probe"
+            )),
+            vec![E5Variant::Fp16]
+        );
     }
 
     #[test]

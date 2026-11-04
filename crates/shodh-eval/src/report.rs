@@ -393,9 +393,18 @@ pub struct Baseline {
     pub dataset_hash: String,
     pub corpus_hash: String,
     pub recorded_at: String,
+    /// Who approved a change of the recorded numbers and why, with the old
+    /// and new values (for a deliberate change, such as another embedding
+    /// export). Not compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
     pub settings: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, MetricStats>,
 }
+
+/// The report setting that names the embedding export a run indexed with
+/// (`fp16`, `int8`): each export has its own baseline.
+pub const EMBEDDING_VARIANT_SETTING: &str = "embedding_variant";
 
 impl Baseline {
     pub fn from_report(report: &RunReport) -> Self {
@@ -405,6 +414,7 @@ impl Baseline {
             dataset_hash: report.dataset_hash.clone(),
             corpus_hash: report.corpus_hash.clone(),
             recorded_at: report.created_at.clone(),
+            approval: None,
             settings: report.settings.clone(),
             metrics: report.metrics.clone(),
         }
@@ -417,6 +427,31 @@ impl Baseline {
     pub fn read(path: &Path) -> Result<Self> {
         read_json(path)
     }
+}
+
+/// The baseline among `baselines` recorded with the embedding export `report`
+/// indexed with ([`EMBEDDING_VARIANT_SETTING`]): which export a run uses
+/// depends on the processor (int8 only where its kernels are exact), and each
+/// export is gated against its own numbers. An error when none matches.
+pub fn baseline_for<'a>(baselines: &'a [Baseline], report: &RunReport) -> Result<&'a Baseline> {
+    let variant = report.settings.get(EMBEDDING_VARIANT_SETTING);
+    baselines
+        .iter()
+        .find(|b| b.settings.get(EMBEDDING_VARIANT_SETTING) == variant)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no baseline was recorded with {EMBEDDING_VARIANT_SETTING}={} (baselines: {})",
+                variant.map_or("unset", String::as_str),
+                baselines
+                    .iter()
+                    .map(|b| b
+                        .settings
+                        .get(EMBEDDING_VARIANT_SETTING)
+                        .map_or("unset", String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -558,6 +593,44 @@ mod tests {
             ingest: vec![],
             cases: vec![],
         }
+    }
+
+    /// Each embedding export is gated against its own baseline; a report of an
+    /// export no baseline was recorded with is an error, never a pass.
+    #[test]
+    fn a_report_is_compared_with_the_baseline_of_its_embedding_export() {
+        let with_variant = |variant: &str| {
+            let mut r = report(&[("mrr", &[0.9])]);
+            r.settings
+                .insert(EMBEDDING_VARIANT_SETTING.to_string(), variant.to_string());
+            r
+        };
+        let fp16 = Baseline::from_report(&with_variant("fp16"));
+        let mut int8 = Baseline::from_report(&with_variant("int8"));
+        int8.approval = Some("approved".to_string());
+        let baselines = vec![fp16.clone(), int8.clone()];
+        assert_eq!(
+            baseline_for(&baselines, &with_variant("int8")).unwrap(),
+            &int8
+        );
+        assert_eq!(
+            baseline_for(&baselines, &with_variant("fp16")).unwrap(),
+            &fp16
+        );
+        let missing = baseline_for(&[fp16.clone()], &with_variant("int8")).unwrap_err();
+        assert!(
+            missing.to_string().contains("embedding_variant=int8"),
+            "{missing}"
+        );
+        assert!(baseline_for(&baselines, &report(&[("mrr", &[0.9])])).is_err());
+        // The approval is kept in the file and not compared.
+        let json = serde_json::to_value(&int8).unwrap();
+        assert_eq!(json["approval"], "approved");
+        assert!(serde_json::to_value(&fp16)
+            .unwrap()
+            .get("approval")
+            .is_none());
+        assert!(compare(&int8, &with_variant("int8")).passed());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use shodh_eval::corpus::{absolute_dir, default_output_dir, prepare_output_dir, LOCAL_DIR};
 use shodh_eval::dataset::Dataset;
 use shodh_eval::engine::Tweaks;
-use shodh_eval::report::{compare, Baseline, RunReport};
+use shodh_eval::report::{baseline_for, compare, Baseline, RunReport, EMBEDDING_VARIANT_SETTING};
 use shodh_eval::{answers, generate, models, ocr, papers, retrieval, scan, synth};
 use shodh_rag::config::{OcrConfig, OcrEngineChoice};
 
@@ -32,7 +32,7 @@ USAGE:
   shodh-eval answers   --corpus <dir> --models <dir> [--dataset <file>] [--limit <n>]
                        [--timeout-secs <n>] [--runtime <dir>] [--out <dir>]
   shodh-eval generate  --corpus <dir> --models <dir> [--n <n>] [--seed <n>] [--out <dir>] [--force]
-  shodh-eval compare   --baseline <file> --report <file>
+  shodh-eval compare   --baseline <file> [--baseline-int8 <file>] --report <file>
 
 Outputs default to .eval-local/runs/<corpus>-<hash>/ (git-ignored). `answers` and
 `generate` send passages to the model set by SHODH_EVAL_PROVIDER / SHODH_EVAL_MODEL.";
@@ -359,10 +359,24 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
             );
         }
         "compare" => {
-            let args = Args::parse(rest, &["baseline", "report"], &[])?;
-            let baseline = Baseline::read(&args.required_path("baseline")?)?;
+            let args = Args::parse(rest, &["baseline", "baseline-int8", "report"], &[])?;
+            let mut baselines = vec![Baseline::read(&args.required_path("baseline")?)?];
+            if let Some(path) = args.path("baseline-int8") {
+                baselines.push(Baseline::read(&path)?);
+            }
             let report = RunReport::read(&args.required_path("report")?)?;
-            let outcome = compare(&baseline, &report);
+            // The run's embedding export decides the baseline (see `baseline_for`).
+            let baseline = baseline_for(&baselines, &report)?;
+            eprintln!(
+                "Comparing with the baseline recorded {} ({}={})",
+                baseline.recorded_at,
+                EMBEDDING_VARIANT_SETTING,
+                baseline
+                    .settings
+                    .get(EMBEDDING_VARIANT_SETTING)
+                    .map_or("unset", String::as_str)
+            );
+            let outcome = compare(baseline, &report);
             println!("{}", outcome.render());
             if !outcome.passed() {
                 eprintln!("Regression against the baseline.");

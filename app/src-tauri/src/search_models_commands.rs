@@ -59,6 +59,7 @@ impl SearchModelsState {
         let variants = index_model::setup_variants(
             index,
             config.embedding.compute,
+            shodh_rag::embeddings::e5::int8_exact(),
             shodh_rag::compute::provider::probe_gpus,
         );
         ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants)

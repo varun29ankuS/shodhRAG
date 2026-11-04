@@ -343,22 +343,16 @@ pub fn ocr_settings(ocr: &shodh_rag::config::OcrConfig) -> BTreeMap<String, Stri
     settings
 }
 
-/// The processor features the int8 search model's speed and rounding depend
-/// on (its integer kernels use VNNI where the processor has it), for the log.
+/// The processor, and the int8 kernels that decide whether the run indexes
+/// with int8 (exact kernels) or fp16, for the log: speeds are comparable only
+/// on the same processor.
 fn cpu_features() -> String {
-    #[cfg(target_arch = "x86_64")]
-    {
-        format!(
-            "CPU: x86_64, avx2 {}, avx512f {}, avx512vnni {}",
-            std::arch::is_x86_feature_detected!("avx2"),
-            std::arch::is_x86_feature_detected!("avx512f"),
-            std::arch::is_x86_feature_detected!("avx512vnni"),
-        )
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        format!("CPU: {}", std::env::consts::ARCH)
-    }
+    format!(
+        "CPU: {} ({}), int8 kernels {:?}",
+        std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "unnamed".to_string()),
+        std::env::consts::ARCH,
+        shodh_rag::embeddings::e5::int8_kernels()
+    )
 }
 
 pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {

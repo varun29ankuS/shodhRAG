@@ -267,6 +267,11 @@ jobs:
   # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
   # index, every question searched, gated against the committed baseline.
   # Retrieval is deterministic, so any drop fails; latency is reported only.
+  # The search model export follows the runner's processor, as in the app: int8
+  # where its integer kernels are exact (VNNI), fp16 elsewhere (the saturating
+  # AVX2 kernels give other vectors). Each export is gated against its own
+  # baseline (baseline.json is fp16, baseline-int8.json int8), chosen by the
+  # report's embedding_variant.
   # The scanned corpus (image-only pages) is gated the same way, read with the
   # PP-OCRv6 model installed with the search models; it fails when the OCR
   # model is missing rather than measuring another engine.
@@ -349,6 +354,7 @@ jobs:
         run: >
           cargo run --package shodh-eval -- compare
           --baseline crates/shodh-eval/data/synthetic/baseline.json
+          --baseline-int8 crates/shodh-eval/data/synthetic/baseline-int8.json
           --report eval-out/retrieval-report.json
 
       - name: Scanned retrieval eval (PP-OCRv6)
@@ -364,6 +370,7 @@ jobs:
         run: >
           cargo run --package shodh-eval -- compare
           --baseline crates/shodh-eval/data/scanned/baseline.json
+          --baseline-int8 crates/shodh-eval/data/scanned/baseline-int8.json
           --report eval-out-scanned/retrieval-report.json
 
       - name: Paper retrieval eval
@@ -378,6 +385,7 @@ jobs:
         run: >
           cargo run --package shodh-eval -- compare
           --baseline crates/shodh-eval/data/papers/baseline.json
+          --baseline-int8 crates/shodh-eval/data/papers/baseline-int8.json
           --report eval-out-papers/retrieval-report.json
 
       - name: ONNX Runtime came from the cache

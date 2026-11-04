@@ -79,6 +79,54 @@ impl E5Variant {
     }
 }
 
+/// How this processor runs the int8 export's integer matrix products
+/// (ONNX Runtime's MLAS kernels for unsigned-by-signed 8-bit products).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Int8Kernels {
+    /// x86 with VNNI (AVX512-VNNI or AVX-VNNI): exact 32-bit sums.
+    Vnni,
+    /// ARM64 (dot-product or widening multiplies): exact 32-bit sums.
+    Arm,
+    /// Any other x86 (AVX2 without VNNI, as on AMD Zen 3 and Intel before
+    /// Ice Lake / Alder Lake): `vpmaddubsw` sums pairs into 16 bits and
+    /// clamps them, so the int8 export's vectors come out different. Measured
+    /// on CI: the memory-use scores of the same fixture moved by about 0.03
+    /// between runners, with fp16 identical. Not used for int8 here.
+    Saturating,
+}
+
+/// The int8 kernels of this processor.
+pub fn int8_kernels() -> Int8Kernels {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // AVX-VNNI is CPUID leaf 7, sub-leaf 1, EAX bit 4; it needs the AVX
+        // state, which AVX2 being usable implies.
+        #[allow(unused_unsafe)]
+        let avx_vnni = std::arch::is_x86_feature_detected!("avx2")
+            && unsafe { std::arch::x86_64::__cpuid_count(7, 1) }.eax & (1 << 4) != 0;
+        if std::arch::is_x86_feature_detected!("avx512vnni") || avx_vnni {
+            Int8Kernels::Vnni
+        } else {
+            Int8Kernels::Saturating
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        Int8Kernels::Arm
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        Int8Kernels::Saturating
+    }
+}
+
+/// Whether this processor runs the int8 export exactly, so it may build an
+/// int8 index. Elsewhere the CPU runs fp16.
+pub fn int8_exact() -> bool {
+    int8_kernels() != Int8Kernels::Saturating
+}
+
 /// Which export the vectors must be in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariantRule {
@@ -86,7 +134,8 @@ pub enum VariantRule {
     /// one used, on whatever runs it (fp16: a graphics card or the CPU;
     /// int8: the CPU).
     Index(E5Variant),
-    /// No vectors exist yet: a graphics card runs fp16, the CPU int8, and
+    /// No vectors exist yet: a graphics card runs fp16, the CPU int8 (on a
+    /// processor that runs it exactly, [`int8_exact`]; fp16 elsewhere), and
     /// whichever [`choose`] keeps decides the export
     /// ([`E5Embeddings::variant`]).
     Fastest,
@@ -168,8 +217,14 @@ impl E5Config {
     }
 
     /// What may run on a graphics card and what on the CPU under the rule,
-    /// given the installed exports.
+    /// given the installed exports and this processor's int8 kernels.
     fn plan(&self) -> Result<Plan> {
+        self.plan_for(int8_exact())
+    }
+
+    /// [`Self::plan`] on a processor that runs int8 exactly (`int8_exact`)
+    /// or not.
+    fn plan_for(&self, int8_exact: bool) -> Result<Plan> {
         let installed = installed_variants(&self.model_dir);
         match self.rule {
             VariantRule::Index(variant) => {
@@ -188,10 +243,15 @@ impl E5Config {
             }
             VariantRule::Fastest => {
                 let has = |v: E5Variant| installed.contains(&v);
-                let cpu = if has(E5Variant::Int8) {
+                // int8 only where its integer kernels are exact; with only
+                // int8 installed (a library moved to another computer before
+                // it had vectors), int8 rather than nothing.
+                let cpu = if has(E5Variant::Int8) && int8_exact {
                     E5Variant::Int8
                 } else if has(E5Variant::Fp16) {
                     E5Variant::Fp16
+                } else if has(E5Variant::Int8) {
+                    E5Variant::Int8
                 } else {
                     return Err(anyhow!(
                         "no E5 search model is installed in {}",
@@ -670,6 +730,15 @@ impl E5Embeddings {
         }
         let variant = chosen.session.variant;
         let model_file = variant.file_name().to_string();
+        if variant == E5Variant::Int8 && !int8_exact() {
+            // An int8 index made elsewhere (or the only export installed):
+            // queries stay in its export, but this processor's kernels round
+            // differently from the ones that built it.
+            tracing::warn!(
+                kernels = ?int8_kernels(),
+                "The int8 search model runs on a processor without VNNI; its vectors differ slightly from an exact processor's"
+            );
+        }
 
         // A speed measured while OCR competed for the cores is used for this
         // load but not kept; a card's failure is kept all the same.
@@ -1029,7 +1098,8 @@ mod tests {
         std::fs::write(e5.join(E5Variant::Fp16.file_name()), b"fp16").unwrap();
         let config = E5Config::auto_detect(dir.path()).expect("fp16 installed");
         assert_eq!(config.rule, VariantRule::Fastest);
-        let plan = |rule| config.clone().with_rule(rule).plan();
+        let plan = |rule| config.clone().with_rule(rule).plan_for(true);
+        let plan_saturating = |rule| config.clone().with_rule(rule).plan_for(false);
         assert_eq!(
             plan(VariantRule::Fastest).unwrap(),
             Plan {
@@ -1056,6 +1126,22 @@ mod tests {
             }
         );
         assert_eq!(
+            plan_saturating(VariantRule::Fastest).unwrap(),
+            Plan {
+                gpu: Some(E5Variant::Fp16),
+                cpu: E5Variant::Fp16
+            },
+            "a processor without exact int8 kernels builds fp16"
+        );
+        assert_eq!(
+            plan_saturating(VariantRule::Index(E5Variant::Int8)).unwrap(),
+            Plan {
+                gpu: None,
+                cpu: E5Variant::Int8
+            },
+            "an int8 index stays int8 everywhere"
+        );
+        assert_eq!(
             plan(VariantRule::Index(E5Variant::Fp16)).unwrap(),
             Plan {
                 gpu: Some(E5Variant::Fp16),
@@ -1072,12 +1158,15 @@ mod tests {
         );
 
         std::fs::remove_file(e5.join(E5Variant::Fp16.file_name())).unwrap();
+        let int8_only = Plan {
+            gpu: None,
+            cpu: E5Variant::Int8,
+        };
+        assert_eq!(plan(VariantRule::Fastest).unwrap(), int8_only);
         assert_eq!(
-            plan(VariantRule::Fastest).unwrap(),
-            Plan {
-                gpu: None,
-                cpu: E5Variant::Int8
-            }
+            plan_saturating(VariantRule::Fastest).unwrap(),
+            int8_only,
+            "only int8 installed"
         );
         assert!(plan(VariantRule::Index(E5Variant::Fp16)).is_err());
     }
@@ -1103,6 +1192,16 @@ mod tests {
             .embed_batch_with_mode(&[target], E5Mode::Passage)
             .expect("alone")
             .remove(0);
+        // Which kernels ran, and a digest of the vector: equal digests on
+        // runners of one processor class, different ones across classes.
+        let digest = alone.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| {
+            (h ^ u64::from(x.to_bits())).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        eprintln!(
+            "processor {:?}; int8 kernels {:?}; vector digest {digest:016x}",
+            std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default(),
+            int8_kernels()
+        );
         let long = "Linear attention replaces softmax with a kernel feature map. ".repeat(30);
         let many: Vec<String> = (0..80)
             .map(|i| {
@@ -1222,12 +1321,14 @@ mod tests {
         config.calibration_file = Some(file.clone());
         let model = E5Embeddings::new(config.clone()).expect("load E5");
         assert_eq!(model.accelerator(), Accelerator::Cpu);
-        // No index yet and the CPU: the int8 export, when installed.
-        let expected = if installed_variants(&config.model_dir).contains(&E5Variant::Int8) {
-            E5Variant::Int8
-        } else {
-            E5Variant::Fp16
-        };
+        // No index yet and the CPU: the int8 export, when installed and this
+        // processor runs it exactly.
+        let expected =
+            if installed_variants(&config.model_dir).contains(&E5Variant::Int8) && int8_exact() {
+                E5Variant::Int8
+            } else {
+                E5Variant::Fp16
+            };
         assert_eq!(model.variant(), expected);
         let report = status.embedder().expect("reported");
         assert_eq!(report.model_file, expected.file_name());

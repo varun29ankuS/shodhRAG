@@ -1174,31 +1174,29 @@ mod tests {
             }
         }
 
-        // On Windows the scheme counts as local only over the protocol the
-        // app serves it with (http); the https form is a remote origin.
-        if cfg!(windows) {
-            let https = preview.replacen("http://", "https://", 1);
-            let result = call(&main, "get_app_settings", &https);
-            assert!(refused(&result), "{https}: {result:?}");
-        }
-
         // Tripwire, not a guarantee: the Artifacts preview frame lives in the
         // main webview, and Tauri 2.9 counts every registered custom scheme
-        // as a local origin (`Webview::is_local_url`, on macOS by scheme, on
-        // Windows as http://<scheme>.localhost), so the ACL grants the frame
-        // what it grants main; the invoke key is the barrier there
-        // (creations/preview.rs). This bypasses the key on purpose. A Tauri
-        // that classes the frame as remote refuses it, since no capability
-        // allows remote origins: that is an improvement, reported here, not
-        // a failure. Anything else is unexpected.
-        match call(&main, "get_app_settings", &preview) {
-            Ok(answer) if answer == REACHED => {}
-            result if refused(&result) => eprintln!(
-                "NOTE: the ACL now refuses the preview origin {preview} in the main webview. \
-                 The preview is no longer a local origin: update creations/preview.rs and \
-                 remove this tripwire."
-            ),
-            other => panic!("unexpected answer from the preview origin: {other:?}"),
+        // as a local origin (`Webview::is_local_url`: on macOS and Linux by
+        // scheme, on Windows as http(s)://<scheme>.localhost, either scheme),
+        // so the ACL grants the frame what it grants main; the invoke key is
+        // the barrier there (creations/preview.rs). This bypasses the key on
+        // purpose. A Tauri that classes the frame as remote refuses it, since
+        // no capability allows remote origins: that is an improvement,
+        // reported here, not a failure. Anything else is unexpected.
+        let mut preview_forms = vec![preview.clone()];
+        if cfg!(windows) {
+            preview_forms.push(preview.replacen("http://", "https://", 1));
+        }
+        for form in preview_forms {
+            match call(&main, "get_app_settings", &form) {
+                Ok(answer) if answer == REACHED => {}
+                result if refused(&result) => eprintln!(
+                    "NOTE: the ACL now refuses the preview origin {form} in the main webview. \
+                     The preview is no longer a local origin: update creations/preview.rs and \
+                     remove this tripwire."
+                ),
+                other => panic!("unexpected answer from the preview origin {form}: {other:?}"),
+            }
         }
     }
 }

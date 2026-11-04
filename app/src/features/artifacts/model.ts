@@ -1,7 +1,7 @@
 /**
  * The Artifacts tab's data and the rules it shows them by: Creator mode's creations
- * (`creation_commands.rs`), the progress of a build, the finish card's choices and the
- * preview frame's isolation.
+ * (`creation_commands.rs`), the progress of a build, the finish card's choices and what
+ * the preview window says.
  *
  * Pure (no React, no Tauri) so it is unit-tested directly with Node
  * (`app/tests/artifacts.test.ts`).
@@ -70,8 +70,10 @@ export interface CodeChange {
   autoApplied: number;
 }
 
+/** A preview shown in its own window (`creations/preview_window.rs`). */
 export interface PreviewInfo {
-  url: string;
+  /** The preview window, for moving, reloading and closing it. */
+  label: string;
   network: boolean;
   page: string;
 }
@@ -90,38 +92,101 @@ export function isArtifactPane(value: unknown): value is ArtifactPane {
   return typeof value === 'string' && (ARTIFACT_PANES as readonly string[]).includes(value);
 }
 
-/**
- * The preview frame's `sandbox`: scripts run, nothing else. Never `allow-same-origin`
- * (the page would share an origin it could reach the app from), never popups, top
- * navigation, forms, downloads or modals. The page also gets `sandbox allow-scripts`
- * in its own CSP (`creations/preview.rs`).
- */
-export const PREVIEW_SANDBOX = 'allow-scripts';
-
-/** No camera, microphone, location, clipboard or other powerful feature in the frame. */
-export const PREVIEW_ALLOW = "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; display-capture 'none'; usb 'none'; serial 'none'; bluetooth 'none'; payment 'none'";
 
 /**
- * What the preview says about itself, exactly as far as it goes. With the switch off the
- * page cannot load or send anything through the web, WebRTC is gone and DNS look-ahead is
- * off; a browser may still warm up a connection to a link the page shows, so it is not
- * called a sealed network.
+ * What the preview says about itself, exactly as far as it goes.
+ *
+ * With the switch off, on Windows the preview window's own browser sends everything to a
+ * closed address and lets WebRTC use no direct route, so nothing it sends leaves the
+ * computer. On a Mac no engine setting closes WebRTC; a page script guard is all there is,
+ * and guards can be broken, so the text says so plainly (`creations/preview.rs`).
  */
-export const PREVIEW_NETWORK_OFF_TEXT =
-  'The page runs in its own frame: it cannot use Shodh, read your files or reach your accounts. It cannot load or send anything over the internet, and WebRTC and DNS look-ahead are off. A hostile page might still make the browser connect ahead to a link it shows, which can reveal that it ran.';
+const ISOLATION = 'The page runs in a window of its own: it cannot use Shodh, read your files or reach your accounts.';
+
+export const PREVIEW_NETWORK_OFF_TEXT_WINDOWS =
+  `${ISOLATION} Its traffic goes to a closed address, so it cannot load or send anything over the internet, WebRTC included. Camera, microphone and other devices are refused.`;
+
+export const PREVIEW_NETWORK_OFF_TEXT_MAC =
+  `${ISOLATION} It cannot load pages or send requests over the internet. On a Mac a hostile page might still reach the internet through WebRTC, which Shodh can only partly block there, and that can reveal that it ran.`;
 
 export const PREVIEW_NETWORK_ON_TEXT =
-  'The page runs in its own frame: it cannot use Shodh, read your files or reach your accounts. While this is on, it can load from and send to any secure (https) site.';
+  `${ISOLATION} While this is on, it can load from and send to any secure (https) site, and use WebRTC.`;
 
-/** Whether a frame's sandbox tokens keep an agent-built page isolated. */
-export function sandboxIsIsolated(sandbox: string): boolean {
-  const tokens = sandbox.split(/\s+/).filter(Boolean);
-  return tokens.every(token => token === 'allow-scripts');
+/** The line under the internet switch, for this computer. */
+export function previewNetworkText(network: boolean, mac: boolean): string {
+  if (network) return PREVIEW_NETWORK_ON_TEXT;
+  return mac ? PREVIEW_NETWORK_OFF_TEXT_MAC : PREVIEW_NETWORK_OFF_TEXT_WINDOWS;
 }
 
-/** Whether `url` is a preview of this app's scheme (`creations/preview.rs` `origin()`). */
-export function isPreviewUrl(url: string): boolean {
-  return /^(?:shodh-preview:\/\/localhost|http:\/\/shodh-preview\.localhost)\/[0-9a-f]{32}\//.test(url);
+/** The preview open now (`creation_preview_status`), if any. */
+export interface PreviewShown {
+  label: string;
+  creationId: string;
+  version: number | null;
+  network: boolean;
+}
+
+export function parsePreviewShown(value: unknown): PreviewShown | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const { label, creationId, version, network } = value as Record<string, unknown>;
+  if (typeof label !== 'string' || typeof creationId !== 'string' || typeof network !== 'boolean') return null;
+  const at = typeof version === 'number' && Number.isInteger(version) && version > 0 ? version : null;
+  return { label, creationId, version: at, network };
+}
+
+/** The event Rust sends the main window about its preview window (`preview_window.rs`). */
+export const PREVIEW_EVENT = 'creation-preview';
+
+export type PreviewState = 'loaded' | 'blocked' | 'closed' | 'stopped';
+
+export interface PreviewEvent {
+  label: string;
+  /**
+   * Loaded: the first page finished. Blocked: it tried to leave its files, open a window or
+   * download. Closed: the window went (the user, the page or Shodh closed it). Stopped: the
+   * page's browser process crashed or hung.
+   */
+  state: PreviewState;
+}
+
+const PREVIEW_STATES: readonly string[] = ['loaded', 'blocked', 'closed', 'stopped'];
+
+export function parsePreviewEvent(payload: unknown): PreviewEvent | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const { label, state } = payload as { label?: unknown; state?: unknown };
+  if (typeof label !== 'string' || typeof state !== 'string' || !PREVIEW_STATES.includes(state)) return null;
+  return { label, state: state as PreviewState };
+}
+
+/** What the card says when the page was stopped from leaving its files. */
+export const PREVIEW_BLOCKED_TEXT = 'The page tried to open another address, a window or a download. Shodh stopped it.';
+
+/** Why the preview window closed, when the tab closed it or saw it go. */
+export type PreviewEnd = 'closed' | 'stopped' | 'version' | 'network';
+
+export const PREVIEW_END_TEXT: Record<PreviewEnd, string> = {
+  closed: 'The preview closed.',
+  stopped: 'The preview stopped working. Open it again to restart it.',
+  version: 'The preview closed because you picked another version. Open it again to see that version.',
+  network: 'The preview closed because you changed the internet switch. Open it again to use the new setting.',
+};
+
+/** What the card says about the window it shows. */
+export function previewShowingText(version: number | null): string {
+  return version === null
+    ? 'Showing the folder as it is now, in its own window.'
+    : `Showing version ${version}, in its own window.`;
+}
+
+/**
+ * Whether the open preview no longer matches what the page asks for, and why: another
+ * version or a changed switch closes it (with a note), anything else keeps it.
+ */
+export function previewEndFor(shown: PreviewShown, creationId: string, version: number | null, network: boolean): PreviewEnd | null {
+  if (shown.creationId !== creationId) return null;
+  if (shown.version !== version) return 'version';
+  if (shown.network !== network) return 'network';
+  return null;
 }
 
 /** Tools whose start means the agent began building: the tab opens. */

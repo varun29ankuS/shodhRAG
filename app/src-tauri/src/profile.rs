@@ -177,7 +177,7 @@ fn once_args(cell: &OnceLock<String>, compute: impl FnOnce() -> String) -> &str 
 /// folder, and WebView2 refuses one whose options differ from the running
 /// browser's, so a regional format or variable changed while Shodh runs
 /// must not reach a later window (a PDF export's).
-fn process_browser_args() -> &'static str {
+pub(crate) fn process_browser_args() -> &'static str {
     once_args(&BROWSER_ARGS, || {
         let lang_flag =
             os_languages().and_then(|(ui, regional)| regional_lang_flag(&ui, &regional));

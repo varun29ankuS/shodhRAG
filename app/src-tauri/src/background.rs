@@ -106,6 +106,8 @@ fn show_main(app: &AppHandle) {
         if let Err(e) = window.show().and_then(|()| window.unminimize()) {
             tracing::warn!(error = %e, "could not show the main window");
         }
+        // The Artifacts preview comes back with it, before Shodh takes the focus.
+        crate::creations::preview_window::show_with_main(app);
         if let Err(e) = window.set_focus() {
             tracing::debug!(error = %e, "could not focus the main window");
         }
@@ -254,6 +256,8 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
     if let Err(e) = window.hide() {
         tracing::warn!(error = %e, "could not hide the main window");
     }
+    // An owned window stays up when its owner hides, so the preview goes too.
+    crate::creations::preview_window::hide_with_main(app);
     if !settings.background.close_to_tray_explained {
         // Belongs to no notification category: it explains, once, the close the
         // user just made (a failure is logged by the notification service).

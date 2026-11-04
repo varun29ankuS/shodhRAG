@@ -1,81 +1,229 @@
 /**
- * The Artifacts tab: the preview frame's isolation, a build's progress line, the finish
- * card's choices, and the navigation that opens a creation. Run with Node 22.6+:
+ * The Artifacts tab: the preview window and its card, the page guard, a build's progress
+ * line, the finish card's choices, and the navigation that opens a creation. Run with Node
+ * 22.6+:
  *   node --experimental-strip-types --test app/tests/artifacts.test.ts
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import {
   ARTIFACT_PANES,
   CHANGE_DRAFT,
-  PREVIEW_ALLOW,
-  PREVIEW_NETWORK_OFF_TEXT,
+  PREVIEW_END_TEXT,
+  PREVIEW_EVENT,
+  PREVIEW_NETWORK_OFF_TEXT_MAC,
+  PREVIEW_NETWORK_OFF_TEXT_WINDOWS,
   PREVIEW_NETWORK_ON_TEXT,
-  PREVIEW_SANDBOX,
   buildProgress,
   fileRows,
   filterCreations,
   finishCard,
   isArtifactPane,
-  isPreviewUrl,
+  parsePreviewEvent,
+  parsePreviewShown,
+  previewEndFor,
+  previewNetworkText,
+  previewShowingText,
   previousVersion,
   progressLine,
-  sandboxIsIsolated,
   sizeLabel,
   startsBuilding,
 } from '../src/features/artifacts/model.ts';
 import type { Creation, StepLike } from '../src/features/artifacts/model.ts';
 import { VIEW_TABS, VIEW_TAB_LABELS, normalizeViewTab } from '../src/lib/viewTabs.ts';
 
+
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
-test('agent-built pages run in a frame that can only run scripts', () => {
-  assert.equal(PREVIEW_SANDBOX, 'allow-scripts');
-  assert.ok(sandboxIsIsolated(PREVIEW_SANDBOX));
-  for (const loose of ['allow-scripts allow-same-origin', 'allow-popups', 'allow-top-navigation', 'allow-forms', 'allow-scripts allow-modals']) {
-    assert.equal(sandboxIsIsolated(loose), false, loose);
-  }
-  // No powerful feature is delegated to the frame.
-  for (const feature of ['camera', 'microphone', 'geolocation', 'clipboard-read', 'clipboard-write', 'display-capture']) {
-    assert.match(PREVIEW_ALLOW, new RegExp(`${feature} 'none'`), feature);
-  }
-  // Every frame in the app's source that shows a creation uses these, and none is same-origin.
+test('agent-built pages never load in the app: no frame, no preview address, no grants', () => {
+  // The page shows in a window of its own label that Rust opens (creations/preview_window.rs);
+  // the app's own page renders no frame of it and never learns its address.
   const page = read('../src/features/artifacts/ArtifactPage.tsx');
-  assert.match(page, /sandbox=\{PREVIEW_SANDBOX\}/);
-  assert.match(page, /allow=\{PREVIEW_ALLOW\}/);
-  assert.match(page, /referrerPolicy="no-referrer"/);
-  assert.doesNotMatch(page, /allow-same-origin/);
-  assert.doesNotMatch(page, /srcDoc|srcdoc/, 'a srcdoc frame would inherit the app\'s policy and origin rules');
-});
-
-test('only previews of the app\'s own scheme count as previews', () => {
-  const token = '0123456789abcdef0123456789abcdef';
-  assert.ok(isPreviewUrl(`shodh-preview://localhost/${token}/index.html`));
-  assert.ok(isPreviewUrl(`http://shodh-preview.localhost/${token}/index.html`));
-  for (const url of [
-    `https://shodh-preview.localhost/${token}/index.html`,
-    `http://ipc.localhost/${token}/`,
-    `http://shodh-preview.localhost.evil.example/${token}/`,
-    `http://tauri.localhost/${token}/`,
-    'http://shodh-preview.localhost/short/index.html',
-  ]) {
-    assert.equal(isPreviewUrl(url), false, url);
+  assert.doesNotMatch(page, /<iframe/);
+  assert.doesNotMatch(page, /srcDoc|srcdoc/);
+  for (const file of ['ArtifactPage.tsx', 'api.ts', 'model.ts', 'ArtifactsView.tsx', 'CreatorFinishCard.tsx']) {
+    assert.doesNotMatch(read(`../src/features/artifacts/${file}`), /shodh-preview/, file);
+  }
+  const rust = read('../src-tauri/src/creation_commands.rs');
+  assert.match(rust, /pub struct PreviewInfo \{(?:\s*\/\/\/[^\n]*)*\s*pub label: String,/);
+  assert.doesNotMatch(rust, /pub url: String/);
+  // No capability names the preview window's label.
+  for (const file of ['main.json', 'print.json']) {
+    const capability = JSON.parse(read(`../src-tauri/capabilities/${file}`)) as { webviews: string[] };
+    for (const label of capability.webviews) assert.doesNotMatch(label, /^preview/, `${file}: ${label}`);
   }
 });
 
-test('the app lets frames load only blobs and previews, in release and in development', () => {
+test('the app frames only blobs, in release and in development', () => {
   const config = JSON.parse(read('../src-tauri/tauri.conf.json')) as {
     app: { security: Record<string, Record<string, string>> };
   };
   for (const key of ['csp', 'devCsp']) {
     const frames = config.app.security[key]['frame-src'].split(/\s+/).sort();
-    assert.deepEqual(frames, ['blob:', 'http://shodh-preview.localhost', 'shodh-preview:'], key);
+    assert.deepEqual(frames, ['blob:'], key);
+    for (const [directive, value] of Object.entries(config.app.security[key])) {
+      assert.doesNotMatch(value, /shodh-preview/, `${key} ${directive}`);
+    }
     // The app's own scripts stay as strict as before: no inline scripts in release.
     if (key === 'csp') assert.doesNotMatch(config.app.security[key]['script-src'], /unsafe-inline/);
   }
 });
 
+
+test('the preview is a normal window the user opens; the pane holds its card', () => {
+  const page = read('../src/features/artifacts/ArtifactPage.tsx');
+  // No overlay: nothing measures the pane, tracks layers or follows the main window.
+  for (const gone of ['requestAnimationFrame', 'getBoundingClientRect', 'previewPlacement', 'data-floating-layer', 'placePreview']) {
+    assert.doesNotMatch(page, new RegExp(gone), gone);
+  }
+  assert.doesNotMatch(read('../src/components/shell/ConversationDock.tsx'), /data-floating-layer/);
+  // The card: Bring to front, Reload and Close, a heading and a live status line.
+  for (const label of ['Bring to front', 'Reload', 'Close', 'Open preview', 'Open it again']) {
+    assert.ok(page.includes(`${label}\n`) || page.includes(`'${label}'`), label);
+  }
+  assert.match(page, /aria-labelledby=\{headingId\}/);
+  assert.match(page, /role="status" aria-live="polite"/);
+  // It opens on a click of Preview or when the assistant shows the preview, never on its own
+  // when a build starts (that request names no pane).
+  assert.match(page, /if \(name === 'preview'\) setOpenSeq\(seq => seq \+ 1\)/);
+  assert.match(read('../src/features/artifacts/ArtifactsView.tsx'), /showPreview: target\.pane === 'preview'/);
+  assert.match(read('../src/features/ask/ChatSessionContext.tsx'), /artifactId: live\.creationId, version: null, pane: null \}/);
+  // The window is a normal one: titled, resizable, decorated, its own close keys honoured.
+  const rust = read('../src-tauri/src/creations/preview_window.rs');
+  for (const part of ['.decorations(true)', '.resizable(true)', '.title(window_title(']) assert.ok(rust.includes(part), part);
+  assert.doesNotMatch(rust, /prevent_close\(|skip_taskbar\(true\)|\.parent\(/);
+});
+
+test('the card says what the window shows and why it closed', () => {
+  assert.equal(previewShowingText(null), 'Showing the folder as it is now, in its own window.');
+  assert.equal(previewShowingText(3), 'Showing version 3, in its own window.');
+  const shown = { label: 'preview-0123456789abcdef0123456789abcdef', creationId: 'cr_a', version: 2, network: false };
+  assert.equal(previewEndFor(shown, 'cr_a', 2, false), null);
+  assert.equal(previewEndFor(shown, 'cr_a', null, false), 'version');
+  assert.equal(previewEndFor(shown, 'cr_a', 2, true), 'network');
+  // Another creation's page leaves the window alone.
+  assert.equal(previewEndFor(shown, 'cr_b', null, true), null);
+  for (const why of ['closed', 'stopped', 'version', 'network'] as const) {
+    assert.ok(PREVIEW_END_TEXT[why].length > 0, why);
+  }
+  assert.match(PREVIEW_END_TEXT.version, /another version/);
+  assert.match(PREVIEW_END_TEXT.network, /internet switch/);
+  assert.deepEqual(parsePreviewShown(shown), shown);
+  assert.deepEqual(parsePreviewShown({ ...shown, version: null }), { ...shown, version: null });
+  for (const bad of [null, 'x', { ...shown, label: 7 }, { ...shown, network: 'no' }]) {
+    assert.equal(parsePreviewShown(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('only Rust reports on the preview window, in four plain states', () => {
+  assert.equal(PREVIEW_EVENT, 'creation-preview');
+  assert.match(read('../src-tauri/src/creations/preview_window.rs'), /pub const PREVIEW_EVENT: &str = "creation-preview";/);
+  const label = 'preview-0123456789abcdef0123456789abcdef';
+  for (const state of ['loaded', 'blocked', 'closed', 'stopped'] as const) {
+    assert.deepEqual(parsePreviewEvent({ label, state }), { label, state });
+  }
+  for (const bad of [null, 'loaded', { label }, { label, state: 'navigated' }, { label: 7, state: 'loaded' }]) {
+    assert.equal(parsePreviewEvent(bad), null, JSON.stringify(bad));
+  }
+});
+
+/** The page guard as preview.rs ships it (its raw string). */
+function guardScript(): string {
+  const rust = read('../src-tauri/src/creations/preview.rs');
+  const start = rust.indexOf('r#"', rust.indexOf('macro_rules! guard_script'));
+  const end = rust.indexOf('"#', start + 3);
+  assert.ok(start > 0 && end > start, 'the guard script in preview.rs');
+  return rust.slice(start + 3, end);
+}
+
+/**
+ * A browser window, as far as the guard reaches into it: the WebRTC interfaces, media
+ * capture, frames the page makes, and the DOM calls that insert them.
+ */
+function fakeWindow(): Record<string, unknown> {
+  const frames: Record<string, unknown>[] = [];
+  const win: Record<string, unknown> = {};
+  class Navigator {
+    get mediaDevices() { return { getUserMedia: () => 'camera' }; }
+    getUserMedia() { return 'camera'; }
+  }
+  class MediaDevices {
+    getUserMedia() { return 'camera'; }
+    getDisplayMedia() { return 'screen'; }
+  }
+  class HTMLIFrameElement {
+    child: Record<string, unknown>;
+    constructor() { this.child = fakeChild(); }
+    get contentWindow() { return this.child; }
+    get contentDocument() { return { defaultView: this.child }; }
+  }
+  class Node {
+    appendChild(node: unknown) {
+      if (node instanceof HTMLIFrameElement) frames.push(node.child);
+      return node;
+    }
+  }
+  class Element extends Node {}
+  Object.assign(win, {
+    RTCPeerConnection: function RTCPeerConnection() {},
+    RTCDataChannel: function RTCDataChannel() {},
+    navigator: new Navigator(),
+    Navigator,
+    MediaDevices,
+    HTMLIFrameElement,
+    Node,
+    Element,
+    frames: { get length() { return frames.length; } },
+    document: {},
+  });
+  Object.defineProperty(win.frames, '0', { get: () => frames[0] });
+  return win;
+}
+
+function fakeChild(): Record<string, unknown> {
+  return {
+    RTCPeerConnection: function RTCPeerConnection() {},
+    navigator: { mediaDevices: { getUserMedia: () => 'camera' } },
+    frames: { length: 0 },
+    document: {},
+  };
+}
+
+test('the page guard takes WebRTC and media capture away from the page and the frames it makes', () => {
+  const win = fakeWindow();
+  runInNewContext(guardScript(), { window: win, Object });
+  assert.equal(win.RTCPeerConnection, undefined);
+  assert.equal(win.RTCDataChannel, undefined);
+  const navigator = win.navigator as Record<string, unknown>;
+  assert.equal(navigator.mediaDevices, undefined);
+  assert.equal(navigator.getUserMedia, undefined);
+  const MediaDevicesClass = win.MediaDevices as { prototype: Record<string, unknown> };
+  assert.equal(MediaDevicesClass.prototype.getUserMedia, undefined);
+  assert.equal(MediaDevicesClass.prototype.getDisplayMedia, undefined);
+  // It cannot be put back.
+  assert.throws(() => {
+    'use strict';
+    Object.defineProperty(win, 'RTCPeerConnection', { value: () => 'peer' });
+  });
+  // A frame read through contentWindow is guarded before the page gets it.
+  const Frame = win.HTMLIFrameElement as new () => { contentWindow: Record<string, unknown>; contentDocument: { defaultView: Record<string, unknown> } };
+  const first = new Frame();
+  assert.equal(first.contentWindow.RTCPeerConnection, undefined);
+  assert.equal((first.contentWindow.navigator as Record<string, unknown>).mediaDevices, undefined);
+  const second = new Frame();
+  assert.equal(second.contentDocument.defaultView.RTCPeerConnection, undefined);
+  // A frame inserted and then reached through window.frames is guarded by the insertion.
+  const third = new Frame();
+  const NodeClass = win.Node as { prototype: { appendChild(node: unknown): unknown } };
+  NodeClass.prototype.appendChild.call({}, third);
+  const reached = (win.frames as Record<string, Record<string, unknown>>)['0'];
+  assert.equal(reached.RTCPeerConnection, undefined);
+  // Running twice (the page's own copy after the window's) changes nothing.
+  runInNewContext(guardScript(), { window: win, Object });
+  assert.equal(win.RTCPeerConnection, undefined);
+});
 const step = (tool: string, status: string, args: unknown = {}, label = tool, detail: unknown = null): StepLike => ({
   tool,
   status,
@@ -186,15 +334,34 @@ test('files list as a tree, each folder once before its files', () => {
   assert.equal(sizeLabel(3 * 1024 * 1024), '3.0 MB');
 });
 
-test('the preview never claims a sealed network, and says what the switch opens', () => {
-  assert.doesNotMatch(PREVIEW_NETWORK_OFF_TEXT, /cannot reach the internet|no network|sealed/i);
-  assert.match(PREVIEW_NETWORK_OFF_TEXT, /WebRTC and DNS look-ahead are off/);
-  assert.match(PREVIEW_NETWORK_OFF_TEXT, /might still/);
+
+test('the preview says exactly what the internet switch does, on each system', () => {
+  for (const text of [PREVIEW_NETWORK_OFF_TEXT_WINDOWS, PREVIEW_NETWORK_OFF_TEXT_MAC, PREVIEW_NETWORK_ON_TEXT]) {
+    assert.match(text, /window of its own/);
+    // No promise that WebRTC is off: on a Mac it is not, and nowhere is a page script the block.
+    assert.doesNotMatch(text, /WebRTC (and DNS look-ahead )?(is|are) off/);
+    assert.doesNotMatch(text, /sealed|no network/i);
+  }
+  // Windows: the window's own browser has a dead proxy, so WebRTC cannot leave either.
+  assert.match(PREVIEW_NETWORK_OFF_TEXT_WINDOWS, /closed address/);
+  assert.match(PREVIEW_NETWORK_OFF_TEXT_WINDOWS, /WebRTC included/);
+  // Mac: said plainly.
+  assert.match(PREVIEW_NETWORK_OFF_TEXT_MAC, /might still reach the internet through WebRTC/);
   assert.match(PREVIEW_NETWORK_ON_TEXT, /https/);
+  assert.equal(previewNetworkText(false, false), PREVIEW_NETWORK_OFF_TEXT_WINDOWS);
+  assert.equal(previewNetworkText(false, true), PREVIEW_NETWORK_OFF_TEXT_MAC);
+  assert.equal(previewNetworkText(true, true), PREVIEW_NETWORK_ON_TEXT);
   const page = read('../src/features/artifacts/ArtifactPage.tsx');
-  assert.match(page, /network \? PREVIEW_NETWORK_ON_TEXT : PREVIEW_NETWORK_OFF_TEXT/);
-  // Every preview page and response turn the channels CSP misses off (preview.rs).
+  assert.match(page, /previewNetworkText\(network, IS_MAC\)/);
+  // The Windows claim rests on the window's arguments; the rest on the page guard (preview.rs).
+  const window = read('../src-tauri/src/creations/preview_window.rs');
+  assert.match(window, /pub const DEAD_PROXY: &str = "--proxy-server=127\.0\.0\.1:9";/);
+  assert.match(window, /\.initialization_script_for_all_frames\(preview::GUARD_SCRIPT\)/);
   const rust = read('../src-tauri/src/creations/preview.rs');
   assert.match(rust, /\.header\("X-DNS-Prefetch-Control", "off"\)/);
   assert.match(rust, /'RTCPeerConnection'/);
+  // No code comment calls WebRTC off either.
+  for (const file of ['../src-tauri/src/creations/preview.rs', '../src-tauri/src/creations/preview_window.rs', '../src/features/artifacts/model.ts']) {
+    assert.doesNotMatch(read(file), /WebRTC (and DNS look-ahead )?(is|are) off/, file);
+  }
 });

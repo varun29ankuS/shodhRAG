@@ -22,6 +22,7 @@
 pub mod diff;
 pub mod handle;
 pub mod preview;
+pub mod preview_window;
 
 use std::collections::BTreeMap;
 use std::fs;

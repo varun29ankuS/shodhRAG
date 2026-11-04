@@ -190,14 +190,19 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .on_window_event(background::on_window_event)
+        .on_window_event(|window, event| {
+            // The Artifacts preview window: its place, its end, and closing with Shodh.
+            creations::preview_window::on_window_event(window, event);
+            background::on_window_event(window, event);
+        })
         // Each page load (the first, and any reload) is drawn at the saved text size.
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 app_settings::on_page_loaded(webview);
             }
         })
-        // Creator mode's previews: agent-built pages in a sandboxed frame (creations/preview.rs).
+        // Creator mode's previews: agent-built pages, served only to their own
+        // preview window, which holds no grants (creations/preview.rs, preview_window.rs).
         .register_asynchronous_uri_scheme_protocol(
             creations::preview::SCHEME,
             creation_commands::preview_protocol,
@@ -892,6 +897,10 @@ pub fn run() {
             creation_commands::creation_file,
             creation_commands::creation_diff,
             creation_commands::creation_preview,
+            creation_commands::creation_preview_status,
+            creation_commands::creation_preview_focus,
+            creation_commands::creation_preview_reload,
+            creation_commands::creation_preview_close,
             creation_commands::creation_keep,
             creation_commands::creation_export,
             creation_commands::creation_delete,

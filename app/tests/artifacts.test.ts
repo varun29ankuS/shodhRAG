@@ -224,6 +224,14 @@ test('the page guard takes WebRTC and media capture away from the page and the f
   runInNewContext(guardScript(), { window: win, Object });
   assert.equal(win.RTCPeerConnection, undefined);
 });
+const step = (tool: string, status: string, args: unknown = {}, label = tool, detail: unknown = null): StepLike => ({
+  tool,
+  status,
+  args,
+  label,
+  detail,
+});
+
 test('building starts with the first file or command, and the progress line says what is done', () => {
   for (const tool of ['write', 'edit', 'run_command']) assert.ok(startsBuilding(tool), tool);
   for (const tool of ['read', 'grep', 'finish_creation', 'open_artifact']) assert.equal(startsBuilding(tool), false, tool);

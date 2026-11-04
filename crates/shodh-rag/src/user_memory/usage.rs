@@ -10,7 +10,7 @@
 //! similarity(m, w) = cos(E(m), E(w))
 //! overlap(m, w)    = share of m's content words that appear in w
 //! score(m)         = max over windows w of (similarity(m, w) + overlap(m, w)) / 2
-//! used             = score ≥ use_cutoff(the E5 export)
+//! used             = score ≥ DEFAULT_USE_CUTOFF
 //! ```
 //!
 //! Both signals are taken from the same window, so a long answer gains nothing from its
@@ -19,7 +19,7 @@
 //! the maximum over; the fixture's long answers measure what that costs.)
 //!
 //! Similarity alone does not separate use from topic: an answer about the same subject
-//! scores almost as high as one that relies on the memory (see [`FP16_USE_CUTOFF`]).
+//! scores almost as high as one that relies on the memory (see [`DEFAULT_USE_CUTOFF`]).
 //! An answer that uses a memory usually repeats its specifics (a name, a date, a value),
 //! which the word overlap sees; one that paraphrases it is caught by the similarity. The
 //! two are weighted equally (not tuned), so only the cutoff is fitted.
@@ -29,42 +29,35 @@
 
 use std::collections::HashSet;
 
-use crate::embeddings::e5::E5Variant;
 use crate::embeddings::EmbeddingModel;
 
-/// Score at which an answer counts as using a memory (see the module docs), with
-/// multilingual-e5-base's fp16 export (`model_O4.onnx`). Measured on `fixtures/memory_use.json`
-/// (`the_use_cutoff_separates_used_from_unused_memories_with_e5`): 66 hand-labelled
-/// memory–answer pairs, each memory once used (often paraphrased) and once in an answer on
-/// the same topic that does not use it; 18 of them have long answers (166–187 words) that
-/// use the memory in one sentence or not at all.
+/// Score at which an answer counts as using a memory (see the module docs), for both of
+/// multilingual-e5-base's exports. Measured on `fixtures/memory_use.json`
+/// (`the_use_cutoff_separates_used_from_unused_memories_with_e5`, which checks each
+/// export): 66 hand-labelled memory–answer pairs, each memory once used (often
+/// paraphrased) and once in an answer on the same topic that does not use it; 18 of them
+/// have long answers (166–187 words) that use the memory in one sentence or not at all.
 ///
-/// Chosen on the 42 tuning pairs only, as the best of a sweep in steps of 0.005: 40 of 42
-/// right (95.2%); every cutoff from 0.590 to 0.625 is within one pair of that. Tuning
-/// scores: used 0.406–0.942 (median 0.792), not used 0.357–0.633 (median 0.502).
+/// Chosen on the 42 tuning pairs only, as the best of a sweep in steps of 0.005.
 ///
-/// The 24 held-out pairs (8 long), never used to choose it: 19 of 24 right (79.2%); used
-/// 0.586–0.932 (median 0.858), not used 0.377–0.663 (median 0.579). Four of the five
-/// misses are on-topic answers that do not use the memory but score above the cutoff
-/// (two of them long), so the cutoff errs towards reinforcing a memory that did not help.
-/// On all 18 long pairs: 16 right (88.9%). The test requires at least 75% held out (one
-/// pair below the measurement). The fixture is small and written by hand: re-measure when
-/// the embedding model or the scoring changes.
-pub const FP16_USE_CUTOFF: f64 = 0.595;
-
-/// [`FP16_USE_CUTOFF`] for the int8 export (`model_qint8_avx512_vnni.onnx`, each text
-/// embedded alone), chosen the same way on the same tuning pairs. Its similarities run
-/// higher than fp16's, so its plateau sits higher.
-pub const INT8_USE_CUTOFF: f64 = 0.635;
-
-/// The cutoff for vectors of `variant`; [`FP16_USE_CUTOFF`] for a model that is no E5
-/// export (tests).
-pub fn use_cutoff(variant: Option<E5Variant>) -> f64 {
-    match variant {
-        Some(E5Variant::Int8) => INT8_USE_CUTOFF,
-        Some(E5Variant::Fp16) | None => FP16_USE_CUTOFF,
-    }
-}
+/// fp16 (`model_O4.onnx`): 40 of 42 right (95.2%), best at 0.595 alone; every cutoff from
+/// 0.590 to 0.625 is within one pair of that. Tuning scores: used 0.406–0.942 (median
+/// 0.792), not used 0.357–0.633 (median 0.502). The 24 held-out pairs (8 long), never used
+/// to choose it: 19 of 24 right (79.2%); used 0.586–0.932 (median 0.858), not used
+/// 0.377–0.663 (median 0.579). Four of the five misses are on-topic answers that do not use
+/// the memory but score above the cutoff (two of them long), so the cutoff errs towards
+/// reinforcing a memory that did not help. On all 18 long pairs: 16 right (88.9%).
+///
+/// int8 (`model_qint8_avx512_vnni.onnx`, each text embedded alone; CI run 41812434379):
+/// 39 of 42 right (92.9%), best from 0.595 to 0.620, so the same rule (the first best)
+/// gives the same cutoff; 0.575 to 0.635 is within one pair. Held out 19 of 24 (79.2%),
+/// long 16 of 18 (88.9%), as with fp16. (The int8 export run in batches, as first
+/// measured, had its plateau at 0.635: its vectors moved with their batch.)
+///
+/// The test requires at least 75% held out (one pair below the measurement). The fixture
+/// is small and written by hand: re-measure when the embedding model or the scoring
+/// changes.
+pub const DEFAULT_USE_CUTOFF: f64 = 0.595;
 
 /// Words that say nothing about which memory an answer drew on, left out of
 /// [`content_overlap`]: function words, and the labels facts are rendered with
@@ -341,7 +334,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f64 {
 }
 
 /// Scores each of `memories` (`(id, text)`) against the windows of `answer` with
-/// `embedder` (see the module docs) and judges it used at `cutoff` (normally [`use_cutoff`] of its export). Blocking
+/// `embedder` (see the module docs) and judges it used at `cutoff` (normally [`DEFAULT_USE_CUTOFF`]). Blocking
 /// (it runs the embedder); call it off the async executor. An answer with no sentence to
 /// compare uses nothing.
 pub fn judge_use(
@@ -585,8 +578,8 @@ mod tests {
         let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
             .expect("multilingual-e5-base under SHODH_TEST_MODELS")
             .with_compute(crate::compute::provider::ComputePreference::Cpu);
-        // Each export has its own cutoff; CI installs both.
-        for variant in E5Variant::ALL {
+        // One cutoff for both exports; CI installs both.
+        for variant in crate::embeddings::e5::E5Variant::ALL {
             let config = config
                 .clone()
                 .with_rule(crate::embeddings::e5::VariantRule::Index(variant));
@@ -596,7 +589,7 @@ mod tests {
                 variant.file_name()
             );
             eprintln!("== {} ({})", variant.label(), variant.file_name());
-            the_use_cutoff_separates_used_from_unused_memories(config, use_cutoff(Some(variant)));
+            the_use_cutoff_separates_used_from_unused_memories(config, DEFAULT_USE_CUTOFF);
         }
     }
 

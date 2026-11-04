@@ -198,16 +198,7 @@ function SearchDetails({ status }: { status: SystemStatus }) {
   );
 }
 
-const SWITCH_ACTION_LABEL: Record<SwitchAction, string> = {
-  start: 'Re-index for faster search',
-  continue: 'Continue',
-  cancel: 'Cancel',
-  discard: 'Discard',
-  restart: 'Restart Shodh now',
-  retry: 'Try again',
-};
-
-/** Re-indexing for the faster search model: the offer, its progress, or the restart it waits for. */
+/** Re-indexing for the faster (or back to the standard) search model: the offer, its progress, the restart it waits for, or why it failed. */
 function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction: (action: SwitchAction) => void }) {
   const view = modelSwitchView(status);
   if (!view) return null;
@@ -228,7 +219,7 @@ function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction
       {s.phase === 'building' && s.total > 0 && (
         <div
           role="progressbar"
-          aria-label="Re-indexing for faster search"
+          aria-label={view.title}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent}
@@ -241,11 +232,11 @@ function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction
         </div>
       )}
       <div className="flex flex-wrap gap-1.5 pt-0.5">
-        {view.actions.map(action => (
+        {view.actions.map(({ action, label }) => (
           <button key={action} type="button" className={SMALL_BUTTON} onClick={() => onAction(action)}>
-            {action === 'restart' && <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />}
+            {(action === 'restart' || action === 'retryRestart') && <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />}
             {(action === 'cancel' || action === 'discard') && <X className="w-3.5 h-3.5" aria-hidden="true" />}
-            {SWITCH_ACTION_LABEL[action]}
+            {label}
           </button>
         ))}
       </div>
@@ -550,13 +541,14 @@ export function SystemStatusStrip({
       case 'start':
       case 'continue':
       case 'retry':
-        void run('re-index for faster search', () => system?.startModelSwitch() ?? Promise.resolve());
+        void run('re-index the library', () => system?.startModelSwitch() ?? Promise.resolve());
         break;
       case 'cancel':
       case 'discard':
         void run('cancel re-indexing', () => system?.cancelModelSwitch() ?? Promise.resolve());
         break;
       case 'restart':
+      case 'retryRestart':
         void run('restart Shodh', () => system?.restartForModelSwitch() ?? Promise.resolve());
         break;
     }
@@ -680,7 +672,7 @@ export function SystemStatusStrip({
       )}
 
       {/* Re-indexing for faster search, when no folder is shown above: its progress, or the restart it waits for. */}
-      {switchView && !job && !collapsed && (switchBusy || status?.modelSwitch.phase === 'ready') && (
+      {switchView && !job && !collapsed && (switchBusy || status?.modelSwitch.phase === 'ready' || status?.modelSwitch.finishFailed) && (
         <div className="flex items-center gap-1 px-1">
           <button
             type="button"
@@ -698,7 +690,7 @@ export function SystemStatusStrip({
               type="button"
               className={ICON_BUTTON}
               onClick={() => onModelSwitch('cancel')}
-              aria-label="Cancel re-indexing for faster search"
+              aria-label={`Cancel: ${switchView.title}`}
               title="Cancel re-indexing"
             >
               <X className="w-3.5 h-3.5" aria-hidden="true" />

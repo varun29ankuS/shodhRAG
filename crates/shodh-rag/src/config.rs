@@ -72,6 +72,11 @@ pub struct EmbeddingConfig {
     /// the CPU, which is what they measure.
     #[serde(default)]
     pub compute: crate::compute::provider::ComputePreference,
+    /// The search model export a library without vectors is built with:
+    /// fp16 by default; int8 ("faster search, slightly less accurate") only
+    /// when the user opted in (see [`crate::embeddings::index_model`]).
+    #[serde(default)]
+    pub new_library_variant: crate::embeddings::e5::E5Variant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +215,7 @@ impl Default for RAGConfig {
                 use_e5: e5_available,
                 cache_size: 1000,
                 compute: Default::default(),
+                new_library_variant: Default::default(),
             },
             chunking: ChunkingConfig {
                 chunk_size: 1750,

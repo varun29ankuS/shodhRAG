@@ -104,7 +104,7 @@ pub async fn status_json(app: &AppHandle) -> serde_json::Value {
     serde_json::to_value(&status).unwrap_or_default()
 }
 
-fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
+pub(crate) fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
     crate::profile::app_data_dir(app)
         .map(|dir| SettingsStore::in_dir(&dir))
         .map_err(|e| format!("Failed to get app data directory: {e}"))

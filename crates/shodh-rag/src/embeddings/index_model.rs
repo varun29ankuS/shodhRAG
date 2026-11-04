@@ -13,8 +13,8 @@
 //! The record is written once, before the first vector is stored:
 //! - a data folder that already holds vectors and has no record was built
 //!   before records existed, with fp16 (the only export shipped then);
-//! - an empty one gets the export the first load chooses (a graphics card
-//!   that is faster than the CPU's int8 runs fp16, else int8).
+//! - an empty one gets the export chosen for new libraries: fp16, the default,
+//!   or int8 when the user opted in to faster search on a processor that runs it exactly.
 //!
 //! It is replaced, atomically, only when everything has been embedded again
 //! in another export ([`super::model_switch`]): the record also names the
@@ -28,7 +28,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::e5::{E5Variant, E5_DIR};
-use crate::compute::provider::{ComputePreference, GpuProbe};
 
 /// The record's file in the data folder.
 pub const INDEX_MODEL_FILE: &str = "search-index-model.json";
@@ -146,93 +145,55 @@ pub(crate) fn write_json_atomically<T: Serialize>(dir: &Path, name: &str, value:
     std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))
 }
 
-/// The E5 exports search setup installs on this machine:
+/// The E5 export search setup installs:
 /// - the index's own export, when it is recorded (`index`): nothing else can
 ///   search it;
-/// - otherwise (a new library), on a processor that runs int8 exactly
-///   (`int8_exact`, [`super::e5::int8_exact`]): int8 for the processor, plus
-///   fp16 when a graphics card may run search (`preference` allows it and
-///   `probe` finds a card a provider can use), so the first load can compare
-///   the card's fp16 with the processor's int8 and keep the faster;
-/// - on any other processor fp16, which both the card and the processor run.
+/// - otherwise (a new library) the export chosen for new libraries
+///   (`new_library`): fp16 by default; int8 only when the user opted in and
+///   this processor runs it exactly (`int8_exact`, [`super::e5::int8_exact`]).
 pub fn setup_variants(
     index: Option<E5Variant>,
-    preference: ComputePreference,
+    new_library: E5Variant,
     int8_exact: bool,
-    probe: impl FnOnce() -> GpuProbe,
 ) -> Vec<E5Variant> {
-    if let Some(variant) = index {
-        return vec![variant];
-    }
-    if !int8_exact {
-        return vec![E5Variant::Fp16];
-    }
-    let card = preference == ComputePreference::Auto
-        && matches!(probe(), GpuProbe::Devices(devices) if !devices.is_empty());
-    if card {
-        vec![E5Variant::Fp16, E5Variant::Int8]
-    } else {
-        vec![E5Variant::Int8]
+    match index {
+        Some(variant) => vec![variant],
+        None if new_library == E5Variant::Int8 && int8_exact => vec![E5Variant::Int8],
+        None => vec![E5Variant::Fp16],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compute::provider::{Accelerator, Device};
 
     #[test]
-    fn setup_installs_the_index_s_export_or_what_this_machine_runs() {
-        let card = || {
-            GpuProbe::Devices(vec![Device {
-                accelerator: Accelerator::DirectMl,
-                name: "Radeon".to_string(),
-                index: Some(0),
-                driver: None,
-            }])
-        };
-        let auto = ComputePreference::Auto;
+    fn setup_installs_the_index_s_export_or_fp16_unless_int8_was_chosen() {
         for exact in [true, false] {
             assert_eq!(
-                setup_variants(Some(E5Variant::Fp16), auto, exact, card),
+                setup_variants(Some(E5Variant::Fp16), E5Variant::Int8, exact),
                 vec![E5Variant::Fp16],
                 "an existing fp16 library needs no int8 download"
             );
             assert_eq!(
-                setup_variants(Some(E5Variant::Int8), auto, exact, card),
+                setup_variants(Some(E5Variant::Int8), E5Variant::Fp16, exact),
                 vec![E5Variant::Int8]
             );
-        }
-        assert_eq!(
-            setup_variants(None, auto, true, card),
-            vec![E5Variant::Fp16, E5Variant::Int8]
-        );
-        assert_eq!(
-            setup_variants(None, ComputePreference::Cpu, true, || unreachable!(
-                "no probe"
-            )),
-            vec![E5Variant::Int8]
-        );
-        for probe in [
-            GpuProbe::Unsupported,
-            GpuProbe::Devices(Vec::new()),
-            GpuProbe::Failed("DXGI".to_string()),
-        ] {
             assert_eq!(
-                setup_variants(None, auto, true, || probe.clone()),
-                vec![E5Variant::Int8]
+                setup_variants(None, E5Variant::Fp16, exact),
+                vec![E5Variant::Fp16],
+                "first-run setup downloads fp16 by default"
             );
         }
-        // Without exact int8 kernels a new library is fp16, card or not.
         assert_eq!(
-            setup_variants(None, auto, false, card),
-            vec![E5Variant::Fp16]
+            setup_variants(None, E5Variant::Int8, true),
+            vec![E5Variant::Int8],
+            "int8 only when chosen"
         );
         assert_eq!(
-            setup_variants(None, ComputePreference::Cpu, false, || unreachable!(
-                "no probe"
-            )),
-            vec![E5Variant::Fp16]
+            setup_variants(None, E5Variant::Int8, false),
+            vec![E5Variant::Fp16],
+            "and only where it runs exactly"
         );
     }
 

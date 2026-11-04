@@ -50,17 +50,15 @@ impl SearchModelsState {
     }
 
     /// The files setup installs for this engine: the E5 export its index was
-    /// built with, or, for a new library, the processor's int8 export plus
-    /// the graphics card's fp16 export when a card may run search
-    /// (`index_model::setup_variants`).
+    /// built with, or, for a new library, the export chosen for new libraries
+    /// (fp16 unless the user opted in to int8; `index_model::setup_variants`).
     async fn store(&self, rag_state: &RagState) -> ModelStore {
         let config = rag_state.rag.read().await.config().clone();
         let index = SearchModels::index_variant(&config);
         let variants = index_model::setup_variants(
             index,
-            config.embedding.compute,
+            config.embedding.new_library_variant,
             shodh_rag::embeddings::e5::int8_exact(),
-            shodh_rag::compute::provider::probe_gpus,
         );
         ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants)
     }

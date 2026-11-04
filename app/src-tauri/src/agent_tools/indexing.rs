@@ -215,7 +215,10 @@ impl HostTool for StatusTool {
         "What runs search on this computer (graphics card or CPU, and why), its measured speed \
          and whether it runs slower than usual, the reranker and scan reader, whether indexing \
          is paused, and what is being indexed now. Use it to answer why indexing is slow or \
-         what is running; the System status panel opens for the user."
+         what is running; the System status panel opens for the user. `modelSwitch` says \
+         whether the faster, slightly less accurate search model is offered (`offered`, \
+         `target`) or a re-index to it is running: you may suggest it, but only the user \
+         starts it, with the button in the panel that opens."
     }
     fn schema(&self) -> Value {
         json!({ "type": "object", "properties": {}, "additionalProperties": false })

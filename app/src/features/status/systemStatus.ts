@@ -46,13 +46,26 @@ export interface RunningIndex {
 
 export type SwitchPhase = 'idle' | 'downloading' | 'building' | 'stopped' | 'ready' | 'failed';
 
-/** Re-indexing for the faster search model (`search_model_switch::SwitchStatus`). */
+export type SearchModelVariant = 'fp16' | 'int8';
+
+/**
+ * The opt-in faster search model (`search_model_switch::SwitchStatus`): fp16
+ * is the standard model; int8 is "Faster search (slightly less accurate)".
+ */
 export interface ModelSwitch {
   /** The library's search model, once recorded. */
-  indexVariant: 'fp16' | 'int8' | null;
-  /** Offered: the library uses the fp16 model and search runs on the processor. */
+  indexVariant: SearchModelVariant | null;
+  /** The model a re-index moves to (in progress, or offered). */
+  target: SearchModelVariant | null;
+  /** A re-index is offered: to the faster model, or back to the standard one. */
   offered: boolean;
+  /** This processor runs the faster model exactly, so it may be chosen. */
+  fasterAvailable: boolean;
+  /** New libraries are built with the faster model (Settings → Search). */
+  fasterForNewLibraries: boolean;
   phase: SwitchPhase;
+  /** The re-index was built, and completing it when Shodh started failed. */
+  finishFailed: boolean;
   done: number;
   total: number;
   etaSeconds: number | null;
@@ -161,8 +174,12 @@ export function readSystemStatus(value: unknown): SystemStatus | null {
 
 const NO_SWITCH: ModelSwitch = {
   indexVariant: null,
+  target: null,
   offered: false,
+  fasterAvailable: false,
+  fasterForNewLibraries: false,
   phase: 'idle',
+  finishFailed: false,
   done: 0,
   total: 0,
   etaSeconds: null,
@@ -176,8 +193,12 @@ export function readModelSwitch(value: unknown): ModelSwitch {
   if (!isRecord(value)) return NO_SWITCH;
   return {
     indexVariant: oneOf(['fp16', 'int8'] as const, value.indexVariant),
+    target: oneOf(['fp16', 'int8'] as const, value.target),
     offered: value.offered === true,
+    fasterAvailable: value.fasterAvailable === true,
+    fasterForNewLibraries: value.fasterForNewLibraries === true,
     phase: oneOf(['idle', 'downloading', 'building', 'stopped', 'ready', 'failed'] as const, value.phase) ?? 'idle',
+    finishFailed: value.finishFailed === true,
     done: count(value.done) ?? 0,
     total: count(value.total) ?? 0,
     etaSeconds: count(value.etaSeconds),
@@ -193,79 +214,137 @@ export function megabytesText(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1_000_000)).toLocaleString('en-US')} MB`;
 }
 
-/** What the user can do about the switch. */
-export type SwitchAction = 'start' | 'continue' | 'cancel' | 'discard' | 'restart' | 'retry';
+/** The faster model's name wherever it is offered. */
+export const FASTER_SEARCH_NAME = 'Faster search (slightly less accurate)';
+
+/** What the user can do about the switch: `retryRestart` restarts Shodh to complete it again. */
+export type SwitchAction = 'start' | 'continue' | 'cancel' | 'discard' | 'restart' | 'retry' | 'retryRestart';
 
 /** The switch in plain words for the Search part of the panel; `null` when there is nothing to show. */
 export interface SwitchView {
   title: string;
   detail: string | null;
-  actions: SwitchAction[];
+  actions: { action: SwitchAction; label: string }[];
   tone: Tone;
 }
 
 export function modelSwitchView(status: SystemStatus | null): SwitchView | null {
   const s = status?.modelSwitch;
   if (!s) return null;
+  const toFaster = s.target === 'int8';
+  const reindexing = toFaster ? 'Re-indexing for faster search' : 'Re-indexing for standard search';
+  const modelName = toFaster ? 'faster search model' : 'standard search model';
   const passages = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'passage' : 'passages'}`;
   const counted = s.total > 0 ? `${s.done.toLocaleString('en-US')} of ${passages(s.total)}` : null;
+  const download = s.modelBytes > 0 ? `It downloads the model first (${megabytesText(s.modelBytes)}).` : null;
+  const how =
+    'Shodh re-indexes your library’s saved text once, in the background; search keeps working meanwhile, and the switch happens the next time Shodh starts.';
   switch (s.phase) {
     case 'idle':
-      if (!s.offered) return null;
-      return {
-        title: 'A faster search model is available for this computer.',
-        detail: [
-          'It indexes new files about 3 times faster on the processor, with nearly the same search quality.',
-          'Shodh embeds your library’s saved text again once, in the background; search keeps working meanwhile, and the switch happens the next time Shodh starts.',
-          s.modelBytes > 0 ? `It downloads the model first (${megabytesText(s.modelBytes)}).` : null,
-        ]
-          .filter(Boolean)
-          .join(' '),
-        actions: ['start'],
-        tone: 'idle',
-      };
+      if (!s.offered || !s.target) return null;
+      return toFaster
+        ? {
+            title: `${FASTER_SEARCH_NAME} is available for this computer.`,
+            detail: [
+              'It indexes and searches about 3 times faster on this processor, but may rank some passages lower.',
+              how,
+              download,
+            ]
+              .filter(Boolean)
+              .join(' '),
+            actions: [{ action: 'start', label: 'Re-index for faster search' }],
+            tone: 'idle',
+          }
+        : {
+            title: `Your library uses ${FASTER_SEARCH_NAME.toLowerCase()}.`,
+            detail: [
+              'The standard search model ranks passages more accurately; indexing is about 3 times slower on this processor.',
+              how,
+              download,
+            ]
+              .filter(Boolean)
+              .join(' '),
+            actions: [{ action: 'start', label: 'Re-index for standard search' }],
+            tone: 'idle',
+          };
     case 'downloading':
       return {
-        title: 'Downloading the faster search model',
+        title: `Downloading the ${modelName}`,
         detail:
           s.downloadBytes > 0
             ? `${megabytesText(s.downloadedBytes)} of ${megabytesText(s.downloadBytes)}`
             : 'Checking the model',
-        actions: ['cancel'],
+        actions: [{ action: 'cancel', label: 'Cancel' }],
         tone: 'good',
       };
     case 'building': {
       const paused = status?.indexingPaused ?? false;
       const left = paused ? null : etaText(s.etaSeconds);
       return {
-        title: paused ? 'Re-indexing for faster search (paused)' : 'Re-indexing for faster search',
+        title: paused ? `${reindexing} (paused)` : reindexing,
         detail: [counted ?? 'Starting', left].filter(Boolean).join(' · ') + '. Search keeps working meanwhile.',
-        actions: ['cancel'],
+        actions: [{ action: 'cancel', label: 'Cancel' }],
         tone: paused ? 'warn' : 'good',
       };
     }
     case 'stopped':
       return {
-        title: 'Re-indexing for faster search stopped before it finished.',
+        title: `${reindexing} stopped before it finished.`,
         detail: counted ? `It got to ${counted}; Continue picks up from there.` : 'Continue picks up where it stopped.',
-        actions: ['continue', 'discard'],
+        actions: [
+          { action: 'continue', label: 'Continue' },
+          { action: 'discard', label: 'Discard' },
+        ],
         tone: 'warn',
       };
     case 'ready':
       return {
-        title: 'The faster search model is ready.',
-        detail: 'Restart Shodh to switch to it. Starting takes a few seconds longer this once.',
-        actions: ['restart'],
+        title: `The ${modelName} is ready.`,
+        detail: 'Restart Shodh to switch to it. Starting takes longer this once, more for a large library.',
+        actions: [{ action: 'restart', label: 'Restart Shodh now' }],
         tone: 'good',
       };
     case 'failed':
-      return {
-        title: 'Re-indexing for faster search did not finish.',
-        detail: s.error ? `Reason: ${s.error}` : null,
-        actions: ['retry'],
-        tone: 'bad',
-      };
+      return s.finishFailed
+        ? {
+            title: `Switching to the ${modelName} did not finish.`,
+            detail:
+              s.error ?? 'Shodh could not finish the switch when it started, so your library kept its current model.',
+            actions: [
+              { action: 'retryRestart', label: 'Try again (restarts Shodh)' },
+              { action: 'discard', label: 'Cancel the switch' },
+            ],
+            tone: 'bad',
+          }
+        : {
+            title: `${reindexing} did not finish.`,
+            detail: s.error ? `Reason: ${s.error}` : null,
+            actions: [
+              { action: 'retry', label: 'Try again' },
+              { action: 'discard', label: 'Cancel' },
+            ],
+            tone: 'bad',
+          };
   }
+}
+
+/** The choice for new libraries in Settings → Search; `null` where the faster model cannot run. */
+export interface NewLibraryChoice {
+  faster: boolean;
+  /** About the library that already exists: it keeps its own model. */
+  current: string | null;
+}
+
+export function newLibraryChoice(status: SystemStatus | null): NewLibraryChoice | null {
+  const s = status?.modelSwitch;
+  if (!s || !s.fasterAvailable) return null;
+  const current =
+    s.indexVariant === 'int8'
+      ? `Your library uses ${FASTER_SEARCH_NAME.toLowerCase()}. To go back, use Re-index for standard search in System status.`
+      : s.indexVariant === 'fp16'
+        ? 'Your library uses the standard search model. To switch it, use Re-index for faster search in System status.'
+        : null;
+  return { faster: s.fasterForNewLibraries, current };
 }
 
 /** "≈1,200 pages a minute", rounded to two significant figures. */

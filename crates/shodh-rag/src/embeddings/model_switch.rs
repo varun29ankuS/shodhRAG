@@ -16,7 +16,15 @@
 //! replaced, atomically, by one naming the new export and tables. That rename
 //! is the switch; a crash before it leaves the old index in use and the
 //! switch is finished at the following start. The old tables are dropped
-//! after it.
+//! after it. If completing it fails, the old index stays in use and the
+//! marker keeps the reason (`finish_error`) for the System status, which
+//! offers Retry (the next start) or Cancel.
+//!
+//! Until the switch completes or is cancelled, a memory forgotten in the
+//! meantime still has its earlier copy in the switch's statement table (and
+//! that table's old versions). It is removed when the switch completes (the
+//! forgotten row is brought over, then old versions are pruned) or is
+//! cancelled (the table is dropped); it is never searched in between.
 //!
 //! The marker (`search-model-switch.json`) says a switch was started and
 //! whether its build is complete; without one, tables a cancelled or finished
@@ -72,6 +80,11 @@ pub struct PendingSwitch {
     /// Every row has been embedded once in `to`: the switch completes at the
     /// next start.
     pub built: bool,
+    /// Why completing it at the last start failed, in plain words: the old
+    /// index stayed in use. The switch is tried again at the next start
+    /// (Retry) or cancelled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_error: Option<String>,
 }
 
 /// How far a build is: rows looked at (copied or found unchanged) of all the
@@ -163,6 +176,7 @@ pub fn start(data_dir: &Path, to: E5Variant) -> Result<PendingSwitch> {
         statements_table: table_for(crate::statements::STATEMENTS_TABLE, to),
         started_at: Utc::now(),
         built: false,
+        finish_error: None,
     };
     write_pending(data_dir, &switch)?;
     tracing::info!(
@@ -277,10 +291,42 @@ where
     L: FnOnce(E5Variant) -> Result<Arc<dyn EmbeddingModel>> + Send + 'static,
 {
     let finished = finish(data_dir, load).await;
+    if let Err(e) = &finished {
+        // Kept with the switch, so the System status says why and offers
+        // Retry (the next start) or Cancel, instead of "ready, restart".
+        if let Ok(Some(mut switch)) = pending(data_dir) {
+            if switch.built {
+                switch.finish_error = Some(finish_failure_text(e));
+                if let Err(write) = write_pending(data_dir, &switch) {
+                    tracing::warn!(error = %format!("{write:#}"), "The switch's failure was not saved");
+                }
+            }
+        }
+    }
     if let Err(e) = tidy(data_dir).await {
         tracing::warn!(error = %format!("{e:#}"), "Leftover search tables were not removed");
     }
     finished
+}
+
+/// What a failed completion says to the user: what happened, in plain words,
+/// then the technical reason.
+fn finish_failure_text(error: &anyhow::Error) -> String {
+    let detail = format!("{error:#}");
+    let cause = if error.chain().any(|e| {
+        e.downcast_ref::<crate::embeddings::SearchModelsMissing>()
+            .is_some()
+    }) || detail.contains("is not installed")
+    {
+        "the search model it switches to is not installed any more"
+    } else if detail.contains("not the one the switch started from") {
+        "the library changed its search model in another way since the re-index began"
+    } else {
+        "an error stopped it"
+    };
+    format!(
+        "Shodh could not finish switching the search model when it started ({cause}), so your library kept its current model. Details: {detail}"
+    )
 }
 
 async fn finish<L>(data_dir: &Path, load: L) -> Result<Option<IndexModel>>

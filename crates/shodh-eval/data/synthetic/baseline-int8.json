@@ -4,7 +4,7 @@
   "dataset_hash": "26c12c6b06498b390057be75f5cdbafee993cdbcad0776f549dbd0a5a8164936",
   "corpus_hash": "a0dd1b9f61d3abd55c1a96ab9ff130b3d60b5f19d1a7e874e12d7d60ac9d5349",
   "recorded_at": "2026-11-04T11:20:15.393566700+00:00",
-  "approval": "int8 search model on the processor (model_qint8_avx512_vnni.onnx, each passage embedded alone so a vector never depends on its batch), used only on processors whose int8 kernels are exact (VNNI); elsewhere the eval runs fp16 against baseline.json. The user approved switching CPU search to int8 and accepting a small quality dip on 2026-11-02 (\"int8 model is fine\"), on the measurement then (passages batched): papers mrr 0.9520 -> 0.9515, ndcg@10 0.9479 -> 0.9476. Recorded from CI run 41818552734 (AMD64 Family 25 Model 17, AVX512-VNNI). Every metric equals fp16 (baseline.json).",
+  "approval": "Opt-in only: the faster, slightly less accurate search model (int8, model_qint8_avx512_vnni.onnx, each passage embedded alone so a vector never depends on its batch), which the user chooses; the default everywhere is fp16, gated by baseline.json. Offered and gated only on processors whose int8 kernels are exact (VNNI). The user accepted mrr 0.9470 on papers for this opt-in path (decision on PR #125, 2026-11-04). Recorded from CI run 41818552734 (AMD64 Family 25 Model 17, AVX512-VNNI). Every metric equals fp16 (baseline.json).",
   "settings": {
     "candidate_multiplier": "5",
     "chunk_max_tokens": "380",

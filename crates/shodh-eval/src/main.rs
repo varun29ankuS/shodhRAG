@@ -33,6 +33,7 @@ USAGE:
                        [--timeout-secs <n>] [--runtime <dir>] [--out <dir>]
   shodh-eval generate  --corpus <dir> --models <dir> [--n <n>] [--seed <n>] [--out <dir>] [--force]
   shodh-eval compare   --baseline <file> [--baseline-int8 <file>] --report <file>
+  shodh-eval int8-kernels   prints exact where the opt-in int8 search model runs exactly
 
 Outputs default to .eval-local/runs/<corpus>-<hash>/ (git-ignored). `answers` and
 `generate` send passages to the model set by SHODH_EVAL_PROVIDER / SHODH_EVAL_MODEL.";
@@ -384,6 +385,16 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
             }
             eprintln!("No regression against the baseline.");
         }
+        // Whether this processor runs the opt-in int8 model exactly ("exact") or
+        // not ("saturating"): CI measures int8 only where it is "exact".
+        "int8-kernels" => println!(
+            "{}",
+            if shodh_rag::embeddings::e5::int8_exact() {
+                "exact"
+            } else {
+                "saturating"
+            }
+        ),
         "help" | "--help" | "-h" => println!("{USAGE}"),
         other => bail!("unknown command '{other}'\n\n{USAGE}"),
     }

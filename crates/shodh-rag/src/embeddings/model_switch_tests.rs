@@ -481,3 +481,204 @@ fn a_fingerprint_covers_every_column_but_the_vector() {
         "id IN ('a''b', 'c')"
     );
 }
+
+/// A start that cannot complete the switch keeps the old index, and the
+/// switch says why in plain words (the System status offers Retry or
+/// Cancel); a later start that can, completes it and clears the reason.
+#[tokio::test]
+async fn a_failed_completion_keeps_the_old_index_and_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    start(dir.path(), E5Variant::Int8).unwrap();
+    let other = Arc::new(OtherExport::default());
+    build(dir.path(), other.clone(), never(), &|_| {})
+        .await
+        .unwrap();
+    let failed = finish_pending(dir.path(), |_| {
+        Err(crate::embeddings::SearchModelsMissing.into())
+    })
+    .await;
+    assert!(failed.is_err());
+    let record = index_model::read(dir.path()).unwrap().unwrap();
+    assert_eq!(
+        record.variant,
+        E5Variant::Fp16,
+        "the old index stays in use"
+    );
+    assert_eq!(record.documents_table, "documents");
+    let switch = pending(dir.path())
+        .unwrap()
+        .expect("kept for Retry or Cancel");
+    assert!(switch.built);
+    let reason = switch.finish_error.expect("the reason is kept");
+    assert!(
+        reason.starts_with("Shodh could not finish switching the search model")
+            && reason.contains("not installed any more"),
+        "{reason}"
+    );
+    assert!(table_names(dir.path())
+        .await
+        .contains(&"documents_int8".to_string()));
+
+    let loader = other.clone();
+    let switched = finish_pending(dir.path(), move |_| Ok(loader as Arc<dyn EmbeddingModel>))
+        .await
+        .unwrap()
+        .expect("completed on retry");
+    assert_eq!(switched.variant, E5Variant::Int8);
+    assert_eq!(pending(dir.path()).unwrap(), None);
+}
+
+/// Old versions of the table being copied are pruned (and rows deleted)
+/// while the build reads it, as the engine's compaction and the memory's
+/// purge may do. The build either finishes or fails cleanly; built again, the
+/// new table holds exactly the rows in use.
+#[tokio::test]
+async fn pruning_the_source_during_a_build_never_leaves_a_wrong_table() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    {
+        let mut engine = engine(dir.path()).await;
+        for i in 0..70 {
+            add(
+                &mut engine,
+                &format!("note://{i}"),
+                &format!("Note {i} says the meeting moved to room {i} on Friday afternoon."),
+            )
+            .await;
+        }
+    }
+    start(dir.path(), E5Variant::Int8).unwrap();
+    let other = Arc::new(OtherExport::default());
+    let db = connect(dir.path()).await.unwrap();
+    let step = AtomicUsize::new(0);
+    let first = build(
+        dir.path(),
+        other.clone(),
+        || {
+            let db = db.clone();
+            let n = step.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let documents = db.open_table("documents").execute().await.unwrap();
+                documents
+                    .delete(&format!("source = 'note://{n}'"))
+                    .await
+                    .unwrap();
+                prune_old_versions(&db, "documents").await.unwrap();
+                false
+            }
+        },
+        &|_| {},
+    )
+    .await;
+    eprintln!("build while pruning: {first:?}");
+    assert_eq!(
+        build(dir.path(), other.clone(), never(), &|_| {})
+            .await
+            .unwrap(),
+        BuildOutcome::Built
+    );
+    let live = rows(dir.path(), "documents", Rows::Documents).await;
+    let built = rows(dir.path(), "documents_int8", Rows::Documents).await;
+    assert_eq!(ids(&built), ids(&live), "exactly the rows in use");
+    for (_, text, vector) in &built {
+        assert_eq!(vector, &other.vector(text));
+    }
+}
+
+/// The real model end to end: a small library is searched with fp16, moved
+/// to int8 and back to fp16 with the switch, and every search finds the
+/// right note throughout.
+#[tokio::test]
+#[cfg_attr(
+    not(shodh_test_models),
+    ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
+)]
+async fn the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right() {
+    let models =
+        std::path::PathBuf::from(std::env::var_os("SHODH_TEST_MODELS").expect("SHODH_TEST_MODELS"));
+    let dir = tempfile::tempdir().unwrap();
+    let real = |dir: &Path| {
+        let mut config = RAGConfig::default();
+        config.data_dir = dir.to_path_buf();
+        config.embedding.model_dir = models.clone();
+        config.embedding.use_e5 = true;
+        config.embedding.dimension = crate::embeddings::e5::E5_DIMENSION;
+        config.embedding.compute = crate::compute::provider::ComputePreference::Cpu;
+        config
+    };
+    let notes = [
+        (
+            "note://tide",
+            "Tide pools hold anemones and crabs at low tide.",
+        ),
+        (
+            "note://lease",
+            "The lease notice period is sixty days, given in writing to the landlord.",
+        ),
+        (
+            "note://kettle",
+            "The kettle is descaled with citric acid once a month.",
+        ),
+    ];
+    let questions = [
+        (
+            "How long is the notice period of the lease?",
+            "note://lease",
+        ),
+        ("What lives in tide pools?", "note://tide"),
+        ("How do I descale the kettle?", "note://kettle"),
+    ];
+    async fn searches_right(engine: &RAGEngine, questions: &[(&str, &str)]) {
+        for (question, source) in questions {
+            let results = engine.search(question, 3).await.unwrap();
+            assert_eq!(
+                results.first().map(|r| r.source.as_str()),
+                Some(*source),
+                "{question}"
+            );
+        }
+    }
+    {
+        let mut engine = RAGEngine::new(real(dir.path())).await.unwrap();
+        for (source, text) in notes {
+            add(&mut engine, source, text).await;
+        }
+        searches_right(&engine, &questions).await;
+    }
+    assert_eq!(
+        index_model::read(dir.path()).unwrap().unwrap().variant,
+        E5Variant::Fp16,
+        "a new library is fp16 by default"
+    );
+    for to in [E5Variant::Int8, E5Variant::Fp16] {
+        start(dir.path(), to).unwrap();
+        let model = crate::rag_engine::switch_model(&models, to).unwrap();
+        assert_eq!(
+            build(dir.path(), model, never(), &|_| {}).await.unwrap(),
+            BuildOutcome::Built
+        );
+        let loader_models = models.clone();
+        let switched = finish_pending(dir.path(), move |v| {
+            crate::rag_engine::switch_model(&loader_models, v)
+        })
+        .await
+        .unwrap()
+        .expect("switched");
+        assert_eq!(switched.variant, to);
+        let engine = RAGEngine::new(real(dir.path())).await.unwrap();
+        searches_right(&engine, &questions).await;
+        assert_eq!(
+            engine.embeddings().unwrap().e5_variant(),
+            Some(to),
+            "queries use the library's export"
+        );
+    }
+    assert_eq!(
+        index_model::read(dir.path())
+            .unwrap()
+            .unwrap()
+            .documents_table,
+        "documents_fp16"
+    );
+}

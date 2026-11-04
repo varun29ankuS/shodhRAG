@@ -40,6 +40,8 @@ export interface SystemStatusState {
   startModelSwitch: () => Promise<void>;
   /** Stops it and throws away what it embedded. */
   cancelModelSwitch: () => Promise<void>;
+  /** Whether new libraries use the faster, slightly less accurate search model (downloads it when turned on). */
+  setFasterForNewLibraries: (faster: boolean) => Promise<void>;
   /** Restarts Shodh, which completes a re-index that is ready. */
   restartForModelSwitch: () => Promise<void>;
 }
@@ -141,6 +143,11 @@ export function useSystemStatus(): SystemStatusState {
     refresh();
   }, [refresh]);
 
+  const setFasterForNewLibraries = useCallback(async (faster: boolean) => {
+    await invoke('set_faster_search_for_new_libraries', { faster });
+    refresh();
+  }, [refresh]);
+
   const restartForModelSwitch = useCallback(async () => {
     await invoke('restart_for_search_model_switch');
   }, []);
@@ -154,6 +161,7 @@ export function useSystemStatus(): SystemStatusState {
     setUseGpu,
     startModelSwitch,
     cancelModelSwitch,
+    setFasterForNewLibraries,
     restartForModelSwitch,
   };
 }

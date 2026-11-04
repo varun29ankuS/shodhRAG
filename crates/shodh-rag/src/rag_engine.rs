@@ -1710,12 +1710,13 @@ impl EmbeddingModel for LazyEmbeddings {
 /// Loads the E5 model in the export the index in `data_dir` was built with
 /// ([`index_model`]): never another, so vectors are never mixed. With no
 /// record yet (`settled`: the index was checked and holds no vectors), the
-/// load chooses the fastest export for this machine and records it before
-/// any vector is stored; a record that cannot be written fails the load.
+/// load builds it with `new_library` (fp16 unless the user chose int8) and records
+/// it before any vector is stored; a record that cannot be written fails the load.
 fn load_for_index(
     config: &E5Config,
     data_dir: &Path,
     settled: &std::sync::atomic::AtomicBool,
+    new_library: E5Variant,
 ) -> Result<E5Embeddings> {
     match index_model::read(data_dir)? {
         Some(record) => {
@@ -1727,7 +1728,7 @@ fn load_for_index(
                     "which search model built this library could not be checked at start (see the log); search waits for a restart"
                 );
             }
-            let model = E5Embeddings::new(config.clone().with_rule(VariantRule::Fastest))?;
+            let model = E5Embeddings::new(config.clone().with_rule(VariantRule::New(new_library)))?;
             index_model::write(data_dir, model.variant(), "first vectors")?;
             Ok(model)
         }
@@ -2137,9 +2138,28 @@ impl RAGEngine {
         config.calibration_file = Some(self.config.data_dir.join(SEARCH_SPEED_FILE));
         let data_dir = self.config.data_dir.clone();
         let settled = self.index_model_settled.clone();
+        let new_library = self.config.embedding.new_library_variant;
         self.embedder
-            .set_loader(move || load_for_index(&config, &data_dir, &settled));
+            .set_loader(move || load_for_index(&config, &data_dir, &settled, new_library));
         self.embedder_e5 = true;
+    }
+
+    /// The search model export a library without vectors is built with
+    /// (fp16 unless the user opted in to int8). A library that has vectors
+    /// keeps its own export; the loader is replaced only while this one has
+    /// none yet.
+    pub fn set_new_library_variant(&mut self, variant: E5Variant) -> Result<()> {
+        if self.config.embedding.new_library_variant == variant {
+            return Ok(());
+        }
+        self.config.embedding.new_library_variant = variant;
+        if self.embedder_e5 && index_model::read(&self.config.data_dir)?.is_none() {
+            match E5Config::auto_detect(&self.config.embedding.model_dir) {
+                Some(config) => self.set_embedder_loader(config),
+                None => return Err(SearchModelsMissing.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Attach models loaded with [`SearchModels::load`]. Fails when the
@@ -7432,7 +7452,7 @@ mod lazy_embedder_tests {
         let config = E5Config::auto_detect(dir.path()).unwrap();
         let data = dir.path().join("data");
         let unchecked = std::sync::atomic::AtomicBool::new(false);
-        let error = load_for_index(&config, &data, &unchecked)
+        let error = load_for_index(&config, &data, &unchecked, E5Variant::Fp16)
             .err()
             .expect("refused");
         assert!(format!("{error:#}").contains("could not be checked"));

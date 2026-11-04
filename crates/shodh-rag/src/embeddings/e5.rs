@@ -25,11 +25,12 @@ pub const E5_DIMENSION: usize = 768;
 /// The exports of multilingual-e5-base Shodh runs. Their vectors are close
 /// but not the same, so an index holds vectors of one export only
 /// ([`crate::embeddings::index_model`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum E5Variant {
     /// `model_O4.onnx` (optimum O4: fp16 weights), 555 MB. Runs on a
     /// graphics card or the CPU, with sequences batched.
+    #[default]
     Fp16,
     /// `model_qint8_avx512_vnni.onnx` (int8 weights, activations quantised
     /// while it runs), 279 MB: about 3x faster than fp16 on the CPU. The CPU
@@ -123,8 +124,8 @@ pub fn int8_kernels() -> Int8Kernels {
     }
 }
 
-/// Whether this processor runs the int8 export exactly, so it may build an
-/// int8 index. Elsewhere the CPU runs fp16.
+/// Whether this processor runs the int8 export exactly, so int8 ("faster
+/// search, slightly less accurate") may be offered. Elsewhere only fp16 is.
 pub fn int8_exact() -> bool {
     int8_kernels() != Int8Kernels::Saturating
 }
@@ -136,11 +137,12 @@ pub enum VariantRule {
     /// one used, on whatever runs it (fp16: a graphics card or the CPU;
     /// int8: the CPU).
     Index(E5Variant),
-    /// No vectors exist yet: a graphics card runs fp16, the CPU int8 (on a
-    /// processor that runs it exactly, [`int8_exact`]; fp16 elsewhere), and
-    /// whichever [`choose`] keeps decides the export
+    /// No vectors exist yet: the library is built with this export, the
+    /// user's choice for a new library (fp16 unless they opted in to int8).
+    /// int8 is used only where it is installed and runs exactly
+    /// ([`int8_exact`]); otherwise fp16. The export loaded is the library's
     /// ([`E5Embeddings::variant`]).
-    Fastest,
+    New(E5Variant),
 }
 
 #[derive(Clone)]
@@ -174,8 +176,8 @@ pub fn installed_variants(dir: &Path) -> Vec<E5Variant> {
 
 impl E5Config {
     /// The E5 model under the model root `model_dir` when its tokenizer and
-    /// at least one export are installed, with [`VariantRule::Fastest`]
-    /// (the engine sets the rule its index needs).
+    /// at least one export are installed, with the default rule for a new
+    /// library, fp16 (the engine sets the rule its index needs).
     pub fn auto_detect(model_dir: &Path) -> Option<Self> {
         let dir = model_dir.join(E5_DIR);
         if installed_variants(&dir).is_empty() {
@@ -183,7 +185,7 @@ impl E5Config {
         }
         Some(Self {
             model_dir: dir,
-            rule: VariantRule::Fastest,
+            rule: VariantRule::New(E5Variant::Fp16),
             dimension: E5_DIMENSION,
             max_length: 512,
             normalize: true,
@@ -210,7 +212,7 @@ impl E5Config {
         let installed = installed_variants(&self.model_dir);
         match self.rule {
             VariantRule::Index(variant) => installed.contains(&variant),
-            VariantRule::Fastest => !installed.is_empty(),
+            VariantRule::New(_) => !installed.is_empty(),
         }
     }
 
@@ -243,13 +245,15 @@ impl E5Config {
                     cpu: variant,
                 })
             }
-            VariantRule::Fastest => {
+            VariantRule::New(chosen) => {
                 let has = |v: E5Variant| installed.contains(&v);
-                // int8 only where its integer kernels are exact; with only
-                // int8 installed (a library moved to another computer before
-                // it had vectors), int8 rather than nothing.
-                let cpu = if has(E5Variant::Int8) && int8_exact {
-                    E5Variant::Int8
+                // The chosen export when it can run here (int8: installed and
+                // exact); else fp16; with only int8 installed (a library moved
+                // to another computer before it had vectors), int8 rather
+                // than nothing.
+                let usable = |v: E5Variant| has(v) && (v == E5Variant::Fp16 || int8_exact);
+                let variant = if usable(chosen) {
+                    chosen
                 } else if has(E5Variant::Fp16) {
                     E5Variant::Fp16
                 } else if has(E5Variant::Int8) {
@@ -260,9 +264,16 @@ impl E5Config {
                         self.model_dir.display()
                     ));
                 };
+                if variant != chosen {
+                    tracing::warn!(
+                        chosen = chosen.label(),
+                        used = variant.label(),
+                        "The search model chosen for a new library cannot run here; using another"
+                    );
+                }
                 Ok(Plan {
-                    gpu: has(E5Variant::Fp16).then_some(E5Variant::Fp16),
-                    cpu,
+                    gpu: variant.runs_on_gpu().then_some(variant),
+                    cpu: variant,
                 })
             }
         }
@@ -1049,8 +1060,8 @@ impl EmbeddingModel for E5Embeddings {
 mod tests {
     use super::*;
 
-    /// The installed E5 model on the CPU, with no index yet (the int8
-    /// export when it is installed, as on a new library).
+    /// The installed E5 model on the CPU, with no index yet (fp16, the default
+    /// for a new library).
     fn model_config() -> E5Config {
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory");
@@ -1083,11 +1094,11 @@ mod tests {
         assert_eq!(serde_json::to_value(E5Variant::Int8).unwrap(), "int8");
     }
 
-    /// Which export runs where: an index's export everywhere it can run, and
-    /// with no index the card's fp16 and the CPU's int8 (fp16 on the CPU
-    /// only when int8 is missing).
+    /// Which export runs where: an index's export everywhere it can run; a
+    /// new library fp16 unless int8 was chosen, and int8 only where it is
+    /// installed and exact.
     #[test]
-    fn the_plan_follows_the_index_and_the_installed_files() {
+    fn the_plan_follows_the_index_and_the_choice_for_a_new_library() {
         let dir = tempfile::tempdir().expect("temp dir");
         let e5 = dir.path().join(E5_DIR);
         std::fs::create_dir_all(&e5).unwrap();
@@ -1099,15 +1110,26 @@ mod tests {
         assert!(E5Config::auto_detect(dir.path()).is_none(), "no export");
         std::fs::write(e5.join(E5Variant::Fp16.file_name()), b"fp16").unwrap();
         let config = E5Config::auto_detect(dir.path()).expect("fp16 installed");
-        assert_eq!(config.rule, VariantRule::Fastest);
+        assert_eq!(
+            config.rule,
+            VariantRule::New(E5Variant::Fp16),
+            "fp16 by default"
+        );
         let plan = |rule| config.clone().with_rule(rule).plan_for(true);
         let plan_saturating = |rule| config.clone().with_rule(rule).plan_for(false);
+        let fp16 = Plan {
+            gpu: Some(E5Variant::Fp16),
+            cpu: E5Variant::Fp16,
+        };
+        let int8 = Plan {
+            gpu: None,
+            cpu: E5Variant::Int8,
+        };
+        assert_eq!(plan(VariantRule::New(E5Variant::Fp16)).unwrap(), fp16);
         assert_eq!(
-            plan(VariantRule::Fastest).unwrap(),
-            Plan {
-                gpu: Some(E5Variant::Fp16),
-                cpu: E5Variant::Fp16
-            }
+            plan(VariantRule::New(E5Variant::Int8)).unwrap(),
+            fp16,
+            "int8 chosen but not installed: fp16"
         );
         assert!(plan(VariantRule::Index(E5Variant::Int8)).is_err());
         assert!(!config
@@ -1121,53 +1143,32 @@ mod tests {
             vec![E5Variant::Fp16, E5Variant::Int8]
         );
         assert_eq!(
-            plan(VariantRule::Fastest).unwrap(),
-            Plan {
-                gpu: Some(E5Variant::Fp16),
-                cpu: E5Variant::Int8
-            }
+            plan(VariantRule::New(E5Variant::Fp16)).unwrap(),
+            fp16,
+            "int8 installed is not used unless chosen"
         );
+        assert_eq!(plan(VariantRule::New(E5Variant::Int8)).unwrap(), int8);
         assert_eq!(
-            plan_saturating(VariantRule::Fastest).unwrap(),
-            Plan {
-                gpu: Some(E5Variant::Fp16),
-                cpu: E5Variant::Fp16
-            },
+            plan_saturating(VariantRule::New(E5Variant::Int8)).unwrap(),
+            fp16,
             "a processor without exact int8 kernels builds fp16"
         );
         assert_eq!(
             plan_saturating(VariantRule::Index(E5Variant::Int8)).unwrap(),
-            Plan {
-                gpu: None,
-                cpu: E5Variant::Int8
-            },
+            int8,
             "an int8 index stays int8 everywhere"
         );
         assert_eq!(
             plan(VariantRule::Index(E5Variant::Fp16)).unwrap(),
-            Plan {
-                gpu: Some(E5Variant::Fp16),
-                cpu: E5Variant::Fp16
-            },
+            fp16,
             "an fp16 index stays fp16 on the CPU"
         );
-        assert_eq!(
-            plan(VariantRule::Index(E5Variant::Int8)).unwrap(),
-            Plan {
-                gpu: None,
-                cpu: E5Variant::Int8
-            }
-        );
+        assert_eq!(plan(VariantRule::Index(E5Variant::Int8)).unwrap(), int8);
 
         std::fs::remove_file(e5.join(E5Variant::Fp16.file_name())).unwrap();
-        let int8_only = Plan {
-            gpu: None,
-            cpu: E5Variant::Int8,
-        };
-        assert_eq!(plan(VariantRule::Fastest).unwrap(), int8_only);
         assert_eq!(
-            plan_saturating(VariantRule::Fastest).unwrap(),
-            int8_only,
+            plan_saturating(VariantRule::New(E5Variant::Fp16)).unwrap(),
+            int8,
             "only int8 installed"
         );
         assert!(plan(VariantRule::Index(E5Variant::Fp16)).is_err());
@@ -1323,14 +1324,9 @@ mod tests {
         config.calibration_file = Some(file.clone());
         let model = E5Embeddings::new(config.clone()).expect("load E5");
         assert_eq!(model.accelerator(), Accelerator::Cpu);
-        // No index yet and the CPU: the int8 export, when installed and this
-        // processor runs it exactly.
-        let expected =
-            if installed_variants(&config.model_dir).contains(&E5Variant::Int8) && int8_exact() {
-                E5Variant::Int8
-            } else {
-                E5Variant::Fp16
-            };
+        // No index yet: fp16, the default for a new library, even with int8
+        // installed.
+        let expected = E5Variant::Fp16;
         assert_eq!(model.variant(), expected);
         let report = status.embedder().expect("reported");
         assert_eq!(report.model_file, expected.file_name());

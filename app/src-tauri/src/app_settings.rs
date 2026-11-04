@@ -209,6 +209,11 @@ pub struct IndexingPrefs {
     /// The search model may run on a graphics card (on by default; off runs
     /// it on the CPU).
     pub use_gpu: bool,
+    /// A library without vectors is built with the faster int8 search model
+    /// ("Faster search (slightly less accurate)"); off by default (fp16). Only
+    /// offered on processors that run int8 exactly. A library that has vectors
+    /// keeps its own model; it moves with "Re-index for faster search".
+    pub faster_search: bool,
 }
 
 impl Default for IndexingPrefs {
@@ -216,6 +221,7 @@ impl Default for IndexingPrefs {
         Self {
             paused: false,
             use_gpu: true,
+            faster_search: false,
         }
     }
 }
@@ -646,6 +652,7 @@ pub const AGENT_DENIED: [(&str, &str); 31] = [
     ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
     ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, how many model calls they may spend, and which GitHub repositories Shodh may read, push to or merge in; only the user may change that."),
     ("use_gpu", "Whether search uses the graphics card is the user's call about their computer."),
+    ("faster_search", "Whether new libraries use the faster, slightly less accurate search model is the user's trade-off to make."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -1150,6 +1157,11 @@ mod tests {
         // The assistant pauses and resumes with its own tools; the GPU is the user's call.
         assert!(denied_reason("indexing_paused").is_none());
         assert!(denied_reason("use_gpu").is_some());
+        assert!(
+            !defaults.faster_search,
+            "the standard search model by default"
+        );
+        assert!(denied_reason("faster_search").is_some());
     }
 
     #[test]

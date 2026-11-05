@@ -446,9 +446,10 @@ jobs:
   eval-retrieval-int8:
     name: Retrieval eval (int8, Apple silicon)
     runs-on: macos-14
-    # Measured 63 minutes on a cold cache (run 41966083623: build and probe 14,
-    # model tests 7, the three int8 evals 40); the limit leaves a quarter on top.
-    timeout-minutes: 80
+    # Slowest 71 minutes on a cold cache (run 41984775872: build and probe 15,
+    # model tests 8, the three int8 evals 47; run 41966083623 took 63); the
+    # limit leaves a quarter on top.
+    timeout-minutes: 90
     env:
       # The workflow's -crt-static is for the Windows MSVC builds.
       RUSTFLAGS: ""

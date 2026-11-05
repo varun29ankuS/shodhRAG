@@ -20,7 +20,8 @@ export type CpuReason =
   | { kind: 'noProvider' }
   | { kind: 'noGpu' }
   | { kind: 'failed'; device: string | null; error: string }
-  | { kind: 'slowerThanCpu'; device: string; gpuTokensPerSecond: number; cpuTokensPerSecond: number };
+  | { kind: 'slowerThanCpu'; device: string; gpuTokensPerSecond: number; cpuTokensPerSecond: number }
+  | { kind: 'cpuModel' };
 
 /** `compute::status::EmbedderReport`. */
 export interface SearchReport {
@@ -43,6 +44,41 @@ export interface RunningIndex {
   path: string;
 }
 
+export type SwitchPhase = 'idle' | 'downloading' | 'building' | 'stopped' | 'ready' | 'failed';
+
+export type SearchModelVariant = 'fp16' | 'int8';
+
+/**
+ * The opt-in faster search model (`search_model_switch::SwitchStatus`): fp16
+ * is the standard model; int8 is "Faster search (slightly less accurate)".
+ */
+export interface ModelSwitch {
+  /** The library's search model, once recorded. */
+  indexVariant: SearchModelVariant | null;
+  /** The model a re-index moves to (in progress, or offered). */
+  target: SearchModelVariant | null;
+  /** A re-index is offered: to the faster model, or back to the standard one. */
+  offered: boolean;
+  /** The library uses the faster model, which this processor can't run exactly: nothing new is indexed. */
+  writesBlocked: boolean;
+  phase: SwitchPhase;
+  /** The re-index was built, and completing it when Shodh started failed. */
+  finishFailed: boolean;
+  /** "Restart Shodh now" waits for the last changes to be brought over. */
+  restarting: boolean;
+  done: number;
+  total: number;
+  etaSeconds: number | null;
+  downloadedBytes: number;
+  downloadBytes: number;
+  /** The target model's download size when it is not installed (0 when it is). */
+  modelBytes: number;
+  /** The plain reason of a failure. */
+  error: string | null;
+  /** Its technical detail, behind "Show details". */
+  errorDetail: string | null;
+}
+
 /** `indexing_control::SystemStatus`. */
 export interface SystemStatus {
   searchInstalled: boolean;
@@ -52,6 +88,7 @@ export interface SystemStatus {
   scanReaderInstalled: boolean;
   indexingPaused: boolean;
   running: RunningIndex[];
+  modelSwitch: ModelSwitch;
 }
 
 /** The colour a state is shown in. */
@@ -79,6 +116,7 @@ export function readCpuReason(value: unknown): CpuReason | null {
     case 'chosen':
     case 'noProvider':
     case 'noGpu':
+    case 'cpuModel':
       return { kind: value.kind };
     case 'failed':
       return { kind: 'failed', device: text(value.device), error: text(value.error) ?? 'unknown error' };
@@ -133,7 +171,212 @@ export function readSystemStatus(value: unknown): SystemStatus | null {
     scanReaderInstalled: value.scanReaderInstalled === true,
     indexingPaused: value.indexingPaused === true,
     running,
+    modelSwitch: readModelSwitch(value.modelSwitch),
   };
+}
+
+const NO_SWITCH: ModelSwitch = {
+  indexVariant: null,
+  target: null,
+  offered: false,
+  writesBlocked: false,
+  phase: 'idle',
+  finishFailed: false,
+  restarting: false,
+  done: 0,
+  total: 0,
+  etaSeconds: null,
+  downloadedBytes: 0,
+  downloadBytes: 0,
+  modelBytes: 0,
+  error: null,
+  errorDetail: null,
+};
+
+export function readModelSwitch(value: unknown): ModelSwitch {
+  if (!isRecord(value)) return NO_SWITCH;
+  return {
+    indexVariant: oneOf(['fp16', 'int8'] as const, value.indexVariant),
+    target: oneOf(['fp16', 'int8'] as const, value.target),
+    offered: value.offered === true,
+    writesBlocked: value.writesBlocked === true,
+    phase: oneOf(['idle', 'downloading', 'building', 'stopped', 'ready', 'failed'] as const, value.phase) ?? 'idle',
+    finishFailed: value.finishFailed === true,
+    restarting: value.restarting === true,
+    done: count(value.done) ?? 0,
+    total: count(value.total) ?? 0,
+    etaSeconds: count(value.etaSeconds),
+    downloadedBytes: count(value.downloadedBytes) ?? 0,
+    downloadBytes: count(value.downloadBytes) ?? 0,
+    modelBytes: count(value.modelBytes) ?? 0,
+    error: text(value.error),
+    errorDetail: text(value.errorDetail),
+  };
+}
+
+/** "279 MB" (decimal megabytes, as downloads are usually shown). */
+export function megabytesText(bytes: number): string {
+  return `${Math.max(1, Math.round(bytes / 1_000_000)).toLocaleString('en-US')} MB`;
+}
+
+/** The faster model's name wherever it is offered. */
+export const FASTER_SEARCH_NAME = 'Faster search (slightly less accurate)';
+
+/**
+ * What the user can do about the switch. `stop` keeps the work for Continue;
+ * `discard` throws it away (the panel asks first); `retryRestart` restarts
+ * Shodh to complete a switch again.
+ */
+export type SwitchAction = 'start' | 'continue' | 'stop' | 'discard' | 'restart' | 'retry' | 'retryRestart';
+
+/** The switch in plain words for the Search part of the panel; `null` when there is nothing to show. */
+export interface SwitchView {
+  title: string;
+  detail: string | null;
+  /** The technical reason behind a failure, for "Show details". */
+  technical: string | null;
+  actions: { action: SwitchAction; label: string }[];
+  tone: Tone;
+}
+
+/** What a discard would throw away, for its confirmation. */
+export function discardConfirmText(status: SystemStatus | null): string {
+  const s = status?.modelSwitch;
+  const work =
+    s && s.done > 0
+      ? `the ${s.done.toLocaleString('en-US')} ${s.done === 1 ? 'passage' : 'passages'} already re-indexed`
+      : 'the re-index';
+  return `Discard ${work}? Starting again re-indexes the library from the beginning.`;
+}
+
+export function modelSwitchView(status: SystemStatus | null): SwitchView | null {
+  const s = status?.modelSwitch;
+  if (!s) return null;
+  const toFaster = s.target === 'int8';
+  const reindexing = toFaster ? 'Re-indexing for faster search' : 'Re-indexing for standard search';
+  const modelName = toFaster ? 'faster search model' : 'standard search model';
+  const passages = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'passage' : 'passages'}`;
+  const counted = s.total > 0 ? `${s.done.toLocaleString('en-US')} of ${passages(s.total)}` : null;
+  const download = s.modelBytes > 0 ? `It downloads the model first (${megabytesText(s.modelBytes)}).` : null;
+  const how =
+    'Shodh re-indexes your library’s saved text once, in the background; search keeps working meanwhile, and the switch happens the next time Shodh starts.';
+  const busy = [
+    { action: 'stop' as const, label: 'Stop' },
+    { action: 'discard' as const, label: 'Discard' },
+  ];
+  switch (s.phase) {
+    case 'idle':
+      if (!s.offered || !s.target) return null;
+      if (toFaster) {
+        return {
+          title: `${FASTER_SEARCH_NAME} is available for this computer.`,
+          detail: [
+            'It indexes faster on this processor, which runs the faster model’s arithmetic quickly, but may rank some passages lower.',
+            how,
+            download,
+          ]
+            .filter(Boolean)
+            .join(' '),
+          technical: null,
+          actions: [{ action: 'start', label: 'Re-index for faster search' }],
+          tone: 'idle',
+        };
+      }
+      return {
+        title: s.writesBlocked
+          ? 'Your library uses the faster search model, which this processor can’t run exactly.'
+          : `Your library uses ${FASTER_SEARCH_NAME.toLowerCase()}.`,
+        detail: [
+          s.writesBlocked
+            ? 'Nothing new is indexed until it moves to the standard search model; search keeps working.'
+            : 'The standard search model ranks passages more accurately; indexing is slower on this processor.',
+          how,
+          download,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        technical: null,
+        actions: [{ action: 'start', label: 'Re-index for standard search' }],
+        tone: s.writesBlocked ? 'bad' : 'idle',
+      };
+    case 'downloading':
+      return {
+        title: `Downloading the ${modelName}`,
+        detail:
+          s.downloadBytes > 0
+            ? `${megabytesText(s.downloadedBytes)} of ${megabytesText(s.downloadBytes)}`
+            : 'Checking the model',
+        technical: null,
+        actions: busy,
+        tone: 'good',
+      };
+    case 'building': {
+      if (s.restarting) {
+        return {
+          title: 'Getting the switch ready, then restarting Shodh',
+          detail: `Bringing over what changed since the re-index${counted ? ` (${counted})` : ''}.`,
+          technical: null,
+          actions: [],
+          tone: 'good',
+        };
+      }
+      const paused = status?.indexingPaused ?? false;
+      const left = paused ? null : etaText(s.etaSeconds);
+      return {
+        title: paused ? `${reindexing} (paused)` : reindexing,
+        detail: [counted ?? 'Starting', left].filter(Boolean).join(' · ') + '. Search keeps working meanwhile.',
+        technical: null,
+        actions: busy,
+        tone: paused ? 'warn' : 'good',
+      };
+    }
+    case 'stopped':
+      return {
+        title: `${reindexing} stopped before it finished.`,
+        detail: counted ? `It got to ${counted}; Continue picks up from there.` : 'Continue picks up where it stopped.',
+        technical: null,
+        actions: [
+          { action: 'continue', label: 'Continue' },
+          { action: 'discard', label: 'Discard' },
+        ],
+        tone: 'warn',
+      };
+    case 'ready':
+      return {
+        title: `The ${modelName} is ready.`,
+        detail:
+          'Restart Shodh to switch to it. Shodh first brings over what changed since the re-index, saves your work, then restarts.',
+        technical: null,
+        actions: [
+          { action: 'restart', label: 'Restart Shodh now' },
+          { action: 'discard', label: 'Discard' },
+        ],
+        tone: 'good',
+      };
+    case 'failed':
+      return s.finishFailed
+        ? {
+            title: `Switching to the ${modelName} did not finish.`,
+            detail:
+              s.error ?? 'Shodh could not finish the switch when it started, so your library kept its current model.',
+            technical: s.errorDetail,
+            actions: [
+              { action: 'retryRestart', label: 'Try again (restarts Shodh)' },
+              { action: 'discard', label: 'Cancel the switch' },
+            ],
+            tone: 'bad',
+          }
+        : {
+            title: `${reindexing} did not finish.`,
+            detail: s.error ? `Reason: ${s.error}` : null,
+            technical: null,
+            actions: [
+              { action: 'retry', label: 'Try again' },
+              { action: 'discard', label: 'Discard' },
+            ],
+            tone: 'bad',
+          };
+  }
 }
 
 /** "≈1,200 pages a minute", rounded to two significant figures. */
@@ -174,6 +417,8 @@ export function cpuReasonText(reason: CpuReason | null): string {
         : 'The graphics cards could not be checked.';
     case 'slowerThanCpu':
       return `${reason.device} ran the search model slower than the processor.`;
+    case 'cpuModel':
+      return 'Your library was indexed with the search model made for the processor, which runs only there.';
   }
 }
 
@@ -192,6 +437,7 @@ export function cpuAdvice(reason: CpuReason | null): string {
     case 'noGpu':
     case 'noProvider':
     case 'slowerThanCpu':
+    case 'cpuModel':
       return 'Index fewer folders at a time, or let large folders index while you are away.';
     default:
       return 'Restart Shodh to check again.';

@@ -337,4 +337,31 @@ mod tests {
         std::fs::write(&path, b"{not json").unwrap();
         assert_eq!(Calibrations::load(&path), Calibrations::default());
     }
+
+    /// A saved speed reads back as exactly the measured number, so a model
+    /// loaded again reports the speed it reported before (CI caught a speed
+    /// that came back one ulp off before JSON numbers were read exactly).
+    #[test]
+    fn a_saved_speed_reads_back_bit_for_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("search-speed.json");
+        let now = Utc::now();
+        for cpu in [
+            2019.7520067421249,
+            186.43864677619615 * 650.0 / 60.0,
+            0.1 + 0.2,
+            1e-300 * 3.0,
+            1234.5678901234567,
+        ] {
+            let mut saved = Calibrations::default();
+            saved.learn(&key(), &[Learned::Cpu { cpu }], now);
+            saved.save(&path).unwrap();
+            match Calibrations::load(&path).known(&key(), None, now) {
+                Some(Known::Cpu { cpu: read }) => {
+                    assert_eq!(read.to_bits(), cpu.to_bits(), "{cpu} read back as {read}")
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
 }

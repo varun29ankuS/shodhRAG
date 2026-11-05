@@ -1,0 +1,180 @@
+{
+  "kind": "retrieval",
+  "dataset_id": "papers-v1",
+  "dataset_hash": "bbc550e194f33612d96aacb074675b7ed007402712e00479f8261dc063bfbe47",
+  "corpus_hash": "f66be554f50fe48a44961631a282b2e52b82c26d3d47a86b973b13993efea0be",
+  "recorded_at": "2026-11-05T05:14:00.605934+00:00",
+  "approval": "Opt-in only, Apple silicon: the faster, slightly less accurate search model (int8, model_qint8_avx512_vnni.onnx, each passage embedded alone), offered only where ONNX Runtime's int8 sums are exact (Apple's dot-product kernels; checked at start by a MatMulInteger probe). Apple-silicon int8 rounds differently from x86 VNNI, so it has its own baseline. Recorded from CI run 41966083623 (macos-14, Apple M1 (Virtual), job eval-retrieval-int8). The user accepted int8 at papers mrr 0.9470 on VNNI (PR #125, 2026-11-04); these Apple-silicon numbers are measured, not yet accepted by the user. Against fp16 (baseline.json): mrr 0.9520 -> 0.9515, ndcg@10 0.9479 -> 0.9476, depth_recall@20 0.8690 -> 0.8571, multi_ndcg@10 0.6809 -> 0.6791, recall@20 0.9823 -> 0.9764; hit@1/5/10, recall@5/10, passage_hit and page_hit unchanged. Against VNNI int8 (baseline-int8.json): mrr 0.9470 -> 0.9515, hit@5/10 0.9596 -> 0.9697, recall@20 0.9823 -> 0.9764, multi_ndcg@10 0.6809 -> 0.6791.",
+  "settings": {
+    "candidate_multiplier": "5",
+    "chunk_max_tokens": "380",
+    "citation_graph": "off",
+    "embedding": "multilingual-e5-base",
+    "embedding_variant": "int8",
+    "int8_kernels": "arm",
+    "k": "10",
+    "min_score_threshold": "0.02",
+    "ocr": "auto",
+    "ocr_model": "pp-ocrv6-small",
+    "ocr_render_dpi": "300",
+    "pool_open_share": "0",
+    "pool_source_cap": "0",
+    "reranker": "ms-marco-MiniLM-L6-v2",
+    "reranking": "true",
+    "rrf_k": "60",
+    "runs": "1",
+    "score_weight": "0.3",
+    "source_decay": "0.5",
+    "system_ocr_render_dpi": "96 (page size)",
+    "table_refinement": "off"
+  },
+  "metrics": {
+    "depth_recall@10": {
+      "mean": 0.507936507936508,
+      "stddev": 0.0,
+      "min": 0.507936507936508,
+      "max": 0.507936507936508,
+      "runs": 1
+    },
+    "depth_recall@20": {
+      "mean": 0.857142857142857,
+      "stddev": 0.0,
+      "min": 0.857142857142857,
+      "max": 0.857142857142857,
+      "runs": 1
+    },
+    "hit@1": {
+      "mean": 0.9393939393939394,
+      "stddev": 0.0,
+      "min": 0.9393939393939394,
+      "max": 0.9393939393939394,
+      "runs": 1
+    },
+    "hit@10": {
+      "mean": 0.9696969696969697,
+      "stddev": 0.0,
+      "min": 0.9696969696969697,
+      "max": 0.9696969696969697,
+      "runs": 1
+    },
+    "hit@5": {
+      "mean": 0.9696969696969697,
+      "stddev": 0.0,
+      "min": 0.9696969696969697,
+      "max": 0.9696969696969697,
+      "runs": 1
+    },
+    "ingest_ok": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "mrr": {
+      "mean": 0.9515151515151515,
+      "stddev": 0.0,
+      "min": 0.9515151515151515,
+      "max": 0.9515151515151515,
+      "runs": 1
+    },
+    "multi_files@10": {
+      "mean": 5.266666666666667,
+      "stddev": 0.0,
+      "min": 5.266666666666667,
+      "max": 5.266666666666667,
+      "runs": 1
+    },
+    "multi_ndcg@10": {
+      "mean": 0.6790898174319131,
+      "stddev": 0.0,
+      "min": 0.6790898174319131,
+      "max": 0.6790898174319131,
+      "runs": 1
+    },
+    "multi_recall@10": {
+      "mean": 0.711111111111111,
+      "stddev": 0.0,
+      "min": 0.711111111111111,
+      "max": 0.711111111111111,
+      "runs": 1
+    },
+    "multi_recall@5": {
+      "mean": 0.711111111111111,
+      "stddev": 0.0,
+      "min": 0.711111111111111,
+      "max": 0.711111111111111,
+      "runs": 1
+    },
+    "ndcg@10": {
+      "mean": 0.9476492627782843,
+      "stddev": 0.0,
+      "min": 0.9476492627782843,
+      "max": 0.9476492627782843,
+      "runs": 1
+    },
+    "page_hit@1": {
+      "mean": 0.8631578947368421,
+      "stddev": 0.0,
+      "min": 0.8631578947368421,
+      "max": 0.8631578947368421,
+      "runs": 1
+    },
+    "page_hit@10": {
+      "mean": 0.968421052631579,
+      "stddev": 0.0,
+      "min": 0.968421052631579,
+      "max": 0.968421052631579,
+      "runs": 1
+    },
+    "page_hit@5": {
+      "mean": 0.9473684210526315,
+      "stddev": 0.0,
+      "min": 0.9473684210526315,
+      "max": 0.9473684210526315,
+      "runs": 1
+    },
+    "passage_hit@1": {
+      "mean": 0.6262626262626263,
+      "stddev": 0.0,
+      "min": 0.6262626262626263,
+      "max": 0.6262626262626263,
+      "runs": 1
+    },
+    "passage_hit@10": {
+      "mean": 0.9090909090909091,
+      "stddev": 0.0,
+      "min": 0.9090909090909091,
+      "max": 0.9090909090909091,
+      "runs": 1
+    },
+    "passage_hit@5": {
+      "mean": 0.8484848484848485,
+      "stddev": 0.0,
+      "min": 0.8484848484848485,
+      "max": 0.8484848484848485,
+      "runs": 1
+    },
+    "recall@10": {
+      "mean": 0.9562289562289563,
+      "stddev": 0.0,
+      "min": 0.9562289562289563,
+      "max": 0.9562289562289563,
+      "runs": 1
+    },
+    "recall@20": {
+      "mean": 0.9764309764309764,
+      "stddev": 0.0,
+      "min": 0.9764309764309764,
+      "max": 0.9764309764309764,
+      "runs": 1
+    },
+    "recall@5": {
+      "mean": 0.9562289562289563,
+      "stddev": 0.0,
+      "min": 0.9562289562289563,
+      "max": 0.9562289562289563,
+      "runs": 1
+    }
+  }
+}

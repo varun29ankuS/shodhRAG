@@ -267,15 +267,22 @@ jobs:
   # Retrieval quality on the committed synthetic corpus (no LLM): a fresh
   # index, every question searched, gated against the committed baseline.
   # Retrieval is deterministic, so any drop fails; latency is reported only.
+  # The default search model (fp16) is gated on every runner against
+  # baseline.json. The opt-in faster model (int8) is gated against
+  # baseline-int8.json too, but only on runners whose int8 kernels are exact
+  # (VNNI); elsewhere that step warns on the run and in its summary that it
+  # was skipped and why. Apple silicon has its own job (eval-retrieval-int8).
   # The scanned corpus (image-only pages) is gated the same way, read with the
   # PP-OCRv6 model installed with the search models; it fails when the OCR
   # model is missing rather than measuring another engine.
   eval-retrieval:
     name: Retrieval eval
     runs-on: windows-latest
-    # Slowest 21 minutes before the paper library (33 files, 99 questions);
-    # one paper run measured 30 minutes on windows-latest.
-    timeout-minutes: 75
+    # Slowest 48 minutes for the fp16 evals (three corpora, AMD Zen 3 runners,
+    # PR #125). The int8 evals on VNNI runners measured 40 minutes on their own
+    # (run 41818552734), so a VNNI runner runs both in about 88 minutes; the
+    # limit leaves a quarter on top of that.
+    timeout-minutes: 110
     env:
       # Line tables only: smaller debug builds and caches (release is untouched).
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -323,9 +330,11 @@ jobs:
 
       # The tests that need the real E5 model: the cutoff at which an answer counts as
       # using a memory, measured on the labelled fixture
-      # (crates/shodh-rag/src/user_memory/fixtures/memory_use.json), and the embedder
-      # itself (batching, the CPU path and its calibration, GPU agreement where a GPU runs). SHODH_TEST_MODELS
-      # turns the model-backed tests on at compile time; the name filters run these only.
+      # (crates/shodh-rag/src/user_memory/fixtures/memory_use.json), the embedder
+      # itself (batching, int8's batch independence, the CPU path and its calibration,
+      # GPU agreement where a GPU runs), and a small library switched fp16 -> int8 ->
+      # fp16 with searches checked throughout. SHODH_TEST_MODELS turns the
+      # model-backed tests on at compile time; the name filters run these only.
       # One at a time: each loads the model (a gigabyte or more in memory).
       - name: Model tests (E5)
         env:
@@ -334,6 +343,7 @@ jobs:
           cargo test --package shodh-rag --lib --
           the_use_cutoff_separates_used_from_unused_memories_with_e5
           embeddings::e5::
+          the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right
           --nocapture
           --test-threads=1
 
@@ -380,6 +390,34 @@ jobs:
           --baseline crates/shodh-eval/data/papers/baseline.json
           --report eval-out-papers/retrieval-report.json
 
+      # The opt-in faster model, gated against its own baselines, on runners
+      # where it runs exactly (the app offers it nowhere else).
+      - name: Opt-in int8 retrieval evals (exact int8 kernels only)
+        shell: pwsh
+        run: |
+          $kernels = cargo run -q --package shodh-eval -- int8-kernels
+          if ($LASTEXITCODE -ne 0) { throw 'shodh-eval int8-kernels failed' }
+          if ($kernels -ne 'exact') {
+            # Loud: a skipped gate is shown on the run, not only in the log.
+            $why = "The x86 int8 gate (baseline-int8.json) was skipped: this runner's int8 kernels are '$kernels', not VNNI; the app does not offer the faster model on such processors."
+            Write-Host "::warning title=int8 gate skipped::$why"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### int8 gate skipped`n`n$why"
+            exit 0
+          }
+          foreach ($corpus in 'synthetic', 'scanned', 'papers') {
+            $ocr = if ($corpus -eq 'scanned') { @('--ocr', 'ppocr') } else { @() }
+            cargo run --package shodh-eval -- retrieval `
+              --corpus "crates/shodh-eval/data/$corpus/corpus" `
+              --dataset "crates/shodh-eval/data/$corpus/dataset.json" `
+              --models "${{ runner.temp }}/shodh-models" `
+              @ocr --search search_model=int8 --out "eval-out-int8-$corpus"
+            if ($LASTEXITCODE -ne 0) { throw "The int8 $corpus eval failed" }
+            cargo run --package shodh-eval -- compare `
+              --baseline "crates/shodh-eval/data/$corpus/baseline-int8.json" `
+              --report "eval-out-int8-$corpus/retrieval-report.json"
+            if ($LASTEXITCODE -ne 0) { throw "int8 $corpus regressed against baseline-int8.json" }
+          }
+
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify
 
@@ -395,6 +433,118 @@ jobs:
             eval-out-scanned/retrieval-summary.md
             eval-out-papers/retrieval-report.json
             eval-out-papers/retrieval-summary.md
+            eval-out-int8-*/retrieval-report.json
+            eval-out-int8-*/retrieval-summary.md
+          if-no-files-found: ignore
+
+  # The opt-in faster model (int8) on Apple silicon, the one ARM class the app
+  # offers it on: Apple's dot-product int8 kernels are exact by design, and
+  # this job is what measures them. It gates the three corpora against
+  # baseline-int8-arm64.json (Apple-silicon int8 rounds differently from x86
+  # VNNI, so each class has its own numbers). It fails, never skips, when the
+  # runner's int8 kernels are not exact: a gate that cannot run is a failure.
+  eval-retrieval-int8:
+    name: Retrieval eval (int8, Apple silicon)
+    runs-on: macos-14
+    # Slowest 71 minutes on a cold cache (run 41984775872: build and probe 15,
+    # model tests 8, the three int8 evals 47; run 41966083623 took 63); the
+    # limit leaves a quarter on top.
+    timeout-minutes: 90
+    env:
+      # The workflow's -crt-static is for the Windows MSVC builds.
+      RUSTFLAGS: ""
+      # Line tables only: smaller debug builds and caches (release is untouched).
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # LanceDB's protobuf definitions are compiled at build time.
+      - name: Install Protobuf compiler
+        run: brew install protobuf
+
+      - uses: ./.github/actions/onnxruntime
+        with:
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: The int8 kernels here are exact
+        run: |
+          kernels="$(cargo run -q --package shodh-eval -- int8-kernels)"
+          echo "int8 kernels: $kernels ($(uname -m), $(sysctl -n machdep.cpu.brand_string))"
+          if [ "$kernels" != "exact" ]; then
+            echo "::error::This runner's int8 kernels are '$kernels', so the Apple-silicon int8 gate cannot run."
+            exit 1
+          fi
+
+      - name: Restore search models
+        id: models-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-macos-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
+
+      - name: Install search and OCR models
+        run: cargo run --package shodh-eval -- models --models "${{ runner.temp }}/shodh-models"
+
+      - name: Save search models
+        if: github.ref == 'refs/heads/master' && steps.models-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/shodh-models
+          key: search-models-macos-${{ hashFiles('crates/shodh-rag/src/embeddings/model_store.rs') }}
+
+      # The embedder on Apple silicon (int8's batch independence, the CPU path)
+      # and a small library switched fp16 -> int8 -> fp16 with searches checked.
+      - name: Model tests (E5)
+        env:
+          SHODH_TEST_MODELS: ${{ runner.temp }}/shodh-models
+        run: >
+          cargo test --package shodh-rag --lib --
+          embeddings::e5::
+          the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right
+          --nocapture
+          --test-threads=1
+
+      - name: int8 retrieval evals against the Apple-silicon baselines
+        run: |
+          for corpus in synthetic scanned papers; do
+            ocr=()
+            if [ "$corpus" = scanned ]; then ocr=(--ocr ppocr); fi
+            cargo run --package shodh-eval -- retrieval \
+              --corpus "crates/shodh-eval/data/$corpus/corpus" \
+              --dataset "crates/shodh-eval/data/$corpus/dataset.json" \
+              --models "${{ runner.temp }}/shodh-models" \
+              "${ocr[@]}" --search search_model=int8 --out "eval-out-int8-$corpus"
+            cat "eval-out-int8-$corpus/retrieval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+          failed=0
+          for corpus in synthetic scanned papers; do
+            if ! cargo run --package shodh-eval -- compare \
+              --baseline "crates/shodh-eval/data/$corpus/baseline-int8-arm64.json" \
+              --report "eval-out-int8-$corpus/retrieval-report.json"; then
+              echo "::error::int8 $corpus regressed against baseline-int8-arm64.json"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: eval-retrieval-int8-arm64
+          path: |
+            eval-out-int8-*/retrieval-report.json
+            eval-out-int8-*/retrieval-summary.md
           if-no-files-found: ignore
 
   frontend:

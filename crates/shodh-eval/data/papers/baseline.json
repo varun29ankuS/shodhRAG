@@ -9,6 +9,7 @@
     "chunk_max_tokens": "380",
     "citation_graph": "off",
     "embedding": "multilingual-e5-base",
+    "embedding_variant": "fp16",
     "k": "10",
     "min_score_threshold": "0.02",
     "ocr": "auto",

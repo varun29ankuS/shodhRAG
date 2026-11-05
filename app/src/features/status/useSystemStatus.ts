@@ -36,6 +36,14 @@ export interface SystemStatusState {
   setPaused: (paused: boolean) => Promise<void>;
   cancel: (sourceId?: string) => Promise<number>;
   setUseGpu: (useGpu: boolean) => Promise<void>;
+  /** Starts (or continues) re-indexing for the faster search model. */
+  startModelSwitch: () => Promise<void>;
+  /** Discards the re-index and what it embedded (the panel asks first). */
+  cancelModelSwitch: () => Promise<void>;
+  /** Stops the re-index and keeps its work, for Continue. */
+  stopModelSwitch: () => Promise<void>;
+  /** Brings over the last changes, saves, and restarts Shodh, which completes a ready re-index. */
+  restartForModelSwitch: () => Promise<void>;
 }
 
 function progressOf(payload: unknown): { space: string; progress: FolderProgress; done: boolean } | null {
@@ -125,5 +133,36 @@ export function useSystemStatus(): SystemStatusState {
     if (mounted.current) setStatus(readSystemStatus(value));
   }, []);
 
-  return { status, progress, refresh, setPaused, cancel, setUseGpu };
+  const startModelSwitch = useCallback(async () => {
+    await invoke('start_search_model_switch');
+    refresh();
+  }, [refresh]);
+
+  const cancelModelSwitch = useCallback(async () => {
+    await invoke('cancel_search_model_switch');
+    refresh();
+  }, [refresh]);
+
+  const stopModelSwitch = useCallback(async () => {
+    await invoke('stop_search_model_switch');
+    refresh();
+  }, [refresh]);
+
+  const restartForModelSwitch = useCallback(async () => {
+    await invoke('restart_for_search_model_switch');
+    refresh();
+  }, [refresh]);
+
+  return {
+    status,
+    progress,
+    refresh,
+    setPaused,
+    cancel,
+    setUseGpu,
+    startModelSwitch,
+    cancelModelSwitch,
+    stopModelSwitch,
+    restartForModelSwitch,
+  };
 }

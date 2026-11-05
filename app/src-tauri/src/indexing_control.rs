@@ -17,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::app_settings::{broadcast, SettingsStore};
 use crate::background::BackgroundState;
 use crate::rag_commands::RagState;
+use crate::search_model_switch::{SearchModelSwitchState, SwitchStatus};
 
 /// Emitted with `{ "paused": bool }` whenever indexing is paused or resumed
 /// (from the window, the tray or the agent).
@@ -99,11 +100,11 @@ pub async fn status_json(app: &AppHandle) -> serde_json::Value {
         .unwrap_or(true);
     let rag_state = app.state::<RagState>();
     let indexing = app.state::<IndexingState>();
-    let status = read_status(&rag_state, &indexing, use_gpu).await;
+    let status = read_status(app, &rag_state, &indexing, use_gpu).await;
     serde_json::to_value(&status).unwrap_or_default()
 }
 
-fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
+pub(crate) fn settings_store(app: &AppHandle) -> Result<SettingsStore, String> {
     crate::profile::app_data_dir(app)
         .map(|dir| SettingsStore::in_dir(&dir))
         .map_err(|e| format!("Failed to get app data directory: {e}"))
@@ -170,7 +171,7 @@ pub async fn set_search_gpu(
         .map_err(|e| e.to_string())?;
     broadcast(&app, &settings);
     tracing::info!(use_gpu, "search compute setting changed");
-    Ok(read_status(&rag_state, &indexing, use_gpu).await)
+    Ok(read_status(&app, &rag_state, &indexing, use_gpu).await)
 }
 
 /// A folder (or file) being indexed now.
@@ -201,9 +202,12 @@ pub struct SystemStatus {
     pub indexing_paused: bool,
     /// The folders and files being indexed now.
     pub running: Vec<RunningIndex>,
+    /// Re-indexing for the faster search model: offered, running or ready.
+    pub model_switch: SwitchStatus,
 }
 
 async fn read_status(
+    app: &AppHandle,
     rag_state: &RagState,
     indexing: &IndexingState,
     use_gpu: bool,
@@ -223,14 +227,20 @@ async fn read_status(
         .map(|(source_id, path)| RunningIndex { source_id, path })
         .collect();
     running.sort_by(|a, b| a.source_id.cmp(&b.source_id).then(a.path.cmp(&b.path)));
+    let search = compute.embedder();
+    let model_switch = match app.try_state::<SearchModelSwitchState>() {
+        Some(state) => crate::search_model_switch::status(&state, rag_state, search.as_ref()).await,
+        None => SwitchStatus::default(),
+    };
     SystemStatus {
         search_installed,
         use_gpu,
-        search: compute.embedder(),
+        search,
         reranker_installed,
         scan_reader_installed,
         indexing_paused: indexing.is_paused(),
         running,
+        model_switch,
     }
 }
 
@@ -247,7 +257,7 @@ pub async fn system_status(
             tracing::warn!(error = %e, "settings unreadable; the GPU setting reads as on");
             true
         });
-    Ok(read_status(&rag_state, &indexing, use_gpu).await)
+    Ok(read_status(&app, &rag_state, &indexing, use_gpu).await)
 }
 
 #[cfg(test)]
@@ -267,6 +277,7 @@ mod tests {
                 source_id: "folder-papers".to_string(),
                 path: "C:/Papers".to_string(),
             }],
+            model_switch: SwitchStatus::default(),
         };
         let json = serde_json::to_value(&status).expect("json");
         assert_eq!(json["indexingPaused"], true);

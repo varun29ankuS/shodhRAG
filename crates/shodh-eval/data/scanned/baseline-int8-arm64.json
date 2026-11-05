@@ -1,0 +1,166 @@
+{
+  "kind": "retrieval",
+  "dataset_id": "scanned-v1",
+  "dataset_hash": "139dc06603bf2b1fdbf2a22c66b8cd347cd81ef843727ff8e6ae38526c50a3dc",
+  "corpus_hash": "423a73008fb06466e06da8d586087134dcfff31c0e62be7dba855fcac99fcb13",
+  "recorded_at": "2026-11-05T04:42:45.039237+00:00",
+  "approval": "Opt-in only, Apple silicon: the faster, slightly less accurate search model (int8, model_qint8_avx512_vnni.onnx, each passage embedded alone), offered only where ONNX Runtime's int8 sums are exact (Apple's dot-product kernels; checked at start by a MatMulInteger probe). Apple-silicon int8 rounds differently from x86 VNNI, so it has its own baseline. Recorded from CI run 41966083623 (macos-14, Apple M1 (Virtual), job eval-retrieval-int8). The user accepted int8 at papers mrr 0.9470 on VNNI (PR #125, 2026-11-04); these Apple-silicon numbers are measured, not yet accepted by the user. Every metric equals fp16 (baseline.json) and VNNI int8 (baseline-int8.json).",
+  "settings": {
+    "candidate_multiplier": "5",
+    "chunk_max_tokens": "380",
+    "citation_graph": "off",
+    "embedding": "multilingual-e5-base",
+    "embedding_variant": "int8",
+    "int8_kernels": "arm",
+    "k": "10",
+    "min_score_threshold": "0.02",
+    "ocr": "ppocr",
+    "ocr_model": "pp-ocrv6-small",
+    "ocr_render_dpi": "300",
+    "pool_open_share": "0",
+    "pool_source_cap": "0",
+    "reranker": "ms-marco-MiniLM-L6-v2",
+    "reranking": "true",
+    "rrf_k": "60",
+    "runs": "1",
+    "score_weight": "0.3",
+    "source_decay": "0.5",
+    "system_ocr_render_dpi": "96 (page size)",
+    "table_refinement": "off"
+  },
+  "metrics": {
+    "hit@1": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "hit@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "ingest_ok": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "mrr": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "multi_files@10": {
+      "mean": 9.0,
+      "stddev": 0.0,
+      "min": 9.0,
+      "max": 9.0,
+      "runs": 1
+    },
+    "multi_ndcg@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "multi_recall@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "multi_recall@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "ndcg@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "page_hit@1": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "page_hit@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "page_hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "passage_hit@1": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "passage_hit@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "passage_hit@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "recall@10": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "recall@20": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    },
+    "recall@5": {
+      "mean": 1.0,
+      "stddev": 0.0,
+      "min": 1.0,
+      "max": 1.0,
+      "runs": 1
+    }
+  }
+}

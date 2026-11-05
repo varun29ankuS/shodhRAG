@@ -343,6 +343,18 @@ pub fn ocr_settings(ocr: &shodh_rag::config::OcrConfig) -> BTreeMap<String, Stri
     settings
 }
 
+/// The processor, and the int8 kernels that decide whether the run indexes
+/// with int8 (exact kernels) or fp16, for the log: speeds are comparable only
+/// on the same processor.
+fn cpu_features() -> String {
+    format!(
+        "CPU: {} ({}), int8 kernels {:?}",
+        std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "unnamed".to_string()),
+        std::env::consts::ARCH,
+        shodh_rag::embeddings::e5::int8_kernels()
+    )
+}
+
 pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
     if opts.runs == 0 || opts.k == 0 {
         bail!("runs and k must be at least 1");
@@ -361,6 +373,8 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
     let mut ingests = Vec::with_capacity(opts.runs);
     let mut latencies = Vec::new();
     let mut last = Vec::new();
+    let mut variants = std::collections::BTreeSet::new();
+    eprintln!("{}", cpu_features());
     for run in 1..=opts.runs {
         eprintln!(
             "run {run}/{}: indexing {}",
@@ -368,6 +382,10 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
             opts.corpus.display()
         );
         let index = index_corpus_with(&opts.corpus, &opts.models, &opts.ocr, &opts.tweaks).await?;
+        // The export the index was built with, as its record says.
+        let variant = shodh_rag::embeddings::index_model::read(index.data_dir())?
+            .map_or("unrecorded", |r| r.variant.label());
+        variants.insert(variant);
         eprintln!(
             "run {run}/{}: {}/{} files, {} chunks in {:.1} s; searching {} questions",
             opts.runs,
@@ -409,6 +427,20 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
         last = searched.records;
     }
     let mut settings = settings_with(&opts.tweaks);
+    settings.insert(
+        "embedding_variant".to_string(),
+        variants.into_iter().collect::<Vec<_>>().join("+"),
+    );
+    // int8's numbers depend on the kernel class (VNNI and Apple silicon round
+    // differently): each class has its own baseline.
+    if settings.get("embedding_variant").map(String::as_str) == Some("int8") {
+        settings.insert(
+            "int8_kernels".to_string(),
+            shodh_rag::embeddings::e5::int8_kernels()
+                .label()
+                .to_string(),
+        );
+    }
     settings.insert("k".to_string(), opts.k.to_string());
     settings.insert("runs".to_string(), opts.runs.to_string());
     settings.extend(ocr_settings(&opts.ocr));

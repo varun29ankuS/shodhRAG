@@ -6,8 +6,8 @@ use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
 use crate::config::RAGConfig;
-use crate::embeddings::e5::{E5Config, E5Embeddings};
-use crate::embeddings::{EmbeddingModel, SearchModelsMissing};
+use crate::embeddings::e5::{E5Config, E5Embeddings, E5Variant, VariantRule};
+use crate::embeddings::{index_model, EmbeddingModel, SearchModelsMissing};
 use crate::harness::web::relevance::sigmoid;
 use crate::lazy_model::LazyModel;
 use crate::processing::chunker::{ContextualChunkResult, DocumentContext, TextChunker};
@@ -695,18 +695,33 @@ fn rerank_context(result: &ComprehensiveResult) -> String {
     if let Some(context) = result.metadata.get(CHUNK_CONTEXT_KEY) {
         return context.clone();
     }
-    let mut context = format!("Document: \"{}\". ", result.citation.title.trim());
-    if let Some(heading) = result
-        .metadata
-        .get("heading")
-        .map(|h| h.trim())
-        .filter(|h| !h.is_empty())
-    {
+    format1_context(&result.citation.title, result.metadata.get("heading"))
+}
+
+/// The context a chunk of [`INDEX_FORMAT`] 1 was embedded with: its
+/// document's title and section.
+fn format1_context(title: &str, heading: Option<&String>) -> String {
+    let mut context = format!("Document: \"{}\". ", title.trim());
+    if let Some(heading) = heading.map(|h| h.trim()).filter(|h| !h.is_empty()) {
         context.push_str("Section: ");
         context.push_str(heading);
         context.push_str(". ");
     }
     context
+}
+
+/// The text a stored chunk's vector was embedded from (as a passage): the
+/// context stored with it and its text, or, for a chunk of [`INDEX_FORMAT`]
+/// 1, its document's title and section and its text. Used to embed stored
+/// chunks again in another export ([`crate::embeddings::model_switch`]).
+pub(crate) fn embedded_text(text: &str, title: &str, metadata_json: &str) -> Result<String> {
+    let metadata: HashMap<String, String> = serde_json::from_str(metadata_json)
+        .context("the chunk's metadata is not a map of strings")?;
+    let context = match metadata.get(CHUNK_CONTEXT_KEY) {
+        Some(context) => context.clone(),
+        None => format1_context(title, metadata.get("heading")),
+    };
+    Ok(format!("{context}{text}"))
 }
 
 /// How a chunk's context names the file `source`: its file name. The folders
@@ -1568,9 +1583,31 @@ impl SearchModels {
         }
     }
 
-    /// Whether the E5 model files exist under `config.embedding.model_dir`.
+    /// Whether the E5 files this index needs exist under
+    /// `config.embedding.model_dir`: the export it was built with
+    /// ([`index_model`]), or, for an index without vectors, fp16 (int8 only when chosen).
     pub fn available(config: &RAGConfig) -> bool {
-        E5Config::auto_detect(&config.embedding.model_dir).is_some()
+        let Some(e5) = E5Config::auto_detect(&config.embedding.model_dir) else {
+            return false;
+        };
+        match index_model::read(&config.data_dir) {
+            Ok(Some(record)) => e5.with_rule(VariantRule::Index(record.variant)).can_load(),
+            // A new library: the standard model (or int8 when chosen and exact).
+            Ok(None) => e5
+                .with_rule(VariantRule::New(config.embedding.new_library_variant))
+                .can_load(),
+            // Attached, so the load reports the damaged record.
+            Err(_) => true,
+        }
+    }
+
+    /// The E5 export the index under `config.data_dir` was built with, when
+    /// recorded.
+    pub fn index_variant(config: &RAGConfig) -> Option<E5Variant> {
+        index_model::read(&config.data_dir)
+            .ok()
+            .flatten()
+            .map(|r| r.variant)
     }
 
     /// Locate the models under `config.embedding.model_dir` (nothing is
@@ -1620,6 +1657,9 @@ impl SearchModels {
     }
 }
 
+/// What indexing says on a processor that cannot run an int8 library's model exactly.
+pub const INT8_NOT_EXACT_HERE: &str = "This library uses the faster search model, which this processor can't run exactly, so nothing new is indexed. Use \"Re-index for standard search\" in System status to keep indexing here.";
+
 /// The engine's E5 embedder, loaded on first use and dropped when idle;
 /// shared so the idle unloader and the install check reach it without the
 /// engine lock.
@@ -1641,6 +1681,17 @@ impl LazyEmbeddings {
             )
         })
     }
+
+    /// The model, for passages that will be stored: refused for an int8 library on a
+    /// processor that cannot run int8 exactly, whose vectors would differ from the
+    /// library's (queries still run). System status offers the way back.
+    fn writable(&self) -> Result<Arc<E5Embeddings>> {
+        let model = self.loaded()?;
+        if model.variant() == E5Variant::Int8 && !crate::embeddings::e5::int8_exact() {
+            anyhow::bail!(INT8_NOT_EXACT_HERE);
+        }
+        Ok(model)
+    }
 }
 
 impl EmbeddingModel for LazyEmbeddings {
@@ -1649,7 +1700,7 @@ impl EmbeddingModel for LazyEmbeddings {
     }
 
     fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
-        self.loaded()?.embed_document(text)
+        self.writable()?.embed_document(text)
     }
 
     fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
@@ -1658,7 +1709,7 @@ impl EmbeddingModel for LazyEmbeddings {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        self.loaded()?.embed_documents(texts)
+        self.writable()?.embed_documents(texts)
     }
 
     fn dimension(&self) -> usize {
@@ -1667,6 +1718,110 @@ impl EmbeddingModel for LazyEmbeddings {
 
     fn count_tokens(&self, text: &str) -> Option<usize> {
         self.model.get()?.count_tokens(text)
+    }
+
+    fn e5_variant(&self) -> Option<E5Variant> {
+        self.model.get().map(|m| m.variant())
+    }
+}
+
+/// Loads the E5 model in the export the index in `data_dir` was built with
+/// ([`index_model`]): never another, so vectors are never mixed. With no
+/// record yet (`settled`: the index was checked and holds no vectors), the
+/// load builds it with `new_library` (fp16 unless the user chose int8) and records
+/// it before any vector is stored; a record that cannot be written fails the load.
+fn load_for_index(
+    config: &E5Config,
+    data_dir: &Path,
+    settled: &std::sync::atomic::AtomicBool,
+    new_library: E5Variant,
+) -> Result<E5Embeddings> {
+    match index_model::read(data_dir)? {
+        Some(record) => {
+            E5Embeddings::new(config.clone().with_rule(VariantRule::Index(record.variant)))
+        }
+        None => {
+            if !settled.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!(
+                    "which search model built this library could not be checked at start (see the log); search waits for a restart"
+                );
+            }
+            let model = E5Embeddings::new(config.clone().with_rule(VariantRule::New(new_library)))?;
+            index_model::write(data_dir, model.variant(), "first vectors")?;
+            Ok(model)
+        }
+    }
+}
+
+/// The E5 model of `variant` under the model root `model_dir`, on the CPU, for
+/// a search model switch (it embeds beside the model search uses, and at
+/// start before search runs).
+pub fn switch_model(model_dir: &Path, variant: E5Variant) -> Result<Arc<dyn EmbeddingModel>> {
+    let config = E5Config::auto_detect(model_dir)
+        .ok_or(SearchModelsMissing)?
+        .with_rule(VariantRule::Index(variant))
+        .with_compute(crate::compute::provider::ComputePreference::Cpu);
+    Ok(Arc::new(E5Embeddings::new(config)?))
+}
+
+/// Records fp16 for an index in `data_dir` that holds vectors (chunks in
+/// `store`, or memory statements beside them) and has no record: it was
+/// built before records existed, when fp16 was the only export. Returns
+/// whether the index's export is known or it is empty (the first load may
+/// then choose); `false` when it could not be checked.
+async fn settle_index_model(data_dir: &Path, store: &LanceStore) -> bool {
+    match index_model::read(data_dir) {
+        Ok(Some(_)) => return true,
+        Ok(None) => {}
+        Err(e) => {
+            // The load reports it; nothing is guessed.
+            tracing::error!(error = %format!("{e:#}"), "The search index's model record is unreadable");
+            return true;
+        }
+    }
+    // A switch's tables with rows and no record: the record was lost, and the
+    // library is in them. A new library is never started over it; the model
+    // waits (the log says why) and nothing is dropped.
+    match crate::embeddings::model_switch::unrecorded_vector_tables(data_dir).await {
+        Ok(tables) if !tables.is_empty() => {
+            tracing::error!(
+                ?tables,
+                "search-index-model.json is missing but the library is in these tables; search waits rather than start a new library over it"
+            );
+            return false;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "Checking for a lost search model record failed; the search model waits");
+            return false;
+        }
+    }
+    let counted = async {
+        let chunks = store.count().await?;
+        let statements = store
+            .count_table(crate::statements::STATEMENTS_TABLE)
+            .await?;
+        anyhow::Ok(chunks + statements)
+    }
+    .await;
+    match counted {
+        Ok(0) => true,
+        Ok(vectors) => {
+            match index_model::write(data_dir, E5Variant::Fp16, "built before records") {
+                Ok(_) => {
+                    tracing::info!(vectors, "An index built before model records: fp16");
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(error = %format!("{e:#}"), "Recording the search index's model failed");
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "Counting the indexed vectors failed; the search model waits");
+            false
+        }
     }
 }
 
@@ -1689,6 +1844,10 @@ pub struct RAGEngine {
     embedder: SharedEmbedder,
     /// `embeddings` is the E5 model in [`Self::embedder`] (not a test embedder).
     embedder_e5: bool,
+    /// The index's E5 export is recorded, or the index was checked and holds
+    /// no vectors ([`settle_index_model`]); until then the model does not
+    /// load without a record.
+    index_model_settled: Arc<std::sync::atomic::AtomicBool>,
     /// What runs the search model and how fast ([`Self::compute_status`]).
     compute_status: Arc<crate::compute::status::ComputeStatus>,
     chunker: TextChunker,
@@ -1753,16 +1912,50 @@ impl RAGEngine {
     pub async fn new(config: RAGConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.data_dir).ok();
 
-        let lance_path = config.data_dir.join("lance_data");
-        let store = LanceStore::new(
+        // A switch to another search model whose tables are built completes
+        // before anything opens them (see `model_switch`).
+        let model_dir = config.embedding.model_dir.clone();
+        match crate::embeddings::model_switch::finish_pending(&config.data_dir, move |variant| {
+            switch_model(&model_dir, variant)
+        })
+        .await
+        {
+            Ok(Some(record)) => tracing::info!(
+                variant = record.variant.label(),
+                "The library now searches with the new search model"
+            ),
+            Ok(None) => {}
+            Err(e) => tracing::error!(
+                error = %format!("{e:#}"),
+                "The search model switch did not complete; the library keeps its current model"
+            ),
+        }
+        let documents_table = match index_model::tables(&config.data_dir) {
+            Ok((documents, _)) => documents,
+            Err(e) => {
+                // The model refuses to load on such a record, so nothing is
+                // embedded; the chunks stay listable.
+                tracing::error!(error = %format!("{e:#}"), "The search index's model record is unreadable");
+                index_model::DOCUMENTS_TABLE.to_string()
+            }
+        };
+
+        let lance_path = config
+            .data_dir
+            .join(crate::embeddings::model_switch::LANCE_DIR);
+        let store = LanceStore::open(
             lance_path.to_str().unwrap_or("./lance_data"),
             config.embedding.dimension,
+            &documents_table,
         )
         .await
         .context("Failed to initialize LanceDB store")?;
 
         let text_search = TextSearch::new(config.data_dir.to_str().unwrap_or("./data"))
             .context("Failed to initialize Tantivy search")?;
+
+        // Before any model is attached: which export built this index.
+        let settled = settle_index_model(&config.data_dir, &store).await;
 
         let models = if config.embedding.use_e5 && SearchModels::available(&config) {
             match SearchModels::load(&config) {
@@ -1804,6 +1997,7 @@ impl RAGEngine {
             embeddings: None,
             embedder: Arc::new(LazyModel::new("embedder")),
             embedder_e5: false,
+            index_model_settled: Arc::new(std::sync::atomic::AtomicBool::new(settled)),
             compute_status: Default::default(),
             chunker,
             structure_chunker,
@@ -1977,9 +2171,30 @@ impl RAGEngine {
         config.compute = self.config.embedding.compute;
         config.status = Some(self.compute_status.clone());
         config.calibration_file = Some(self.config.data_dir.join(SEARCH_SPEED_FILE));
+        let data_dir = self.config.data_dir.clone();
+        let settled = self.index_model_settled.clone();
+        let new_library = self.config.embedding.new_library_variant;
         self.embedder
-            .set_loader(move || E5Embeddings::new(config.clone()));
+            .set_loader(move || load_for_index(&config, &data_dir, &settled, new_library));
         self.embedder_e5 = true;
+    }
+
+    /// The search model export a library without vectors is built with
+    /// (fp16 unless the user opted in to int8). A library that has vectors
+    /// keeps its own export; the loader is replaced only while this one has
+    /// none yet.
+    pub fn set_new_library_variant(&mut self, variant: E5Variant) -> Result<()> {
+        if self.config.embedding.new_library_variant == variant {
+            return Ok(());
+        }
+        self.config.embedding.new_library_variant = variant;
+        if self.embedder_e5 && index_model::read(&self.config.data_dir)?.is_none() {
+            match E5Config::auto_detect(&self.config.embedding.model_dir) {
+                Some(config) => self.set_embedder_loader(config),
+                None => return Err(SearchModelsMissing.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Attach models loaded with [`SearchModels::load`]. Fails when the
@@ -7181,6 +7396,102 @@ mod lazy_embedder_tests {
             !engine.has_search_models(),
             "a model that cannot load offers setup again"
         );
+    }
+
+    fn word_engine_config(dir: &Path) -> RAGConfig {
+        let mut config = RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config
+    }
+
+    /// An index that holds vectors and has no record was built before
+    /// records, with fp16: opening it records that, and an empty index
+    /// records nothing (its first load chooses).
+    #[tokio::test]
+    async fn an_index_with_vectors_and_no_record_is_recorded_as_fp16() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = word_engine_config(dir.path());
+        {
+            let mut engine = RAGEngine::new(config.clone()).await.unwrap();
+            assert_eq!(index_model::read(&config.data_dir).unwrap(), None);
+            engine
+                .attach_search_models(SearchModels::from_embedder(Arc::new(
+                    crate::statements::testing::WordEmbedder::default(),
+                )))
+                .unwrap();
+            let mut metadata = HashMap::new();
+            metadata.insert("source".to_string(), "note://tide".to_string());
+            engine
+                .add_document(
+                    "Tide pools hold anemones and crabs at low tide.",
+                    crate::types::DocumentFormat::TXT,
+                    metadata,
+                    Citation::default(),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            index_model::read(&config.data_dir).unwrap(),
+            None,
+            "a test embedder records nothing"
+        );
+        let _engine = RAGEngine::new(config.clone()).await.unwrap();
+        let record = index_model::read(&config.data_dir)
+            .unwrap()
+            .expect("recorded at open");
+        assert_eq!(record.variant, E5Variant::Fp16);
+        assert_eq!(record.reason, "built before records");
+    }
+
+    /// The E5 files an index needs are its own export's: an int8 index with
+    /// only the fp16 file installed is not set up (setup installs int8), and
+    /// an empty index takes either.
+    #[tokio::test]
+    async fn search_is_available_only_with_the_index_s_own_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let e5 = dir
+            .path()
+            .join("models")
+            .join(crate::embeddings::e5::E5_DIR);
+        std::fs::create_dir_all(&e5).unwrap();
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(e5.join(E5Variant::Fp16.file_name()), b"fp16").unwrap();
+        let config = word_engine_config(dir.path());
+        assert!(SearchModels::available(&config), "no record: any export");
+        index_model::write(&config.data_dir, E5Variant::Int8, "first vectors").unwrap();
+        assert!(!SearchModels::available(&config));
+        assert_eq!(SearchModels::index_variant(&config), Some(E5Variant::Int8));
+        std::fs::write(e5.join(E5Variant::Int8.file_name()), b"int8").unwrap();
+        assert!(SearchModels::available(&config));
+        index_model::write(&config.data_dir, E5Variant::Fp16, "built before records").unwrap();
+        std::fs::remove_file(e5.join(E5Variant::Fp16.file_name())).unwrap();
+        assert!(
+            !SearchModels::available(&config),
+            "an fp16 index never runs int8"
+        );
+    }
+
+    /// Without a record the model loads only once the index was checked
+    /// empty: a load that cannot know the index's export does not guess.
+    #[test]
+    fn an_unchecked_index_without_a_record_does_not_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let e5 = dir.path().join(crate::embeddings::e5::E5_DIR);
+        std::fs::create_dir_all(&e5).unwrap();
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(e5.join(E5Variant::Int8.file_name()), b"int8").unwrap();
+        let config = E5Config::auto_detect(dir.path()).unwrap();
+        let data = dir.path().join("data");
+        let unchecked = std::sync::atomic::AtomicBool::new(false);
+        let error = load_for_index(&config, &data, &unchecked, E5Variant::Fp16)
+            .err()
+            .expect("refused");
+        assert!(format!("{error:#}").contains("could not be checked"));
+        assert_eq!(index_model::read(&data).unwrap(), None);
     }
 }
 

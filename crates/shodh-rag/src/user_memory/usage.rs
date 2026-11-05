@@ -31,24 +31,37 @@ use std::collections::HashSet;
 
 use crate::embeddings::EmbeddingModel;
 
-/// Score at which an answer counts as using a memory (see the module docs). Measured with
-/// multilingual-e5-base on `fixtures/memory_use.json`
-/// (`the_use_cutoff_separates_used_from_unused_memories_with_e5`): 66 hand-labelled
-/// memory–answer pairs, each memory once used (often paraphrased) and once in an answer on
-/// the same topic that does not use it; 18 of them have long answers (166–187 words) that
-/// use the memory in one sentence or not at all.
+/// Score at which an answer counts as using a memory (see the module docs), for both of
+/// multilingual-e5-base's exports. Measured on `fixtures/memory_use.json`
+/// (`the_use_cutoff_separates_used_from_unused_memories_with_e5`, which checks each
+/// export): 66 hand-labelled memory–answer pairs, each memory once used (often
+/// paraphrased) and once in an answer on the same topic that does not use it; 18 of them
+/// have long answers (166–187 words) that use the memory in one sentence or not at all.
 ///
-/// Chosen on the 42 tuning pairs only, as the best of a sweep in steps of 0.005: 40 of 42
-/// right (95.2%); every cutoff from 0.590 to 0.625 is within one pair of that. Tuning
-/// scores: used 0.406–0.942 (median 0.792), not used 0.357–0.633 (median 0.502).
+/// Chosen on the 42 tuning pairs only, as the best of a sweep in steps of 0.005.
 ///
-/// The 24 held-out pairs (8 long), never used to choose it: 19 of 24 right (79.2%); used
-/// 0.586–0.932 (median 0.858), not used 0.377–0.663 (median 0.579). Four of the five
-/// misses are on-topic answers that do not use the memory but score above the cutoff
-/// (two of them long), so the cutoff errs towards reinforcing a memory that did not help.
-/// On all 18 long pairs: 16 right (88.9%). The test requires at least 75% held out (one
-/// pair below the measurement). The fixture is small and written by hand: re-measure when
-/// the embedding model or the scoring changes.
+/// fp16 (`model_O4.onnx`): 40 of 42 right (95.2%), best at 0.595 alone; every cutoff from
+/// 0.590 to 0.625 is within one pair of that. Tuning scores: used 0.406–0.942 (median
+/// 0.792), not used 0.357–0.633 (median 0.502). The 24 held-out pairs (8 long), never used
+/// to choose it: 19 of 24 right (79.2%); used 0.586–0.932 (median 0.858), not used
+/// 0.377–0.663 (median 0.579). Four of the five misses are on-topic answers that do not use
+/// the memory but score above the cutoff (two of them long), so the cutoff errs towards
+/// reinforcing a memory that did not help. On all 18 long pairs: 16 right (88.9%).
+///
+/// int8 (`model_qint8_avx512_vnni.onnx`, each text embedded alone) on processors with
+/// exact int8 kernels (AVX512-VNNI; CI runs 41812434379 and 41818552734, the second an
+/// AMD64 Family 25 Model 17, both giving the same scores): 39 of 42 right (92.9%), best
+/// from 0.595 to 0.620, so the same rule (the first best) gives the same cutoff; 0.575 to
+/// 0.635 is within one pair. Held out 19 of 24 (79.2%), long 16 of 18 (88.9%), as with
+/// fp16. On another runner (CI run 41815024189; its processor was not logged, and the
+/// likely difference is a processor without VNNI) the same int8 scores ran about 0.03
+/// higher (best 0.610 to 0.645) while fp16 was unchanged: that is why Shodh builds int8
+/// indexes only on processors with exact int8 kernels
+/// ([`crate::embeddings::e5::int8_exact`]), and the test checks int8 only there.
+///
+/// The test requires at least 75% held out (one pair below the measurement). The fixture
+/// is small and written by hand: re-measure when the embedding model or the scoring
+/// changes.
 pub const DEFAULT_USE_CUTOFF: f64 = 0.595;
 
 /// Words that say nothing about which memory an answer drew on, left out of
@@ -565,13 +578,42 @@ mod tests {
         ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
     )]
     fn the_use_cutoff_separates_used_from_unused_memories_with_e5() {
-        /// Share of the held-out pairs the shipped cutoff must classify right.
-        const HELD_OUT_FLOOR: f64 = 0.75;
         let root = std::env::var_os("SHODH_TEST_MODELS")
             .expect("SHODH_TEST_MODELS must point at the models directory to run this test");
         let config = crate::embeddings::e5::E5Config::auto_detect(std::path::Path::new(&root))
             .expect("multilingual-e5-base under SHODH_TEST_MODELS")
             .with_compute(crate::compute::provider::ComputePreference::Cpu);
+        // One cutoff for both exports; CI installs both. int8 is checked only where
+        // Shodh builds int8 indexes (exact int8 kernels); elsewhere its sweep is printed.
+        for variant in crate::embeddings::e5::E5Variant::ALL {
+            let config = config
+                .clone()
+                .with_rule(crate::embeddings::e5::VariantRule::Index(variant));
+            assert!(
+                config.can_load(),
+                "{} is not installed",
+                variant.file_name()
+            );
+            let checked = variant == crate::embeddings::e5::E5Variant::Fp16
+                || crate::embeddings::e5::int8_exact();
+            eprintln!(
+                "== {} ({}), int8 kernels {:?}{}",
+                variant.label(),
+                variant.file_name(),
+                crate::embeddings::e5::int8_kernels(),
+                if checked { "" } else { ", not checked" }
+            );
+            the_use_cutoff_separates_used_from_unused_memories(config, DEFAULT_USE_CUTOFF, checked);
+        }
+    }
+
+    fn the_use_cutoff_separates_used_from_unused_memories(
+        config: crate::embeddings::e5::E5Config,
+        shipped: f64,
+        checked: bool,
+    ) {
+        /// Share of the held-out pairs the shipped cutoff must classify right.
+        const HELD_OUT_FLOOR: f64 = 0.75;
         let e5 = crate::embeddings::e5::E5Embeddings::new(config).expect("load E5");
         let (mut tuning, mut held_out, mut long, mut short) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -580,7 +622,7 @@ mod tests {
                 &e5,
                 &[("m".to_string(), p.memory.clone())],
                 &p.answer,
-                DEFAULT_USE_CUTOFF,
+                shipped,
             )
             .expect("embed");
             let j = &judged[0];
@@ -630,14 +672,17 @@ mod tests {
             .filter(|(_, acc)| *acc >= best - one_pair - 1e-9)
             .map(|(cutoff, _)| *cutoff)
             .collect();
-        let shipped_tuning = accuracy(&tuning, DEFAULT_USE_CUTOFF);
-        let shipped_held_out = accuracy(&held_out, DEFAULT_USE_CUTOFF);
+        let shipped_tuning = accuracy(&tuning, shipped);
+        let shipped_held_out = accuracy(&held_out, shipped);
         eprintln!(
-            "best tuning {best:.3}; plateau {:.3}-{:.3}; shipped {DEFAULT_USE_CUTOFF:.3}: tuning {shipped_tuning:.3}, held out {shipped_held_out:.3}, long {:.3}",
+            "best tuning {best:.3}; plateau {:.3}-{:.3}; shipped {shipped:.3}: tuning {shipped_tuning:.3}, held out {shipped_held_out:.3}, long {:.3}",
             plateau.first().copied().unwrap_or(f64::NAN),
             plateau.last().copied().unwrap_or(f64::NAN),
-            accuracy(&long, DEFAULT_USE_CUTOFF),
+            accuracy(&long, shipped),
         );
+        if !checked {
+            return;
+        }
         assert!(
             shipped_tuning >= best - one_pair - 1e-9,
             "the shipped cutoff is off the tuning plateau: {shipped_tuning:.3} vs best {best:.3}"

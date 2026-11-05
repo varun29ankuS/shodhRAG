@@ -393,9 +393,18 @@ pub struct Baseline {
     pub dataset_hash: String,
     pub corpus_hash: String,
     pub recorded_at: String,
+    /// Who approved a change of the recorded numbers and why, with the old
+    /// and new values (for a deliberate change, such as another embedding
+    /// export). Not compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
     pub settings: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, MetricStats>,
 }
+
+/// The report setting that names the embedding export a run indexed with
+/// (`fp16`, `int8`): each export has its own baseline.
+pub const EMBEDDING_VARIANT_SETTING: &str = "embedding_variant";
 
 impl Baseline {
     pub fn from_report(report: &RunReport) -> Self {
@@ -405,6 +414,7 @@ impl Baseline {
             dataset_hash: report.dataset_hash.clone(),
             corpus_hash: report.corpus_hash.clone(),
             recorded_at: report.created_at.clone(),
+            approval: None,
             settings: report.settings.clone(),
             metrics: report.metrics.clone(),
         }
@@ -417,6 +427,48 @@ impl Baseline {
     pub fn read(path: &Path) -> Result<Self> {
         read_json(path)
     }
+}
+
+/// The report setting naming the int8 kernel class ("vnni", "arm") an int8
+/// run used: each class rounds differently, so each has its own baseline.
+pub const INT8_KERNELS_SETTING: &str = "int8_kernels";
+
+/// The baseline among `baselines` recorded with the embedding export and,
+/// for int8, the kernel class `report` ran with ([`EMBEDDING_VARIANT_SETTING`],
+/// [`INT8_KERNELS_SETTING`]): each is gated against its own numbers. An error
+/// when none matches, never a pass.
+pub fn baseline_for<'a>(baselines: &'a [Baseline], report: &RunReport) -> Result<&'a Baseline> {
+    let key = |settings: &BTreeMap<String, String>| {
+        (
+            settings.get(EMBEDDING_VARIANT_SETTING).cloned(),
+            settings.get(INT8_KERNELS_SETTING).cloned(),
+        )
+    };
+    let wanted = key(&report.settings);
+    let describe = |(variant, kernels): &(Option<String>, Option<String>)| {
+        format!(
+            "{EMBEDDING_VARIANT_SETTING}={}{}",
+            variant.as_deref().unwrap_or("unset"),
+            kernels
+                .as_deref()
+                .map(|k| format!(" {INT8_KERNELS_SETTING}={k}"))
+                .unwrap_or_default()
+        )
+    };
+    baselines
+        .iter()
+        .find(|b| key(&b.settings) == wanted)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no baseline was recorded with {} (baselines: {})",
+                describe(&wanted),
+                baselines
+                    .iter()
+                    .map(|b| describe(&key(&b.settings)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -560,6 +612,44 @@ mod tests {
         }
     }
 
+    /// Each embedding export is gated against its own baseline; a report of an
+    /// export no baseline was recorded with is an error, never a pass.
+    #[test]
+    fn a_report_is_compared_with_the_baseline_of_its_embedding_export() {
+        let with_variant = |variant: &str| {
+            let mut r = report(&[("mrr", &[0.9])]);
+            r.settings
+                .insert(EMBEDDING_VARIANT_SETTING.to_string(), variant.to_string());
+            r
+        };
+        let fp16 = Baseline::from_report(&with_variant("fp16"));
+        let mut int8 = Baseline::from_report(&with_variant("int8"));
+        int8.approval = Some("approved".to_string());
+        let baselines = vec![fp16.clone(), int8.clone()];
+        assert_eq!(
+            baseline_for(&baselines, &with_variant("int8")).unwrap(),
+            &int8
+        );
+        assert_eq!(
+            baseline_for(&baselines, &with_variant("fp16")).unwrap(),
+            &fp16
+        );
+        let missing = baseline_for(&[fp16.clone()], &with_variant("int8")).unwrap_err();
+        assert!(
+            missing.to_string().contains("embedding_variant=int8"),
+            "{missing}"
+        );
+        assert!(baseline_for(&baselines, &report(&[("mrr", &[0.9])])).is_err());
+        // The approval is kept in the file and not compared.
+        let json = serde_json::to_value(&int8).unwrap();
+        assert_eq!(json["approval"], "approved");
+        assert!(serde_json::to_value(&fp16)
+            .unwrap()
+            .get("approval")
+            .is_none());
+        assert!(compare(&int8, &with_variant("int8")).passed());
+    }
+
     #[test]
     fn percentiles_use_nearest_rank() {
         let s = summarize_latencies(&[5.0, 1.0, 3.0, 2.0, 4.0]);
@@ -674,5 +764,26 @@ mod tests {
         ));
         assert!(md.contains("Provider errors (every attempt): rate_limited 2."));
         assert!(md.contains("Stopped early: quota used up."));
+    }
+
+    /// int8 on VNNI and int8 on Apple silicon are gated against their own
+    /// baselines; an int8 report of a class with no baseline is an error.
+    #[test]
+    fn an_int8_report_is_compared_with_the_baseline_of_its_kernel_class() {
+        let with = |kernels: &str| {
+            let mut r = report(&[("mrr", &[0.9])]);
+            r.settings
+                .insert(EMBEDDING_VARIANT_SETTING.to_string(), "int8".to_string());
+            r.settings
+                .insert(INT8_KERNELS_SETTING.to_string(), kernels.to_string());
+            r
+        };
+        let vnni = Baseline::from_report(&with("vnni"));
+        let arm = Baseline::from_report(&with("arm"));
+        let baselines = vec![vnni.clone(), arm.clone()];
+        assert_eq!(baseline_for(&baselines, &with("arm")).unwrap(), &arm);
+        assert_eq!(baseline_for(&baselines, &with("vnni")).unwrap(), &vnni);
+        let error = baseline_for(&[vnni], &with("arm")).unwrap_err();
+        assert!(error.to_string().contains("int8_kernels=arm"), "{error}");
     }
 }

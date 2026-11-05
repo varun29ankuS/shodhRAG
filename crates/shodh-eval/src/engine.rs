@@ -80,8 +80,9 @@ pub fn result_pages(metadata: &std::collections::HashMap<String, String>) -> Opt
 /// `key=value` pairs (`retrieval --search rrf_k=20,source_decay=0.7`), to
 /// measure what a setting does before changing its default. Search keys:
 /// `rrf_k`, `candidate_multiplier`, `min_score_threshold`, `score_weight`,
-/// `source_decay`, `pool_source_cap`, `pool_open_share`, `reranking` (`on`/`off`); indexing key:
-/// `chunk_max_tokens`.
+/// `source_decay`, `pool_source_cap`, `pool_open_share`, `reranking` (`on`/`off`); indexing keys:
+/// `chunk_max_tokens`, `search_model` (`fp16`, the default, or `int8`, the opt-in faster model;
+/// int8 runs only on a processor with exact int8 kernels).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tweaks {
     pairs: Vec<(String, String)>,
@@ -128,6 +129,13 @@ impl Tweaks {
                 "pool_source_cap" => config.search.pool_source_cap = number(key, value)?,
                 "pool_open_share" => config.search.pool_open_share = number(key, value)?,
                 "chunk_max_tokens" => config.chunking.max_tokens = number(key, value)?,
+                "search_model" => {
+                    config.embedding.new_library_variant = match value.as_str() {
+                        "fp16" => shodh_rag::embeddings::e5::E5Variant::Fp16,
+                        "int8" => shodh_rag::embeddings::e5::E5Variant::Int8,
+                        other => bail!("search_model must be fp16 or int8, got '{other}'"),
+                    }
+                }
                 "reranking" => {
                     config.features.enable_reranking = match value.as_str() {
                         "on" => true,
@@ -228,6 +236,16 @@ pub async fn index_corpus_with(
     config.embedding.compute = shodh_rag::compute::provider::ComputePreference::Cpu;
     config.ocr = ocr.clone();
     tweaks.apply(&mut config)?;
+    // The opt-in int8 model is measured only where it runs exactly, as in the
+    // app: elsewhere a new library would silently be fp16.
+    if config.embedding.new_library_variant == shodh_rag::embeddings::e5::E5Variant::Int8
+        && !shodh_rag::embeddings::e5::int8_exact()
+    {
+        bail!(
+            "search_model=int8 needs a processor with exact, measured int8 kernels (x86 VNNI or Apple silicon); this one is {:?}",
+            shodh_rag::embeddings::e5::int8_kernels()
+        );
+    }
     let engine = RAGEngine::new(config).await.context("opening the engine")?;
     if !engine.has_search_models() {
         bail!(
@@ -305,6 +323,20 @@ mod tests {
         assert_eq!(recorded["rrf_k"], "20");
         assert_eq!(recorded["reranking"], "false");
         assert!(Tweaks::parse("").unwrap().is_empty());
+        let mut config = RAGConfig::default();
+        assert_eq!(
+            config.embedding.new_library_variant,
+            shodh_rag::embeddings::e5::E5Variant::Fp16,
+            "the standard model by default"
+        );
+        Tweaks::parse("search_model=int8")
+            .unwrap()
+            .apply(&mut config)
+            .unwrap();
+        assert_eq!(
+            config.embedding.new_library_variant,
+            shodh_rag::embeddings::e5::E5Variant::Int8
+        );
         for bad in [
             "rrf_k",
             "rrf_k=x",
@@ -312,6 +344,7 @@ mod tests {
             "rrf_k=1,rrf_k=2",
             "source_decay=1.5",
             "reranking=maybe",
+            "search_model=fp32",
         ] {
             assert!(Tweaks::parse(bad).is_err(), "{bad}");
         }

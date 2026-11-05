@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::json;
 use shodh_rag::audit::{AuditEventType, AuditRecord};
+use shodh_rag::embeddings::index_model;
 use shodh_rag::embeddings::model_store::{
     ArtifactStatus, HttpByteSource, InstallPhase, InstallProgress, ModelStore,
 };
@@ -37,7 +38,8 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 /// Where the search models live and the single-flight install guard.
 pub struct SearchModelsState {
     pub model_dir: PathBuf,
-    install_lock: tokio::sync::Mutex<()>,
+    /// One model download at a time, for setup and the search model switch alike.
+    pub(crate) install_lock: tokio::sync::Mutex<()>,
 }
 
 impl SearchModelsState {
@@ -48,8 +50,19 @@ impl SearchModelsState {
         }
     }
 
-    fn store(&self) -> ModelStore {
-        ModelStore::search_and_ocr_models(self.model_dir.clone())
+    /// The files setup installs for this engine: the E5 export its index was
+    /// built with, or, for a new library, the export chosen for new libraries
+    /// (fp16 unless the user opted in to int8; `index_model::setup_variants`).
+    async fn store(&self, rag_state: &RagState) -> ModelStore {
+        let config = rag_state.rag.read().await.config().clone();
+        let index = SearchModels::index_variant(&config);
+        // The int8 check loads ONNX Runtime, so it runs only when int8 was
+        // chosen for a new library.
+        let new_library = config.embedding.new_library_variant;
+        let int8_exact = new_library == shodh_rag::embeddings::e5::E5Variant::Int8
+            && shodh_rag::embeddings::e5::int8_exact();
+        let variants = index_model::setup_variants(index, new_library, int8_exact);
+        ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants)
     }
 }
 
@@ -72,7 +85,7 @@ async fn read_status(
 ) -> Result<SearchModelsStatus, String> {
     let ready = rag_state.rag.read().await.has_search_models();
     let installing = state.install_lock.try_lock().is_err();
-    let store = state.store();
+    let store = state.store(rag_state).await;
     // Hash unstamped files only when the result matters (not ready) and no
     // install is writing them.
     let verify = verify && !ready && !installing;
@@ -112,7 +125,7 @@ pub async fn install_search_models(
         format!("{INSTALL_IN_PROGRESS_CODE}: the search models are already being installed")
     })?;
 
-    let store = state.store();
+    let store = state.store(&rag_state).await;
     let source = HttpByteSource::new().map_err(|e| e.to_string())?;
     let emitter = app.clone();
     let last_emit = std::sync::Mutex::new(None::<(Instant, InstallPhase)>);

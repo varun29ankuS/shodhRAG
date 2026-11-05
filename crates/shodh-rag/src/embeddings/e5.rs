@@ -400,7 +400,17 @@ impl E5Config {
             }
             VariantRule::New(chosen) => {
                 let has = |v: E5Variant| installed.contains(&v);
-                // The chosen export when it can run here (int8: installed and // exact), else fp16. Never int8 in place of a missing fp16: a // new library is the standard model unless int8 was chosen. let usable = |v: E5Variant| has(v) && (v == E5Variant::Fp16 || int8_exact); let variant = if usable(chosen) { chosen } else if has(E5Variant::Fp16) { E5Variant::Fp16 } else { return Err(SearchModelsMissing.into()); };
+                // The chosen export when it can run here (int8: installed and
+                // exact), else fp16. Never int8 in place of a missing fp16: a
+                // new library is the standard model unless int8 was chosen.
+                let usable = |v: E5Variant| has(v) && (v == E5Variant::Fp16 || int8_exact);
+                let variant = if usable(chosen) {
+                    chosen
+                } else if has(E5Variant::Fp16) {
+                    E5Variant::Fp16
+                } else {
+                    return Err(SearchModelsMissing.into());
+                };
                 if variant != chosen {
                     tracing::warn!(
                         chosen = chosen.label(),

@@ -1,26 +1,29 @@
 //! The opt-in faster search model: "Faster search (slightly less accurate)".
 //!
 //! The standard search model (fp16) is the default everywhere. The int8 model
-//! indexes and searches about 3x faster on the processor but may rank some
-//! passages lower, so it is only ever the user's choice, and only offered on
-//! processors that run it exactly (`e5::int8_exact`: VNNI on x86, ARM64):
-//! - for a library without vectors yet, in Settings → Search
-//!   ([`set_faster_search_for_new_libraries`]);
-//! - for a library that has vectors, "Re-index for faster search" in the
-//!   System status, and "Re-index for standard search" to go back.
+//! indexes faster on processors with fast int8 but may rank some passages
+//! lower, so it is only ever the user's choice, and only offered where its
+//! int8 kernels are exact and measured (`e5::int8_exact`: x86 with VNNI, Apple
+//! silicon). A library keeps the model it was built with; "Re-index for
+//! faster search" in the System status moves it, and "Re-index for standard
+//! search" moves it back (`shodh_rag::embeddings::model_switch`).
 //!
-//! A library keeps the model it was built with, so moving one embeds its
-//! stored text again (`shodh_rag::embeddings::model_switch`). The model is
-//! downloaded only then (279 MB for int8). The re-index is an indexing run:
-//! the status strip shows it, Pause holds it, Cancel stops it. Search keeps
-//! using the old index; the switch completes when Shodh next starts, and the
-//! panel offers the restart. If completing fails, the panel says why and
-//! offers Retry (another restart) or Cancel.
+//! The re-index downloads the model it moves to when missing (one download at
+//! a time, shared with setup), then embeds the library's stored text again in
+//! the background as an indexing run: the status strip shows it, Pause holds
+//! it, Stop keeps what it did for Continue, Discard (confirmed in the UI)
+//! throws it away and also stops a download. Search keeps using the old
+//! index; "Restart Shodh now" first brings over what changed since the build
+//! (with progress), writes the window's pending saves, and restarts, which
+//! completes the switch. If completing fails, the panel says why and offers
+//! Retry or Cancel. A reset or "Clear all documents" discards a switch first.
 //!
-//! The assistant cannot start, cancel or restart any of this (agent-coverage
-//! exclusions): it can read the state with `system_status` and open the
-//! panel on it, where the user clicks.
+//! The assistant cannot start, stop, discard or restart any of this
+//! (agent-coverage exclusions): it can read the state with `system_status` and
+//! open the panel on it, where the user clicks.
 
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -35,11 +38,11 @@ use shodh_rag::embeddings::{index_model, EmbeddingModel};
 use shodh_rag::indexing::IndexingState;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::app_settings::broadcast;
-use crate::indexing_control::{settings_store, SYSTEM_STATUS_EVENT};
+use crate::indexing_control::SYSTEM_STATUS_EVENT;
 use crate::rag_commands::RagState;
+use crate::search_models_commands::SearchModelsState;
 
-/// The run's source id in the indexing state (the strip's Cancel stops it).
+/// The run's source id in the indexing state (the strip's Stop stops it).
 pub const SWITCH_SOURCE: &str = "search-model-switch";
 
 /// What the strip shows for a re-index to `to`.
@@ -47,16 +50,6 @@ fn run_label(to: E5Variant) -> &'static str {
     match to {
         E5Variant::Int8 => "Re-indexing for faster search",
         E5Variant::Fp16 => "Re-indexing for standard search",
-    }
-}
-
-/// The export a new library is built with for the setting `faster`: int8
-/// only when chosen and this processor runs it exactly.
-pub fn new_library_variant(faster: bool) -> E5Variant {
-    if faster && int8_exact() {
-        E5Variant::Int8
-    } else {
-        E5Variant::Fp16
     }
 }
 
@@ -71,8 +64,8 @@ pub enum SwitchPhase {
     Downloading,
     /// The library's text is being embedded again.
     Building,
-    /// Stopped (cancelled from the strip, or Shodh closed) before it was done;
-    /// what it embedded is kept for Continue.
+    /// Stopped (from the strip, or Shodh closed) before it was done; what it
+    /// embedded is kept for Continue.
     Stopped,
     /// Built: it completes when Shodh next starts.
     Ready,
@@ -81,7 +74,7 @@ pub enum SwitchPhase {
     Failed,
 }
 
-/// The switch, for the System status and Settings → Search.
+/// The switch, for the System status.
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwitchStatus {
@@ -91,16 +84,17 @@ pub struct SwitchStatus {
     /// offered.
     pub target: Option<E5Variant>,
     /// A re-index is offered (none in progress): to int8 for an fp16 library
-    /// searched on a processor that runs int8 exactly; back to fp16 for an
-    /// int8 library.
+    /// searched on a processor where int8 is exact; back to fp16 for an int8
+    /// library.
     pub offered: bool,
-    /// This processor runs the faster model exactly, so it may be chosen.
-    pub faster_available: bool,
-    /// New libraries are built with the faster model (Settings → Search).
-    pub faster_for_new_libraries: bool,
+    /// The library is int8 but this processor cannot run int8 exactly:
+    /// nothing new is indexed until it moves back to the standard model.
+    pub writes_blocked: bool,
     pub phase: SwitchPhase,
     /// Completing the built switch at start failed (see `error`).
     pub finish_failed: bool,
+    /// The restart waits for the changes since the build to be brought over.
+    pub restarting: bool,
     /// Rows embedded (or found unchanged) of all the rows to embed.
     pub done: u64,
     pub total: u64,
@@ -111,14 +105,21 @@ pub struct SwitchStatus {
     pub download_bytes: u64,
     /// The size of the target model's download when it is not installed.
     pub model_bytes: u64,
+    /// The plain reason of a failure.
     pub error: Option<String>,
+    /// The technical detail behind it, for "Show details".
+    pub error_detail: Option<String>,
 }
 
 #[derive(Debug, Default)]
 struct Inner {
     running: bool,
-    /// A Cancel asked to throw away what was embedded.
+    /// Stop or Discard was asked: a download in progress ends.
+    stop_requested: bool,
+    /// A Discard asked to throw away what was embedded.
     discard: bool,
+    /// Restart Shodh once the run has built the switch.
+    restart_after: bool,
     phase: SwitchPhase,
     progress: SwitchProgress,
     /// When building started, and how far it was then (for the speed).
@@ -128,14 +129,77 @@ struct Inner {
 }
 
 /// Managed state: the switch running in this session, if any.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SearchModelSwitchState {
     inner: std::sync::Mutex<Inner>,
+    /// Wakes a download to stop it, on Stop or Discard.
+    stop: tokio::sync::Notify,
+    /// Whether a run is going, for waiting on its end.
+    running: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for SearchModelSwitchState {
+    fn default() -> Self {
+        Self {
+            inner: Default::default(),
+            stop: tokio::sync::Notify::new(),
+            running: tokio::sync::watch::Sender::new(false),
+        }
+    }
 }
 
 impl SearchModelSwitchState {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Claims the run (none may be going): `true` when this call may start it.
+    fn claim(&self) -> bool {
+        let mut inner = self.lock();
+        if inner.running {
+            return false;
+        }
+        *inner = Inner {
+            running: true,
+            phase: SwitchPhase::Downloading,
+            ..Inner::default()
+        };
+        drop(inner);
+        self.running.send_replace(true);
+        true
+    }
+
+    /// The run ended in `result`.
+    fn release(&self, result: Result<SwitchPhase, String>) {
+        let mut inner = self.lock();
+        inner.running = false;
+        inner.discard = false;
+        inner.restart_after = false;
+        match result {
+            Ok(phase) => inner.phase = phase,
+            Err(error) => {
+                tracing::warn!(%error, "Re-indexing the library failed");
+                inner.phase = SwitchPhase::Failed;
+                inner.error = Some(error);
+            }
+        }
+        drop(inner);
+        self.running.send_replace(false);
+    }
+
+    /// Marks a running run as asked to stop (nothing when none runs).
+    fn request_stop(&self) {
+        let mut inner = self.lock();
+        if inner.running {
+            inner.stop_requested = true;
+        }
+    }
+
+    /// Waits until no run is going.
+    async fn wait_until_idle(&self) {
+        let mut running = self.running.subscribe();
+        // The sender lives in `self`, so the wait ends only when a run does.
+        let _ = running.wait_for(|running| !*running).await;
     }
 }
 
@@ -179,6 +243,14 @@ fn phase_of(
     }
 }
 
+/// A completion failure's plain sentence and its technical detail.
+fn split_failure(reason: &str) -> (String, Option<String>) {
+    match reason.split_once(" Details: ") {
+        Some((plain, detail)) => (plain.to_string(), Some(detail.to_string())),
+        None => (reason.to_string(), None),
+    }
+}
+
 /// The switch as the System status shows it. `report` is what last ran the
 /// search model.
 pub async fn status(
@@ -186,12 +258,11 @@ pub async fn status(
     rag_state: &RagState,
     report: Option<&EmbedderReport>,
 ) -> SwitchStatus {
-    let (data_dir, model_dir, new_library) = {
+    let (data_dir, model_dir) = {
         let engine = rag_state.rag.read().await;
         (
             engine.config().data_dir.clone(),
             engine.config().embedding.model_dir.clone(),
-            engine.config().embedding.new_library_variant,
         )
     };
     let index_variant = index_model::read(&data_dir)
@@ -225,21 +296,27 @@ pub async fn status(
         ),
         _ => None,
     };
-    let error = if finish_failed {
-        pending.as_ref().and_then(|p| p.finish_error.clone())
+    let (error, error_detail) = if finish_failed {
+        match pending.as_ref().and_then(|p| p.finish_error.as_deref()) {
+            Some(reason) => {
+                let (plain, detail) = split_failure(reason);
+                (Some(plain), detail)
+            }
+            None => (None, None),
+        }
     } else if phase == SwitchPhase::Failed {
-        inner.error.clone()
+        (inner.error.clone(), None)
     } else {
-        None
+        (None, None)
     };
     SwitchStatus {
         index_variant,
         target,
         offered,
-        faster_available: exact,
-        faster_for_new_libraries: new_library == E5Variant::Int8,
+        writes_blocked: index_variant == Some(E5Variant::Int8) && !exact,
         phase,
         finish_failed,
+        restarting: inner.running && inner.restart_after,
         done: inner.progress.done,
         total: inner.progress.total,
         eta_seconds,
@@ -250,6 +327,7 @@ pub async fn status(
             _ => 0,
         },
         error,
+        error_detail,
     }
 }
 
@@ -259,20 +337,37 @@ fn changed(app: &AppHandle) {
     }
 }
 
-const NOT_EXACT: &str = "This processor cannot run the faster search model exactly (it has no VNNI instructions), so Shodh keeps the standard one.";
+const NOT_EXACT: &str =
+    "This processor cannot run the faster search model exactly, so Shodh keeps the standard one.";
 
 async fn current_status(state: &SearchModelSwitchState, rag_state: &RagState) -> SwitchStatus {
     let report = rag_state.rag.read().await.compute_status().embedder();
     status(state, rag_state, report.as_ref()).await
 }
 
-/// Downloads (or verifies) the model of `variant` into `model_dir`,
-/// reporting the bytes to the switch state.
+/// Downloads (or verifies) the model of `variant` into `model_dir`, one
+/// download at a time (setup's lock), reporting the bytes to the switch
+/// state. Stop or Discard ends it at once (the partial file is kept for a
+/// later resume); returns `Ok(false)` then.
 async fn install_variant(
     app: &AppHandle,
-    model_dir: &std::path::Path,
+    model_dir: &Path,
     variant: E5Variant,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let installs = app.state::<SearchModelsState>();
+    let state = app.state::<SearchModelSwitchState>();
+    // Registered before the flag is read, so a Stop between the two still
+    // wakes it.
+    let stopping = state.stop.notified();
+    tokio::pin!(stopping);
+    stopping.as_mut().enable();
+    if state.lock().stop_requested {
+        return Ok(false);
+    }
+    let _one_download = tokio::select! {
+        guard = installs.install_lock.lock() => guard,
+        () = &mut stopping => return Ok(false),
+    };
     let store =
         ModelStore::with_artifacts(model_dir.to_path_buf(), vec![e5_model_artifact(variant)]);
     let source = HttpByteSource::new().map_err(|e| e.to_string())?;
@@ -283,55 +378,28 @@ async fn install_variant(
             .lock()
             .downloaded = (p.overall_bytes, p.overall_total);
     };
-    store
-        .install(&source, &on_download)
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("Downloading the search model failed: {e}"))
+    tokio::select! {
+        installed = store.install(&source, &on_download) => installed
+            .map(|_| true)
+            .map_err(|e| format!("Downloading the search model failed: {e}")),
+        () = &mut stopping => Ok(false),
+    }
 }
 
-/// Whether new libraries are built with the faster model (Settings →
-/// Search; off by default). Turning it on downloads the faster model when it
-/// is missing. A library that has vectors keeps its model.
-#[tauri::command]
-pub async fn set_faster_search_for_new_libraries(
-    app: AppHandle,
-    faster: bool,
-    state: State<'_, SearchModelSwitchState>,
-    rag_state: State<'_, RagState>,
-) -> Result<SwitchStatus, String> {
-    if faster && !int8_exact() {
-        return Err(NOT_EXACT.into());
-    }
-    if faster {
-        let model_dir = rag_state
-            .rag
-            .read()
-            .await
-            .config()
-            .embedding
-            .model_dir
-            .clone();
-        install_variant(&app, &model_dir, E5Variant::Int8).await?;
-    }
-    // The engine first: a setting it could not take is not saved.
-    rag_state
-        .rag
-        .write()
-        .await
-        .set_new_library_variant(new_library_variant(faster))
-        .map_err(|e| format!("{e:#}"))?;
-    let store = settings_store(&app)?;
-    let (settings, ()) = store
-        .update(|s| {
-            s.indexing.faster_search = faster;
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
-    broadcast(&app, &settings);
-    tracing::info!(faster, "search model for new libraries changed");
-    changed(&app);
-    Ok(current_status(&state, &rag_state).await)
+/// The model a re-index moves to: the pending switch's, else the other one.
+fn target_of(data_dir: &Path) -> Result<E5Variant, String> {
+    let record = index_model::read(data_dir)
+        .map_err(|e| format!("{e:#}"))?
+        .ok_or("This library's search model is not known yet; search once, then try again.")?;
+    Ok(
+        match model_switch::pending(data_dir).map_err(|e| format!("{e:#}"))? {
+            Some(pending) => pending.to,
+            None => match record.variant {
+                E5Variant::Fp16 => E5Variant::Int8,
+                E5Variant::Int8 => E5Variant::Fp16,
+            },
+        },
+    )
 }
 
 /// Starts the re-index (or continues a stopped one, or retries one that
@@ -344,29 +412,12 @@ pub async fn start_search_model_switch(
     rag_state: State<'_, RagState>,
 ) -> Result<SwitchStatus, String> {
     let data_dir = rag_state.rag.read().await.config().data_dir.clone();
-    let record = index_model::read(&data_dir)
-        .map_err(|e| format!("{e:#}"))?
-        .ok_or("This library's search model is not known yet; search once, then try again.")?;
-    let target = match model_switch::pending(&data_dir).map_err(|e| format!("{e:#}"))? {
-        Some(pending) => pending.to,
-        None => match record.variant {
-            E5Variant::Fp16 => E5Variant::Int8,
-            E5Variant::Int8 => E5Variant::Fp16,
-        },
-    };
+    let target = target_of(&data_dir)?;
     if target == E5Variant::Int8 && !int8_exact() {
         return Err(NOT_EXACT.into());
     }
-    {
-        let mut inner = state.lock();
-        if inner.running {
-            return Err("A re-index of the library is already running.".into());
-        }
-        *inner = Inner {
-            running: true,
-            phase: SwitchPhase::Downloading,
-            ..Inner::default()
-        };
+    if !state.claim() {
+        return Err("A re-index of the library is already running.".into());
     }
     let task = app.clone();
     tauri::async_runtime::spawn(async move { run(task, target).await });
@@ -374,10 +425,26 @@ pub async fn start_search_model_switch(
     Ok(current_status(&state, &rag_state).await)
 }
 
-/// Cancels the re-index: a running one stops before its next step, and what
-/// it embedded is thrown away (a downloaded model is kept: it is the pinned,
-/// verified file). A built switch whose completion failed is cancelled the
-/// same way.
+/// Stops the re-index and keeps what it did, for Continue (a download in
+/// progress stops too; its partial file is kept).
+#[tauri::command]
+pub async fn stop_search_model_switch(
+    app: AppHandle,
+    state: State<'_, SearchModelSwitchState>,
+    rag_state: State<'_, RagState>,
+    indexing: State<'_, IndexingState>,
+) -> Result<SwitchStatus, String> {
+    state.request_stop();
+    indexing.cancel_source(SWITCH_SOURCE);
+    state.stop.notify_waiters();
+    tracing::info!("Re-indexing the library stopped");
+    changed(&app);
+    Ok(current_status(&state, &rag_state).await)
+}
+
+/// Discards the re-index: a running one (or its download) stops before its
+/// next step and what it embedded is thrown away; a built switch, also one
+/// whose completion failed, is cancelled. The UI asks first.
 #[tauri::command]
 pub async fn cancel_search_model_switch(
     app: AppHandle,
@@ -385,39 +452,107 @@ pub async fn cancel_search_model_switch(
     rag_state: State<'_, RagState>,
     indexing: State<'_, IndexingState>,
 ) -> Result<SwitchStatus, String> {
+    let data_dir = rag_state.rag.read().await.config().data_dir.clone();
+    discard(&state, &indexing, &data_dir).await?;
+    tracing::info!("Re-indexing the library discarded");
+    changed(&app);
+    Ok(current_status(&state, &rag_state).await)
+}
+
+/// Discards the switch in `data_dir`: a running one is told to discard and
+/// waited for; then the switch on disk is cancelled. Either way no switch
+/// table is left.
+async fn discard(
+    state: &SearchModelSwitchState,
+    indexing: &IndexingState,
+    data_dir: &Path,
+) -> Result<(), String> {
     let running = {
         let mut inner = state.lock();
         if inner.running {
             inner.discard = true;
+            inner.stop_requested = true;
         }
         inner.running
     };
     if running {
         indexing.cancel_source(SWITCH_SOURCE);
-    } else {
-        let data_dir = rag_state.rag.read().await.config().data_dir.clone();
-        model_switch::cancel(&data_dir)
-            .await
-            .map_err(|e| format!("Cancelling failed: {e:#}"))?;
-        let mut inner = state.lock();
-        inner.phase = SwitchPhase::Idle;
-        inner.error = None;
+        state.stop.notify_waiters();
+        state.wait_until_idle().await;
     }
-    tracing::info!(running, "Re-indexing the library cancelled");
-    changed(&app);
-    Ok(current_status(&state, &rag_state).await)
+    model_switch::cancel(data_dir)
+        .await
+        .map_err(|e| format!("Discarding the re-index failed: {e:#}"))?;
+    let mut inner = state.lock();
+    inner.phase = SwitchPhase::Idle;
+    inner.error = None;
+    Ok(())
 }
 
-/// Restarts Shodh, which completes a built switch before anything opens the
-/// index (and tries again after a failed completion).
+/// Before a reset or "Clear all documents": the switch (which holds a copy
+/// of the library) is discarded and waited for, so nothing of it stays on
+/// disk.
+pub async fn discard_for_reset(app: &AppHandle) -> Result<(), String> {
+    let Some(state) = app.try_state::<SearchModelSwitchState>() else {
+        return Ok(());
+    };
+    let data_dir = app
+        .state::<RagState>()
+        .rag
+        .read()
+        .await
+        .config()
+        .data_dir
+        .clone();
+    discard(&state, &app.state::<IndexingState>(), &data_dir).await?;
+    changed(app);
+    Ok(())
+}
+
+/// Restarts Shodh to complete a built switch: first the changes since the
+/// build are brought over in the background (shown as building), so the
+/// start embeds little; then the window's pending saves are written and the
+/// agents shut down, as for an update; then the restart.
 #[tauri::command]
-pub fn restart_for_search_model_switch(app: AppHandle) {
+pub async fn restart_for_search_model_switch(
+    app: AppHandle,
+    state: State<'_, SearchModelSwitchState>,
+    rag_state: State<'_, RagState>,
+) -> Result<SwitchStatus, String> {
+    let data_dir = rag_state.rag.read().await.config().data_dir.clone();
+    let pending = model_switch::pending(&data_dir).map_err(|e| format!("{e:#}"))?;
+    match pending {
+        // A failed completion is retried by the start itself.
+        Some(switch) if switch.built && switch.finish_error.is_none() => {
+            if !state.claim() {
+                return Err("A re-index of the library is already running.".into());
+            }
+            state.lock().restart_after = true;
+            let task = app.clone();
+            tauri::async_runtime::spawn(async move { run(task, switch.to).await });
+            changed(&app);
+            Ok(current_status(&state, &rag_state).await)
+        }
+        _ => {
+            restart_now(&app).await;
+            Ok(current_status(&state, &rag_state).await)
+        }
+    }
+}
+
+/// Writes the window's waiting saves and shuts the agents down, then
+/// restarts (the start completes the switch).
+async fn restart_now(app: &AppHandle) {
     tracing::info!("Restarting to switch the search model");
+    crate::shutdown::prepare_exit(app).await;
+    app.state::<crate::agent_session_commands::AgentSessions>()
+        .shutdown_all()
+        .await;
     app.restart();
 }
 
 /// At start: a re-index Shodh closed in the middle of goes on (it waits
-/// while indexing is paused).
+/// while indexing is paused), unless it was cancelled meanwhile.
 pub fn resume_at_start(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -429,52 +564,66 @@ pub fn resume_at_start(app: &AppHandle) {
             .config()
             .data_dir
             .clone();
-        match model_switch::pending(&data_dir) {
-            Ok(Some(switch)) if !switch.built => {
-                {
-                    let state = app.state::<SearchModelSwitchState>();
-                    let mut inner = state.lock();
-                    if inner.running {
-                        return;
-                    }
-                    *inner = Inner {
-                        running: true,
-                        phase: SwitchPhase::Downloading,
-                        ..Inner::default()
-                    };
-                }
-                tracing::info!(to = switch.to.label(), "Re-indexing the library goes on");
-                run(app.clone(), switch.to).await;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %format!("{e:#}"), "The search model switch could not be read")
-            }
+        let resumed = claim_resume(&app.state::<SearchModelSwitchState>(), &data_dir);
+        if let Some(to) = resumed {
+            tracing::info!(to = to.label(), "Re-indexing the library goes on");
+            run(app.clone(), to).await;
         }
     });
 }
 
-async fn run(app: AppHandle, to: E5Variant) {
-    let result = run_switch(&app, to).await;
-    {
-        let state = app.state::<SearchModelSwitchState>();
-        let mut inner = state.lock();
-        inner.running = false;
-        inner.discard = false;
-        match result {
-            Ok(phase) => inner.phase = phase,
-            Err(error) => {
-                tracing::warn!(%error, "Re-indexing the library failed");
-                inner.phase = SwitchPhase::Failed;
-                inner.error = Some(error);
-            }
+/// Claims the run for a switch on disk that is not built, reading the marker
+/// again once the run is claimed (a cancel between the two reads wins).
+fn claim_resume(state: &SearchModelSwitchState, data_dir: &Path) -> Option<E5Variant> {
+    let unbuilt = |dir: &Path| match model_switch::pending(dir) {
+        Ok(Some(switch)) if !switch.built => Some(switch.to),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "The search model switch could not be read");
+            None
+        }
+    };
+    unbuilt(data_dir)?;
+    if !state.claim() {
+        return None;
+    }
+    match unbuilt(data_dir) {
+        Some(to) => Some(to),
+        None => {
+            state.release(Ok(SwitchPhase::Idle));
+            None
         }
     }
+}
+
+async fn run(app: AppHandle, to: E5Variant) {
+    let result = run_switch(&app, to).await;
+    let restart = {
+        let state = app.state::<SearchModelSwitchState>();
+        let restart = state.lock().restart_after && result == Ok(SwitchPhase::Ready);
+        state.release(result);
+        restart
+    };
     changed(&app);
+    if restart {
+        restart_now(&app).await;
+    }
 }
 
 fn discarding(app: &AppHandle) -> bool {
     app.state::<SearchModelSwitchState>().lock().discard
+}
+
+/// What a run that stopped early ends as: discarded (the switch cancelled)
+/// or stopped (its work kept).
+async fn after_stop(app: &AppHandle, data_dir: &Path) -> Result<SwitchPhase, String> {
+    if discarding(app) {
+        model_switch::cancel(data_dir)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        return Ok(SwitchPhase::Idle);
+    }
+    Ok(SwitchPhase::Stopped)
 }
 
 async fn run_switch(app: &AppHandle, to: E5Variant) -> Result<SwitchPhase, String> {
@@ -496,31 +645,23 @@ async fn run_switch(app: &AppHandle, to: E5Variant) -> Result<SwitchPhase, Strin
     };
 
     // The model it moves to, verified (kept when it is already installed).
-    install_variant(app, &model_dir, to).await?;
-    if discarding(app) || run.stopped() {
+    let downloaded = install_variant(app, &model_dir, to).await?;
+    if !downloaded || discarding(app) || run.stopped() {
         drop(run);
-        if discarding(app) {
-            model_switch::cancel(&data_dir)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
-            return Ok(SwitchPhase::Idle);
-        }
-        return Ok(SwitchPhase::Stopped);
+        return after_stop(app, &data_dir).await;
     }
 
-    model_switch::start(&data_dir, to).map_err(|e| format!("{e:#}"))?;
-    let embedder: std::sync::Arc<dyn EmbeddingModel> = {
+    model_switch::start(&data_dir, to)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let embedder: Arc<dyn EmbeddingModel> = {
         let model_dir = model_dir.clone();
         tokio::task::spawn_blocking(move || shodh_rag::rag_engine::switch_model(&model_dir, to))
             .await
             .map_err(|e| format!("Loading the search model failed: {e}"))?
             .map_err(|e| format!("Loading the search model failed: {e:#}"))?
     };
-    {
-        let state = app.state::<SearchModelSwitchState>();
-        let mut inner = state.lock();
-        inner.phase = SwitchPhase::Building;
-    }
+    app.state::<SearchModelSwitchState>().lock().phase = SwitchPhase::Building;
     changed(app);
     let progress_app = app.clone();
     let on_progress = move |p: SwitchProgress| {
@@ -542,13 +683,7 @@ async fn run_switch(app: &AppHandle, to: E5Variant) -> Result<SwitchPhase, Strin
     drop(run);
     match outcome {
         BuildOutcome::Built => Ok(SwitchPhase::Ready),
-        BuildOutcome::Stopped if discarding(app) => {
-            model_switch::cancel(&data_dir)
-                .await
-                .map_err(|e| format!("{e:#}"))?;
-            Ok(SwitchPhase::Idle)
-        }
-        BuildOutcome::Stopped => Ok(SwitchPhase::Stopped),
+        BuildOutcome::Stopped => after_stop(app, &data_dir).await,
     }
 }
 
@@ -579,7 +714,7 @@ mod tests {
     }
 
     /// A completion that failed at start is shown as failed (with Retry and
-    /// Cancel), never as "ready, restart".
+    /// Cancel), never as "ready, restart"; its plain sentence leads.
     #[test]
     fn a_failed_completion_is_never_shown_as_ready() {
         use SwitchPhase::*;
@@ -590,6 +725,64 @@ mod tests {
         assert_eq!(phase_of(None, Failed, None), Failed);
         assert_eq!(phase_of(None, Idle, None), Idle);
         assert_eq!(phase_of(Some(Building), Idle, Some((true, true))), Building);
+        let (plain, detail) =
+            split_failure("Shodh could not finish (x), so it kept. Details: y: z");
+        assert_eq!(plain, "Shodh could not finish (x), so it kept.");
+        assert_eq!(detail.as_deref(), Some("y: z"));
+        assert_eq!(split_failure("plain").1, None);
+    }
+
+    /// A switch cancelled between the start's first look and its claim is not
+    /// resumed (and does not hold the run); one still there is.
+    #[test]
+    fn a_switch_cancelled_at_start_is_not_resumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = SearchModelSwitchState::default();
+        assert_eq!(claim_resume(&state, dir.path()), None, "no switch");
+        index_model::write(dir.path(), E5Variant::Fp16, "built before records").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(model_switch::start(dir.path(), E5Variant::Int8))
+            .unwrap();
+        assert_eq!(claim_resume(&state, dir.path()), Some(E5Variant::Int8));
+        assert!(!state.claim(), "the run is held");
+        state.release(Ok(SwitchPhase::Stopped));
+        runtime.block_on(model_switch::cancel(dir.path())).unwrap();
+        assert_eq!(claim_resume(&state, dir.path()), None);
+        assert!(state.claim(), "a cancelled switch does not hold the run");
+    }
+
+    /// A discard (before a reset) cancels the switch on disk, so nothing of
+    /// it is left; with a run going it first waits for the run to end.
+    #[test]
+    fn a_discard_cancels_the_switch_and_waits_for_a_run() {
+        let dir = tempfile::tempdir().unwrap();
+        index_model::write(dir.path(), E5Variant::Fp16, "built before records").unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            model_switch::start(dir.path(), E5Variant::Int8)
+                .await
+                .unwrap();
+            let state = Arc::new(SearchModelSwitchState::default());
+            let indexing = IndexingState::default();
+            discard(&state, &indexing, dir.path()).await.unwrap();
+            assert_eq!(model_switch::pending(dir.path()).unwrap(), None);
+
+            model_switch::start(dir.path(), E5Variant::Int8)
+                .await
+                .unwrap();
+            assert!(state.claim());
+            let ending = state.clone();
+            let ended = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(ending.lock().discard, "the run was told to discard");
+                ending.release(Ok(SwitchPhase::Idle));
+            });
+            discard(&state, &indexing, dir.path()).await.unwrap();
+            ended.await.unwrap();
+            assert!(!state.lock().running);
+            assert_eq!(model_switch::pending(dir.path()).unwrap(), None);
+        });
     }
 
     #[test]
@@ -598,17 +791,12 @@ mod tests {
             index_variant: Some(E5Variant::Fp16),
             target: Some(E5Variant::Int8),
             offered: true,
-            faster_available: true,
-            faster_for_new_libraries: false,
             phase: SwitchPhase::Building,
-            finish_failed: false,
             done: 3,
             total: 9,
             eta_seconds: Some(12),
-            downloaded_bytes: 0,
-            download_bytes: 0,
             model_bytes: 278_686_411,
-            error: None,
+            ..SwitchStatus::default()
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["indexVariant"], "fp16");
@@ -616,7 +804,8 @@ mod tests {
         assert_eq!(json["phase"], "building");
         assert_eq!(json["etaSeconds"], 12);
         assert_eq!(json["modelBytes"], 278_686_411u64);
-        assert_eq!(json["fasterForNewLibraries"], false);
+        assert_eq!(json["writesBlocked"], false);
         assert_eq!(json["finishFailed"], false);
+        assert!(json["errorDetail"].is_null());
     }
 }

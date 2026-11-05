@@ -12,7 +12,7 @@ import {
   etaText,
   indexingText,
   modelSwitchView,
-  newLibraryChoice,
+  discardConfirmText,
   pagesPerMinuteText,
   readCpuReason,
   readModelSwitch,
@@ -53,7 +53,7 @@ function status(extra: Partial<SystemStatus> = {}): SystemStatus {
 }
 
 function modelSwitch(extra: Partial<ModelSwitch> = {}): ModelSwitch {
-  return { ...readModelSwitch(null), indexVariant: 'fp16', fasterAvailable: true, ...extra };
+  return { ...readModelSwitch(null), indexVariant: 'fp16', ...extra };
 }
 
 test('the faster model switch is read field by field, and junk is dropped', () => {
@@ -61,10 +61,10 @@ test('the faster model switch is read field by field, and junk is dropped', () =
     indexVariant: 'fp16',
     target: 'int8',
     offered: true,
-    fasterAvailable: true,
-    fasterForNewLibraries: 'yes',
+    writesBlocked: 'yes',
     phase: 'building',
     finishFailed: false,
+    restarting: true,
     done: 120,
     total: 4000,
     etaSeconds: 600,
@@ -72,15 +72,16 @@ test('the faster model switch is read field by field, and junk is dropped', () =
     downloadBytes: 'x',
     modelBytes: 278_686_411,
     error: '',
+    errorDetail: 'lance: io',
   });
   assert.deepEqual(read, {
     indexVariant: 'fp16',
     target: 'int8',
     offered: true,
-    fasterAvailable: true,
-    fasterForNewLibraries: false,
+    writesBlocked: false,
     phase: 'building',
     finishFailed: false,
+    restarting: true,
     done: 120,
     total: 4000,
     etaSeconds: 600,
@@ -88,30 +89,36 @@ test('the faster model switch is read field by field, and junk is dropped', () =
     downloadBytes: 0,
     modelBytes: 278_686_411,
     error: null,
+    errorDetail: 'lance: io',
   });
   assert.equal(readModelSwitch({ phase: 'exploded' }).phase, 'idle');
   assert.equal(readSystemStatus({})?.modelSwitch.phase, 'idle');
-  assert.equal(readSystemStatus({})?.modelSwitch.fasterForNewLibraries, false, 'the standard model by default');
 });
 
-test('the faster model is an opt-in that says its trade-off, and there is a way back', () => {
+test('the faster model is an opt-in that says its trade-off without a speed claim, and there is a way back', () => {
   assert.equal(modelSwitchView(status()), null, 'nothing offered, nothing shown');
   const offered = modelSwitchView(
     status({ modelSwitch: modelSwitch({ offered: true, target: 'int8', modelBytes: 278_686_411 }) }),
   );
   assert.equal(offered?.title, 'Faster search (slightly less accurate) is available for this computer.');
-  assert.match(offered?.detail ?? '', /about 3 times faster/);
+  assert.match(offered?.detail ?? '', /indexes faster on this processor/);
+  assert.doesNotMatch(offered?.detail ?? '', /\d+ times/, 'no number without a same-processor measurement');
   assert.match(offered?.detail ?? '', /may rank some passages lower/);
   assert.match(offered?.detail ?? '', /search keeps working meanwhile/);
   assert.match(offered?.detail ?? '', /\(279 MB\)/);
   assert.deepEqual(offered?.actions, [{ action: 'start', label: 'Re-index for faster search' }]);
 
-  const back = modelSwitchView(
-    status({ modelSwitch: modelSwitch({ indexVariant: 'int8', offered: true, target: 'fp16' }) }),
-  );
+  const back = modelSwitchView(status({ modelSwitch: modelSwitch({ indexVariant: 'int8', offered: true, target: 'fp16' }) }));
   assert.equal(back?.title, 'Your library uses faster search (slightly less accurate).');
   assert.match(back?.detail ?? '', /ranks passages more accurately/);
   assert.deepEqual(back?.actions, [{ action: 'start', label: 'Re-index for standard search' }]);
+
+  const blocked = modelSwitchView(
+    status({ modelSwitch: modelSwitch({ indexVariant: 'int8', offered: true, target: 'fp16', writesBlocked: true }) }),
+  );
+  assert.equal(blocked?.title, 'Your library uses the faster search model, which this processor can’t run exactly.');
+  assert.match(blocked?.detail ?? '', /Nothing new is indexed/);
+  assert.equal(blocked?.tone, 'bad');
 
   const downloading = modelSwitchView(
     status({
@@ -120,15 +127,18 @@ test('the faster model is an opt-in that says its trade-off, and there is a way 
   );
   assert.equal(downloading?.title, 'Downloading the faster search model');
   assert.equal(downloading?.detail, '120 MB of 279 MB');
+  assert.deepEqual(downloading?.actions.map(a => a.action), ['stop', 'discard'], 'a download can be stopped');
 
   const building = modelSwitchView(
     status({ modelSwitch: modelSwitch({ phase: 'building', target: 'int8', done: 1200, total: 40_000, etaSeconds: 480 }) }),
   );
   assert.equal(building?.title, 'Re-indexing for faster search');
   assert.equal(building?.detail, '1,200 of 40,000 passages · about 8 min left. Search keeps working meanwhile.');
-  const backBuilding = modelSwitchView(
-    status({ modelSwitch: modelSwitch({ phase: 'building', target: 'fp16', done: 1, total: 2 }) }),
-  );
+  assert.deepEqual(building?.actions, [
+    { action: 'stop', label: 'Stop' },
+    { action: 'discard', label: 'Discard' },
+  ]);
+  const backBuilding = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'building', target: 'fp16', done: 1, total: 2 }) }));
   assert.equal(backBuilding?.title, 'Re-indexing for standard search');
   const paused = modelSwitchView(
     status({
@@ -138,35 +148,38 @@ test('the faster model is an opt-in that says its trade-off, and there is a way 
   );
   assert.equal(paused?.title, 'Re-indexing for faster search (paused)');
   assert.doesNotMatch(paused?.detail ?? '', /left/);
+  const restarting = modelSwitchView(
+    status({ modelSwitch: modelSwitch({ phase: 'building', target: 'int8', restarting: true, done: 3, total: 9 }) }),
+  );
+  assert.equal(restarting?.title, 'Getting the switch ready, then restarting Shodh');
+  assert.deepEqual(restarting?.actions, []);
 
   const stopped = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'stopped', target: 'int8', done: 5, total: 9 }) }));
-  assert.deepEqual(
-    stopped?.actions.map(a => a.action),
-    ['continue', 'discard'],
-  );
+  assert.deepEqual(stopped?.actions.map(a => a.action), ['continue', 'discard']);
   assert.match(stopped?.detail ?? '', /5 of 9 passages/);
 
   const ready = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'ready', target: 'int8' }) }));
   assert.equal(ready?.title, 'The faster search model is ready.');
-  assert.deepEqual(ready?.actions, [{ action: 'restart', label: 'Restart Shodh now' }]);
+  assert.match(ready?.detail ?? '', /saves your work, then restarts/);
+  assert.deepEqual(ready?.actions.map(a => a.action), ['restart', 'discard']);
 
   const failed = modelSwitchView(status({ modelSwitch: modelSwitch({ phase: 'failed', target: 'int8', error: 'disk full' }) }));
   assert.equal(failed?.detail, 'Reason: disk full');
   assert.equal(failed?.tone, 'bad');
-  assert.deepEqual(
-    failed?.actions.map(a => a.action),
-    ['retry', 'discard'],
-  );
+  assert.deepEqual(failed?.actions.map(a => a.action), ['retry', 'discard']);
 });
 
-test('a switch that could not finish at start says why and offers Retry or Cancel, never "ready"', () => {
+test('a switch that could not finish at start says why first, details behind a toggle, and offers Retry or Cancel', () => {
   const reason =
-    'Shodh could not finish switching the search model when it started (the search model it switches to is not installed any more), so your library kept its current model. Details: x';
+    'Shodh could not finish switching the search model when it started (the search model it switches to is not installed any more), so your library kept its current model.';
   const view = modelSwitchView(
-    status({ modelSwitch: modelSwitch({ phase: 'failed', finishFailed: true, target: 'int8', error: reason }) }),
+    status({
+      modelSwitch: modelSwitch({ phase: 'failed', finishFailed: true, target: 'int8', error: reason, errorDetail: 'loading: x' }),
+    }),
   );
   assert.equal(view?.title, 'Switching to the faster search model did not finish.');
   assert.equal(view?.detail, reason);
+  assert.equal(view?.technical, 'loading: x');
   assert.doesNotMatch(view?.title ?? '', /ready/);
   assert.deepEqual(view?.actions, [
     { action: 'retryRestart', label: 'Try again (restarts Shodh)' },
@@ -174,17 +187,15 @@ test('a switch that could not finish at start says why and offers Retry or Cance
   ]);
 });
 
-test('Settings offers the faster model for new libraries only where it runs exactly, standard by default', () => {
-  assert.equal(newLibraryChoice(status({ modelSwitch: modelSwitch({ fasterAvailable: false }) })), null);
-  const standard = newLibraryChoice(status({ modelSwitch: modelSwitch() }));
-  assert.equal(standard?.faster, false);
-  assert.match(standard?.current ?? '', /uses the standard search model/);
-  const faster = newLibraryChoice(
-    status({ modelSwitch: modelSwitch({ indexVariant: 'int8', fasterForNewLibraries: true }) }),
+test('a discard asks first and names the work it throws away', () => {
+  assert.equal(
+    discardConfirmText(status({ modelSwitch: modelSwitch({ phase: 'building', done: 1200, total: 4000 }) })),
+    'Discard the 1,200 passages already re-indexed? Starting again re-indexes the library from the beginning.',
   );
-  assert.equal(faster?.faster, true);
-  assert.match(faster?.current ?? '', /Re-index for standard search/);
-  assert.equal(newLibraryChoice(status({ modelSwitch: modelSwitch({ indexVariant: null }) }))?.current, null);
+  assert.equal(
+    discardConfirmText(status({ modelSwitch: modelSwitch({ phase: 'downloading' }) })),
+    'Discard the re-index? Starting again re-indexes the library from the beginning.',
+  );
 });
 
 test('the backend report is read field by field, and junk is dropped', () => {

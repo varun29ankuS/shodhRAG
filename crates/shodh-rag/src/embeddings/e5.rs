@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::tokenizer::SentencePieceTokenizer;
-use super::EmbeddingModel;
+use super::{EmbeddingModel, SearchModelsMissing};
 use crate::compute::calibration::{CalibrationKey, Calibrations};
 use crate::compute::choose::{self, Candidate, Learned};
 use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, Device};
@@ -85,21 +85,37 @@ impl E5Variant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Int8Kernels {
-    /// x86 with VNNI (AVX512-VNNI or AVX-VNNI): exact 32-bit sums.
+    /// x86 with VNNI (AVX512-VNNI or AVX-VNNI): exact 32-bit sums. Measured:
+    /// the int8 baselines (`baseline-int8.json`).
     Vnni,
-    /// ARM64 (dot-product or widening multiplies): exact 32-bit sums.
-    Arm,
+    /// Apple silicon (dot-product instructions): exact 32-bit sums. Measured
+    /// by CI's Apple-silicon int8 eval (`baseline-int8-arm64.json`).
+    AppleArm,
+    /// Another ARM64 system (Windows on ARM, Linux): exact by design, but no
+    /// eval runs there, so int8 is not offered.
+    OtherArm,
     /// Any other x86 (AVX2 without VNNI, as on AMD Zen 3 and Intel before
     /// Ice Lake / Alder Lake): `vpmaddubsw` sums pairs into 16 bits and
     /// clamps them (ONNX Runtime's documented U8S8 saturation), so the int8
     /// export's vectors come out different. On CI the int8 memory-use scores
-    /// of one fixture ran about 0.03 higher on one runner while fp16 stayed
-    /// identical; two runners with AVX512-VNNI gave the same scores. Not used
-    /// for new int8 indexes.
+    /// of one fixture ran about 0.03 higher on such a runner while fp16 stayed
+    /// identical. int8 is not offered.
     Saturating,
 }
 
-/// The int8 kernels of this processor.
+impl Int8Kernels {
+    /// The name reports and baselines use ("vnni", "arm", ...).
+    pub fn label(self) -> &'static str {
+        match self {
+            Int8Kernels::Vnni => "vnni",
+            Int8Kernels::AppleArm => "arm",
+            Int8Kernels::OtherArm => "other-arm",
+            Int8Kernels::Saturating => "saturating",
+        }
+    }
+}
+
+/// The int8 kernels this processor's instructions call for.
 pub fn int8_kernels() -> Int8Kernels {
     #[cfg(target_arch = "x86_64")]
     {
@@ -114,9 +130,13 @@ pub fn int8_kernels() -> Int8Kernels {
             Int8Kernels::Saturating
         }
     }
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     {
-        Int8Kernels::Arm
+        Int8Kernels::AppleArm
+    }
+    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+    {
+        Int8Kernels::OtherArm
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
@@ -124,10 +144,138 @@ pub fn int8_kernels() -> Int8Kernels {
     }
 }
 
-/// Whether this processor runs the int8 export exactly, so int8 ("faster
-/// search, slightly less accurate") may be offered. Elsewhere only fp16 is.
+/// Whether int8 ("faster search, slightly less accurate") may be offered on
+/// this processor: its kernels are a measured, exact class ([`Int8Kernels`])
+/// and ONNX Runtime, asked directly, sums int8 products exactly
+/// ([`probe_int8_exact`]). Checked once.
 pub fn int8_exact() -> bool {
-    int8_kernels() != Int8Kernels::Saturating
+    static EXACT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *EXACT.get_or_init(|| {
+        let kernels = int8_kernels();
+        if !matches!(kernels, Int8Kernels::Vnni | Int8Kernels::AppleArm) {
+            return false;
+        }
+        match probe_int8_exact() {
+            Ok(true) => true,
+            Ok(false) => {
+                tracing::warn!(
+                    ?kernels,
+                    "ONNX Runtime clamps int8 sums on this processor; the faster search model is not offered"
+                );
+                false
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "The int8 kernel check failed; the faster search model is not offered");
+                false
+            }
+        }
+    })
+}
+
+/// Rows and depth of the probe's product: 64 pairs of 255 x 127 sum to
+/// 2,072,640 exactly; a kernel that sums byte pairs into 16 bits and clamps
+/// them gets 1,048,544.
+const PROBE_ROWS: usize = 16;
+const PROBE_DEPTH: usize = 64;
+
+/// Runs one `MatMulInteger` (u8 x s8, the int8 export's product) through
+/// ONNX Runtime on the CPU and tells whether every sum came out exact: what
+/// the kernels ONNX Runtime picks here actually do, not what the processor's
+/// instructions suggest.
+pub fn probe_int8_exact() -> Result<bool> {
+    ort::init().with_name("e5_embeddings").commit();
+    let mut session = Session::builder()
+        .map_err(|e| anyhow!("session builder: {e}"))?
+        .with_optimization_level(GraphOptimizationLevel::Disable)
+        .map_err(|e| anyhow!("optimization level: {e}"))?
+        .with_intra_threads(1)
+        .map_err(|e| anyhow!("intra threads: {e}"))?
+        .commit_from_memory(&matmul_integer_model())
+        .map_err(|e| anyhow!("loading the int8 probe: {e}"))?;
+    let a = Value::from_array((
+        vec![PROBE_ROWS, PROBE_DEPTH],
+        vec![255u8; PROBE_ROWS * PROBE_DEPTH],
+    ))
+    .map_err(|e| anyhow!("probe input: {e:?}"))?;
+    let b = Value::from_array((vec![PROBE_DEPTH, 1], vec![127i8; PROBE_DEPTH]))
+        .map_err(|e| anyhow!("probe input: {e:?}"))?;
+    let outputs = session
+        .run(ort::inputs!["A" => a, "B" => b])
+        .map_err(|e| anyhow!("running the int8 probe: {e:?}"))?;
+    let (_, sums) = outputs["Y"]
+        .try_extract_tensor::<i32>()
+        .map_err(|e| anyhow!("probe output: {e:?}"))?;
+    let exact = (PROBE_DEPTH as i32) * 255 * 127;
+    Ok(sums.len() == PROBE_ROWS && sums.iter().all(|&s| s == exact))
+}
+
+/// The ONNX model `Y = MatMulInteger(A, B)` with A u8 `[16, 64]`, B s8
+/// `[64, 1]` and Y i32 `[16, 1]`, written as protobuf directly.
+fn matmul_integer_model() -> Vec<u8> {
+    fn varint(mut value: u64, out: &mut Vec<u8>) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    fn number(field: u64, value: u64, out: &mut Vec<u8>) {
+        varint(field << 3, out);
+        varint(value, out);
+    }
+    fn bytes(field: u64, value: &[u8], out: &mut Vec<u8>) {
+        varint((field << 3) | 2, out);
+        varint(value.len() as u64, out);
+        out.extend_from_slice(value);
+    }
+    // ValueInfoProto { name: 1, type: 2 { tensor_type: 1 { elem_type: 1, shape: 2 { dim: 1 { dim_value: 1 } } } } }
+    fn tensor(name: &str, elem_type: u64, dims: &[u64]) -> Vec<u8> {
+        let mut shape = Vec::new();
+        for &d in dims {
+            let mut dim = Vec::new();
+            number(1, d, &mut dim);
+            bytes(1, &dim, &mut shape);
+        }
+        let mut tensor_type = Vec::new();
+        number(1, elem_type, &mut tensor_type);
+        bytes(2, &shape, &mut tensor_type);
+        let mut type_proto = Vec::new();
+        bytes(1, &tensor_type, &mut type_proto);
+        let mut info = Vec::new();
+        bytes(1, name.as_bytes(), &mut info);
+        bytes(2, &type_proto, &mut info);
+        info
+    }
+    const UINT8: u64 = 2;
+    const INT8: u64 = 3;
+    const INT32: u64 = 6;
+    let (rows, depth) = (PROBE_ROWS as u64, PROBE_DEPTH as u64);
+    // NodeProto { input: 1, output: 2, op_type: 4 }
+    let mut node = Vec::new();
+    bytes(1, b"A", &mut node);
+    bytes(1, b"B", &mut node);
+    bytes(2, b"Y", &mut node);
+    bytes(4, b"MatMulInteger", &mut node);
+    // GraphProto { node: 1, name: 2, input: 11, output: 12 }
+    let mut graph = Vec::new();
+    bytes(1, &node, &mut graph);
+    bytes(2, b"int8_probe", &mut graph);
+    bytes(11, &tensor("A", UINT8, &[rows, depth]), &mut graph);
+    bytes(11, &tensor("B", INT8, &[depth, 1]), &mut graph);
+    bytes(12, &tensor("Y", INT32, &[rows, 1]), &mut graph);
+    // OperatorSetIdProto { version: 2 } (the default domain)
+    let mut opset = Vec::new();
+    number(2, 13, &mut opset);
+    // ModelProto { ir_version: 1, graph: 7, opset_import: 8 }
+    let mut model = Vec::new();
+    number(1, 7, &mut model);
+    bytes(7, &graph, &mut model);
+    bytes(8, &opset, &mut model);
+    model
 }
 
 /// Which export the vectors must be in.
@@ -212,7 +360,12 @@ impl E5Config {
         let installed = installed_variants(&self.model_dir);
         match self.rule {
             VariantRule::Index(variant) => installed.contains(&variant),
-            VariantRule::New(_) => !installed.is_empty(),
+            VariantRule::New(chosen) => {
+                installed.contains(&E5Variant::Fp16)
+                    || (chosen == E5Variant::Int8
+                        && installed.contains(&E5Variant::Int8)
+                        && int8_exact())
+            }
         }
     }
 
@@ -247,23 +400,7 @@ impl E5Config {
             }
             VariantRule::New(chosen) => {
                 let has = |v: E5Variant| installed.contains(&v);
-                // The chosen export when it can run here (int8: installed and
-                // exact); else fp16; with only int8 installed (a library moved
-                // to another computer before it had vectors), int8 rather
-                // than nothing.
-                let usable = |v: E5Variant| has(v) && (v == E5Variant::Fp16 || int8_exact);
-                let variant = if usable(chosen) {
-                    chosen
-                } else if has(E5Variant::Fp16) {
-                    E5Variant::Fp16
-                } else if has(E5Variant::Int8) {
-                    E5Variant::Int8
-                } else {
-                    return Err(anyhow!(
-                        "no E5 search model is installed in {}",
-                        self.model_dir.display()
-                    ));
-                };
+                // The chosen export when it can run here (int8: installed and // exact), else fp16. Never int8 in place of a missing fp16: a // new library is the standard model unless int8 was chosen. let usable = |v: E5Variant| has(v) && (v == E5Variant::Fp16 || int8_exact); let variant = if usable(chosen) { chosen } else if has(E5Variant::Fp16) { E5Variant::Fp16 } else { return Err(SearchModelsMissing.into()); };
                 if variant != chosen {
                     tracing::warn!(
                         chosen = chosen.label(),
@@ -1081,6 +1218,26 @@ mod tests {
         config
     }
 
+    /// ONNX Runtime, asked directly, sums int8 products exactly where the
+    /// processor class says it should: VNNI and ARM64 exact, AVX2 without VNNI
+    /// clamped. Runs on every CI processor (Zen 3, VNNI runners, Apple silicon).
+    #[test]
+    fn the_int8_probe_agrees_with_the_processor_class() {
+        let kernels = int8_kernels();
+        let exact = probe_int8_exact().expect("the probe runs");
+        eprintln!("int8 kernels {kernels:?}, ONNX Runtime exact: {exact}");
+        assert_eq!(
+            exact,
+            kernels != Int8Kernels::Saturating,
+            "ONNX Runtime disagrees with the {kernels:?} class"
+        );
+        assert_eq!(
+            int8_exact(),
+            matches!(kernels, Int8Kernels::Vnni | Int8Kernels::AppleArm)
+        );
+        assert!(!matmul_integer_model().is_empty());
+    }
+
     #[test]
     fn the_variants_name_their_files_and_how_they_run() {
         assert_eq!(E5Variant::Fp16.file_name(), "model_O4.onnx");
@@ -1166,11 +1323,22 @@ mod tests {
         assert_eq!(plan(VariantRule::Index(E5Variant::Int8)).unwrap(), int8);
 
         std::fs::remove_file(e5.join(E5Variant::Fp16.file_name())).unwrap();
-        assert_eq!(
-            plan_saturating(VariantRule::New(E5Variant::Fp16)).unwrap(),
-            int8,
-            "only int8 installed"
+        // Only int8 installed: a new library still never falls back to int8.
+        let missing = plan(VariantRule::New(E5Variant::Fp16)).unwrap_err();
+        assert!(
+            missing.downcast_ref::<SearchModelsMissing>().is_some(),
+            "{missing:#}"
         );
+        assert!(plan_saturating(VariantRule::New(E5Variant::Int8)).is_err());
+        assert_eq!(
+            plan(VariantRule::New(E5Variant::Int8)).unwrap(),
+            int8,
+            "int8 when chosen"
+        );
+        assert!(!config
+            .clone()
+            .with_rule(VariantRule::New(E5Variant::Fp16))
+            .can_load());
         assert!(plan(VariantRule::Index(E5Variant::Fp16)).is_err());
     }
 

@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Pause, Play, Plug, RotateCcw, ScanText, X, Zap } from 'lucide-react';
+import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Pause, Play, Plug, RotateCcw, ScanText, Trash2, X, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
@@ -29,6 +29,7 @@ import {
   cpuReasonDetail,
   etaText,
   indexingText,
+  discardConfirmText,
   modelSwitchView,
   pagesPerMinuteText,
   runsOnText,
@@ -198,12 +199,41 @@ function SearchDetails({ status }: { status: SystemStatus }) {
   );
 }
 
-/** Re-indexing for the faster (or back to the standard) search model: the offer, its progress, the restart it waits for, or why it failed. */
+/** The icon on the left of each switch action. */
+const SWITCH_ACTION_ICON: Record<SwitchAction, LucideIcon> = {
+  start: Zap,
+  continue: Play,
+  stop: Pause,
+  discard: Trash2,
+  restart: RotateCcw,
+  retry: RotateCcw,
+  retryRestart: RotateCcw,
+};
+
+/** Re-indexing for the faster (or back to the standard) search model: the offer, its progress, the restart it waits for, or why it failed. Discard asks first. */
 function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction: (action: SwitchAction) => void }) {
+  const [confirming, setConfirming] = useState(false);
   const view = modelSwitchView(status);
   if (!view) return null;
   const s = status.modelSwitch;
   const percent = s.total > 0 ? Math.max(0, Math.min(100, Math.round((s.done / s.total) * 100))) : 0;
+  const downloadPercent =
+    s.downloadBytes > 0 ? Math.max(0, Math.min(100, Math.round((s.downloadedBytes / s.downloadBytes) * 100))) : 0;
+  const bar = (value: number, label: string) => (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value}
+      className="h-[3px] rounded-[3px] bg-shodh-border overflow-hidden"
+    >
+      <div
+        className={cn('h-full origin-left transition-transform duration-panel ease-standard', status.indexingPaused ? 'bg-shodh-text-faint' : 'bg-shodh-accent')}
+        style={{ transform: `scaleX(${value / 100})` }}
+      />
+    </div>
+  );
   return (
     <div
       className={cn(
@@ -216,30 +246,53 @@ function ModelSwitchBlock({ status, onAction }: { status: SystemStatus; onAction
         {view.title}
       </p>
       {view.detail && <p className="m-0 text-caption text-shodh-text-secondary tabular-nums">{view.detail}</p>}
-      {s.phase === 'building' && s.total > 0 && (
-        <div
-          role="progressbar"
-          aria-label={view.title}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percent}
-          className="h-[3px] rounded-[3px] bg-shodh-border overflow-hidden"
-        >
-          <div
-            className={cn('h-full origin-left transition-transform duration-panel ease-standard', status.indexingPaused ? 'bg-shodh-text-faint' : 'bg-shodh-accent')}
-            style={{ transform: `scaleX(${percent / 100})` }}
-          />
+      {view.technical && (
+        <details className="text-caption text-shodh-text-muted">
+          <summary className={cn('cursor-pointer select-none w-fit rounded-sm', PANEL_FOCUS_RING)}>Show details</summary>
+          <p className="m-0 mt-1 break-words">{view.technical}</p>
+        </details>
+      )}
+      {s.phase === 'building' && s.total > 0 && bar(percent, view.title)}
+      {s.phase === 'downloading' && s.downloadBytes > 0 && bar(downloadPercent, view.title)}
+      {confirming ? (
+        <div className="flex flex-col gap-1.5 pt-0.5" role="alertdialog" aria-label="Discard the re-index">
+          <p className="m-0 text-caption text-shodh-text">{discardConfirmText(status)}</p>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              className={SMALL_BUTTON}
+              onClick={() => {
+                setConfirming(false);
+                onAction('discard');
+              }}
+            >
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+              Discard
+            </button>
+            <button type="button" className={SMALL_BUTTON} onClick={() => setConfirming(false)}>
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+              Keep it
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1.5 pt-0.5">
+          {view.actions.map(({ action, label }) => {
+            const Icon = SWITCH_ACTION_ICON[action];
+            return (
+              <button
+                key={action}
+                type="button"
+                className={SMALL_BUTTON}
+                onClick={() => (action === 'discard' ? setConfirming(true) : onAction(action))}
+              >
+                <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                {label}
+              </button>
+            );
+          })}
         </div>
       )}
-      <div className="flex flex-wrap gap-1.5 pt-0.5">
-        {view.actions.map(({ action, label }) => (
-          <button key={action} type="button" className={SMALL_BUTTON} onClick={() => onAction(action)}>
-            {(action === 'restart' || action === 'retryRestart') && <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />}
-            {(action === 'cancel' || action === 'discard') && <X className="w-3.5 h-3.5" aria-hidden="true" />}
-            {label}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -543,9 +596,11 @@ export function SystemStatusStrip({
       case 'retry':
         void run('re-index the library', () => system?.startModelSwitch() ?? Promise.resolve());
         break;
-      case 'cancel':
+      case 'stop':
+        void run('stop re-indexing', () => system?.stopModelSwitch() ?? Promise.resolve());
+        break;
       case 'discard':
-        void run('cancel re-indexing', () => system?.cancelModelSwitch() ?? Promise.resolve());
+        void run('discard the re-index', () => system?.cancelModelSwitch() ?? Promise.resolve());
         break;
       case 'restart':
       case 'retryRestart':
@@ -689,11 +744,11 @@ export function SystemStatusStrip({
             <button
               type="button"
               className={ICON_BUTTON}
-              onClick={() => onModelSwitch('cancel')}
-              aria-label={`Cancel: ${switchView.title}`}
-              title="Cancel re-indexing"
+              onClick={() => onModelSwitch('stop')}
+              aria-label={`Stop: ${switchView.title}. The work is kept for Continue.`}
+              title="Stop re-indexing (the work is kept)"
             >
-              <X className="w-3.5 h-3.5" aria-hidden="true" />
+              <Pause className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           )}
         </div>

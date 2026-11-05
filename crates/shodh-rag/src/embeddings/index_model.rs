@@ -58,6 +58,21 @@ pub struct IndexModel {
     /// The LanceDB table (in `lance_data`) of the memory statements.
     #[serde(default = "statements_table")]
     pub statements_table: String,
+    /// The tables of the export used before the last switch, kept for one
+    /// start as a way back and dropped at the following start, each only if it
+    /// is still at the version it had when it was retired (an older release
+    /// run in between may have written to it): see
+    /// [`super::model_switch::drop_retired`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired: Vec<RetiredTable>,
+}
+
+/// A table retired by a switch: its name and its LanceDB version then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetiredTable {
+    pub name: String,
+    pub version: u64,
 }
 
 impl IndexModel {
@@ -70,6 +85,7 @@ impl IndexModel {
             reason: reason.to_string(),
             documents_table: documents_table(),
             statements_table: statements_table(),
+            retired: Vec::new(),
         }
     }
 }
@@ -142,7 +158,14 @@ pub(crate) fn write_json_atomically<T: Serialize>(dir: &Path, name: &str, value:
         file.write_all(&json)?;
         file.sync_all()?;
     }
-    std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))
+    std::fs::rename(&partial, &path).with_context(|| format!("writing {}", path.display()))?;
+    // The rename itself made durable before anything relies on it (Unix; on
+    // Windows the rename of a flushed file is durable).
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|d| d.sync_all())
+        .with_context(|| format!("flushing {}", dir.display()))?;
+    Ok(())
 }
 
 /// The E5 export search setup installs:

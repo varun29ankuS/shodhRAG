@@ -248,10 +248,15 @@ pub async fn resolve_path_case(path: String) -> Result<String, String> {
 /// Clear every document from the index (audited).
 #[tauri::command]
 pub async fn clear_all_documents(
+    app: tauri::AppHandle,
     state: State<'_, RagState>,
     audit: State<'_, AuditState>,
 ) -> Result<String, String> {
-    let result = clear_all_documents_inner(state).await;
+    // A search model switch holds a copy of the library: discarded first.
+    let result = match crate::search_model_switch::discard_for_reset(&app).await {
+        Ok(()) => clear_all_documents_inner(state).await,
+        Err(e) => Err(e),
+    };
     let outcome = match &result {
         Ok(_) => json!({"ok": true}),
         Err(e) => json!({"ok": false, "error": e}),
@@ -266,10 +271,15 @@ pub async fn clear_all_documents(
 /// Reset the index and spaces (audited).
 #[tauri::command]
 pub async fn reset_database(
+    app: tauri::AppHandle,
     state: State<'_, RagState>,
     audit: State<'_, AuditState>,
 ) -> Result<String, String> {
-    let result = reset_database_inner(state).await;
+    // A search model switch holds a copy of the library: discarded first.
+    let result = match crate::search_model_switch::discard_for_reset(&app).await {
+        Ok(()) => reset_database_inner(state).await,
+        Err(e) => Err(e),
+    };
     let outcome = match &result {
         Ok(_) => json!({"ok": true}),
         Err(e) => json!({"ok": false, "error": e}),

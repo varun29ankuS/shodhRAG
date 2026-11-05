@@ -429,25 +429,42 @@ impl Baseline {
     }
 }
 
-/// The baseline among `baselines` recorded with the embedding export `report`
-/// indexed with ([`EMBEDDING_VARIANT_SETTING`]): which export a run uses
-/// depends on the processor (int8 only where its kernels are exact), and each
-/// export is gated against its own numbers. An error when none matches.
+/// The report setting naming the int8 kernel class ("vnni", "arm") an int8
+/// run used: each class rounds differently, so each has its own baseline.
+pub const INT8_KERNELS_SETTING: &str = "int8_kernels";
+
+/// The baseline among `baselines` recorded with the embedding export and,
+/// for int8, the kernel class `report` ran with ([`EMBEDDING_VARIANT_SETTING`],
+/// [`INT8_KERNELS_SETTING`]): each is gated against its own numbers. An error
+/// when none matches, never a pass.
 pub fn baseline_for<'a>(baselines: &'a [Baseline], report: &RunReport) -> Result<&'a Baseline> {
-    let variant = report.settings.get(EMBEDDING_VARIANT_SETTING);
+    let key = |settings: &BTreeMap<String, String>| {
+        (
+            settings.get(EMBEDDING_VARIANT_SETTING).cloned(),
+            settings.get(INT8_KERNELS_SETTING).cloned(),
+        )
+    };
+    let wanted = key(&report.settings);
+    let describe = |(variant, kernels): &(Option<String>, Option<String>)| {
+        format!(
+            "{EMBEDDING_VARIANT_SETTING}={}{}",
+            variant.as_deref().unwrap_or("unset"),
+            kernels
+                .as_deref()
+                .map(|k| format!(" {INT8_KERNELS_SETTING}={k}"))
+                .unwrap_or_default()
+        )
+    };
     baselines
         .iter()
-        .find(|b| b.settings.get(EMBEDDING_VARIANT_SETTING) == variant)
+        .find(|b| key(&b.settings) == wanted)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no baseline was recorded with {EMBEDDING_VARIANT_SETTING}={} (baselines: {})",
-                variant.map_or("unset", String::as_str),
+                "no baseline was recorded with {} (baselines: {})",
+                describe(&wanted),
                 baselines
                     .iter()
-                    .map(|b| b
-                        .settings
-                        .get(EMBEDDING_VARIANT_SETTING)
-                        .map_or("unset", String::as_str))
+                    .map(|b| describe(&key(&b.settings)))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -747,5 +764,26 @@ mod tests {
         ));
         assert!(md.contains("Provider errors (every attempt): rate_limited 2."));
         assert!(md.contains("Stopped early: quota used up."));
+    }
+
+    /// int8 on VNNI and int8 on Apple silicon are gated against their own
+    /// baselines; an int8 report of a class with no baseline is an error.
+    #[test]
+    fn an_int8_report_is_compared_with_the_baseline_of_its_kernel_class() {
+        let with = |kernels: &str| {
+            let mut r = report(&[("mrr", &[0.9])]);
+            r.settings
+                .insert(EMBEDDING_VARIANT_SETTING.to_string(), "int8".to_string());
+            r.settings
+                .insert(INT8_KERNELS_SETTING.to_string(), kernels.to_string());
+            r
+        };
+        let vnni = Baseline::from_report(&with("vnni"));
+        let arm = Baseline::from_report(&with("arm"));
+        let baselines = vec![vnni.clone(), arm.clone()];
+        assert_eq!(baseline_for(&baselines, &with("arm")).unwrap(), &arm);
+        assert_eq!(baseline_for(&baselines, &with("vnni")).unwrap(), &vnni);
+        let error = baseline_for(&[vnni], &with("arm")).unwrap_err();
+        assert!(error.to_string().contains("int8_kernels=arm"), "{error}");
     }
 }

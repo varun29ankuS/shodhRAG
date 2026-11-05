@@ -38,11 +38,11 @@ export interface SystemStatusState {
   setUseGpu: (useGpu: boolean) => Promise<void>;
   /** Starts (or continues) re-indexing for the faster search model. */
   startModelSwitch: () => Promise<void>;
-  /** Stops it and throws away what it embedded. */
+  /** Discards the re-index and what it embedded (the panel asks first). */
   cancelModelSwitch: () => Promise<void>;
-  /** Whether new libraries use the faster, slightly less accurate search model (downloads it when turned on). */
-  setFasterForNewLibraries: (faster: boolean) => Promise<void>;
-  /** Restarts Shodh, which completes a re-index that is ready. */
+  /** Stops the re-index and keeps its work, for Continue. */
+  stopModelSwitch: () => Promise<void>;
+  /** Brings over the last changes, saves, and restarts Shodh, which completes a ready re-index. */
   restartForModelSwitch: () => Promise<void>;
 }
 
@@ -143,14 +143,15 @@ export function useSystemStatus(): SystemStatusState {
     refresh();
   }, [refresh]);
 
-  const setFasterForNewLibraries = useCallback(async (faster: boolean) => {
-    await invoke('set_faster_search_for_new_libraries', { faster });
+  const stopModelSwitch = useCallback(async () => {
+    await invoke('stop_search_model_switch');
     refresh();
   }, [refresh]);
 
   const restartForModelSwitch = useCallback(async () => {
     await invoke('restart_for_search_model_switch');
-  }, []);
+    refresh();
+  }, [refresh]);
 
   return {
     status,
@@ -161,7 +162,7 @@ export function useSystemStatus(): SystemStatusState {
     setUseGpu,
     startModelSwitch,
     cancelModelSwitch,
-    setFasterForNewLibraries,
+    stopModelSwitch,
     restartForModelSwitch,
   };
 }

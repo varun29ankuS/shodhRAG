@@ -209,11 +209,6 @@ pub struct IndexingPrefs {
     /// The search model may run on a graphics card (on by default; off runs
     /// it on the CPU).
     pub use_gpu: bool,
-    /// A library without vectors is built with the faster int8 search model
-    /// ("Faster search (slightly less accurate)"); off by default (fp16). Only
-    /// offered on processors that run int8 exactly. A library that has vectors
-    /// keeps its own model; it moves with "Re-index for faster search".
-    pub faster_search: bool,
 }
 
 impl Default for IndexingPrefs {
@@ -221,7 +216,6 @@ impl Default for IndexingPrefs {
         Self {
             paused: false,
             use_gpu: true,
-            faster_search: false,
         }
     }
 }
@@ -620,7 +614,7 @@ pub const AGENT_WRITABLE: [SettingKey; 2] = [SettingKey::Theme, SettingKey::Sear
 /// these by name (in addition to its schema only listing [`AGENT_WRITABLE`]),
 /// so a prompt-injected request gets a clear refusal rather than a
 /// best-effort match.
-pub const AGENT_DENIED: [(&str, &str); 32] = [
+pub const AGENT_DENIED: [(&str, &str); 31] = [
     ("api_keys", "API keys are secrets; a manipulated agent could leak or replace them."),
     ("provider", "Switching the model provider changes who receives the user's documents."),
     ("model", "Switching the model changes who receives the user's documents and what it costs."),
@@ -652,7 +646,6 @@ pub const AGENT_DENIED: [(&str, &str); 32] = [
     ("code_mode", "Code mode lets answers change files and run commands on this computer; only the user may turn it on."),
     ("connectors", "Connectors decide which documents people outside this computer (in Slack or Telegram) can get answers from, whose Telegram account is the user's, how many model calls they may spend, and which GitHub repositories Shodh may read, push to or merge in; only the user may change that."),
     ("use_gpu", "Whether search uses the graphics card is the user's call about their computer."),
-    ("faster_search", "Whether new libraries use the faster, slightly less accurate search model is the user's trade-off to make."),
 ];
 
 /// Why `key` is withheld from the agent, if it is.
@@ -1157,11 +1150,6 @@ mod tests {
         // The assistant pauses and resumes with its own tools; the GPU is the user's call.
         assert!(denied_reason("indexing_paused").is_none());
         assert!(denied_reason("use_gpu").is_some());
-        assert!(
-            !defaults.faster_search,
-            "the standard search model by default"
-        );
-        assert!(denied_reason("faster_search").is_some());
     }
 
     #[test]

@@ -62,6 +62,10 @@ pub struct StatementStore {
     purge_requested: AtomicBool,
     /// The background purge is running ([`StatementStore::schedule_purge`]).
     purge_running: AtomicBool,
+    /// The data folder whose search model switch, while one is in progress, holds
+    /// copies of these statements: erases and purges reach those copies too
+    /// ([`crate::embeddings::model_switch::erase_copies`]).
+    switch_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for StatementStore {
@@ -230,6 +234,7 @@ impl StatementStore {
             write_lock: tokio::sync::Mutex::new(()),
             purge_requested: AtomicBool::new(false),
             purge_running: AtomicBool::new(false),
+            switch_dir: lance_dir.parent().map(Path::to_path_buf),
         })
     }
 
@@ -1148,11 +1153,24 @@ impl StatementStore {
                 self.table.delete(&id_list_predicate(chunk)).await?;
             }
         }
-        Ok(ids
+        let erased: Vec<String> = ids
             .iter()
             .filter(|id| stored.contains(*id))
             .cloned()
-            .collect())
+            .collect();
+        self.erase_switch_copies(&erased).await?;
+        Ok(erased)
+    }
+
+    /// Deletes `ids`' copies from a search model switch in progress, at once (see
+    /// [`crate::embeddings::model_switch::erase_copies`]).
+    async fn erase_switch_copies(&self, ids: &[String]) -> StatementResult<()> {
+        match &self.switch_dir {
+            Some(dir) => crate::embeddings::model_switch::erase_copies(dir, ids)
+                .await
+                .map_err(|e| StatementError::Lance(format!("{e:#}"))),
+            None => Ok(()),
+        }
     }
 
     /// Erases statements that were only forgotten (soft-deleted by
@@ -1204,6 +1222,7 @@ impl StatementStore {
         for chunk in ids.chunks(100) {
             self.table.delete(&id_list_predicate(chunk)).await?;
         }
+        self.erase_switch_copies(&ids).await?;
         Ok(ids.len())
     }
 
@@ -1215,6 +1234,12 @@ impl StatementStore {
         let _guard = self.write_lock.lock().await;
         let pending = self.dynamics.state(PURGE_PENDING_KEY)?.is_some();
         let stats = self.table.purge_old_versions(pending).await?;
+        // A switch in progress keeps copies of these statements: purged the same way.
+        if let Some(dir) = &self.switch_dir {
+            crate::embeddings::model_switch::purge_copies(dir)
+                .await
+                .map_err(|e| StatementError::Lance(format!("{e:#}")))?;
+        }
         if pending {
             self.dynamics.clear_state(PURGE_PENDING_KEY)?;
         }

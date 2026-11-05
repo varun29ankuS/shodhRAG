@@ -1,9 +1,9 @@
-//! Tests of [`super`]: a library with chunks and a memory, switched to another
+//! Tests of [`super`]: a library with chunks and memories, switched to another
 //! "export" (a deterministic embedder whose vectors differ from the index's).
 
 use super::*;
 use crate::statements::testing::{
-    ontology, preference, t0, FixedEmbedder, TestClock, WordEmbedder, DIM,
+    ontology, preference, t0, FixedEmbedder, HashEmbedder, TestClock, DIM,
 };
 use crate::statements::{DynamicsStore, PutIntent, Scope, StatementStore};
 use crate::types::{Citation, DocumentFormat};
@@ -11,18 +11,17 @@ use crate::{RAGConfig, RAGEngine, SearchModels};
 use std::collections::HashMap as Map;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Another "export": its own vocabulary and every vector negated, so its
-/// vectors are told from the index's. Counts the passages it embeds.
+/// Another "export": every vector of [`HashEmbedder`] negated, so its vectors
+/// are told from the index's. Counts the passages it embeds.
 #[derive(Default)]
 struct OtherExport {
-    words: WordEmbedder,
     embedded: AtomicUsize,
 }
 
 impl OtherExport {
     /// The vector it gives `text`, without counting it.
     fn vector(&self, text: &str) -> Vec<f32> {
-        self.words
+        HashEmbedder
             .embed_document(text)
             .unwrap()
             .into_iter()
@@ -53,12 +52,13 @@ fn config(dir: &Path) -> RAGConfig {
     config
 }
 
+/// The library's engine, embedding with the stateless [`HashEmbedder`]: a
+/// stored chunk's vector is the hash vector of exactly the text the indexer
+/// embedded.
 async fn engine(dir: &Path) -> RAGEngine {
     let mut engine = RAGEngine::new(config(dir)).await.unwrap();
     engine
-        .attach_search_models(SearchModels::from_embedder(Arc::new(
-            WordEmbedder::default(),
-        )))
+        .attach_search_models(SearchModels::from_embedder(Arc::new(HashEmbedder)))
         .unwrap();
     engine
 }
@@ -69,6 +69,33 @@ async fn add(engine: &mut RAGEngine, source: &str, text: &str) {
     metadata.insert("title".to_string(), source.to_string());
     engine
         .add_document(text, DocumentFormat::TXT, metadata, Citation::default())
+        .await
+        .unwrap();
+}
+
+/// The memory of the library in `dir`, embedding with [`HashEmbedder`].
+async fn memory(dir: &Path) -> StatementStore {
+    let (_, statements) = index_model::tables(dir).unwrap();
+    StatementStore::open_table(
+        &dir.join(LANCE_DIR),
+        &statements,
+        DIM,
+        ontology(),
+        Arc::new(DynamicsStore::open(&dir.join("shodh.db"), None).unwrap()),
+        Arc::new(FixedEmbedder(Arc::new(HashEmbedder))),
+        TestClock::at(t0()),
+    )
+    .await
+    .unwrap()
+}
+
+async fn remember(store: &StatementStore, id: &str, topic: &str) {
+    store
+        .put(
+            preference(id, topic, "PDF", t0()),
+            Scope::Global,
+            PutIntent::Auto,
+        )
         .await
         .unwrap();
 }
@@ -143,25 +170,7 @@ async fn library(dir: &Path) {
         .await;
     }
     std::fs::remove_file(dir.join(index_model::INDEX_MODEL_FILE)).ok();
-    let store = StatementStore::open(
-        &dir.join(LANCE_DIR),
-        DIM,
-        ontology(),
-        Arc::new(DynamicsStore::open(&dir.join("shodh.db"), None).unwrap()),
-        Arc::new(FixedEmbedder(Arc::new(WordEmbedder::default()))),
-        TestClock::at(t0()),
-    )
-    .await
-    .unwrap();
-    store
-        .put(
-            preference("p1", "report format", "PDF", t0()),
-            Scope::Global,
-            PutIntent::Auto,
-        )
-        .await
-        .unwrap();
-    drop(store);
+    remember(&memory(dir).await, "p1", "report format").await;
     drop(RAGEngine::new(config(dir)).await.unwrap());
     assert_eq!(
         index_model::read(dir).unwrap().map(|r| r.variant),
@@ -173,15 +182,55 @@ fn never() -> impl FnMut() -> std::future::Ready<bool> {
     || std::future::ready(false)
 }
 
+async fn built(dir: &Path, other: &Arc<OtherExport>) {
+    assert_eq!(
+        build(dir, other.clone(), never(), &|_| {}).await.unwrap(),
+        BuildOutcome::Built
+    );
+}
+
+async fn finished(dir: &Path, other: &Arc<OtherExport>) -> IndexModel {
+    let loader = other.clone();
+    finish_pending(dir, move |_| Ok(loader as Arc<dyn EmbeddingModel>))
+        .await
+        .unwrap()
+        .expect("switched")
+}
+
+/// One row of `name` again with the id `id`, as an older release would add
+/// a row.
+async fn add_row_like(dir: &Path, name: &str, id: &str) {
+    let db = connect(dir).await.unwrap();
+    let table = db.open_table(name).execute().await.unwrap();
+    let schema = table.schema().await.unwrap();
+    let one: Vec<RecordBatch> = table
+        .query()
+        .limit(1)
+        .execute()
+        .await
+        .unwrap()
+        .try_collect()
+        .await
+        .unwrap();
+    let mut columns = one[0].columns().to_vec();
+    columns[schema.index_of("id").unwrap()] = Arc::new(StringArray::from(vec![id]));
+    let row = RecordBatch::try_new(schema.clone(), columns).unwrap();
+    table
+        .add(Box::new(RecordBatchIterator::new([Ok(row)], schema)))
+        .execute()
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_build_copies_every_row_with_a_vector_of_the_new_export() {
     let dir = tempfile::tempdir().unwrap();
     library(dir.path()).await;
-    let switch = start(dir.path(), E5Variant::Int8).unwrap();
+    let switch = start(dir.path(), E5Variant::Int8).await.unwrap();
     assert_eq!(switch.documents_table, "documents_int8");
     assert_eq!(switch.statements_table, "statements_int8");
     assert_eq!(
-        start(dir.path(), E5Variant::Int8).unwrap(),
+        start(dir.path(), E5Variant::Int8).await.unwrap(),
         switch,
         "starting again continues it"
     );
@@ -207,28 +256,21 @@ async fn a_build_copies_every_row_with_a_vector_of_the_new_export() {
         assert!(!before.is_empty(), "{old} has rows");
         assert_eq!(ids(&before), ids(&after), "{new}: the same rows");
         for ((_, text, old_vector), (_, new_text, vector)) in before.iter().zip(&after) {
+            // The text rebuilt from the stored row is exactly what the indexer
+            // and the memory embedded: its vector is the stored one.
+            assert_eq!(
+                old_vector,
+                &HashEmbedder.embed_document(text).unwrap(),
+                "{old}: the stored vector is of the rebuilt text {text:?}"
+            );
             assert_eq!(text, new_text, "the same content");
             assert_eq!(vector, &other.vector(text), "the new export's vector");
-            assert_ne!(vector, old_vector, "not the old vector");
         }
-    }
-    let documents = rows(dir.path(), "documents", Rows::Documents).await;
-    for (_, text, _) in &documents {
-        assert!(
-            text.contains("note://")
-                && (text.ends_with("low tide.") || text.ends_with("in writing.")),
-            "a chunk is embedded from its stored context and its text: {text:?}"
-        );
     }
 
     // Built again: every row is unchanged, so nothing is embedded.
     let embedded = other.embedded.load(Ordering::SeqCst);
-    assert_eq!(
-        build(dir.path(), other.clone(), never(), &|_| {})
-            .await
-            .unwrap(),
-        BuildOutcome::Built
-    );
+    built(dir.path(), &other).await;
     assert_eq!(other.embedded.load(Ordering::SeqCst), embedded);
     // The index in use is untouched.
     let record = index_model::read(dir.path()).unwrap().unwrap();
@@ -237,7 +279,7 @@ async fn a_build_copies_every_row_with_a_vector_of_the_new_export() {
 }
 
 #[tokio::test]
-async fn a_stopped_build_keeps_its_rows_and_a_cancel_drops_them() {
+async fn a_stopped_build_keeps_its_rows_and_a_cancel_drops_only_its_own_tables() {
     let dir = tempfile::tempdir().unwrap();
     library(dir.path()).await;
     {
@@ -251,10 +293,10 @@ async fn a_stopped_build_keeps_its_rows_and_a_cancel_drops_them() {
             .await;
         }
     }
-    start(dir.path(), E5Variant::Int8).unwrap();
+    start(dir.path(), E5Variant::Int8).await.unwrap();
     let other = Arc::new(OtherExport::default());
     let asked = AtomicUsize::new(0);
-    // Stops when asked a second time: one step of rows is copied.
+    // Stops when asked the second time: one step of rows is copied.
     let outcome = build(
         dir.path(),
         other.clone(),
@@ -274,12 +316,7 @@ async fn a_stopped_build_keeps_its_rows_and_a_cancel_drops_them() {
     assert_eq!(other.embedded.load(Ordering::SeqCst), STEP_ROWS);
 
     // Continued: only the rest is embedded.
-    assert_eq!(
-        build(dir.path(), other.clone(), never(), &|_| {})
-            .await
-            .unwrap(),
-        BuildOutcome::Built
-    );
+    built(dir.path(), &other).await;
     let total = rows(dir.path(), "documents", Rows::Documents).await.len()
         + rows(dir.path(), "statements", Rows::Statements).await.len();
     assert_eq!(other.embedded.load(Ordering::SeqCst), total);
@@ -290,18 +327,20 @@ async fn a_stopped_build_keeps_its_rows_and_a_cancel_drops_them() {
     assert!(!names.contains(&"documents_int8".to_string()), "{names:?}");
     assert!(!names.contains(&"statements_int8".to_string()), "{names:?}");
     assert!(names.contains(&"documents".to_string()));
+    assert!(names.contains(&"statements".to_string()));
     assert!(!cancel(dir.path()).await.unwrap(), "nothing left to cancel");
 }
 
+/// The switch completes at start with what changed since the build, after
+/// checking the new tables; the old tables stay one start as a way back and
+/// go at the start after.
 #[tokio::test]
-async fn the_switch_completes_at_start_with_what_changed_since_the_build() {
+async fn the_switch_completes_at_start_and_keeps_the_old_tables_one_start() {
     let dir = tempfile::tempdir().unwrap();
     library(dir.path()).await;
-    start(dir.path(), E5Variant::Int8).unwrap();
+    start(dir.path(), E5Variant::Int8).await.unwrap();
     let other = Arc::new(OtherExport::default());
-    build(dir.path(), other.clone(), never(), &|_| {})
-        .await
-        .unwrap();
+    built(dir.path(), &other).await;
     // After the build: a note removed, another added.
     {
         let mut engine = engine(dir.path()).await;
@@ -314,18 +353,13 @@ async fn the_switch_completes_at_start_with_what_changed_since_the_build() {
         .await;
     }
     let live = rows(dir.path(), "documents", Rows::Documents).await;
-    let loader = other.clone();
-    let switched = finish_pending(dir.path(), move |variant| {
-        assert_eq!(variant, E5Variant::Int8);
-        Ok(loader as Arc<dyn EmbeddingModel>)
-    })
-    .await
-    .unwrap()
-    .expect("switched");
+    let switched = finished(dir.path(), &other).await;
     assert_eq!(switched.variant, E5Variant::Int8);
     assert_eq!(switched.documents_table, "documents_int8");
     assert_eq!(switched.statements_table, "statements_int8");
     assert_eq!(switched.reason, "switched from fp16");
+    let retired: Vec<&str> = switched.retired.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(retired, ["documents", "statements"]);
     assert_eq!(index_model::read(dir.path()).unwrap(), Some(switched));
     assert_eq!(pending(dir.path()).unwrap(), None);
 
@@ -340,12 +374,8 @@ async fn the_switch_completes_at_start_with_what_changed_since_the_build() {
     }
     let names = table_names(dir.path()).await;
     assert!(
-        !names.contains(&"documents".to_string()),
-        "old table dropped: {names:?}"
-    );
-    assert!(
-        !names.contains(&"statements".to_string()),
-        "old table dropped: {names:?}"
+        names.contains(&"documents".to_string()),
+        "kept one start: {names:?}"
     );
     let versions = connect(dir.path())
         .await
@@ -359,29 +389,155 @@ async fn the_switch_completes_at_start_with_what_changed_since_the_build() {
         .unwrap();
     assert_eq!(versions.len(), 1, "no earlier copy of a row stays");
 
-    // The engine opens the new tables.
+    // The next start: the engine opens the new tables, the old ones go.
     let engine = RAGEngine::new(config(dir.path())).await.unwrap();
     assert_eq!(engine.count_documents().await.unwrap(), 2);
     drop(engine);
-    // Nothing is left to finish.
+    let names = table_names(dir.path()).await;
+    assert!(!names.contains(&"documents".to_string()), "{names:?}");
+    assert!(!names.contains(&"statements".to_string()), "{names:?}");
+    assert!(index_model::read(dir.path())
+        .unwrap()
+        .unwrap()
+        .retired
+        .is_empty());
+}
+
+/// A retired table an older release wrote to (a downgrade between two
+/// starts) is kept; after the re-upgrade nothing drops a table no switch
+/// retired, so what was written while downgraded survives. The way back to
+/// the standard model uses the original names when they are free.
+#[tokio::test]
+async fn a_downgrade_s_writes_survive_and_the_way_back_uses_the_original_names() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    finished(dir.path(), &other).await;
+    // An older release writes into the original tables (it knows no others).
+    add_row_like(dir.path(), "documents", "written-while-downgraded").await;
+    // Re-upgraded: the start keeps the written table, and later starts too.
+    for _ in 0..3 {
+        drop(RAGEngine::new(config(dir.path())).await.unwrap());
+    }
+    let db = connect(dir.path()).await.unwrap();
+    assert!(all_ids(&db, "documents")
+        .await
+        .unwrap()
+        .contains(&"written-while-downgraded".to_string()));
+    assert!(index_model::read(dir.path())
+        .unwrap()
+        .unwrap()
+        .retired
+        .is_empty());
+
+    // With the original names taken, the way back builds `*_fp16`; once
+    // they are free, the original names.
+    let back = start(dir.path(), E5Variant::Fp16).await.unwrap();
+    assert_eq!(back.documents_table, "documents_fp16");
+    assert!(cancel(dir.path()).await.unwrap());
+    assert!(table_names(dir.path())
+        .await
+        .contains(&"documents".to_string()));
+    db.drop_table("documents", &[]).await.unwrap();
+    drop_table(&db, "statements").await.unwrap();
+    let back = start(dir.path(), E5Variant::Fp16).await.unwrap();
+    assert_eq!(back.documents_table, "documents");
+    assert_eq!(back.statements_table, "statements");
+    built(dir.path(), &other).await;
+    let record = finished(dir.path(), &other).await;
+    assert_eq!(record.documents_table, "documents");
+    assert_eq!(record.statements_table, "statements");
+}
+
+/// A lost record never starts a new library over the switched one, and
+/// nothing is dropped.
+#[tokio::test]
+async fn a_lost_record_drops_nothing_and_starts_no_new_library() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    finished(dir.path(), &other).await;
+    drop(RAGEngine::new(config(dir.path())).await.unwrap());
+    let before = rows(dir.path(), "documents_int8", Rows::Documents).await;
+    std::fs::remove_file(dir.path().join(index_model::INDEX_MODEL_FILE)).unwrap();
+    for _ in 0..2 {
+        drop(RAGEngine::new(config(dir.path())).await.unwrap());
+    }
     assert_eq!(
-        finish_pending(dir.path(), |_| unreachable!("no switch to finish"))
+        index_model::read(dir.path()).unwrap(),
+        None,
+        "no new record over the library"
+    );
+    assert_eq!(
+        rows(dir.path(), "documents_int8", Rows::Documents).await,
+        before
+    );
+    assert_eq!(
+        unrecorded_vector_tables(dir.path()).await.unwrap(),
+        ["documents_int8", "statements_int8"]
+    );
+    drop_retired(dir.path()).await.unwrap();
+    assert_eq!(
+        rows(dir.path(), "documents_int8", Rows::Documents).await,
+        before
+    );
+}
+
+/// A start that stopped after the record was replaced and before the marker
+/// went finishes the bookkeeping and drops nothing.
+#[tokio::test]
+async fn a_crash_after_the_record_is_replaced_completes_without_dropping() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    let switch = start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    let mut record = index_model::read(dir.path()).unwrap().unwrap();
+    record.variant = E5Variant::Int8;
+    record.documents_table = switch.documents_table.clone();
+    record.statements_table = switch.statements_table.clone();
+    index_model::write_record(dir.path(), &record).unwrap();
+    assert_eq!(
+        finish_pending(dir.path(), |_| unreachable!("nothing left to embed"))
             .await
             .unwrap(),
         None
     );
+    assert_eq!(pending(dir.path()).unwrap(), None);
+    let names = table_names(dir.path()).await;
+    for table in [
+        "documents",
+        "statements",
+        "documents_int8",
+        "statements_int8",
+    ] {
+        assert!(
+            names.contains(&table.to_string()),
+            "{table} kept: {names:?}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn a_switch_starts_only_from_a_recorded_index_in_another_export() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(start(dir.path(), E5Variant::Int8).is_err(), "no record");
-    index_model::write(dir.path(), E5Variant::Int8, "first vectors").unwrap();
-    assert!(start(dir.path(), E5Variant::Int8).is_err(), "already int8");
-    index_model::write(dir.path(), E5Variant::Fp16, "built before records").unwrap();
-    start(dir.path(), E5Variant::Int8).unwrap();
     assert!(
-        start(dir.path(), E5Variant::Fp16).is_err(),
+        start(dir.path(), E5Variant::Int8).await.is_err(),
+        "no record"
+    );
+    index_model::write(dir.path(), E5Variant::Int8, "first vectors").unwrap();
+    assert!(
+        start(dir.path(), E5Variant::Int8).await.is_err(),
+        "already int8"
+    );
+    index_model::write(dir.path(), E5Variant::Fp16, "built before records").unwrap();
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    assert!(
+        start(dir.path(), E5Variant::Fp16).await.is_err(),
         "another switch is in progress"
     );
     // A switch that is not built does not complete at start.
@@ -393,45 +549,303 @@ async fn a_switch_starts_only_from_a_recorded_index_in_another_export() {
     );
 }
 
+/// A start that cannot complete the switch keeps the old index, and the
+/// switch says why in plain words; a later start that can, completes it.
 #[tokio::test]
-async fn tidy_drops_only_the_vector_tables_nothing_names() {
+async fn a_failed_completion_keeps_the_old_index_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     library(dir.path()).await;
-    let db = connect(dir.path()).await.unwrap();
-    let schema = db
-        .open_table("documents")
-        .execute()
-        .await
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    let failed = finish_pending(dir.path(), |_| {
+        Err(crate::embeddings::SearchModelsMissing.into())
+    })
+    .await;
+    assert!(failed.is_err());
+    let record = index_model::read(dir.path()).unwrap().unwrap();
+    assert_eq!(
+        record.variant,
+        E5Variant::Fp16,
+        "the old index stays in use"
+    );
+    assert_eq!(record.documents_table, "documents");
+    let switch = pending(dir.path())
         .unwrap()
-        .schema()
-        .await
-        .unwrap();
-    for name in ["documents_int8", "unrelated"] {
-        db.create_empty_table(name, schema.clone())
-            .execute()
-            .await
-            .unwrap();
-    }
-    // In the original tables, without a switch, nothing is looked at.
-    tidy(dir.path()).await.unwrap();
+        .expect("kept for Retry or Cancel");
+    assert!(switch.built);
+    let reason = switch.finish_error.expect("the reason is kept");
+    assert!(
+        reason.starts_with("Shodh could not finish switching the search model")
+            && reason.contains("not installed any more"),
+        "{reason}"
+    );
     assert!(table_names(dir.path())
         .await
         .contains(&"documents_int8".to_string()));
-    // A record naming other tables: the original chunk table is a leftover.
-    let mut record = index_model::read(dir.path()).unwrap().unwrap();
-    record.documents_table = "documents_int8".to_string();
-    index_model::write_record(dir.path(), &record).unwrap();
-    tidy(dir.path()).await.unwrap();
-    let names = table_names(dir.path()).await;
-    assert!(!names.contains(&"documents".to_string()), "{names:?}");
-    assert!(names.contains(&"documents_int8".to_string()));
-    assert!(
-        names.contains(&"unrelated".to_string()),
-        "not a vector table"
+    assert_eq!(finished(dir.path(), &other).await.variant, E5Variant::Int8);
+    assert_eq!(pending(dir.path()).unwrap(), None);
+}
+
+/// No record is replaced over new tables that do not hold exactly the old
+/// tables' rows.
+#[tokio::test]
+async fn new_tables_that_do_not_match_are_never_switched_to() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    let db = connect(dir.path()).await.unwrap();
+    verify(&db, "documents", "documents_int8").await.unwrap();
+    add_row_like(dir.path(), "documents_int8", "a-stray-row").await;
+    let error = verify(&db, "documents", "documents_int8")
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<SwitchError>().is_some(), "{error:#}");
+    let text = finish_failure_text(&error);
+    assert!(text.contains("did not match"), "{text}");
+}
+
+/// Erasing a memory reaches the switch at once: a copy already made is
+/// deleted (and purged), and a step after the erase never copies it back.
+#[tokio::test]
+async fn an_erased_memory_leaves_no_copy_in_a_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    let store = memory(dir.path()).await;
+    remember(&store, "p2", "meeting room").await;
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+
+    // Paused before the memories' step (the documents are copied first).
+    let asked = AtomicUsize::new(0);
+    let outcome = build(
+        dir.path(),
+        other.clone(),
+        || std::future::ready(asked.fetch_add(1, Ordering::SeqCst) >= 1),
+        &|_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, BuildOutcome::Stopped);
+    store.erase(&["p2".to_string()]).await.unwrap();
+    built(dir.path(), &other).await;
+    let copied = ids(&rows(dir.path(), "statements_int8", Rows::Statements).await);
+    assert_eq!(copied, ["p1"], "p2 erased before its step: never copied");
+
+    // After the build (a Ready switch): the copy goes with the erase.
+    store.erase(&["p1".to_string()]).await.unwrap();
+    assert!(rows(dir.path(), "statements_int8", Rows::Statements)
+        .await
+        .is_empty());
+    store.purge_history().await.unwrap();
+    let versions = connect(dir.path())
+        .await
+        .unwrap()
+        .open_table("statements_int8")
+        .execute()
+        .await
+        .unwrap()
+        .list_versions()
+        .await
+        .unwrap();
+    assert_eq!(versions.len(), 1, "the purge reached the switch's table");
+}
+
+/// Memories erased between the build and the switch, a whole build step of
+/// them, leave nothing in the new table's full-text index: it covers exactly
+/// the rows left.
+#[tokio::test]
+async fn the_switched_memory_s_word_index_covers_only_the_rows_left() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    let store = memory(dir.path()).await;
+    let erased: Vec<String> = (0..STEP_ROWS).map(|i| format!("e{i:02}")).collect();
+    for (i, id) in erased.iter().enumerate() {
+        remember(&store, id, &format!("topic number {i} zanzibarword")).await;
+    }
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    store.erase(&erased).await.unwrap();
+    drop(store);
+    finished(dir.path(), &other).await;
+    let table = connect(dir.path())
+        .await
+        .unwrap()
+        .open_table("statements_int8")
+        .execute()
+        .await
+        .unwrap();
+    let rows_left = table.count_rows(None).await.unwrap();
+    assert_eq!(rows_left, 1, "only p1 is left");
+    let index = table
+        .list_indices()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|i| i.columns == ["terms"])
+        .expect("the terms index");
+    let stats = table
+        .index_stats(&index.name)
+        .await
+        .unwrap()
+        .expect("index statistics");
+    assert_eq!(
+        stats.num_indexed_rows, rows_left,
+        "the index was rebuilt over the rows left"
+    );
+    assert_eq!(stats.num_unindexed_rows, 0);
+}
+
+/// Old versions of the table being copied are pruned (and rows deleted)
+/// while the build runs, as compaction and the memory's purge do. Each step
+/// reads the latest version, so the build finishes with exactly the rows in
+/// use.
+#[tokio::test]
+async fn pruning_the_source_during_a_build_never_leaves_a_wrong_table() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    {
+        let mut engine = engine(dir.path()).await;
+        for i in 0..70 {
+            add(
+                &mut engine,
+                &format!("note://{i}"),
+                &format!("Note {i} says the meeting moved to room {i} on Friday afternoon."),
+            )
+            .await;
+        }
+    }
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    let db = connect(dir.path()).await.unwrap();
+    let step = AtomicUsize::new(0);
+    let first = build(
+        dir.path(),
+        other.clone(),
+        || {
+            let db = db.clone();
+            let n = step.fetch_add(1, Ordering::SeqCst);
+            async move {
+                let documents = db.open_table("documents").execute().await.unwrap();
+                documents
+                    .delete(&format!("source = 'note://{n}'"))
+                    .await
+                    .unwrap();
+                prune_old_versions(&db, "documents").await.unwrap();
+                false
+            }
+        },
+        &|_| {},
+    )
+    .await
+    .expect("each step reads the latest version");
+    assert_eq!(first, BuildOutcome::Built);
+    let live = rows(dir.path(), "documents", Rows::Documents).await;
+    let copied = rows(dir.path(), "documents_int8", Rows::Documents).await;
+    assert_eq!(ids(&copied), ids(&live), "exactly the rows in use");
+    for (_, text, vector) in &copied {
+        assert_eq!(vector, &other.vector(text));
+    }
+    verify(&db, "documents", "documents_int8").await.unwrap();
+}
+
+/// Many changes since the build are not embedded at start: the switch waits
+/// and the build catches up in the background.
+#[tokio::test]
+async fn many_changes_since_the_build_are_caught_up_in_the_background_not_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    {
+        let mut engine = engine(dir.path()).await;
+        for i in 0..=MAX_CHANGES_AT_START {
+            add(
+                &mut engine,
+                &format!("note://late-{i}"),
+                &format!("Late note {i} about the garden shed."),
+            )
+            .await;
+        }
+    }
+    let embedded = other.embedded.load(Ordering::SeqCst);
+    let loader = other.clone();
+    assert_eq!(
+        finish_pending(dir.path(), move |_| Ok(loader as Arc<dyn EmbeddingModel>))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        other.embedded.load(Ordering::SeqCst),
+        embedded,
+        "nothing embedded at start"
     );
     assert!(
-        names.contains(&"statements".to_string()),
-        "named by the record"
+        !pending(dir.path()).unwrap().unwrap().built,
+        "the build goes on"
+    );
+    assert_eq!(
+        index_model::read(dir.path()).unwrap().unwrap().variant,
+        E5Variant::Fp16
+    );
+    built(dir.path(), &other).await;
+    assert_eq!(finished(dir.path(), &other).await.variant, E5Variant::Int8);
+}
+
+/// A reset discards a switch: no copy of the library stays on disk.
+#[tokio::test]
+async fn a_cancelled_switch_and_a_clear_leave_no_copy_of_the_library() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    start(dir.path(), E5Variant::Int8).await.unwrap();
+    let other = Arc::new(OtherExport::default());
+    built(dir.path(), &other).await;
+    assert!(cancel(dir.path()).await.unwrap());
+    engine(dir.path()).await.clear_all_data().await.unwrap();
+    let names = table_names(dir.path()).await;
+    assert!(
+        !names.iter().any(|n| n.ends_with("_int8")),
+        "no switch table left: {names:?}"
+    );
+}
+
+/// Every column of the real chunk and statement tables can be compared, and
+/// a chunk whose metadata cannot be read stops the switch instead of being
+/// embedded from a guess.
+#[tokio::test]
+async fn the_real_tables_columns_are_compared_and_bad_metadata_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    library(dir.path()).await;
+    let db = connect(dir.path()).await.unwrap();
+    for name in ["documents", "statements"] {
+        let batches: Vec<RecordBatch> = db
+            .open_table(name)
+            .execute()
+            .await
+            .unwrap()
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        for batch in &batches {
+            for row in 0..batch.num_rows() {
+                fingerprint(batch, row).unwrap();
+            }
+        }
+    }
+    assert!(crate::rag_engine::embedded_text("text", "title", "{not json").is_err());
+    assert!(crate::rag_engine::embedded_text("text", "title", r#"{"n":1}"#).is_err());
+    assert_eq!(
+        crate::rag_engine::embedded_text("text", "title", r#"{"context":"C. "}"#).unwrap(),
+        "C. text"
     );
 }
 
@@ -482,113 +896,10 @@ fn a_fingerprint_covers_every_column_but_the_vector() {
     );
 }
 
-/// A start that cannot complete the switch keeps the old index, and the
-/// switch says why in plain words (the System status offers Retry or
-/// Cancel); a later start that can, completes it and clears the reason.
-#[tokio::test]
-async fn a_failed_completion_keeps_the_old_index_and_says_why() {
-    let dir = tempfile::tempdir().unwrap();
-    library(dir.path()).await;
-    start(dir.path(), E5Variant::Int8).unwrap();
-    let other = Arc::new(OtherExport::default());
-    build(dir.path(), other.clone(), never(), &|_| {})
-        .await
-        .unwrap();
-    let failed = finish_pending(dir.path(), |_| {
-        Err(crate::embeddings::SearchModelsMissing.into())
-    })
-    .await;
-    assert!(failed.is_err());
-    let record = index_model::read(dir.path()).unwrap().unwrap();
-    assert_eq!(
-        record.variant,
-        E5Variant::Fp16,
-        "the old index stays in use"
-    );
-    assert_eq!(record.documents_table, "documents");
-    let switch = pending(dir.path())
-        .unwrap()
-        .expect("kept for Retry or Cancel");
-    assert!(switch.built);
-    let reason = switch.finish_error.expect("the reason is kept");
-    assert!(
-        reason.starts_with("Shodh could not finish switching the search model")
-            && reason.contains("not installed any more"),
-        "{reason}"
-    );
-    assert!(table_names(dir.path())
-        .await
-        .contains(&"documents_int8".to_string()));
-
-    let loader = other.clone();
-    let switched = finish_pending(dir.path(), move |_| Ok(loader as Arc<dyn EmbeddingModel>))
-        .await
-        .unwrap()
-        .expect("completed on retry");
-    assert_eq!(switched.variant, E5Variant::Int8);
-    assert_eq!(pending(dir.path()).unwrap(), None);
-}
-
-/// Old versions of the table being copied are pruned (and rows deleted)
-/// while the build reads it, as the engine's compaction and the memory's
-/// purge may do. The build either finishes or fails cleanly; built again, the
-/// new table holds exactly the rows in use.
-#[tokio::test]
-async fn pruning_the_source_during_a_build_never_leaves_a_wrong_table() {
-    let dir = tempfile::tempdir().unwrap();
-    library(dir.path()).await;
-    {
-        let mut engine = engine(dir.path()).await;
-        for i in 0..70 {
-            add(
-                &mut engine,
-                &format!("note://{i}"),
-                &format!("Note {i} says the meeting moved to room {i} on Friday afternoon."),
-            )
-            .await;
-        }
-    }
-    start(dir.path(), E5Variant::Int8).unwrap();
-    let other = Arc::new(OtherExport::default());
-    let db = connect(dir.path()).await.unwrap();
-    let step = AtomicUsize::new(0);
-    let first = build(
-        dir.path(),
-        other.clone(),
-        || {
-            let db = db.clone();
-            let n = step.fetch_add(1, Ordering::SeqCst);
-            async move {
-                let documents = db.open_table("documents").execute().await.unwrap();
-                documents
-                    .delete(&format!("source = 'note://{n}'"))
-                    .await
-                    .unwrap();
-                prune_old_versions(&db, "documents").await.unwrap();
-                false
-            }
-        },
-        &|_| {},
-    )
-    .await;
-    eprintln!("build while pruning: {first:?}");
-    assert_eq!(
-        build(dir.path(), other.clone(), never(), &|_| {})
-            .await
-            .unwrap(),
-        BuildOutcome::Built
-    );
-    let live = rows(dir.path(), "documents", Rows::Documents).await;
-    let built = rows(dir.path(), "documents_int8", Rows::Documents).await;
-    assert_eq!(ids(&built), ids(&live), "exactly the rows in use");
-    for (_, text, vector) in &built {
-        assert_eq!(vector, &other.vector(text));
-    }
-}
-
 /// The real model end to end: a small library is searched with fp16, moved
-/// to int8 and back to fp16 with the switch, and every search finds the
-/// right note throughout.
+/// to int8 and back to fp16 with the switch, every search finds the right
+/// note throughout, and the vectors after the way back are the original fp16
+/// ones.
 #[tokio::test]
 #[cfg_attr(
     not(shodh_test_models),
@@ -654,8 +965,9 @@ async fn the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right() 
         E5Variant::Fp16,
         "a new library is fp16 by default"
     );
+    let original = rows(dir.path(), "documents", Rows::Documents).await;
     for to in [E5Variant::Int8, E5Variant::Fp16] {
-        start(dir.path(), to).unwrap();
+        start(dir.path(), to).await.unwrap();
         let model = crate::rag_engine::switch_model(&models, to).unwrap();
         assert_eq!(
             build(dir.path(), model, never(), &|_| {}).await.unwrap(),
@@ -669,6 +981,7 @@ async fn the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right() 
         .unwrap()
         .expect("switched");
         assert_eq!(switched.variant, to);
+        // The next start opens it (and drops the tables before it).
         let engine = RAGEngine::new(real(dir.path())).await.unwrap();
         searches_right(&engine, &questions).await;
         assert_eq!(
@@ -677,11 +990,19 @@ async fn the_real_model_switches_fp16_to_int8_and_back_and_search_stays_right() 
             "queries use the library's export"
         );
     }
+    let record = index_model::read(dir.path()).unwrap().unwrap();
     assert_eq!(
-        index_model::read(dir.path())
-            .unwrap()
-            .unwrap()
-            .documents_table,
-        "documents_fp16"
+        record.documents_table, "documents",
+        "the original name again"
     );
+    let back = rows(dir.path(), "documents", Rows::Documents).await;
+    assert_eq!(ids(&back), ids(&original));
+    for ((id, text, before), (_, after_text, after)) in original.iter().zip(&back) {
+        assert_eq!(text, after_text);
+        let cosine: f32 = before.iter().zip(after).map(|(a, b)| a * b).sum();
+        assert!(
+            cosine >= 0.9999,
+            "{id}: the fp16 vector moved, cos={cosine}"
+        );
+    }
 }

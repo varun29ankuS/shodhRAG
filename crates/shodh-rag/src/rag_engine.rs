@@ -714,13 +714,14 @@ fn format1_context(title: &str, heading: Option<&String>) -> String {
 /// context stored with it and its text, or, for a chunk of [`INDEX_FORMAT`]
 /// 1, its document's title and section and its text. Used to embed stored
 /// chunks again in another export ([`crate::embeddings::model_switch`]).
-pub(crate) fn embedded_text(text: &str, title: &str, metadata_json: &str) -> String {
-    let metadata: HashMap<String, String> = serde_json::from_str(metadata_json).unwrap_or_default();
+pub(crate) fn embedded_text(text: &str, title: &str, metadata_json: &str) -> Result<String> {
+    let metadata: HashMap<String, String> = serde_json::from_str(metadata_json)
+        .context("the chunk's metadata is not a map of strings")?;
     let context = match metadata.get(CHUNK_CONTEXT_KEY) {
         Some(context) => context.clone(),
         None => format1_context(title, metadata.get("heading")),
     };
-    format!("{context}{text}")
+    Ok(format!("{context}{text}"))
 }
 
 /// How a chunk's context names the file `source`: its file name. The folders
@@ -1584,14 +1585,17 @@ impl SearchModels {
 
     /// Whether the E5 files this index needs exist under
     /// `config.embedding.model_dir`: the export it was built with
-    /// ([`index_model`]), or any export for an index without vectors.
+    /// ([`index_model`]), or, for an index without vectors, fp16 (int8 only when chosen).
     pub fn available(config: &RAGConfig) -> bool {
         let Some(e5) = E5Config::auto_detect(&config.embedding.model_dir) else {
             return false;
         };
         match index_model::read(&config.data_dir) {
             Ok(Some(record)) => e5.with_rule(VariantRule::Index(record.variant)).can_load(),
-            Ok(None) => true,
+            // A new library: the standard model (or int8 when chosen and exact).
+            Ok(None) => e5
+                .with_rule(VariantRule::New(config.embedding.new_library_variant))
+                .can_load(),
             // Attached, so the load reports the damaged record.
             Err(_) => true,
         }
@@ -1653,6 +1657,9 @@ impl SearchModels {
     }
 }
 
+/// What indexing says on a processor that cannot run an int8 library's model exactly.
+pub const INT8_NOT_EXACT_HERE: &str = "This library uses the faster search model, which this processor can't run exactly, so nothing new is indexed. Use \"Re-index for standard search\" in System status to keep indexing here.";
+
 /// The engine's E5 embedder, loaded on first use and dropped when idle;
 /// shared so the idle unloader and the install check reach it without the
 /// engine lock.
@@ -1674,6 +1681,17 @@ impl LazyEmbeddings {
             )
         })
     }
+
+    /// The model, for passages that will be stored: refused for an int8 library on a
+    /// processor that cannot run int8 exactly, whose vectors would differ from the
+    /// library's (queries still run). System status offers the way back.
+    fn writable(&self) -> Result<Arc<E5Embeddings>> {
+        let model = self.loaded()?;
+        if model.variant() == E5Variant::Int8 && !crate::embeddings::e5::int8_exact() {
+            anyhow::bail!(INT8_NOT_EXACT_HERE);
+        }
+        Ok(model)
+    }
 }
 
 impl EmbeddingModel for LazyEmbeddings {
@@ -1682,7 +1700,7 @@ impl EmbeddingModel for LazyEmbeddings {
     }
 
     fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
-        self.loaded()?.embed_document(text)
+        self.writable()?.embed_document(text)
     }
 
     fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
@@ -1691,7 +1709,7 @@ impl EmbeddingModel for LazyEmbeddings {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        self.loaded()?.embed_documents(texts)
+        self.writable()?.embed_documents(texts)
     }
 
     fn dimension(&self) -> usize {
@@ -1759,6 +1777,23 @@ async fn settle_index_model(data_dir: &Path, store: &LanceStore) -> bool {
             // The load reports it; nothing is guessed.
             tracing::error!(error = %format!("{e:#}"), "The search index's model record is unreadable");
             return true;
+        }
+    }
+    // A switch's tables with rows and no record: the record was lost, and the
+    // library is in them. A new library is never started over it; the model
+    // waits (the log says why) and nothing is dropped.
+    match crate::embeddings::model_switch::unrecorded_vector_tables(data_dir).await {
+        Ok(tables) if !tables.is_empty() => {
+            tracing::error!(
+                ?tables,
+                "search-index-model.json is missing but the library is in these tables; search waits rather than start a new library over it"
+            );
+            return false;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "Checking for a lost search model record failed; the search model waits");
+            return false;
         }
     }
     let counted = async {

@@ -23,7 +23,7 @@
 
 pub mod dynamics;
 mod identity;
-mod lance;
+pub(crate) mod lance;
 mod render;
 mod sqlite;
 mod store;

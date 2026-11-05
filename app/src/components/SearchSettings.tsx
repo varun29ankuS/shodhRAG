@@ -9,8 +9,6 @@ import {
   onAppSettingsChanged,
   updatePreferences,
 } from '../lib/appSettings';
-import { useSystemStatusContext } from '../features/status/SystemStatusContext';
-import { FASTER_SEARCH_NAME, newLibraryChoice } from '../features/status/systemStatus';
 
 /**
  * Search preferences the user can change. Only the passage count exists:
@@ -143,80 +141,6 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
           Each search combines meaning-based and keyword matching, then ranks the passages; the assistant may ask for more when a question needs it.
         </p>
       </div>
-
-      <SearchModelChoice />
     </div>
-  );
-}
-
-/**
- * The search model a new library is built with: the standard model by
- * default; "Faster search (slightly less accurate)" only where this processor
- * runs it exactly. A library that already has passages keeps its model and
- * moves with Re-index in System status.
- */
-function SearchModelChoice() {
-  const { colors } = useTheme();
-  const system = useSystemStatusContext();
-  const choice = newLibraryChoice(system?.status ?? null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  if (!system || !choice) return null;
-
-  const choose = (faster: boolean) => {
-    if (faster === choice.faster || saving) return;
-    setSaving(true);
-    setError(null);
-    system
-      .setFasterForNewLibraries(faster)
-      .catch(err => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setSaving(false));
-  };
-
-  const option = (faster: boolean, title: string, detail: string) => (
-    <label className="flex items-start gap-2 cursor-pointer">
-      <input
-        type="radio"
-        name="search-model-new-library"
-        checked={choice.faster === faster}
-        disabled={saving}
-        onChange={() => choose(faster)}
-        className="mt-0.5"
-        style={{ accentColor: colors.primary }}
-      />
-      <span className="flex flex-col">
-        <span className="text-xs font-medium" style={{ color: colors.text }}>{title}</span>
-        <span className="text-caption" style={{ color: colors.textMuted }}>{detail}</span>
-      </span>
-    </label>
-  );
-
-  return (
-    <fieldset className="space-y-2 border-0 p-0 m-0" disabled={saving}>
-      <legend className="text-xs font-medium mb-1" style={{ color: colors.textSecondary }}>
-        Search model for a new library
-      </legend>
-      {option(false, 'Standard (recommended)', 'The most accurate ranking. Used unless you choose otherwise.')}
-      {option(
-        true,
-        FASTER_SEARCH_NAME,
-        'About 3 times faster indexing and search on this processor, but may rank some passages lower. Downloads the model (279 MB) when chosen.',
-      )}
-      {saving && (
-        <p className="text-caption" style={{ color: colors.textMuted }} role="status">
-          Saving…
-        </p>
-      )}
-      {error && (
-        <p className="text-caption" style={{ color: colors.error }} role="alert">
-          {error}
-        </p>
-      )}
-      {choice.current && (
-        <p className="text-caption" style={{ color: colors.textMuted }}>
-          {choice.current}
-        </p>
-      )}
-    </fieldset>
   );
 }

@@ -431,6 +431,16 @@ pub async fn run(opts: &RetrievalOptions) -> Result<RunReport> {
         "embedding_variant".to_string(),
         variants.into_iter().collect::<Vec<_>>().join("+"),
     );
+    // int8's numbers depend on the kernel class (VNNI and Apple silicon round
+    // differently): each class has its own baseline.
+    if settings.get("embedding_variant").map(String::as_str) == Some("int8") {
+        settings.insert(
+            "int8_kernels".to_string(),
+            shodh_rag::embeddings::e5::int8_kernels()
+                .label()
+                .to_string(),
+        );
+    }
     settings.insert("k".to_string(), opts.k.to_string());
     settings.insert("runs".to_string(), opts.runs.to_string());
     settings.extend(ocr_settings(&opts.ocr));

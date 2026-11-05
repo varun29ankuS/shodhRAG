@@ -242,7 +242,7 @@ pub async fn index_corpus_with(
         && !shodh_rag::embeddings::e5::int8_exact()
     {
         bail!(
-            "search_model=int8 needs a processor with exact int8 kernels (VNNI or ARM64); this one is {:?}",
+            "search_model=int8 needs a processor with exact, measured int8 kernels (x86 VNNI or Apple silicon); this one is {:?}",
             shodh_rag::embeddings::e5::int8_kernels()
         );
     }

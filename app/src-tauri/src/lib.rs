@@ -428,10 +428,6 @@ pub fn run() {
                 });
             rag_config.embedding.compute =
                 indexing_control::compute_preference(indexing_prefs.use_gpu);
-            // A new library is built with fp16 unless the user opted in to the
-            // faster int8 model (and this processor runs it exactly).
-            rag_config.embedding.new_library_variant =
-                search_model_switch::new_library_variant(indexing_prefs.faster_search);
             let mut default_rag = tauri::async_runtime::block_on(
                 shodh_rag::comprehensive_system::ComprehensiveRAG::new(rag_config),
             )
@@ -706,8 +702,8 @@ pub fn run() {
             indexing_control::cancel_indexing,
             indexing_control::set_search_gpu,
             indexing_control::system_status,
-            search_model_switch::set_faster_search_for_new_libraries,
             search_model_switch::start_search_model_switch,
+            search_model_switch::stop_search_model_switch,
             search_model_switch::cancel_search_model_switch,
             search_model_switch::restart_for_search_model_switch,
             enhanced_rag_commands::check_path_type,

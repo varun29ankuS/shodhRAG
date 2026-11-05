@@ -25,7 +25,8 @@
     "score_weight": "0.3",
     "source_decay": "0.5",
     "system_ocr_render_dpi": "96 (page size)",
-    "table_refinement": "off"
+    "table_refinement": "off",
+    "int8_kernels": "vnni"
   },
   "metrics": {
     "hit@1": {

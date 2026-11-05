@@ -38,7 +38,8 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 /// Where the search models live and the single-flight install guard.
 pub struct SearchModelsState {
     pub model_dir: PathBuf,
-    install_lock: tokio::sync::Mutex<()>,
+    /// One model download at a time, for setup and the search model switch alike.
+    pub(crate) install_lock: tokio::sync::Mutex<()>,
 }
 
 impl SearchModelsState {

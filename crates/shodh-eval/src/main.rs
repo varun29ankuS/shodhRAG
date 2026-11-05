@@ -385,14 +385,17 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
             }
             eprintln!("No regression against the baseline.");
         }
-        // Whether this processor runs the opt-in int8 model exactly ("exact") or
-        // not ("saturating"): CI measures int8 only where it is "exact".
+        // Whether the app offers the opt-in int8 model on this processor
+        // ("exact": a measured kernel class whose sums ONNX Runtime computes
+        // exactly), else its kernel class ("saturating", "other-arm", or
+        // "vnni"/"arm" when the probe found clamped sums): CI measures int8
+        // only where it is "exact".
         "int8-kernels" => println!(
             "{}",
             if shodh_rag::embeddings::e5::int8_exact() {
                 "exact"
             } else {
-                "saturating"
+                shodh_rag::embeddings::e5::int8_kernels().label()
             }
         ),
         "help" | "--help" | "-h" => println!("{USAGE}"),

@@ -9,6 +9,7 @@ use crate::statements::{DynamicsStore, PutIntent, Scope, StatementStore};
 use crate::types::{Citation, DocumentFormat};
 use crate::{RAGConfig, RAGEngine, SearchModels};
 use std::collections::HashMap as Map;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Another "export": every vector of [`HashEmbedder`] negated, so its vectors
@@ -721,6 +722,12 @@ async fn pruning_the_source_during_a_build_never_leaves_a_wrong_table() {
     start(dir.path(), E5Variant::Int8).await.unwrap();
     let other = Arc::new(OtherExport::default());
     let db = connect(dir.path()).await.unwrap();
+    // The documents table is copied in this many steps; the steps after them
+    // copy the memory, while notes are still deleted from the documents.
+    let document_steps = rows(dir.path(), "documents", Rows::Documents)
+        .await
+        .len()
+        .div_ceil(STEP_ROWS);
     let step = AtomicUsize::new(0);
     let first = build(
         dir.path(),
@@ -743,12 +750,39 @@ async fn pruning_the_source_during_a_build_never_leaves_a_wrong_table() {
     .await
     .expect("each step reads the latest version");
     assert_eq!(first, BuildOutcome::Built);
+    let deletions = step.load(Ordering::SeqCst);
+    assert!(
+        deletions > document_steps,
+        "notes are also deleted after the documents were copied"
+    );
     let live = rows(dir.path(), "documents", Rows::Documents).await;
     let copied = rows(dir.path(), "documents_int8", Rows::Documents).await;
-    assert_eq!(ids(&copied), ids(&live), "exactly the rows in use");
+    // Every row in use is copied with the new export's vector. Rows deleted
+    // while the documents were copied are gone from the copy; only notes
+    // deleted after that (while the memory was copied) are still there, for
+    // the completion to bring over.
+    let live_ids: HashSet<String> = ids(&live).into_iter().collect();
     for (_, text, vector) in &copied {
         assert_eq!(vector, &other.vector(text));
     }
+    for id in ids(&live) {
+        assert!(ids(&copied).contains(&id), "row {id} in use is copied");
+    }
+    let late: Vec<String> = (document_steps..deletions)
+        .map(|n| format!("Note {n} says"))
+        .collect();
+    for (id, text, _) in &copied {
+        if !live_ids.contains(id) {
+            assert!(
+                late.iter().any(|note| text.contains(note.as_str())),
+                "only a note deleted after the documents were copied stays: {text}"
+            );
+        }
+    }
+    let finished = finished(dir.path(), &other).await;
+    assert_eq!(finished.documents_table, "documents_int8");
+    let switched = rows(dir.path(), "documents_int8", Rows::Documents).await;
+    assert_eq!(ids(&switched), ids(&live), "exactly the rows in use");
     verify(&db, "documents", "documents_int8").await.unwrap();
 }
 

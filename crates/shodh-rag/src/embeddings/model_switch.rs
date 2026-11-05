@@ -207,6 +207,16 @@ fn vector_table_names() -> Vec<String> {
 /// record, they mean the record was lost and the library is in them, so no
 /// new library may start over it (see `rag_engine::settle_index_model`).
 pub async fn unrecorded_vector_tables(data_dir: &Path) -> Result<Vec<String>> {
+    // Checked on every start of a library without a record: without any
+    // switch table folder (`<name>.lance`) there is nothing to open.
+    let dir = lance_dir(data_dir);
+    let candidates = vector_table_names()
+        .into_iter()
+        .filter(|name| name != DOCUMENTS_TABLE && name != STATEMENTS_TABLE)
+        .any(|name| dir.join(format!("{name}.lance")).exists());
+    if !candidates {
+        return Ok(Vec::new());
+    }
     let db = connect(data_dir).await?;
     let existing = db.table_names().execute().await?;
     let mut found = Vec::new();

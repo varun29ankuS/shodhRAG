@@ -56,11 +56,12 @@ impl SearchModelsState {
     async fn store(&self, rag_state: &RagState) -> ModelStore {
         let config = rag_state.rag.read().await.config().clone();
         let index = SearchModels::index_variant(&config);
-        let variants = index_model::setup_variants(
-            index,
-            config.embedding.new_library_variant,
-            shodh_rag::embeddings::e5::int8_exact(),
-        );
+        // The int8 check loads ONNX Runtime, so it runs only when int8 was
+        // chosen for a new library.
+        let new_library = config.embedding.new_library_variant;
+        let int8_exact = new_library == shodh_rag::embeddings::e5::E5Variant::Int8
+            && shodh_rag::embeddings::e5::int8_exact();
+        let variants = index_model::setup_variants(index, new_library, int8_exact);
         ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants)
     }
 }

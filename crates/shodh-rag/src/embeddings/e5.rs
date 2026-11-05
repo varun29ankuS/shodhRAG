@@ -376,7 +376,10 @@ impl E5Config {
     /// What may run on a graphics card and what on the CPU under the rule,
     /// given the installed exports and this processor's int8 kernels.
     fn plan(&self) -> Result<Plan> {
-        self.plan_for(int8_exact())
+        // The int8 check loads ONNX Runtime; only a new library for which
+        // int8 was chosen needs it (an index's own export is never swapped).
+        let needs_check = matches!(self.rule, VariantRule::New(E5Variant::Int8));
+        self.plan_for(needs_check && int8_exact())
     }
 
     /// [`Self::plan`] on a processor that runs int8 exactly (`int8_exact`)

@@ -271,8 +271,15 @@ pub async fn status(
         .map(|r| r.variant);
     let pending = model_switch::pending(&data_dir).ok().flatten();
     let installed = installed_variants(&model_dir.join(E5_DIR));
-    let exact = int8_exact();
     let on_cpu = report.is_some_and(|r| r.accelerator == Accelerator::Cpu);
+    // The int8 check loads ONNX Runtime (about 10 MB), so it runs only when
+    // the answer matters: an fp16 library searched on the processor (the
+    // search model is loaded then anyway) or an int8 library.
+    let exact = match index_variant {
+        Some(E5Variant::Fp16) => on_cpu && int8_exact(),
+        Some(E5Variant::Int8) => int8_exact(),
+        None => false,
+    };
     let inner = state.lock();
     let phase = phase_of(
         inner.running.then_some(inner.phase),

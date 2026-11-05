@@ -850,12 +850,22 @@ where
         }
         progress(*counter);
     }
-    // Rows the source no longer has (erased, removed, or gone since the ids
-    // were read).
-    let gone: Vec<String> = held.into_keys().filter(|id| !seen.contains(id)).collect();
+    // Rows the source no longer has: removed before the build, or since a
+    // step copied them. Read again under the lock from the latest versions
+    // of both tables, so nothing removed meanwhile stays in the copy.
+    let _step = lock.lock().await;
+    let gone: Vec<String> = if embedder.is_some() {
+        let live: HashSet<String> = all_ids(db, source).await?.into_iter().collect();
+        all_ids(db, target)
+            .await?
+            .into_iter()
+            .filter(|id| !live.contains(id))
+            .collect()
+    } else {
+        held.into_keys().filter(|id| !seen.contains(id)).collect()
+    };
     synced.changes += gone.len();
     if embedder.is_some() {
-        let _step = lock.lock().await;
         for ids in gone.chunks(DELETE_IDS) {
             target_table.delete(&id_list(ids)).await?;
         }

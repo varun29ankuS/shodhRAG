@@ -446,10 +446,9 @@ jobs:
   eval-retrieval-int8:
     name: Retrieval eval (int8, Apple silicon)
     runs-on: macos-14
-    # Not measured yet on this runner: the macOS build and tests take up to 21
-    # minutes, the model download a few, and the three int8 evals ran 40
-    # minutes on Windows VNNI runners. Tightened once measured.
-    timeout-minutes: 90
+    # Measured 63 minutes on a cold cache (run 41966083623: build and probe 14,
+    # model tests 7, the three int8 evals 40); the limit leaves a quarter on top.
+    timeout-minutes: 80
     env:
       # The workflow's -crt-static is for the Windows MSVC builds.
       RUSTFLAGS: ""

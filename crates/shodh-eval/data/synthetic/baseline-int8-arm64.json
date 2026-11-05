@@ -3,14 +3,15 @@
   "dataset_id": "synthetic-v1",
   "dataset_hash": "26c12c6b06498b390057be75f5cdbafee993cdbcad0776f549dbd0a5a8164936",
   "corpus_hash": "a0dd1b9f61d3abd55c1a96ab9ff130b3d60b5f19d1a7e874e12d7d60ac9d5349",
-  "recorded_at": "2026-11-04T11:20:15.393566700+00:00",
-  "approval": "Measuring: the Apple-silicon int8 baseline is recorded from the first CI run of the Apple-silicon int8 job.",
+  "recorded_at": "2026-11-05T04:38:13.565344+00:00",
+  "approval": "Opt-in only, Apple silicon: the faster, slightly less accurate search model (int8, model_qint8_avx512_vnni.onnx, each passage embedded alone), offered only where ONNX Runtime's int8 sums are exact (Apple's dot-product kernels; checked at start by a MatMulInteger probe). Apple-silicon int8 rounds differently from x86 VNNI, so it has its own baseline. Recorded from CI run 41966083623 (macos-14, Apple M1 (Virtual), job eval-retrieval-int8). The user accepted int8 at papers mrr 0.9470 on VNNI (PR #125, 2026-11-04); these Apple-silicon numbers are measured, not yet accepted by the user. Every metric equals fp16 (baseline.json) and VNNI int8 (baseline-int8.json).",
   "settings": {
     "candidate_multiplier": "5",
     "chunk_max_tokens": "380",
     "citation_graph": "off",
     "embedding": "multilingual-e5-base",
     "embedding_variant": "int8",
+    "int8_kernels": "arm",
     "k": "10",
     "min_score_threshold": "0.02",
     "ocr": "auto",
@@ -25,8 +26,7 @@
     "score_weight": "0.3",
     "source_decay": "0.5",
     "system_ocr_render_dpi": "96 (page size)",
-    "table_refinement": "off",
-    "int8_kernels": "arm"
+    "table_refinement": "off"
   },
   "metrics": {
     "hit@1": {

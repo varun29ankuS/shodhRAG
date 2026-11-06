@@ -304,10 +304,6 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn src_file(relative: &str) -> String {
-        read(&manifest_dir().join("..").join("src").join(relative))
-    }
-
     fn strings(value: &Value) -> Vec<String> {
         value
             .as_array()
@@ -319,19 +315,208 @@ pub(crate) mod tests {
             .unwrap_or_default()
     }
 
+    /// Every frontend source, by its path under `app/src` (`/`-separated).
+    fn frontend_sources() -> BTreeMap<String, String> {
+        frontend_files()
+            .iter()
+            .map(|f| (relative(f), read(f)))
+            .collect()
+    }
+
+    /// Every Rust source of the app (`app/src-tauri/src`), joined: where the per-tool
+    /// navigation tests live.
+    fn app_rust_sources() -> String {
+        fn walk(dir: &Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push_str(&read(&path));
+                    out.push('\n');
+                }
+            }
+        }
+        let mut out = String::new();
+        walk(&manifest_dir().join("src"), &mut out);
+        out
+    }
+
+    /// The body of `const <name> = useCallback(` up to its dependency list.
+    fn callback_body<'a>(text: &'a str, name: &str) -> Option<&'a str> {
+        let start = text.find(&format!("const {name} = useCallback("))?;
+        let rest = &text[start..];
+        let end = rest.find("\n  }, [")?;
+        Some(&rest[..end])
+    }
+
+    /// The frontend file (under `app/src`) whose view applies targets of `kind`; `None`
+    /// for `conversation`, which the chat session opens itself. A new kind fails the
+    /// test until it is given an owner here.
+    fn kind_owner(kind: &str) -> Option<&'static str> {
+        match kind {
+            "conversation" => None,
+            "document" => Some("features/ask/AskView.tsx"),
+            "calendar" => Some("features/tasks/TasksStore.tsx"),
+            "audit" => Some("features/audit/AuditView.tsx"),
+            "source" => Some("App-SplitView.tsx"),
+            "visual" => Some("features/visuals/VisualNavigator.tsx"),
+            "workspace" => Some("features/workspaces/WorkspacesView.tsx"),
+            "artifact" => Some("features/artifacts/ArtifactsView.tsx"),
+            "code" | "review" => Some("features/code/CodeReviewContext.tsx"),
+            "setting" => Some("components/shell/SettingsView.tsx"),
+            "library" => Some("features/library/LibraryView.tsx"),
+            "status" => Some("components/shell/SystemStatusStrip.tsx"),
+            _ => Some("(no owner: add the kind to kind_owner)"),
+        }
+    }
+
+    /// What the frontend lacks for the assistant's navigation to reach the screen:
+    /// a parser and a view for every target kind (the view's own
+    /// `useNavigationTarget('<kind>'`, never an unrelated `kind === ...`), a highlight
+    /// for every setting the assistant may change, a handler for every Library
+    /// section, the same lists on both sides, and every move going through the
+    /// navigation gate. Pure over `sources`, so the checks are themselves tested by
+    /// mutating the sources.
+    fn frontend_navigation_problems(sources: &BTreeMap<String, String>) -> Vec<String> {
+        use shodh_rag::harness::events::NavigationTarget;
+        use shodh_rag::harness::tools::navigate::VIEWS;
+
+        let file = |name: &str| sources.get(name).map(String::as_str).unwrap_or("");
+        let mut problems = Vec::new();
+        let parser = file("features/agent/navigation.ts");
+        let session = file("features/ask/ChatSessionContext.tsx");
+        for kind in NavigationTarget::KINDS {
+            if !parser.contains(&format!("case '{kind}':")) {
+                problems.push(format!(
+                    "target {kind}: features/agent/navigation.ts does not parse it"
+                ));
+            }
+            let applied = match kind_owner(kind) {
+                // A conversation is opened by the session itself, never by a view.
+                None => session.contains("nav.target?.kind === 'conversation'"),
+                // The view that owns the kind handles it; another file's handler (the
+                // snippet shelf's for `library`) or an unrelated `kind === ...` does not count.
+                Some(owner) => file(owner).contains(&format!("useNavigationTarget('{kind}'")),
+            };
+            if !applied {
+                problems.push(format!("target {kind}: no view applies it"));
+            }
+        }
+
+        // Every setting the assistant may change and Settings shows is highlighted there.
+        for key in crate::app_settings::AGENT_WRITABLE {
+            if key.section().is_none() {
+                continue;
+            }
+            let marker = format!("agentItemKey('setting', '{}')", key.as_str());
+            if !sources.values().any(|text| text.contains(&marker)) {
+                problems.push(format!(
+                    "setting {}: no control is marked {marker}, so update_setting highlights nothing",
+                    key.as_str()
+                ));
+            }
+        }
+
+        // Every Library section has a handler in the Library.
+        let library = file("features/library/LibraryView.tsx");
+        for section in crate::agent_tools::LIBRARY_SECTIONS {
+            if !library.contains(&format!("target.section === '{section}'")) {
+                problems.push(format!(
+                    "Library section {section}: LibraryView does not open it"
+                ));
+            }
+        }
+
+        // Both sides validate targets against the same lists.
+        let mut same = |what: &str, rust: &[&str], ts: Vec<String>| {
+            let rust: Vec<String> = rust.iter().map(|s| s.to_string()).collect();
+            if rust != ts {
+                problems.push(format!("{what}: Rust has {rust:?}, the frontend {ts:?}"));
+            }
+        };
+        let section_ids: Vec<String> = Regex::new(r"(?m)^\s*id: '([a-z]+)',\s*$")
+            .unwrap()
+            .captures_iter(file("components/shell/SettingsView.tsx"))
+            .map(|c| c[1].to_string())
+            .collect();
+        same(
+            "Settings sections (SettingsView)",
+            &crate::agent_tools::SETTINGS_SECTIONS[..],
+            section_ids,
+        );
+        same(
+            "Settings sections (navigation.ts)",
+            &crate::agent_tools::SETTINGS_SECTIONS[..],
+            ts_array(parser, "SETTINGS_SECTIONS", "navigation.ts"),
+        );
+        same(
+            "Library sections",
+            &crate::agent_tools::LIBRARY_SECTIONS[..],
+            ts_array(parser, "LIBRARY_SECTIONS", "navigation.ts"),
+        );
+        same(
+            "Workspace tabs",
+            &crate::agent_tools::WORKSPACE_TABS[..],
+            ts_array(parser, "WORKSPACE_TABS", "navigation.ts"),
+        );
+        same(
+            "Views",
+            &VIEWS[..],
+            ts_array(file("lib/viewTabs.ts"), "VIEW_TABS", "viewTabs.ts"),
+        );
+
+        // Every move reaches the screen through the gate: the view switch and the
+        // target hand-off happen only inside followNavigation, which only the gate calls.
+        match callback_body(session, "followNavigation") {
+            None => problems.push("ChatSessionContext has no followNavigation".to_string()),
+            Some(body) => {
+                for marker in ["CustomEvent('switchTab'", "publishTarget("] {
+                    let total = session.matches(marker).count();
+                    let inside = body.matches(marker).count();
+                    if inside == 0 || total != inside {
+                        problems.push(format!(
+                            "ChatSessionContext: {marker} must appear only inside followNavigation ({inside} of {total})"
+                        ));
+                    }
+                }
+                let follows = session.matches("followNavigation(").count();
+                let gated: usize = ["deliver", "goToHeldNavigation"]
+                    .iter()
+                    .filter_map(|name| callback_body(session, name))
+                    .map(|b| b.matches("followNavigation(").count())
+                    .sum();
+                if follows != gated {
+                    problems.push(format!(
+                        "ChatSessionContext: followNavigation is called {follows} times, {gated} of them through the gate"
+                    ));
+                }
+            }
+        }
+        // The System status panel opens from its own target, through the same gate.
+        if sources
+            .values()
+            .any(|text| text.contains("'show-system-status'"))
+        {
+            problems.push(
+                "the System status panel still opens from its own event, outside the gate"
+                    .to_string(),
+            );
+        }
+        problems
+    }
+
     /// Every view the assistant can open and every kind of item a `navigated`
-    /// event can point at has a Read-tier tool that emits it, and the frontend
-    /// handles each: it parses the kind, a view applies it, and the lists both
-    /// sides validate against (Settings sections, Library parts, workspace tabs,
-    /// views) agree. That each listed tool really emits its target is asserted
-    /// by the tool's own tests.
+    /// event can point at has a Read-tier tool that emits it (besides `open_view`,
+    /// which opens every view), every Library section has one, every tool on the map
+    /// has a test that reads its event with `testing::expect_navigation` (which fails
+    /// for a tool not on the map), and the frontend handles each.
     #[tokio::test]
     async fn every_view_and_item_the_assistant_can_open_has_a_tool_and_a_handler() {
         use shodh_rag::harness::events::NavigationTarget;
         use shodh_rag::harness::tools::navigate::VIEWS;
-        use shodh_rag::harness::RiskTier;
-
         use shodh_rag::harness::tools::HostTool;
+        use shodh_rag::harness::RiskTier;
 
         let t = testing::host().await;
         let registry = build_registry(t.host.clone()).expect("registry builds");
@@ -351,61 +536,68 @@ pub(crate) mod tests {
             })
         };
         let navigation = &manifest()["navigation"];
+        let tested: BTreeSet<String> = Regex::new(
+            r#"(?:expect_navigation|next_calendar_target|next_setting_target)\(\s*&mut \w+,\s*"([a-z_]+)""#,
+        )
+        .unwrap()
+        .captures_iter(&app_rust_sources())
+        .map(|c| c[1].to_string())
+        .collect();
         let mut problems = Vec::new();
 
-        let check_tools = |what: &str, entry: Option<&Value>, problems: &mut Vec<String>| {
+        let mut check = |what: &str, entry: Option<&Value>, ignore_open_view: bool| {
             let tools = entry.map(strings).unwrap_or_default();
-            if tools.is_empty() {
-                problems.push(format!("{what}: no tool opens it"));
-                return;
-            }
             let mut read = false;
             for tool in &tools {
                 match tier_of(tool) {
                     None => problems.push(format!("{what}: {tool} is not a registered tool")),
-                    Some(tier) => read |= tier == RiskTier::Read,
+                    Some(tier) => {
+                        read |= tier == RiskTier::Read && !(ignore_open_view && tool == "open_view")
+                    }
+                }
+                if !tested.contains(tool) {
+                    problems.push(format!(
+                        "{what}: {tool} is on the map but no test reads its event with expect_navigation(&mut rx, \"{tool}\")"
+                    ));
                 }
             }
             if !read {
                 problems.push(format!(
-                    "{what}: only writes show it; give the assistant a Read-tier tool that opens it"
+                    "{what}: no Read-tier tool opens it{}",
+                    if ignore_open_view {
+                        " (besides open_view)"
+                    } else {
+                        ""
+                    }
                 ));
             }
         };
 
         let views = navigation["views"].as_object().expect("navigation.views");
         for view in VIEWS {
-            check_tools(&format!("view {view}"), views.get(view), &mut problems);
+            check(&format!("view {view}"), views.get(view), true);
+        }
+        let targets = navigation["targets"]
+            .as_object()
+            .expect("navigation.targets");
+        for kind in NavigationTarget::KINDS {
+            check(&format!("target {kind}"), targets.get(kind), false);
+        }
+        let sections = navigation["librarySections"]
+            .as_object()
+            .expect("navigation.librarySections");
+        for section in crate::agent_tools::LIBRARY_SECTIONS {
+            check(
+                &format!("Library section {section}"),
+                sections.get(section),
+                false,
+            );
         }
         for view in views.keys() {
             if !VIEWS.contains(&view.as_str()) {
                 problems.push(format!(
                     "navigation.views lists {view}, which is not a view"
                 ));
-            }
-        }
-
-        let targets = navigation["targets"]
-            .as_object()
-            .expect("navigation.targets");
-        let parser = src_file("features/agent/navigation.ts");
-        let frontend: Vec<String> = frontend_files().iter().map(|f| read(f)).collect();
-        for kind in NavigationTarget::KINDS {
-            check_tools(&format!("target {kind}"), targets.get(kind), &mut problems);
-            if !parser.contains(&format!("case '{kind}':")) {
-                problems.push(format!(
-                    "target {kind}: features/agent/navigation.ts does not parse it"
-                ));
-            }
-            let applied = [
-                format!("useNavigationTarget('{kind}'"),
-                format!("kind === '{kind}'"),
-            ];
-            if !frontend
-                .iter()
-                .any(|text| applied.iter().any(|a| text.contains(a.as_str())))
-            {
-                problems.push(format!("target {kind}: no view applies it"));
             }
         }
         for kind in targets.keys() {
@@ -427,54 +619,136 @@ pub(crate) mod tests {
             }
         }
 
-        // Both sides validate targets against the same lists.
-        let same = |what: &str, rust: &[&str], ts: Vec<String>, problems: &mut Vec<String>| {
-            let rust: Vec<String> = rust.iter().map(|s| s.to_string()).collect();
-            if rust != ts {
-                problems.push(format!("{what}: Rust has {rust:?}, the frontend {ts:?}"));
-            }
-        };
-        let settings_view = src_file("components/shell/SettingsView.tsx");
-        let section_ids: Vec<String> = Regex::new(r"(?m)^\s*id: '([a-z]+)',\s*$")
-            .unwrap()
-            .captures_iter(&settings_view)
-            .map(|c| c[1].to_string())
-            .collect();
-        same(
-            "Settings sections (SettingsView)",
-            &crate::agent_tools::SETTINGS_SECTIONS[..],
-            section_ids,
-            &mut problems,
-        );
-        same(
-            "Settings sections (navigation.ts)",
-            &crate::agent_tools::SETTINGS_SECTIONS[..],
-            ts_array(&parser, "SETTINGS_SECTIONS", "navigation.ts"),
-            &mut problems,
-        );
-        same(
-            "Library sections",
-            &crate::agent_tools::LIBRARY_SECTIONS[..],
-            ts_array(&parser, "LIBRARY_SECTIONS", "navigation.ts"),
-            &mut problems,
-        );
-        same(
-            "Workspace tabs",
-            &crate::agent_tools::WORKSPACE_TABS[..],
-            ts_array(&parser, "WORKSPACE_TABS", "navigation.ts"),
-            &mut problems,
-        );
-        same(
-            "Views",
-            &VIEWS[..],
-            ts_array(&src_file("lib/viewTabs.ts"), "VIEW_TABS", "viewTabs.ts"),
-            &mut problems,
-        );
-
+        problems.extend(frontend_navigation_problems(&frontend_sources()));
         assert!(
             problems.is_empty(),
             "navigation gaps:\n- {}",
             problems.join("\n- ")
+        );
+    }
+
+    /// The frontend checks fail when what they check is gone: a view's handler, a
+    /// setting's highlight, a Library section's handler, or the gate.
+    #[test]
+    fn the_frontend_navigation_checks_catch_a_missing_handler() {
+        let real = frontend_sources();
+        let now = frontend_navigation_problems(&real);
+        assert!(now.is_empty(), "{now:?}");
+        let mutated = |file: &str, from: &str, to: &str| {
+            let mut sources = real.clone();
+            let text = sources.get_mut(file).unwrap_or_else(|| panic!("{file}"));
+            assert!(text.contains(from), "{file} has no {from}");
+            *text = text.replace(from, to);
+            frontend_navigation_problems(&sources)
+        };
+        let names = |problems: Vec<String>, needle: &str| {
+            assert!(
+                problems.iter().any(|p| p.contains(needle)),
+                "no problem names {needle}: {problems:?}"
+            );
+        };
+        // The Library's handler deleted: an unrelated `kind === 'library'` elsewhere
+        // does not count.
+        names(
+            mutated(
+                "features/library/LibraryView.tsx",
+                "useNavigationTarget('library'",
+                "useNavigationTarget_removed('library'",
+            ),
+            "target library",
+        );
+        names(
+            mutated(
+                "components/SearchSettings.tsx",
+                "agentItemKey('setting', 'search_max_results')",
+                "agentItemKey('setting', 'other')",
+            ),
+            "setting search_max_results",
+        );
+        names(
+            mutated(
+                "features/library/LibraryView.tsx",
+                "target.section === 'graph'",
+                "target.section === 'graph_removed'",
+            ),
+            "Library section graph",
+        );
+        // A view switch outside the gate.
+        names(
+            mutated(
+                "features/ask/ChatSessionContext.tsx",
+                "const onEnvelope = useCallback(",
+                "window.dispatchEvent(new CustomEvent('switchTab', { detail: 'ask' }));\n  const onEnvelope = useCallback(",
+            ),
+            "CustomEvent('switchTab'",
+        );
+        names(
+            mutated(
+                "features/ask/ChatSessionContext.tsx",
+                "nav.target?.kind === 'conversation'",
+                "nav.target?.kind === 'chat'",
+            ),
+            "target conversation",
+        );
+    }
+
+    /// The tools of `navigate.rs` and GitHub's status, as the app registers them, send
+    /// the events the map lists.
+    #[tokio::test]
+    async fn the_crates_navigation_tools_send_what_the_map_lists() {
+        use shodh_rag::harness::profile::AgentProfile;
+        use shodh_rag::harness::tools::{ApprovalGate, ToolCall};
+        let t = testing::host().await;
+        let registry = build_registry(t.host.clone()).expect("registry builds");
+        let gate = ApprovalGate::default();
+        let (ctx, mut rx) = testing::ctx();
+        let call = |tool: &str, args: Value| ToolCall {
+            tool: tool.to_string(),
+            args,
+            call_index: 1,
+        };
+        let profile = AgentProfile::assistant();
+        let doc = if cfg!(windows) {
+            "C:/docs/acme.pdf"
+        } else {
+            "/docs/acme.pdf"
+        };
+        for (tool, args) in [
+            ("open_view", serde_json::json!({ "view": "library" })),
+            (
+                "show_document",
+                serde_json::json!({ "path": doc, "page": 4 }),
+            ),
+            ("show_audit", serde_json::json!({ "types": ["tool_call"] })),
+        ] {
+            let out = registry
+                .dispatch(call(tool, args), &profile, &gate, &ctx)
+                .await;
+            assert!(out.ok, "{tool}: {}", out.text_for_model);
+        }
+        assert_eq!(
+            testing::expect_navigation(&mut rx, "open_view").view,
+            "library"
+        );
+        let doc_shown = testing::expect_navigation(&mut rx, "show_document");
+        assert_eq!(doc_shown.label.as_deref(), Some("acme.pdf, page 4"));
+        assert_eq!(
+            testing::expect_navigation(&mut rx, "show_audit").view,
+            "activity"
+        );
+        // GitHub's status opens the GitHub page even before a sign-in.
+        let _ = registry
+            .dispatch(
+                call("github_status", serde_json::json!({})),
+                &profile,
+                &gate,
+                &ctx,
+            )
+            .await;
+        let github = testing::expect_navigation(&mut rx, "github_status");
+        assert_eq!(
+            (github.view.as_str(), github.focus.as_deref()),
+            ("connectors", Some("github"))
         );
     }
 }

@@ -78,20 +78,6 @@ pub fn set_paused(app: &AppHandle, paused: bool) {
     }
 }
 
-/// Emitted with `{ "part": "search" | "indexing" }` to open the System
-/// status panel with that part highlighted (the assistant read or changed it).
-pub const SHOW_SYSTEM_STATUS_EVENT: &str = "show-system-status";
-
-/// Opens the System status panel at `part` in the window.
-pub fn show(app: &AppHandle, part: &str) {
-    if let Err(e) = app.emit(
-        SHOW_SYSTEM_STATUS_EVENT,
-        serde_json::json!({ "part": part }),
-    ) {
-        tracing::warn!("Failed to emit {}: {}", SHOW_SYSTEM_STATUS_EVENT, e);
-    }
-}
-
 /// The System status as JSON (for the assistant's `system_status` tool).
 pub async fn status_json(app: &AppHandle) -> serde_json::Value {
     let use_gpu = settings_store(app)

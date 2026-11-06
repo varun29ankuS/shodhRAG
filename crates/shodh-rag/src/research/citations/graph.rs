@@ -300,27 +300,37 @@ impl PaperGraph {
 
     /// Finds a paper by entity id, file path, arXiv id, DOI or (near-exact) title.
     pub fn find(&self, query: &str) -> Option<&PaperNode> {
+        self.find_where(query, |_| true)
+    }
+
+    /// [`Self::find`] among the papers `keep` accepts only: a paper `keep` refuses is
+    /// never the answer, and never hides one it accepts that also matches.
+    pub fn find_where(&self, query: &str, keep: impl Fn(&PaperNode) -> bool) -> Option<&PaperNode> {
         let q = query.trim();
         if q.is_empty() {
             return None;
         }
-        if let Some(p) = self.paper(q) {
+        if let Some(p) = self.paper(q).filter(|p| keep(p)) {
             return Some(p);
         }
-        if let Some(p) = self.paper_for_file(q) {
+        if let Some(p) = self.paper_for_file(q).filter(|p| keep(p)) {
             return Some(p);
         }
         if let Some(id) = crate::harness::web::papers::normalize_arxiv_id(q) {
             if let Some(p) = self
                 .papers
                 .iter()
-                .find(|p| p.arxiv_id.as_deref() == Some(&id))
+                .find(|p| keep(p) && p.arxiv_id.as_deref() == Some(&id))
             {
                 return Some(p);
             }
         }
         if let Some(doi) = crate::harness::web::papers::normalize_doi(q) {
-            if let Some(p) = self.papers.iter().find(|p| p.doi.as_deref() == Some(&doi)) {
+            if let Some(p) = self
+                .papers
+                .iter()
+                .find(|p| keep(p) && p.doi.as_deref() == Some(&doi))
+            {
                 return Some(p);
             }
         }
@@ -335,13 +345,19 @@ impl PaperGraph {
                     .is_some_and(|a| normalize_title(&a) == norm)
         };
         // Library papers first, then the most cited.
-        let mut candidates: Vec<&PaperNode> = self.papers.iter().filter(exact).collect();
+        let mut candidates: Vec<&PaperNode> = self
+            .papers
+            .iter()
+            .filter(|p| keep(p))
+            .filter(exact)
+            .collect();
         candidates.sort_by_key(|p| (!p.in_library, std::cmp::Reverse(self.cited_by_count(p))));
         if let Some(p) = candidates.first() {
             return Some(p);
         }
         self.papers
             .iter()
+            .filter(|p| keep(p))
             .filter_map(|p| {
                 let t = p.title.as_deref()?;
                 let s = super::text::title_similarity(t, q);

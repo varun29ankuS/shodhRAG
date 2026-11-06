@@ -1372,6 +1372,19 @@ impl AuditLog {
         Ok(out)
     }
 
+    /// The event with id `id`, if it is in the log.
+    pub fn entry(&self, id: i64) -> AuditResult<Option<AuditRow>> {
+        let conn = lock(&self.reader);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {ROW_COLUMNS} FROM audit_events WHERE id = ?"
+        ))?;
+        let mut rows = stmt.query([id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(RawRow::from_sql(row)?.into_row())),
+            None => Ok(None),
+        }
+    }
+
     /// Number of events matching `q` (ignores `limit`/`offset`).
     pub fn count(&self, q: &AuditQuery) -> AuditResult<u64> {
         let (filter, params) = filter_sql(q);

@@ -121,3 +121,5 @@ chrono-tz = "0.10"
 tauri = { version = "2.0", features = ["test"] }
 # Paused time for the connector stop tests (connectors/mod.rs)
 tokio = { version = "1", features = ["test-util"] }
+# Generated PDFs for the snippet tool tests (agent_tools/papers.rs)
+shodh-rag = { path = "../../crates/shodh-rag", features = ["test-fixtures"] }

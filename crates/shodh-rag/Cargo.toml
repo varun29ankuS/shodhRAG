@@ -108,6 +108,9 @@ default = []
 strict = []
 # Encrypt the audit database with SQLCipher (key from the OS keychain).
 sqlcipher = ["rusqlite/bundled-sqlcipher-vendored-openssl"]
+# The small generated PDFs of `processing::pdf_fixtures`, for other crates' tests
+# (the app's agent tool tests save snippets from them). Never enabled in a build.
+test-fixtures = []
 
 # Windows OCR (Windows.Media.Ocr + Windows.Data.Pdf), and Code mode's command
 # runner (harness/run_command/win.rs: Job Objects, the scratch folder's access

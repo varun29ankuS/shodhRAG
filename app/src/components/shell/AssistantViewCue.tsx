@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Sparkles } from 'lucide-react';
-import { VIEW_TAB_LABELS } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
-import { VIEW_CUE_MS, cueAnnouncement, initialCueTracker, nextCue, visibleCue } from '../../lib/viewCue';
+import { VIEW_CUE_MS, initialCueTracker, nextCue, visibleCue } from '../../lib/viewCue';
 
 interface Cue {
   id: number;
@@ -45,17 +44,17 @@ export function useAssistantViewCue(seq: number, requested: ViewTab | null, tab:
 
 /**
  * "Opened by Shodh" next to the view's title after the assistant changed the
- * view. Never takes focus; the polite live region stays mounted so screen
- * readers hear "Shodh opened Library" when its text changes.
+ * view. Never takes focus. Screen readers hear "Shodh opened Library: …" from
+ * the shell's one live region (lib/announcer, said when the move is followed),
+ * so this cue is visual only and two regions never talk over each other.
  */
 export function AssistantViewCue({ cue }: { cue: Cue | null }) {
   return (
-    <span role="status" aria-live="polite" aria-atomic="true" className="inline-flex items-center">
+    <span className="inline-flex items-center" aria-hidden="true">
       {cue && (
         <span key={cue.id} className="shell-cue ml-2 inline-flex items-center gap-1 text-caption font-medium text-shodh-text-muted">
-          <Sparkles className="w-3 h-3 text-shodh-accent-text" aria-hidden="true" />
-          <span aria-hidden="true">opened by Shodh</span>
-          <span className="sr-only">{cueAnnouncement(VIEW_TAB_LABELS[cue.view])}</span>
+          <Sparkles className="w-3 h-3 text-shodh-accent-text" />
+          <span>opened by Shodh</span>
         </span>
       )}
     </span>

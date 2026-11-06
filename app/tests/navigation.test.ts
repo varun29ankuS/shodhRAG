@@ -36,7 +36,7 @@ test('every target kind parses', () => {
     kind: 'document', path: 'C:/docs/a.pdf', page: 4, passage: 'notice',
   });
   assert.deepEqual(parseTarget({ kind: 'calendar', date: '2026-10-30', taskId: 't1', eventId: null }), {
-    kind: 'calendar', date: '2026-10-30', taskId: 't1', eventId: null,
+    kind: 'calendar', date: '2026-10-30', taskId: 't1', eventId: null, highlightOnly: false,
   });
   assert.deepEqual(parseTarget({ kind: 'conversation', conversationId: 'c1' }), { kind: 'conversation', conversationId: 'c1' });
   assert.deepEqual(parseTarget({ kind: 'audit', types: ['tool_call', 7], tool: 'web_search', from: null, to: null, text: '' }), {
@@ -52,6 +52,24 @@ test('every target kind parses', () => {
   });
   assert.deepEqual(parseTarget({ kind: 'library', section: 'snippets', item: 'sn-1' }), { kind: 'library', section: 'snippets', item: 'sn-1' });
   assert.deepEqual(parseTarget({ kind: 'library', section: 'graph', item: null }), { kind: 'library', section: 'graph', item: null });
+  assert.deepEqual(parseTarget({ kind: 'status', part: 'indexing' }), { kind: 'status', part: 'indexing' });
+  // A write only highlights: the flag survives, and an event without it opens as before.
+  const written = parseTarget({ kind: 'calendar', date: null, taskId: 't1', eventId: null, highlightOnly: true });
+  assert.equal(written?.kind === 'calendar' ? written.highlightOnly : 'x', true);
+  const revised = parseTarget({ kind: 'visual', visualId: 'v1', version: 2, highlightOnly: true });
+  assert.equal(revised?.kind === 'visual' ? revised.highlightOnly : 'x', true);
+  const opened = parseTarget({ kind: 'visual', visualId: 'v1', version: null });
+  assert.equal(opened?.kind === 'visual' ? opened.highlightOnly : 'x', false);
+});
+
+test('navigations carry the item label, clipped for the shell', () => {
+  const event = { ...navigated({ kind: 'calendar', date: null, taskId: 't1', eventId: null }, 'tasks'), label: 'Renew lease' };
+  assert.equal(navigationFromEvent(event as NavigatedEvent).label, 'Renew lease');
+  const long = { ...event, label: 'x'.repeat(80) };
+  const clipped = navigationFromEvent(long as NavigatedEvent).label ?? '';
+  assert.equal(Array.from(clipped).length, 40);
+  assert.ok(clipped.endsWith('…'));
+  assert.equal(navigationFromEvent({ ...event, label: '  ' } as NavigatedEvent).label, null);
 });
 
 test('malformed or unknown targets are dropped', () => {
@@ -73,7 +91,7 @@ test('malformed or unknown targets are dropped', () => {
 
 test('older navigated events without a target still switch views', () => {
   const legacy = { type: 'navigated', runId: RUN, view: 'library', focus: 'src-1' } as unknown as NavigatedEvent;
-  assert.deepEqual(navigationFromEvent(legacy), { view: 'library', focus: 'src-1', target: null });
+  assert.deepEqual(navigationFromEvent(legacy), { view: 'library', focus: 'src-1', target: null, label: null });
   const withTarget = navigationFromEvent(navigated({ kind: 'calendar', date: '2026-11-05', taskId: 'abc', eventId: null }));
   assert.equal(withTarget.target?.kind, 'calendar');
 });

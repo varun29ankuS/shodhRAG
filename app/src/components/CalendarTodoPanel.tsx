@@ -25,6 +25,7 @@ import { useTasksStore } from '../features/tasks/TasksStore';
 import { isDone, PRIORITIES, PRIORITY_LABELS } from '../features/tasks/types';
 import type { CalendarEvent, TodoItem } from '../features/tasks/types';
 import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
+import { agentItemKey } from '../lib/agentHighlight';
 
 type FilterTab = 'all' | 'pending' | 'completed';
 
@@ -230,6 +231,7 @@ function TaskRow({
       <div
         ref={rowRef}
         data-task-row={task.id}
+        data-agent-item={agentItemKey('task', task.id)}
         role="group"
         tabIndex={active ? 0 : -1}
         aria-label={summary}
@@ -786,7 +788,7 @@ export default function CalendarTodoPanel() {
             ) : (
               <ul className="flex flex-col gap-1.5">
                 {upcomingEvents.map(ev => (
-                  <li key={ev.id}>
+                  <li key={ev.id} data-agent-item={agentItemKey('event', ev.id)} className="rounded-lg">
                     <button
                       type="button"
                       onClick={() => openEvent(ev.id)}

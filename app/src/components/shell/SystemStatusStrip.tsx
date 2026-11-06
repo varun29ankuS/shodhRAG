@@ -19,7 +19,7 @@ import type { ConnectionSnapshot } from '../../features/connection/connectionSta
 import { slackApi } from '../../features/connectors/api';
 import { telegramApi } from '../../features/connectors/telegramApi';
 import type { SlackState } from '../../features/connectors/slackModel';
-import { listen } from '@tauri-apps/api/event';
+import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
 import { Kbd, IS_MAC } from '../ui/Kbd';
 import { ariaKeyShortcuts, matchesShortcut, withShortcut } from '../../lib/shortcuts';
 import { useSystemStatusContext } from '../../features/status/SystemStatusContext';
@@ -500,16 +500,15 @@ export function SystemStatusStrip({
   const search = searchSummary(status);
   const paused = status?.indexingPaused ?? false;
 
-  // The assistant read or changed a part: the panel opens on it.
-  useEffect(() => {
-    const unlisten = listen<{ part?: string }>('show-system-status', event => {
-      setHighlight(typeof event.payload?.part === 'string' ? event.payload.part : null);
-      setOpen(true);
-    });
-    return () => {
-      unlisten.then(fn => fn()).catch(() => undefined);
-    };
-  }, []);
+  // The assistant read or changed a part (system_status, pause, resume, cancel): the panel
+  // opens on it, through the same gate as every navigation (held while the user types),
+  // and without taking the focus: the user keeps typing where they were.
+  const openedByAssistant = useRef(false);
+  useNavigationTarget('status', target => {
+    openedByAssistant.current = true;
+    setHighlight(target.part);
+    setOpen(true);
+  });
 
   // The registry's shortcuts: open the panel, pause or resume indexing.
   useEffect(() => {
@@ -567,7 +566,12 @@ export function SystemStatusStrip({
 
   const shown = open && position !== null;
   useEffect(() => {
-    if (shown) panelRef.current?.querySelector<HTMLElement>('button, summary, input')?.focus();
+    if (!open) openedByAssistant.current = false;
+  }, [open]);
+  // Opened by the user (click or shortcut): the focus moves into the panel. Opened by the
+  // assistant: it stays where the user is.
+  useEffect(() => {
+    if (shown && !openedByAssistant.current) panelRef.current?.querySelector<HTMLElement>('button, summary, input')?.focus();
   }, [shown]);
 
   const close = (refocus: boolean) => {

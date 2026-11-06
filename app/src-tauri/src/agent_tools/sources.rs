@@ -13,7 +13,7 @@ use shodh_rag::audit::payload::{source_change, ChangeOrigin};
 use shodh_rag::audit::AuditEventType;
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
-use shodh_rag::harness::tools::navigate::emit_navigation;
+use shodh_rag::harness::tools::navigate::emit_shown;
 use shodh_rag::harness::tools::sources::{find_folder_source, SourceSummary};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
@@ -65,14 +65,15 @@ fn validate_folder(tool: &str, raw: &str) -> Result<PathBuf, ToolError> {
 /// Show the Library with the card of `source_id` highlighted (its indexing
 /// progress on it), or the Library as it is when no source is given. Called
 /// only after the change started.
-fn reveal_source(ctx: &ToolContext, source_id: Option<&str>) {
-    emit_navigation(
+fn reveal_source(ctx: &ToolContext, source_id: Option<&str>, name: &str) {
+    emit_shown(
         ctx,
         "library",
         source_id.map(str::to_string),
         source_id.map(|id| NavigationTarget::Source {
             source_id: id.to_string(),
         }),
+        Some(name),
     );
 }
 
@@ -171,7 +172,11 @@ impl HostTool for AddFolderTool {
                 source_id: source_id.clone(),
             },
         );
-        reveal_source(ctx, Some(source_id.as_str()));
+        reveal_source(
+            ctx,
+            Some(source_id.as_str()),
+            &shodh_rag::research::file_name(&folder_text),
+        );
         Ok(ToolOutput {
             // The folder's name only: its path never reaches the model.
             text_for_model: format!(
@@ -241,7 +246,11 @@ impl HostTool for ReindexSourceTool {
                 source_id: source_id.to_string(),
             },
         );
-        reveal_source(ctx, Some(source_id));
+        reveal_source(
+            ctx,
+            Some(source_id),
+            &shodh_rag::research::file_name(&folder),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
                 "Started re-indexing the folder \"{}\" (source {source_id}) in the background.",
@@ -317,7 +326,11 @@ impl HostTool for RemoveSourceTool {
             ),
         );
         // Its card is gone: the Library as it is now.
-        reveal_source(ctx, None);
+        reveal_source(
+            ctx,
+            None,
+            &format!("{} (removed)", shodh_rag::research::file_name(&folder)),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
                 "Removed the folder \"{}\" (source {source_id}, {} files, {deleted} chunks) from the index. Files on disk were not touched.",
@@ -334,19 +347,9 @@ impl HostTool for RemoveSourceTool {
 mod tests {
     use super::super::testing;
     use super::*;
-    use shodh_rag::harness::AgentEvent;
-
-    /// The `navigated` events sent so far, as (view, target).
-    fn shown(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    ) -> Vec<(String, Option<NavigationTarget>)> {
-        let mut out = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            if let AgentEvent::Navigated { view, target, .. } = event {
-                out.push((view, target));
-            }
-        }
-        out
+    fn view_and_target(shown: testing::Shown) -> (String, Option<NavigationTarget>) {
+        assert!(shown.label.is_some(), "it names the folder");
+        (shown.view, shown.target)
     }
 
     #[tokio::test]
@@ -379,14 +382,15 @@ mod tests {
         assert!(jobs[0].folder.ends_with("docs"));
         // The refused calls showed nothing; the started one shows the new card.
         assert_eq!(
-            shown(&mut rx),
-            vec![(
+            view_and_target(testing::expect_navigation(&mut rx, "add_folder")),
+            (
                 "library".to_string(),
                 Some(NavigationTarget::Source {
                     source_id: jobs[0].source_id.clone()
                 })
-            )]
+            )
         );
+        assert!(testing::no_navigation(&mut rx));
     }
 
     /// The agent removes a source as the Library does: its chunks go (and no
@@ -458,14 +462,24 @@ mod tests {
                 source_id: "folder-papers".into(),
             }),
         );
-        assert_eq!(shown(&mut rx), vec![card.clone(), card]);
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "show_source")),
+            card
+        );
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "reindex_source")),
+            card
+        );
         let out = remove
             .execute(json!({"source_id": "folder-papers"}), &ctx)
             .await
             .unwrap();
         assert!(out.summary_for_ui.starts_with("Removed "));
         // Its card is gone: the Library as it is now.
-        assert_eq!(shown(&mut rx), vec![("library".to_string(), None)]);
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "remove_source")),
+            ("library".to_string(), None)
+        );
 
         let owners: Vec<String> = t
             .host

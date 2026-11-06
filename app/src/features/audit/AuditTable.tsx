@@ -7,6 +7,7 @@ import { eventLabel } from './types';
 import type { AuditRow } from './types';
 import { countOf } from '../../lib/plural';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
+import { announce } from '../../lib/announcer';
 
 const ROW_HEIGHT = 34;
 const OVERSCAN = 8;
@@ -31,13 +32,15 @@ interface AuditTableProps {
   onSelectConversation: (conversationId: string) => void;
   /** An entry the assistant pointed at (show_audit): expanded, scrolled to and highlighted once loaded. */
   reveal?: { id: number; seq: number } | null;
+  /** The reveal is done (found or known missing). */
+  onRevealDone?: () => void;
 }
 
 /**
  * Windowed event table. Rows have a fixed height; one row at a time can be
  * expanded, and its measured detail height shifts the rows below it.
  */
-export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversation, reveal = null }: AuditTableProps) {
+export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversation, reveal = null, onRevealDone }: AuditTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -100,19 +103,34 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
     if (!loading && rows.length < total && last >= rows.length - LOAD_AHEAD) onLoadMore();
   }, [last, rows.length, total, loading, onLoadMore]);
 
-  // The assistant pointed at an entry: once its row is loaded, expand it, bring it into the
-  // window and highlight it (lib/agentHighlight). Each request is applied once.
+  // The assistant pointed at an entry (rows loaded for the filters it set): load pages
+  // until its row is there (rows are newest first, so a page whose oldest row is older
+  // than the entry settles it), then expand it, bring it into the window and highlight
+  // it (lib/agentHighlight). Not there: say so. Either way the request is then done, so
+  // it never applies later under the user's hands.
   const revealedSeq = useRef(0);
   useEffect(() => {
     if (!reveal || reveal.seq === revealedSeq.current) return;
     const index = rows.findIndex(r => r.id === reveal.id);
-    if (index < 0) return;
+    if (index >= 0) {
+      revealedSeq.current = reveal.seq;
+      setExpandedId(reveal.id);
+      const el = scrollRef.current;
+      if (el) el.scrollTop = Math.max(0, index * ROW_HEIGHT - el.clientHeight / 2);
+      revealAgentItem(agentItemKey('audit', String(reveal.id)));
+      onRevealDone?.();
+      return;
+    }
+    if (loading) return;
+    const oldest = rows.length > 0 ? rows[rows.length - 1].id : null;
+    if (rows.length < total && (oldest === null || oldest > reveal.id)) {
+      onLoadMore();
+      return;
+    }
     revealedSeq.current = reveal.seq;
-    setExpandedId(reveal.id);
-    const el = scrollRef.current;
-    if (el) el.scrollTop = Math.max(0, index * ROW_HEIGHT - el.clientHeight / 2);
-    revealAgentItem(agentItemKey('audit', String(reveal.id)));
-  }, [reveal, rows]);
+    announce(`Shodh pointed at Activity entry ${reveal.id}, which is not in the log.`);
+    onRevealDone?.();
+  }, [reveal, rows, loading, total, onLoadMore, onRevealDone]);
 
   // The expanded row stays mounted even when scrolled out of the window, so
   // its measured detail height (which offsets the rows below) stays valid.

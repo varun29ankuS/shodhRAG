@@ -20,6 +20,17 @@ export interface AppNavigation {
   view: string;
   focus: string | null;
   target: NavigationTarget | null;
+  /** The item shown, in the user's words, at most `MAX_LABEL_CHARS`; null when unnamed. */
+  label: string | null;
+}
+
+/** Longest item label shown (the backend clips to the same). */
+export const MAX_LABEL_CHARS = 40;
+
+/** `label` cut to `MAX_LABEL_CHARS`, with an ellipsis when cut. */
+export function clipLabel(label: string): string {
+  const chars = Array.from(label.trim());
+  return chars.length <= MAX_LABEL_CHARS ? chars.join('') : `${chars.slice(0, MAX_LABEL_CHARS - 1).join('').trimEnd()}…`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -65,7 +76,14 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const taskId = optString(value.taskId);
       const eventId = optString(value.eventId);
       if (!date && !taskId && !eventId) return null;
-      return { kind: 'calendar', date: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null, taskId, eventId };
+      return {
+        kind: 'calendar',
+        date: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null,
+        taskId,
+        eventId,
+        // Events from older builds have no flag: they opened the sheet.
+        highlightOnly: value.highlightOnly === true,
+      };
     }
     case 'conversation': {
       const conversationId = reqString(value.conversationId);
@@ -90,7 +108,7 @@ export function parseTarget(value: unknown): NavigationTarget | null {
     case 'visual': {
       const visualId = reqString(value.visualId);
       const version = typeof value.version === 'number' && Number.isInteger(value.version) && value.version > 0 ? value.version : null;
-      return visualId ? { kind: 'visual', visualId, version } : null;
+      return visualId ? { kind: 'visual', visualId, version, highlightOnly: value.highlightOnly === true } : null;
     }
     case 'workspace': {
       const workspaceId = reqString(value.workspaceId);
@@ -142,6 +160,10 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       if (section === 'paper' && !item) return null;
       return { kind: 'library', section, item };
     }
+    case 'status': {
+      const part = reqString(value.part);
+      return part ? { kind: 'status', part } : null;
+    }
     default:
       return null;
   }
@@ -154,6 +176,7 @@ export function navigationFromEvent(event: NavigatedEvent): AppNavigation {
     focus: optString(event.focus),
     // Events from older builds have no `target` key at all.
     target: parseTarget((event as { target?: unknown }).target ?? null),
+    label: typeof event.label === 'string' && event.label.trim().length > 0 ? clipLabel(event.label) : null,
   };
 }
 

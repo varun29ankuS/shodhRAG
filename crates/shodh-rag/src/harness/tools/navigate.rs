@@ -19,7 +19,8 @@ use tokio::sync::RwLock;
 use super::sources::find_folder_source;
 use super::{opt_str, req_str, HostTool, ToolContext, ToolError, ToolOutput};
 use crate::audit::AuditEventType;
-use crate::harness::events::{AgentEvent, NavigationTarget, RiskTier};
+use crate::audit::AuditLog;
+use crate::harness::events::{AgentEvent, NavigationTarget, RiskTier, MAX_NAVIGATION_LABEL_CHARS};
 use crate::RAGEngine;
 
 pub const OPEN_VIEW: &str = "open_view";
@@ -64,6 +65,12 @@ fn accepted_views() -> Vec<&'static str> {
 /// Longest passage text sent to the viewer for highlighting.
 const MAX_PASSAGE_CHARS: usize = 500;
 
+/// What a tool that shows something tells the model happened. The app may
+/// hold a navigation while the user types (it then offers it with a "Go
+/// there" link), so a tool never claims more than this.
+pub const SHOWN_TO_USER: &str =
+    "It is shown to the user, or offered to them with a Go there link if they are typing.";
+
 /// Emit a `navigated` event for this call's run.
 pub fn emit_navigation(
     ctx: &ToolContext,
@@ -71,12 +78,40 @@ pub fn emit_navigation(
     focus: Option<String>,
     target: Option<NavigationTarget>,
 ) {
+    emit_shown(ctx, view, focus, target, None);
+}
+
+/// Emit a `navigated` event naming the item shown (`label`, in the user's
+/// words: a task's title, a file and page), clipped to
+/// [`MAX_NAVIGATION_LABEL_CHARS`]. Call it only after the item passed the
+/// tool's scope checks: the label reaches the screen.
+pub fn emit_shown(
+    ctx: &ToolContext,
+    view: &str,
+    focus: Option<String>,
+    target: Option<NavigationTarget>,
+    label: Option<&str>,
+) {
+    let label = label
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(clip_label);
     ctx.emit(AgentEvent::Navigated {
         run_id: ctx.run_id.clone(),
         view: view.to_string(),
         focus,
         target,
+        label,
     });
+}
+
+/// `label` cut to [`MAX_NAVIGATION_LABEL_CHARS`], with an ellipsis when cut.
+pub fn clip_label(label: &str) -> String {
+    if label.chars().count() <= MAX_NAVIGATION_LABEL_CHARS {
+        return label.to_string();
+    }
+    let kept: String = label.chars().take(MAX_NAVIGATION_LABEL_CHARS - 1).collect();
+    format!("{}…", kept.trim_end())
 }
 
 pub struct OpenViewTool;
@@ -125,7 +160,7 @@ impl HostTool for OpenViewTool {
         let focus = opt_str(&args, "focus").map(str::to_string);
         emit_navigation(ctx, view, focus.clone(), None);
         Ok(ToolOutput {
-            text_for_model: format!("The {view} view is now open for the user."),
+            text_for_model: format!("The {view} view: {SHOWN_TO_USER}"),
             summary_for_ui: format!("Opened {view}"),
             detail: focus.map(|f| json!({ "focus": f })),
         })
@@ -188,7 +223,11 @@ impl HostTool for ShowDocumentTool {
             opt_str(&args, "passage").map(|p| crate::harness::truncate_chars(p, MAX_PASSAGE_CHARS));
         let name = file_name(path).to_string();
         let at = page.map(|p| format!(" at page {p}")).unwrap_or_default();
-        emit_navigation(
+        let label = match page {
+            Some(p) => format!("{name}, page {p}"),
+            None => name.clone(),
+        };
+        emit_shown(
             ctx,
             "ask",
             None,
@@ -197,9 +236,10 @@ impl HostTool for ShowDocumentTool {
                 page,
                 passage,
             }),
+            Some(&label),
         );
         Ok(ToolOutput {
-            text_for_model: format!("{name} is now open in the viewer{at}."),
+            text_for_model: format!("{name} in the viewer{at}: {SHOWN_TO_USER}"),
             summary_for_ui: format!("Opened {name}{at}"),
             detail: Some(json!({ "path": path, "page": page })),
         })
@@ -237,8 +277,46 @@ fn shown_document(args: &Value, ctx: &ToolContext) -> Result<(String, Option<u32
     }
 }
 
-/// `show_audit`: open the audit log with filters.
-pub struct ShowAuditTool;
+/// `show_audit`: open the audit log with filters, or at one entry.
+pub struct ShowAuditTool {
+    /// The log, to check an `entry_id` against (none: entries cannot be shown).
+    audit: Option<Arc<AuditLog>>,
+}
+
+impl ShowAuditTool {
+    pub fn new(audit: Option<Arc<AuditLog>>) -> Self {
+        Self { audit }
+    }
+
+    /// The day filter that shows entry `id`, after checking it exists and, in a
+    /// workspace chat, that it is one of this conversation's entries (a chat
+    /// limited to a workspace never puts another chat's entries on screen).
+    /// Errors name nothing about the entry.
+    async fn entry_bounds(&self, ctx: &ToolContext, id: u64) -> Result<String, ToolError> {
+        let audit = self
+            .audit
+            .clone()
+            .ok_or_else(|| ToolError::Unavailable("The audit log is not available.".to_string()))?;
+        let not_found = || ToolError::NotFound(format!("No Activity entry {id}."));
+        let row_id = i64::try_from(id).map_err(|_| not_found())?;
+        let row = tokio::task::spawn_blocking(move || audit.entry(row_id))
+            .await
+            .map_err(|e| ToolError::Failed(format!("Reading the audit log failed: {e}")))?
+            .map_err(|e| ToolError::Failed(format!("Reading the audit log failed: {e}")))?
+            .ok_or_else(not_found)?;
+        if ctx.scope().restricted {
+            let this = ctx.audit_scope().map(|s| s.conversation_id.as_str());
+            if row.conversation_id.as_deref() != this || this.is_none() {
+                return Err(ToolError::Forbidden(
+                    "In a workspace chat only this conversation's own Activity entries can be \
+                     shown."
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(row.ts)
+    }
+}
 
 fn audit_type_names() -> Vec<&'static str> {
     AuditEventType::ALL.iter().map(|t| t.as_str()).collect()
@@ -257,8 +335,9 @@ impl HostTool for ShowAuditTool {
     }
     fn description(&self) -> &'static str {
         "Open the activity (usage and audit) log for the user with filters applied: event types, a tool \
-         name, a time range (RFC 3339 from/to) and free text; `entry_id` (an id from audit_query) \
-         expands and highlights that entry. Use audit_query to read the log yourself."
+         name, a time range (RFC 3339 from/to) and free text. Or give only `entry_id` (an id \
+         from audit_query) to open the log at that entry, expanded and highlighted. Use \
+         audit_query to read the log yourself."
     }
     fn schema(&self) -> Value {
         json!({
@@ -284,6 +363,39 @@ impl HostTool for ShowAuditTool {
     }
 
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        if let Some(id) = args.get("entry_id").and_then(Value::as_u64) {
+            if ["types", "tool", "from", "to", "text"]
+                .iter()
+                .any(|k| args.get(*k).is_some())
+            {
+                return Err(ToolError::InvalidArguments {
+                    tool: SHOW_AUDIT.to_string(),
+                    reasons: "`entry_id` shows one entry; give it without filters".to_string(),
+                });
+            }
+            let ts = self.entry_bounds(ctx, id).await?;
+            // The entry's moment as the filter: the log opens on that day with the entry
+            // among the rows it loads.
+            emit_shown(
+                ctx,
+                "activity",
+                None,
+                Some(NavigationTarget::Audit {
+                    types: Vec::new(),
+                    tool: None,
+                    from: Some(ts.clone()),
+                    to: Some(ts),
+                    text: None,
+                    entry_id: Some(id),
+                }),
+                Some(&format!("entry {id}")),
+            );
+            return Ok(ToolOutput {
+                text_for_model: format!("Activity entry {id}: {SHOWN_TO_USER}"),
+                summary_for_ui: format!("Opened Activity entry {id}"),
+                detail: Some(json!({ "entryId": id })),
+            });
+        }
         let types: Vec<String> = args
             .get("types")
             .and_then(Value::as_array)
@@ -309,7 +421,6 @@ impl HostTool for ShowAuditTool {
         let [from, to] = bounds;
         let tool = opt_str(&args, "tool").map(str::to_string);
         let text = opt_str(&args, "text").map(str::to_string);
-        let entry_id = args.get("entry_id").and_then(Value::as_u64);
         emit_navigation(
             ctx,
             "activity",
@@ -320,16 +431,11 @@ impl HostTool for ShowAuditTool {
                 from,
                 to,
                 text,
-                entry_id,
+                entry_id: None,
             }),
         );
         Ok(ToolOutput {
-            text_for_model: match entry_id {
-                Some(id) => format!(
-                    "The audit log is now open for the user with those filters, entry {id} highlighted."
-                ),
-                None => "The audit log is now open for the user with those filters.".to_string(),
-            },
+            text_for_model: format!("The audit log with those filters: {SHOWN_TO_USER}"),
             summary_for_ui: "Opened the audit log".to_string(),
             detail: Some(json!({ "types": types, "tool": tool })),
         })
@@ -386,18 +492,19 @@ impl HostTool for ShowSourceTool {
             .folder
             .clone()
             .unwrap_or_else(|| source.source_id.clone());
-        emit_navigation(
+        emit_shown(
             ctx,
             "library",
             Some(source.source_id.clone()),
             Some(NavigationTarget::Source {
                 source_id: source.source_id.clone(),
             }),
+            Some(&source.name),
         );
         Ok(ToolOutput {
             // The folder's name only: its path never reaches the model.
             text_for_model: format!(
-                "The folder \"{}\" is now shown in the Library.",
+                "The folder \"{}\" in the Library: {SHOWN_TO_USER}",
                 source.name
             ),
             summary_for_ui: format!("Opened {folder} in Library"),
@@ -503,13 +610,15 @@ mod tests {
     #[tokio::test]
     async fn show_audit_normalises_bounds_and_rejects_bad_ones() {
         let (ctx, mut rx) = ctx();
-        ShowAuditTool
+        let tool = ShowAuditTool::new(None);
+        let out = tool
             .execute(
-                json!({"types": ["tool_call"], "tool": "web_search", "from": "2026-10-01T00:00:00+05:30", "entry_id": 7}),
+                json!({"types": ["tool_call"], "tool": "web_search", "from": "2026-10-01T00:00:00+05:30"}),
                 &ctx,
             )
             .await
             .unwrap();
+        assert!(out.text_for_model.ends_with(SHOWN_TO_USER));
         match rx.recv().await.unwrap() {
             AgentEvent::Navigated { view, target, .. } => {
                 assert_eq!(view, "activity");
@@ -521,7 +630,7 @@ mod tests {
                         entry_id,
                         ..
                     }) => {
-                        assert_eq!(entry_id, Some(7));
+                        assert_eq!(entry_id, None);
                         assert_eq!(types, vec!["tool_call".to_string()]);
                         assert_eq!(tool.as_deref(), Some("web_search"));
                         assert_eq!(from.as_deref(), Some("2026-09-30T18:30:00+00:00"));
@@ -531,9 +640,84 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        let bad = ShowAuditTool
-            .execute(json!({"from": "last tuesday"}), &ctx)
-            .await;
+        let bad = tool.execute(json!({"from": "last tuesday"}), &ctx).await;
         assert!(matches!(bad, Err(ToolError::InvalidArguments { .. })));
+    }
+
+    /// An entry is shown only when it exists, alone (a filter could hide it), and in a
+    /// workspace chat only when it is this conversation's. The log opens on the entry's
+    /// moment, so the entry is among the rows it loads.
+    #[tokio::test]
+    async fn show_audit_opens_an_entry_only_after_checking_it() {
+        use crate::audit::AuditRecord;
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(AuditLog::open(dir.path().join("shodh.db"), None).unwrap());
+        let id = log
+            .append(
+                AuditRecord::new(AuditEventType::Question, json!({"text": "notice period"}))
+                    .conversation("c1"),
+            )
+            .unwrap();
+        let ts = log.entry(id).unwrap().unwrap().ts;
+        let tool = ShowAuditTool::new(Some(log));
+        let (ctx, mut rx) = ctx();
+        let entry = u64::try_from(id).unwrap();
+        let out = tool
+            .execute(json!({ "entry_id": entry }), &ctx)
+            .await
+            .unwrap();
+        assert!(!out.text_for_model.contains("notice period"));
+        match rx.try_recv().unwrap() {
+            AgentEvent::Navigated { target, label, .. } => {
+                assert_eq!(
+                    target,
+                    Some(NavigationTarget::Audit {
+                        types: Vec::new(),
+                        tool: None,
+                        from: Some(ts.clone()),
+                        to: Some(ts),
+                        text: None,
+                        entry_id: Some(entry),
+                    })
+                );
+                assert_eq!(label.as_deref(), Some(format!("entry {entry}").as_str()));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            tool.execute(json!({ "entry_id": entry + 100 }), &ctx).await,
+            Err(ToolError::NotFound(_))
+        ));
+        assert!(matches!(
+            tool.execute(json!({ "entry_id": entry, "text": "x" }), &ctx)
+                .await,
+            Err(ToolError::InvalidArguments { .. })
+        ));
+        // A workspace chat that is not the entry's conversation cannot show it.
+        let restricted = ctx.clone().with_scope(Arc::new(super::super::RunScope {
+            restricted: true,
+            ..Default::default()
+        }));
+        assert!(matches!(
+            tool.execute(json!({ "entry_id": entry }), &restricted)
+                .await,
+            Err(ToolError::Forbidden(_))
+        ));
+        assert!(matches!(
+            ShowAuditTool::new(None)
+                .execute(json!({ "entry_id": entry }), &ctx)
+                .await,
+            Err(ToolError::Unavailable(_))
+        ));
+        assert!(rx.try_recv().is_err(), "a refused call shows nothing");
+    }
+
+    #[test]
+    fn labels_are_clipped_for_the_shell() {
+        assert_eq!(clip_label("Renew lease"), "Renew lease");
+        let long = "a".repeat(80);
+        let clipped = clip_label(&long);
+        assert_eq!(clipped.chars().count(), MAX_NAVIGATION_LABEL_CHARS);
+        assert!(clipped.ends_with('…'));
     }
 }

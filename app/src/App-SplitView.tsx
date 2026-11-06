@@ -119,6 +119,7 @@ import { ActivityView, ArtifactsView, ConnectorsView, LibraryView, SettingsView,
 import { CHANGE_DRAFT } from './features/artifacts/model';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
 import { AssistantNavigationChip } from './components/shell/AssistantNavigationChip';
+import { ShellAnnouncer } from './components/shell/ShellAnnouncer';
 import { clearViewCache } from './lib/viewCache';
 import { shownView } from './lib/viewSwitch';
 import { useSearchConfig } from './components/SearchSettings';
@@ -193,6 +194,7 @@ function AppSplitView() {
     heldNavigation,
     goToHeldNavigation,
     dismissHeldNavigation,
+    noteViewOpened,
     streamingConversationId,
     sideRun,
   } = useChatSession();
@@ -228,6 +230,17 @@ function AppSplitView() {
   const deferredTab = useDeferredValue(activeTab);
   const viewTab = shownView(activeTab, deferredTab, isViewReady);
   const viewCue = useAssistantViewCue(navigation?.seq ?? 0, navigation?.view ?? null, activeTab, viewTab);
+  // The user opened a view: a move the assistant held for it (the chip) is spent.
+  useEffect(() => {
+    noteViewOpened(activeTab);
+  }, [activeTab, noteViewOpened]);
+  // "Go there": the user asked to move, so the focus goes to the view they opened (the
+  // chip's button is gone). A move to the System status panel leaves the focus alone.
+  const goToHeld = useCallback(() => {
+    const toView = heldNavigation?.nav.view != null;
+    goToHeldNavigation();
+    if (toView) window.requestAnimationFrame(() => document.getElementById('main-content')?.focus());
+  }, [heldNavigation, goToHeldNavigation]);
   // Restored synchronously so the Library and sidebar render with the first frame.
   const [sources, setSources] = useState<Source[]>(() => {
     try {
@@ -1586,7 +1599,8 @@ function AppSplitView() {
                 {VIEW_TAB_LABELS[viewTab]}
               </span>
               <AssistantViewCue cue={viewCue} />
-              <AssistantNavigationChip held={heldNavigation} onGo={goToHeldNavigation} onDismiss={dismissHeldNavigation} />
+              <AssistantNavigationChip held={heldNavigation} onGo={goToHeld} onDismiss={dismissHeldNavigation} />
+              <ShellAnnouncer />
             </span>
             {viewTab === 'ask' && (() => {
               const workspace = workspaceById(activeConversation?.workspaceId);

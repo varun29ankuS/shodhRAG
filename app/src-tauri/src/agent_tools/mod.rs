@@ -195,9 +195,6 @@ pub trait HostEffects: Send + Sync {
     fn cancel_indexing(&self, source_id: Option<&str>) -> usize;
     /// The System status the status strip shows, as JSON.
     async fn system_status(&self) -> serde_json::Value;
-    /// Opens the System status panel with `part` ("search", "indexing")
-    /// highlighted, so the user sees what the assistant read or changed.
-    fn show_system_status(&self, part: &str);
     /// Runs the fresh-eyes reviewer on `request` (only what it holds reaches
     /// it) and keeps the review for the code pane
     /// ([`crate::code_review_commands::run_and_store`]).
@@ -260,7 +257,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     registry.register(Arc::new(SuggestModeTool))?;
     registry.register(Arc::new(OpenViewTool))?;
     registry.register(Arc::new(ShowDocumentTool))?;
-    registry.register(Arc::new(ShowAuditTool))?;
+    registry.register(Arc::new(ShowAuditTool::new(host.audit.clone())))?;
     registry.register(Arc::new(ShowSourceTool::new(rag)))?;
     calendar::register(&mut registry, &host)?;
     history::register(&mut registry, &host)?;
@@ -289,9 +286,14 @@ pub(crate) const LIBRARY_SECTIONS: [&str; 3] = ["snippets", "graph", "paper"];
 
 /// Show a part of the Library ([`LIBRARY_SECTIONS`]) with `item` (a snippet or paper
 /// id) highlighted or opened.
-pub(crate) fn show_in_library(ctx: &ToolContext, section: &'static str, item: Option<String>) {
+pub(crate) fn show_in_library(
+    ctx: &ToolContext,
+    section: &'static str,
+    item: Option<String>,
+    label: &str,
+) {
     debug_assert!(LIBRARY_SECTIONS.contains(&section), "{section}");
-    shodh_rag::harness::tools::navigate::emit_navigation(
+    shodh_rag::harness::tools::navigate::emit_shown(
         ctx,
         "library",
         item.clone(),
@@ -299,6 +301,7 @@ pub(crate) fn show_in_library(ctx: &ToolContext, section: &'static str, item: Op
             section: section.to_string(),
             item,
         }),
+        Some(label),
     );
 }
 
@@ -349,8 +352,6 @@ pub(crate) mod testing {
         pub indexing_state: shodh_rag::indexing::IndexingState,
         /// Sources removed through `remove_source`, as the Library is told.
         pub removed_sources: Mutex<Vec<String>>,
-        /// The System status panel opened, by the part highlighted.
-        pub shown_status: Mutex<Vec<String>>,
         /// Every review asked for: exactly what the reviewer would get.
         pub reviews: Mutex<Vec<shodh_rag::code_review::ReviewRequest>>,
         /// The model a review would be sent to (none: unknown).
@@ -472,12 +473,6 @@ pub(crate) mod testing {
                 "running": self.indexing_state.running_paths(),
             })
         }
-        fn show_system_status(&self, part: &str) {
-            self.shown_status
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(part.to_string());
-        }
         async fn remove_source(
             &self,
             rag: &RwLock<RAGEngine>,
@@ -530,7 +525,6 @@ pub(crate) mod testing {
             folder_sync: crate::file_watcher::FolderSyncState::new(dir.path().join("folder_sync")),
             indexing_state: shodh_rag::indexing::IndexingState::default(),
             removed_sources: Mutex::default(),
-            shown_status: Mutex::default(),
             reviews: Mutex::default(),
             review_target: Mutex::default(),
         });
@@ -856,6 +850,77 @@ pub(crate) mod testing {
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (ToolContext::new("run-1", "step-1", tx), rx)
+    }
+
+    /// A `navigated` event a tool sent, as the tests see it.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Shown {
+        pub view: String,
+        pub focus: Option<String>,
+        pub target: Option<shodh_rag::harness::events::NavigationTarget>,
+        pub label: Option<String>,
+    }
+
+    /// The navigation map of `agent-coverage.json` (`navigation`).
+    fn navigation_map() -> serde_json::Value {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("agent-coverage.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&text).unwrap();
+        manifest["navigation"].clone()
+    }
+
+    /// The next `navigated` event among `rx`'s events, sent by `tool`. It must be on the
+    /// navigation map: `tool` listed under its target's kind (or, without a target,
+    /// under its view), so a test of a tool that navigates without being on the map
+    /// fails.
+    pub fn expect_navigation(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<shodh_rag::harness::AgentEvent>,
+        tool: &str,
+    ) -> Shown {
+        loop {
+            match rx.try_recv() {
+                Ok(shodh_rag::harness::AgentEvent::Navigated {
+                    view,
+                    focus,
+                    target,
+                    label,
+                    ..
+                }) => {
+                    let map = navigation_map();
+                    let (section, key) = match &target {
+                        Some(t) => ("targets", t.kind().to_string()),
+                        None => ("views", view.clone()),
+                    };
+                    let listed = map[section][&key]
+                        .as_array()
+                        .is_some_and(|tools| tools.iter().any(|t| t == tool));
+                    assert!(
+                        listed,
+                        "{tool} sent a {key} navigation but is not listed under navigation.{section}.{key} in agent-coverage.json"
+                    );
+                    return Shown {
+                        view,
+                        focus,
+                        target,
+                        label,
+                    };
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("{tool} sent no navigated event ({e:?})"),
+            }
+        }
+    }
+
+    /// Whether `rx` holds no further `navigated` event.
+    pub fn no_navigation(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<shodh_rag::harness::AgentEvent>,
+    ) -> bool {
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, shodh_rag::harness::AgentEvent::Navigated { .. }) {
+                return false;
+            }
+        }
+        true
     }
 }
 

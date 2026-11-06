@@ -35,6 +35,7 @@ import {
 import { OPEN_MEMORY_EDIT, peekRequestedMemoryEdit, takeRequestedMemoryEdit } from '../features/memory/navigation';
 import { coreHeading, shortScope } from '../features/memory/usedMemories';
 import { agentItemKey } from '../lib/agentHighlight';
+import { useNavigationTarget } from '../features/agent/useNavigationTarget';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -451,6 +452,12 @@ export default function MemorySettings(props: MemorySettingsProps) {
   }, [props.scope, refresh]);
 
   const editOpened = useCallback(() => setEditId(null), []);
+
+  // The assistant pointed at a memory (show_setting): clear the filter that could hide it,
+  // so Settings can highlight it once the list has loaded.
+  useNavigationTarget('setting', target => {
+    if (target.section === 'memory' && target.item) setFilter('');
+  }, { consume: false });
 
   // "Outdated" on a core memory: its editor in the list below.
   const editCore = useCallback((id: string) => {

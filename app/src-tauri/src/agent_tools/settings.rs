@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use shodh_rag::audit::AuditEventType;
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
-use shodh_rag::harness::tools::navigate::emit_navigation;
+use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
@@ -199,7 +199,7 @@ impl HostTool for UpdateSettingTool {
         }
         // The changed control, highlighted where Settings shows it.
         if let Some(section) = key.section() {
-            reveal_setting(ctx, section, Some(key.as_str().to_string()));
+            reveal_setting(ctx, section, Some(key.as_str().to_string()), key.label());
         }
         Ok(ToolOutput {
             text_for_model: format!("{} is now {new} (was {old}).", key.as_str()),
@@ -225,8 +225,25 @@ pub const SETTINGS_SECTIONS: [&str; 10] = [
 ];
 
 /// Open Settings at `section` with `item` (a setting key or a memory id) highlighted.
-fn reveal_setting(ctx: &ToolContext, section: &str, item: Option<String>) {
-    emit_navigation(
+/// What Settings shows for `section`, in the user's words (`SettingsView.tsx`).
+fn section_label(section: &str) -> &str {
+    match section {
+        "models" => "Models",
+        "search" => "Search",
+        "tools" => "Tools & connections",
+        "tables" => "Tables",
+        "general" => "General",
+        "appearance" => "Appearance",
+        "notifications" => "Notifications",
+        "privacy" => "Privacy",
+        "memory" => "Memory",
+        "data" => "Data",
+        other => other,
+    }
+}
+
+fn reveal_setting(ctx: &ToolContext, section: &str, item: Option<String>, label: &str) {
+    emit_shown(
         ctx,
         "settings",
         item.clone(),
@@ -234,6 +251,7 @@ fn reveal_setting(ctx: &ToolContext, section: &str, item: Option<String>) {
             section: section.to_string(),
             item,
         }),
+        Some(label),
     );
 }
 
@@ -315,14 +333,21 @@ impl HostTool for ShowSettingTool {
                 requested.ok_or_else(|| invalid(tool, "give a section, a key or a memory_id"))?;
             (section, None)
         };
-        reveal_setting(ctx, section, item.clone());
+        let label = match (&item, section) {
+            (Some(_), "memory") => "a memory".to_string(),
+            (Some(key), _) => SettingKey::parse(key)
+                .map(|k| k.label().to_string())
+                .unwrap_or_else(|| key.clone()),
+            (None, _) => section_label(section).to_string(),
+        };
+        reveal_setting(ctx, section, item.clone(), &label);
         let what = match (&item, section) {
             (Some(_), "memory") => " with that memory highlighted".to_string(),
             (Some(key), _) => format!(" with {key} highlighted"),
             (None, _) => String::new(),
         };
         Ok(ToolOutput {
-            text_for_model: format!("Settings is now open at {section}{what} for the user."),
+            text_for_model: format!("Settings at {section}{what}: {SHOWN_TO_USER}"),
             summary_for_ui: format!("Opened Settings at {section}"),
             detail: Some(json!({ "section": section, "item": item })),
         })
@@ -381,16 +406,13 @@ mod tests {
 
     fn next_setting_target(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<shodh_rag::harness::AgentEvent>,
+        tool: &str,
     ) -> (String, Option<String>) {
-        match rx.try_recv().expect("a navigated event") {
-            shodh_rag::harness::AgentEvent::Navigated {
-                view,
-                target: Some(NavigationTarget::Setting { section, item }),
-                ..
-            } => {
-                assert_eq!(view, "settings");
-                (section, item)
-            }
+        let shown = testing::expect_navigation(rx, tool);
+        assert_eq!(shown.view, "settings");
+        assert!(shown.label.is_some(), "it names what it shows");
+        match shown.target {
+            Some(NavigationTarget::Setting { section, item }) => (section, item),
             other => panic!("{other:?}"),
         }
     }
@@ -405,13 +427,16 @@ mod tests {
         tool.execute(json!({"section": "privacy"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(next_setting_target(&mut rx), ("privacy".into(), None));
+        assert_eq!(
+            next_setting_target(&mut rx, "show_setting"),
+            ("privacy".into(), None)
+        );
         let out = tool
             .execute(json!({"key": "search_max_results"}), &ctx)
             .await
             .unwrap();
         assert_eq!(
-            next_setting_target(&mut rx),
+            next_setting_target(&mut rx, "show_setting"),
             ("search".into(), Some("search_max_results".into()))
         );
         assert!(out
@@ -451,7 +476,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            next_setting_target(&mut rx),
+            next_setting_target(&mut rx, "update_setting"),
             ("search".into(), Some("search_max_results".into()))
         );
         // The theme changes the whole window; it has no control in Settings to show.

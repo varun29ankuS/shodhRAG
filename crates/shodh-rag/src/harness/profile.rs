@@ -63,12 +63,13 @@ pub mod app_tools {
     pub const OPEN_CODE: &str = "open_code";
     pub const SHOW_SETTING: &str = "show_setting";
     pub const SHOW_PAPER: &str = "show_paper";
+    pub const SHOW_SNIPPET: &str = "show_snippet";
     /// A Code session's own tool (with its workspace), not in [`ALL`]: a Research chat
     /// has no code folder to send to a reviewer.
     pub const REVIEW_CODE: &str = "review_code";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 54] = [
+    pub const ALL: [&str; 55] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -123,6 +124,7 @@ pub mod app_tools {
         OPEN_CODE,
         SHOW_SETTING,
         SHOW_PAPER,
+        SHOW_SNIPPET,
     ];
 }
 

@@ -3,7 +3,7 @@ import { useConversations } from '../../hooks/useConversations';
 import { ConversationsUnavailable } from './ConversationsUnavailable';
 import type { ConversationMessage } from '../../hooks/useConversations';
 import { notify } from '../../lib/notify';
-import { normalizeViewTab } from '../../lib/viewTabs';
+import { normalizeViewTab, VIEW_TAB_LABELS } from '../../lib/viewTabs';
 import type { ViewTab } from '../../lib/viewTabs';
 import type { AgentEventEnvelope, NavigationTarget } from '../agent/events';
 import { navigationFromEvent, publishTarget } from '../agent/navigation';
@@ -37,8 +37,20 @@ import {
 } from './messageStore';
 import type { SideSummaryRef } from '../focus/summary';
 import { connectorFocus, requestConnectorPage } from '../connectors/navigation';
-import { createTypingTracker, dismissHeld, goThere, initialGate, offerNavigation } from '../../lib/navigationGate';
-import type { GateState } from '../../lib/navigationGate';
+import {
+  arrive,
+  dropHeld,
+  flush as flushMoves,
+  goThere,
+  heldNavigationText,
+  initialCoalescer,
+  initialGate,
+  offerNavigation,
+  typingActivity,
+  viewOpened,
+} from '../../lib/navigationGate';
+import type { CoalescerState, Counted, GateState } from '../../lib/navigationGate';
+import { announce } from '../../lib/announcer';
 import { creationsApi, errorText } from '../artifacts/api';
 import { startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
@@ -141,8 +153,18 @@ export interface AgentNavigation {
   openDock?: boolean;
 }
 
-/** A navigation the assistant asked for, before it is followed (`lib/navigationGate`). */
-export type HeldNavigation = Omit<AgentNavigation, 'seq'>;
+/**
+ * A move the assistant asked for, before it is followed (`lib/navigationGate`): a view
+ * (null for the System status panel, which opens over the current view), what to show
+ * in it, and the item's name for the chip.
+ */
+export interface HeldNavigation {
+  view: ViewTab | null;
+  focus: string | null;
+  target: NavigationTarget | null;
+  label: string | null;
+  openDock?: boolean;
+}
 
 export interface ChatSessionValue {
   conversations: ConversationsApi['conversations'];
@@ -171,12 +193,14 @@ export interface ChatSessionValue {
   liveRun: LiveRunInfo | null;
   /** Latest navigation requested by the agent. */
   navigation: AgentNavigation | null;
-  /** A navigation held because the user was typing; the shell offers "Go there". */
-  heldNavigation: HeldNavigation | null;
+  /** A move held because the user was typing, with how many moves it stands for; the shell offers "Go there". */
+  heldNavigation: Counted<HeldNavigation> | null;
   /** Follow the held navigation (the user clicked "Go there"). */
   goToHeldNavigation: () => void;
   /** Drop the held navigation (the user dismissed the chip). */
   dismissHeldNavigation: () => void;
+  /** The user opened `view` themselves (a move held for it is spent). */
+  noteViewOpened: (view: ViewTab) => void;
   /** Whether the agent runtime is installed (null until known). */
   runtimeInstalled: boolean | null;
   setRuntimeInstalled: (installed: boolean) => void;
@@ -274,9 +298,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
   const [navigation, setNavigation] = useState<AgentNavigation | null>(null);
   // A navigation held while the user types ("The assistant opened X · Go there").
-  const [heldNavigation, setHeldNavigation] = useState<HeldNavigation | null>(null);
+  const [heldNavigation, setHeldNavigation] = useState<Counted<HeldNavigation> | null>(null);
   const gateRef = useRef<GateState<HeldNavigation>>(initialGate());
-  const typingRef = useRef(createTypingTracker());
+  const coalescerRef = useRef<CoalescerState<HeldNavigation>>(initialCoalescer());
+  const flushTimerRef = useRef<number | null>(null);
   // Shared with first-run setup and the setup card (one status, one install).
   const { installed: runtimeInstalled, setInstalled: setRuntimeInstalled } = useRuntimeSetup();
   const [sideRun, setSideRun] = useState<SideRunInfo | null>(null);
@@ -428,19 +453,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   // What the user types, for the navigation gate: an input event in a text field.
   useEffect(() => {
-    const onInput = (event: Event) => typingRef.current.note(event.target as HTMLElement | null, Date.now());
+    const onInput = (event: Event) => typingActivity.note(event.target as HTMLElement | null, Date.now());
     document.addEventListener('input', onInput, true);
     return () => document.removeEventListener('input', onInput, true);
   }, []);
 
   /**
    * Go where the assistant asked: the view, the item inside it (scrolled to and
-   * highlighted by the view that owns it), a connector's page, or another
-   * conversation. Only ever called through the gate below.
+   * highlighted by the view that owns it), a connector's page, another
+   * conversation, or the System status panel over the current view. Only ever
+   * called through the gate (`deliver`, `goToHeldNavigation`).
    */
   const followNavigation = useCallback((nav: HeldNavigation) => {
-    navSeqRef.current += 1;
-    setNavigation({ ...nav, seq: navSeqRef.current });
+    if (nav.view !== null) {
+      navSeqRef.current += 1;
+      setNavigation({ view: nav.view, focus: nav.focus, target: nav.target, seq: navSeqRef.current, openDock: nav.openDock });
+    }
     if (nav.target?.kind === 'conversation') {
       // The run keeps streaming into its own conversation.
       switchConversationRef.current(nav.target.conversationId);
@@ -450,22 +478,56 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // A connector named in the focus opens its page (a GitHub action highlights its repository).
     const page = nav.view === 'connectors' ? connectorFocus(nav.focus) : null;
     if (page) requestConnectorPage(page);
-    window.dispatchEvent(new CustomEvent('switchTab', { detail: nav.view }));
+    if (nav.view !== null) window.dispatchEvent(new CustomEvent('switchTab', { detail: nav.view }));
+    const where = nav.view === null ? null : VIEW_TAB_LABELS[nav.view];
+    announce(
+      where
+        ? `Shodh opened ${where}${nav.label ? `: ${nav.label}` : ''}`
+        : `Shodh opened ${nav.label ?? 'the system status'}`,
+    );
   }, []);
 
   /**
-   * Every navigation of the assistant comes here: followed at once, or held
-   * while the user is typing so nothing moves under their hands (lib/navigationGate).
-   * A held navigation publishes nothing: no view, item or conversation changes
-   * until the user clicks "Go there".
+   * The gate (lib/navigationGate): a move the coalescer let through is followed, or
+   * held while the user types, so nothing moves under their hands. A held move
+   * publishes nothing: no view, item or conversation changes until "Go there". The
+   * chip is announced once, when it appears; later moves update it silently.
    */
-  const offer = useCallback((nav: HeldNavigation) => {
+  const deliver = useCallback((move: Counted<HeldNavigation>) => {
     const focused = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
-    const result = offerNavigation(gateRef.current, nav, typingRef.current.isTyping(focused, Date.now()));
+    const result = offerNavigation(gateRef.current, move, typingActivity.isTyping(focused, Date.now()));
     gateRef.current = result.state;
     setHeldNavigation(result.state.held);
+    if (result.appeared && result.state.held) {
+      const { nav, count } = result.state.held;
+      announce(`${heldNavigationText(nav.view === null ? null : VIEW_TAB_LABELS[nav.view], nav.label, count)}. Go there is in the title bar.`);
+    }
     if (result.follow) followNavigation(result.follow);
   }, [followNavigation]);
+
+  /**
+   * Every move of the assistant comes here first: the coalescer folds a burst into
+   * one move to its last target (lib/navigationGate), then hands it to the gate.
+   */
+  const offer = useCallback((nav: HeldNavigation) => {
+    const now = Date.now();
+    const result = arrive(coalescerRef.current, nav, nav.view, now);
+    coalescerRef.current = result.state;
+    if (result.emit) deliver(result.emit);
+    const due = result.state.dueAt;
+    if (due === null) return;
+    if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = window.setTimeout(() => {
+      flushTimerRef.current = null;
+      const flushed = flushMoves(coalescerRef.current, Date.now());
+      coalescerRef.current = flushed.state;
+      if (flushed.emit) deliver(flushed.emit);
+    }, Math.max(0, due - now));
+  }, [deliver]);
+
+  useEffect(() => () => {
+    if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
+  }, []);
 
   const goToHeldNavigation = useCallback(() => {
     const result = goThere(gateRef.current);
@@ -475,9 +537,23 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [followNavigation]);
 
   const dismissHeldNavigation = useCallback(() => {
-    gateRef.current = dismissHeld(gateRef.current);
+    gateRef.current = dropHeld(gateRef.current);
     setHeldNavigation(null);
   }, []);
+
+  /** The user opened `view` themselves: a move held for it is spent. */
+  const noteViewOpened = useCallback((view: ViewTab) => {
+    const next = viewOpened(gateRef.current, view);
+    if (next === gateRef.current) return;
+    gateRef.current = next;
+    setHeldNavigation(null);
+  }, []);
+
+  // A held move belongs to the conversation it came from: another one drops it.
+  useEffect(() => {
+    gateRef.current = dropHeld(gateRef.current);
+    setHeldNavigation(null);
+  }, [activeConversationId]);
 
   const onEnvelope = useCallback((envelope: AgentEventEnvelope) => {
     const live = liveRef.current;
@@ -488,7 +564,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (event.type === 'navigated') {
       const nav = navigationFromEvent(event);
       const tab = normalizeViewTab(nav.view);
-      if (tab) offer({ view: tab, focus: nav.focus, target: nav.target });
+      if (nav.target?.kind === 'status') {
+        // The System status panel opens over whatever view is shown.
+        offer({ view: null, focus: null, target: nav.target, label: nav.label });
+      } else if (tab) {
+        offer({ view: tab, focus: nav.focus, target: nav.target, label: nav.label });
+      }
     }
     // A Creator answer started building: the Artifacts tab opens on its creation
     // (preview pane, files filling in, progress), with the chat alongside in the dock. The
@@ -497,7 +578,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (event.type === 'step_started' && live.creationId && !live.creationShown && startsBuilding(event.tool)) {
       live.creationShown = true;
       const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: null };
-      offer({ view: 'artifacts', focus: null, target, openDock: true });
+      offer({ view: 'artifacts', focus: null, target, label: null, openDock: true });
     }
     // Lifecycle changes and the start of the answer's check are applied at
     // once; streamed content waits for the frame.
@@ -647,6 +728,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const content = text.trim();
     const conversationId = viewRef.current.conversationId;
     if (!content || !conversationId || liveRef.current || sideRunRef.current) return false;
+    // The draft is sent: an empty composer no longer holds the assistant's moves, and a
+    // move held for the last answer is spent.
+    typingActivity.reset();
+    gateRef.current = dropHeld(gateRef.current);
+    setHeldNavigation(null);
 
     const history = viewRef.current.messages;
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
@@ -850,6 +936,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     heldNavigation,
     goToHeldNavigation,
     dismissHeldNavigation,
+    noteViewOpened,
     runtimeInstalled,
     setRuntimeInstalled,
     prewarm,
@@ -866,7 +953,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     releaseSideRun,
     updateThreads,
     updateFocusThreads: conv.updateFocusThreads,
-  }), [conv, view, streamingConversationId, liveRun, navigation, heldNavigation, goToHeldNavigation, dismissHeldNavigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
+  }), [conv, view, streamingConversationId, liveRun, navigation, heldNavigation, goToHeldNavigation, dismissHeldNavigation, noteViewOpened, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return (
     <ChatSessionContext.Provider value={value}>

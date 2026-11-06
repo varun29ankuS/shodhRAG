@@ -276,7 +276,7 @@ function AskAboutTask({ task }: { task: TodoItem }) {
 }
 
 export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | null; onClose: () => void }) {
-  const { updateTask, deleteTask, tasks } = useTasksStore();
+  const { updateTask, deleteTask, tasks, detailByAssistant } = useTasksStore();
   // Keep showing the last task while the sheet animates closed.
   const last = useRef<TodoItem | null>(null);
   if (task) last.current = task;
@@ -290,6 +290,7 @@ export default function TaskDetailSheet({ task, onClose }: { task: TodoItem | nu
     <DetailSheet
       open={task !== null}
       onClose={onClose}
+      keepFocus={detailByAssistant}
       title={`Task: ${shown.title}`}
       kindLabel="Task"
       footer={

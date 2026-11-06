@@ -227,6 +227,8 @@ export interface CalendarTarget {
   date: string | null;
   taskId: string | null;
   eventId: string | null;
+  /** After a write: only highlight the row, never open its sheet (a dialog that takes the focus). */
+  highlightOnly: boolean;
 }
 
 export interface ConversationTarget {
@@ -258,6 +260,8 @@ export interface VisualTarget {
   visualId: string;
   /** Version to show; the latest when null. */
   version: number | null;
+  /** After a write: highlight its card in the gallery, never open the pop-out. */
+  highlightOnly: boolean;
 }
 
 /** A workspace's page, at a tab (the overview when null). */
@@ -310,6 +314,12 @@ export interface LibraryTarget {
   item: string | null;
 }
 
+/** The System status panel, opened over the current view with `part` ("search", "indexing") highlighted. */
+export interface StatusTarget {
+  kind: "status";
+  part: string;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
@@ -322,7 +332,8 @@ export type NavigationTarget =
   | CodeTarget
   | ReviewTarget
   | SettingTarget
-  | LibraryTarget;
+  | LibraryTarget
+  | StatusTarget;
 
 export interface NavigatedEvent {
   type: "navigated";
@@ -331,6 +342,8 @@ export interface NavigatedEvent {
   focus: string | null;
   /** What to show inside the view; null when the event only switches views. */
   target: NavigationTarget | null;
+  /** The item shown in the user's words ("Renew lease"), for the shell; null when unnamed. */
+  label?: string | null;
 }
 
 export interface UsageEvent {

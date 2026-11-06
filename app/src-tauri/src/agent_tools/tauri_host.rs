@@ -105,10 +105,6 @@ impl HostEffects for TauriEffects {
         crate::indexing_control::status_json(&self.app).await
     }
 
-    fn show_system_status(&self, part: &str) {
-        crate::indexing_control::show(&self.app, part);
-    }
-
     fn review_target(&self) -> Option<super::ReviewTarget> {
         crate::code_review_commands::review_target(&self.app)
     }

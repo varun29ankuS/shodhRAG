@@ -125,7 +125,11 @@ export default function SettingsView({
     const key = target.item
       ? agentItemKey(next.id === 'memory' ? 'memory' : 'setting', target.item)
       : agentItemKey('settings-section', next.id);
-    revealAgentItem(key);
+    revealAgentItem(key, {
+      missed: next.id === 'memory'
+        ? 'Shodh pointed at a memory that Settings does not show now.'
+        : `Shodh pointed at something in ${next.label} that is not shown.`,
+    });
   });
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 

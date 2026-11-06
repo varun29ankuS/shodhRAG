@@ -132,9 +132,11 @@ export function LibraryView({
       setGraphPages([{ kind: 'graph' }, { kind: 'paper', id: target.item }]);
     } else if (target.section === 'graph') {
       setGraphPages([{ kind: 'graph' }]);
-    } else {
+    } else if (target.section === 'snippets') {
       setGraphPages([]);
-      revealAgentItem(target.item ? agentItemKey('snippet', target.item) : agentItemKey('library-section', 'snippets'));
+      revealAgentItem(target.item ? agentItemKey('snippet', target.item) : agentItemKey('library-section', 'snippets'), {
+        missed: 'Shodh pointed at a snippet that the shelf does not show now.',
+      });
     }
   });
 

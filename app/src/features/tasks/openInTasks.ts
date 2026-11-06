@@ -10,6 +10,7 @@ export function openInTasks(target: { taskId: string } | { eventId: string }): v
     date: null,
     taskId: 'taskId' in target ? target.taskId : null,
     eventId: 'eventId' in target ? target.eventId : null,
+    highlightOnly: false,
   });
   window.dispatchEvent(new CustomEvent('switchTab', { detail: 'tasks' }));
 }

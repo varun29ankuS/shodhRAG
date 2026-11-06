@@ -6,8 +6,8 @@ pub mod lopdf_parser;
 pub mod ocr;
 pub mod office_xml;
 pub mod parser;
-#[cfg(test)]
-pub(crate) mod pdf_fixtures;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod pdf_fixtures;
 pub mod pdf_forms;
 pub mod pdf_info;
 pub mod pdf_layout;

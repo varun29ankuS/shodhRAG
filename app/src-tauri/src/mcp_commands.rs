@@ -146,7 +146,7 @@ pub fn tool_group(name: &str) -> &'static str {
         | "resume_indexing" | "cancel_indexing" | "system_status" => "Library and files",
         "web_search" | "fetch_url" | "search_papers" => "Web",
         "query_results" | "paper_graph" | "get_paper" | "find_papers" | "show_figure"
-        | "get_equation" | "list_snippets" | "create_snippet" | "show_paper" => {
+        | "get_equation" | "list_snippets" | "create_snippet" | "show_paper" | "show_snippet" => {
             "Papers and research"
         }
         "create_task" | "create_event" | "list_tasks" | "list_events" | "update_task"

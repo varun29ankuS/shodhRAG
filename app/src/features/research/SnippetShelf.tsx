@@ -5,6 +5,7 @@ import { SnippetCard } from './SnippetCard';
 import { sortSnippets } from './snippetModel';
 import { BUTTON, FOCUS_RING } from './ui';
 import { useSnippetList } from './useSnippets';
+import { useNavigationTarget } from '../agent/useNavigationTarget';
 
 const SEARCH_DELAY_MS = 250;
 const LIMIT = 200;
@@ -16,6 +17,11 @@ const LIMIT = 200;
 export function SnippetShelf({ filePath = null, emptyText }: { filePath?: string | null; emptyText?: string }) {
   const searchId = useId();
   const [query, setQuery] = useState('');
+  // The assistant pointed at a snippet: clear the search that could hide it (the Library
+  // highlights it).
+  useNavigationTarget('library', target => {
+    if (target.section === 'snippets') setQuery('');
+  }, { consume: false });
   const [debounced, setDebounced] = useState('');
   useEffect(() => {
     const timer = window.setTimeout(() => setDebounced(query.trim()), SEARCH_DELAY_MS);

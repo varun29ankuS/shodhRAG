@@ -343,12 +343,17 @@
   }
 
   /* "The assistant is here": an item the assistant opened, changed or pointed at
-     (lib/agentHighlight). A soft accent outline that pulses twice and fades; a
-     still outline under reduced motion, removed after the same time. */
-  .assistant-here {
+     (lib/agentHighlight sets the attribute; React never renders it, so a re-render
+     keeps it). A soft accent outline that pulses twice and fades; a still outline
+     under reduced motion, removed after the same time. Rows of a scrolling table
+     draw it inside, where the scroll container cannot clip it. */
+  [data-assistant-here] {
     outline: 2px solid var(--c-accent-text);
     outline-offset: 2px;
     animation: assistant-here 2800ms var(--ease-standard) both;
+  }
+  [role="row"][data-assistant-here] {
+    outline-offset: -2px;
   }
 
   .shell-pop {
@@ -397,7 +402,7 @@
 @media (prefers-reduced-motion: reduce) {
   .shell-view-enter,
   .shell-cue,
-  .assistant-here,
+  [data-assistant-here],
   .shell-pop,
   .shell-skeleton,
   .ask-rise,

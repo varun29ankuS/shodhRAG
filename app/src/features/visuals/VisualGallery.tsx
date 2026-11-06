@@ -22,6 +22,7 @@ import { backfillOnce } from './recording';
 import { VisualThumb } from './VisualThumb';
 import { exportPdf } from '../print/exportPdf';
 import { buildPrintDocument, visualPrintMarkdown } from '../print/printModel';
+import { agentItemKey } from '../../lib/agentHighlight';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -174,7 +175,7 @@ function VisualCard({
   };
 
   return (
-    <li className="relative">
+    <li className="relative rounded-[14px]" data-agent-item={agentItemKey('visual', card.id)}>
       <article
         aria-labelledby={titleId}
         className="group relative flex flex-col rounded-[14px] border border-shodh-border bg-shodh-surface overflow-hidden hover:border-shodh-border-strong transition-colors duration-micro"

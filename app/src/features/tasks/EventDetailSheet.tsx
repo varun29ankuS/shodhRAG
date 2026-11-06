@@ -42,7 +42,7 @@ export function startPatch(event: CalendarEvent, startTime: string): EventPatch 
 }
 
 export default function EventDetailSheet({ event, onClose }: { event: CalendarEvent | null; onClose: () => void }) {
-  const { updateEvent, deleteEvent } = useTasksStore();
+  const { updateEvent, deleteEvent, detailByAssistant } = useTasksStore();
   const last = useRef<CalendarEvent | null>(null);
   if (event) last.current = event;
   const shown = event ?? last.current;
@@ -58,6 +58,7 @@ export default function EventDetailSheet({ event, onClose }: { event: CalendarEv
     <DetailSheet
       open={event !== null}
       onClose={onClose}
+      keepFocus={detailByAssistant}
       title={`Event: ${shown.title}`}
       kindLabel="Event"
       footer={

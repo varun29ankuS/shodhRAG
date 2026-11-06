@@ -2511,6 +2511,131 @@ pub fn approval_for(
     }
 }
 
+/// Key of the diff an edit or write prompt shows: a list of
+/// [`crate::code_review::diff::FileChange`] (one file).
+pub const CODE_DIFF_KEY: &str = "codeDiff";
+
+/// Lines an edit or write prompt's diff shows at most; a larger change keeps
+/// the prompt's text rows only.
+pub const MAX_APPROVAL_DIFF_LINES: usize = 800;
+
+/// Bytes of a file read to show the diff of an edit or write to it.
+pub const MAX_DIFF_FILE_BYTES: u64 = 1024 * 1024;
+
+/// The text of the file an edit or write lands in, for its diff: `Ok(None)`
+/// when it does not exist yet, `Err` when it cannot be shown (no target,
+/// unreadable, larger than [`MAX_DIFF_FILE_BYTES`], not UTF-8). Blocking.
+#[allow(clippy::result_unit_err)]
+pub fn read_for_diff(target: Option<&Path>) -> Result<Option<String>, ()> {
+    let target = target.ok_or(())?;
+    match std::fs::symlink_metadata(target) {
+        Ok(meta) if meta.is_file() && meta.len() <= MAX_DIFF_FILE_BYTES => {}
+        Ok(_) => return Err(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    }
+    let bytes = std::fs::read(target).map_err(|_| ())?;
+    String::from_utf8(bytes).map(Some).map_err(|_| ())
+}
+
+/// The diff an edit or write would make to `current` (the file's text now;
+/// `None` when it does not exist yet), shown under `path`. `None` when it
+/// cannot be shown exactly: an edit whose text is not in the file, or found
+/// more than once without `replace_all`, or a change past
+/// [`MAX_APPROVAL_DIFF_LINES`].
+pub fn change_diff(
+    request: &GuardRequest,
+    path: &str,
+    current: Option<&str>,
+) -> Option<crate::code_review::diff::FileChange> {
+    let input = &request.input;
+    let after = match request.tool.as_str() {
+        "write" => str_arg(input, "content").to_string(),
+        "edit" => {
+            let current = current?;
+            let old = str_arg(input, "old_string");
+            if old.is_empty() {
+                return None;
+            }
+            let new = str_arg(input, "new_string");
+            let every = input
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            match current.matches(old).count() {
+                0 => return None,
+                1 => current.replacen(old, new, 1),
+                _ if every => current.replace(old, new),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let change = crate::code_review::diff::FileChange::between(path, current, Some(&after));
+    (!change.too_large && change.line_count() <= MAX_APPROVAL_DIFF_LINES).then_some(change)
+}
+
+/// The conversation's code changes in `folder`: the working tree against
+/// `base` (a branch or commit; `HEAD` when `None`), and every file git does
+/// not track yet as added. Git runs hardened ([`git`]) with external diff
+/// programs and text conversion off. `path` limits it to one file or folder.
+/// Blocking.
+pub fn working_changes(
+    folder: &Path,
+    base: Option<&str>,
+    path: Option<&str>,
+) -> Result<Vec<crate::code_review::diff::FileChange>, String> {
+    use crate::code_review::diff::{parse_unified, FileChange};
+    let base = base.unwrap_or("HEAD");
+    if base.starts_with('-') || base.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("“{base}” is not a branch or commit name"));
+    }
+    let mut diff_args = vec![
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--unified=3",
+        base,
+        "--",
+    ];
+    if let Some(path) = path {
+        diff_args.push(path);
+    }
+    let text = run_git(folder, &diff_args)?;
+    let mut changes = parse_unified(&text);
+    let mut untracked_args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
+    if let Some(path) = path {
+        untracked_args.push(path);
+    }
+    let raw = run_git_raw(folder, &untracked_args)?;
+    for name in raw.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        let name = String::from_utf8_lossy(name).into_owned();
+        let full = folder.join(&name);
+        let meta = std::fs::symlink_metadata(&full).ok();
+        let readable = meta
+            .as_ref()
+            .is_some_and(|m| m.is_file() && m.len() <= MAX_DIFF_FILE_BYTES);
+        let text = readable
+            .then(|| std::fs::read(&full).ok())
+            .flatten()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        changes.push(match text {
+            Some(text) => FileChange::between(&name, None, Some(&text)),
+            None => FileChange {
+                path: name,
+                status: "added",
+                binary: meta.is_some_and(|m| m.is_file() && m.len() <= MAX_DIFF_FILE_BYTES),
+                too_large: !readable,
+                hunks: Vec::new(),
+            },
+        });
+    }
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
+}
+
 /// Split a shell command into lowercased words per command segment. Quotes
 /// are dropped, so commands inside `bash -c "…"` are seen too; programs are
 /// reduced to their file name without `.exe`.

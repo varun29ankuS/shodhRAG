@@ -2849,3 +2849,110 @@ fn an_install_prompt_says_whether_the_packages_run_their_scripts() {
         );
     }
 }
+
+#[test]
+fn an_edit_prompt_shows_the_files_diff_with_its_line_numbers() {
+    let current = "fn a() {}\nfn b() {\n    1\n}\nfn c() {}\n";
+    let edit = guarded(
+        "edit",
+        json!({"path": "src/lib.rs", "old_string": "    1\n", "new_string": "    2\n"}),
+    );
+    let change = change_diff(&edit, "src/lib.rs", Some(current)).unwrap();
+    assert_eq!(
+        (change.path.as_str(), change.status),
+        ("src/lib.rs", "changed")
+    );
+    let lines = &change.hunks[0].lines;
+    let removed = lines.iter().find(|l| l.kind == "removed").unwrap();
+    let added = lines.iter().find(|l| l.kind == "added").unwrap();
+    assert_eq!((removed.text.as_str(), removed.old), ("    1", Some(3)));
+    assert_eq!((added.text.as_str(), added.new), ("    2", Some(3)));
+    assert!(lines
+        .iter()
+        .any(|l| l.kind == "same" && l.text == "fn a() {}"));
+
+    // Text that is not in the file, or in it twice without replace_all: no diff,
+    // the prompt keeps its text rows.
+    let missing = guarded("edit", json!({"old_string": "nope", "new_string": "x"}));
+    assert!(change_diff(&missing, "src/lib.rs", Some(current)).is_none());
+    let twice = guarded(
+        "edit",
+        json!({"old_string": "fn ", "new_string": "pub fn "}),
+    );
+    assert!(change_diff(&twice, "src/lib.rs", Some(current)).is_none());
+    let every = guarded(
+        "edit",
+        json!({"old_string": "fn ", "new_string": "pub fn ", "replace_all": true}),
+    );
+    let all = change_diff(&every, "src/lib.rs", Some(current)).unwrap();
+    assert_eq!(
+        all.hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == "added")
+            .count(),
+        3
+    );
+    // An edit of a file that does not exist cannot be shown.
+    assert!(change_diff(&edit, "src/lib.rs", None).is_none());
+}
+
+#[test]
+fn a_write_prompt_shows_a_new_file_as_added_and_an_overwrite_as_changed() {
+    let write = guarded("write", json!({"path": "a.txt", "content": "one\ntwo\n"}));
+    let new = change_diff(&write, "a.txt", None).unwrap();
+    assert_eq!(new.status, "added");
+    assert_eq!(new.line_count(), 2);
+    let over = change_diff(&write, "a.txt", Some("one\n")).unwrap();
+    assert_eq!(over.status, "changed");
+    let big: String = (0..=MAX_APPROVAL_DIFF_LINES)
+        .map(|i| format!("{i}\n"))
+        .collect();
+    let large = guarded("write", json!({"path": "a.txt", "content": big}));
+    assert!(
+        change_diff(&large, "a.txt", None).is_none(),
+        "too large to show"
+    );
+    let command = guarded("run_command", json!({"command": "ls"}));
+    assert!(change_diff(&command, "x", None).is_none());
+}
+
+#[test]
+fn files_for_a_diff_are_read_only_when_they_can_be_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = dir.path().join("a.rs");
+    std::fs::write(&text, "fn a() {}\n").unwrap();
+    assert_eq!(
+        read_for_diff(Some(text.as_path())),
+        Ok(Some("fn a() {}\n".to_string()))
+    );
+    assert_eq!(
+        read_for_diff(Some(dir.path().join("new.rs").as_path())),
+        Ok(None)
+    );
+    let binary = dir.path().join("b.bin");
+    std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+    assert_eq!(read_for_diff(Some(binary.as_path())), Err(()));
+    assert_eq!(read_for_diff(Some(dir.path())), Err(()), "a folder");
+    assert_eq!(read_for_diff(None), Err(()));
+}
+
+#[test]
+fn working_changes_list_edits_and_new_files_against_the_base() {
+    let dir = repo();
+    std::fs::write(dir.path().join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    std::fs::write(dir.path().join("new.rs"), "fn n() {}\n").unwrap();
+    let changes = working_changes(dir.path(), None, None).unwrap();
+    let paths: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|c| (c.path.as_str(), c.status))
+        .collect();
+    assert_eq!(paths, vec![("lib.rs", "changed"), ("new.rs", "added")]);
+    let added = &changes[0].hunks[0].lines;
+    assert!(added
+        .iter()
+        .any(|l| l.kind == "added" && l.text == "fn b() {}" && l.new == Some(2)));
+    let only = working_changes(dir.path(), None, Some("new.rs")).unwrap();
+    assert_eq!(only.len(), 1);
+    assert!(working_changes(dir.path(), Some("--output=x"), None).is_err());
+}

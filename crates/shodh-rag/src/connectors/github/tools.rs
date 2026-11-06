@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 
 use super::api::{ApiError, BranchRules, GitHubApi, PullRequest};
 use super::device::APP_INSTALL_URL;
-use super::git::{project_remotes, GitError, HostGit, PushPlan};
+use super::git::{project_remotes, GitError, HostGit, PushDiff, PushPlan};
 use super::limits::{self, MergeMethod, Need, RepoGrant};
 use super::remote::{self, Remote, RemoteKind, RepoRef, Route};
 use super::token::UserToken;
@@ -714,6 +714,24 @@ impl GitHubTool {
             "pullRequest".into(),
             json!("Not opened: Shodh asks again before opening one."),
         );
+        // The code itself, as the approval's diff shows it.
+        match &plan.diff {
+            PushDiff::Files(files) => {
+                details.insert("codeDiff".into(), json!(files));
+            }
+            PushDiff::TooLarge => {
+                details.insert(
+                    "code".into(),
+                    json!("Too large to show here: the list of files above is complete."),
+                );
+            }
+            PushDiff::Unavailable => {
+                details.insert(
+                    "code".into(),
+                    json!("git could not compare the code; the list of files above is complete."),
+                );
+            }
+        }
         let mut label = format!(
             "Push {} to {branch} on {}",
             count(plan.total, "commit", "commits"),

@@ -35,9 +35,9 @@ use super::code_mode::{
     CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::code_mode::{
-    approved_network, creator_command_reason, install_network_text, project_fingerprint,
-    ProjectFingerprint, CREATION_UNDO, CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY,
-    PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
+    approved_network, change_diff, creator_command_reason, install_network_text,
+    project_fingerprint, read_for_diff, ProjectFingerprint, CODE_DIFF_KEY, CREATION_UNDO,
+    CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY, PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -1176,6 +1176,23 @@ impl Inner {
                 auto_ran: true,
                 network: false,
             });
+        }
+        // An edit or write shows the change as a diff of the file. Without one
+        // (unreadable, too large, an edit whose text is not found), the prompt
+        // keeps its text rows only; nothing else about the decision changes.
+        if matches!(request.tool.as_str(), "edit" | "write") {
+            if let Some(relative) = target_in_folder(code.folder.root(), request) {
+                let target = request.target.clone();
+                let current = tokio::task::spawn_blocking(move || read_for_diff(target.as_deref()))
+                    .await
+                    .unwrap_or(Err(()));
+                let shown = relative.to_string_lossy().replace('\\', "/");
+                if let (Ok(current), Some(map)) = (current, approval.preview.as_object_mut()) {
+                    if let Some(change) = change_diff(request, &shown, current.as_deref()) {
+                        map.insert(CODE_DIFF_KEY.to_string(), json!([change]));
+                    }
+                }
+            }
         }
         if let Some(ui_id) = &request.ui_id {
             lock(&code.dialogs).insert(ui_id.clone(), request.tool_call_id.clone());

@@ -156,7 +156,29 @@ pub struct PushPlan {
     /// The repository's workflows (on its default branch) that run on a push to a new
     /// branch, by path.
     pub push_workflows: Vec<String>,
+    /// The code the push brings, for the approval.
+    pub diff: PushDiff,
 }
+
+/// The code a push brings, as its approval shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushDiff {
+    /// Each changed file with its hunks (cut at [`MAX_PUSH_DIFF_LINES`] lines in all).
+    Files(Vec<crate::code_review::diff::FileChange>),
+    /// More than the approval can show.
+    TooLarge,
+    /// git could not compare it.
+    Unavailable,
+}
+
+/// Lines a push approval's diff shows at most.
+pub const MAX_PUSH_DIFF_LINES: usize = 1_500;
+/// Changed lines (by the commits' numbers) past which a push's diff is not read.
+pub const MAX_PUSH_DIFF_SOURCE_LINES: u64 = 20_000;
+/// Bytes of git's diff read at most.
+const MAX_PUSH_DIFF_BYTES: usize = 4 * 1024 * 1024;
+/// git's empty tree object.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /// Shodh's git for one data folder.
 #[derive(Debug, Clone)]
@@ -1066,6 +1088,12 @@ impl HostGit {
         files.sort();
         files.dedup();
         let push_workflows = self.push_workflows(&mirror, default_branch).await;
+        let changed_lines: u64 = commits.iter().map(|c| c.insertions + c.deletions).sum();
+        let diff = if changed_lines > MAX_PUSH_DIFF_SOURCE_LINES {
+            PushDiff::TooLarge
+        } else {
+            self.push_diff(&mirror, default_branch, &sha).await
+        };
         Ok(PushPlan {
             sha,
             local_branch,
@@ -1074,7 +1102,47 @@ impl HostGit {
             files,
             outgoing,
             push_workflows,
+            diff,
         })
+    }
+
+    /// The code a push brings, against where it leaves the repository's default branch
+    /// (their merge base; the empty tree for a history of its own). Read in the mirror
+    /// with external diff programs and text conversion off, so no setting can make git
+    /// run a program. `Unavailable` when git could not say.
+    async fn push_diff(&self, mirror: &Path, default_branch: &str, sha: &str) -> PushDiff {
+        let default_ref = format!("refs/heads/{default_branch}");
+        let base = match self.network(mirror, None, &["merge-base", sha, &default_ref]) {
+            Ok(command) => run(command, LOCAL_TIMEOUT, "")
+                .await
+                .ok()
+                .map(|text| text.trim().to_string())
+                .filter(|text| text.len() >= 40 && text.chars().all(|c| c.is_ascii_hexdigit())),
+            Err(_) => return PushDiff::Unavailable,
+        };
+        // git's empty tree: every file of a history that shares nothing is new.
+        let base = base.unwrap_or_else(|| EMPTY_TREE.to_string());
+        let args = [
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--unified=3",
+            base.as_str(),
+            sha,
+        ];
+        let Ok(command) = self.network(mirror, None, &args) else {
+            return PushDiff::Unavailable;
+        };
+        match run(command, LOCAL_TIMEOUT, "").await {
+            Ok(text) if text.len() > MAX_PUSH_DIFF_BYTES => PushDiff::TooLarge,
+            Ok(text) => PushDiff::Files(crate::code_review::diff::capped(
+                crate::code_review::diff::parse_unified(&text),
+                MAX_PUSH_DIFF_LINES,
+            )),
+            Err(_) => PushDiff::Unavailable,
+        }
     }
 
     /// Pushes exactly `plan.sha` to `refs/heads/<branch>` of `repo` (no force), and

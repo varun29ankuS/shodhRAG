@@ -34,6 +34,10 @@ function reqString(value: unknown): string | null {
   return optString(value);
 }
 
+function positiveInt(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 /** Tabs of a workspace page a target may open. */
 const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results', 'tables'];
 
@@ -95,6 +99,27 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       return artifactId
         ? { kind: 'artifact', artifactId, version, pane: pane && ARTIFACT_PANES.includes(pane) ? pane : null }
         : null;
+    }
+    case 'code': {
+      const workspaceId = reqString(value.workspaceId);
+      const line = positiveInt(value.line);
+      const endLine = positiveInt(value.endLine);
+      const view = optString(value.view);
+      return workspaceId
+        ? {
+            kind: 'code',
+            workspaceId,
+            conversationId: optString(value.conversationId),
+            path: optString(value.path),
+            line,
+            endLine: line !== null && endLine !== null && endLine >= line ? endLine : line,
+            view: view === 'file' || view === 'diff' ? view : null,
+          }
+        : null;
+    }
+    case 'review': {
+      const reviewId = reqString(value.reviewId);
+      return reviewId ? { kind: 'review', reviewId } : null;
     }
     default:
       return null;

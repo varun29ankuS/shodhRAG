@@ -10,6 +10,7 @@ import { stripChartContent } from '../../utils/artifactExtractor';
 import { getArtifactKind } from '../../utils/artifactKind';
 import { ChartArtifact } from '../../components/ChartArtifact';
 import { CodeHighlight } from '../../components/CodeHighlight';
+import { ReviewableSnippet } from '../code/ReviewThisButton';
 import { TableArtifact } from '../../components/TableArtifact';
 import { ArtifactPreviewCard } from '../../components/ArtifactPreviewCard';
 import type { SearchHit } from './types';
@@ -400,12 +401,16 @@ function MessageContent({
         if (match[1] === 'derivation') return <><DerivationBlock source={codeString} /><DeeperChips lang="derivation" source={codeString} /></>;
         if (match[1] === 'symbols') return <><SymbolsBlock source={codeString} /><DeeperChips lang="symbols" source={codeString} /></>;
         if (match[1] === 'diagram') return <DiagramBlock source={codeString} />;
-        return (
-          <div>
+        const block = (reviewButton: React.ReactNode, codeRef?: React.Ref<HTMLDivElement>) => (
+          <>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
               <span className="font-mono text-caption uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
-              <CodeCopyButton text={codeString} />
+              <span className="inline-flex items-center gap-1" data-answer-ui="">
+                {reviewButton}
+                <CodeCopyButton text={codeString} />
+              </span>
             </div>
+            <div ref={codeRef}>
             <CodeHighlight
               code={codeString}
               language={match[1]}
@@ -413,14 +418,18 @@ function MessageContent({
               preTag="div"
               customStyle={{ margin: 0, padding: '14px 16px', fontSize: '13px', lineHeight: 1.6, borderRadius: 0, background: 'transparent' }}
             />
-          </div>
+            </div>
+          </>
         );
+        // Printed answers have no code pane to review in.
+        if (print) return <div>{block(null)}</div>;
+        return <ReviewableSnippet code={codeString} language={match[1]}>{block}</ReviewableSnippet>;
       }
       return (
         <code className="px-1.5 py-0.5 rounded-md bg-shodh-raised-2 font-mono text-[0.875em] text-shodh-text">{children}</code>
       );
     },
-  }), [isDark, theme]);
+  }), [isDark, theme, print]);
 
   // The renderers below must keep their identity: a new renderer is a new
   // component type to ReactMarkdown, which would remount every block of the

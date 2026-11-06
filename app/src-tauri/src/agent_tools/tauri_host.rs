@@ -109,6 +109,26 @@ impl HostEffects for TauriEffects {
         crate::indexing_control::show(&self.app, part);
     }
 
+    fn review_target(&self) -> Option<super::ReviewTarget> {
+        crate::code_review_commands::review_target(&self.app)
+    }
+
+    async fn run_code_review(
+        &self,
+        request: shodh_rag::code_review::ReviewRequest,
+        workspace_id: Option<String>,
+        conversation_id: Option<String>,
+    ) -> Result<crate::code_review_commands::StoredReview, String> {
+        crate::code_review_commands::run_and_store(
+            &self.app,
+            request,
+            workspace_id,
+            conversation_id,
+            true,
+        )
+        .await
+    }
+
     fn settings_changed(&self, settings: &AppSettings) {
         crate::app_settings::broadcast(&self.app, settings);
     }

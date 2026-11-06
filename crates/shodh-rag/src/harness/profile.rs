@@ -60,9 +60,13 @@ pub mod app_tools {
     pub const SYSTEM_STATUS: &str = "system_status";
     pub const LIST_ARTIFACTS: &str = "list_artifacts";
     pub const OPEN_ARTIFACT: &str = "open_artifact";
+    pub const OPEN_CODE: &str = "open_code";
+    /// A Code session's own tool (with its workspace), not in [`ALL`]: a Research chat
+    /// has no code folder to send to a reviewer.
+    pub const REVIEW_CODE: &str = "review_code";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 51] = [
+    pub const ALL: [&str; 52] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -114,6 +118,7 @@ pub mod app_tools {
         SYSTEM_STATUS,
         LIST_ARTIFACTS,
         OPEN_ARTIFACT,
+        OPEN_CODE,
     ];
 }
 

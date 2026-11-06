@@ -89,6 +89,8 @@ import { sourceSummary, workspaceForNewChat } from './features/workspaces/model'
 import { WorkspaceIcon } from './features/workspaces/WorkspaceIcon';
 import { FocusProvider } from './features/focus/FocusContext';
 import { SystemStatusProvider } from './features/status/SystemStatusContext';
+import { CodeReviewProvider } from './features/code/CodeReviewContext';
+import { ReviewPane } from './features/code/ReviewPane';
 import { VisualNavigator } from './features/visuals/VisualNavigator';
 import { SnippetHost } from './features/research/SnippetHost';
 import { ReminderAlerts } from './features/tasks/ReminderAlerts';
@@ -2010,9 +2012,12 @@ function AppSplitViewRoot() {
       <ChatSessionProvider>
         <SystemStatusProvider>
           <FocusProvider>
-            <AppSplitView />
-            <VisualNavigator />
-            <SnippetHost />
+            <CodeReviewProvider>
+              <AppSplitView />
+              <VisualNavigator />
+              <SnippetHost />
+              <ReviewPane />
+            </CodeReviewProvider>
           </FocusProvider>
         </SystemStatusProvider>
       </ChatSessionProvider>

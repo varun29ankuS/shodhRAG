@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef } from 'react';
+import React, { useEffect, useId, useMemo, useRef } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { StepApproval } from './reducer';
@@ -6,6 +6,9 @@ import { DiffView } from '../workspaces/DiffView';
 import { parseDiff } from '../workspaces/model';
 import { REVIEW_BLOCK_KEYS, reviewTokenFor, unreviewedFiles } from './reviewList';
 import { revealHidden } from './hiddenChars';
+import { CodeDiff } from '../code/CodeDiff';
+import { parseFileChanges } from '../code/diffModel';
+import { ReviewThisButton } from '../code/ReviewThisButton';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -58,12 +61,18 @@ export function previewChanges(preview: unknown): FieldChange[] {
     }));
 }
 
+/** Preview key of a code diff (an edit, a write, a push): a list of file changes. */
+const CODE_DIFF = 'codeDiff';
+
+/** Text rows the code diff shows better: folded under "The change as text" when the diff is there. */
+const SHOWN_BY_DIFF = ['replace', 'with', 'content'];
+
 /** The preview as label/value rows (without `changes`); non-object previews become one row. */
 function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
     return Object.entries(preview)
-      // Shown as their own blocks: field changes and an instruction diff.
-      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE && !REVIEW_BLOCK_KEYS.includes(k))
+      // Shown as their own blocks: field changes, an instruction diff and a code diff.
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== CODE_DIFF && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE && !REVIEW_BLOCK_KEYS.includes(k))
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
@@ -118,9 +127,14 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const denyRef = useRef<HTMLButtonElement>(null);
   const pending = approval.decision === 'pending';
   const destructive = approval.tier === 'destructive';
-  const rows = previewRows(approval.preview);
+  const allRows = useMemo(() => previewRows(approval.preview), [approval.preview]);
   const changes = previewChanges(approval.preview);
   const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
+  const codeDiff = useMemo(() => (isRecord(approval.preview) ? parseFileChanges(approval.preview[CODE_DIFF]) : null), [approval.preview]);
+  const textLabels = SHOWN_BY_DIFF.map(humanKey);
+  // With a diff, the change's own text rows stay as a fallback, folded.
+  const asText = codeDiff ? allRows.filter(([key]) => textLabels.includes(key)) : [];
+  const rows = codeDiff ? allRows.filter(([key]) => !textLabels.includes(key)) : allRows;
   const allowance = conversationAllowance(approval.preview);
   const allowanceNote = conversationAllowanceNote(approval.preview);
   const allowanceNoteId = useId();
@@ -208,6 +222,31 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
         </div>
       )}
       {diff && <DiffView lines={diff} label="Proposed change to the instructions" />}
+      {codeDiff && (
+        <CodeDiff
+          changes={codeDiff}
+          label={`The code this changes: ${approval.label}`}
+          maxHeight={compact ? 260 : 380}
+          actions={
+            <ReviewThisButton
+              subject={() => ({ kind: 'diff', title: approval.label, changes: codeDiff, workspaceId: null, selection: null })}
+            />
+          }
+        />
+      )}
+      {asText.length > 0 && (
+        <details className="rounded-lg bg-shodh-raised px-3 py-2 text-small">
+          <summary className="cursor-pointer text-caption text-shodh-text-secondary">The change as text</summary>
+          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            {asText.map(([key, value]) => (
+              <React.Fragment key={key}>
+                <dt className="text-shodh-text-muted whitespace-nowrap">{key}</dt>
+                <dd className="text-shodh-text break-words whitespace-pre-wrap min-w-0 max-h-64 overflow-y-auto scrollbar-thin">{value}</dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        </details>
+      )}
       <div className="flex items-center gap-2">
         <button
           ref={approveRef}

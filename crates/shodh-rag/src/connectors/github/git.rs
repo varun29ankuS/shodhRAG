@@ -156,6 +156,93 @@ pub struct PushPlan {
     /// The repository's workflows (on its default branch) that run on a push to a new
     /// branch, by path.
     pub push_workflows: Vec<String>,
+    /// The code the push brings, for the approval.
+    pub diff: PushDiff,
+}
+
+/// The code a push brings, as its approval shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushDiff {
+    /// Each changed file with its hunks (cut at [`MAX_PUSH_DIFF_LINES`] lines in all),
+    /// against where the push leaves `against` (the default branch).
+    Files {
+        files: Vec<crate::code_review::diff::FileChange>,
+        against: String,
+    },
+    /// More than the approval can show.
+    TooLarge,
+    /// git could not compare it.
+    Unavailable,
+}
+
+/// Lines a push approval's diff shows at most.
+pub const MAX_PUSH_DIFF_LINES: usize = 1_500;
+/// Changed lines (over every commit) past which a push's diff is not read.
+pub const MAX_PUSH_DIFF_SOURCE_LINES: u64 = 20_000;
+/// Bytes of git's diff read at most.
+const MAX_PUSH_DIFF_BYTES: usize = 4 * 1024 * 1024;
+/// git's empty tree object.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Lines inserted and deleted, from `git diff --shortstat` ("3 files changed, 10
+/// insertions(+), 2 deletions(-)").
+fn shortstat_lines(text: &str) -> u64 {
+    text.split(',')
+        .filter(|part| part.contains("insertion") || part.contains("deletion"))
+        .filter_map(|part| part.split_whitespace().next()?.parse::<u64>().ok())
+        .sum()
+}
+
+/// Runs `command` and reads its stdout up to `cap` bytes: `Ok(None)` when there is
+/// more (the process is then stopped), `Err` when it fails.
+async fn run_capped(
+    command: Command,
+    timeout: Duration,
+    cap: usize,
+) -> Result<Option<String>, GitError> {
+    use tokio::io::AsyncReadExt;
+    let mut command = tokio::process::Command::from(command);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(GitError::Missing),
+        Err(e) => return Err(GitError::Failed(format!("git could not be started: {e}"))),
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return Err(GitError::Failed("git gave no output".to_string()));
+    };
+    let read = async {
+        let mut bytes = Vec::new();
+        // One byte past the cap tells that there is more.
+        let mut limited = stdout.take(cap as u64 + 1);
+        limited
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| GitError::Failed(format!("git's output could not be read: {e}")))?;
+        Ok::<_, GitError>(bytes)
+    };
+    let bytes = match tokio::time::timeout(timeout, read).await {
+        Ok(result) => result?,
+        Err(_) => return Err(GitError::TimedOut),
+    };
+    if bytes.len() > cap {
+        let _ = child.kill().await;
+        return Ok(None);
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| GitError::Failed(format!("git failed: {e}")))?;
+    if !status.success() {
+        return Err(GitError::Failed(
+            "git could not compare the code".to_string(),
+        ));
+    }
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
 /// Shodh's git for one data folder.
@@ -1066,6 +1153,7 @@ impl HostGit {
         files.sort();
         files.dedup();
         let push_workflows = self.push_workflows(&mirror, default_branch).await;
+        let diff = self.push_diff(&mirror, default_branch, &sha).await;
         Ok(PushPlan {
             sha,
             local_branch,
@@ -1074,7 +1162,101 @@ impl HostGit {
             files,
             outgoing,
             push_workflows,
+            diff,
         })
+    }
+
+    /// The code a push brings, against where it leaves the repository's default branch
+    /// (their merge base; the empty tree only for a history that shares nothing with it).
+    /// Read in the mirror with external diff programs and text conversion off, so no
+    /// setting can make git run a program. Its size is checked over every commit before
+    /// it is read, and it is read only up to [`MAX_PUSH_DIFF_BYTES`]. `Unavailable` when git
+    /// could not say, never a diff of the whole repository.
+    async fn push_diff(&self, mirror: &Path, default_branch: &str, sha: &str) -> PushDiff {
+        let default_ref = format!("refs/heads/{default_branch}");
+        // An empty repository on GitHub has no default branch yet: every file is new.
+        let Ok(check) = self.network(
+            mirror,
+            None,
+            &["rev-parse", "--verify", "--quiet", &default_ref],
+        ) else {
+            return PushDiff::Unavailable;
+        };
+        let default_exists = match run_full(check, LOCAL_TIMEOUT, "").await {
+            Ok(output) if output.ok => true,
+            // `--quiet`: a missing branch fails without a word; anything else says why.
+            Ok(output) if output.stderr.trim().is_empty() => false,
+            Ok(_) => return PushDiff::Unavailable,
+            Err(_) => return PushDiff::Unavailable,
+        };
+        let base = if !default_exists {
+            EMPTY_TREE.to_string()
+        } else {
+            let Ok(command) = self.network(mirror, None, &["merge-base", sha, &default_ref]) else {
+                return PushDiff::Unavailable;
+            };
+            match run_full(command, LOCAL_TIMEOUT, "").await {
+                Ok(output) if output.ok => {
+                    let found = output.stdout.trim().to_string();
+                    if found.len() < 40 || !found.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return PushDiff::Unavailable;
+                    }
+                    found
+                }
+                // merge-base says nothing and fails when the histories share no commit:
+                // then every file of the push is new.
+                Ok(output)
+                    if output.stdout.trim().is_empty() && output.stderr.trim().is_empty() =>
+                {
+                    EMPTY_TREE.to_string()
+                }
+                _ => return PushDiff::Unavailable,
+            }
+        };
+        // Every commit counts: the listed ones are only the newest.
+        let stat_args = [
+            "diff",
+            "--shortstat",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            base.as_str(),
+            sha,
+        ];
+        let Ok(command) = self.network(mirror, None, &stat_args) else {
+            return PushDiff::Unavailable;
+        };
+        match run(command, LOCAL_TIMEOUT, "").await {
+            Ok(stat) if shortstat_lines(&stat) > MAX_PUSH_DIFF_SOURCE_LINES => {
+                return PushDiff::TooLarge
+            }
+            Ok(_) => {}
+            Err(_) => return PushDiff::Unavailable,
+        }
+        let args = [
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--unified=3",
+            base.as_str(),
+            sha,
+        ];
+        let Ok(command) = self.network(mirror, None, &args) else {
+            return PushDiff::Unavailable;
+        };
+        match run_capped(command, LOCAL_TIMEOUT, MAX_PUSH_DIFF_BYTES).await {
+            Ok(Some(text)) => PushDiff::Files {
+                files: crate::code_review::diff::capped(
+                    crate::code_review::diff::parse_unified(&text),
+                    MAX_PUSH_DIFF_LINES,
+                ),
+                against: default_branch.to_string(),
+            },
+            Ok(None) => PushDiff::TooLarge,
+            Err(_) => PushDiff::Unavailable,
+        }
     }
 
     /// Pushes exactly `plan.sha` to `refs/heads/<branch>` of `repo` (no force), and
@@ -2212,5 +2394,33 @@ mod tests {
             ),
             "refs/heads/main"
         );
+    }
+
+    #[test]
+    fn a_pushs_size_counts_every_line_git_reports() {
+        assert_eq!(
+            shortstat_lines(" 3 files changed, 10 insertions(+), 2 deletions(-)\n"),
+            12
+        );
+        assert_eq!(shortstat_lines(" 1 file changed, 1 insertion(+)"), 1);
+        assert_eq!(shortstat_lines(" 1 file changed, 4 deletions(-)"), 4);
+        assert_eq!(shortstat_lines(""), 0);
+    }
+
+    #[tokio::test]
+    async fn a_capped_read_stops_past_its_limit() {
+        let mut big = Command::new("git");
+        big.args(["--version"]);
+        assert!(
+            run_capped(big, LOCAL_TIMEOUT, 4).await.unwrap().is_none(),
+            "more than 4 bytes"
+        );
+        let mut small = Command::new("git");
+        small.args(["--version"]);
+        let text = run_capped(small, LOCAL_TIMEOUT, 4096)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(text.starts_with("git version"), "{text}");
     }
 }

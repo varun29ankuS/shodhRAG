@@ -45,20 +45,8 @@ export interface FileContent {
   truncated: boolean;
 }
 
-export interface DiffLine {
-  kind: 'same' | 'added' | 'removed';
-  text: string;
-  old: number | null;
-  new: number | null;
-}
-
-export interface FileChange {
-  path: string;
-  status: 'added' | 'removed' | 'changed';
-  binary: boolean;
-  tooLarge: boolean;
-  hunks: { lines: DiffLine[] }[];
-}
+/** A version's changes: the app's one diff (`features/code/diffModel`). */
+export type { DiffLine, FileChange } from '../code/diffModel';
 
 /** Code the agent wrote in Code mode: a conversation's branch in its workspace folder. */
 export interface CodeChange {

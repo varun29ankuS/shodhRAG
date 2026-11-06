@@ -56,6 +56,7 @@ mod agent_session_commands;
 mod agent_tools;
 mod calendar_commands;
 mod calendar_store;
+mod code_review_commands;
 mod conversation_commands;
 mod event_emitter;
 
@@ -209,6 +210,7 @@ pub fn run() {
             creation_commands::preview_protocol,
         )
         .manage(shutdown::ShutdownState::default())
+        .manage(code_review_commands::CodeReviewState::default())
         .setup(|app| {
             // Installed builds have no console: from here on the log is also kept in
             // `<app data>/logs/shodh.log`. A folder that can't be written keeps stderr only.
@@ -905,6 +907,11 @@ pub fn run() {
             creation_commands::creation_files,
             creation_commands::creation_file,
             creation_commands::creation_diff,
+            code_review_commands::code_review_run,
+            code_review_commands::code_review_get,
+            code_review_commands::code_review_target,
+            code_review_commands::code_file_read,
+            code_review_commands::code_diff,
             creation_commands::creation_preview,
             creation_commands::creation_preview_status,
             creation_commands::creation_preview_focus,

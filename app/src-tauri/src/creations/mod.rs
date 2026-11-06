@@ -189,18 +189,8 @@ pub struct FileContent {
     pub truncated: bool,
 }
 
-/// How one file differs between two versions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FileChange {
-    pub path: String,
-    /// `added`, `removed` or `changed`.
-    pub status: &'static str,
-    pub binary: bool,
-    /// Too large to compare line by line ([`diff::hunks`]).
-    pub too_large: bool,
-    pub hunks: Vec<diff::Hunk>,
-}
+/// How one file differs between two versions (the shared diff's own type).
+pub use diff::FileChange;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct StoreFile {
@@ -848,6 +838,7 @@ impl CreationStore {
                 binary,
                 too_large,
                 hunks,
+                note: None,
             });
         }
         Ok(changes)

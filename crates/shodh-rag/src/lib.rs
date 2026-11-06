@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod chat;
+pub mod code_review;
 pub mod compute;
 pub mod config;
 pub mod connectors;

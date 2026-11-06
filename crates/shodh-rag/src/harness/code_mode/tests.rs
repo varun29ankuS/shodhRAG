@@ -2849,3 +2849,188 @@ fn an_install_prompt_says_whether_the_packages_run_their_scripts() {
         );
     }
 }
+
+#[test]
+fn an_edit_prompt_shows_the_files_diff_with_its_line_numbers() {
+    let current = "fn a() {}\nfn b() {\n    1\n}\nfn c() {}\n";
+    let edit = guarded(
+        "edit",
+        json!({"path": "src/lib.rs", "old_string": "    1\n", "new_string": "    2\n"}),
+    );
+    let change = change_diff(&edit, "src/lib.rs", Some(current)).unwrap();
+    assert_eq!(
+        (change.path.as_str(), change.status),
+        ("src/lib.rs", "changed")
+    );
+    let lines = &change.hunks[0].lines;
+    let removed = lines.iter().find(|l| l.kind == "removed").unwrap();
+    let added = lines.iter().find(|l| l.kind == "added").unwrap();
+    assert_eq!((removed.text.as_str(), removed.old), ("    1", Some(3)));
+    assert_eq!((added.text.as_str(), added.new), ("    2", Some(3)));
+    assert!(lines
+        .iter()
+        .any(|l| l.kind == "same" && l.text == "fn a() {}"));
+
+    // Text that is not in the file, or in it twice without replace_all: no diff,
+    // the prompt keeps its text rows.
+    let missing = guarded("edit", json!({"old_string": "nope", "new_string": "x"}));
+    assert!(change_diff(&missing, "src/lib.rs", Some(current)).is_none());
+    let twice = guarded(
+        "edit",
+        json!({"old_string": "fn ", "new_string": "pub fn "}),
+    );
+    assert!(change_diff(&twice, "src/lib.rs", Some(current)).is_none());
+    let every = guarded(
+        "edit",
+        json!({"old_string": "fn ", "new_string": "pub fn ", "replace_all": true}),
+    );
+    let all = change_diff(&every, "src/lib.rs", Some(current)).unwrap();
+    assert_eq!(
+        all.hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == "added")
+            .count(),
+        3
+    );
+    // An edit of a file that does not exist cannot be shown.
+    assert!(change_diff(&edit, "src/lib.rs", None).is_none());
+}
+
+#[test]
+fn a_write_prompt_shows_a_new_file_as_added_and_an_overwrite_as_changed() {
+    let write = guarded("write", json!({"path": "a.txt", "content": "one\ntwo\n"}));
+    let new = change_diff(&write, "a.txt", None).unwrap();
+    assert_eq!(new.status, "added");
+    assert_eq!(new.line_count(), 2);
+    let over = change_diff(&write, "a.txt", Some("one\n")).unwrap();
+    assert_eq!(over.status, "changed");
+    let big: String = (0..=MAX_APPROVAL_DIFF_LINES)
+        .map(|i| format!("{i}\n"))
+        .collect();
+    let large = guarded("write", json!({"path": "a.txt", "content": big}));
+    assert!(
+        change_diff(&large, "a.txt", None).is_none(),
+        "too large to show"
+    );
+    let command = guarded("run_command", json!({"command": "ls"}));
+    assert!(change_diff(&command, "x", None).is_none());
+}
+
+#[test]
+fn files_for_a_diff_are_read_only_when_they_can_be_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = dir.path().join("a.rs");
+    std::fs::write(&text, "fn a() {}\n").unwrap();
+    assert_eq!(
+        read_for_diff(Some(text.as_path())),
+        Ok(Some("fn a() {}\n".to_string()))
+    );
+    assert_eq!(
+        read_for_diff(Some(dir.path().join("new.rs").as_path())),
+        Ok(None)
+    );
+    let binary = dir.path().join("b.bin");
+    std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+    assert_eq!(read_for_diff(Some(binary.as_path())), Err(()));
+    assert_eq!(read_for_diff(Some(dir.path())), Err(()), "a folder");
+    assert_eq!(read_for_diff(None), Err(()));
+}
+
+#[test]
+fn working_changes_list_edits_and_new_files_against_the_base() {
+    let dir = repo();
+    std::fs::write(dir.path().join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    std::fs::write(dir.path().join("new.rs"), "fn n() {}\n").unwrap();
+    let changes = working_changes(dir.path(), None, None, 1_000).unwrap();
+    let paths: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|c| (c.path.as_str(), c.status))
+        .collect();
+    assert_eq!(paths, vec![("lib.rs", "changed"), ("new.rs", "added")]);
+    let added = &changes[0].hunks[0].lines;
+    assert!(added
+        .iter()
+        .any(|l| l.kind == "added" && l.text == "fn b() {}" && l.new == Some(2)));
+    let only = working_changes(dir.path(), None, Some("new.rs"), 1_000).unwrap();
+    assert_eq!(only.len(), 1);
+    assert!(working_changes(dir.path(), Some("--output=x"), None, 1_000).is_err());
+}
+
+#[test]
+fn reading_the_changes_runs_no_filter_or_text_conversion_of_the_repository() {
+    let dir = repo();
+    // A repository whose own config names a clean filter and a text conversion that
+    // leave a marker when they run, applied to every file.
+    std::fs::write(
+        dir.path().join(".gitattributes"),
+        "* filter=evil diff=evil\n",
+    )
+    .unwrap();
+    git_ok(dir.path(), &["add", "--all"]);
+    git_ok(dir.path(), &["commit", "--quiet", "-m", "attributes"]);
+    git_ok(
+        dir.path(),
+        &["config", "filter.evil.clean", "touch filter-ran; cat"],
+    );
+    git_ok(
+        dir.path(),
+        &["config", "diff.evil.textconv", "touch textconv-ran; cat"],
+    );
+    std::fs::write(dir.path().join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    let changes = working_changes(dir.path(), None, None, 1_000).unwrap();
+    assert!(changes
+        .iter()
+        .any(|c| c.path == "lib.rs" && c.line_count() > 0));
+    assert!(
+        !dir.path().join("filter-ran").exists(),
+        "the clean filter ran"
+    );
+    assert!(
+        !dir.path().join("textconv-ran").exists(),
+        "the text conversion ran"
+    );
+    assert!(FILTERED_COMMANDS.contains(&"diff"));
+}
+
+#[test]
+fn the_changes_never_read_secrets_and_stop_at_their_limits() {
+    let dir = repo();
+    std::fs::write(dir.path().join(".env"), "TOKEN=secret-value\n").unwrap();
+    for i in 0..(MAX_UNTRACKED_READ + 5) {
+        std::fs::write(dir.path().join(format!("n{i:03}.txt")), "x\n").unwrap();
+    }
+    let changes = working_changes(dir.path(), None, None, 50).unwrap();
+    let env = changes
+        .iter()
+        .find(|c| c.path == ".env")
+        .expect(".env is listed");
+    assert!(env.hunks.is_empty());
+    assert_eq!(env.note, Some(crate::code_review::secrets::SECRET_NOTE));
+    let shown: usize = changes.iter().map(|c| c.line_count()).sum();
+    assert!(shown <= 50, "{shown} lines shown");
+    assert_eq!(
+        changes.len(),
+        MAX_UNTRACKED_READ + 6,
+        "every file is listed by name"
+    );
+    assert!(changes
+        .iter()
+        .any(|c| c.note == Some(crate::code_review::diff::LIMIT_NOTE)));
+}
+
+#[test]
+fn ignored_and_listed_files_come_from_git() {
+    let dir = repo();
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("build")).unwrap();
+    std::fs::write(dir.path().join("build/out.rs"), "fn o() {}\n").unwrap();
+    std::fs::write(dir.path().join("new.rs"), "fn n() {}\n").unwrap();
+    assert!(git_ignores(dir.path(), "build/out.rs"));
+    assert!(!git_ignores(dir.path(), "lib.rs"));
+    let mut files = listed_files(dir.path(), ".").unwrap();
+    files.sort();
+    assert_eq!(files, vec![".gitignore", "lib.rs", "new.rs"]);
+    let outside = tempfile::tempdir().unwrap();
+    assert_eq!(listed_files(outside.path(), "."), None);
+}

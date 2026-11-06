@@ -918,6 +918,21 @@ async fn a_push_shows_its_commits_and_files_and_sends_exactly_them_to_a_shodh_br
     );
     assert_eq!(preview["commits"], "• “Fix the login” · 1 file, +1 −0");
     assert_eq!(preview["filesChanged"], "1 file\nlogin.rs");
+    // The code itself: the file the commit adds, line by line, against main.
+    let diff = preview["codeDiff"]
+        .as_array()
+        .expect("the push shows its diff");
+    assert_eq!(diff.len(), 1, "{diff:?}");
+    assert_eq!(diff[0]["path"], "login.rs");
+    assert_eq!(diff[0]["status"], "added");
+    assert_eq!(
+        preview["codeComparedWith"],
+        "main, where this push leaves it"
+    );
+    assert_eq!(
+        diff[0]["hunks"][0]["lines"],
+        json!([{"kind": "added", "text": "fn login() {}", "old": null, "new": 1}])
+    );
     assert_eq!(preview["branch"], "shodh/fix-login (new)");
     assert_eq!(preview["repository"], "github.com/octo-org/hello");
     assert!(preview.get("warning").is_none(), "no CI here");

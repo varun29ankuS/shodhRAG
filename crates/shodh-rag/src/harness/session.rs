@@ -35,9 +35,9 @@ use super::code_mode::{
     CODE_TOOLS, GUARD_COMMAND, IGNORE_RULES_UNDO, OMP_EXECUTION_TOOLS, UNTRACKED_UNDO,
 };
 use super::code_mode::{
-    approved_network, creator_command_reason, install_network_text, project_fingerprint,
-    ProjectFingerprint, CREATION_UNDO, CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY,
-    PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
+    approved_network, change_diff, creator_command_reason, install_network_text,
+    project_fingerprint, read_for_diff, ProjectFingerprint, CODE_DIFF_KEY, CREATION_UNDO,
+    CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY, PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
 };
 use super::error::HarnessError;
 use super::events::{
@@ -599,6 +599,9 @@ struct Inner {
     plan_in_run: Arc<RunPlan>,
     grounding: Option<GroundingConfig>,
     grounding_run: Mutex<GroundingRun>,
+    /// Runs the code review pane sent (a fix or a check, by run id): every edit and
+    /// write they make asks, whatever the mode ([`OmpSession::mark_review_run`]).
+    review_runs: Mutex<HashSet<String>>,
     /// What the user limited the active run to.
     scope: Mutex<Arc<RunScope>>,
     next_id: AtomicU64,
@@ -1134,7 +1137,18 @@ impl Inner {
             map.insert(PROJECT_CODE_KEY.to_string(), json!(PROJECT_CODE_TEXT));
             map.insert(REVIEW_TOKEN_KEY.to_string(), json!(token));
         }
-        if let Some(reason) = auto_approval(mode, &settings, request, &plan, target, &gate) {
+        // A change the code reviewer suggested asks in every mode: the user never typed it.
+        let review_asks =
+            review_change_asks(lock(&self.review_runs).contains(&run_id), &request.tool);
+        if let (true, Some(map)) = (review_asks, approval.preview.as_object_mut()) {
+            map.insert(REVIEW_RUN_KEY.to_string(), json!(REVIEW_RUN_NOTE));
+        }
+        let auto = if review_asks {
+            None
+        } else {
+            auto_approval(mode, &settings, request, &plan, target, &gate)
+        };
+        if let Some(reason) = auto {
             self.audit(
                 &run_id,
                 AuditEventType::Approval,
@@ -1176,6 +1190,23 @@ impl Inner {
                 auto_ran: true,
                 network: false,
             });
+        }
+        // An edit or write shows the change as a diff of the file. Without one
+        // (unreadable, too large, an edit whose text is not found), the prompt
+        // keeps its text rows only; nothing else about the decision changes.
+        if matches!(request.tool.as_str(), "edit" | "write") {
+            if let Some(relative) = target_in_folder(code.folder.root(), request) {
+                let target = request.target.clone();
+                let current = tokio::task::spawn_blocking(move || read_for_diff(target.as_deref()))
+                    .await
+                    .unwrap_or(Err(()));
+                let shown = relative.to_string_lossy().replace('\\', "/");
+                if let (Ok(current), Some(map)) = (current, approval.preview.as_object_mut()) {
+                    if let Some(change) = change_diff(request, &shown, current.as_deref()) {
+                        map.insert(CODE_DIFF_KEY.to_string(), json!([change]));
+                    }
+                }
+            }
         }
         if let Some(ui_id) = &request.ui_id {
             lock(&code.dialogs).insert(ui_id.clone(), request.tool_call_id.clone());
@@ -2535,6 +2566,7 @@ impl OmpSession {
             plan_in_run: Arc::new(RunPlan::new()),
             grounding,
             grounding_run: Mutex::new(GroundingRun::default()),
+            review_runs: Mutex::new(HashSet::new()),
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -2724,6 +2756,35 @@ impl OmpSession {
     pub fn active_run_id(&self) -> Option<String> {
         lock(&self.inner.state).active_run_id().map(str::to_string)
     }
+
+    /// Mark run `run_id` (before it starts) as sent from the code review pane:
+    /// its edits and writes ask in every mode, as the reviewer's suggestions
+    /// were never typed by the user ([`review_change_asks`]).
+    pub fn mark_review_run(&self, run_id: &str) {
+        let mut runs = lock(&self.inner.review_runs);
+        // A session answers one run at a time; old marks are only kept briefly.
+        if runs.len() >= MAX_REVIEW_RUNS {
+            runs.clear();
+        }
+        runs.insert(run_id.to_string());
+    }
+}
+
+/// Review-run marks a session keeps before it forgets them.
+const MAX_REVIEW_RUNS: usize = 64;
+
+/// What an edit or write of a run sent from the code review pane says on its
+/// prompt: it asks whatever the mode.
+pub const REVIEW_RUN_NOTE: &str = "This comes from the code review. A change the reviewer \
+     suggested always asks, whatever the mode.";
+
+/// Key of [`REVIEW_RUN_NOTE`] on a prompt's preview.
+pub const REVIEW_RUN_KEY: &str = "from_code_review";
+
+/// Whether a guarded `tool` call of a run sent from the code review pane
+/// (`review_run`) must ask in every mode: edits and writes always do.
+pub fn review_change_asks(review_run: bool, tool: &str) -> bool {
+    review_run && matches!(tool, "edit" | "write")
 }
 
 impl Drop for OmpSession {
@@ -2982,6 +3043,7 @@ mod tests {
             plan_in_run: Arc::new(RunPlan::new()),
             grounding,
             grounding_run: Mutex::new(GroundingRun::default()),
+            review_runs: Mutex::new(HashSet::new()),
             scope: Mutex::new(Arc::new(RunScope::default())),
             next_id: AtomicU64::new(0),
             closing: AtomicBool::new(false),
@@ -5986,5 +6048,121 @@ mod tests {
         let state = json!({"dumpTools": [{"name": "read"}, {"name": "task"}]});
         assert_eq!(tool_inventory(Some(&state)), vec!["read", "task"]);
         assert!(tool_inventory(None).is_empty());
+    }
+
+    /// A repository with one commit, for the review-run tests.
+    fn review_repo() -> tempfile::TempDir {
+        let folder = tempfile::tempdir().unwrap();
+        for args in [
+            &["-c", "init.defaultBranch=main", "init", "--quiet"][..],
+            &["config", "user.name", "Test"],
+            &["config", "user.email", "test@example.com"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(folder.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+        std::fs::write(folder.path().join("lib.rs"), "fn a() {}\n").unwrap();
+        for args in [&["add", "--all"][..], &["commit", "--quiet", "-m", "first"]] {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(folder.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+        folder
+    }
+
+    /// A Code session in `mode` over a fresh repository, with one run started
+    /// (`run-1`), marked as sent from the code review when `review`.
+    fn review_case(
+        mode: AgentMode,
+        review: bool,
+    ) -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Arc<TestExecutor>,
+        std::path::PathBuf,
+        Arc<Inner>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        mpsc::UnboundedReceiver<OutboundFrame>,
+    ) {
+        // A creation folder is not a repository: Creator mode makes no branch.
+        let folder = if mode == AgentMode::Creator {
+            let plain = tempfile::tempdir().unwrap();
+            std::fs::write(plain.path().join("lib.rs"), "fn a() {}\n").unwrap();
+            plain
+        } else {
+            review_repo()
+        };
+        let data = tempfile::tempdir().unwrap();
+        let exec = TestExecutor::new();
+        let runtime = CodeRuntime::new(
+            CodeFolder::open(folder.path()).unwrap(),
+            CodeSession {
+                conversation_id: "conv-1".into(),
+                branches: CodeBranchStore::in_dir(data.path()),
+                settings_dir: Some(data.path().to_path_buf()),
+                executor: Arc::clone(&exec) as Arc<dyn CommandExecutor>,
+                scratch: data.path().join("scratch"),
+                data_dir: data.path().to_path_buf(),
+            },
+        );
+        let code = Arc::new(runtime.creating(mode == AgentMode::Creator));
+        let lib = code.folder.root().join("lib.rs");
+        let (inner, events, mut out) =
+            offline_session_in_mode(None, Some(code), ToolRegistry::new(), mode);
+        if review {
+            lock(&inner.review_runs).insert("run-1".to_string());
+        }
+        inner
+            .start_run("Fix it", Some("run-1".into()), RunScope::default())
+            .unwrap();
+        let _ = sent_prompt(&mut out);
+        (folder, data, exec, lib, inner, events, out)
+    }
+
+    #[tokio::test]
+    async fn a_change_sent_from_the_code_review_asks_in_every_mode() {
+        let edit = |lib: &std::path::Path| {
+            guard_request(
+                "1",
+                "edit",
+                json!({"path": "lib.rs", "old_string": "a", "new_string": "b"}),
+                Some(lib),
+            )
+        };
+        for mode in [AgentMode::AcceptEdits, AgentMode::Auto, AgentMode::Creator] {
+            // The edit runs unasked in a run the user typed...
+            let (_folder, _data, exec, lib, inner, _events, mut out) = review_case(mode, false);
+            runs_unasked(&inner, &exec, &mut out, edit(&lib)).await;
+
+            // ...and asks in a run the code review sent, whatever the mode.
+            let (_folder, _data, _exec, lib, inner, mut events, _out) = review_case(mode, true);
+            feed(&inner, &edit(&lib).1);
+            let seen = events_until(&mut events, |e| {
+                matches!(e, AgentEvent::ApprovalRequested { .. })
+            })
+            .await;
+            match seen.last() {
+                Some(AgentEvent::ApprovalRequested { preview, .. }) => {
+                    assert_eq!(preview[REVIEW_RUN_KEY], REVIEW_RUN_NOTE, "{mode:?}");
+                }
+                other => panic!("{mode:?}: expected an approval prompt, got {other:?}"),
+            }
+            inner.approvals.resolve("call-1", false).unwrap();
+        }
+        assert!(review_change_asks(true, "write"));
+        assert!(!review_change_asks(true, RUN_COMMAND));
+        assert!(!review_change_asks(false, "edit"));
     }
 }

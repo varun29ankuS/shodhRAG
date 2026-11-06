@@ -10,6 +10,11 @@ export interface CodeHighlightProps {
   wrapLongLines?: boolean;
   /** Element wrapping the code (`pre` unless given). */
   preTag?: 'div' | 'pre';
+  /**
+   * Style of the inner `code` element, over the theme's (the diff view makes its line
+   * height its rows' height, so its row colours line up with the code).
+   */
+  codeStyle?: CSSProperties;
 }
 
 // Prism with every grammar is one of the largest libraries in the app; it

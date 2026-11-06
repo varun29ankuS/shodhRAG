@@ -67,6 +67,7 @@ pub enum Purpose {
     Extraction,
     Ask,
     SideRun,
+    CodeReview,
 }
 
 impl Purpose {
@@ -78,6 +79,7 @@ impl Purpose {
             Purpose::Extraction => "extraction",
             Purpose::Ask => "ask",
             Purpose::SideRun => "side_run",
+            Purpose::CodeReview => "code_review",
         }
     }
 }

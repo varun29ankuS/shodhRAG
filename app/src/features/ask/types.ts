@@ -156,6 +156,11 @@ export interface ChatMessage {
    * Persisted in `metadata` under `aboutFiles`.
    */
   aboutFiles?: string[];
+  /**
+   * Sent from the code review pane (a fix or a check), not typed: a retry keeps it so
+   * (`messageOrigin.ts`). Persisted in `metadata` under `composedBy`.
+   */
+  fromReview?: boolean;
 }
 
 /** Options that scope a request; supplied by the caller at send time. */

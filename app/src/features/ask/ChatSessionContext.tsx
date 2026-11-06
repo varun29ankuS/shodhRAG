@@ -56,6 +56,8 @@ import {
   upsertById,
 } from './chatPersistence';
 import type { PersistMode, PersistView } from './chatPersistence';
+import { originOf, wireOrigin } from './messageOrigin';
+import type { MessageOrigin } from './messageOrigin';
 
 /**
  * The answer being produced. Events are queued and folded into the
@@ -108,6 +110,12 @@ export interface SendExtra {
    * what is learned from and checked (`agent_send`'s `attachedContext`).
    */
   attachedContext?: AttachedContext[];
+  /**
+   * The code review pane wrote the message, not the user (a check or a fix it sends):
+   * it is shown and answered like any other, but never learned from or taken for the
+   * user's own words, and every edit or write of its answer asks (`messageOrigin.ts`).
+   */
+  fromReview?: boolean;
 }
 
 /** What the rest of the app needs to know about the running answer. */
@@ -488,14 +496,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     });
   }, [api, activeConversationId, instructions, activeMode, activeWorkspaceId, activeAgentMode, activeHasMessages, runtimeInstalled, streaming, activeReadOnly]);
 
-  // `textOrigin`: `typed` when `prompt` is exactly what the user typed (learning may use it);
-  // `composed` for prompts the app builds (a side-thread summary request).
+  // `origin`: who wrote `prompt` (`messageOrigin.ts`): only `typed` text is learned from;
+  // `composed` for prompts the app builds; `review` for a fix or check from the code review.
   const runAgent = useCallback(async (
     conversationId: string,
     prompt: string,
     history: ChatMessage[],
     options: SendOptions | null,
-    textOrigin: 'typed' | 'composed',
+    origin: MessageOrigin,
     fallback: FallbackRun | null = null,
     attachedContext: AttachedContext[] = [],
     priorRunIds: string[] = [],
@@ -565,7 +573,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const workspaceId = conversation?.workspaceId ?? null;
       await api.send(sessionId, prompt, runId, historyOf(history), {
         scope: scopeOf(options, workspaceId),
-        textOrigin,
+        ...wireOrigin(origin),
         attachedContext,
         priorRunIds,
       });
@@ -605,12 +613,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const userMessage = questionMessage(newId('msg'), content, new Date().toISOString(), options, {
       sideSummary,
       attachedContext,
+      fromReview: extra?.fromReview === true,
     });
     const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
     publish(conversationId, userMessage, 'debounced');
 
     // runAgent reports its own failures in the answer; acceptance is decided above.
-    void runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null, attachedContext);
+    void runAgent(conversationId, prompt, history, options, originOf({ sideSummary, fromReview: extra?.fromReview }), extra?.fallback ?? null, attachedContext);
     return true;
   }, [publish, runAgent]);
 
@@ -634,11 +643,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const replaced = messages[index].transcript;
       const priorRunIds = replaced ? [...(replaced.priorRunIds ?? []), replaced.runId] : [];
       setView(v => changeMessages(v, conversationId, ms => ms.filter(m => m.id !== assistantMessageId), 'debounced'));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), askedOptions, asked.sideSummary ? 'composed' : 'typed', fallback, asked.attachedContext ?? [], priorRunIds);
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), askedOptions, originOf(asked), fallback, asked.attachedContext ?? [], priorRunIds);
     } else {
       send(asked.content, askedOptions, {
         ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}),
         ...(asked.attachedContext ? { attachedContext: asked.attachedContext } : {}),
+        ...(asked.fromReview ? { fromReview: true } : {}),
         fallback,
       });
     }

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::audit::AuditEventType;
+use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
+use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
@@ -28,6 +30,7 @@ pub(super) fn register(
 ) -> Result<(), RegistryError> {
     registry.register(Arc::new(GetSettingsTool { host: host.clone() }))?;
     registry.register(Arc::new(UpdateSettingTool { host: host.clone() }))?;
+    registry.register(Arc::new(ShowSettingTool { host: host.clone() }))?;
     Ok(())
 }
 
@@ -194,10 +197,159 @@ impl HostTool for UpdateSettingTool {
             );
             self.host.effects.settings_changed(&settings);
         }
+        // The changed control, highlighted where Settings shows it.
+        if let Some(section) = key.section() {
+            reveal_setting(ctx, section, Some(key.as_str().to_string()), key.label());
+        }
         Ok(ToolOutput {
             text_for_model: format!("{} is now {new} (was {old}).", key.as_str()),
             summary_for_ui: format!("Set {} to {new}", key.as_str()),
             detail: Some(json!({ "key": key.as_str(), "before": old, "after": new })),
+        })
+    }
+}
+
+/// The sections of the Settings view, in its order (`SettingsView.tsx`; the
+/// coverage test checks the two agree).
+pub const SETTINGS_SECTIONS: [&str; 10] = [
+    "models",
+    "search",
+    "tools",
+    "tables",
+    "general",
+    "appearance",
+    "notifications",
+    "privacy",
+    "memory",
+    "data",
+];
+
+/// Open Settings at `section` with `item` (a setting key or a memory id) highlighted.
+/// What Settings shows for `section`, in the user's words (`SettingsView.tsx`).
+fn section_label(section: &str) -> &str {
+    match section {
+        "models" => "Models",
+        "search" => "Search",
+        "tools" => "Tools & connections",
+        "tables" => "Tables",
+        "general" => "General",
+        "appearance" => "Appearance",
+        "notifications" => "Notifications",
+        "privacy" => "Privacy",
+        "memory" => "Memory",
+        "data" => "Data",
+        other => other,
+    }
+}
+
+fn reveal_setting(ctx: &ToolContext, section: &str, item: Option<String>, label: &str) {
+    emit_shown(
+        ctx,
+        "settings",
+        item.clone(),
+        Some(NavigationTarget::Setting {
+            section: section.to_string(),
+            item,
+        }),
+        Some(label),
+    );
+}
+
+/// `show_setting`: open a Settings section for the user, a setting or a memory
+/// highlighted. It only shows: changing a setting is `update_setting` (with
+/// approval), and the user-only settings stay the user's to change there.
+pub struct ShowSettingTool {
+    host: Arc<AgentHost>,
+}
+
+#[async_trait]
+impl HostTool for ShowSettingTool {
+    fn name(&self) -> &'static str {
+        app_tools::SHOW_SETTING
+    }
+    fn label(&self) -> &'static str {
+        "Show setting"
+    }
+    fn label_template(&self) -> &'static str {
+        "Opening Settings[ {section}][ at {key}]"
+    }
+    fn description(&self) -> &'static str {
+        "Open Settings for the user at a section: models, search, tools (tools, MCP servers and \
+         skills), tables, general (running in the background), appearance (text size), \
+         notifications, privacy (Local-only mode and web access), memory or data. Give `key` \
+         (a setting you may change) to highlight it, or `memory_id` (from recall) to highlight \
+         a memory in the memory section. Use it to show the user where to change a setting \
+         you may not change yourself."
+    }
+    fn schema(&self) -> Value {
+        let keys: Vec<&str> = AGENT_WRITABLE
+            .iter()
+            .filter(|k| k.section().is_some())
+            .map(|k| k.as_str())
+            .collect();
+        json!({
+            "type": "object",
+            "properties": {
+                "section": {"type": "string", "enum": SETTINGS_SECTIONS},
+                "key": {"type": "string", "enum": keys},
+                "memory_id": {"type": "string", "minLength": 1, "maxLength": 200}
+            },
+            "additionalProperties": false
+        })
+    }
+    fn tier(&self) -> RiskTier {
+        RiskTier::Read
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let tool = app_tools::SHOW_SETTING;
+        let requested = str_arg(&args, "section");
+        if let Some(s) = requested {
+            if !SETTINGS_SECTIONS.contains(&s) {
+                return Err(invalid(tool, format!("unknown section {s}")));
+            }
+        }
+        let (section, item) = if let Some(id) = str_arg(&args, "memory_id") {
+            if requested.is_some_and(|s| s != "memory") {
+                return Err(invalid(tool, "a memory is shown in the memory section"));
+            }
+            super::memory::check_visible(&self.host, ctx, tool, id).await?;
+            ("memory", Some(id.to_string()))
+        } else if let Some(raw) = str_arg(&args, "key") {
+            let key = SettingKey::parse(raw)
+                .ok_or_else(|| invalid(tool, format!("unknown setting {raw}")))?;
+            let home = key.section().ok_or_else(|| {
+                invalid(
+                    tool,
+                    format!("{raw} is not shown in Settings; it changes the whole window"),
+                )
+            })?;
+            if requested.is_some_and(|s| s != home) {
+                return Err(invalid(tool, format!("{raw} is in the {home} section")));
+            }
+            (home, Some(raw.to_string()))
+        } else {
+            let section =
+                requested.ok_or_else(|| invalid(tool, "give a section, a key or a memory_id"))?;
+            (section, None)
+        };
+        let label = match (&item, section) {
+            (Some(_), "memory") => "a memory".to_string(),
+            (Some(key), _) => SettingKey::parse(key)
+                .map(|k| k.label().to_string())
+                .unwrap_or_else(|| key.clone()),
+            (None, _) => section_label(section).to_string(),
+        };
+        reveal_setting(ctx, section, item.clone(), &label);
+        let what = match (&item, section) {
+            (Some(_), "memory") => " with that memory highlighted".to_string(),
+            (Some(key), _) => format!(" with {key} highlighted"),
+            (None, _) => String::new(),
+        };
+        Ok(ToolOutput {
+            text_for_model: format!("Settings at {section}{what}: {SHOWN_TO_USER}"),
+            summary_for_ui: format!("Opened Settings at {section}"),
+            detail: Some(json!({ "section": section, "item": item })),
         })
     }
 }
@@ -250,6 +402,88 @@ mod tests {
             tool.preview(&json!({"key": "font_size", "value": 3})).await,
             Err(ToolError::InvalidArguments { .. })
         ));
+    }
+
+    fn next_setting_target(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<shodh_rag::harness::AgentEvent>,
+        tool: &str,
+    ) -> (String, Option<String>) {
+        let shown = testing::expect_navigation(rx, tool);
+        assert_eq!(shown.view, "settings");
+        assert!(shown.label.is_some(), "it names what it shows");
+        match shown.target {
+            Some(NavigationTarget::Setting { section, item }) => (section, item),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn show_setting_opens_a_section_or_a_setting_and_checks_them() {
+        let t = testing::host().await;
+        let tool = ShowSettingTool {
+            host: t.host.clone(),
+        };
+        let (ctx, mut rx) = testing::ctx();
+        tool.execute(json!({"section": "privacy"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            next_setting_target(&mut rx, "show_setting"),
+            ("privacy".into(), None)
+        );
+        let out = tool
+            .execute(json!({"key": "search_max_results"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            next_setting_target(&mut rx, "show_setting"),
+            ("search".into(), Some("search_max_results".into()))
+        );
+        assert!(out
+            .text_for_model
+            .contains("search_max_results highlighted"));
+        for bad in [
+            json!({}),
+            json!({"section": "secrets"}),
+            json!({"key": "theme"}),
+            json!({"key": "local_only"}),
+            json!({"section": "privacy", "key": "search_max_results"}),
+            json!({"section": "search", "memory_id": "mem-1"}),
+        ] {
+            assert!(
+                matches!(
+                    tool.execute(bad.clone(), &ctx).await,
+                    Err(ToolError::InvalidArguments { .. })
+                ),
+                "{bad}"
+            );
+        }
+        assert!(tool
+            .execute(json!({"memory_id": "mem-none"}), &ctx)
+            .await
+            .is_err());
+        assert!(rx.try_recv().is_err(), "a refused call shows nothing");
+    }
+
+    #[tokio::test]
+    async fn update_setting_shows_the_changed_control_after_saving() {
+        let t = testing::host().await;
+        let tool = UpdateSettingTool {
+            host: t.host.clone(),
+        };
+        let (ctx, mut rx) = testing::ctx();
+        tool.execute(json!({"key": "search_max_results", "value": 12}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            next_setting_target(&mut rx, "update_setting"),
+            ("search".into(), Some("search_max_results".into()))
+        );
+        // The theme changes the whole window; it has no control in Settings to show.
+        tool.execute(json!({"key": "theme", "value": "light"}), &ctx)
+            .await
+            .unwrap();
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]

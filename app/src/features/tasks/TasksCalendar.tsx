@@ -8,6 +8,7 @@ import { focusDayKey, useTasksStore } from './TasksStore';
 import { isDone } from './types';
 import type { CalendarEvent as CalendarEntry, TodoItem as CalendarTask } from './types';
 import { ReminderBadge } from './ReminderField';
+import { agentItemKey } from '../../lib/agentHighlight';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -430,7 +431,7 @@ export default function TasksCalendar() {
               <h3 className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Events</h3>
               <ul className="flex flex-col gap-1.5">
                 {dayEvents.map(ev => (
-                  <li key={ev.id}>
+                  <li key={ev.id} data-agent-item={agentItemKey('event', ev.id)} className="rounded-lg">
                     <button
                       type="button"
                       onClick={() => openEvent(ev.id)}
@@ -457,7 +458,7 @@ export default function TasksCalendar() {
               <h3 className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">Due</h3>
               <ul className="flex flex-col gap-1.5">
                 {dayTasks.map(task => (
-                  <li key={task.id} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border">
+                  <li key={task.id} data-agent-item={agentItemKey('task', task.id)} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-shodh-surface border border-shodh-border">
                     <button
                       type="button"
                       role="checkbox"

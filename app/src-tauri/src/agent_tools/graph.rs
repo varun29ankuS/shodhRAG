@@ -14,6 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::harness::profile::app_tools;
+use shodh_rag::harness::tools::navigate::SHOWN_TO_USER;
 use shodh_rag::harness::tools::{
     CitedPassage, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
     UNTRUSTED_NOTICE,
@@ -39,6 +40,7 @@ pub(super) fn register(
     registry.register(Arc::new(PaperGraphTool { host: host.clone() }))?;
     registry.register(Arc::new(GetPaperTool { host: host.clone() }))?;
     registry.register(Arc::new(FindPapersTool { host: host.clone() }))?;
+    registry.register(Arc::new(ShowPaperTool { host: host.clone() }))?;
     Ok(())
 }
 
@@ -60,15 +62,19 @@ async fn graph_of(host: &AgentHost) -> Result<Arc<PaperGraph>, ToolError> {
 
 const NOT_BUILT: &str = "The paper graph has not been built yet. The user can build it in Library → Graph (Build); until then, answer from search_documents.";
 
+/// The paper `query` names, among the papers this answer may use only ([`shown`]): a
+/// library paper outside the workspace is never matched, so it neither blocks an in-scope
+/// match nor reaches the model, not even its title in an error.
 fn find_paper<'g>(
     graph: &'g PaperGraph,
+    ctx: &ToolContext,
     tool: &str,
     query: &str,
 ) -> Result<&'g PaperNode, ToolError> {
     if graph.papers().is_empty() {
         return Err(ToolError::Failed(NOT_BUILT.to_string()));
     }
-    graph.find(query).ok_or_else(|| {
+    graph.find_where(query, |p| shown(ctx, p)).ok_or_else(|| {
         ToolError::NotFound(format!(
             "{tool}: no paper in the graph matches \"{query}\" (try its title, arXiv id, DOI or file path)"
         ))
@@ -112,18 +118,6 @@ fn shown(ctx: &ToolContext, paper: &PaperNode) -> bool {
             .file_path
             .as_deref()
             .is_some_and(|f| ctx.scope().allows_path(f))
-}
-
-/// Refuses a paper the answer may not use.
-fn require_shown(ctx: &ToolContext, paper: &PaperNode) -> Result<(), ToolError> {
-    if shown(ctx, paper) {
-        Ok(())
-    } else {
-        Err(ToolError::Forbidden(ctx.scope().outside_message(&format!(
-            "The paper \"{}\"",
-            paper.label()
-        ))))
-    }
 }
 
 /// Numbers a reference entry as a checkable passage of the citing library paper.
@@ -302,10 +296,10 @@ impl HostTool for PaperGraphTool {
             "cited" | "citers" | "neighbors" => {
                 let paper = find_paper(
                     &graph,
+                    ctx,
                     tool,
                     str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?,
                 )?;
-                require_shown(ctx, paper)?;
                 lines.push(format!("Paper: {}", describe(paper)));
                 if op != "citers" {
                     let cited: Vec<&PaperNode> = graph
@@ -381,16 +375,16 @@ impl HostTool for PaperGraphTool {
             "shared_references" | "lineage" => {
                 let a = find_paper(
                     &graph,
+                    ctx,
                     tool,
                     str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?,
                 )?;
                 let b = find_paper(
                     &graph,
+                    ctx,
                     tool,
                     str_arg(&args, "other").ok_or_else(|| invalid(tool, "`other` is required"))?,
                 )?;
-                require_shown(ctx, a)?;
-                require_shown(ctx, b)?;
                 if op == "shared_references" {
                     let mut shared = graph.shared_references(&a.id, &b.id);
                     shared.retain(|s| shown(ctx, s));
@@ -501,8 +495,7 @@ impl HostTool for GetPaperTool {
         let tool = self.name();
         let query = str_arg(&args, "paper").ok_or_else(|| invalid(tool, "`paper` is required"))?;
         let graph = graph_of(&self.host).await?;
-        let paper = find_paper(&graph, tool, query)?.clone();
-        require_shown(ctx, &paper)?;
+        let paper = find_paper(&graph, ctx, tool, query)?.clone();
         let view = paper_view(&graph, &paper.id).ok_or_else(|| {
             ToolError::NotFound(format!("{tool}: \"{query}\" is not in the graph"))
         })?;
@@ -661,6 +654,60 @@ impl HostTool for GetPaperTool {
     }
 }
 
+/// `show_paper`: open the Library's paper graph, or one paper's page in it, for the user.
+pub struct ShowPaperTool {
+    host: Arc<AgentHost>,
+}
+
+#[async_trait]
+impl HostTool for ShowPaperTool {
+    fn name(&self) -> &'static str {
+        app_tools::SHOW_PAPER
+    }
+    fn label(&self) -> &'static str {
+        "Show paper"
+    }
+    fn label_template(&self) -> &'static str {
+        "Showing[ {paper}]"
+    }
+    fn description(&self) -> &'static str {
+        "Open a paper's page in the Library for the user (its citations, results, figures and \
+         snippets), the paper named like get_paper does: by title, arXiv id, DOI or file path. \
+         Without `paper`, open the paper graph. This only shows; use get_paper to read it."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "paper": {"type": "string", "minLength": 1, "maxLength": 1000} },
+            "additionalProperties": false
+        })
+    }
+    fn tier(&self) -> RiskTier {
+        RiskTier::Read
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let tool = self.name();
+        let Some(query) = str_arg(&args, "paper") else {
+            super::show_in_library(ctx, "graph", None, "Paper graph");
+            return Ok(ToolOutput {
+                text_for_model: format!("The paper graph in the Library: {SHOWN_TO_USER}"),
+                summary_for_ui: "Opened the paper graph".to_string(),
+                detail: None,
+            });
+        };
+        let graph = graph_of(&self.host).await?;
+        let paper = find_paper(&graph, ctx, tool, query)?.clone();
+        let label = clip(&paper.label(), 80);
+        super::show_in_library(ctx, "paper", Some(paper.id.clone()), &label);
+        Ok(ToolOutput {
+            text_for_model: format!("The page of \"{label}\" in the Library: {SHOWN_TO_USER}"),
+            summary_for_ui: format!("Opened {label}"),
+            detail: Some(json!({ "paperId": paper.id })),
+        })
+    }
+}
+
 pub struct FindPapersTool {
     host: Arc<AgentHost>,
 }
@@ -791,6 +838,32 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn show_paper_opens_the_graph_and_shows_nothing_for_an_unknown_paper() {
+        let t = testing::host().await;
+        let tool = ShowPaperTool {
+            host: t.host.clone(),
+        };
+        assert_eq!(tool.tier(), RiskTier::Read);
+        let (ctx, mut rx) = testing::ctx();
+        tool.execute(json!({}), &ctx).await.unwrap();
+        let shown = testing::expect_navigation(&mut rx, "show_paper");
+        assert_eq!(shown.view, "library");
+        assert_eq!(
+            shown.target,
+            Some(shodh_rag::harness::events::NavigationTarget::Library {
+                section: "graph".into(),
+                item: None,
+            })
+        );
+        // No graph built yet: the paper cannot be found, and nothing is shown.
+        assert!(tool
+            .execute(json!({"paper": "Attention is all you need"}), &ctx)
+            .await
+            .is_err());
+        assert!(rx.try_recv().is_err());
+    }
+
     fn paper(id: &str, title: &str, year: i32, file: Option<&str>) -> PaperNode {
         PaperNode {
             id: id.into(),
@@ -836,6 +909,65 @@ mod tests {
         };
         let services = t.host.research.services().await.unwrap();
         *services.citations.slot().write() = Some(Arc::new(PaperGraph::new(parts)));
+    }
+
+    /// In a chat limited to a workspace, a library paper outside it is never matched:
+    /// not shown, not read, and its title never reaches the model, even in an error.
+    #[tokio::test]
+    async fn papers_outside_the_workspace_are_neither_shown_nor_named() {
+        use shodh_rag::harness::events::NavigationTarget;
+        use shodh_rag::harness::tools::RunScope;
+        let t = testing::host().await;
+        with_graph(&t).await;
+        let show = ShowPaperTool {
+            host: t.host.clone(),
+        };
+        let get = GetPaperTool {
+            host: t.host.clone(),
+        };
+        let (ctx, mut rx) = testing::ctx();
+        let ctx = ctx.with_scope(Arc::new(RunScope {
+            files: vec!["C:/p/delta.pdf".into()],
+            restricted: true,
+            ..Default::default()
+        }));
+        // In scope: shown, named by its title.
+        show.execute(json!({ "paper": "2406.06484" }), &ctx)
+            .await
+            .unwrap();
+        let shown = testing::expect_navigation(&mut rx, "show_paper");
+        assert_eq!(shown.view, "library");
+        assert_eq!(
+            shown.target,
+            Some(NavigationTarget::Library {
+                section: "paper".into(),
+                item: Some("paper:arxiv:2406.06484".into()),
+            })
+        );
+        assert!(shown.label.unwrap().starts_with("Parallelizing"));
+        // Outside it: a plain "not found", as for a paper that does not exist.
+        for err in [
+            show.execute(json!({ "paper": "2411.12537" }), &ctx)
+                .await
+                .unwrap_err(),
+            get.execute(json!({ "paper": "2411.12537" }), &ctx)
+                .await
+                .unwrap_err(),
+        ] {
+            match err {
+                ToolError::NotFound(message) => {
+                    assert!(!message.contains("Unlocking"), "{message}");
+                    assert!(!message.contains("neg.pdf"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(rx.try_recv().is_err(), "a refused paper shows nothing");
+        // A work outside the library (a public record) stays visible.
+        assert!(get
+            .execute(json!({ "paper": "2006.16236" }), &ctx)
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

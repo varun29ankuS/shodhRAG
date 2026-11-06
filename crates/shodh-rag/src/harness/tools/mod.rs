@@ -2497,6 +2497,7 @@ mod tests {
                 view: "tasks".into(),
                 focus: Some("task-9".into()),
                 target: None,
+                label: None,
             }
         );
         let bad = reg

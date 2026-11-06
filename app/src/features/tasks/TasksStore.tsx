@@ -21,6 +21,7 @@ import {
 } from './taskStore';
 import type { EventPatch, PendingOp, StoreState, TaskPatch } from './taskStore';
 import type { CalendarEvent, TodoItem } from './types';
+import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
 export type { EventPatch, TaskPatch } from './taskStore';
 
@@ -47,7 +48,8 @@ export interface NewEventInput {
   location?: string | null;
 }
 
-type Detail = { kind: 'task'; id: string } | { kind: 'event'; id: string } | null;
+/** The open sheet; `byAssistant` when `show_calendar` opened it (it then keeps the user's focus). */
+type Detail = { kind: 'task' | 'event'; id: string; byAssistant?: boolean } | null;
 
 /**
  * A day, task or event the agent asked to show (`show_calendar`). Both
@@ -96,6 +98,8 @@ interface TasksStoreValue {
   detailTask: TodoItem | null;
   detailEvent: CalendarEvent | null;
   closeDetail: () => void;
+  /** The sheet was opened by the assistant: it opens without taking the focus and leaves the page usable. */
+  detailByAssistant: boolean;
   /** Latest agent request to show a day, task or event. */
   focusRequest: FocusRequest | null;
 }
@@ -469,8 +473,20 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
     void refresh().then(() => {
       if (seq !== focusSeq.current) return;
       setFocusRequest({ seq, day: target.date, taskId: target.taskId, eventId: target.eventId });
-      if (target.taskId) setDetail({ kind: 'task', id: target.taskId });
-      else if (target.eventId) setDetail({ kind: 'event', id: target.eventId });
+      if (target.highlightOnly) {
+        // After a write: the row is highlighted, and no sheet (a dialog that would take
+        // the focus) opens over what the user is doing.
+        const id = target.taskId ?? target.eventId;
+        if (id) {
+          revealAgentItem(agentItemKey(target.taskId ? 'task' : 'event', id), {
+            missed: 'Shodh changed an item that the current Tasks layout does not show.',
+          });
+        }
+        return;
+      }
+      // An explicit "show me this" (show_calendar): its sheet opens.
+      if (target.taskId) setDetail({ kind: 'task', id: target.taskId, byAssistant: true });
+      else if (target.eventId) setDetail({ kind: 'event', id: target.eventId, byAssistant: true });
     });
   }, { consume: followAgent });
 
@@ -505,8 +521,9 @@ export function TasksStoreProvider({ children, followAgent = true }: { children:
     detailTask,
     detailEvent,
     closeDetail,
+    detailByAssistant: detail?.byAssistant === true,
     focusRequest,
-  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, renameSubtask, deleteSubtask, snoozeReminder, updateEvent, deleteEvent, openTask, openEvent, detailTask, detailEvent, closeDetail, focusRequest]);
+  }), [tasks, events, loading, error, refresh, createTask, createEvent, updateTask, deleteTask, addSubtask, toggleSubtask, renameSubtask, deleteSubtask, snoozeReminder, updateEvent, deleteEvent, openTask, openEvent, detail, detailTask, detailEvent, closeDetail, focusRequest]);
 
   return <TasksStoreContext.Provider value={value}>{children}</TasksStoreContext.Provider>;
 }

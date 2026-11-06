@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
 use shodh_rag::harness::tools::creation::{FinishCreationTool, FINISH_CREATION};
-use shodh_rag::harness::tools::navigate::emit_navigation;
+use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::{
     HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
@@ -294,7 +294,7 @@ impl HostTool for OpenArtifactTool {
                 )));
             }
         }
-        emit_navigation(
+        emit_shown(
             ctx,
             "artifacts",
             None,
@@ -303,6 +303,7 @@ impl HostTool for OpenArtifactTool {
                 version,
                 pane: Some(pane.clone()),
             }),
+            Some(&creation.title),
         );
         let at = match version {
             Some(number) => format!("version {number}"),
@@ -310,7 +311,7 @@ impl HostTool for OpenArtifactTool {
         };
         Ok(ToolOutput {
             text_for_model: format!(
-                "The Artifacts tab now shows \"{}\" ({at}) on its {pane} pane for the user.",
+                "\"{}\" ({at}) on the {pane} pane of the Artifacts tab: {SHOWN_TO_USER}",
                 creation.title
             ),
             summary_for_ui: format!("Showed “{}” · {pane}", creation.title),
@@ -367,20 +368,17 @@ mod tests {
             .await
             .unwrap();
         assert!(out.text_for_model.contains("files pane"));
-        match rx.try_recv().unwrap() {
-            AgentEvent::Navigated { view, target, .. } => {
-                assert_eq!(view, "artifacts");
-                assert_eq!(
-                    target,
-                    Some(NavigationTarget::Artifact {
-                        artifact_id: creation.id.clone(),
-                        version: Some(1),
-                        pane: Some("files".into()),
-                    })
-                );
-            }
-            other => panic!("expected navigation, got {other:?}"),
-        }
+        let shown = crate::agent_tools::testing::expect_navigation(&mut rx, "open_artifact");
+        assert_eq!(shown.view, "artifacts");
+        assert_eq!(
+            shown.target,
+            Some(NavigationTarget::Artifact {
+                artifact_id: creation.id.clone(),
+                version: Some(1),
+                pane: Some("files".into()),
+            })
+        );
+        assert_eq!(shown.label.as_deref(), Some(creation.title.as_str()));
         assert_eq!(tool.tier(), RiskTier::Read);
     }
 

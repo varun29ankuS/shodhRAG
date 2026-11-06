@@ -36,13 +36,40 @@ test('every target kind parses', () => {
     kind: 'document', path: 'C:/docs/a.pdf', page: 4, passage: 'notice',
   });
   assert.deepEqual(parseTarget({ kind: 'calendar', date: '2026-10-30', taskId: 't1', eventId: null }), {
-    kind: 'calendar', date: '2026-10-30', taskId: 't1', eventId: null,
+    kind: 'calendar', date: '2026-10-30', taskId: 't1', eventId: null, highlightOnly: false,
   });
   assert.deepEqual(parseTarget({ kind: 'conversation', conversationId: 'c1' }), { kind: 'conversation', conversationId: 'c1' });
   assert.deepEqual(parseTarget({ kind: 'audit', types: ['tool_call', 7], tool: 'web_search', from: null, to: null, text: '' }), {
-    kind: 'audit', types: ['tool_call'], tool: 'web_search', from: null, to: null, text: null,
-  });
+    kind: 'audit', types: ['tool_call'], tool: 'web_search', from: null, to: null, text: null, entryId: null,
+  }, 'an event from an older build names no entry');
+  const entry = parseTarget({ kind: 'audit', types: [], tool: null, from: null, to: null, text: null, entryId: 42 });
+  assert.equal(entry?.kind === 'audit' ? entry.entryId : 'x', 42);
   assert.deepEqual(parseTarget({ kind: 'source', sourceId: 's1' }), { kind: 'source', sourceId: 's1' });
+  assert.deepEqual(parseTarget({ kind: 'setting', section: 'memory', item: 'mem-1' }), { kind: 'setting', section: 'memory', item: 'mem-1' });
+  assert.deepEqual(parseTarget({ kind: 'setting', section: 'privacy', item: null }), { kind: 'setting', section: 'privacy', item: null });
+  assert.deepEqual(parseTarget({ kind: 'library', section: 'paper', item: 'paper:arxiv:1706.03762' }), {
+    kind: 'library', section: 'paper', item: 'paper:arxiv:1706.03762',
+  });
+  assert.deepEqual(parseTarget({ kind: 'library', section: 'snippets', item: 'sn-1' }), { kind: 'library', section: 'snippets', item: 'sn-1' });
+  assert.deepEqual(parseTarget({ kind: 'library', section: 'graph', item: null }), { kind: 'library', section: 'graph', item: null });
+  assert.deepEqual(parseTarget({ kind: 'status', part: 'indexing' }), { kind: 'status', part: 'indexing' });
+  // A write only highlights: the flag survives, and an event without it opens as before.
+  const written = parseTarget({ kind: 'calendar', date: null, taskId: 't1', eventId: null, highlightOnly: true });
+  assert.equal(written?.kind === 'calendar' ? written.highlightOnly : 'x', true);
+  const revised = parseTarget({ kind: 'visual', visualId: 'v1', version: 2, highlightOnly: true });
+  assert.equal(revised?.kind === 'visual' ? revised.highlightOnly : 'x', true);
+  const opened = parseTarget({ kind: 'visual', visualId: 'v1', version: null });
+  assert.equal(opened?.kind === 'visual' ? opened.highlightOnly : 'x', false);
+});
+
+test('navigations carry the item label, clipped for the shell', () => {
+  const event = { ...navigated({ kind: 'calendar', date: null, taskId: 't1', eventId: null }, 'tasks'), label: 'Renew lease' };
+  assert.equal(navigationFromEvent(event as NavigatedEvent).label, 'Renew lease');
+  const long = { ...event, label: 'x'.repeat(80) };
+  const clipped = navigationFromEvent(long as NavigatedEvent).label ?? '';
+  assert.equal(Array.from(clipped).length, 40);
+  assert.ok(clipped.endsWith('…'));
+  assert.equal(navigationFromEvent({ ...event, label: '  ' } as NavigatedEvent).label, null);
 });
 
 test('malformed or unknown targets are dropped', () => {
@@ -51,6 +78,11 @@ test('malformed or unknown targets are dropped', () => {
   assert.equal(parseTarget({ kind: 'document', page: 2 }), null, 'no path');
   assert.equal(parseTarget({ kind: 'calendar', date: null, taskId: null, eventId: null }), null, 'nothing to show');
   assert.equal(parseTarget({ kind: 'conversation', conversationId: '  ' }), null);
+  assert.equal(parseTarget({ kind: 'setting', section: 'api_keys', item: null }), null, 'no such Settings section');
+  assert.equal(parseTarget({ kind: 'library', section: 'paper', item: null }), null, 'a paper page needs its paper');
+  assert.equal(parseTarget({ kind: 'library', section: 'trash', item: null }), null);
+  const badEntry = parseTarget({ kind: 'audit', types: [], tool: null, from: null, to: null, text: null, entryId: -1 });
+  assert.equal(badEntry?.kind === 'audit' ? badEntry.entryId : 'x', null);
   const badPage = parseTarget({ kind: 'document', path: 'a.pdf', page: -3, passage: null });
   assert.equal(badPage?.kind === 'document' ? badPage.page : 'x', null);
   const badDate = parseTarget({ kind: 'calendar', date: 'next friday', taskId: 't', eventId: null });
@@ -59,7 +91,7 @@ test('malformed or unknown targets are dropped', () => {
 
 test('older navigated events without a target still switch views', () => {
   const legacy = { type: 'navigated', runId: RUN, view: 'library', focus: 'src-1' } as unknown as NavigatedEvent;
-  assert.deepEqual(navigationFromEvent(legacy), { view: 'library', focus: 'src-1', target: null });
+  assert.deepEqual(navigationFromEvent(legacy), { view: 'library', focus: 'src-1', target: null, label: null });
   const withTarget = navigationFromEvent(navigated({ kind: 'calendar', date: '2026-11-05', taskId: 'abc', eventId: null }));
   assert.equal(withTarget.target?.kind, 'calendar');
 });

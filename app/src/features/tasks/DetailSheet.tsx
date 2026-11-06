@@ -20,6 +20,7 @@ export default function DetailSheet({
   kindLabel,
   children,
   footer,
+  keepFocus = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -29,15 +30,23 @@ export default function DetailSheet({
   kindLabel: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  /**
+   * Opened by the assistant (`show_calendar`): the sheet opens beside what the user is
+   * doing, not over it: no focus trap or overlay, and the focus stays where it was.
+   */
+  keepFocus?: boolean;
 }) {
   return (
-    <Dialog.Root open={open} onOpenChange={next => { if (!next) onClose(); }}>
+    <Dialog.Root open={open} modal={!keepFocus} onOpenChange={next => { if (!next) onClose(); }}>
       <Dialog.Portal>
-        <Dialog.Overlay
-          className="fixed inset-0 z-50 bg-black/30 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 duration-panel"
-        />
+        {!keepFocus && (
+          <Dialog.Overlay
+            className="fixed inset-0 z-50 bg-black/30 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 duration-panel"
+          />
+        )}
         <Dialog.Content
           aria-describedby={undefined}
+          onOpenAutoFocus={e => { if (keepFocus) e.preventDefault(); }}
           onEscapeKeyDown={e => {
             const target = e.target instanceof Element ? e.target : null;
             if (target?.closest(EDITABLE)) e.preventDefault();

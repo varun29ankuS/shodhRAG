@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
-use shodh_rag::harness::tools::navigate::emit_navigation;
+use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::sources::{load_sources, SourceKind as IndexKind};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
@@ -33,10 +33,26 @@ use crate::workspace_commands::{list_with_chats, WorkspaceCommandError};
 
 /// Most sources one call may add.
 const MAX_ADD: usize = 50;
-/// Tabs of a workspace page.
-const TABS: [&str; 8] = [
+/// Tabs of a workspace page (`WORKSPACE_TABS` in the frontend's navigation; the
+/// coverage test checks the two agree).
+pub(crate) const TABS: [&str; 8] = [
     "overview", "sources", "chats", "tasks", "memory", "visuals", "results", "tables",
 ];
+
+/// Show a workspace the assistant just changed: its page at `tab` (the overview
+/// when absent). Called only after the write succeeded.
+fn reveal_workspace(ctx: &ToolContext, workspace_id: &str, name: &str, tab: Option<&str>) {
+    emit_shown(
+        ctx,
+        "workspaces",
+        Some(workspace_id.to_string()),
+        Some(NavigationTarget::Workspace {
+            workspace_id: workspace_id.to_string(),
+            tab: tab.map(str::to_string),
+        }),
+        Some(name),
+    );
+}
 
 pub(super) fn register(
     registry: &mut ToolRegistry,
@@ -245,7 +261,7 @@ impl HostTool for OpenWorkspaceTool {
             ));
         }
         let d = detail(&self.host, id).await?;
-        emit_navigation(
+        emit_shown(
             ctx,
             "workspaces",
             Some(d.workspace.id.clone()),
@@ -253,12 +269,10 @@ impl HostTool for OpenWorkspaceTool {
                 workspace_id: d.workspace.id.clone(),
                 tab: tab.clone(),
             }),
+            Some(&d.workspace.name),
         );
         Ok(ToolOutput {
-            text_for_model: format!(
-                "Opened the workspace \"{}\" for the user.",
-                d.workspace.name
-            ),
+            text_for_model: format!("The workspace \"{}\": {SHOWN_TO_USER}", d.workspace.name),
             summary_for_ui: format!("Opened “{}”", d.workspace.name),
             detail: Some(json!({ "id": d.workspace.id, "tab": tab })),
         })
@@ -350,7 +364,7 @@ impl HostTool for CreateWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_WORKSPACE;
         let new = new_workspace(tool, &args)?;
         let created = self
@@ -360,6 +374,7 @@ impl HostTool for CreateWorkspaceTool {
             .await
             .map_err(store_error)?;
         self.host.effects.workspaces_changed(&created.id);
+        reveal_workspace(ctx, &created.id, &created.name, None);
         Ok(ToolOutput {
             text_for_model: format!(
                 "Created the workspace \"{}\" (id {}). It has no sources yet; add some with \
@@ -539,7 +554,7 @@ impl HostTool for UpdateWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::UPDATE_WORKSPACE;
         let update = update_args(tool, &args)?;
         let id = update.id.clone();
@@ -569,6 +584,7 @@ impl HostTool for UpdateWorkspaceTool {
             .await
             .map_err(store_error)?;
         self.host.effects.workspaces_changed(&id);
+        reveal_workspace(ctx, &id, &name, None);
         let text = match version {
             Some(v) => {
                 format!("Updated the workspace \"{name}\"; its instructions are now version {v}.")
@@ -840,7 +856,7 @@ impl HostTool for AddToWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let (d, sources) = self.resolved(&args).await?;
         let id = d.workspace.id.clone();
         let report = self
@@ -852,6 +868,7 @@ impl HostTool for AddToWorkspaceTool {
         if report.added > 0 {
             self.host.effects.workspaces_changed(&d.workspace.id);
         }
+        reveal_workspace(ctx, &d.workspace.id, &d.workspace.name, Some("sources"));
         Ok(ToolOutput {
             text_for_model: format!(
                 "Added {} source(s) to \"{}\" ({} were already in it).",
@@ -971,7 +988,7 @@ impl HostTool for RemoveFromWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::REMOVE_FROM_WORKSPACE;
         let (id, kind, reference) = remove_args(tool, &args)?;
         let (d, label) = held_source(&self.host, &id, kind, &reference).await?;
@@ -985,6 +1002,7 @@ impl HostTool for RemoveFromWorkspaceTool {
         if removed {
             self.host.effects.workspaces_changed(&d.workspace.id);
         }
+        reveal_workspace(ctx, &d.workspace.id, &d.workspace.name, Some("sources"));
         Ok(ToolOutput {
             text_for_model: format!("Removed \"{label}\" from \"{}\".", d.workspace.name),
             summary_for_ui: format!("Removed “{label}”"),
@@ -997,7 +1015,6 @@ impl HostTool for RemoveFromWorkspaceTool {
 mod tests {
     use super::super::{build_registry, testing};
     use super::*;
-    use shodh_rag::harness::AgentEvent;
 
     async fn create(t: &testing::TestHost, name: &str) -> Workspace {
         let new = NewWorkspace {
@@ -1155,21 +1172,50 @@ mod tests {
         .execute(json!({"workspace_id": id, "tab": "sources"}), &ctx)
         .await
         .unwrap();
-        let mut navigated = false;
-        while let Ok(event) = rx.try_recv() {
-            if let AgentEvent::Navigated { view, target, .. } = event {
-                assert_eq!(view, "workspaces");
-                assert_eq!(
-                    target,
-                    Some(NavigationTarget::Workspace {
-                        workspace_id: id.clone(),
-                        tab: Some("sources".into())
-                    })
-                );
-                navigated = true;
-            }
+        let shown = testing::expect_navigation(&mut rx, "open_workspace");
+        assert_eq!(shown.view, "workspaces");
+        assert_eq!(
+            shown.target,
+            Some(NavigationTarget::Workspace {
+                workspace_id: id.clone(),
+                tab: Some("sources".into())
+            })
+        );
+        assert_eq!(shown.label.as_deref(), Some("Audit of Acme"));
+    }
+
+    #[tokio::test]
+    async fn creating_and_updating_a_workspace_shows_its_page() {
+        let t = testing::host().await;
+        let (ctx, mut rx) = testing::ctx();
+        let out = CreateWorkspaceTool {
+            host: t.host.clone(),
         }
-        assert!(navigated);
+        .execute(json!({"name": "Thesis"}), &ctx)
+        .await
+        .unwrap();
+        let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        UpdateWorkspaceTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"workspace_id": id, "name": "Thesis 2026"}), &ctx)
+        .await
+        .unwrap();
+        let page = Some(NavigationTarget::Workspace {
+            workspace_id: id.clone(),
+            tab: None,
+        });
+        let created = testing::expect_navigation(&mut rx, "create_workspace");
+        assert_eq!(
+            (created.view.as_str(), &created.target),
+            ("workspaces", &page)
+        );
+        assert_eq!(created.label.as_deref(), Some("Thesis"));
+        let updated = testing::expect_navigation(&mut rx, "update_workspace");
+        assert_eq!(
+            (updated.view.as_str(), &updated.target),
+            ("workspaces", &page)
+        );
     }
 
     #[tokio::test]
@@ -1202,8 +1248,18 @@ mod tests {
             preview.label.as_deref(),
             Some("Remove “a.pdf” from “Papers”")
         );
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         tool.execute(args.clone(), &ctx).await.unwrap();
+        // The workspace's Sources tab shows it gone.
+        let shown = testing::expect_navigation(&mut rx, "remove_from_workspace");
+        assert_eq!(shown.view, "workspaces");
+        assert_eq!(
+            shown.target,
+            Some(NavigationTarget::Workspace {
+                workspace_id: ws.id.clone(),
+                tab: Some("sources".into()),
+            })
+        );
         assert!(matches!(
             tool.preview(&args).await,
             Err(ToolError::NotFound(_))
@@ -1262,5 +1318,59 @@ mod tests {
         ] {
             assert_eq!(tier, RiskTier::Write);
         }
+    }
+
+    /// Adding a source opens the workspace's Sources tab with it there.
+    #[tokio::test]
+    async fn adding_a_source_shows_the_sources_tab() {
+        use shodh_rag::research::pdf_text::PageRect;
+        use shodh_rag::research::snippets::{NewSnippet, SnippetAuthor, SnippetKind};
+        let t = testing::host().await;
+        let ws = create(&t, "Papers").await;
+        let pdf = t.dir.path().join("ann.pdf");
+        std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let services = t.host.research.services().await.unwrap();
+        let snippet = services
+            .snippets
+            .create(NewSnippet {
+                file_path: pdf.display().to_string(),
+                page: 2,
+                rect: PageRect {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 100.0,
+                    height: 30.0,
+                },
+                text: "Graph indexes reach a recall of 95 percent.".into(),
+                image_png: None,
+                title: None,
+                note: None,
+                tags: vec![],
+                kind: SnippetKind::Passage,
+                scope: shodh_rag::statements::Scope::Global,
+                author: SnippetAuthor::User,
+            })
+            .await
+            .unwrap();
+        let (ctx, mut rx) = testing::ctx();
+        AddToWorkspaceTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({"workspace_id": ws.id, "sources": [{"kind": "snippet", "id": snippet.id}]}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let shown = testing::expect_navigation(&mut rx, "add_to_workspace");
+        assert_eq!(shown.view, "workspaces");
+        assert_eq!(
+            shown.target,
+            Some(NavigationTarget::Workspace {
+                workspace_id: ws.id.clone(),
+                tab: Some("sources".into()),
+            })
+        );
+        assert_eq!(shown.label.as_deref(), Some("Papers"));
     }
 }

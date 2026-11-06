@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
-use shodh_rag::harness::tools::navigate::emit_navigation;
+use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
@@ -259,16 +259,17 @@ impl HostTool for OpenConversationTool {
             .ok_or_else(|| invalid(tool, "`conversation_id` is required"))?;
         let conversations = load(&self.host)?;
         let record = find(&conversations, id)?;
-        emit_navigation(
+        emit_shown(
             ctx,
             "ask",
             Some(record.id.clone()),
             Some(NavigationTarget::Conversation {
                 conversation_id: record.id.clone(),
             }),
+            Some(&record.title),
         );
         Ok(ToolOutput {
-            text_for_model: format!("Opened the conversation \"{}\" for the user.", record.title),
+            text_for_model: format!("The conversation \"{}\": {SHOWN_TO_USER}", record.title),
             summary_for_ui: format!("Opened “{}”", record.title),
             detail: Some(json!({ "id": record.id, "title": record.title })),
         })
@@ -411,7 +412,6 @@ mod tests {
     use super::super::testing;
     use super::*;
     use crate::conversation_commands::ConversationMessage;
-    use shodh_rag::harness::AgentEvent;
 
     fn message(role: &str, content: &str) -> ConversationMessage {
         ConversationMessage {
@@ -525,18 +525,15 @@ mod tests {
         tool.execute(json!({"conversation_id": "c2"}), &ctx)
             .await
             .unwrap();
-        match rx.recv().await.unwrap() {
-            AgentEvent::Navigated { view, target, .. } => {
-                assert_eq!(view, "ask");
-                assert_eq!(
-                    target,
-                    Some(NavigationTarget::Conversation {
-                        conversation_id: "c2".into()
-                    })
-                );
-            }
-            other => panic!("{other:?}"),
-        }
+        let shown = crate::agent_tools::testing::expect_navigation(&mut rx, "open_conversation");
+        assert_eq!(shown.view, "ask");
+        assert_eq!(
+            shown.target,
+            Some(NavigationTarget::Conversation {
+                conversation_id: "c2".into()
+            })
+        );
+        assert!(shown.label.is_some());
     }
 
     #[tokio::test]

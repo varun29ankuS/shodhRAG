@@ -108,6 +108,10 @@ export default function AuditView() {
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [searchText, setSearchText] = useState('');
+  /** The entry the assistant pointed at (show_audit's entry_id), with a sequence so a repeat applies. */
+  const [reveal, setReveal] = useState<{ id: number; seq: number; filters: Filters } | null>(null);
+  /** The filters the rows shown were loaded for (null until the first page arrives). */
+  const [loadedFor, setLoadedFor] = useState<Filters | null>(null);
   const [firstPage] = useState(cachedFirstPage);
   const [rows, setRows] = useState<AuditRow[]>(() => firstPage?.rows ?? []);
   const [total, setTotal] = useState(() => firstPage?.total ?? 0);
@@ -163,6 +167,7 @@ export default function AuditView() {
         if (generation !== generationRef.current) return;
         setRows(page.rows);
         setTotal(page.total);
+        setLoadedFor(filters);
         if (isUnfiltered(filters)) writeViewCache<FirstPage>(VIEW_CACHE_KEYS.auditFirstPage, { rows: page.rows, total: page.total });
       })
       .catch(err => {
@@ -220,15 +225,26 @@ export default function AuditView() {
   useNavigationTarget('audit', target => {
     const known = new Set<string>(EVENT_TYPES.map(t => t.id));
     setSearchText(target.text ?? '');
-    setFilters({
+    const next: Filters = {
       types: target.types.filter((t): t is AuditEventType => known.has(t)),
       fromDate: dateOf(target.from),
       toDate: dateOf(target.to),
       conversationId: '',
       tool: target.tool ?? '',
       text: target.text ?? '',
-    });
+    };
+    setFilters(next);
+    // One entry (show_audit entry_id): the log opens on its day, and the table looks for it
+    // in the rows of exactly these filters, loading more until it is found or known missing.
+    const id = target.entryId;
+    setReveal(prev => (id === null ? null : { id, seq: (prev?.seq ?? 0) + 1, filters: next }));
   });
+
+  // The user changed the filters: an entry the assistant pointed at is no longer looked for,
+  // so it never jumps into view later.
+  useEffect(() => {
+    if (reveal && reveal.filters !== filters) setReveal(null);
+  }, [reveal, filters]);
 
   const clearFilters = () => {
     setSearchText('');
@@ -448,6 +464,8 @@ export default function AuditView() {
         loading={loading}
         onLoadMore={loadMore}
         onSelectConversation={conversationId => setFilters(f => ({ ...f, conversationId }))}
+        reveal={reveal && loadedFor === reveal.filters ? reveal : null}
+        onRevealDone={() => setReveal(null)}
       />
 
       <form onSubmit={saveRetention} className="flex flex-wrap items-end gap-2" aria-labelledby={`${ids}-retention`}>

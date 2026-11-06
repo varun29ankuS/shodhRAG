@@ -227,6 +227,8 @@ export interface CalendarTarget {
   date: string | null;
   taskId: string | null;
   eventId: string | null;
+  /** After a write: only highlight the row, never open its sheet (a dialog that takes the focus). */
+  highlightOnly: boolean;
 }
 
 export interface ConversationTarget {
@@ -243,6 +245,8 @@ export interface AuditTarget {
   from: string | null;
   to: string | null;
   text: string | null;
+  /** An entry (its id) to expand and highlight; null in events from older builds. */
+  entryId: number | null;
 }
 
 export interface SourceTarget {
@@ -256,6 +260,8 @@ export interface VisualTarget {
   visualId: string;
   /** Version to show; the latest when null. */
   version: number | null;
+  /** After a write: highlight its card in the gallery, never open the pop-out. */
+  highlightOnly: boolean;
 }
 
 /** A workspace's page, at a tab (the overview when null). */
@@ -294,6 +300,26 @@ export interface ReviewTarget {
   reviewId: string;
 }
 
+/** A Settings section, with a setting (its key) or, in "memory", a memory (its id) highlighted. */
+export interface SettingTarget {
+  kind: "setting";
+  section: string;
+  item: string | null;
+}
+
+/** A part of the Library: "snippets" (a snippet highlighted), "graph", or "paper" (its page). */
+export interface LibraryTarget {
+  kind: "library";
+  section: string;
+  item: string | null;
+}
+
+/** The System status panel, opened over the current view with `part` ("search", "indexing") highlighted. */
+export interface StatusTarget {
+  kind: "status";
+  part: string;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
@@ -304,7 +330,10 @@ export type NavigationTarget =
   | WorkspaceTarget
   | ArtifactTarget
   | CodeTarget
-  | ReviewTarget;
+  | ReviewTarget
+  | SettingTarget
+  | LibraryTarget
+  | StatusTarget;
 
 export interface NavigatedEvent {
   type: "navigated";
@@ -313,6 +342,8 @@ export interface NavigatedEvent {
   focus: string | null;
   /** What to show inside the view; null when the event only switches views. */
   target: NavigationTarget | null;
+  /** The item shown in the user's words ("Renew lease"), for the shell; null when unnamed. */
+  label?: string | null;
 }
 
 export interface UsageEvent {

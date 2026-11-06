@@ -15,6 +15,8 @@ import ToolsSettings from '../ToolsSettings';
 import AppearanceSettings from '../AppearanceSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
+import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
+import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
 export type SettingsSection = 'models' | 'search' | 'tools' | 'tables' | 'general' | 'appearance' | 'notifications' | 'privacy' | 'memory' | 'data';
 
@@ -114,6 +116,21 @@ export default function SettingsView({
     window.addEventListener(OPEN_SETTINGS_SECTION, open);
     return () => window.removeEventListener(OPEN_SETTINGS_SECTION, open);
   }, []);
+  // The assistant opened a section (show_setting, update_setting): it opens, with the
+  // setting or memory it named highlighted, else the section's heading.
+  useNavigationTarget('setting', target => {
+    const next = SECTIONS.find(s => s.id === target.section);
+    if (!next) return;
+    setSection(next.id);
+    const key = target.item
+      ? agentItemKey(next.id === 'memory' ? 'memory' : 'setting', target.item)
+      : agentItemKey('settings-section', next.id);
+    revealAgentItem(key, {
+      missed: next.id === 'memory'
+        ? 'Shodh pointed at a memory that Settings does not show now.'
+        : `Shodh pointed at something in ${next.label} that is not shown.`,
+    });
+  });
   const active = SECTIONS.find(s => s.id === section) ?? SECTIONS[0];
 
   return (
@@ -152,7 +169,7 @@ export default function SettingsView({
         <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
           <div className="max-w-[820px] px-10 py-8 flex flex-col gap-7">
             <header className="flex flex-col gap-1.5">
-              <h2 id="settings-section-heading" className="m-0 text-2xl font-bold">
+              <h2 id="settings-section-heading" data-agent-item={agentItemKey('settings-section', active.id)} className="m-0 text-2xl font-bold">
                 {active.label}
               </h2>
               <p className="text-sm text-shodh-text-muted">{active.description}</p>
@@ -164,7 +181,7 @@ export default function SettingsView({
         <section aria-labelledby="settings-section-heading" className="flex-1 min-w-0 overflow-y-auto">
           <div className="max-w-[820px] px-10 py-8 flex flex-col gap-7">
             <header className="flex flex-col gap-1.5">
-              <h2 id="settings-section-heading" className="m-0 text-2xl font-bold">
+              <h2 id="settings-section-heading" data-agent-item={agentItemKey('settings-section', active.id)} className="m-0 text-2xl font-bold">
                 {active.label}
               </h2>
               <p className="text-sm text-shodh-text-muted">{active.description}</p>

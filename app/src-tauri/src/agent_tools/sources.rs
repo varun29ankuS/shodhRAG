@@ -11,7 +11,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::audit::payload::{source_change, ChangeOrigin};
 use shodh_rag::audit::AuditEventType;
+use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
+use shodh_rag::harness::tools::navigate::emit_shown;
 use shodh_rag::harness::tools::sources::{find_folder_source, SourceSummary};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
@@ -58,6 +60,21 @@ fn validate_folder(tool: &str, raw: &str) -> Result<PathBuf, ToolError> {
     std::fs::canonicalize(path)
         .map(|p| strip_verbatim(&p))
         .map_err(|e| ToolError::Unavailable(format!("Cannot open {raw}: {e}")))
+}
+
+/// Show the Library with the card of `source_id` highlighted (its indexing
+/// progress on it), or the Library as it is when no source is given. Called
+/// only after the change started.
+fn reveal_source(ctx: &ToolContext, source_id: Option<&str>, name: &str) {
+    emit_shown(
+        ctx,
+        "library",
+        source_id.map(str::to_string),
+        source_id.map(|id| NavigationTarget::Source {
+            source_id: id.to_string(),
+        }),
+        Some(name),
+    );
 }
 
 /// Resolve the `source_id` argument to an indexed folder source.
@@ -155,6 +172,11 @@ impl HostTool for AddFolderTool {
                 source_id: source_id.clone(),
             },
         );
+        reveal_source(
+            ctx,
+            Some(source_id.as_str()),
+            &shodh_rag::research::file_name(&folder_text),
+        );
         Ok(ToolOutput {
             // The folder's name only: its path never reaches the model.
             text_for_model: format!(
@@ -223,6 +245,11 @@ impl HostTool for ReindexSourceTool {
                 folder: folder.clone(),
                 source_id: source_id.to_string(),
             },
+        );
+        reveal_source(
+            ctx,
+            Some(source_id),
+            &shodh_rag::research::file_name(&folder),
         );
         Ok(ToolOutput {
             text_for_model: format!(
@@ -298,6 +325,12 @@ impl HostTool for RemoveSourceTool {
                 json!({"ok": true, "files": source.files, "chunks": deleted}),
             ),
         );
+        // Its card is gone: the Library as it is now.
+        reveal_source(
+            ctx,
+            None,
+            &format!("{} (removed)", shodh_rag::research::file_name(&folder)),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
                 "Removed the folder \"{}\" (source {source_id}, {} files, {deleted} chunks) from the index. Files on disk were not touched.",
@@ -314,6 +347,10 @@ impl HostTool for RemoveSourceTool {
 mod tests {
     use super::super::testing;
     use super::*;
+    fn view_and_target(shown: testing::Shown) -> (String, Option<NavigationTarget>) {
+        assert!(shown.label.is_some(), "it names the folder");
+        (shown.view, shown.target)
+    }
 
     #[tokio::test]
     async fn add_folder_validates_and_starts_one_background_job() {
@@ -321,7 +358,7 @@ mod tests {
         let tool = AddFolderTool {
             host: t.host.clone(),
         };
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         assert!(matches!(
             tool.execute(json!({"path": "relative/folder"}), &ctx).await,
             Err(ToolError::InvalidArguments { .. })
@@ -343,6 +380,17 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].action, "add");
         assert!(jobs[0].folder.ends_with("docs"));
+        // The refused calls showed nothing; the started one shows the new card.
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "add_folder")),
+            (
+                "library".to_string(),
+                Some(NavigationTarget::Source {
+                    source_id: jobs[0].source_id.clone()
+                })
+            )
+        );
+        assert!(testing::no_navigation(&mut rx));
     }
 
     /// The agent removes a source as the Library does: its chunks go (and no
@@ -396,12 +444,42 @@ mod tests {
         let remove = RemoveSourceTool {
             host: t.host.clone(),
         };
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
+        // Shown first, then re-indexed: both open the Library at its card.
+        shodh_rag::harness::tools::navigate::ShowSourceTool::new(t.host.rag.clone())
+            .execute(json!({"source_id": "folder-papers"}), &ctx)
+            .await
+            .unwrap();
+        ReindexSourceTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"source_id": "folder-papers"}), &ctx)
+        .await
+        .unwrap();
+        let card = (
+            "library".to_string(),
+            Some(NavigationTarget::Source {
+                source_id: "folder-papers".into(),
+            }),
+        );
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "show_source")),
+            card
+        );
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "reindex_source")),
+            card
+        );
         let out = remove
             .execute(json!({"source_id": "folder-papers"}), &ctx)
             .await
             .unwrap();
         assert!(out.summary_for_ui.starts_with("Removed "));
+        // Its card is gone: the Library as it is now.
+        assert_eq!(
+            view_and_target(testing::expect_navigation(&mut rx, "remove_source")),
+            ("library".to_string(), None)
+        );
 
         let owners: Vec<String> = t
             .host

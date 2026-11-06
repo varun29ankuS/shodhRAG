@@ -20,6 +20,17 @@ export interface AppNavigation {
   view: string;
   focus: string | null;
   target: NavigationTarget | null;
+  /** The item shown, in the user's words, at most `MAX_LABEL_CHARS`; null when unnamed. */
+  label: string | null;
+}
+
+/** Longest item label shown (the backend clips to the same). */
+export const MAX_LABEL_CHARS = 40;
+
+/** `label` cut to `MAX_LABEL_CHARS`, with an ellipsis when cut. */
+export function clipLabel(label: string): string {
+  const chars = Array.from(label.trim());
+  return chars.length <= MAX_LABEL_CHARS ? chars.join('') : `${chars.slice(0, MAX_LABEL_CHARS - 1).join('').trimEnd()}…`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -41,6 +52,12 @@ function positiveInt(value: unknown): number | null {
 /** Tabs of a workspace page a target may open. */
 const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results', 'tables'];
 
+/** Sections of Settings a target may open (`SettingsView`; the Rust coverage test checks both agree). */
+export const SETTINGS_SECTIONS: readonly string[] = ['models', 'search', 'tools', 'tables', 'general', 'appearance', 'notifications', 'privacy', 'memory', 'data'];
+
+/** Parts of the Library a target may open: the snippet shelf, the paper graph, a paper's page. */
+export const LIBRARY_SECTIONS: readonly string[] = ['snippets', 'graph', 'paper'];
+
 /** Panes of an artifact a target may open (`open_artifact`). */
 export const ARTIFACT_PANES: readonly string[] = ['preview', 'files', 'versions'];
 
@@ -59,7 +76,14 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const taskId = optString(value.taskId);
       const eventId = optString(value.eventId);
       if (!date && !taskId && !eventId) return null;
-      return { kind: 'calendar', date: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null, taskId, eventId };
+      return {
+        kind: 'calendar',
+        date: date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null,
+        taskId,
+        eventId,
+        // Events from older builds have no flag: they opened the sheet.
+        highlightOnly: value.highlightOnly === true,
+      };
     }
     case 'conversation': {
       const conversationId = reqString(value.conversationId);
@@ -74,6 +98,7 @@ export function parseTarget(value: unknown): NavigationTarget | null {
         from: optString(value.from),
         to: optString(value.to),
         text: optString(value.text),
+        entryId: positiveInt(value.entryId),
       };
     }
     case 'source': {
@@ -83,7 +108,7 @@ export function parseTarget(value: unknown): NavigationTarget | null {
     case 'visual': {
       const visualId = reqString(value.visualId);
       const version = typeof value.version === 'number' && Number.isInteger(value.version) && value.version > 0 ? value.version : null;
-      return visualId ? { kind: 'visual', visualId, version } : null;
+      return visualId ? { kind: 'visual', visualId, version, highlightOnly: value.highlightOnly === true } : null;
     }
     case 'workspace': {
       const workspaceId = reqString(value.workspaceId);
@@ -121,6 +146,24 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const reviewId = reqString(value.reviewId);
       return reviewId ? { kind: 'review', reviewId } : null;
     }
+    case 'setting': {
+      const section = reqString(value.section);
+      return section && SETTINGS_SECTIONS.includes(section)
+        ? { kind: 'setting', section, item: optString(value.item) }
+        : null;
+    }
+    case 'library': {
+      const section = reqString(value.section);
+      if (!section || !LIBRARY_SECTIONS.includes(section)) return null;
+      const item = optString(value.item);
+      // A paper page needs its paper.
+      if (section === 'paper' && !item) return null;
+      return { kind: 'library', section, item };
+    }
+    case 'status': {
+      const part = reqString(value.part);
+      return part ? { kind: 'status', part } : null;
+    }
     default:
       return null;
   }
@@ -133,6 +176,7 @@ export function navigationFromEvent(event: NavigatedEvent): AppNavigation {
     focus: optString(event.focus),
     // Events from older builds have no `target` key at all.
     target: parseTarget((event as { target?: unknown }).target ?? null),
+    label: typeof event.label === 'string' && event.label.trim().length > 0 ? clipLabel(event.label) : null,
   };
 }
 

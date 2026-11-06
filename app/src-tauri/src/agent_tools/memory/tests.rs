@@ -701,3 +701,115 @@ async fn a_memory_from_slack_is_recalled_quoted_as_possibly_other_peoples_words(
         outcome.text_for_model
     );
 }
+
+/// The `navigated` events among `rx`'s events, as (view, target).
+fn navigations(
+    rx: &mut UnboundedReceiver<AgentEvent>,
+) -> Vec<(String, Option<shodh_rag::harness::events::NavigationTarget>)> {
+    let mut out = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::Navigated { view, target, .. } = event {
+            out.push((view, target));
+        }
+    }
+    out
+}
+
+/// `show_setting` shows a memory only where `recall` would see it: another
+/// workspace's memory is "not found", exactly like one that does not exist, and
+/// nothing is shown.
+#[tokio::test]
+async fn show_setting_shows_only_memories_this_chat_may_see() {
+    use shodh_rag::harness::events::NavigationTarget;
+    let h = harness().await;
+    for (step, workspace, text) in [
+        ("s1", Some("alpha"), "Alpha invoices go to Priya"),
+        ("s2", None, "Invoices are due on the 5th"),
+    ] {
+        let (ctx, rx) = h.ctx(step, workspace);
+        assert!(
+            h.call(
+                "remember",
+                json!({ "text": text }),
+                ctx,
+                rx,
+                AgentProfile::assistant(),
+                true
+            )
+            .await
+            .0
+            .ok
+        );
+    }
+    let all = h
+        .service()
+        .await
+        .list(&ListRequest::default())
+        .await
+        .unwrap();
+    let id_of = |words: &str| {
+        all.iter()
+            .find(|m| m.text.contains(words))
+            .unwrap()
+            .id
+            .clone()
+    };
+    let (alpha, global) = (id_of("Priya"), id_of("5th"));
+    let show = |id: &str| ToolCall {
+        tool: app_tools::SHOW_SETTING.to_string(),
+        args: json!({ "memory_id": id }),
+        call_index: 1,
+    };
+
+    // From workspace beta: the global memory is shown, alpha's is not found.
+    let (ctx, mut rx) = h.ctx("v1", Some("beta"));
+    let out = h
+        .registry
+        .dispatch(show(&global), &AgentProfile::assistant(), &h.gate, &ctx)
+        .await;
+    assert!(out.ok, "{}", out.text_for_model);
+    let shown = super::super::testing::expect_navigation(&mut rx, "show_setting");
+    assert_eq!(shown.view, "settings");
+    assert_eq!(
+        shown.target,
+        Some(NavigationTarget::Setting {
+            section: "memory".into(),
+            item: Some(global.clone()),
+        })
+    );
+    assert_eq!(
+        shown.label.as_deref(),
+        Some("a memory"),
+        "never the memory's words"
+    );
+    let refused = h
+        .registry
+        .dispatch(show(&alpha), &AgentProfile::assistant(), &h.gate, &ctx)
+        .await;
+    assert!(!refused.ok);
+    let missing = h
+        .registry
+        .dispatch(show("mem-none"), &AgentProfile::assistant(), &h.gate, &ctx)
+        .await;
+    assert!(!missing.ok);
+    // The same answer as a memory that does not exist: no oracle, no words.
+    assert_eq!(
+        refused.text_for_model.replace(&alpha, "ID"),
+        missing.text_for_model.replace("mem-none", "ID")
+    );
+    assert!(!refused.text_for_model.contains("Priya"));
+    assert!(
+        navigations(&mut rx).is_empty(),
+        "a refused call shows nothing"
+    );
+
+    // From alpha itself it is shown.
+    let (ctx, mut rx) = h.ctx("v2", Some("alpha"));
+    assert!(
+        h.registry
+            .dispatch(show(&alpha), &AgentProfile::assistant(), &h.gate, &ctx)
+            .await
+            .ok
+    );
+    assert_eq!(navigations(&mut rx).len(), 1);
+}

@@ -267,29 +267,42 @@ pub enum NavigationTarget {
         page: Option<u32>,
         passage: Option<String>,
     },
-    /// Show a calendar date, task or event.
+    /// Show a calendar date, task or event: its sheet opens (`show_calendar`),
+    /// or, `highlight_only` (after a write), its row is only highlighted, so
+    /// nothing modal takes the user's focus.
     Calendar {
         date: Option<String>,
         task_id: Option<String>,
         event_id: Option<String>,
+        /// Absent in events from builds before writes only highlighted.
+        #[serde(default)]
+        highlight_only: bool,
     },
     /// Open a saved conversation.
     Conversation { conversation_id: String },
-    /// Show the audit log filtered to these event types, tool, range and text.
+    /// Show the audit log filtered to these event types, tool, range and text,
+    /// with one entry (by its id) expanded and highlighted when given.
     Audit {
         types: Vec<String>,
         tool: Option<String>,
         from: Option<String>,
         to: Option<String>,
         text: Option<String>,
+        /// Absent in events from builds before entries could be shown.
+        #[serde(default)]
+        entry_id: Option<u64>,
     },
     /// Show an indexed folder source in the Library.
     Source { source_id: String },
     /// Open a generated visual (gallery) in the focus pop-out, at a version (the latest
-    /// when absent).
+    /// when absent), or, `highlight_only` (after a write), highlight its card in the
+    /// gallery without opening anything.
     Visual {
         visual_id: String,
         version: Option<u32>,
+        /// Absent in events from builds before writes only highlighted.
+        #[serde(default)]
+        highlight_only: bool,
     },
     /// Open a workspace's page, at a tab (`overview`, `sources`, `chats`, `tasks`,
     /// `memory`, `visuals`, `results`; the overview when absent).
@@ -321,6 +334,69 @@ pub enum NavigationTarget {
     /// Open a code review in the code pane, its code shown with the reviewed
     /// lines selected.
     Review { review_id: String },
+    /// Show a Settings section, with one item highlighted when given: a setting
+    /// (its key, e.g. `theme`) or, in `memory`, a memory (its id).
+    Setting {
+        section: String,
+        item: Option<String>,
+    },
+    /// Show a part of the Library: `snippets` (a snippet highlighted by its id),
+    /// `graph` (the paper graph) or `paper` (a paper's page, by its id).
+    Library {
+        section: String,
+        item: Option<String>,
+    },
+    /// Open the System status panel over the current view with `part`
+    /// (`search`, `indexing`) highlighted. Its event's view is
+    /// [`STATUS_VIEW`]: the panel is not a view of its own.
+    Status { part: String },
+}
+
+/// The `view` of a `navigated` event that opens the System status panel
+/// ([`NavigationTarget::Status`]) and leaves the current view as it is.
+pub const STATUS_VIEW: &str = "status";
+
+/// Longest item label a `navigated` event carries (characters).
+pub const MAX_NAVIGATION_LABEL_CHARS: usize = 40;
+
+impl NavigationTarget {
+    /// Every target kind, as serialised in `kind`. [`Self::kind`] is an
+    /// exhaustive match, so a new variant cannot compile until it has a kind,
+    /// and the coverage test checks this list against the frontend.
+    pub const KINDS: [&'static str; 13] = [
+        "document",
+        "calendar",
+        "conversation",
+        "audit",
+        "source",
+        "visual",
+        "workspace",
+        "artifact",
+        "code",
+        "review",
+        "setting",
+        "library",
+        "status",
+    ];
+
+    /// This target's `kind`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Document { .. } => "document",
+            Self::Calendar { .. } => "calendar",
+            Self::Conversation { .. } => "conversation",
+            Self::Audit { .. } => "audit",
+            Self::Source { .. } => "source",
+            Self::Visual { .. } => "visual",
+            Self::Workspace { .. } => "workspace",
+            Self::Artifact { .. } => "artifact",
+            Self::Code { .. } => "code",
+            Self::Review { .. } => "review",
+            Self::Setting { .. } => "setting",
+            Self::Library { .. } => "library",
+            Self::Status { .. } => "status",
+        }
+    }
 }
 
 /// A normalised agent event. Produced from omp frames and from host-tool
@@ -414,6 +490,11 @@ pub enum AgentEvent {
         /// builds, which only switched the view.
         #[serde(default)]
         target: Option<NavigationTarget>,
+        /// The item shown, in the user's words ("Renew lease", "lease.pdf,
+        /// page 4"), at most [`MAX_NAVIGATION_LABEL_CHARS`]: for the shell's
+        /// "Shodh has … to show you" line. Never sent to the model.
+        #[serde(default)]
+        label: Option<String>,
     },
     Usage {
         run_id: String,
@@ -660,10 +741,12 @@ mod tests {
                         date: Some("2026-10-30".into()),
                         task_id: Some("task-1".into()),
                         event_id: None,
+                        highlight_only: true,
                     }),
+                    label: Some("Renew lease".into()),
                 },
                 "navigated",
-                vec!["runId", "view", "focus", "target"],
+                vec!["runId", "view", "focus", "target", "label"],
             ),
             (
                 AgentEvent::Usage {
@@ -964,9 +1047,10 @@ mod tests {
                     date: Some("2026-10-30".into()),
                     task_id: None,
                     event_id: Some("e1".into()),
+                    highlight_only: true,
                 },
                 "calendar",
-                vec!["date", "taskId", "eventId"],
+                vec!["date", "taskId", "eventId", "highlightOnly"],
             ),
             (
                 NavigationTarget::Conversation {
@@ -982,9 +1066,10 @@ mod tests {
                     from: None,
                     to: None,
                     text: None,
+                    entry_id: Some(42),
                 },
                 "audit",
-                vec!["types", "tool", "from", "to", "text"],
+                vec!["types", "tool", "from", "to", "text", "entryId"],
             ),
             (
                 NavigationTarget::Source {
@@ -997,9 +1082,10 @@ mod tests {
                 NavigationTarget::Visual {
                     visual_id: "v1".into(),
                     version: Some(2),
+                    highlight_only: false,
                 },
                 "visual",
-                vec!["visualId", "version"],
+                vec!["visualId", "version", "highlightOnly"],
             ),
             (
                 NavigationTarget::Workspace {
@@ -1044,6 +1130,29 @@ mod tests {
                 "review",
                 vec!["reviewId"],
             ),
+            (
+                NavigationTarget::Setting {
+                    section: "memory".into(),
+                    item: Some("mem-1".into()),
+                },
+                "setting",
+                vec!["section", "item"],
+            ),
+            (
+                NavigationTarget::Library {
+                    section: "paper".into(),
+                    item: Some("paper-1".into()),
+                },
+                "library",
+                vec!["section", "item"],
+            ),
+            (
+                NavigationTarget::Status {
+                    part: "indexing".into(),
+                },
+                "status",
+                vec!["part"],
+            ),
         ]
     }
 
@@ -1057,6 +1166,46 @@ mod tests {
             }
             let back: NavigationTarget = serde_json::from_value(value).unwrap();
             assert_eq!(back, target);
+            assert_eq!(target.kind(), kind);
+        }
+        // Every kind is round-tripped above, and KINDS lists each exactly once.
+        let mut tested: Vec<&str> = targets().iter().map(|(_, kind, _)| *kind).collect();
+        tested.sort_unstable();
+        let mut kinds = NavigationTarget::KINDS.to_vec();
+        kinds.sort_unstable();
+        assert_eq!(tested, kinds);
+    }
+
+    #[test]
+    fn targets_from_older_builds_open_as_before() {
+        let old =
+            json!({"kind": "calendar", "date": "2026-10-30", "taskId": "t1", "eventId": null});
+        assert!(matches!(
+            serde_json::from_value::<NavigationTarget>(old).unwrap(),
+            NavigationTarget::Calendar {
+                highlight_only: false,
+                ..
+            }
+        ));
+        let old = json!({"kind": "visual", "visualId": "v1", "version": null});
+        assert!(matches!(
+            serde_json::from_value::<NavigationTarget>(old).unwrap(),
+            NavigationTarget::Visual {
+                highlight_only: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_audit_target_from_an_older_build_has_no_entry() {
+        let old = json!({"kind": "audit", "types": [], "tool": null, "from": null, "to": null, "text": "x"});
+        match serde_json::from_value::<NavigationTarget>(old).unwrap() {
+            NavigationTarget::Audit { entry_id, text, .. } => {
+                assert_eq!(entry_id, None);
+                assert_eq!(text.as_deref(), Some("x"));
+            }
+            other => panic!("{other:?}"),
         }
     }
 
@@ -1071,6 +1220,7 @@ mod tests {
                 view: "library".into(),
                 focus: None,
                 target: None,
+                label: None,
             }
         );
         let value = serde_json::to_value(&event).unwrap();

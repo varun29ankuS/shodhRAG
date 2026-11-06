@@ -77,6 +77,7 @@ import Sidebar from './components/shell/Sidebar';
 import { ConversationDock } from './components/shell/ConversationDock';
 import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
+import { agentItemKey, revealAgentItem } from './lib/agentHighlight';
 import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
@@ -117,6 +118,8 @@ import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { ActivityView, ArtifactsView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
 import { CHANGE_DRAFT } from './features/artifacts/model';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
+import { AssistantNavigationChip } from './components/shell/AssistantNavigationChip';
+import { ShellAnnouncer } from './components/shell/ShellAnnouncer';
 import { clearViewCache } from './lib/viewCache';
 import { shownView } from './lib/viewSwitch';
 import { useSearchConfig } from './components/SearchSettings';
@@ -188,6 +191,10 @@ function AppSplitView() {
     appendMessageTo,
     updateMessage,
     navigation,
+    heldNavigation,
+    goToHeldNavigation,
+    dismissHeldNavigation,
+    noteViewOpened,
     streamingConversationId,
     sideRun,
   } = useChatSession();
@@ -223,6 +230,17 @@ function AppSplitView() {
   const deferredTab = useDeferredValue(activeTab);
   const viewTab = shownView(activeTab, deferredTab, isViewReady);
   const viewCue = useAssistantViewCue(navigation?.seq ?? 0, navigation?.view ?? null, activeTab, viewTab);
+  // The user opened a view: a move the assistant held for it (the chip) is spent.
+  useEffect(() => {
+    noteViewOpened(activeTab);
+  }, [activeTab, noteViewOpened]);
+  // "Go there": the user asked to move, so the focus goes to the view they opened (the
+  // chip's button is gone). A move to the System status panel leaves the focus alone.
+  const goToHeld = useCallback(() => {
+    const toView = heldNavigation?.nav.view != null;
+    goToHeldNavigation();
+    if (toView) window.requestAnimationFrame(() => document.getElementById('main-content')?.focus());
+  }, [heldNavigation, goToHeldNavigation]);
   // Restored synchronously so the Library and sidebar render with the first frame.
   const [sources, setSources] = useState<Source[]>(() => {
     try {
@@ -233,7 +251,10 @@ function AppSplitView() {
   });
   /** Library source the agent pointed at (show_source); LibraryView scrolls to and highlights it. */
   const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
-  useNavigationTarget('source', target => setFocusedSourceId(target.sourceId));
+  useNavigationTarget('source', target => {
+    setFocusedSourceId(target.sourceId);
+    revealAgentItem(agentItemKey('source', target.sourceId));
+  });
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
   // Latest sources and indexing actions for listeners registered once (drag and drop).
   const sourcesRef = useRef<Source[]>(sources);
@@ -1578,6 +1599,8 @@ function AppSplitView() {
                 {VIEW_TAB_LABELS[viewTab]}
               </span>
               <AssistantViewCue cue={viewCue} />
+              <AssistantNavigationChip held={heldNavigation} onGo={goToHeld} onDismiss={dismissHeldNavigation} />
+              <ShellAnnouncer />
             </span>
             {viewTab === 'ask' && (() => {
               const workspace = workspaceById(activeConversation?.workspaceId);

@@ -12,6 +12,7 @@ import { pngDataUrl } from './snippetRender';
 import type { Snippet } from './types';
 import { FOCUS_RING } from './ui';
 import { useSnippetImage } from './useSnippets';
+import { agentItemKey } from '../../lib/agentHighlight';
 
 /** The image of a snippet in a card (drawn from the PDF the first time when not stored). */
 export function SnippetThumb({ snippet, className }: { snippet: Snippet; className?: string }) {
@@ -65,7 +66,7 @@ export function SnippetCard({ snippet, showFile = true, onChange }: { snippet: S
   if (hidden) return null;
 
   return (
-    <li className="relative">
+    <li className="relative rounded-[14px]" data-agent-item={agentItemKey('snippet', snippet.id)}>
       <article
         aria-labelledby={titleId}
         draggable

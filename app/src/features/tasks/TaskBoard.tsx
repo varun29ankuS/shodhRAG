@@ -12,6 +12,7 @@ import { TasksStoreProvider, useTasksStore } from './TasksStore';
 import TaskDetailSheet from './TaskDetailSheet';
 import { isDone, PRIORITY_LABELS, STATUS_LABELS } from './types';
 import type { TodoItem } from './types';
+import { agentItemKey } from '../../lib/agentHighlight';
 
 /** How far (px) a pointer moves before a press on a card becomes a drag. */
 const DRAG_THRESHOLD_PX = 6;
@@ -118,6 +119,7 @@ function Card({
   return (
     <li
       data-board-card={task.id}
+      data-agent-item={agentItemKey('task', task.id)}
       onPointerDown={e => onPointerDown(e, task)}
       style={dragging && drag ? { transform: `translate(${drag.dx}px, ${drag.dy}px)` } : undefined}
       className={cn(

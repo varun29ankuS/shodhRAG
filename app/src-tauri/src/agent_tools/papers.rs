@@ -42,6 +42,7 @@ pub(super) fn register(
 ) -> Result<(), RegistryError> {
     registry.register(Arc::new(ListSnippetsTool { host: host.clone() }))?;
     registry.register(Arc::new(CreateSnippetTool { host: host.clone() }))?;
+    registry.register(Arc::new(ShowSnippetTool { host: host.clone() }))?;
     registry.register(Arc::new(QueryResultsTool { host: host.clone() }))?;
     Ok(())
 }
@@ -472,7 +473,83 @@ impl HostTool for CreateSnippetTool {
         self.host
             .effects
             .research_changed("snippet", &snippet.file_path);
+        super::show_in_library(
+            ctx,
+            "snippets",
+            Some(snippet.id.clone()),
+            &snippet_label(&snippet),
+        );
         Ok(created_snippet_output(&snippet, ctx))
+    }
+}
+
+/// A snippet as the shell names it: its title, else its file and page.
+fn snippet_label(snippet: &Snippet) -> String {
+    let title = snippet.title.trim();
+    if title.is_empty() {
+        format!("{}, page {}", snippet.file_name, snippet.page)
+    } else {
+        title.to_string()
+    }
+}
+
+/// `show_snippet`: open the Library's snippet shelf for the user with one snippet
+/// highlighted. Only a snippet this answer may use (its file inside the workspace of a
+/// workspace chat) is shown, as `list_snippets` reads them.
+pub struct ShowSnippetTool {
+    host: Arc<AgentHost>,
+}
+
+#[async_trait]
+impl HostTool for ShowSnippetTool {
+    fn name(&self) -> &'static str {
+        app_tools::SHOW_SNIPPET
+    }
+    fn label(&self) -> &'static str {
+        "Show snippet"
+    }
+    fn label_template(&self) -> &'static str {
+        "Showing a saved snippet"
+    }
+    fn description(&self) -> &'static str {
+        "Open the snippet shelf in the Library for the user with one saved snippet \n         highlighted (`snippet_id` from list_snippets or create_snippet). This only shows; \n         use list_snippets to read it."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "snippet_id": {"type": "string", "minLength": 1, "maxLength": 200}
+            },
+            "required": ["snippet_id"],
+            "additionalProperties": false
+        })
+    }
+    fn tier(&self) -> RiskTier {
+        RiskTier::Read
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let tool = app_tools::SHOW_SNIPPET;
+        let id = str_arg(&args, "snippet_id")
+            .ok_or_else(|| invalid(tool, "`snippet_id` is required"))?;
+        let services = self.host.research.services().await.map_err(tool_error)?;
+        let not_found = || ToolError::NotFound(format!("No saved snippet {id}."));
+        let snippet = services.snippets.get(id).await.map_err(|_| not_found())?;
+        // Outside the workspace: the same answer as a snippet that does not exist.
+        if !ctx.scope().allows_path(&snippet.file_path) {
+            return Err(not_found());
+        }
+        let label = snippet_label(&snippet);
+        super::show_in_library(ctx, "snippets", Some(snippet.id.clone()), &label);
+        Ok(ToolOutput {
+            text_for_model: format!(
+                "The snippet {} on the Library's shelf: {}",
+                snippet.id,
+                shodh_rag::harness::tools::navigate::SHOWN_TO_USER
+            ),
+            summary_for_ui: format!("Showed the snippet “{label}”"),
+            detail: Some(json!({ "snippetId": snippet.id })),
+        })
     }
 }
 
@@ -1232,5 +1309,110 @@ The encoder has six layers."
         let empty = created_snippet_output(&saved_snippet("  "), &ctx);
         assert!(empty.text_for_model.contains("holds no text"));
         assert_eq!(ctx.passages_issued(), 3, "an empty region gets no number");
+    }
+
+    /// create_snippet saves the region and highlights the new snippet on the Library's
+    /// shelf; show_snippet shows a saved one, only where list_snippets would read it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn saved_and_shown_snippets_are_highlighted_on_the_shelf() {
+        use shodh_rag::harness::events::NavigationTarget;
+        use shodh_rag::harness::tools::RunScope;
+        use shodh_rag::processing::pdf_fixtures::{build_pdf, text};
+        let t = testing::host_with_search_models().await;
+        let folder = t.dir.path().join("Papers");
+        std::fs::create_dir_all(&folder).unwrap();
+        let pdf = folder.join("notice.pdf");
+        std::fs::write(
+            &pdf,
+            build_pdf(
+                &[vec![text(
+                    72.0,
+                    700.0,
+                    12.0,
+                    "Either party may end this agreement with sixty days written notice.",
+                )]],
+                None,
+            ),
+        )
+        .unwrap();
+        t.host
+            .rag
+            .write()
+            .await
+            .add_document_from_file(
+                &pdf,
+                std::collections::HashMap::from([(
+                    "space_id".to_string(),
+                    "folder-papers".to_string(),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        let (ctx, mut rx) = testing::ctx();
+        let out = CreateSnippetTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({
+                "file": "notice.pdf",
+                "page": 1,
+                "rect": { "x": 0, "y": 0, "width": 612, "height": 792 },
+                "title": "Notice clause"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let id = out.detail.unwrap()["snippetId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let saved = testing::expect_navigation(&mut rx, "create_snippet");
+        assert_eq!(saved.view, "library");
+        assert_eq!(
+            saved.target,
+            Some(NavigationTarget::Library {
+                section: "snippets".into(),
+                item: Some(id.clone()),
+            })
+        );
+        assert_eq!(saved.label.as_deref(), Some("Notice clause"));
+
+        let show = ShowSnippetTool {
+            host: t.host.clone(),
+        };
+        assert_eq!(show.tier(), RiskTier::Read);
+        show.execute(json!({ "snippet_id": id }), &ctx)
+            .await
+            .unwrap();
+        let shown = testing::expect_navigation(&mut rx, "show_snippet");
+        assert_eq!(shown.target, saved.target);
+
+        // A workspace chat without this file: the same "not found" as a missing snippet.
+        let restricted = ctx.clone().with_scope(Arc::new(RunScope {
+            files: vec!["C:/elsewhere/other.pdf".into()],
+            restricted: true,
+            ..Default::default()
+        }));
+        let outside = show
+            .execute(json!({ "snippet_id": id }), &restricted)
+            .await
+            .unwrap_err();
+        let missing = show
+            .execute(json!({ "snippet_id": "sn-none" }), &ctx)
+            .await
+            .unwrap_err();
+        match (outside, missing) {
+            (ToolError::NotFound(a), ToolError::NotFound(b)) => {
+                assert_eq!(a.replace(&id, "ID"), b.replace("sn-none", "ID"));
+                assert!(!a.contains("notice.pdf"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            testing::no_navigation(&mut rx),
+            "a refused call shows nothing"
+        );
     }
 }

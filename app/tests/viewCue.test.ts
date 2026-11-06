@@ -101,8 +101,13 @@ test('the cue is announced in full and fades on the same clock it is removed on'
   assert.ok(lists.some(list => /\.shell-cue\b/.test(list)), '.shell-cue is still under reduced motion');
 });
 
-test('the cue never takes focus', () => {
+test("the cue never takes focus, and the opened view is announced by the shell's one live region", () => {
   const cue = readFileSync(new URL('../src/components/shell/AssistantViewCue.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(cue, /\.focus\(|autoFocus/);
-  assert.match(cue, /aria-live="polite"/);
+  // One polite region for everything the assistant does, so two never talk over each other.
+  assert.doesNotMatch(cue, /aria-live/);
+  const announcer = readFileSync(new URL('../src/components/shell/ShellAnnouncer.tsx', import.meta.url), 'utf8');
+  assert.match(announcer, /aria-live="polite"/);
+  const session = readFileSync(new URL('../src/features/ask/ChatSessionContext.tsx', import.meta.url), 'utf8');
+  assert.match(session, /`Shodh opened \$\{where\}/);
 });

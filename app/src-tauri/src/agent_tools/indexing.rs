@@ -3,7 +3,7 @@
 //!
 //! The assistant operates indexing as the status strip does, visibly: every
 //! call opens the System status panel with the part it is about highlighted
-//! ([`super::HostEffects::show_system_status`]), and pause, resume and cancel
+//! ([`show_status`], through the same gate as every navigation), and pause, resume and cancel
 //! ask for approval like the other changes it makes, and are audited.
 //! Whether search may use the graphics card stays the user's choice.
 
@@ -19,6 +19,21 @@ use shodh_rag::harness::tools::{
 use shodh_rag::harness::RiskTier;
 
 use super::{str_arg, AgentHost};
+
+/// Open the System status panel over the current view with `part` highlighted: a
+/// `navigated` event like every other move the assistant makes, so the app holds it
+/// while the user types and opens the panel without taking the focus.
+fn show_status(ctx: &ToolContext, part: &str) {
+    shodh_rag::harness::tools::navigate::emit_shown(
+        ctx,
+        shodh_rag::harness::events::STATUS_VIEW,
+        None,
+        Some(shodh_rag::harness::events::NavigationTarget::Status {
+            part: part.to_string(),
+        }),
+        Some("System status"),
+    );
+}
 
 pub(super) fn register(
     registry: &mut ToolRegistry,
@@ -100,7 +115,7 @@ impl HostTool for PauseTool {
         let effects = &self.host.effects;
         let was = effects.indexing_paused();
         effects.set_indexing_paused(self.pause);
-        effects.show_system_status("indexing");
+        show_status(ctx, "indexing");
         if was != self.pause {
             ctx.audit(
                 AuditEventType::SettingsChange,
@@ -175,7 +190,7 @@ impl HostTool for CancelTool {
         let source = str_arg(&args, "source_id");
         let effects = &self.host.effects;
         let runs = effects.cancel_indexing(source);
-        effects.show_system_status("indexing");
+        show_status(ctx, "indexing");
         ctx.audit(
             AuditEventType::SourceChange,
             control_payload("indexing_cancelled", source, Some(runs)),
@@ -226,9 +241,9 @@ impl HostTool for StatusTool {
     fn tier(&self) -> RiskTier {
         RiskTier::Read
     }
-    async fn execute(&self, _args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let status = self.host.effects.system_status().await;
-        self.host.effects.show_system_status("search");
+        show_status(ctx, "search");
         Ok(ToolOutput {
             text_for_model: status.to_string(),
             summary_for_ui: "Read the system status".to_string(),
@@ -241,11 +256,22 @@ impl HostTool for StatusTool {
 mod tests {
     use super::super::testing;
     use super::*;
+    use shodh_rag::harness::events::{NavigationTarget, STATUS_VIEW};
+
+    /// The status panel part the next `navigated` event (sent by `tool`) opens: a
+    /// status navigation, over the current view, through the same gate as the rest.
+    fn status_part(shown: testing::Shown) -> String {
+        assert_eq!(shown.view, STATUS_VIEW);
+        match shown.target {
+            Some(NavigationTarget::Status { part }) => part,
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn pausing_resuming_and_cancelling_act_on_indexing_and_open_the_panel() {
         let t = testing::host().await;
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         let pause = PauseTool {
             host: t.host.clone(),
             pause: true,
@@ -274,19 +300,20 @@ mod tests {
             .unwrap();
         assert!(run.stopped());
         assert_eq!(out.detail.unwrap()["runs"], 1);
-        let shown = t
-            .effects
-            .shown_status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        assert_eq!(shown, ["indexing", "indexing", "indexing"]);
+        assert_eq!(
+            [
+                status_part(testing::expect_navigation(&mut rx, "pause_indexing")),
+                status_part(testing::expect_navigation(&mut rx, "resume_indexing")),
+                status_part(testing::expect_navigation(&mut rx, "cancel_indexing")),
+            ],
+            ["indexing", "indexing", "indexing"]
+        );
     }
 
     #[tokio::test]
     async fn the_status_tool_reads_the_status_and_shows_it() {
         let t = testing::host().await;
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         t.effects.indexing_state.pause();
         let status = StatusTool {
             host: t.host.clone(),
@@ -294,11 +321,9 @@ mod tests {
         assert_eq!(status.tier(), RiskTier::Read);
         let out = status.execute(json!({}), &ctx).await.unwrap();
         assert_eq!(out.detail.unwrap()["indexingPaused"], true);
-        assert!(t
-            .effects
-            .shown_status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(&"search".to_string()));
+        assert_eq!(
+            status_part(testing::expect_navigation(&mut rx, "system_status")),
+            "search"
+        );
     }
 }

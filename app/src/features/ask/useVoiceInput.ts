@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { notify } from '../../lib/notify';
+import { typingActivity } from '../../lib/navigationGate';
 
 /** Minimal typing for the Web Speech API (not in TypeScript's DOM lib). */
 interface SpeechRecognitionAlternativeLike {
@@ -47,6 +48,12 @@ export function useVoiceInput(getText: () => string, setText: (text: string) => 
   const supported = getRecognitionCtor() !== null;
 
   useEffect(() => () => recognitionRef.current?.stop(), []);
+
+  // Dictating into the composer is typing: the assistant's moves wait (lib/navigationGate).
+  useEffect(() => {
+    typingActivity.setDictating(listening);
+    return () => typingActivity.setDictating(false);
+  }, [listening]);
 
   const toggle = useCallback(() => {
     if (recognitionRef.current) {

@@ -312,5 +312,38 @@
     "github_available_repos": { "excluded": "Lists every repository the Shodh app is installed on, for the user's picker; the agent reaches only the repositories on the user's list (github_status) and asks for a project's linked repository with github_request_access, which the user approves." },
     "github_set_repo": { "excluded": "Decides what Shodh may do on a repository, including merging; widening Shodh's own permissions is the user's decision. The agent can only ask for read or write on a repository through github_request_access, which the user approves each time, and can never turn merging on." },
     "github_remove_repo": { "excluded": "Taking a repository off the list is the user's choice about what Shodh may reach; the agent has no reason to change the user's list." }
+  },
+  "navigation": {
+    "about": "Where the assistant can take the user, visibly: every view and every kind of item a navigated event can open, with the agent tools that emit it. Read-tier tools open and highlight; write tools show what they changed after it is saved (and so after its approval). Every tool listed has a test of its own that reads its event with testing::expect_navigation, which fails for a tool not listed here; the coverage test fails for a listed tool without one. Writes only highlight (a write never opens a dialog), and every move reaches the screen through the app's navigation gate, which holds it while the user types. Checked by agent_coverage::tests against the registered tools, NavigationTarget::KINDS and the frontend's navigation handling.",
+    "views": {
+      "ask": ["open_view", "show_document", "open_visual", "open_conversation"],
+      "artifacts": ["open_view", "open_artifact"],
+      "library": ["open_view", "show_source", "show_paper", "show_snippet", "remove_source"],
+      "workspaces": ["open_view", "open_workspace"],
+      "connectors": ["open_view", "github_status"],
+      "tasks": ["open_view", "show_calendar"],
+      "activity": ["open_view", "show_audit"],
+      "settings": ["open_view", "show_setting"]
+    },
+    "targets": {
+      "document": ["show_document"],
+      "calendar": ["show_calendar", "create_task", "update_task", "complete_task", "create_event", "update_event", "delete_task", "delete_event"],
+      "conversation": ["open_conversation"],
+      "audit": ["show_audit"],
+      "source": ["show_source", "add_folder", "reindex_source"],
+      "visual": ["open_visual", "revise_visual", "organize_visual"],
+      "workspace": ["open_workspace", "create_workspace", "update_workspace", "add_to_workspace", "remove_from_workspace"],
+      "artifact": ["open_artifact"],
+      "code": ["open_code"],
+      "review": ["review_code"],
+      "setting": ["show_setting", "update_setting"],
+      "library": ["show_paper", "show_snippet", "create_snippet"],
+      "status": ["system_status", "pause_indexing", "resume_indexing", "cancel_indexing"]
+    },
+    "librarySections": {
+      "snippets": ["show_snippet", "create_snippet"],
+      "graph": ["show_paper"],
+      "paper": ["show_paper"]
+    }
   }
 }

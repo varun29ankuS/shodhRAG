@@ -5,6 +5,7 @@ import type { VisualTarget } from '../agent/events';
 import { useFocus } from '../focus/FocusContext';
 import { toVisualError, visualsApi } from './api';
 import { recordTarget, visualRef } from './model';
+import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
 /**
  * Opens the visuals the agent shows (`open_visual`) in the focus pop-out.
@@ -13,6 +14,14 @@ import { recordTarget, visualRef } from './model';
 export function VisualNavigator() {
   const focus = useFocus();
   const open = useCallback((target: VisualTarget) => {
+    if (target.highlightOnly) {
+      // After a write (revise_visual, organize_visual): its card in the gallery is
+      // highlighted; the pop-out, a dialog that would take the focus, does not open.
+      revealAgentItem(agentItemKey('visual', target.visualId), {
+        missed: 'Shodh changed a visual that the gallery does not show now. Clear its search to see it.',
+      });
+      return;
+    }
     if (!focus) return;
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     visualsApi.get(target.visualId, target.version ? { version: target.version } : { latest: true })

@@ -596,6 +596,24 @@ impl SettingKey {
         AGENT_WRITABLE.iter().copied().find(|k| k.as_str() == key)
     }
 
+    /// The setting's name as the app shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingKey::Theme => "Theme",
+            SettingKey::SearchMaxResults => "Passages per search",
+        }
+    }
+
+    /// The Settings section that shows this setting, if one does: the theme
+    /// is switched from the sidebar and the command palette, and a change to
+    /// it is seen across the whole window.
+    pub fn section(self) -> Option<&'static str> {
+        match self {
+            SettingKey::Theme => None,
+            SettingKey::SearchMaxResults => Some("search"),
+        }
+    }
+
     pub fn describe(self) -> &'static str {
         match self {
             SettingKey::Theme => "colour theme: \"light\" or \"dark\"",

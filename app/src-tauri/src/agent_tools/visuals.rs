@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
-use shodh_rag::harness::tools::navigate::emit_navigation;
+use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
@@ -279,18 +279,20 @@ impl HostTool for OpenVisualTool {
             .await
             .map_err(tool_error)?;
         let v = &detail.visual;
-        emit_navigation(
+        emit_shown(
             ctx,
             "ask",
             None,
             Some(NavigationTarget::Visual {
                 visual_id: v.id.clone(),
                 version: Some(v.version),
+                highlight_only: false,
             }),
+            Some(&v.title),
         );
         Ok(ToolOutput {
             text_for_model: format!(
-                "The {} \"{}\" (version {}) is now open in the focus pop-out for the user.",
+                "The {} \"{}\" (version {}) in the focus pop-out: {SHOWN_TO_USER}",
                 v.kind.noun().to_lowercase(),
                 v.title,
                 v.version
@@ -350,7 +352,7 @@ impl HostTool for ReviseVisualTool {
          its code block body (no fences): Mermaid text, chart/plot/simulation JSON, SVG \
          markup, TeX of the equation, or a Markdown table. It is stored as the next version; \
          earlier versions and the original answer are never changed. `change` says what was \
-         changed. Call open_visual afterwards to show it."
+         changed. The new version is then shown to the user."
     }
     fn schema(&self) -> Value {
         json!({
@@ -398,7 +400,7 @@ impl HostTool for ReviseVisualTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let revision = revision_args(&args)?;
         let Revision {
             id,
@@ -424,16 +426,34 @@ impl HostTool for ReviseVisualTool {
             .map_err(tool_error)?;
         let v = &detail.visual;
         self.host.effects.visuals_changed(&v.conversation_id);
+        reveal_visual(ctx, v);
         Ok(ToolOutput {
             text_for_model: format!(
-                "Saved version {} of \"{}\" (id {}). Earlier versions are unchanged. Call \
-                 open_visual with this id to show it.",
+                "Saved version {} of \"{}\" (id {}). Earlier versions are unchanged. Its card in \
+                 Artifacts: {SHOWN_TO_USER}",
                 v.version, v.title, v.id
             ),
             summary_for_ui: format!("Saved version {} of “{}”", v.version, v.title),
             detail: Some(json!({ "id": v.id, "version": v.version, "parentId": v.parent_id })),
         })
     }
+}
+
+/// Show a visual the assistant just changed: its card in the Artifacts gallery,
+/// highlighted (`highlight_only`). The focus pop-out, a dialog that would take the
+/// focus, opens only from `open_visual`. Called only after the change was saved.
+fn reveal_visual(ctx: &ToolContext, v: &VisualRecord) {
+    emit_shown(
+        ctx,
+        "artifacts",
+        None,
+        Some(NavigationTarget::Visual {
+            visual_id: v.id.clone(),
+            version: Some(v.version),
+            highlight_only: true,
+        }),
+        Some(&v.title),
+    );
 }
 
 pub struct OrganizeVisualTool {
@@ -547,7 +567,7 @@ impl HostTool for OrganizeVisualTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let change = organize_args(&args)?;
         let Organize {
             id,
@@ -575,6 +595,7 @@ impl HostTool for OrganizeVisualTool {
             .map_err(tool_error)?;
         let v = &detail.visual;
         self.host.effects.visuals_changed(&v.conversation_id);
+        reveal_visual(ctx, v);
         Ok(ToolOutput {
             text_for_model: format!(
                 "The visual is now titled \"{}\"{}{}.",
@@ -596,7 +617,6 @@ impl HostTool for OrganizeVisualTool {
 mod tests {
     use super::super::testing;
     use super::*;
-    use shodh_rag::harness::AgentEvent;
     use shodh_rag::visuals::{NewVisual, VisualOrigin};
 
     const PLOT: &str = r#"{"title":"Pendulum","x":{"min":0,"max":4},"y":{"min":-3,"max":3},"params":[{"name":"L","min":0.1,"max":2}],"items":[{"type":"function","expr":"L*sin(x)"}]}"#;
@@ -737,22 +757,25 @@ mod tests {
         open.execute(json!({ "visual_id": id }), &ctx)
             .await
             .unwrap();
-        let mut target = None;
-        while let Ok(event) = rx.try_recv() {
-            if let AgentEvent::Navigated {
-                target: t, view, ..
-            } = event
-            {
-                assert_eq!(view, "ask");
-                target = t;
-            }
-        }
-        assert_eq!(
-            target,
+        let revised = testing::expect_navigation(&mut rx, "revise_visual");
+        let opened = testing::expect_navigation(&mut rx, "open_visual");
+        assert_eq!(opened.label.as_deref(), Some("Pendulum"));
+        let targets = vec![(revised.view, revised.target), (opened.view, opened.target)];
+        // The revision highlighted its new version's card in the gallery without opening
+        // anything; open_visual (an explicit show) opened it in the pop-out.
+        let shown = |highlight_only| {
             Some(NavigationTarget::Visual {
-                visual_id: new_id,
+                visual_id: new_id.clone(),
                 version: Some(2),
+                highlight_only,
             })
+        };
+        assert_eq!(
+            targets,
+            vec![
+                ("artifacts".to_string(), shown(true)),
+                ("ask".to_string(), shown(false)),
+            ]
         );
         let missing = open.execute(json!({ "visual_id": "nope" }), &ctx).await;
         assert!(matches!(missing, Err(ToolError::NotFound(_))));
@@ -768,7 +791,7 @@ mod tests {
         let args = json!({ "visual_id": id, "title": "Long pendulum", "pinned": true, "note": "lecture 3" });
         let preview = tool.preview(&args).await.unwrap();
         assert_eq!(preview.details["changes"].as_array().unwrap().len(), 3);
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         tool.execute(args.clone(), &ctx).await.unwrap();
         let unchanged = tool.preview(&args).await;
         assert!(matches!(unchanged, Err(ToolError::Failed(_))));
@@ -782,6 +805,17 @@ mod tests {
         assert_eq!(detail.visual.title, "Long pendulum");
         assert!(detail.visual.pinned);
         assert_eq!(detail.visual.note, "lecture 3");
+        // The renamed card is highlighted in the gallery; nothing opens.
+        let shown = testing::expect_navigation(&mut rx, "organize_visual");
+        assert_eq!(shown.view, "artifacts");
+        assert!(matches!(
+            shown.target,
+            Some(NavigationTarget::Visual {
+                highlight_only: true,
+                ..
+            })
+        ));
+        assert_eq!(shown.label.as_deref(), Some("Long pendulum"));
         let nothing = tool.execute(json!({ "visual_id": id }), &ctx).await;
         assert!(matches!(nothing, Err(ToolError::InvalidArguments { .. })));
     }

@@ -334,6 +334,20 @@ impl HostTool for RemoveSourceTool {
 mod tests {
     use super::super::testing;
     use super::*;
+    use shodh_rag::harness::AgentEvent;
+
+    /// The `navigated` events sent so far, as (view, target).
+    fn shown(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) -> Vec<(String, Option<NavigationTarget>)> {
+        let mut out = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Navigated { view, target, .. } = event {
+                out.push((view, target));
+            }
+        }
+        out
+    }
 
     #[tokio::test]
     async fn add_folder_validates_and_starts_one_background_job() {
@@ -341,7 +355,7 @@ mod tests {
         let tool = AddFolderTool {
             host: t.host.clone(),
         };
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         assert!(matches!(
             tool.execute(json!({"path": "relative/folder"}), &ctx).await,
             Err(ToolError::InvalidArguments { .. })
@@ -363,6 +377,16 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].action, "add");
         assert!(jobs[0].folder.ends_with("docs"));
+        // The refused calls showed nothing; the started one shows the new card.
+        assert_eq!(
+            shown(&mut rx),
+            vec![(
+                "library".to_string(),
+                Some(NavigationTarget::Source {
+                    source_id: jobs[0].source_id.clone()
+                })
+            )]
+        );
     }
 
     /// The agent removes a source as the Library does: its chunks go (and no
@@ -416,12 +440,32 @@ mod tests {
         let remove = RemoveSourceTool {
             host: t.host.clone(),
         };
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
+        // Shown first, then re-indexed: both open the Library at its card.
+        shodh_rag::harness::tools::navigate::ShowSourceTool::new(t.host.rag.clone())
+            .execute(json!({"source_id": "folder-papers"}), &ctx)
+            .await
+            .unwrap();
+        ReindexSourceTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"source_id": "folder-papers"}), &ctx)
+        .await
+        .unwrap();
+        let card = (
+            "library".to_string(),
+            Some(NavigationTarget::Source {
+                source_id: "folder-papers".into(),
+            }),
+        );
+        assert_eq!(shown(&mut rx), vec![card.clone(), card]);
         let out = remove
             .execute(json!({"source_id": "folder-papers"}), &ctx)
             .await
             .unwrap();
         assert!(out.summary_for_ui.starts_with("Removed "));
+        // Its card is gone: the Library as it is now.
+        assert_eq!(shown(&mut rx), vec![("library".to_string(), None)]);
 
         let owners: Vec<String> = t
             .host

@@ -732,4 +732,84 @@ mod tests {
             );
         }
     }
+
+    /// open_code shows the code pane and review_code its review: each emits the
+    /// target the pane opens on.
+    #[tokio::test]
+    async fn the_code_tools_show_the_code_pane() {
+        use shodh_rag::harness::AgentEvent;
+        use shodh_rag::workspaces::{NewSource, NewWorkspace, SourceKind, WorkspaceAuthor};
+        let t = crate::agent_tools::testing::host().await;
+        let project = t.dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("src").join("lib.rs"), "fn main() {}\n").unwrap();
+        let folder = project.display().to_string();
+        let workspace = t
+            .host
+            .workspaces
+            .run(move |s| {
+                let ws = s.create(
+                    &NewWorkspace {
+                        name: "Project".into(),
+                        ..NewWorkspace::default()
+                    },
+                    WorkspaceAuthor::User,
+                )?;
+                s.add_sources(
+                    &ws.id,
+                    &[NewSource {
+                        kind: SourceKind::Folder,
+                        reference: "folder-project".into(),
+                        label: "project".into(),
+                        path: Some(folder),
+                    }],
+                    WorkspaceAuthor::User,
+                )?;
+                Ok(ws)
+            })
+            .await
+            .unwrap();
+        let tools = code_review_tools(
+            t.effects.clone(),
+            t.host.workspaces.clone(),
+            t.dir.path().to_path_buf(),
+            Some(workspace.id.clone()),
+        );
+        let (ctx, mut rx) = crate::agent_tools::testing::ctx();
+        let target = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>| match rx.try_recv()
+        {
+            Ok(AgentEvent::Navigated { view, target, .. }) => {
+                assert_eq!(view, "ask");
+                target
+            }
+            other => panic!("{other:?}"),
+        };
+
+        tools[0]
+            .execute(json!({"view": "diff"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            target(&mut rx),
+            Some(NavigationTarget::Code {
+                workspace_id: workspace.id.clone(),
+                conversation_id: None,
+                path: None,
+                line: None,
+                end_line: None,
+                view: Some("diff".into()),
+            })
+        );
+
+        tools[1]
+            .execute(json!({"path": ".", "check": "architecture"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            target(&mut rx),
+            Some(NavigationTarget::Review {
+                review_id: "rv_test".into(),
+            })
+        );
+    }
 }

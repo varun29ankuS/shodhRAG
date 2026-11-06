@@ -1252,8 +1252,22 @@ mod tests {
             preview.label.as_deref(),
             Some("Remove “a.pdf” from “Papers”")
         );
-        let (ctx, _rx) = testing::ctx();
+        let (ctx, mut rx) = testing::ctx();
         tool.execute(args.clone(), &ctx).await.unwrap();
+        // The workspace's Sources tab shows it gone.
+        match rx.try_recv() {
+            Ok(AgentEvent::Navigated { view, target, .. }) => {
+                assert_eq!(view, "workspaces");
+                assert_eq!(
+                    target,
+                    Some(NavigationTarget::Workspace {
+                        workspace_id: ws.id.clone(),
+                        tab: Some("sources".into()),
+                    })
+                );
+            }
+            other => panic!("{other:?}"),
+        }
         assert!(matches!(
             tool.preview(&args).await,
             Err(ToolError::NotFound(_))

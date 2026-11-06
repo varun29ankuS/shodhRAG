@@ -314,13 +314,13 @@
     "github_remove_repo": { "excluded": "Taking a repository off the list is the user's choice about what Shodh may reach; the agent has no reason to change the user's list." }
   },
   "navigation": {
-    "about": "Where the assistant can take the user, visibly: every view and every kind of item a navigated event can open, with the agent tools that emit it. Read-tier tools open and highlight; write tools show what they changed after it is saved (and so after its approval). Checked by agent_coverage::tests against the registered tools, NavigationTarget::KINDS and the frontend's navigation handling.",
+    "about": "Where the assistant can take the user, visibly: every view and every kind of item a navigated event can open, with the agent tools that emit it. Read-tier tools open and highlight; write tools show what they changed after it is saved (and so after its approval). Every tool listed has a test of its own asserting the event it emits. Checked by agent_coverage::tests against the registered tools, NavigationTarget::KINDS and the frontend's navigation handling.",
     "views": {
       "ask": ["open_view", "show_document", "open_visual", "open_conversation"],
       "artifacts": ["open_view", "open_artifact"],
       "library": ["open_view", "show_source", "show_paper"],
       "workspaces": ["open_view", "open_workspace"],
-      "connectors": ["open_view", "github_status"],
+      "connectors": ["open_view"],
       "tasks": ["open_view", "show_calendar"],
       "activity": ["open_view", "show_audit"],
       "settings": ["open_view", "show_setting"]
@@ -332,12 +332,12 @@
       "audit": ["show_audit"],
       "source": ["show_source", "add_folder", "reindex_source"],
       "visual": ["open_visual", "revise_visual"],
-      "workspace": ["open_workspace", "create_workspace", "update_workspace", "add_to_workspace", "remove_from_workspace"],
+      "workspace": ["open_workspace", "create_workspace", "update_workspace", "remove_from_workspace"],
       "artifact": ["open_artifact"],
       "code": ["open_code"],
       "review": ["review_code"],
       "setting": ["show_setting", "update_setting"],
-      "library": ["show_paper", "create_snippet"]
+      "library": ["show_paper"]
     }
   }
 }

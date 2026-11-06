@@ -163,6 +163,11 @@ export interface SendExtras {
    * reinforced is not reinforced again.
    */
   priorRunIds?: string[];
+  /**
+   * Sent from the code review pane (a fix or a check): every edit and write of the
+   * answer asks, in every mode (`agent_send`'s `reviewAction`).
+   */
+  reviewAction?: boolean;
 }
 
 export interface HistoryTurn {
@@ -265,6 +270,7 @@ export const agentApi = {
     typedText: extras.typedText ?? null,
     attachedContext: extras.attachedContext && extras.attachedContext.length > 0 ? extras.attachedContext : null,
     priorRunIds: extras.priorRunIds && extras.priorRunIds.length > 0 ? extras.priorRunIds : null,
+    reviewAction: extras.reviewAction === true ? true : null,
   }),
   /**
    * Stop a running Code-mode command now (its process and everything it

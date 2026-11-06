@@ -39,6 +39,7 @@
           "code_file_read",
           "code_review_get",
           "code_review_run",
+          "code_review_target",
           "code_settings_get",
           "code_settings_set",
           "code_trust_builds",

@@ -189,11 +189,18 @@ pub struct FileChange {
     /// `added`, `removed` or `changed`.
     pub status: &'static str,
     pub binary: bool,
-    /// Too large to compare line by line ([`hunks`]), or to show where it is
-    /// shown ([`capped`]).
+    /// Too large to compare line by line ([`hunks`]).
     pub too_large: bool,
     pub hunks: Vec<Hunk>,
+    /// Why its lines are not shown when the file itself is not the reason: the
+    /// diff's line limit was reached ([`LIMIT_NOTE`]), or the file may hold
+    /// secrets ([`super::secrets::SECRET_NOTE`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<&'static str>,
 }
+
+/// What a file whose lines did not fit the diff's line limit says.
+pub const LIMIT_NOTE: &str = "Not shown: the diff's line limit was reached.";
 
 impl FileChange {
     /// `path` from `old` (`None`: the file is new) to `new` (`None`: it was removed).
@@ -213,6 +220,19 @@ impl FileChange {
             binary: false,
             too_large,
             hunks,
+            note: None,
+        }
+    }
+
+    /// `path` listed by name only, its lines not shown for `note`.
+    pub fn named(path: &str, status: &'static str, note: &'static str) -> Self {
+        FileChange {
+            path: path.to_string(),
+            status,
+            binary: false,
+            too_large: false,
+            hunks: Vec::new(),
+            note: Some(note),
         }
     }
 
@@ -223,16 +243,23 @@ impl FileChange {
 }
 
 /// `changes` with at most `max_lines` lines shown in all: a file whose hunks
-/// would pass that is kept by name, marked too large to show here.
+/// would pass that is kept by name, with [`LIMIT_NOTE`]; a file that may hold
+/// secrets ([`super::secrets::secret_path`]) is kept by name, its lines never
+/// shown.
 pub fn capped(changes: Vec<FileChange>, max_lines: usize) -> Vec<FileChange> {
     let mut used = 0usize;
     changes
         .into_iter()
         .map(|mut change| {
+            if super::secrets::secret_path(&change.path).is_some() {
+                change.hunks.clear();
+                change.note = Some(super::secrets::SECRET_NOTE);
+                return change;
+            }
             let lines = change.line_count();
             if used + lines > max_lines {
                 change.hunks.clear();
-                change.too_large = true;
+                change.note = Some(LIMIT_NOTE);
             } else {
                 used += lines;
             }
@@ -336,6 +363,7 @@ impl Reading {
                 binary: false,
                 too_large: false,
                 hunks: Vec::new(),
+                note: None,
             },
             old_left: 0,
             new_left: 0,
@@ -523,7 +551,22 @@ mod tests {
         assert_eq!(shown.len(), 3);
         assert_eq!(shown[0].line_count(), 30);
         assert_eq!(shown[1].line_count(), 1);
-        assert!(shown[2].too_large && shown[2].hunks.is_empty());
+        assert!(shown[2].hunks.is_empty());
+        assert_eq!(
+            shown[2].note,
+            Some(LIMIT_NOTE),
+            "the budget ran out, not the file"
+        );
+        assert!(!shown[2].too_large);
+        let secret = capped(
+            vec![FileChange::between(".env", None, Some("TOKEN=x\n"))],
+            100,
+        );
+        assert!(
+            secret[0].hunks.is_empty(),
+            "a file that may hold secrets never shows its lines"
+        );
+        assert_eq!(secret[0].note, Some(super::super::secrets::SECRET_NOTE));
     }
 
     fn kinds(hunk: &Hunk) -> String {

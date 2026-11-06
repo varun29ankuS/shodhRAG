@@ -105,6 +105,14 @@ pub struct ConversationChange {
     pub updated_at: String,
 }
 
+/// The model a code review is sent to: its name and whether it is off this computer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewTarget {
+    pub model: String,
+    pub cloud: bool,
+}
+
 /// The model that answers, as the user configured it. Never carries a key.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ModelInfo {
@@ -194,6 +202,8 @@ pub trait HostEffects: Send + Sync {
         workspace_id: Option<String>,
         conversation_id: Option<String>,
     ) -> Result<crate::code_review_commands::StoredReview, String>;
+    /// The model a code review would be sent to now, if known.
+    fn review_target(&self) -> Option<ReviewTarget>;
 }
 
 /// Everything an app tool can reach.
@@ -319,10 +329,18 @@ pub(crate) mod testing {
         pub shown_status: Mutex<Vec<String>>,
         /// Every review asked for: exactly what the reviewer would get.
         pub reviews: Mutex<Vec<shodh_rag::code_review::ReviewRequest>>,
+        /// The model a review would be sent to (none: unknown).
+        pub review_target: Mutex<Option<ReviewTarget>>,
     }
 
     #[async_trait::async_trait]
     impl HostEffects for Recorder {
+        fn review_target(&self) -> Option<ReviewTarget> {
+            self.review_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }
         async fn run_code_review(
             &self,
             request: shodh_rag::code_review::ReviewRequest,
@@ -490,6 +508,7 @@ pub(crate) mod testing {
             removed_sources: Mutex::default(),
             shown_status: Mutex::default(),
             reviews: Mutex::default(),
+            review_target: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());

@@ -9,6 +9,12 @@ export interface CodeFile {
   text: string;
 }
 
+/** The model a review is sent to, and whether it is off this computer (`code_review_target`). */
+export interface ReviewTarget {
+  model: string;
+  cloud: boolean;
+}
+
 /** The code review pane's backend (`code_review_commands.rs`). */
 export const codeApi = {
   /** Run the fresh-eyes reviewer on exactly `request`. */
@@ -21,4 +27,6 @@ export const codeApi = {
   /** The code changes of the workspace's code folder (the conversation's branch, else the last commit). */
   diff: (workspaceId: string, conversationId: string | null, path: string | null) =>
     invoke<FileChange[]>('code_diff', { workspaceId, conversationId, path }),
+  /** The model a review would be sent to now (null: none set up). */
+  target: () => invoke<ReviewTarget | null>('code_review_target'),
 };

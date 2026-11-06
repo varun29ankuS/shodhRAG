@@ -1,7 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ScanEye } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { selectionLines, useCodeReview } from './CodeReviewContext';
+import { snippetSelection, useCodeReview } from './CodeReviewContext';
 import type { ReviewSubject } from './CodeReviewContext';
 
 const FOCUS_RING =
@@ -9,16 +9,37 @@ const FOCUS_RING =
 
 /**
  * "Review this": opens the code pane on what this code view shows (its selected lines
- * highlighted), where a check is picked and the fresh-eyes reviewer runs. Nothing
- * outside the pane's provider (the print view) shows it.
+ * highlighted), where a check is picked and the fresh-eyes reviewer runs. The code view
+ * it sits in (the nearest `role="group"`, or `root`) answers to the shortcut too, while
+ * the keyboard focus or a text selection is inside it. Nothing outside the pane's
+ * provider (the print view) shows it.
  */
-export function ReviewThisButton({ subject, className }: { subject: () => ReviewSubject; className?: string }) {
+export function ReviewThisButton({
+  subject,
+  className,
+  root,
+}: {
+  subject: (selectedText: string) => ReviewSubject;
+  className?: string;
+  /** The element the shortcut answers in (the button's code view when absent). */
+  root?: React.RefObject<HTMLElement | null>;
+}) {
   const review = useCodeReview();
+  const button = useRef<HTMLButtonElement>(null);
+  const subjectRef = useRef(subject);
+  subjectRef.current = subject;
+  const register = review?.register;
+  useEffect(() => {
+    const element = root?.current ?? button.current?.closest<HTMLElement>('[role="group"]') ?? null;
+    if (!register || !element) return;
+    return register({ root: element, subject: text => subjectRef.current(text) });
+  }, [register, root]);
   if (!review) return null;
   return (
     <button
+      ref={button}
       type="button"
-      onClick={() => review.open(subject())}
+      onClick={() => review.open(subject(''))}
       title="Have a fresh-eyes reviewer check this code. It sees only this code, never the conversation."
       className={cn(
         'inline-flex items-center gap-1.5 h-7 px-2 rounded-md text-caption font-medium text-shodh-text-secondary hover:bg-shodh-raised-2 hover:text-shodh-text transition-colors duration-micro',
@@ -35,7 +56,8 @@ export function ReviewThisButton({ subject, className }: { subject: () => Review
 /**
  * A code block of an answer, reviewable: with the shortcut on text selected in it, or
  * with the button it hands to `children` for its header. The block's own lines are the
- * subject (a snippet, not a file of the project).
+ * subject (a snippet, not a file of the project); a selection in its code narrows the
+ * review to the lines selected, found by where the selection starts and ends.
  */
 export function ReviewableSnippet({
   code,
@@ -44,56 +66,23 @@ export function ReviewableSnippet({
 }: {
   code: string;
   language: string;
-  children: (reviewButton: React.ReactNode) => React.ReactNode;
+  children: (reviewButton: React.ReactNode, codeRef: React.RefObject<HTMLDivElement | null>) => React.ReactNode;
 }) {
-  const root = React.useRef<HTMLDivElement>(null);
-  const subject = useCallbackSubject(code, language);
-  useReviewSource(root, subject);
+  const root = useRef<HTMLDivElement>(null);
+  const codeBox = useRef<HTMLDivElement>(null);
+  const subject = (): ReviewSubject => ({
+    kind: 'file',
+    title: `Code from the answer (${language})`,
+    path: 'snippet',
+    text: code,
+    language,
+    firstLine: 1,
+    workspaceId: null,
+    selection: snippetSelection(codeBox.current, code, 'snippet'),
+  });
   return (
     <div ref={root}>
-      {children(
-        <ReviewThisButton
-          subject={() => {
-            // Text selected in this block narrows the review to its lines.
-            const selected = window.getSelection();
-            const inside = selected?.anchorNode && root.current?.contains(selected.anchorNode);
-            return subject(inside ? selected.toString() : '');
-          }}
-          className="h-6"
-        />,
-      )}
+      {children(<ReviewThisButton subject={subject} root={root} className="h-6" />, codeBox)}
     </div>
   );
-}
-
-function useCallbackSubject(code: string, language: string): (selectedText: string) => ReviewSubject {
-  return React.useCallback(
-    (selectedText: string) => ({
-      kind: 'file',
-      title: `Code from the answer (${language})`,
-      path: 'snippet',
-      text: code,
-      language,
-      firstLine: 1,
-      workspaceId: null,
-      selection: selectionLines(code, selectedText, 'snippet'),
-    }),
-    [code, language],
-  );
-}
-
-/**
- * Makes the element `root` points at reviewable with the shortcut: text selected in it
- * opens the pane on `subject(selectedText)`.
- */
-export function useReviewSource(root: React.RefObject<HTMLElement | null>, subject: (selectedText: string) => ReviewSubject) {
-  const review = useCodeReview();
-  const subjectRef = React.useRef(subject);
-  subjectRef.current = subject;
-  const register = review?.register;
-  useEffect(() => {
-    const element = root.current;
-    if (!register || !element) return;
-    return register({ root: element, subject: text => subjectRef.current(text) });
-  }, [register, root]);
 }

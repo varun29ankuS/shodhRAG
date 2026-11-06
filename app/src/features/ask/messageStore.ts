@@ -16,6 +16,7 @@ import { answerScope } from '../workspaces/model.ts';
 import { metadataWithAttachedContext, readAttachedContext } from './imageAttachments.ts';
 import type { AttachedContext } from './imageAttachments';
 import { cleanFiles, limitedToFiles, metadataWithAboutFiles, readAboutFiles } from './fileQuestion.ts';
+import { metadataWithFromReview, readFromReview } from './messageOrigin.ts';
 import type {
   ChatMessage,
   RawSearchResult,
@@ -51,14 +52,15 @@ function readRun(value: unknown): RunRecord | undefined {
 
 /** A stored message as the chat shows it. */
 export function fromStored(m: ConversationMessage): ChatMessage {
-  const metadata = metadataWithAboutFiles(
+  const metadata = metadataWithFromReview(metadataWithAboutFiles(
     metadataWithAttachedContext(metadataWithSummary(metadataWithoutThreads(m.metadata), null), []),
     [],
-  );
+  ), false);
   const threads = threadsFromMetadata(m.metadata);
   const sideSummary = m.role === 'user' ? readSideSummary(m.metadata) : null;
   const attachedContext = m.role === 'user' ? readAttachedContext(m.metadata) : [];
   const aboutFiles = m.role === 'user' ? readAboutFiles(m.metadata) : [];
+  const fromReview = m.role === 'user' && readFromReview(m.metadata);
   return {
     id: m.id,
     role: m.role,
@@ -73,6 +75,7 @@ export function fromStored(m: ConversationMessage): ChatMessage {
     sideSummary: sideSummary ?? undefined,
     attachedContext: attachedContext.length > 0 ? attachedContext : undefined,
     aboutFiles: aboutFiles.length > 0 ? aboutFiles : undefined,
+    ...(fromReview ? { fromReview: true } : {}),
   };
 }
 
@@ -86,13 +89,13 @@ export function toStored(m: ChatMessage): ConversationMessage {
   };
   if (m.artifacts && m.artifacts.length > 0) stored.artifacts = m.artifacts;
   if (m.searchResults && m.searchResults.length > 0) stored.searchResults = m.searchResults;
-  const metadata = metadataWithAboutFiles(
+  const metadata = metadataWithFromReview(metadataWithAboutFiles(
     metadataWithAttachedContext(
       metadataWithThreads(metadataWithSummary(m.metadata, m.sideSummary ?? null), m.threads ?? []),
       m.attachedContext ?? [],
     ),
     m.aboutFiles ?? [],
-  );
+  ), m.fromReview === true);
   if (metadata) stored.metadata = metadata;
   if (m.run) {
     const { activity: _activity, ...persistable } = m.run;
@@ -131,6 +134,7 @@ export function scopeOf(options: SendOptions | null, workspaceId: string | null)
 /** What a question carries besides its words. */
 export interface QuestionExtras {
   sideSummary?: SideSummaryRef;
+  fromReview?: boolean;
   attachedContext?: readonly AttachedContext[];
 }
 
@@ -155,6 +159,7 @@ export function questionMessage(
     ...(extras.sideSummary ? { sideSummary: extras.sideSummary } : {}),
     ...(attachedContext.length > 0 ? { attachedContext: [...attachedContext] } : {}),
     ...(aboutFiles.length > 0 ? { aboutFiles } : {}),
+    ...(extras.fromReview ? { fromReview: true } : {}),
   };
 }
 

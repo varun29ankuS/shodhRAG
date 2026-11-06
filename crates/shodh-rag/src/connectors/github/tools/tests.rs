@@ -926,6 +926,10 @@ async fn a_push_shows_its_commits_and_files_and_sends_exactly_them_to_a_shodh_br
     assert_eq!(diff[0]["path"], "login.rs");
     assert_eq!(diff[0]["status"], "added");
     assert_eq!(
+        preview["codeComparedWith"],
+        "main, where this push leaves it"
+    );
+    assert_eq!(
         diff[0]["hunks"][0]["lines"],
         json!([{"kind": "added", "text": "fn login() {}", "old": null, "new": 1}])
     );

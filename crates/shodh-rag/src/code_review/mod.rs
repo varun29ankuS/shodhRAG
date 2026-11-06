@@ -16,12 +16,15 @@
 pub mod diff;
 pub mod report;
 pub mod request;
+pub mod secrets;
 pub mod structure;
 
 #[cfg(test)]
 mod tests;
 
-pub use report::{Citation, Expect, Finding, Replacement, ReviewReport, Severity, VerifyStep};
+pub use report::{
+    visible_text, Citation, Expect, Finding, Replacement, ReviewReport, Severity, Side, VerifyStep,
+};
 pub use request::{
     check_request, reviewer_prompt, LineKind, PieceLine, ReviewCheck, ReviewPiece, ReviewRequest,
 };

@@ -909,6 +909,7 @@ pub fn run() {
             creation_commands::creation_diff,
             code_review_commands::code_review_run,
             code_review_commands::code_review_get,
+            code_review_commands::code_review_target,
             code_review_commands::code_file_read,
             code_review_commands::code_diff,
             creation_commands::creation_preview,

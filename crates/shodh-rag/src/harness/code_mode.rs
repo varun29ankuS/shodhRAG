@@ -2575,17 +2575,26 @@ pub fn change_diff(
     (!change.too_large && change.line_count() <= MAX_APPROVAL_DIFF_LINES).then_some(change)
 }
 
+/// Files git does not track that [`working_changes`] reads at most; the rest
+/// are listed by name.
+pub const MAX_UNTRACKED_READ: usize = 200;
+
 /// The conversation's code changes in `folder`: the working tree against
 /// `base` (a branch or commit; `HEAD` when `None`), and every file git does
-/// not track yet as added. Git runs hardened ([`git`]) with external diff
-/// programs and text conversion off. `path` limits it to one file or folder.
-/// Blocking.
+/// not track yet as added, at most `max_lines` lines shown in all
+/// ([`crate::code_review::diff::capped`]). Git runs hardened ([`git`]) with
+/// the repository's content filters off ([`FILTERED_COMMANDS`]) and external
+/// diff programs and text conversion off, so no program of the repository
+/// runs. Files that may hold secrets are listed by name, never read.
+/// `path` limits it to one file or folder. Blocking.
 pub fn working_changes(
     folder: &Path,
     base: Option<&str>,
     path: Option<&str>,
+    max_lines: usize,
 ) -> Result<Vec<crate::code_review::diff::FileChange>, String> {
-    use crate::code_review::diff::{parse_unified, FileChange};
+    use crate::code_review::diff::{capped, parse_unified, FileChange, LIMIT_NOTE};
+    use crate::code_review::secrets::{secret_path, SECRET_NOTE};
     let base = base.unwrap_or("HEAD");
     if base.starts_with('-') || base.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(format!("“{base}” is not a branch or commit name"));
@@ -2603,15 +2612,29 @@ pub fn working_changes(
     if let Some(path) = path {
         diff_args.push(path);
     }
-    let text = run_git(folder, &diff_args)?;
-    let mut changes = parse_unified(&text);
+    // Untrimmed: a last context line of spaces is a line.
+    let raw_diff = run_git_raw(folder, &diff_args)?;
+    let mut changes = parse_unified(&String::from_utf8_lossy(&raw_diff));
+    let mut used: usize = changes.iter().map(FileChange::line_count).sum();
     let mut untracked_args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
     if let Some(path) = path {
         untracked_args.push(path);
     }
     let raw = run_git_raw(folder, &untracked_args)?;
-    for name in raw.split(|b| *b == 0).filter(|n| !n.is_empty()) {
-        let name = String::from_utf8_lossy(name).into_owned();
+    for (read, name) in raw
+        .split(|b| *b == 0)
+        .filter(|n| !n.is_empty())
+        .map(|n| String::from_utf8_lossy(n).into_owned())
+        .enumerate()
+    {
+        if secret_path(&name).is_some() {
+            changes.push(FileChange::named(&name, "added", SECRET_NOTE));
+            continue;
+        }
+        if read >= MAX_UNTRACKED_READ || used >= max_lines {
+            changes.push(FileChange::named(&name, "added", LIMIT_NOTE));
+            continue;
+        }
         let full = folder.join(&name);
         let meta = std::fs::symlink_metadata(&full).ok();
         let readable = meta
@@ -2621,19 +2644,60 @@ pub fn working_changes(
             .then(|| std::fs::read(&full).ok())
             .flatten()
             .and_then(|bytes| String::from_utf8(bytes).ok());
-        changes.push(match text {
+        let change = match text {
             Some(text) => FileChange::between(&name, None, Some(&text)),
             None => FileChange {
                 path: name,
                 status: "added",
-                binary: meta.is_some_and(|m| m.is_file() && m.len() <= MAX_DIFF_FILE_BYTES),
+                binary: readable,
                 too_large: !readable,
                 hunks: Vec::new(),
+                note: None,
             },
-        });
+        };
+        used += change.line_count();
+        changes.push(change);
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(changes)
+    Ok(capped(changes, max_lines))
+}
+
+/// Whether git ignores `relative` (a path inside `folder`): `false` outside a
+/// repository. Blocking; runs no program of the repository (`check-ignore`
+/// reads only the ignore rules).
+pub fn git_ignores(folder: &Path, relative: &str) -> bool {
+    let Ok(mut command) = git(folder) else {
+        return false;
+    };
+    command
+        .args(["check-ignore", "--quiet", "--", relative])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// The files of `within` (inside `folder`) that git tracks or would add,
+/// relative to `folder` with `/`: every file `.gitignore` does not exclude.
+/// `None` outside a repository. Blocking; runs no program of the repository.
+pub fn listed_files(folder: &Path, within: &str) -> Option<Vec<String>> {
+    let raw = run_git_raw(
+        folder,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            within,
+        ],
+    )
+    .ok()?;
+    Some(
+        raw.split(|b| *b == 0)
+            .filter(|n| !n.is_empty())
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .collect(),
+    )
 }
 
 /// Split a shell command into lowercased words per command segment. Quotes
@@ -3020,7 +3084,7 @@ pub(crate) fn git(folder: &Path) -> Result<Command, String> {
 
 /// git commands that may pass file contents through the repository's clean
 /// or smudge filters (programs its config names).
-const FILTERED_COMMANDS: [&str; 4] = ["status", "add", "commit", "checkout"];
+const FILTERED_COMMANDS: [&str; 5] = ["status", "add", "commit", "checkout", "diff"];
 
 /// The git subcommand of `args`: the first word after global `-c key=value`
 /// and `-C dir` options.

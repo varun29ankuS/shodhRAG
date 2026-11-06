@@ -15,7 +15,10 @@ import {
   languageOf,
   opsAsChange,
   parseFileChanges,
+  numberOn,
   selectedLines,
+  selectedRun,
+  sideOf,
   sideBySide,
   textAsChange,
 } from '../src/features/code/diffModel.ts';
@@ -80,16 +83,48 @@ test('a long file is folded after whole hunks, and a huge first hunk is cut', ()
   assert.equal(foldedHunks({ ...change, hunks: [big(10, 1)] }, 160).hidden, 0);
 });
 
-test('lines are selected by click and extended with Shift, in one file', () => {
-  let selection = extendSelection(null, 'a.rs', 7, false);
-  selection = extendSelection(selection, 'a.rs', 3, true);
-  assert.deepEqual(selection, { path: 'a.rs', from: 3, to: 7 });
-  assert.ok(isSelected(selection, 'a.rs', 5));
-  assert.ok(!isSelected(selection, 'b.rs', 5));
-  assert.deepEqual(extendSelection(selection, 'b.rs', 9, true), { path: 'b.rs', from: 9, to: 9 });
-  const change = textAsChange('a.rs', 'one\ntwo\nthree\n', 10);
-  assert.deepEqual(selectedLines(change, { path: 'a.rs', from: 11, to: 12 }).map(l => l.text), ['two', 'three']);
-  assert.equal(selectedLines(change, null).length, 3);
+test('lines are selected on their own side, extended with Shift, in one file', () => {
+  const lines = [same(200, 230, 'a'), removed(201, 'gone'), added(231, 'new'), same(202, 232, 'b')];
+  let selection = extendSelection(null, 'a.rs', lines[3], false);
+  assert.deepEqual(selection, { path: 'a.rs', side: 'new', from: 232, to: 232 });
+  selection = extendSelection(selection, 'a.rs', lines[0], true);
+  assert.deepEqual(selection, { path: 'a.rs', side: 'new', from: 230, to: 232 });
+  assert.ok(isSelected(selection, 'a.rs', lines[2]));
+  assert.ok(!isSelected(selection, 'a.rs', lines[1]), 'a removed line has no new number');
+  assert.ok(!isSelected(selection, 'b.rs', lines[0]));
+  // A removed line selects on the old side; Shift on the other side starts again.
+  const old = extendSelection(selection, 'a.rs', lines[1], true);
+  assert.deepEqual(old, { path: 'a.rs', side: 'old', from: 201, to: 201 });
+});
+
+test('a selection takes the lines shown between its ends, never a far line that shares a number', () => {
+  // Old line 205 sits far away from new lines 205–206 (thirty lines were added above).
+  const change: FileChange = {
+    path: 'a.rs',
+    status: 'changed',
+    binary: false,
+    tooLarge: false,
+    hunks: [
+      { lines: [same(204, 174, 'x'), removed(205, 'far away, old 205')] },
+      { lines: [same(234, 204, 'y'), added(205, 'new 205'), removed(236, 'old next to it'), same(237, 206, 'z')] },
+    ],
+  };
+  const picked = selectedLines(change, { path: 'a.rs', side: 'new', from: 205, to: 206 });
+  assert.deepEqual(picked.map(l => l.text), ['new 205', 'old next to it', 'z']);
+  assert.equal(selectedRun('a.rs', [], { path: 'a.rs', side: 'new', from: 1, to: 2 }).length, 0);
+  const file = textAsChange('a.rs', 'one\ntwo\nthree\n', 10);
+  assert.deepEqual(selectedLines(file, { path: 'a.rs', side: 'new', from: 11, to: 12 }).map(l => l.text), ['two', 'three']);
+  assert.equal(selectedLines(file, null).length, 3);
+  assert.equal(numberOn(removed(3, 'r'), 'new'), null);
+  assert.equal(sideOf(removed(3, 'r')), 'old');
+});
+
+test('a note says why a file is not shown, when it is not the file itself', () => {
+  const parsed = parseFileChanges([
+    { path: '.env', status: 'added', binary: false, tooLarge: false, hunks: [], note: 'Not shown: this file may hold secrets.' },
+  ]);
+  assert.equal(parsed?.[0].note, 'Not shown: this file may hold secrets.');
+  assert.equal(parseFileChanges([{ path: 'a', status: 'added', binary: false, tooLarge: false, hunks: [] }])?.[0].note, null);
 });
 
 test('an instruction diff becomes a numbered change', () => {

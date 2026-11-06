@@ -13,15 +13,17 @@
 //! hardened git ([`shodh_rag::harness::code_mode::working_changes`]).
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use shodh_rag::code_review::diff::{capped, FileChange};
+use shodh_rag::code_review::diff::FileChange;
+use shodh_rag::code_review::secrets::secret_path;
 use shodh_rag::code_review::structure::language_of;
 use shodh_rag::code_review::{
     run_review, LightStructure, ReviewCheck, ReviewReport, ReviewRequest, StructureSource,
 };
-use shodh_rag::harness::code_mode::{working_changes, CodeBranchStore};
+use shodh_rag::harness::code_mode::{git_ignores, working_changes, CodeBranchStore};
 use tauri::{AppHandle, Manager, State};
 
 use crate::agent_session_commands::{inside_code_folder, workspace_code_folder};
@@ -99,36 +101,48 @@ async fn structure_of(
         .map_err(|e| format!("Reading the folder did not finish: {e}"))?
 }
 
-/// Review `request` and keep the review. The request is passed on as it is:
-/// the reviewer gets nothing else, apart from the structural view of an
-/// Architecture review's folder. Commands are proposed only for a review
-/// that a Code conversation can run them from (`conversation_id` and a code
-/// folder).
-pub(crate) async fn run_and_store(
-    app: &AppHandle,
+/// What a Code conversation's changes are compared with: the branch its
+/// `shodh/…` branch started from, when it has one in `root`; `None` (the last
+/// commit) otherwise.
+pub(crate) fn conversation_base(
+    data_dir: &Path,
+    conversation_id: &str,
+    root: &Path,
+) -> Result<Option<String>, String> {
+    Ok(CodeBranchStore::in_dir(data_dir)
+        .get(conversation_id)?
+        .filter(|record| Path::new(&record.folder) == root)
+        .map(|record| record.base))
+}
+
+/// Review `request` with `model`: the request is passed on as it is, and the
+/// reviewer gets nothing else, apart from the structural view of an
+/// Architecture review's folder. Commands are proposed only for a review that
+/// a Code conversation can run them from (`conversation_id` and a code folder).
+/// `workspaces` reaches the workspace (its folder, and also its instructions,
+/// which must never reach the reviewer): a test drives this with them in reach.
+pub(crate) async fn review_with(
+    model: &dyn shodh_rag::research::results::TextModel,
+    workspaces: &WorkspaceState,
     mut request: ReviewRequest,
     workspace_id: Option<String>,
     conversation_id: Option<String>,
     by_agent: bool,
 ) -> Result<StoredReview, String> {
-    let workspaces = app.state::<WorkspaceState>();
     let structure = match (&request.check, request.folder.as_deref()) {
         (ReviewCheck::Architecture, Some(folder)) => {
-            Some(structure_of(&workspaces, workspace_id.as_deref(), folder).await?)
+            Some(structure_of(workspaces, workspace_id.as_deref(), folder).await?)
         }
         _ => None,
     };
     if request.can_verify {
-        let has_code = workspace_code_folder(&workspaces, workspace_id.as_deref())
+        let has_code = workspace_code_folder(workspaces, workspace_id.as_deref())
             .await
             .is_ok();
         request.can_verify = has_code && conversation_id.is_some();
     }
-    let dir = data_dir(app)?;
-    let llm = app.state::<LLMState>();
-    let model = crate::memory_learn::answering_model(app, &dir, &llm, Purpose::CodeReview)?;
-    let report = run_review(model.as_ref(), &request, structure.as_ref()).await?;
-    let review = StoredReview {
+    let report = run_review(model, &request, structure.as_ref()).await?;
+    Ok(StoredReview {
         id: format!("rv_{}", uuid::Uuid::new_v4().simple()),
         created_at: chrono::Utc::now().to_rfc3339(),
         workspace_id,
@@ -136,7 +150,31 @@ pub(crate) async fn run_and_store(
         by_agent,
         request,
         report,
-    };
+    })
+}
+
+/// [`review_with`] the configured model (with the app's fallback and Local-only
+/// mode), and keep the review for the pane.
+pub(crate) async fn run_and_store(
+    app: &AppHandle,
+    request: ReviewRequest,
+    workspace_id: Option<String>,
+    conversation_id: Option<String>,
+    by_agent: bool,
+) -> Result<StoredReview, String> {
+    let dir = data_dir(app)?;
+    let llm = app.state::<LLMState>();
+    let model = crate::memory_learn::answering_model(app, &dir, &llm, Purpose::CodeReview)?;
+    let workspaces = app.state::<WorkspaceState>();
+    let review = review_with(
+        model.as_ref(),
+        &workspaces,
+        request,
+        workspace_id,
+        conversation_id,
+        by_agent,
+    )
+    .await?;
     app.state::<CodeReviewState>().keep(review.clone());
     tracing::info!(
         target: "shodh::code_review",
@@ -147,6 +185,38 @@ pub(crate) async fn run_and_store(
         "review finished"
     );
     Ok(review)
+}
+
+/// The model a review would be sent to now: the configured one (the fallback
+/// may answer with another of the user's models). `None` when no model is set.
+pub(crate) fn review_target(app: &AppHandle) -> Option<crate::agent_tools::ReviewTarget> {
+    let llm = app.state::<LLMState>();
+    let local_only = data_dir(app)
+        .ok()
+        .and_then(|dir| crate::app_settings::SettingsStore::in_dir(&dir).load().ok())
+        .is_some_and(|s| s.policy.local_only);
+    if let Some(model) = crate::model_picker_commands::configured_model(&llm) {
+        return Some(crate::agent_tools::ReviewTarget {
+            model: format!("{} · {}", model.provider.label(), model.model),
+            cloud: !model.provider.is_local() && !local_only,
+        });
+    }
+    let external = matches!(
+        llm.config.lock().unwrap_or_else(|e| e.into_inner()).mode,
+        shodh_rag::llm::LLMMode::External { .. }
+    );
+    (!external).then(|| crate::agent_tools::ReviewTarget {
+        model: "the model on this computer".to_string(),
+        cloud: false,
+    })
+}
+
+/// Which model the pane's review goes to, said before it is sent.
+#[tauri::command]
+pub async fn code_review_target(
+    app: AppHandle,
+) -> Result<Option<crate::agent_tools::ReviewTarget>, String> {
+    Ok(review_target(&app))
 }
 
 /// Run the fresh-eyes reviewer (Review this, Architecture).
@@ -167,7 +237,9 @@ pub async fn code_review_get(
     state: State<'_, CodeReviewState>,
 ) -> Result<StoredReview, String> {
     state.get(id.trim()).ok_or_else(|| {
-        "That review is no longer kept; run it again from the code it was about.".to_string()
+        "That review is no longer kept (reviews are kept until Shodh closes); run it again \
+         from the code it was about."
+            .to_string()
     })
 }
 
@@ -178,6 +250,20 @@ pub struct CodeFile {
     pub path: String,
     pub language: String,
     pub text: String,
+}
+
+/// Why `shown` (a path inside `root`) is not read for the pane or a review: the
+/// `.git` folder, a file that may hold secrets, a file git ignores. Blocking.
+pub(crate) fn unreadable_reason(root: &Path, shown: &str) -> Option<String> {
+    if let Some(why) = secret_path(shown) {
+        return Some(format!("Shodh does not read {shown}: {why}."));
+    }
+    (shown != "." && git_ignores(root, shown)).then(|| {
+        format!(
+            "Shodh does not read {shown}: git ignores it, and ignored files often hold local \
+             settings or secrets."
+        )
+    })
 }
 
 /// Read `path` of the workspace's code folder for the pane.
@@ -192,7 +278,11 @@ pub async fn code_file_read(
     let shown = path.trim().replace('\\', "/");
     let full = inside_code_folder(&root, &shown)
         .ok_or_else(|| format!("{shown} is not a file of the code folder."))?;
+    let checked = shown.clone();
     let text = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        if let Some(why) = unreadable_reason(&root, &checked) {
+            return Err(why);
+        }
         let meta = std::fs::symlink_metadata(&full).map_err(|e| e.to_string())?;
         if !meta.is_file() {
             return Err("That is not a file.".to_string());
@@ -215,7 +305,7 @@ pub async fn code_file_read(
 /// The code changes of the workspace's code folder: against the branch a
 /// Code conversation started from (its `shodh/…` branch's base) when it
 /// has one, else against the last commit. `path` limits it to one file or
-/// folder.
+/// folder. Files that may hold secrets are listed by name only.
 #[tauri::command]
 pub async fn code_diff(
     app: AppHandle,
@@ -236,18 +326,14 @@ pub async fn code_diff(
         None => None,
     };
     let base = match conversation_id.as_deref() {
-        Some(id) => CodeBranchStore::in_dir(&data_dir(&app)?)
-            .get(id)?
-            .filter(|record| std::path::Path::new(&record.folder) == root.as_path())
-            .map(|record| record.base),
+        Some(id) => conversation_base(&data_dir(&app)?, id, &root)?,
         None => None,
     };
-    let changes = tokio::task::spawn_blocking(move || {
-        working_changes(&root, base.as_deref(), path.as_deref())
+    tokio::task::spawn_blocking(move || {
+        working_changes(&root, base.as_deref(), path.as_deref(), MAX_DIFF_LINES)
     })
     .await
-    .map_err(|e| format!("Reading the changes did not finish: {e}"))??;
-    Ok(capped(changes, MAX_DIFF_LINES))
+    .map_err(|e| format!("Reading the changes did not finish: {e}"))?
 }
 
 #[cfg(test)]
@@ -298,5 +384,157 @@ mod fresh_eyes_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod review_path_tests {
+    //! The real call path of a review, with what it can reach planted with canaries: the
+    //! workspace (its instructions, through the same state the review reads the folder
+    //! from), files of the folder besides the selection, and function bodies. Only the
+    //! request, and the structure Shodh built, reach the model.
+
+    use std::sync::Mutex;
+
+    use super::*;
+    use shodh_rag::code_review::{LineKind, PieceLine, ReviewPiece};
+    use shodh_rag::research::results::TextModel;
+    use shodh_rag::workspaces::{NewSource, NewWorkspace, SourceKind, WorkspaceAuthor};
+
+    struct Recording(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl TextModel for Recording {
+        fn model_id(&self) -> String {
+            "recording".into()
+        }
+        async fn complete(&self, prompt: &str, _max_tokens: usize) -> Result<String, String> {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(prompt.to_string());
+            Ok(r#"{"summary":"none","findings":[]}"#.to_string())
+        }
+    }
+
+    const INSTRUCTIONS_CANARY: &str = "CANARY-WS-INSTRUCTIONS-41d2";
+    const SIBLING_CANARY: &str = "CANARY-SIBLING-FILE-90ab";
+    const BODY_CANARY: &str = "CANARY-FUNCTION-BODY-77ce";
+
+    #[tokio::test]
+    async fn only_the_request_reaches_the_reviewer_through_the_real_path() {
+        let t = crate::agent_tools::testing::host().await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            format!("pub mod other;\npub fn api() {{ let _ = \"{BODY_CANARY}\"; }}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/other.rs"),
+            format!("use crate::api;\npub fn helper() {{ let _ = \"{SIBLING_CANARY}\"; }}\n"),
+        )
+        .unwrap();
+        let folder = root.display().to_string();
+        let workspace = t
+            .host
+            .workspaces
+            .run(move |s| {
+                let created = s.create(
+                    &NewWorkspace {
+                        name: "Demo".into(),
+                        instructions: Some(INSTRUCTIONS_CANARY.into()),
+                        ..NewWorkspace::default()
+                    },
+                    WorkspaceAuthor::User,
+                )?;
+                s.add_sources(
+                    &created.id,
+                    &[NewSource {
+                        kind: SourceKind::Folder,
+                        reference: "src-demo".into(),
+                        label: "Demo".into(),
+                        path: Some(folder),
+                    }],
+                    WorkspaceAuthor::User,
+                )?;
+                Ok(created.id)
+            })
+            .await
+            .unwrap();
+        let model = Recording(Mutex::new(Vec::new()));
+
+        // A snippet of src/lib.rs's first line.
+        let snippet = ReviewRequest {
+            check: ReviewCheck::Security,
+            pieces: vec![ReviewPiece {
+                path: "src/lib.rs".into(),
+                language: "rust".into(),
+                lines: vec![PieceLine {
+                    number: 1,
+                    kind: LineKind::Same,
+                    text: "pub mod other;".into(),
+                }],
+            }],
+            question: None,
+            folder: None,
+            flows: None,
+            context: None,
+            can_verify: true,
+        };
+        let review = review_with(
+            &model,
+            &t.host.workspaces,
+            snippet,
+            Some(workspace.clone()),
+            Some("conv-1".into()),
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            review.request.can_verify,
+            "a Code conversation's review may propose checks"
+        );
+
+        // An architecture review of the whole folder.
+        let architecture = ReviewRequest {
+            check: ReviewCheck::Architecture,
+            pieces: Vec::new(),
+            question: None,
+            folder: Some(".".into()),
+            flows: None,
+            context: None,
+            can_verify: false,
+        };
+        review_with(
+            &model,
+            &t.host.workspaces,
+            architecture,
+            Some(workspace),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let prompts = model.0.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 2);
+        for prompt in &prompts {
+            for canary in [INSTRUCTIONS_CANARY, SIBLING_CANARY, BODY_CANARY] {
+                assert!(
+                    !prompt.contains(canary),
+                    "the reviewer saw {canary}:\n{prompt}"
+                );
+            }
+        }
+        assert!(prompts[0].contains("pub mod other;"));
+        assert!(
+            prompts[1].contains("src/other.rs"),
+            "the structure names the files"
+        );
     }
 }

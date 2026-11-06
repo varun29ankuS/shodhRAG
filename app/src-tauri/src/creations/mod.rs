@@ -838,6 +838,7 @@ impl CreationStore {
                 binary,
                 too_large,
                 hunks,
+                note: None,
             });
         }
         Ok(changes)

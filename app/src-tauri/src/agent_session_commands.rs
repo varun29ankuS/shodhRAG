@@ -1959,8 +1959,8 @@ async fn start_attempt(
             crate::agent_tools::code_review_tools(
                 Arc::new(crate::agent_tools::TauriEffects::new(app.clone())),
                 workspaces.inner().clone(),
+                app_data_dir.clone(),
                 workspace_id.clone(),
-                true,
             ),
         );
         // The agent may suggest another mode in Code sessions too (it never switches).
@@ -2443,6 +2443,7 @@ pub async fn agent_send(
     text_origin: Option<TextOrigin>,
     typed_text: Option<String>,
     prior_run_ids: Option<Vec<String>>,
+    review_action: Option<bool>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
@@ -2532,6 +2533,14 @@ pub async fn agent_send(
     } else {
         None
     };
+    // A fix or a check sent from the code review pane is the app's text, never the
+    // user's own words, and every edit or write of its run asks in every mode.
+    let review_action = review_action == Some(true);
+    let text_origin = if review_action {
+        Some(TextOrigin::Composed)
+    } else {
+        text_origin
+    };
     let own_words = user_words(
         &text,
         text_origin,
@@ -2599,6 +2608,9 @@ pub async fn agent_send(
     // Text the user attached goes to the model only: learning, the audit's question and
     // the answer check (`scope.question`) keep the typed words.
     let message = with_attached_context(message, attached_context.as_deref());
+    if review_action {
+        entry.session.mark_review_run(&request_id);
+    }
     let run_id = match entry
         .session
         .prompt_scoped(&message, Some(request_id.clone()), scope.clone())

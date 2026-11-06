@@ -2942,7 +2942,7 @@ fn working_changes_list_edits_and_new_files_against_the_base() {
     let dir = repo();
     std::fs::write(dir.path().join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
     std::fs::write(dir.path().join("new.rs"), "fn n() {}\n").unwrap();
-    let changes = working_changes(dir.path(), None, None).unwrap();
+    let changes = working_changes(dir.path(), None, None, 1_000).unwrap();
     let paths: Vec<(&str, &str)> = changes
         .iter()
         .map(|c| (c.path.as_str(), c.status))
@@ -2952,7 +2952,85 @@ fn working_changes_list_edits_and_new_files_against_the_base() {
     assert!(added
         .iter()
         .any(|l| l.kind == "added" && l.text == "fn b() {}" && l.new == Some(2)));
-    let only = working_changes(dir.path(), None, Some("new.rs")).unwrap();
+    let only = working_changes(dir.path(), None, Some("new.rs"), 1_000).unwrap();
     assert_eq!(only.len(), 1);
-    assert!(working_changes(dir.path(), Some("--output=x"), None).is_err());
+    assert!(working_changes(dir.path(), Some("--output=x"), None, 1_000).is_err());
+}
+
+#[test]
+fn reading_the_changes_runs_no_filter_or_text_conversion_of_the_repository() {
+    let dir = repo();
+    // A repository whose own config names a clean filter and a text conversion that
+    // leave a marker when they run, applied to every file.
+    std::fs::write(
+        dir.path().join(".gitattributes"),
+        "* filter=evil diff=evil\n",
+    )
+    .unwrap();
+    git_ok(dir.path(), &["add", "--all"]);
+    git_ok(dir.path(), &["commit", "--quiet", "-m", "attributes"]);
+    git_ok(
+        dir.path(),
+        &["config", "filter.evil.clean", "touch filter-ran; cat"],
+    );
+    git_ok(
+        dir.path(),
+        &["config", "diff.evil.textconv", "touch textconv-ran; cat"],
+    );
+    std::fs::write(dir.path().join("lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    let changes = working_changes(dir.path(), None, None, 1_000).unwrap();
+    assert!(changes
+        .iter()
+        .any(|c| c.path == "lib.rs" && c.line_count() > 0));
+    assert!(
+        !dir.path().join("filter-ran").exists(),
+        "the clean filter ran"
+    );
+    assert!(
+        !dir.path().join("textconv-ran").exists(),
+        "the text conversion ran"
+    );
+    assert!(FILTERED_COMMANDS.contains(&"diff"));
+}
+
+#[test]
+fn the_changes_never_read_secrets_and_stop_at_their_limits() {
+    let dir = repo();
+    std::fs::write(dir.path().join(".env"), "TOKEN=secret-value\n").unwrap();
+    for i in 0..(MAX_UNTRACKED_READ + 5) {
+        std::fs::write(dir.path().join(format!("n{i:03}.txt")), "x\n").unwrap();
+    }
+    let changes = working_changes(dir.path(), None, None, 50).unwrap();
+    let env = changes
+        .iter()
+        .find(|c| c.path == ".env")
+        .expect(".env is listed");
+    assert!(env.hunks.is_empty());
+    assert_eq!(env.note, Some(crate::code_review::secrets::SECRET_NOTE));
+    let shown: usize = changes.iter().map(|c| c.line_count()).sum();
+    assert!(shown <= 50, "{shown} lines shown");
+    assert_eq!(
+        changes.len(),
+        MAX_UNTRACKED_READ + 6,
+        "every file is listed by name"
+    );
+    assert!(changes
+        .iter()
+        .any(|c| c.note == Some(crate::code_review::diff::LIMIT_NOTE)));
+}
+
+#[test]
+fn ignored_and_listed_files_come_from_git() {
+    let dir = repo();
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("build")).unwrap();
+    std::fs::write(dir.path().join("build/out.rs"), "fn o() {}\n").unwrap();
+    std::fs::write(dir.path().join("new.rs"), "fn n() {}\n").unwrap();
+    assert!(git_ignores(dir.path(), "build/out.rs"));
+    assert!(!git_ignores(dir.path(), "lib.rs"));
+    let mut files = listed_files(dir.path(), ".").unwrap();
+    files.sort();
+    assert_eq!(files, vec![".gitignore", "lib.rs", "new.rs"]);
+    let outside = tempfile::tempdir().unwrap();
+    assert_eq!(listed_files(outside.path(), "."), None);
 }

@@ -716,7 +716,13 @@ impl GitHubTool {
         );
         // The code itself, as the approval's diff shows it.
         match &plan.diff {
-            PushDiff::Files(files) => {
+            PushDiff::Files { files, against } => {
+                // Said beside the diff: it compares with the default branch, while the
+                // commits above are those GitHub does not have yet.
+                details.insert(
+                    "codeComparedWith".into(),
+                    json!(format!("{against}, where this push leaves it")),
+                );
                 details.insert("codeDiff".into(), json!(files));
             }
             PushDiff::TooLarge => {

@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useRef } from 'react';
+import React, { useEffect, useId, useMemo, useRef } from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import type { StepApproval } from './reducer';
@@ -64,17 +64,15 @@ export function previewChanges(preview: unknown): FieldChange[] {
 /** Preview key of a code diff (an edit, a write, a push): a list of file changes. */
 const CODE_DIFF = 'codeDiff';
 
-/** Text rows the code diff shows better: left out when the diff is there. */
+/** Text rows the code diff shows better: folded under "The change as text" when the diff is there. */
 const SHOWN_BY_DIFF = ['replace', 'with', 'content'];
 
 /** The preview as label/value rows (without `changes`); non-object previews become one row. */
 function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
-    const diffShown = parseFileChanges(preview[CODE_DIFF]) !== null;
     return Object.entries(preview)
       // Shown as their own blocks: field changes, an instruction diff and a code diff.
       .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== CODE_DIFF && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE && !REVIEW_BLOCK_KEYS.includes(k))
-      .filter(([k]) => !(diffShown && SHOWN_BY_DIFF.includes(k)))
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
@@ -129,10 +127,14 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const denyRef = useRef<HTMLButtonElement>(null);
   const pending = approval.decision === 'pending';
   const destructive = approval.tier === 'destructive';
-  const rows = previewRows(approval.preview);
+  const allRows = useMemo(() => previewRows(approval.preview), [approval.preview]);
   const changes = previewChanges(approval.preview);
   const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
-  const codeDiff = isRecord(approval.preview) ? parseFileChanges(approval.preview[CODE_DIFF]) : null;
+  const codeDiff = useMemo(() => (isRecord(approval.preview) ? parseFileChanges(approval.preview[CODE_DIFF]) : null), [approval.preview]);
+  const textLabels = SHOWN_BY_DIFF.map(humanKey);
+  // With a diff, the change's own text rows stay as a fallback, folded.
+  const asText = codeDiff ? allRows.filter(([key]) => textLabels.includes(key)) : [];
+  const rows = codeDiff ? allRows.filter(([key]) => !textLabels.includes(key)) : allRows;
   const allowance = conversationAllowance(approval.preview);
   const allowanceNote = conversationAllowanceNote(approval.preview);
   const allowanceNoteId = useId();
@@ -231,6 +233,19 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
             />
           }
         />
+      )}
+      {asText.length > 0 && (
+        <details className="rounded-lg bg-shodh-raised px-3 py-2 text-small">
+          <summary className="cursor-pointer text-caption text-shodh-text-secondary">The change as text</summary>
+          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            {asText.map(([key, value]) => (
+              <React.Fragment key={key}>
+                <dt className="text-shodh-text-muted whitespace-nowrap">{key}</dt>
+                <dd className="text-shodh-text break-words whitespace-pre-wrap min-w-0 max-h-64 overflow-y-auto scrollbar-thin">{value}</dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        </details>
       )}
       <div className="flex items-center gap-2">
         <button

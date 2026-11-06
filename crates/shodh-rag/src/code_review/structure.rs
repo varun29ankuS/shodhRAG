@@ -23,8 +23,13 @@ use serde::Serialize;
 pub const MAX_FILES: usize = 2_000;
 /// A file larger than this is listed with its size, not read for imports.
 pub const MAX_FILE_BYTES: u64 = 512 * 1024;
+/// Entries a walk looks at at most (files and folders), and the time it may take.
+pub const MAX_ENTRIES: usize = 50_000;
+pub const MAX_WALK_TIME: std::time::Duration = std::time::Duration::from_secs(10);
+/// Bytes of a `Cargo.toml` read at most.
+pub const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 /// Folders never walked: dependencies, build output, version control.
-pub const SKIPPED_DIRS: [&str; 12] = [
+pub const SKIPPED_DIRS: [&str; 19] = [
     ".git",
     "target",
     "node_modules",
@@ -37,6 +42,13 @@ pub const SKIPPED_DIRS: [&str; 12] = [
     ".venv",
     "coverage",
     ".turbo",
+    "venv",
+    "out",
+    ".gradle",
+    "Pods",
+    ".cargo",
+    ".idea",
+    ".vs",
 ];
 /// Public items listed per module in the reviewer's view.
 const MAX_PUBLIC_SHOWN: usize = 12;
@@ -495,6 +507,7 @@ fn script_target(spec: &str, known: &BTreeSet<String>) -> Option<String> {
 
 impl StructureSource for LightStructure {
     fn build(&self, root: &Path, folder: &Path) -> Result<StructureView, String> {
+        let git_root = root;
         let root = std::fs::canonicalize(root)
             .map_err(|e| format!("the code folder could not be read ({e})"))?;
         let folder = std::fs::canonicalize(folder)
@@ -506,41 +519,81 @@ impl StructureSource for LightStructure {
         let mut sources: Vec<PathBuf> = Vec::new();
         let mut manifests: Vec<PathBuf> = Vec::new();
         let mut partial = false;
-        let walker = walkdir::WalkDir::new(&folder)
-            .follow_links(false)
-            .sort_by_file_name()
-            .into_iter()
-            .filter_entry(|entry| {
-                !(entry.file_type().is_dir()
-                    && entry.depth() > 0
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| SKIPPED_DIRS.contains(&name)))
-            });
-        for entry in walker.filter_map(Result::ok) {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy();
+        let started = std::time::Instant::now();
+        let mut take = |path: PathBuf, name: &str| -> bool {
             if name == "Cargo.toml" {
-                manifests.push(path.to_path_buf());
-                continue;
+                manifests.push(path);
+            } else if language_of(name).is_some() {
+                if sources.len() >= MAX_FILES {
+                    return false;
+                }
+                sources.push(path);
             }
-            if language_of(&name).is_none() {
-                continue;
+            true
+        };
+        // In a repository, the files git tracks or would add: `.gitignore` decides.
+        // git is asked in the folder as given: a canonical Windows path (`\?`) is not
+        // one every git takes.
+        let listed = crate::harness::code_mode::listed_files(git_root, &folder_label);
+        match listed {
+            Some(files) => {
+                for (seen, relative) in files.iter().enumerate() {
+                    if seen >= MAX_ENTRIES || started.elapsed() > MAX_WALK_TIME {
+                        partial = true;
+                        break;
+                    }
+                    let skipped = relative.split('/').any(|part| SKIPPED_DIRS.contains(&part));
+                    if skipped || super::secrets::secret_path(relative).is_some() {
+                        continue;
+                    }
+                    let name = relative.rsplit('/').next().unwrap_or(relative);
+                    let path = root.join(relative);
+                    if !take(path, name) {
+                        partial = true;
+                        break;
+                    }
+                }
             }
-            if sources.len() >= MAX_FILES {
-                partial = true;
-                continue;
+            None => {
+                let walker = walkdir::WalkDir::new(&folder)
+                    .follow_links(false)
+                    .sort_by_file_name()
+                    .into_iter()
+                    .filter_entry(|entry| {
+                        !(entry.file_type().is_dir()
+                            && entry.depth() > 0
+                            && entry
+                                .file_name()
+                                .to_str()
+                                .is_some_and(|name| SKIPPED_DIRS.contains(&name)))
+                    });
+                for (seen, entry) in walker.filter_map(Result::ok).enumerate() {
+                    if seen >= MAX_ENTRIES || started.elapsed() > MAX_WALK_TIME {
+                        partial = true;
+                        break;
+                    }
+                    if !entry.file_type().is_file() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !take(entry.path().to_path_buf(), &name) {
+                        partial = true;
+                        break;
+                    }
+                }
             }
-            sources.push(path.to_path_buf());
         }
         // Crates by folder, deepest first, so a file belongs to its nearest crate.
         let mut crate_dirs: Vec<(PathBuf, String, Vec<String>)> = Vec::new();
         for manifest_path in &manifests {
-            let text = std::fs::read_to_string(manifest_path).unwrap_or_default();
+            // A manifest larger than any real one is not read.
+            let small =
+                std::fs::metadata(manifest_path).is_ok_and(|m| m.len() <= MAX_MANIFEST_BYTES);
+            let text = if small {
+                std::fs::read_to_string(manifest_path).unwrap_or_default()
+            } else {
+                String::new()
+            };
             let manifest = read_manifest(&text);
             if let (Some(name), Some(dir)) = (manifest.name, manifest_path.parent()) {
                 let deps = manifest
@@ -1034,5 +1087,25 @@ mod tests {
                 vec!["e".to_string()]
             ]
         );
+    }
+
+    #[test]
+    fn in_a_repository_the_walk_follows_gitignore_and_stops_at_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success());
+        write(root, ".gitignore", "generated/\n");
+        write(root, "src/a.rs", "pub fn a() {}\n");
+        write(root, "generated/big.rs", "pub fn generated() {}\n");
+        let view = LightStructure.build(root, root).unwrap();
+        let paths: Vec<&str> = view.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/a.rs"], "ignored files are never read");
+        assert!(!view.partial);
     }
 }

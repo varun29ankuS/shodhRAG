@@ -109,6 +109,7 @@ export function parseTarget(value: unknown): NavigationTarget | null {
         ? {
             kind: 'code',
             workspaceId,
+            conversationId: optString(value.conversationId),
             path: optString(value.path),
             line,
             endLine: line !== null && endLine !== null && endLine >= line ? endLine : line,

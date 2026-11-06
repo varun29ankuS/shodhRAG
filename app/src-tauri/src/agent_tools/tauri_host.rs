@@ -109,6 +109,10 @@ impl HostEffects for TauriEffects {
         crate::indexing_control::show(&self.app, part);
     }
 
+    fn review_target(&self) -> Option<super::ReviewTarget> {
+        crate::code_review_commands::review_target(&self.app)
+    }
+
     async fn run_code_review(
         &self,
         request: shodh_rag::code_review::ReviewRequest,

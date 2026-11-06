@@ -8,7 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::request::{ReviewCheck, ReviewRequest};
+use super::request::{LineKind, ReviewCheck, ReviewRequest};
 use super::structure::StructureView;
 
 /// Findings kept from one reply.
@@ -38,6 +38,15 @@ impl Severity {
     }
 }
 
+/// Which version of a file a line number counts in: the new one (unchanged and
+/// added lines, and every line of plain code) or the old one (removed lines).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Side {
+    New,
+    Old,
+}
+
 /// Lines of a file a finding cites.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +54,7 @@ pub struct Citation {
     pub path: String,
     pub line: usize,
     pub end_line: usize,
+    pub side: Side,
 }
 
 /// A fix that replaces text found in the code reviewed.
@@ -124,14 +134,30 @@ fn json_object(text: &str) -> Option<RawReply> {
     serde_json::from_str(&text[start..=end]).ok()
 }
 
+/// `text` with every hidden character ([`crate::harness::run_command::hidden_character`])
+/// shown as ⟨U+XXXX⟩: the reviewer's words are shown to the user and may be sent on, and
+/// an invisible instruction must not ride along.
+pub fn visible_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if crate::harness::run_command::hidden_character(c) {
+            out.push_str(&format!("⟨U+{:04X}⟩", u32::from(c)));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn field(value: &Value, key: &str) -> String {
     let text = value.get(key).and_then(Value::as_str).unwrap_or("").trim();
-    if text.chars().count() > MAX_FIELD_CHARS {
+    let text = if text.chars().count() > MAX_FIELD_CHARS {
         let kept: String = text.chars().take(MAX_FIELD_CHARS).collect();
         format!("{kept}…")
     } else {
         text.to_string()
-    }
+    };
+    visible_text(&text)
 }
 
 fn number(value: &Value, key: &str) -> Option<usize> {
@@ -141,58 +167,91 @@ fn number(value: &Value, key: &str) -> Option<usize> {
         .and_then(|n| usize::try_from(n).ok())
 }
 
-/// The lines the reviewer was shown, by path.
+/// The lines the reviewer was shown, by path and side, and the runs of new-side
+/// lines whose numbers follow each other (the text a fix may replace).
 struct Shown<'a> {
-    lines: HashMap<&'a str, BTreeSet<usize>>,
-    text: HashMap<&'a str, String>,
+    new: HashMap<&'a str, BTreeSet<usize>>,
+    old: HashMap<&'a str, BTreeSet<usize>>,
+    runs: HashMap<&'a str, Vec<String>>,
     structure: Option<&'a StructureView>,
 }
 
 impl<'a> Shown<'a> {
     fn new(request: &'a ReviewRequest, structure: Option<&'a StructureView>) -> Self {
-        let mut lines: HashMap<&str, BTreeSet<usize>> = HashMap::new();
-        let mut text: HashMap<&str, String> = HashMap::new();
+        let mut new: HashMap<&str, BTreeSet<usize>> = HashMap::new();
+        let mut old: HashMap<&str, BTreeSet<usize>> = HashMap::new();
+        let mut runs: HashMap<&str, Vec<String>> = HashMap::new();
         for piece in &request.pieces {
-            let entry = lines.entry(piece.path.as_str()).or_default();
-            let body = text.entry(piece.path.as_str()).or_default();
+            let path = piece.path.as_str();
+            let mut run = String::new();
+            let mut last: Option<usize> = None;
             for line in &piece.lines {
-                entry.insert(line.number);
-                body.push_str(&line.text);
-                body.push('\n');
+                if line.kind == LineKind::Removed {
+                    old.entry(path).or_default().insert(line.number);
+                    continue;
+                }
+                new.entry(path).or_default().insert(line.number);
+                if last.is_some_and(|n| n + 1 != line.number) && !run.is_empty() {
+                    runs.entry(path).or_default().push(std::mem::take(&mut run));
+                }
+                run.push_str(&line.text);
+                run.push('\n');
+                last = Some(line.number);
+            }
+            if !run.is_empty() {
+                runs.entry(path).or_default().push(run);
             }
         }
         Shown {
-            lines,
-            text,
+            new,
+            old,
+            runs,
             structure,
         }
     }
 
-    /// The citation, when its path and lines are ones the reviewer saw:
-    /// lines of a piece, or, in an Architecture review, lines of a file of
-    /// the structural view.
-    fn citation(&self, path: &str, line: usize, end: usize) -> Option<Citation> {
+    /// The citation, when its path and lines are ones the reviewer saw on that
+    /// side: lines of a piece, or, in an Architecture review, lines of a file
+    /// of the structural view (new side).
+    fn citation(&self, path: &str, line: usize, end: usize, side: Side) -> Option<Citation> {
         let path = path.trim().trim_start_matches("./").replace('\\', "/");
         let (start, end) = (line.min(end), line.max(end));
         if start == 0 {
             return None;
         }
-        let ok = match self.lines.get(path.as_str()) {
+        let lines = match side {
+            Side::New => self.new.get(path.as_str()),
+            Side::Old => self.old.get(path.as_str()),
+        };
+        let shown_anywhere =
+            self.new.contains_key(path.as_str()) || self.old.contains_key(path.as_str());
+        let ok = match lines {
             Some(shown) => shown.contains(&start) && shown.contains(&end),
-            None => self
-                .structure
-                .and_then(|view| view.file_lines(&path))
-                .is_some_and(|count| end <= count.max(1)),
+            None if shown_anywhere => false,
+            None => {
+                side == Side::New
+                    && self
+                        .structure
+                        .and_then(|view| view.file_lines(&path))
+                        .is_some_and(|count| end <= count.max(1))
+            }
         };
         ok.then_some(Citation {
             path,
             line: start,
             end_line: end,
+            side,
         })
     }
 
+    /// Whether `old` is text of `path` as it is now, within one run of
+    /// consecutive lines: never removed lines, never text stitched across a gap.
     fn contains(&self, path: &str, old: &str) -> bool {
-        !old.is_empty() && self.text.get(path).is_some_and(|text| text.contains(old))
+        !old.is_empty()
+            && self
+                .runs
+                .get(path)
+                .is_some_and(|runs| runs.iter().any(|run| run.contains(old)))
     }
 }
 
@@ -211,6 +270,10 @@ fn verify_step(value: &Value) -> Option<VerifyStep> {
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.chars().count() <= 400)
         .map(str::to_string);
+    // A failure confirms nothing unless it is the failure the finding predicts.
+    if expect == Expect::Fails && output_contains.is_none() {
+        return None;
+    }
     Some(VerifyStep {
         command,
         expect,
@@ -246,7 +309,11 @@ pub fn parse_reply(
         let path = field(value, "path");
         let citation = number(value, "line").and_then(|line| {
             let end = number(value, "endLine").unwrap_or(line);
-            shown.citation(&path, line, end)
+            let side = match value.get("side").and_then(Value::as_str) {
+                Some("old") => Side::Old,
+                _ => Side::New,
+            };
+            shown.citation(&path, line, end, side)
         });
         if citation.is_none() && (!path.is_empty() || number(value, "line").is_some()) {
             dropped += 1;
@@ -317,7 +384,7 @@ pub fn parse_reply(
     };
     let summary = raw
         .summary
-        .map(|s| s.trim().chars().take(MAX_FIELD_CHARS).collect::<String>())
+        .map(|s| visible_text(&s.trim().chars().take(MAX_FIELD_CHARS).collect::<String>()))
         .unwrap_or_default();
     Some(ReviewReport {
         check: request.check,

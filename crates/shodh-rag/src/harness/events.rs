@@ -310,6 +310,9 @@ pub enum NavigationTarget {
     /// absent), with lines `line` to `end_line` selected.
     Code {
         workspace_id: String,
+        /// The conversation whose branch the changes are against (the last commit
+        /// when absent).
+        conversation_id: Option<String>,
         path: Option<String>,
         line: Option<u32>,
         end_line: Option<u32>,
@@ -1018,13 +1021,21 @@ mod tests {
             (
                 NavigationTarget::Code {
                     workspace_id: "ws-1".into(),
+                    conversation_id: Some("c1".into()),
                     path: Some("src/lib.rs".into()),
                     line: Some(10),
                     end_line: Some(14),
                     view: Some("file".into()),
                 },
                 "code",
-                vec!["workspaceId", "path", "line", "endLine", "view"],
+                vec![
+                    "workspaceId",
+                    "conversationId",
+                    "path",
+                    "line",
+                    "endLine",
+                    "view",
+                ],
             ),
             (
                 NavigationTarget::Review {

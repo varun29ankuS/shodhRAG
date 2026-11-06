@@ -401,7 +401,7 @@ function MessageContent({
         if (match[1] === 'derivation') return <><DerivationBlock source={codeString} /><DeeperChips lang="derivation" source={codeString} /></>;
         if (match[1] === 'symbols') return <><SymbolsBlock source={codeString} /><DeeperChips lang="symbols" source={codeString} /></>;
         if (match[1] === 'diagram') return <DiagramBlock source={codeString} />;
-        const block = (reviewButton: React.ReactNode) => (
+        const block = (reviewButton: React.ReactNode, codeRef?: React.Ref<HTMLDivElement>) => (
           <>
             <div className="flex items-center justify-between pl-3 pr-1.5 h-8 border-b border-shodh-border-subtle bg-shodh-raised">
               <span className="font-mono text-caption uppercase tracking-wider text-shodh-text-muted" data-answer-ui="">{match[1]}</span>
@@ -410,6 +410,7 @@ function MessageContent({
                 <CodeCopyButton text={codeString} />
               </span>
             </div>
+            <div ref={codeRef}>
             <CodeHighlight
               code={codeString}
               language={match[1]}
@@ -417,6 +418,7 @@ function MessageContent({
               preTag="div"
               customStyle={{ margin: 0, padding: '14px 16px', fontSize: '13px', lineHeight: 1.6, borderRadius: 0, background: 'transparent' }}
             />
+            </div>
           </>
         );
         // Printed answers have no code pane to review in.

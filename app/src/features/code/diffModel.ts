@@ -29,6 +29,8 @@ export interface FileChange {
   binary: boolean;
   tooLarge: boolean;
   hunks: DiffHunk[];
+  /** Why its lines are not shown, when the file itself is not the reason (a limit, secrets). */
+  note?: string | null;
 }
 
 /** Lines a file shows before the rest is folded behind "Show all". */
@@ -69,7 +71,8 @@ export function parseFileChanges(value: unknown): FileChange[] | null {
       }
       hunks.push({ lines });
     }
-    out.push({ path: item.path, status, binary: item.binary === true, tooLarge: item.tooLarge === true, hunks });
+    const note = typeof item.note === 'string' ? item.note : null;
+    out.push({ path: item.path, status, binary: item.binary === true, tooLarge: item.tooLarge === true, hunks, note });
   }
   return out;
 }
@@ -165,31 +168,67 @@ export function foldedHunks(change: FileChange, limit: number = FOLD_AFTER_LINES
   return { hunks: shown, hidden: total - kept };
 }
 
-/** Lines selected in one file of a diff or file view: `from` to `to` by shown number. */
+/** Which version of a file a line number counts in: `new` (unchanged and added lines,
+ * and plain code) or `old` (removed lines). The two never share one number space. */
+export type Side = 'old' | 'new';
+
+/** Lines selected in one file of a diff or file view: `from` to `to` on one `side`. */
 export interface LineSelection {
   path: string;
+  side: Side;
   from: number;
   to: number;
 }
 
-/** A click on line `line` of `path`, with Shift extending `current` (same file). */
-export function extendSelection(current: LineSelection | null, path: string, line: number, extend: boolean): LineSelection {
-  if (extend && current && current.path === path) {
-    return { path, from: Math.min(current.from, line), to: Math.max(current.to, line) };
+/** The side a line is numbered on: removed lines on the old one, the rest on the new. */
+export function sideOf(line: DiffLine): Side {
+  return line.kind === 'removed' ? 'old' : 'new';
+}
+
+/** `line`'s number on `side`, or null when it has none there (an added line's old one). */
+export function numberOn(line: DiffLine, side: Side): number | null {
+  return side === 'old' ? line.old : line.new;
+}
+
+/** A click on `line` of `path` (on its own side), with Shift extending `current` (same file and side). */
+export function extendSelection(current: LineSelection | null, path: string, line: DiffLine, extend: boolean): LineSelection {
+  const side = sideOf(line);
+  const at = numberOn(line, side) ?? 0;
+  if (extend && current && current.path === path && current.side === side) {
+    return { path, side, from: Math.min(current.from, at), to: Math.max(current.to, at) };
   }
-  return { path, from: line, to: line };
+  return { path, side, from: at, to: at };
 }
 
-/** Whether `line` (by shown number) of `path` is selected. */
-export function isSelected(selection: LineSelection | null, path: string, line: number): boolean {
-  return selection !== null && selection.path === path && line >= selection.from && line <= selection.to;
+/** Whether `line` of `path` has a number in the selection on the selection's side. */
+export function isSelected(selection: LineSelection | null, path: string, line: DiffLine): boolean {
+  if (selection === null || selection.path !== path) return false;
+  const at = numberOn(line, selection.side);
+  return at !== null && at >= selection.from && at <= selection.to;
 }
 
-/** The diff lines of `change` whose shown number is in the selection (every line when none). */
+/**
+ * The lines of `lines` (in display order) a selection covers: from the first to the
+ * last line numbered in it on its side, with the lines shown between them (a removed
+ * line inside a selection of new lines comes with it; one far away never does). Every
+ * line when there is no selection of this file.
+ */
+export function selectedRun(path: string, lines: readonly DiffLine[], selection: LineSelection | null): DiffLine[] {
+  if (!selection || selection.path !== path) return [...lines];
+  let first = -1;
+  let last = -1;
+  lines.forEach((line, i) => {
+    if (isSelected(selection, path, line)) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  });
+  return first < 0 ? [] : lines.slice(first, last + 1);
+}
+
+/** The diff lines of `change` the selection covers ([`selectedRun`]; every line when none). */
 export function selectedLines(change: FileChange, selection: LineSelection | null): DiffLine[] {
-  const all = change.hunks.flatMap(h => h.lines);
-  if (!selection || selection.path !== change.path) return all;
-  return all.filter(l => isSelected(selection, change.path, shownNumber(l)));
+  return selectedRun(change.path, change.hunks.flatMap(h => h.lines), selection);
 }
 
 /** A file's text as one hunk of unchanged lines, numbered from `first`. */

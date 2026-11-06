@@ -6,32 +6,11 @@ import { matchesShortcut } from '../../lib/shortcuts';
 import { notify } from '../../lib/notify';
 import { codeApi } from './api';
 import { languageOf } from './diffModel';
-import type { FileChange, LineSelection } from './diffModel';
-import { piecesAsChanges, reviewedSelection, withOutput } from './reviewModel';
-import type { CheckRun, StoredReview } from './reviewModel';
+import type { LineSelection } from './diffModel';
+import { linesAtOffsets, piecesAsChanges, reviewedSelection, withOutput } from './reviewModel';
+import type { CheckRun, ReviewSubject, StoredReview } from './reviewModel';
 
-/** What the code pane shows and the reviewer is asked about. */
-export type ReviewSubject =
-  | {
-      kind: 'diff';
-      title: string;
-      changes: FileChange[];
-      workspaceId: string | null;
-      selection: LineSelection | null;
-      /** Highlight every file as this language (the paths decide otherwise). */
-      language?: string;
-    }
-  | {
-      kind: 'file';
-      title: string;
-      path: string;
-      text: string;
-      language: string;
-      firstLine: number;
-      workspaceId: string | null;
-      selection: LineSelection | null;
-    }
-  | { kind: 'folder'; title: string; folder: string; workspaceId: string };
+export type { ReviewSubject } from './reviewModel';
 
 /** Something on screen that can be reviewed with the shortcut: its root and what it shows. */
 export interface ReviewSource {
@@ -56,6 +35,8 @@ interface CodeReviewValue {
   register: (source: ReviewSource) => () => void;
   /** Bumped by the shortcut while the pane is open: the pane runs the review. */
   runRequest: number;
+  /** The pane's own element, inside which the shortcut runs the review. */
+  paneRef: React.RefObject<HTMLElement | null>;
 }
 
 const CodeReviewContext = createContext<CodeReviewValue | null>(null);
@@ -65,15 +46,35 @@ export function useCodeReview(): CodeReviewValue | null {
   return useContext(CodeReviewContext);
 }
 
-/** The lines of `code` that `selected` (text the user selected in it) covers, if found. */
-export function selectionLines(code: string, selected: string, path: string, firstLine = 1): LineSelection | null {
-  const text = selected.replace(/\r\n/g, '\n').trim();
-  if (!text) return null;
-  const at = code.indexOf(text);
-  if (at < 0) return null;
-  const before = code.slice(0, at).split('\n').length - 1;
-  const span = text.split('\n').length - 1;
-  return { path, from: firstLine + before, to: firstLine + before + span };
+/** Characters of `container`'s text before `node` at `offset`. */
+function offsetIn(container: Node, node: Node, offset: number): number | null {
+  if (!container.contains(node)) return null;
+  const range = document.createRange();
+  range.setStart(container, 0);
+  range.setEnd(node, offset);
+  return range.toString().length;
+}
+
+/**
+ * The lines of `code` the text selection inside `container` (the code's own element)
+ * covers, found by where it starts and ends, so a selected line that also appears
+ * elsewhere is the one selected. Null without a selection in it.
+ */
+export function snippetSelection(container: HTMLElement | null, code: string, path: string): LineSelection | null {
+  const selection = typeof window === 'undefined' ? null : window.getSelection();
+  if (!container || !selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  const start = offsetIn(container, range.startContainer, range.startOffset);
+  const end = offsetIn(container, range.endContainer, range.endOffset);
+  if (start === null || end === null) return null;
+  const lines = linesAtOffsets(code, start, end);
+  return lines ? { path, side: 'new', from: lines.from, to: lines.to } : null;
+}
+
+function isTextEntry(element: Element | null): boolean {
+  if (!element) return false;
+  const tag = element.tagName;
+  return tag === 'TEXTAREA' || tag === 'INPUT' || (element as HTMLElement).isContentEditable;
 }
 
 export function CodeReviewProvider({ children }: { children: React.ReactNode }) {
@@ -82,6 +83,7 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
   const [runs, setRuns] = useState<Record<string, CheckRun>>({});
   const [runRequest, setRunRequest] = useState(0);
   const sources = useRef(new Set<ReviewSource>());
+  const paneRef = useRef<HTMLElement | null>(null);
   // Checks sent and not yet started: their command, by key.
   const awaited = useRef(new Map<string, string>());
   // Started checks: key by Shodh's command id.
@@ -131,9 +133,11 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
       .catch(e => notify.error('The review could not be opened', { description: String(e) }));
   });
 
-  // The assistant pointed at code (`open_code`): a file at lines, or the changes.
+  // The assistant pointed at code (`open_code`): a file at lines, or the conversation's changes.
   useNavigationTarget('code', target => {
-    const selection = target.path && target.line ? { path: target.path, from: target.line, to: target.endLine ?? target.line } : null;
+    const selection: LineSelection | null = target.path && target.line
+      ? { path: target.path, side: 'new', from: target.line, to: target.endLine ?? target.line }
+      : null;
     if (target.view === 'file' && target.path) {
       const path = target.path;
       codeApi
@@ -145,7 +149,7 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
       return;
     }
     codeApi
-      .diff(target.workspaceId, null, target.path)
+      .diff(target.workspaceId, target.conversationId, target.path)
       .then(changes => open({ kind: 'diff', title: target.path ? `Changes of ${target.path}` : 'Code changes', changes, workspaceId: target.workspaceId, selection }))
       .catch(e => notify.error('The changes could not be read', { description: String(e) }));
   });
@@ -174,18 +178,22 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
   }, []);
   useAgentSession(onAgentEvent);
 
-  // "Review this" from the keyboard: in the pane, run it; elsewhere, open the pane on
-  // the reviewable code the selection is in.
+  // "Review this" from the keyboard: inside the open pane, run it; on a reviewable code
+  // view the focus or a selection is in, open the pane on it. Typing elsewhere (the
+  // composer, a field) never starts a review.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!matchesShortcut(e, 'reviewCode')) return;
-      if (subject) {
+      const focus = document.activeElement;
+      const inPane = !!(paneRef.current && focus && paneRef.current.contains(focus));
+      if (subject && inPane) {
         e.preventDefault();
         setRunRequest(n => n + 1);
         return;
       }
+      if (isTextEntry(focus)) return;
       const selected = window.getSelection();
-      const node = selected?.anchorNode ?? (document.activeElement as Node | null);
+      const node = selected && !selected.isCollapsed ? selected.anchorNode : focus;
       if (!node) return;
       for (const source of sources.current) {
         if (source.root.contains(node)) {
@@ -200,7 +208,7 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
   }, [subject, open]);
 
   const value = useMemo<CodeReviewValue>(
-    () => ({ open, close, subject, review, setReview, setSelection, runs, awaitCheck, register, runRequest }),
+    () => ({ open, close, subject, review, setReview, setSelection, runs, awaitCheck, register, runRequest, paneRef }),
     [open, close, subject, review, setSelection, runs, awaitCheck, register, runRequest],
   );
   return <CodeReviewContext.Provider value={value}>{children}</CodeReviewContext.Provider>;

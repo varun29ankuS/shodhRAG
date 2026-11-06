@@ -278,6 +278,8 @@ export interface ArtifactTarget {
 /** Code of a workspace's code folder in the code pane: a file at lines, or its changes. */
 export interface CodeTarget {
   kind: "code";
+  /** The conversation whose branch the changes are against (the last commit when null). */
+  conversationId: string | null;
   workspaceId: string;
   path: string | null;
   line: number | null;

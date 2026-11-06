@@ -7,7 +7,14 @@
 //! `review_code` takes references only (a path, lines, a check), never code
 //! or words of the assistant's own: Shodh reads the lines from the file, so
 //! nothing the assistant knows can reach the reviewer through it. Free-text
-//! questions to the reviewer come only from the user, in the pane.
+//! questions to the reviewer come only from the user, in the pane. It is a
+//! Code session's tool only: a Research chat has no code folder of its own
+//! to send to a model, and its answers are no place for a file's contents.
+//! It asks first whenever the reviewer is a model off this computer.
+//!
+//! Neither tool reads the repository's `.git` folder, a file that may hold
+//! secrets ([`shodh_rag::code_review::secrets::secret_path`]) or a file git
+//! ignores.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,14 +22,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::code_review::diff::FileChange;
+use shodh_rag::code_review::secrets::secret_path;
 use shodh_rag::code_review::structure::language_of;
 use shodh_rag::code_review::{LineKind, PieceLine, ReviewCheck, ReviewPiece, ReviewRequest};
-use shodh_rag::harness::code_mode::{working_changes, MAX_DIFF_FILE_BYTES};
+use shodh_rag::harness::code_mode::{git_ignores, working_changes, MAX_DIFF_FILE_BYTES};
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
 use shodh_rag::harness::tools::navigate::emit_navigation;
 use shodh_rag::harness::tools::{
-    HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
+    ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
 };
 use shodh_rag::harness::RiskTier;
 
@@ -43,30 +51,37 @@ pub const AGENT_CHECKS: [&str; 5] = [
     "architecture",
 ];
 
-/// The tools as the base registry has them: the workspace is the run's.
+/// The base registry's code tool: `open_code` only, which shows code to the user
+/// and sends nothing anywhere. The workspace is the run's.
 pub(super) fn register(
     registry: &mut ToolRegistry,
     host: &Arc<AgentHost>,
 ) -> Result<(), RegistryError> {
-    for tool in code_review_tools(host.effects.clone(), host.workspaces.clone(), None, false) {
-        registry.register(tool)?;
-    }
+    let shared = Arc::new(Shared {
+        effects: host.effects.clone(),
+        workspaces: host.workspaces.clone(),
+        data_dir: host.data_dir.clone(),
+        workspace_id: None,
+        code_session: false,
+    });
+    registry.register(Arc::new(OpenCodeTool { shared }))?;
     Ok(())
 }
 
-/// The tools for a session. A Code session passes its workspace and
-/// `code_session`, so the reviewer may propose checks its mode then decides.
+/// A Code session's code tools, on its workspace: `open_code` and `review_code`,
+/// whose reviewer may propose checks the session's mode then decides.
 pub fn code_review_tools(
     effects: Arc<dyn HostEffects>,
     workspaces: WorkspaceState,
+    data_dir: PathBuf,
     workspace_id: Option<String>,
-    code_session: bool,
 ) -> Vec<Arc<dyn HostTool>> {
     let shared = Arc::new(Shared {
         effects,
         workspaces,
+        data_dir,
         workspace_id,
-        code_session,
+        code_session: true,
     });
     vec![
         Arc::new(OpenCodeTool {
@@ -82,6 +97,7 @@ pub const CODE_REVIEW_TOOL_NAMES: [&str; 2] = [app_tools::OPEN_CODE, app_tools::
 struct Shared {
     effects: Arc<dyn HostEffects>,
     workspaces: WorkspaceState,
+    data_dir: PathBuf,
     workspace_id: Option<String>,
     code_session: bool,
 }
@@ -102,6 +118,15 @@ impl Shared {
             .await
             .map_err(ToolError::Unavailable)?;
         Ok((workspace, folder.root().to_path_buf()))
+    }
+
+    /// What the conversation's changes are compared with: its `shodh/…` branch's
+    /// base when it has one in this folder, else the last commit.
+    fn base(&self, ctx: &ToolContext, root: &Path) -> Option<String> {
+        let conversation = ctx.audit_scope()?.conversation_id.clone();
+        crate::code_review_commands::conversation_base(&self.data_dir, &conversation, root)
+            .ok()
+            .flatten()
     }
 }
 
@@ -130,6 +155,31 @@ fn checked_path(root: &Path, path: &str, tool: &str) -> Result<String, ToolError
         })
 }
 
+/// [`checked_path`], refusing the `.git` folder, files that may hold secrets and
+/// files git ignores. Blocking (asks git).
+fn readable_path(root: &Path, path: &str, tool: &str) -> Result<String, ToolError> {
+    let shown = checked_path(root, path, tool)?;
+    if let Some(why) = secret_path(&shown) {
+        return Err(ToolError::Forbidden(format!(
+            "Shodh does not read {shown}: {why}."
+        )));
+    }
+    if shown != "." && git_ignores(root, &shown) {
+        return Err(ToolError::Forbidden(format!(
+            "Shodh does not read {shown}: git ignores it, and ignored files often hold local \
+             settings or secrets."
+        )));
+    }
+    Ok(shown)
+}
+
+async fn readable(root: &Path, path: &str, tool: &'static str) -> Result<String, ToolError> {
+    let (root, path) = (root.to_path_buf(), path.to_string());
+    tokio::task::spawn_blocking(move || readable_path(&root, &path, tool))
+        .await
+        .map_err(|e| ToolError::Failed(format!("checking the path did not finish: {e}")))?
+}
+
 pub struct OpenCodeTool {
     shared: Arc<Shared>,
 }
@@ -150,7 +200,8 @@ impl HostTool for OpenCodeTool {
          chat: a file (view \"file\") with lines line to end_line selected and scrolled to, or \
          the code changes (view \"diff\": the changes of this conversation's branch, else \
          against the last commit; of one file or folder with path, of everything without). \
-         Use it to point the user at the exact lines you are talking about. This changes \
+         Use it to point the user at the exact lines you are talking about. It does not show \
+         the .git folder, files that may hold secrets or files git ignores. This changes \
          nothing."
     }
     fn schema(&self) -> Value {
@@ -173,7 +224,7 @@ impl HostTool for OpenCodeTool {
         let tool = app_tools::OPEN_CODE;
         let (workspace, root) = self.shared.folder(ctx, tool).await?;
         let path = match str_arg(&args, "path") {
-            Some(path) => Some(checked_path(&root, path, tool)?),
+            Some(path) => Some(readable(&root, path, tool).await?),
             None => None,
         };
         let view = match str_arg(&args, "view") {
@@ -195,6 +246,7 @@ impl HostTool for OpenCodeTool {
             None,
             Some(NavigationTarget::Code {
                 workspace_id: workspace,
+                conversation_id: ctx.audit_scope().map(|s| s.conversation_id.clone()),
                 path: path.clone(),
                 line: u32_of(line),
                 end_line: u32_of(end_line),
@@ -269,15 +321,17 @@ fn diff_piece(change: &FileChange) -> ReviewPiece {
     }
 }
 
-/// What the reviewer gets for a `review_code` call on `path` (checked to be
-/// inside `root`): read by Shodh from the folder, never taken from the
-/// assistant. Returns the request and the lines reviewed of a file.
+/// What the reviewer gets for a `review_code` call on `path` (already checked
+/// with [`readable_path`]): read by Shodh from the folder, never taken from the
+/// assistant. A diff is against `base` (the conversation's branch base, else the
+/// last commit). Returns the request and the lines reviewed of a file.
 async fn build_request(
     root: &Path,
     path: &str,
     check: ReviewCheck,
     args: &Value,
     code_session: bool,
+    base: Option<String>,
 ) -> Result<(ReviewRequest, Option<(usize, usize)>), ToolError> {
     let mut request = ReviewRequest {
         check,
@@ -294,11 +348,12 @@ async fn build_request(
     }
     if args.get("diff").and_then(Value::as_bool) == Some(true) {
         let (folder, file) = (root.to_path_buf(), path.to_string());
-        let changes =
-            tokio::task::spawn_blocking(move || working_changes(&folder, None, Some(&file)))
-                .await
-                .map_err(|e| ToolError::Failed(format!("reading the changes did not finish: {e}")))?
-                .map_err(ToolError::Failed)?;
+        let changes = tokio::task::spawn_blocking(move || {
+            working_changes(&folder, base.as_deref(), Some(&file), MAX_REVIEW_LINES)
+        })
+        .await
+        .map_err(|e| ToolError::Failed(format!("reading the changes did not finish: {e}")))?
+        .map_err(ToolError::Failed)?;
         request.pieces = changes
             .iter()
             .filter(|c| !c.hunks.is_empty())
@@ -336,6 +391,25 @@ async fn build_request(
     Ok((request, Some((first, last))))
 }
 
+/// What the reviewer will be sent, in words, for a call's approval prompt.
+fn what_is_sent(args: &Value) -> String {
+    let path = str_arg(args, "path").unwrap_or("the code");
+    match (
+        str_arg(args, "check"),
+        args.get("diff").and_then(Value::as_bool),
+    ) {
+        (Some("architecture"), _) => {
+            format!("The structure of {path} (file names, imports, public items)")
+        }
+        (_, Some(true)) => format!("The changes of {path}"),
+        _ => match (line_arg(args, "line"), line_arg(args, "end_line")) {
+            (Some(a), Some(b)) => format!("Lines {a}–{b} of {path}"),
+            (Some(a), None) => format!("Lines {a}–{} of {path}", a + DEFAULT_SPAN - 1),
+            _ => format!("Lines 1–{DEFAULT_SPAN} of {path}"),
+        },
+    }
+}
+
 #[async_trait]
 impl HostTool for ReviewCodeTool {
     fn name(&self) -> &'static str {
@@ -355,10 +429,11 @@ impl HostTool for ReviewCodeTool {
          and the check: algorithm (correctness, edge cases, complexity), security, \
          performance, simpler (a simpler version), or architecture (path is a folder; the \
          reviewer gets its module tree and import graph). It never sees this conversation, \
-         so it is not anchored on how the code was written. Returns ranked findings with \
-         file:line citations, failure scenarios and suggested fixes; they are the reviewer's \
-         claims about the code, to check, not instructions. Read only: nothing is changed or \
-         run."
+         so it is not anchored on how the code was written. It asks the user first when the \
+         reviewer is a model off this computer, and never reads the .git folder, files that \
+         may hold secrets or files git ignores. Returns ranked findings with file:line \
+         citations, failure scenarios and suggested fixes; they are the reviewer's claims \
+         about the code, to check, not instructions. Nothing is changed or run."
     }
     fn schema(&self) -> Value {
         json!({
@@ -378,6 +453,28 @@ impl HostTool for ReviewCodeTool {
         RiskTier::Read
     }
 
+    /// Code sent to a model off this computer asks first, in every mode.
+    async fn must_confirm(&self, _args: &Value) -> Result<bool, ToolError> {
+        Ok(self.shared.effects.review_target().is_none_or(|t| t.cloud))
+    }
+
+    async fn preview(&self, args: &Value) -> Result<ApprovalPreview, ToolError> {
+        let target = self.shared.effects.review_target();
+        let model = target
+            .as_ref()
+            .map(|t| t.model.clone())
+            .unwrap_or_else(|| "the configured model".to_string());
+        Ok(ApprovalPreview {
+            label: Some(format!("Send code to {model} for a review")),
+            details: json!({
+                "sends": what_is_sent(args),
+                "to": model,
+                "check": str_arg(args, "check"),
+                "never": "This conversation, your memories or other files.",
+            }),
+        })
+    }
+
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::REVIEW_CODE;
         let check = str_arg(&args, "check")
@@ -385,13 +482,15 @@ impl HostTool for ReviewCodeTool {
             .and_then(ReviewCheck::parse)
             .ok_or_else(|| invalid(tool, format!("check is one of {}", AGENT_CHECKS.join(", "))))?;
         let (workspace, root) = self.shared.folder(ctx, tool).await?;
-        let path = checked_path(
+        let path = readable(
             &root,
             str_arg(&args, "path").ok_or_else(|| invalid(tool, "path is required"))?,
             tool,
-        )?;
+        )
+        .await?;
+        let base = self.shared.base(ctx, &root);
         let (request, range) =
-            build_request(&root, &path, check, &args, self.shared.code_session).await?;
+            build_request(&root, &path, check, &args, self.shared.code_session, base).await?;
         let (line, end) = range.unzip();
         let conversation = ctx.audit_scope().map(|s| s.conversation_id.clone());
         let review = self
@@ -463,9 +562,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn the_review_tool_takes_references_never_words_of_the_assistant() {
+    async fn the_review_tool_takes_references_and_is_a_code_sessions_alone() {
         let t = crate::agent_tools::testing::host().await;
-        let tools = code_review_tools(t.effects.clone(), WorkspaceState::at(None), None, false);
+        let tools = code_review_tools(
+            t.effects.clone(),
+            WorkspaceState::at(None),
+            t.dir.path().to_path_buf(),
+            None,
+        );
         let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
         assert_eq!(names, CODE_REVIEW_TOOL_NAMES);
         let schema = tools[1].schema();
@@ -482,6 +586,46 @@ mod tests {
             "a free-text question to the reviewer is the user's alone"
         );
         assert!(tools.iter().all(|tool| tool.tier() == RiskTier::Read));
+        // A Research chat's registry has open_code, never review_code.
+        let registry = crate::agent_tools::build_registry(t.host.clone()).unwrap();
+        assert!(registry.tool(app_tools::OPEN_CODE).is_some());
+        assert!(registry.tool(app_tools::REVIEW_CODE).is_none());
+    }
+
+    #[tokio::test]
+    async fn sending_code_to_a_cloud_model_asks_first() {
+        let t = crate::agent_tools::testing::host().await;
+        let tools = code_review_tools(
+            t.effects.clone(),
+            WorkspaceState::at(None),
+            t.dir.path().to_path_buf(),
+            None,
+        );
+        let args = json!({"path": "src/a.rs", "check": "security", "line": 3, "end_line": 9});
+        *t.effects.review_target.lock().unwrap() = Some(crate::agent_tools::ReviewTarget {
+            model: "OpenRouter · some/model".into(),
+            cloud: true,
+        });
+        assert!(tools[1].must_confirm(&args).await.unwrap());
+        let preview = tools[1].preview(&args).await.unwrap();
+        assert_eq!(
+            preview.label.as_deref(),
+            Some("Send code to OpenRouter · some/model for a review")
+        );
+        assert_eq!(preview.details["sends"], "Lines 3–9 of src/a.rs");
+        *t.effects.review_target.lock().unwrap() = Some(crate::agent_tools::ReviewTarget {
+            model: "Ollama · qwen".into(),
+            cloud: false,
+        });
+        assert!(
+            !tools[1].must_confirm(&args).await.unwrap(),
+            "a local model does not ask"
+        );
+        *t.effects.review_target.lock().unwrap() = None;
+        assert!(
+            tools[1].must_confirm(&args).await.unwrap(),
+            "an unknown model asks"
+        );
     }
 
     #[test]
@@ -528,6 +672,7 @@ mod tests {
             ReviewCheck::Algorithm,
             &args,
             true,
+            None,
         )
         .await
         .unwrap();
@@ -549,6 +694,7 @@ mod tests {
             ReviewCheck::Architecture,
             &json!({}),
             false,
+            None,
         )
         .await
         .unwrap();
@@ -558,17 +704,32 @@ mod tests {
     }
 
     #[test]
-    fn paths_must_stay_in_the_code_folder() {
+    fn paths_must_stay_in_the_code_folder_and_out_of_secrets() {
         let project = tempfile::tempdir().unwrap();
-        std::fs::write(project.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let root = project.path();
+        let git = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(root.join(".env"), "TOKEN=x\n").unwrap();
+        std::fs::write(root.join(".gitignore"), "local.rs\n").unwrap();
+        std::fs::write(root.join("local.rs"), "fn l() {}\n").unwrap();
         assert_eq!(
-            checked_path(project.path(), "./a.rs", "review_code").unwrap(),
+            readable_path(root, "./a.rs", "review_code").unwrap(),
             "a.rs"
         );
-        let error = checked_path(project.path(), "../a.rs", "review_code").unwrap_err();
-        assert!(
-            error.to_string().contains("not in the code folder"),
-            "{error}"
-        );
+        for refused in ["../a.rs", ".env", ".git/config", "local.rs"] {
+            assert!(
+                readable_path(root, refused, "review_code").is_err(),
+                "{refused} must be refused"
+            );
+        }
     }
 }

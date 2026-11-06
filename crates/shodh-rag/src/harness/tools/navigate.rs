@@ -95,10 +95,11 @@ impl HostTool for OpenViewTool {
     fn description(&self) -> &'static str {
         "Switch the app to a view so the user can see a result: ask (conversation), artifacts \
          (what Shodh made: creations, diagrams, charts, tables and snippets), library \
-         (indexed folders and their files), connectors (Slack and other connected tools), \
-         tasks (the calendar: tasks and events), activity (usage and the audit log), settings. \
-         Optionally focus an item by id, e.g. the id of a \
-         task you just created."
+         (indexed folders and their files), connectors (Slack and other connected tools; focus \
+         `slack`, `telegram` or `github`, optionally with `:<tab>`, opens that connector's \
+         page), tasks (the calendar: tasks and events), activity (usage and the audit log), \
+         settings (show_setting opens a section). Optionally focus an item by id, e.g. the id \
+         of a task you just created."
     }
     fn schema(&self) -> Value {
         json!({
@@ -256,8 +257,8 @@ impl HostTool for ShowAuditTool {
     }
     fn description(&self) -> &'static str {
         "Open the activity (usage and audit) log for the user with filters applied: event types, a tool \
-         name, a time range (RFC 3339 from/to) and free text. Use audit_query to read the log \
-         yourself."
+         name, a time range (RFC 3339 from/to) and free text; `entry_id` (an id from audit_query) \
+         expands and highlights that entry. Use audit_query to read the log yourself."
     }
     fn schema(&self) -> Value {
         json!({
@@ -272,7 +273,8 @@ impl HostTool for ShowAuditTool {
                 "tool": {"type": "string", "minLength": 1, "maxLength": 100},
                 "from": {"type": "string", "minLength": 10, "maxLength": 40},
                 "to": {"type": "string", "minLength": 10, "maxLength": 40},
-                "text": {"type": "string", "minLength": 1, "maxLength": 200}
+                "text": {"type": "string", "minLength": 1, "maxLength": 200},
+                "entry_id": {"type": "integer", "minimum": 1}
             },
             "additionalProperties": false
         })
@@ -307,6 +309,7 @@ impl HostTool for ShowAuditTool {
         let [from, to] = bounds;
         let tool = opt_str(&args, "tool").map(str::to_string);
         let text = opt_str(&args, "text").map(str::to_string);
+        let entry_id = args.get("entry_id").and_then(Value::as_u64);
         emit_navigation(
             ctx,
             "activity",
@@ -317,11 +320,16 @@ impl HostTool for ShowAuditTool {
                 from,
                 to,
                 text,
+                entry_id,
             }),
         );
         Ok(ToolOutput {
-            text_for_model: "The audit log is now open for the user with those filters."
-                .to_string(),
+            text_for_model: match entry_id {
+                Some(id) => format!(
+                    "The audit log is now open for the user with those filters, entry {id} highlighted."
+                ),
+                None => "The audit log is now open for the user with those filters.".to_string(),
+            },
             summary_for_ui: "Opened the audit log".to_string(),
             detail: Some(json!({ "types": types, "tool": tool })),
         })
@@ -497,7 +505,7 @@ mod tests {
         let (ctx, mut rx) = ctx();
         ShowAuditTool
             .execute(
-                json!({"types": ["tool_call"], "tool": "web_search", "from": "2026-10-01T00:00:00+05:30"}),
+                json!({"types": ["tool_call"], "tool": "web_search", "from": "2026-10-01T00:00:00+05:30", "entry_id": 7}),
                 &ctx,
             )
             .await
@@ -507,8 +515,13 @@ mod tests {
                 assert_eq!(view, "activity");
                 match target {
                     Some(NavigationTarget::Audit {
-                        types, tool, from, ..
+                        types,
+                        tool,
+                        from,
+                        entry_id,
+                        ..
                     }) => {
+                        assert_eq!(entry_id, Some(7));
                         assert_eq!(types, vec!["tool_call".to_string()]);
                         assert_eq!(tool.as_deref(), Some("web_search"));
                         assert_eq!(from.as_deref(), Some("2026-09-30T18:30:00+00:00"));

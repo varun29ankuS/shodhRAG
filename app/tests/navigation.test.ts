@@ -40,9 +40,18 @@ test('every target kind parses', () => {
   });
   assert.deepEqual(parseTarget({ kind: 'conversation', conversationId: 'c1' }), { kind: 'conversation', conversationId: 'c1' });
   assert.deepEqual(parseTarget({ kind: 'audit', types: ['tool_call', 7], tool: 'web_search', from: null, to: null, text: '' }), {
-    kind: 'audit', types: ['tool_call'], tool: 'web_search', from: null, to: null, text: null,
-  });
+    kind: 'audit', types: ['tool_call'], tool: 'web_search', from: null, to: null, text: null, entryId: null,
+  }, 'an event from an older build names no entry');
+  const entry = parseTarget({ kind: 'audit', types: [], tool: null, from: null, to: null, text: null, entryId: 42 });
+  assert.equal(entry?.kind === 'audit' ? entry.entryId : 'x', 42);
   assert.deepEqual(parseTarget({ kind: 'source', sourceId: 's1' }), { kind: 'source', sourceId: 's1' });
+  assert.deepEqual(parseTarget({ kind: 'setting', section: 'memory', item: 'mem-1' }), { kind: 'setting', section: 'memory', item: 'mem-1' });
+  assert.deepEqual(parseTarget({ kind: 'setting', section: 'privacy', item: null }), { kind: 'setting', section: 'privacy', item: null });
+  assert.deepEqual(parseTarget({ kind: 'library', section: 'paper', item: 'paper:arxiv:1706.03762' }), {
+    kind: 'library', section: 'paper', item: 'paper:arxiv:1706.03762',
+  });
+  assert.deepEqual(parseTarget({ kind: 'library', section: 'snippets', item: 'sn-1' }), { kind: 'library', section: 'snippets', item: 'sn-1' });
+  assert.deepEqual(parseTarget({ kind: 'library', section: 'graph', item: null }), { kind: 'library', section: 'graph', item: null });
 });
 
 test('malformed or unknown targets are dropped', () => {
@@ -51,6 +60,11 @@ test('malformed or unknown targets are dropped', () => {
   assert.equal(parseTarget({ kind: 'document', page: 2 }), null, 'no path');
   assert.equal(parseTarget({ kind: 'calendar', date: null, taskId: null, eventId: null }), null, 'nothing to show');
   assert.equal(parseTarget({ kind: 'conversation', conversationId: '  ' }), null);
+  assert.equal(parseTarget({ kind: 'setting', section: 'api_keys', item: null }), null, 'no such Settings section');
+  assert.equal(parseTarget({ kind: 'library', section: 'paper', item: null }), null, 'a paper page needs its paper');
+  assert.equal(parseTarget({ kind: 'library', section: 'trash', item: null }), null);
+  const badEntry = parseTarget({ kind: 'audit', types: [], tool: null, from: null, to: null, text: null, entryId: -1 });
+  assert.equal(badEntry?.kind === 'audit' ? badEntry.entryId : 'x', null);
   const badPage = parseTarget({ kind: 'document', path: 'a.pdf', page: -3, passage: null });
   assert.equal(badPage?.kind === 'document' ? badPage.page : 'x', null);
   const badDate = parseTarget({ kind: 'calendar', date: 'next friday', taskId: 't', eventId: null });

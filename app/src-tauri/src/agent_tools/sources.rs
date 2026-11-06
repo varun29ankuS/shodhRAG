@@ -11,7 +11,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use shodh_rag::audit::payload::{source_change, ChangeOrigin};
 use shodh_rag::audit::AuditEventType;
+use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::profile::app_tools;
+use shodh_rag::harness::tools::navigate::emit_navigation;
 use shodh_rag::harness::tools::sources::{find_folder_source, SourceSummary};
 use shodh_rag::harness::tools::{
     ApprovalPreview, HostTool, RegistryError, ToolContext, ToolError, ToolOutput, ToolRegistry,
@@ -58,6 +60,20 @@ fn validate_folder(tool: &str, raw: &str) -> Result<PathBuf, ToolError> {
     std::fs::canonicalize(path)
         .map(|p| strip_verbatim(&p))
         .map_err(|e| ToolError::Unavailable(format!("Cannot open {raw}: {e}")))
+}
+
+/// Show the Library with the card of `source_id` highlighted (its indexing
+/// progress on it), or the Library as it is when no source is given. Called
+/// only after the change started.
+fn reveal_source(ctx: &ToolContext, source_id: Option<&str>) {
+    emit_navigation(
+        ctx,
+        "library",
+        source_id.map(str::to_string),
+        source_id.map(|id| NavigationTarget::Source {
+            source_id: id.to_string(),
+        }),
+    );
 }
 
 /// Resolve the `source_id` argument to an indexed folder source.
@@ -155,6 +171,7 @@ impl HostTool for AddFolderTool {
                 source_id: source_id.clone(),
             },
         );
+        reveal_source(ctx, Some(source_id.as_str()));
         Ok(ToolOutput {
             // The folder's name only: its path never reaches the model.
             text_for_model: format!(
@@ -224,6 +241,7 @@ impl HostTool for ReindexSourceTool {
                 source_id: source_id.to_string(),
             },
         );
+        reveal_source(ctx, Some(source_id));
         Ok(ToolOutput {
             text_for_model: format!(
                 "Started re-indexing the folder \"{}\" (source {source_id}) in the background.",
@@ -298,6 +316,8 @@ impl HostTool for RemoveSourceTool {
                 json!({"ok": true, "files": source.files, "chunks": deleted}),
             ),
         );
+        // Its card is gone: the Library as it is now.
+        reveal_source(ctx, None);
         Ok(ToolOutput {
             text_for_model: format!(
                 "Removed the folder \"{}\" (source {source_id}, {} files, {deleted} chunks) from the index. Files on disk were not touched.",

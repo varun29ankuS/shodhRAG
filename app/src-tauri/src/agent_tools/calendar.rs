@@ -375,6 +375,7 @@ impl HostTool for CreateTaskTool {
         self.host
             .effects
             .calendar_changed(CalendarChange::TaskSaved(task.clone()));
+        reveal_task(ctx, &task);
         let due_text = task
             .due_date
             .as_deref()
@@ -386,7 +387,7 @@ impl HostTool for CreateTaskTool {
             .unwrap_or_default();
         Ok(ToolOutput {
             text_for_model: format!(
-                "Created task \"{}\" (id {}{due_text}){in_workspace}. Use show_calendar with this task_id to show it.",
+                "Created task \"{}\" (id {}{due_text}){in_workspace}. It is now shown to the user in Tasks.",
                 task.title, task.id
             ),
             summary_for_ui: format!("Created task “{}”{due_text}{in_workspace}", task.title),
@@ -451,7 +452,7 @@ impl HostTool for CreateEventTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_EVENT;
         let title = str_arg(&args, "title").ok_or_else(|| invalid(tool, "`title` is required"))?;
         let start = str_arg(&args, "start").ok_or_else(|| invalid(tool, "`start` is required"))?;
@@ -472,9 +473,10 @@ impl HostTool for CreateEventTool {
         self.host
             .effects
             .calendar_changed(CalendarChange::EventSaved(event.clone()));
+        reveal_event(ctx, &event);
         Ok(ToolOutput {
             text_for_model: format!(
-                "Created event \"{}\" (id {}) starting {}. Use show_calendar with this event_id to show it.",
+                "Created event \"{}\" (id {}) starting {}. It is now shown to the user in Tasks.",
                 event.title, event.id, event.start_time
             ),
             summary_for_ui: format!("Created event “{}” on {}", event.title, event.start_time),
@@ -738,6 +740,7 @@ fn preview_task_patch(
 /// Save `patch` to the task and report it.
 fn save_task_patch(
     host: &AgentHost,
+    ctx: &ToolContext,
     tool: &str,
     task_id: &str,
     patch: &TaskPatch,
@@ -745,6 +748,7 @@ fn save_task_patch(
     let (before, after, changes) = store(host)
         .update(|d| d.patch_task(task_id, patch))
         .map_err(|e| tool_error(tool, e))?;
+    reveal_task(ctx, &after);
     if changes.is_empty() {
         return Ok(ToolOutput {
             text_for_model: format!(
@@ -855,12 +859,12 @@ impl HostTool for UpdateTaskTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::UPDATE_TASK;
         let task_id =
             str_arg(&args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
         let patch = task_patch_from_args(&self.host, tool, &args).await?;
-        save_task_patch(&self.host, tool, task_id, &patch)
+        save_task_patch(&self.host, ctx, tool, task_id, &patch)
     }
 }
 
@@ -917,11 +921,11 @@ impl HostTool for CompleteTaskTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::COMPLETE_TASK;
         let task_id =
             str_arg(&args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
-        save_task_patch(&self.host, tool, task_id, &complete_patch())
+        save_task_patch(&self.host, ctx, tool, task_id, &complete_patch())
     }
 }
 
@@ -1018,7 +1022,7 @@ impl HostTool for UpdateEventTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::UPDATE_EVENT;
         let event_id =
             str_arg(&args, "event_id").ok_or_else(|| invalid(tool, "`event_id` is required"))?;
@@ -1026,6 +1030,7 @@ impl HostTool for UpdateEventTool {
         let (before, after, changes) = store(&self.host)
             .update(|d| d.patch_event(event_id, &patch))
             .map_err(|e| tool_error(tool, e))?;
+        reveal_event(ctx, &after);
         if !changes.is_empty() {
             self.host
                 .effects
@@ -1108,7 +1113,7 @@ impl HostTool for DeleteTaskTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::DELETE_TASK;
         let task_id =
             str_arg(&args, "task_id").ok_or_else(|| invalid(tool, "`task_id` is required"))?;
@@ -1118,6 +1123,7 @@ impl HostTool for DeleteTaskTool {
         self.host
             .effects
             .calendar_changed(CalendarChange::TaskRemoved(removed.id.clone()));
+        reveal_removed(ctx, day_of(removed.due_date.as_deref()));
         Ok(ToolOutput {
             text_for_model: format!("Deleted task \"{}\" (id {}).", removed.title, removed.id),
             summary_for_ui: format!("Deleted “{}”", removed.title),
@@ -1173,7 +1179,7 @@ impl HostTool for DeleteEventTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::DELETE_EVENT;
         let event_id =
             str_arg(&args, "event_id").ok_or_else(|| invalid(tool, "`event_id` is required"))?;
@@ -1183,12 +1189,63 @@ impl HostTool for DeleteEventTool {
         self.host
             .effects
             .calendar_changed(CalendarChange::EventRemoved(removed.id.clone()));
+        reveal_removed(ctx, day_of(Some(&removed.start_time)));
         Ok(ToolOutput {
             text_for_model: format!("Deleted event \"{}\" (id {}).", removed.title, removed.id),
             summary_for_ui: format!("Deleted “{}”", removed.title),
             detail: Some(json!({ "id": removed.id, "title": removed.title })),
         })
     }
+}
+
+// ── showing what a write changed ───────────────────────────────────────────
+
+/// The `YYYY-MM-DD` day of a stored moment, if it parses.
+fn day_of(moment: Option<&str>) -> Option<String> {
+    moment
+        .and_then(parse_moment)
+        .map(|m| m.date().format("%Y-%m-%d").to_string())
+}
+
+/// Show a task the assistant just saved: Tasks at its due date, the task
+/// highlighted. Called only after the write succeeded (and so after its
+/// approval).
+fn reveal_task(ctx: &ToolContext, task: &TodoItem) {
+    emit_navigation(
+        ctx,
+        "tasks",
+        Some(task.id.clone()),
+        Some(NavigationTarget::Calendar {
+            date: day_of(task.due_date.as_deref()),
+            task_id: Some(task.id.clone()),
+            event_id: None,
+        }),
+    );
+}
+
+/// Show an event the assistant just saved: Tasks at its day, the event highlighted.
+fn reveal_event(ctx: &ToolContext, event: &CalendarEvent) {
+    emit_navigation(
+        ctx,
+        "tasks",
+        Some(event.id.clone()),
+        Some(NavigationTarget::Calendar {
+            date: day_of(Some(&event.start_time)),
+            task_id: None,
+            event_id: Some(event.id.clone()),
+        }),
+    );
+}
+
+/// After a delete: Tasks at the day the removed item was on (the item itself
+/// is gone, so nothing is highlighted), or Tasks as it is when it had no day.
+fn reveal_removed(ctx: &ToolContext, day: Option<String>) {
+    let target = day.map(|date| NavigationTarget::Calendar {
+        date: Some(date),
+        task_id: None,
+        event_id: None,
+    });
+    emit_navigation(ctx, "tasks", None, target);
 }
 
 // ── show_calendar ──────────────────────────────────────────────────────────
@@ -1594,6 +1651,118 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The calendar target of the next `navigated` event.
+    fn next_calendar_target(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        match rx.try_recv().expect("a navigated event") {
+            AgentEvent::Navigated { view, target, .. } => {
+                assert_eq!(view, "tasks");
+                match target {
+                    Some(NavigationTarget::Calendar {
+                        date,
+                        task_id,
+                        event_id,
+                    }) => (date, task_id, event_id),
+                    None => (None, None, None),
+                    other => panic!("{other:?}"),
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn every_calendar_write_shows_what_it_changed() {
+        let t = testing::host().await;
+        let (ctx, mut rx) = testing::ctx();
+        let created = CreateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"title": "Renew lease", "due": "2026-11-05"}), &ctx)
+        .await
+        .unwrap();
+        let task_id = created.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            next_calendar_target(&mut rx),
+            (Some("2026-11-05".into()), Some(task_id.clone()), None)
+        );
+        assert!(created.text_for_model.contains("now shown to the user"));
+
+        UpdateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"task_id": task_id, "due": "2026-11-07"}), &ctx)
+        .await
+        .unwrap();
+        assert_eq!(
+            next_calendar_target(&mut rx),
+            (Some("2026-11-07".into()), Some(task_id.clone()), None)
+        );
+
+        CompleteTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"task_id": task_id}), &ctx)
+        .await
+        .unwrap();
+        assert_eq!(next_calendar_target(&mut rx).1, Some(task_id.clone()));
+
+        let event = CreateEventTool {
+            host: t.host.clone(),
+        }
+        .execute(
+            json!({"title": "Lease call", "start": "2026-11-06T10:00"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let event_id = event.detail.unwrap()["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            next_calendar_target(&mut rx),
+            (Some("2026-11-06".into()), None, Some(event_id.clone()))
+        );
+
+        UpdateEventTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"event_id": event_id, "location": "Pune"}), &ctx)
+        .await
+        .unwrap();
+        assert_eq!(next_calendar_target(&mut rx).2, Some(event_id.clone()));
+
+        // A delete shows the day the item was on; nothing is left to highlight.
+        DeleteEventTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"event_id": event_id}), &ctx)
+        .await
+        .unwrap();
+        assert_eq!(
+            next_calendar_target(&mut rx),
+            (Some("2026-11-06".into()), None, None)
+        );
+        DeleteTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"task_id": task_id}), &ctx)
+        .await
+        .unwrap();
+        assert_eq!(
+            next_calendar_target(&mut rx),
+            (Some("2026-11-07".into()), None, None)
+        );
+
+        // A failed write shows nothing.
+        assert!(UpdateTaskTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"task_id": "nope", "title": "x"}), &ctx)
+        .await
+        .is_err());
+        assert!(rx.try_recv().is_err());
     }
 
     // ── Workspaces ─────────────────────────────────────────────────────────

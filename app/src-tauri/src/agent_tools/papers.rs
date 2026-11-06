@@ -472,6 +472,7 @@ impl HostTool for CreateSnippetTool {
         self.host
             .effects
             .research_changed("snippet", &snippet.file_path);
+        super::show_in_library(ctx, "snippets", Some(snippet.id.clone()));
         Ok(created_snippet_output(&snippet, ctx))
     }
 }

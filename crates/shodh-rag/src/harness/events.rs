@@ -275,13 +275,17 @@ pub enum NavigationTarget {
     },
     /// Open a saved conversation.
     Conversation { conversation_id: String },
-    /// Show the audit log filtered to these event types, tool, range and text.
+    /// Show the audit log filtered to these event types, tool, range and text,
+    /// with one entry (by its id) expanded and highlighted when given.
     Audit {
         types: Vec<String>,
         tool: Option<String>,
         from: Option<String>,
         to: Option<String>,
         text: Option<String>,
+        /// Absent in events from builds before entries could be shown.
+        #[serde(default)]
+        entry_id: Option<u64>,
     },
     /// Show an indexed folder source in the Library.
     Source { source_id: String },
@@ -321,6 +325,56 @@ pub enum NavigationTarget {
     /// Open a code review in the code pane, its code shown with the reviewed
     /// lines selected.
     Review { review_id: String },
+    /// Show a Settings section, with one item highlighted when given: a setting
+    /// (its key, e.g. `theme`) or, in `memory`, a memory (its id).
+    Setting {
+        section: String,
+        item: Option<String>,
+    },
+    /// Show a part of the Library: `snippets` (a snippet highlighted by its id),
+    /// `graph` (the paper graph) or `paper` (a paper's page, by its id).
+    Library {
+        section: String,
+        item: Option<String>,
+    },
+}
+
+impl NavigationTarget {
+    /// Every target kind, as serialised in `kind`. [`Self::kind`] is an
+    /// exhaustive match, so a new variant cannot compile until it has a kind,
+    /// and the coverage test checks this list against the frontend.
+    pub const KINDS: [&'static str; 12] = [
+        "document",
+        "calendar",
+        "conversation",
+        "audit",
+        "source",
+        "visual",
+        "workspace",
+        "artifact",
+        "code",
+        "review",
+        "setting",
+        "library",
+    ];
+
+    /// This target's `kind`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Document { .. } => "document",
+            Self::Calendar { .. } => "calendar",
+            Self::Conversation { .. } => "conversation",
+            Self::Audit { .. } => "audit",
+            Self::Source { .. } => "source",
+            Self::Visual { .. } => "visual",
+            Self::Workspace { .. } => "workspace",
+            Self::Artifact { .. } => "artifact",
+            Self::Code { .. } => "code",
+            Self::Review { .. } => "review",
+            Self::Setting { .. } => "setting",
+            Self::Library { .. } => "library",
+        }
+    }
 }
 
 /// A normalised agent event. Produced from omp frames and from host-tool
@@ -982,9 +1036,10 @@ mod tests {
                     from: None,
                     to: None,
                     text: None,
+                    entry_id: Some(42),
                 },
                 "audit",
-                vec!["types", "tool", "from", "to", "text"],
+                vec!["types", "tool", "from", "to", "text", "entryId"],
             ),
             (
                 NavigationTarget::Source {
@@ -1044,6 +1099,22 @@ mod tests {
                 "review",
                 vec!["reviewId"],
             ),
+            (
+                NavigationTarget::Setting {
+                    section: "memory".into(),
+                    item: Some("mem-1".into()),
+                },
+                "setting",
+                vec!["section", "item"],
+            ),
+            (
+                NavigationTarget::Library {
+                    section: "paper".into(),
+                    item: Some("paper-1".into()),
+                },
+                "library",
+                vec!["section", "item"],
+            ),
         ]
     }
 
@@ -1057,6 +1128,25 @@ mod tests {
             }
             let back: NavigationTarget = serde_json::from_value(value).unwrap();
             assert_eq!(back, target);
+            assert_eq!(target.kind(), kind);
+        }
+        // Every kind is round-tripped above, and KINDS lists each exactly once.
+        let mut tested: Vec<&str> = targets().iter().map(|(_, kind, _)| *kind).collect();
+        tested.sort_unstable();
+        let mut kinds = NavigationTarget::KINDS.to_vec();
+        kinds.sort_unstable();
+        assert_eq!(tested, kinds);
+    }
+
+    #[test]
+    fn an_audit_target_from_an_older_build_has_no_entry() {
+        let old = json!({"kind": "audit", "types": [], "tool": null, "from": null, "to": null, "text": "x"});
+        match serde_json::from_value::<NavigationTarget>(old).unwrap() {
+            NavigationTarget::Audit { entry_id, text, .. } => {
+                assert_eq!(entry_id, None);
+                assert_eq!(text.as_deref(), Some("x"));
+            }
+            other => panic!("{other:?}"),
         }
     }
 

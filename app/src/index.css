@@ -342,6 +342,15 @@
     animation: shell-cue 2800ms var(--ease-standard) both;
   }
 
+  /* "The assistant is here": an item the assistant opened, changed or pointed at
+     (lib/agentHighlight). A soft accent outline that pulses twice and fades; a
+     still outline under reduced motion, removed after the same time. */
+  .assistant-here {
+    outline: 2px solid var(--c-accent-text);
+    outline-offset: 2px;
+    animation: assistant-here 2800ms var(--ease-standard) both;
+  }
+
   .shell-pop {
     transform-origin: top right;
     animation: shell-pop var(--dur-panel) var(--ease-enter) both;
@@ -366,6 +375,15 @@
   100% { opacity: 0; }
 }
 
+@keyframes assistant-here {
+  0% { outline-color: transparent; box-shadow: 0 0 0 0 transparent; }
+  10% { outline-color: var(--c-accent-text); box-shadow: 0 0 0 6px var(--c-accent-soft); }
+  30% { box-shadow: 0 0 0 2px var(--c-accent-soft); }
+  50% { box-shadow: 0 0 0 6px var(--c-accent-soft); }
+  80% { outline-color: var(--c-accent-text); box-shadow: 0 0 0 0 transparent; }
+  100% { outline-color: transparent; box-shadow: 0 0 0 0 transparent; }
+}
+
 @keyframes shell-pop {
   from { opacity: 0; transform: scale(0.96) translateY(-2px); }
   to { opacity: 1; transform: none; }
@@ -379,6 +397,7 @@
 @media (prefers-reduced-motion: reduce) {
   .shell-view-enter,
   .shell-cue,
+  .assistant-here,
   .shell-pop,
   .shell-skeleton,
   .ask-rise,

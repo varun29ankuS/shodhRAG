@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Sliders, RotateCcw } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
+import { agentItemKey } from '../lib/agentHighlight';
 import {
   MAX_SEARCH_RESULTS,
   MIN_SEARCH_RESULTS,
@@ -116,7 +117,7 @@ export default function SearchSettings({ config, onUpdate, onReset }: SearchSett
       </div>
 
       {/* Max results */}
-      <div>
+      <div data-agent-item={agentItemKey('setting', 'search_max_results')} className="rounded-lg">
         <div className="flex items-center justify-between mb-1.5">
           <label className="text-xs font-medium" style={{ color: colors.textSecondary }}>
             Passages per search

@@ -108,6 +108,8 @@ export default function AuditView() {
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [searchText, setSearchText] = useState('');
+  /** The entry the assistant pointed at (show_audit's entry_id), with a sequence so a repeat applies. */
+  const [reveal, setReveal] = useState<{ id: number; seq: number } | null>(null);
   const [firstPage] = useState(cachedFirstPage);
   const [rows, setRows] = useState<AuditRow[]>(() => firstPage?.rows ?? []);
   const [total, setTotal] = useState(() => firstPage?.total ?? 0);
@@ -218,6 +220,10 @@ export default function AuditView() {
 
   // The agent opened the log with filters (show_audit).
   useNavigationTarget('audit', target => {
+    if (target.entryId !== null) {
+      const id = target.entryId;
+      setReveal(prev => ({ id, seq: (prev?.seq ?? 0) + 1 }));
+    }
     const known = new Set<string>(EVENT_TYPES.map(t => t.id));
     setSearchText(target.text ?? '');
     setFilters({
@@ -448,6 +454,7 @@ export default function AuditView() {
         loading={loading}
         onLoadMore={loadMore}
         onSelectConversation={conversationId => setFilters(f => ({ ...f, conversationId }))}
+        reveal={reveal}
       />
 
       <form onSubmit={saveRetention} className="flex flex-wrap items-end gap-2" aria-labelledby={`${ids}-retention`}>

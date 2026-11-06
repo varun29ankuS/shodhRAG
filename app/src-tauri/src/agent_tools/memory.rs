@@ -136,6 +136,25 @@ async fn service(host: &AgentHost) -> Result<Arc<MemoryService>, ToolError> {
     host.memory.service().await.map_err(ToolError::Unavailable)
 }
 
+/// Fails unless memory `id` is one this run may see, as `forget` checks it: `show_setting`
+/// shows a memory only after this.
+pub(super) async fn check_visible(
+    host: &AgentHost,
+    ctx: &ToolContext,
+    tool: &str,
+    id: &str,
+) -> Result<(), ToolError> {
+    let memory = service(host)
+        .await?
+        .get(id)
+        .await
+        .map_err(|e| tool_error(tool, e))?;
+    if !scope(ctx).visible().contains(&memory.scope) {
+        return Err(ToolError::NotFound(format!("No memory with id {id}.")));
+    }
+    Ok(())
+}
+
 /// The memory scope of this run: its workspace, or global.
 fn scope(ctx: &ToolContext) -> Scope {
     Scope::for_workspace(ctx.scope().workspace.as_deref())

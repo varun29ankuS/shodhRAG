@@ -282,4 +282,199 @@ pub(crate) mod tests {
             "member calls like x.invoke are not Tauri invoke"
         );
     }
+
+    /// The strings of a `const NAME ... = [ ... ]` array in a TypeScript file.
+    fn ts_array(text: &str, name: &str, file: &str) -> Vec<String> {
+        let re = Regex::new(&format!(
+            r"const {}\b[^=]*=\s*\[([^\]]*)\]",
+            regex::escape(name)
+        ))
+        .unwrap();
+        let body = re
+            .captures(text)
+            .unwrap_or_else(|| panic!("{name} in {file}"))
+            .get(1)
+            .unwrap()
+            .as_str()
+            .to_string();
+        Regex::new(r"'([^']*)'")
+            .unwrap()
+            .captures_iter(&body)
+            .map(|c| c[1].to_string())
+            .collect()
+    }
+
+    fn src_file(relative: &str) -> String {
+        read(&manifest_dir().join("..").join("src").join(relative))
+    }
+
+    fn strings(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Every view the assistant can open and every kind of item a `navigated`
+    /// event can point at has a Read-tier tool that emits it, and the frontend
+    /// handles each: it parses the kind, a view applies it, and the lists both
+    /// sides validate against (Settings sections, Library parts, workspace tabs,
+    /// views) agree. That each listed tool really emits its target is asserted
+    /// by the tool's own tests.
+    #[tokio::test]
+    async fn every_view_and_item_the_assistant_can_open_has_a_tool_and_a_handler() {
+        use shodh_rag::harness::events::NavigationTarget;
+        use shodh_rag::harness::tools::navigate::VIEWS;
+        use shodh_rag::harness::RiskTier;
+
+        use shodh_rag::harness::tools::HostTool;
+
+        let t = testing::host().await;
+        let registry = build_registry(t.host.clone()).expect("registry builds");
+        // A Code session adds its own tools (review_code) to these.
+        let code_tools = crate::agent_tools::code_review_tools(
+            t.host.effects.clone(),
+            t.host.workspaces.clone(),
+            t.host.data_dir.clone(),
+            None,
+        );
+        let tier_of = |name: &str| -> Option<RiskTier> {
+            registry.tool(name).map(|tool| tool.tier()).or_else(|| {
+                code_tools
+                    .iter()
+                    .find(|tool| tool.name() == name)
+                    .map(|tool| tool.tier())
+            })
+        };
+        let navigation = &manifest()["navigation"];
+        let mut problems = Vec::new();
+
+        let check_tools = |what: &str, entry: Option<&Value>, problems: &mut Vec<String>| {
+            let tools = entry.map(strings).unwrap_or_default();
+            if tools.is_empty() {
+                problems.push(format!("{what}: no tool opens it"));
+                return;
+            }
+            let mut read = false;
+            for tool in &tools {
+                match tier_of(tool) {
+                    None => problems.push(format!("{what}: {tool} is not a registered tool")),
+                    Some(tier) => read |= tier == RiskTier::Read,
+                }
+            }
+            if !read {
+                problems.push(format!(
+                    "{what}: only writes show it; give the assistant a Read-tier tool that opens it"
+                ));
+            }
+        };
+
+        let views = navigation["views"].as_object().expect("navigation.views");
+        for view in VIEWS {
+            check_tools(&format!("view {view}"), views.get(view), &mut problems);
+        }
+        for view in views.keys() {
+            if !VIEWS.contains(&view.as_str()) {
+                problems.push(format!(
+                    "navigation.views lists {view}, which is not a view"
+                ));
+            }
+        }
+
+        let targets = navigation["targets"]
+            .as_object()
+            .expect("navigation.targets");
+        let parser = src_file("features/agent/navigation.ts");
+        let frontend: Vec<String> = frontend_files().iter().map(|f| read(f)).collect();
+        for kind in NavigationTarget::KINDS {
+            check_tools(&format!("target {kind}"), targets.get(kind), &mut problems);
+            if !parser.contains(&format!("case '{kind}':")) {
+                problems.push(format!(
+                    "target {kind}: features/agent/navigation.ts does not parse it"
+                ));
+            }
+            let applied = [
+                format!("useNavigationTarget('{kind}'"),
+                format!("kind === '{kind}'"),
+            ];
+            if !frontend
+                .iter()
+                .any(|text| applied.iter().any(|a| text.contains(a.as_str())))
+            {
+                problems.push(format!("target {kind}: no view applies it"));
+            }
+        }
+        for kind in targets.keys() {
+            if !NavigationTarget::KINDS.contains(&kind.as_str()) {
+                problems.push(format!(
+                    "navigation.targets lists {kind}, which is not a target kind"
+                ));
+            }
+        }
+
+        // Opening and showing never changes data: every open_ and show_ tool is Read tier.
+        for name in registry.names() {
+            if name.starts_with("open_") || name.starts_with("show_") {
+                if let Some((_, _, tier)) = registry.describe(name) {
+                    if tier != RiskTier::Read {
+                        problems.push(format!("{name} only shows, but is {tier:?} tier"));
+                    }
+                }
+            }
+        }
+
+        // Both sides validate targets against the same lists.
+        let same = |what: &str, rust: &[&str], ts: Vec<String>, problems: &mut Vec<String>| {
+            let rust: Vec<String> = rust.iter().map(|s| s.to_string()).collect();
+            if rust != ts {
+                problems.push(format!("{what}: Rust has {rust:?}, the frontend {ts:?}"));
+            }
+        };
+        let settings_view = src_file("components/shell/SettingsView.tsx");
+        let section_ids: Vec<String> = Regex::new(r"(?m)^\s*id: '([a-z]+)',\s*$")
+            .unwrap()
+            .captures_iter(&settings_view)
+            .map(|c| c[1].to_string())
+            .collect();
+        same(
+            "Settings sections (SettingsView)",
+            &crate::agent_tools::SETTINGS_SECTIONS[..],
+            section_ids,
+            &mut problems,
+        );
+        same(
+            "Settings sections (navigation.ts)",
+            &crate::agent_tools::SETTINGS_SECTIONS[..],
+            ts_array(&parser, "SETTINGS_SECTIONS", "navigation.ts"),
+            &mut problems,
+        );
+        same(
+            "Library sections",
+            &crate::agent_tools::LIBRARY_SECTIONS[..],
+            ts_array(&parser, "LIBRARY_SECTIONS", "navigation.ts"),
+            &mut problems,
+        );
+        same(
+            "Workspace tabs",
+            &crate::agent_tools::WORKSPACE_TABS[..],
+            ts_array(&parser, "WORKSPACE_TABS", "navigation.ts"),
+            &mut problems,
+        );
+        same(
+            "Views",
+            &VIEWS[..],
+            ts_array(&src_file("lib/viewTabs.ts"), "VIEW_TABS", "viewTabs.ts"),
+            &mut problems,
+        );
+
+        assert!(
+            problems.is_empty(),
+            "navigation gaps:\n- {}",
+            problems.join("\n- ")
+        );
+    }
 }

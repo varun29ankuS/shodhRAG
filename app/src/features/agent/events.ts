@@ -243,6 +243,8 @@ export interface AuditTarget {
   from: string | null;
   to: string | null;
   text: string | null;
+  /** An entry (its id) to expand and highlight; null in events from older builds. */
+  entryId: number | null;
 }
 
 export interface SourceTarget {
@@ -294,6 +296,20 @@ export interface ReviewTarget {
   reviewId: string;
 }
 
+/** A Settings section, with a setting (its key) or, in "memory", a memory (its id) highlighted. */
+export interface SettingTarget {
+  kind: "setting";
+  section: string;
+  item: string | null;
+}
+
+/** A part of the Library: "snippets" (a snippet highlighted), "graph", or "paper" (its page). */
+export interface LibraryTarget {
+  kind: "library";
+  section: string;
+  item: string | null;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
@@ -304,7 +320,9 @@ export type NavigationTarget =
   | WorkspaceTarget
   | ArtifactTarget
   | CodeTarget
-  | ReviewTarget;
+  | ReviewTarget
+  | SettingTarget
+  | LibraryTarget;
 
 export interface NavigatedEvent {
   type: "navigated";

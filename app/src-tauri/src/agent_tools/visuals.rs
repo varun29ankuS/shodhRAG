@@ -350,7 +350,7 @@ impl HostTool for ReviseVisualTool {
          its code block body (no fences): Mermaid text, chart/plot/simulation JSON, SVG \
          markup, TeX of the equation, or a Markdown table. It is stored as the next version; \
          earlier versions and the original answer are never changed. `change` says what was \
-         changed. Call open_visual afterwards to show it."
+         changed. The new version is then shown to the user."
     }
     fn schema(&self) -> Value {
         json!({
@@ -398,7 +398,7 @@ impl HostTool for ReviseVisualTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let revision = revision_args(&args)?;
         let Revision {
             id,
@@ -424,10 +424,20 @@ impl HostTool for ReviseVisualTool {
             .map_err(tool_error)?;
         let v = &detail.visual;
         self.host.effects.visuals_changed(&v.conversation_id);
+        // The new version, open in the focus pop-out.
+        emit_navigation(
+            ctx,
+            "ask",
+            None,
+            Some(NavigationTarget::Visual {
+                visual_id: v.id.clone(),
+                version: Some(v.version),
+            }),
+        );
         Ok(ToolOutput {
             text_for_model: format!(
-                "Saved version {} of \"{}\" (id {}). Earlier versions are unchanged. Call \
-                 open_visual with this id to show it.",
+                "Saved version {} of \"{}\" (id {}). Earlier versions are unchanged. It is now \
+                 open for the user.",
                 v.version, v.title, v.id
             ),
             summary_for_ui: format!("Saved version {} of “{}”", v.version, v.title),
@@ -737,23 +747,22 @@ mod tests {
         open.execute(json!({ "visual_id": id }), &ctx)
             .await
             .unwrap();
-        let mut target = None;
+        let mut targets = Vec::new();
         while let Ok(event) = rx.try_recv() {
             if let AgentEvent::Navigated {
                 target: t, view, ..
             } = event
             {
                 assert_eq!(view, "ask");
-                target = t;
+                targets.push(t);
             }
         }
-        assert_eq!(
-            target,
-            Some(NavigationTarget::Visual {
-                visual_id: new_id,
-                version: Some(2),
-            })
-        );
+        // The revision showed its new version, and open_visual showed it again.
+        let shown = Some(NavigationTarget::Visual {
+            visual_id: new_id,
+            version: Some(2),
+        });
+        assert_eq!(targets, vec![shown.clone(), shown]);
         let missing = open.execute(json!({ "visual_id": "nope" }), &ctx).await;
         assert!(matches!(missing, Err(ToolError::NotFound(_))));
     }

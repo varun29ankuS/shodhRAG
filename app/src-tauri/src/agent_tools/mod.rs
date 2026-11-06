@@ -57,8 +57,13 @@ use crate::workspace_commands::WorkspaceState;
 pub use artifacts::{creator_tools, CREATOR_TOOL_NAMES};
 pub use code_review::{code_review_tools, CODE_REVIEW_TOOL_NAMES};
 pub use files::{IndexedRoots, SourceRoots};
+/// For the coverage test, which checks them against the frontend.
+#[cfg(test)]
+pub(crate) use settings::SETTINGS_SECTIONS;
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
+#[cfg(test)]
+pub(crate) use workspaces::TABS as WORKSPACE_TABS;
 
 /// What the agent is deliberately never given a tool for, stated in the
 /// system prompt (see `ToolRegistry::capability_manifest`) so the model says
@@ -276,6 +281,25 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     code_review::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
+}
+
+/// The parts of the Library a navigation opens (`LIBRARY_SECTIONS` in the frontend's
+/// navigation; the coverage test checks the two agree).
+pub(crate) const LIBRARY_SECTIONS: [&str; 3] = ["snippets", "graph", "paper"];
+
+/// Show a part of the Library ([`LIBRARY_SECTIONS`]) with `item` (a snippet or paper
+/// id) highlighted or opened.
+pub(crate) fn show_in_library(ctx: &ToolContext, section: &'static str, item: Option<String>) {
+    debug_assert!(LIBRARY_SECTIONS.contains(&section), "{section}");
+    shodh_rag::harness::tools::navigate::emit_navigation(
+        ctx,
+        "library",
+        item.clone(),
+        Some(shodh_rag::harness::events::NavigationTarget::Library {
+            section: section.to_string(),
+            item,
+        }),
+    );
 }
 
 pub(crate) fn invalid(tool: &str, reasons: impl Into<String>) -> ToolError {

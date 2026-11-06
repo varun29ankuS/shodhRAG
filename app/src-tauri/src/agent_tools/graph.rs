@@ -39,6 +39,7 @@ pub(super) fn register(
     registry.register(Arc::new(PaperGraphTool { host: host.clone() }))?;
     registry.register(Arc::new(GetPaperTool { host: host.clone() }))?;
     registry.register(Arc::new(FindPapersTool { host: host.clone() }))?;
+    registry.register(Arc::new(ShowPaperTool { host: host.clone() }))?;
     Ok(())
 }
 
@@ -661,6 +662,64 @@ impl HostTool for GetPaperTool {
     }
 }
 
+/// `show_paper`: open the Library's paper graph, or one paper's page in it, for the user.
+pub struct ShowPaperTool {
+    host: Arc<AgentHost>,
+}
+
+#[async_trait]
+impl HostTool for ShowPaperTool {
+    fn name(&self) -> &'static str {
+        app_tools::SHOW_PAPER
+    }
+    fn label(&self) -> &'static str {
+        "Show paper"
+    }
+    fn label_template(&self) -> &'static str {
+        "Showing[ {paper}]"
+    }
+    fn description(&self) -> &'static str {
+        "Open a paper's page in the Library for the user (its citations, results, figures and \
+         snippets), the paper named like get_paper does: by title, arXiv id, DOI or file path. \
+         Without `paper`, open the paper graph. This only shows; use get_paper to read it."
+    }
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "paper": {"type": "string", "minLength": 1, "maxLength": 1000} },
+            "additionalProperties": false
+        })
+    }
+    fn tier(&self) -> RiskTier {
+        RiskTier::Read
+    }
+
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let tool = self.name();
+        let Some(query) = str_arg(&args, "paper") else {
+            super::show_in_library(ctx, "graph", None);
+            return Ok(ToolOutput {
+                text_for_model: "The paper graph is now open in the Library for the user."
+                    .to_string(),
+                summary_for_ui: "Opened the paper graph".to_string(),
+                detail: None,
+            });
+        };
+        let graph = graph_of(&self.host).await?;
+        let paper = find_paper(&graph, tool, query)?.clone();
+        require_shown(ctx, &paper)?;
+        super::show_in_library(ctx, "paper", Some(paper.id.clone()));
+        let label = clip(&paper.label(), 80);
+        Ok(ToolOutput {
+            text_for_model: format!(
+                "The page of \"{label}\" is now open in the Library for the user."
+            ),
+            summary_for_ui: format!("Opened {label}"),
+            detail: Some(json!({ "paperId": paper.id })),
+        })
+    }
+}
+
 pub struct FindPapersTool {
     host: Arc<AgentHost>,
 }
@@ -789,6 +848,36 @@ mod tests {
             .tier(),
             RiskTier::Read
         );
+    }
+
+    #[tokio::test]
+    async fn show_paper_opens_the_graph_and_shows_nothing_for_an_unknown_paper() {
+        let t = testing::host().await;
+        let tool = ShowPaperTool {
+            host: t.host.clone(),
+        };
+        assert_eq!(tool.tier(), RiskTier::Read);
+        let (ctx, mut rx) = testing::ctx();
+        tool.execute(json!({}), &ctx).await.unwrap();
+        match rx.try_recv().unwrap() {
+            shodh_rag::harness::AgentEvent::Navigated { view, target, .. } => {
+                assert_eq!(view, "library");
+                assert_eq!(
+                    target,
+                    Some(shodh_rag::harness::events::NavigationTarget::Library {
+                        section: "graph".into(),
+                        item: None,
+                    })
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // No graph built yet: the paper cannot be found, and nothing is shown.
+        assert!(tool
+            .execute(json!({"paper": "Attention is all you need"}), &ctx)
+            .await
+            .is_err());
+        assert!(rx.try_recv().is_err());
     }
 
     fn paper(id: &str, title: &str, year: i32, file: Option<&str>) -> PaperNode {

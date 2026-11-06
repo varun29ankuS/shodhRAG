@@ -36,8 +36,9 @@ import {
   toStoredCheckpoint,
 } from './messageStore';
 import type { SideSummaryRef } from '../focus/summary';
-import { requestConnectorPage } from '../connectors/navigation';
-import { githubFocus } from '../connectors/githubModel';
+import { connectorFocus, requestConnectorPage } from '../connectors/navigation';
+import { createTypingTracker, dismissHeld, goThere, initialGate, offerNavigation } from '../../lib/navigationGate';
+import type { GateState } from '../../lib/navigationGate';
 import { creationsApi, errorText } from '../artifacts/api';
 import { startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
@@ -140,6 +141,9 @@ export interface AgentNavigation {
   openDock?: boolean;
 }
 
+/** A navigation the assistant asked for, before it is followed (`lib/navigationGate`). */
+export type HeldNavigation = Omit<AgentNavigation, 'seq'>;
+
 export interface ChatSessionValue {
   conversations: ConversationsApi['conversations'];
   /** The saved conversations were read: `conversations` is no longer loading. */
@@ -167,6 +171,12 @@ export interface ChatSessionValue {
   liveRun: LiveRunInfo | null;
   /** Latest navigation requested by the agent. */
   navigation: AgentNavigation | null;
+  /** A navigation held because the user was typing; the shell offers "Go there". */
+  heldNavigation: HeldNavigation | null;
+  /** Follow the held navigation (the user clicked "Go there"). */
+  goToHeldNavigation: () => void;
+  /** Drop the held navigation (the user dismissed the chip). */
+  dismissHeldNavigation: () => void;
   /** Whether the agent runtime is installed (null until known). */
   runtimeInstalled: boolean | null;
   setRuntimeInstalled: (installed: boolean) => void;
@@ -263,6 +273,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [view, setView] = useState<ViewState>(() => emptyView<ChatMessage, ConversationMessage>());
   const [liveRun, setLiveRun] = useState<LiveRunInfo | null>(null);
   const [navigation, setNavigation] = useState<AgentNavigation | null>(null);
+  // A navigation held while the user types ("The assistant opened X · Go there").
+  const [heldNavigation, setHeldNavigation] = useState<HeldNavigation | null>(null);
+  const gateRef = useRef<GateState<HeldNavigation>>(initialGate());
+  const typingRef = useRef(createTypingTracker());
   // Shared with first-run setup and the setup card (one status, one install).
   const { installed: runtimeInstalled, setInstalled: setRuntimeInstalled } = useRuntimeSetup();
   const [sideRun, setSideRun] = useState<SideRunInfo | null>(null);
@@ -412,6 +426,59 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
   }, [flush]);
 
+  // What the user types, for the navigation gate: an input event in a text field.
+  useEffect(() => {
+    const onInput = (event: Event) => typingRef.current.note(event.target as HTMLElement | null, Date.now());
+    document.addEventListener('input', onInput, true);
+    return () => document.removeEventListener('input', onInput, true);
+  }, []);
+
+  /**
+   * Go where the assistant asked: the view, the item inside it (scrolled to and
+   * highlighted by the view that owns it), a connector's page, or another
+   * conversation. Only ever called through the gate below.
+   */
+  const followNavigation = useCallback((nav: HeldNavigation) => {
+    navSeqRef.current += 1;
+    setNavigation({ ...nav, seq: navSeqRef.current });
+    if (nav.target?.kind === 'conversation') {
+      // The run keeps streaming into its own conversation.
+      switchConversationRef.current(nav.target.conversationId);
+    } else if (nav.target) {
+      publishTarget(nav.target);
+    }
+    // A connector named in the focus opens its page (a GitHub action highlights its repository).
+    const page = nav.view === 'connectors' ? connectorFocus(nav.focus) : null;
+    if (page) requestConnectorPage(page);
+    window.dispatchEvent(new CustomEvent('switchTab', { detail: nav.view }));
+  }, []);
+
+  /**
+   * Every navigation of the assistant comes here: followed at once, or held
+   * while the user is typing so nothing moves under their hands (lib/navigationGate).
+   * A held navigation publishes nothing: no view, item or conversation changes
+   * until the user clicks "Go there".
+   */
+  const offer = useCallback((nav: HeldNavigation) => {
+    const focused = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+    const result = offerNavigation(gateRef.current, nav, typingRef.current.isTyping(focused, Date.now()));
+    gateRef.current = result.state;
+    setHeldNavigation(result.state.held);
+    if (result.follow) followNavigation(result.follow);
+  }, [followNavigation]);
+
+  const goToHeldNavigation = useCallback(() => {
+    const result = goThere(gateRef.current);
+    gateRef.current = result.state;
+    setHeldNavigation(null);
+    if (result.follow) followNavigation(result.follow);
+  }, [followNavigation]);
+
+  const dismissHeldNavigation = useCallback(() => {
+    gateRef.current = dismissHeld(gateRef.current);
+    setHeldNavigation(null);
+  }, []);
+
   const onEnvelope = useCallback((envelope: AgentEventEnvelope) => {
     const live = liveRef.current;
     if (!live || live.settled) return;
@@ -421,20 +488,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (event.type === 'navigated') {
       const nav = navigationFromEvent(event);
       const tab = normalizeViewTab(nav.view);
-      if (tab) {
-        navSeqRef.current += 1;
-        setNavigation({ view: tab, focus: nav.focus, target: nav.target, seq: navSeqRef.current });
-        if (nav.target?.kind === 'conversation') {
-          // The run keeps streaming into its own conversation.
-          switchConversationRef.current(nav.target.conversationId);
-        } else if (nav.target) {
-          publishTarget(nav.target);
-        }
-        // A GitHub action opens the GitHub page, with the repository it concerns highlighted.
-        const github = tab === 'connectors' ? githubFocus(nav.focus) : null;
-        if (github) requestConnectorPage({ connector: 'github', tab: github.tab, item: github.item });
-        window.dispatchEvent(new CustomEvent('switchTab', { detail: tab }));
-      }
+      if (tab) offer({ view: tab, focus: nav.focus, target: nav.target });
     }
     // A Creator answer started building: the Artifacts tab opens on its creation
     // (preview pane, files filling in, progress), with the chat alongside in the dock. The
@@ -443,15 +497,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     if (event.type === 'step_started' && live.creationId && !live.creationShown && startsBuilding(event.tool)) {
       live.creationShown = true;
       const target: NavigationTarget = { kind: 'artifact', artifactId: live.creationId, version: null, pane: null };
-      navSeqRef.current += 1;
-      setNavigation({ view: 'artifacts', focus: null, target, seq: navSeqRef.current, openDock: true });
-      publishTarget(target);
-      window.dispatchEvent(new CustomEvent('switchTab', { detail: 'artifacts' }));
+      offer({ view: 'artifacts', focus: null, target, openDock: true });
     }
     // Lifecycle changes and the start of the answer's check are applied at
     // once; streamed content waits for the frame.
     enqueue(live, event, appliesAtOnce(event.type));
-  }, [enqueue]);
+  }, [enqueue, offer]);
 
   const api = useAgentSession(onEnvelope);
 
@@ -796,6 +847,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     streamingConversationId,
     liveRun,
     navigation,
+    heldNavigation,
+    goToHeldNavigation,
+    dismissHeldNavigation,
     runtimeInstalled,
     setRuntimeInstalled,
     prewarm,
@@ -812,7 +866,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     releaseSideRun,
     updateThreads,
     updateFocusThreads: conv.updateFocusThreads,
-  }), [conv, view, streamingConversationId, liveRun, navigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
+  }), [conv, view, streamingConversationId, liveRun, navigation, heldNavigation, goToHeldNavigation, dismissHeldNavigation, runtimeInstalled, prewarm, send, retry, steer, cancel, approve, appendMessage, appendMessageTo, updateMessage, sideRun, claimSideRun, releaseSideRun, updateThreads]);
 
   return (
     <ChatSessionContext.Provider value={value}>

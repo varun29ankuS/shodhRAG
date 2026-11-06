@@ -34,6 +34,7 @@ import {
 } from '../features/memory/api';
 import { OPEN_MEMORY_EDIT, peekRequestedMemoryEdit, takeRequestedMemoryEdit } from '../features/memory/navigation';
 import { coreHeading, shortScope } from '../features/memory/usedMemories';
+import { agentItemKey } from '../lib/agentHighlight';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -203,7 +204,7 @@ function MemoryItem({
   const conversationName = fromConversation ? conversationTitle(fromConversation) : undefined;
 
   return (
-    <li ref={itemRef} className="py-3 flex flex-col gap-2">
+    <li ref={itemRef} data-agent-item={agentItemKey('memory', memory.id)} className="py-3 flex flex-col gap-2 rounded-lg">
       <div className="flex items-start justify-between gap-4">
         <p className="m-0 text-body text-shodh-text break-words">{memory.text}</p>
         <StrengthBar memory={memory} />

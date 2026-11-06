@@ -21,7 +21,8 @@ import { PaperGraphView } from '../research/PaperGraphView';
 import { PaperPage } from '../research/PaperPage';
 import { ConceptPage } from '../research/ConceptPage';
 import type { GraphPage } from '../research/graphTypes';
-import { scrollBehavior } from '../ask/viewer/sourceAccess';
+import { useNavigationTarget } from '../agent/useNavigationTarget';
+import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 import { baseName } from './fileTree';
 import type { FileNode } from './fileTree';
 import { FileBrowser } from './FileBrowser';
@@ -115,19 +116,27 @@ export function LibraryView({
     if (browsingId && !browsing) setBrowsingId(null);
   }, [browsingId, browsing]);
 
-  // The agent pointed at a source: leave the file browser so its card shows.
-  useEffect(() => {
-    if (focusedSourceId) setBrowsingId(null);
-  }, [focusedSourceId]);
+  // The assistant pointed at a source (show_source, add_folder, reindex_source): leave the
+  // file browser and the graph so its card shows. The shell scrolls to and highlights the
+  // card (lib/agentHighlight); the target stays the shell's to take.
+  useNavigationTarget('source', () => {
+    setBrowsingId(null);
+    setGraphPages([]);
+  }, { consume: false });
 
-  // Bring the pointed-at card into view once it is rendered.
-  const showingCards = !(browsing && indexReady);
-  useEffect(() => {
-    if (!focusedSourceId || !showingCards) return;
-    document
-      .getElementById(`library-source-${focusedSourceId}`)
-      ?.scrollIntoView({ block: 'center', behavior: scrollBehavior() });
-  }, [focusedSourceId, showingCards]);
+  // The assistant opened a part of the Library: the paper graph, a paper's page, or the
+  // snippet shelf with the snippet it saved or named highlighted.
+  useNavigationTarget('library', target => {
+    setBrowsingId(null);
+    if (target.section === 'paper' && target.item) {
+      setGraphPages([{ kind: 'graph' }, { kind: 'paper', id: target.item }]);
+    } else if (target.section === 'graph') {
+      setGraphPages([{ kind: 'graph' }]);
+    } else {
+      setGraphPages([]);
+      revealAgentItem(target.item ? agentItemKey('snippet', target.item) : agentItemKey('library-section', 'snippets'));
+    }
+  });
 
   if (browsing && indexReady) {
     return (
@@ -237,7 +246,7 @@ export function LibraryView({
         {hasLibrary && (
           <section aria-labelledby="library-snippets" className="flex flex-col gap-3">
             <div className="flex flex-col gap-0.5">
-              <h2 id="library-snippets" className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
+              <h2 id="library-snippets" data-agent-item={agentItemKey('library-section', 'snippets')} className="text-caption font-semibold uppercase tracking-[0.08em] text-shodh-text-faint">
                 Snippets
               </h2>
               <p className="text-small text-shodh-text-muted">
@@ -497,6 +506,7 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
   return (
     <article
       id={`library-source-${source.id}`}
+      data-agent-item={agentItemKey('source', source.id)}
       aria-labelledby={nameId}
       aria-current={focused ? 'true' : undefined}
       className={cn(

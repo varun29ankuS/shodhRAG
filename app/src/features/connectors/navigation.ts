@@ -12,6 +12,7 @@ import type { ConnectorId } from './registry.ts';
 import type { SlackTabId } from './slackModel.ts';
 import type { TelegramTabId } from './telegramModel.ts';
 import type { GitHubTabId } from './githubModel.ts';
+import { githubFocus } from './githubModel.ts';
 import { OneShot } from '../../lib/oneShot.ts';
 
 /** The tabs of the Slack page, in order. */
@@ -66,6 +67,23 @@ export function tabsOf(connector: ConnectorId): readonly ConnectorTabId[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The connector page the focus of an assistant navigation to Connectors names:
+ * `slack`, `telegram` or `github`, optionally with `:<tab>` (GitHub also
+ * `:<tab>:<owner/name>`, the repository highlighted). Anything else opens the gallery.
+ */
+export function connectorFocus(focus: string | null | undefined): ConnectorPage | null {
+  if (!focus) return null;
+  const github = githubFocus(focus);
+  if (github) return { connector: 'github', tab: github.tab, item: github.item };
+  const match = /^(slack|telegram)(?::([a-z]+))?$/.exec(focus);
+  if (!match) return null;
+  const connector = match[1] as ConnectorId;
+  const tab = match[2] ?? null;
+  if (tab !== null && !(tabsOf(connector) as readonly string[]).includes(tab)) return null;
+  return { connector, tab: tab as ConnectorTabId | null };
 }
 
 /** The page an Inbox link's target names, or `null` for anything malformed or unknown. */

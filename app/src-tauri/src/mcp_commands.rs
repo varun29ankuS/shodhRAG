@@ -146,7 +146,9 @@ pub fn tool_group(name: &str) -> &'static str {
         | "resume_indexing" | "cancel_indexing" | "system_status" => "Library and files",
         "web_search" | "fetch_url" | "search_papers" => "Web",
         "query_results" | "paper_graph" | "get_paper" | "find_papers" | "show_figure"
-        | "get_equation" | "list_snippets" | "create_snippet" => "Papers and research",
+        | "get_equation" | "list_snippets" | "create_snippet" | "show_paper" => {
+            "Papers and research"
+        }
         "create_task" | "create_event" | "list_tasks" | "list_events" | "update_task"
         | "complete_task" | "update_event" | "delete_task" | "delete_event" | "show_calendar" => {
             "Tasks and calendar"
@@ -168,7 +170,7 @@ pub fn tool_group(name: &str) -> &'static str {
         | "revise_visual"
         | "organize_visual" => "Conversations and visuals",
         "update_plan" | "suggest_mode" | "open_view" | "show_audit" | "audit_query"
-        | "get_settings" | "update_setting" => "App",
+        | "get_settings" | "update_setting" | "show_setting" => "App",
         name if name.starts_with("github_") => "GitHub",
         _ => "Other",
     }

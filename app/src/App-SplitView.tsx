@@ -77,6 +77,7 @@ import Sidebar from './components/shell/Sidebar';
 import { ConversationDock } from './components/shell/ConversationDock';
 import { MODEL_CHANGED_EVENT } from './features/modelPicker/modelApi';
 import { normalizeViewTab, VIEW_TAB_LABELS } from './lib/viewTabs';
+import { agentItemKey, revealAgentItem } from './lib/agentHighlight';
 import { isBlankConversation } from './lib/conversationGroups';
 import type { ViewTab } from './lib/viewTabs';
 import { useTheme } from './contexts/ThemeContext';
@@ -117,6 +118,7 @@ import { ViewSkeleton } from './components/shell/ViewSkeleton';
 import { ActivityView, ArtifactsView, ConnectorsView, LibraryView, SettingsView, TasksView, WorkspacesView, createIdlePreloadGate, isViewReady, preloadAllViews, preloadView } from './components/shell/views';
 import { CHANGE_DRAFT } from './features/artifacts/model';
 import { AssistantViewCue, useAssistantViewCue } from './components/shell/AssistantViewCue';
+import { AssistantNavigationChip } from './components/shell/AssistantNavigationChip';
 import { clearViewCache } from './lib/viewCache';
 import { shownView } from './lib/viewSwitch';
 import { useSearchConfig } from './components/SearchSettings';
@@ -188,6 +190,9 @@ function AppSplitView() {
     appendMessageTo,
     updateMessage,
     navigation,
+    heldNavigation,
+    goToHeldNavigation,
+    dismissHeldNavigation,
     streamingConversationId,
     sideRun,
   } = useChatSession();
@@ -233,7 +238,10 @@ function AppSplitView() {
   });
   /** Library source the agent pointed at (show_source); LibraryView scrolls to and highlights it. */
   const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
-  useNavigationTarget('source', target => setFocusedSourceId(target.sourceId));
+  useNavigationTarget('source', target => {
+    setFocusedSourceId(target.sourceId);
+    revealAgentItem(agentItemKey('source', target.sourceId));
+  });
   const [currentlyIndexing, setCurrentlyIndexing] = useState<string | null>(null);
   // Latest sources and indexing actions for listeners registered once (drag and drop).
   const sourcesRef = useRef<Source[]>(sources);
@@ -1578,6 +1586,7 @@ function AppSplitView() {
                 {VIEW_TAB_LABELS[viewTab]}
               </span>
               <AssistantViewCue cue={viewCue} />
+              <AssistantNavigationChip held={heldNavigation} onGo={goToHeldNavigation} onDismiss={dismissHeldNavigation} />
             </span>
             {viewTab === 'ask' && (() => {
               const workspace = workspaceById(activeConversation?.workspaceId);

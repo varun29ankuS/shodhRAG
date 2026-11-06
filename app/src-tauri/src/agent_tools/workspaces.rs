@@ -33,10 +33,25 @@ use crate::workspace_commands::{list_with_chats, WorkspaceCommandError};
 
 /// Most sources one call may add.
 const MAX_ADD: usize = 50;
-/// Tabs of a workspace page.
-const TABS: [&str; 8] = [
+/// Tabs of a workspace page (`WORKSPACE_TABS` in the frontend's navigation; the
+/// coverage test checks the two agree).
+pub(crate) const TABS: [&str; 8] = [
     "overview", "sources", "chats", "tasks", "memory", "visuals", "results", "tables",
 ];
+
+/// Show a workspace the assistant just changed: its page at `tab` (the overview
+/// when absent). Called only after the write succeeded.
+fn reveal_workspace(ctx: &ToolContext, workspace_id: &str, tab: Option<&str>) {
+    emit_navigation(
+        ctx,
+        "workspaces",
+        Some(workspace_id.to_string()),
+        Some(NavigationTarget::Workspace {
+            workspace_id: workspace_id.to_string(),
+            tab: tab.map(str::to_string),
+        }),
+    );
+}
 
 pub(super) fn register(
     registry: &mut ToolRegistry,
@@ -350,7 +365,7 @@ impl HostTool for CreateWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::CREATE_WORKSPACE;
         let new = new_workspace(tool, &args)?;
         let created = self
@@ -360,6 +375,7 @@ impl HostTool for CreateWorkspaceTool {
             .await
             .map_err(store_error)?;
         self.host.effects.workspaces_changed(&created.id);
+        reveal_workspace(ctx, &created.id, None);
         Ok(ToolOutput {
             text_for_model: format!(
                 "Created the workspace \"{}\" (id {}). It has no sources yet; add some with \
@@ -539,7 +555,7 @@ impl HostTool for UpdateWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::UPDATE_WORKSPACE;
         let update = update_args(tool, &args)?;
         let id = update.id.clone();
@@ -569,6 +585,7 @@ impl HostTool for UpdateWorkspaceTool {
             .await
             .map_err(store_error)?;
         self.host.effects.workspaces_changed(&id);
+        reveal_workspace(ctx, &id, None);
         let text = match version {
             Some(v) => {
                 format!("Updated the workspace \"{name}\"; its instructions are now version {v}.")
@@ -840,7 +857,7 @@ impl HostTool for AddToWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let (d, sources) = self.resolved(&args).await?;
         let id = d.workspace.id.clone();
         let report = self
@@ -852,6 +869,7 @@ impl HostTool for AddToWorkspaceTool {
         if report.added > 0 {
             self.host.effects.workspaces_changed(&d.workspace.id);
         }
+        reveal_workspace(ctx, &d.workspace.id, Some("sources"));
         Ok(ToolOutput {
             text_for_model: format!(
                 "Added {} source(s) to \"{}\" ({} were already in it).",
@@ -971,7 +989,7 @@ impl HostTool for RemoveFromWorkspaceTool {
         })
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = app_tools::REMOVE_FROM_WORKSPACE;
         let (id, kind, reference) = remove_args(tool, &args)?;
         let (d, label) = held_source(&self.host, &id, kind, &reference).await?;
@@ -985,6 +1003,7 @@ impl HostTool for RemoveFromWorkspaceTool {
         if removed {
             self.host.effects.workspaces_changed(&d.workspace.id);
         }
+        reveal_workspace(ctx, &d.workspace.id, Some("sources"));
         Ok(ToolOutput {
             text_for_model: format!("Removed \"{label}\" from \"{}\".", d.workspace.name),
             summary_for_ui: format!("Removed “{label}”"),
@@ -1170,6 +1189,37 @@ mod tests {
             }
         }
         assert!(navigated);
+    }
+
+    #[tokio::test]
+    async fn creating_and_updating_a_workspace_shows_its_page() {
+        let t = testing::host().await;
+        let (ctx, mut rx) = testing::ctx();
+        let out = CreateWorkspaceTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"name": "Thesis"}), &ctx)
+        .await
+        .unwrap();
+        let id = out.detail.unwrap()["id"].as_str().unwrap().to_string();
+        UpdateWorkspaceTool {
+            host: t.host.clone(),
+        }
+        .execute(json!({"workspace_id": id, "name": "Thesis 2026"}), &ctx)
+        .await
+        .unwrap();
+        let mut shown = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Navigated { view, target, .. } = event {
+                assert_eq!(view, "workspaces");
+                shown.push(target);
+            }
+        }
+        let page = Some(NavigationTarget::Workspace {
+            workspace_id: id.clone(),
+            tab: None,
+        });
+        assert_eq!(shown, vec![page.clone(), page]);
     }
 
     #[tokio::test]

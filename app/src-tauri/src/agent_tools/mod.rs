@@ -12,6 +12,7 @@
 mod artifacts;
 mod audit;
 mod calendar;
+mod code_review;
 pub(crate) mod export;
 mod figures;
 pub(crate) mod files;
@@ -54,6 +55,7 @@ use crate::visual_commands::VisualState;
 use crate::workspace_commands::WorkspaceState;
 
 pub use artifacts::{creator_tools, CREATOR_TOOL_NAMES};
+pub use code_review::{code_review_tools, CODE_REVIEW_TOOL_NAMES};
 pub use files::{IndexedRoots, SourceRoots};
 pub use tauri_host::TauriEffects;
 pub use web::web_block_reason;
@@ -183,6 +185,15 @@ pub trait HostEffects: Send + Sync {
     /// Opens the System status panel with `part` ("search", "indexing")
     /// highlighted, so the user sees what the assistant read or changed.
     fn show_system_status(&self, part: &str);
+    /// Runs the fresh-eyes reviewer on `request` (only what it holds reaches
+    /// it) and keeps the review for the code pane
+    /// ([`crate::code_review_commands::run_and_store`]).
+    async fn run_code_review(
+        &self,
+        request: shodh_rag::code_review::ReviewRequest,
+        workspace_id: Option<String>,
+        conversation_id: Option<String>,
+    ) -> Result<crate::code_review_commands::StoredReview, String>;
 }
 
 /// Everything an app tool can reach.
@@ -252,6 +263,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     figures::register(&mut registry, &host)?;
     workspaces::register(&mut registry, &host)?;
     artifacts::register(&mut registry, &host)?;
+    code_review::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
@@ -305,10 +317,38 @@ pub(crate) mod testing {
         pub removed_sources: Mutex<Vec<String>>,
         /// The System status panel opened, by the part highlighted.
         pub shown_status: Mutex<Vec<String>>,
+        /// Every review asked for: exactly what the reviewer would get.
+        pub reviews: Mutex<Vec<shodh_rag::code_review::ReviewRequest>>,
     }
 
     #[async_trait::async_trait]
     impl HostEffects for Recorder {
+        async fn run_code_review(
+            &self,
+            request: shodh_rag::code_review::ReviewRequest,
+            workspace_id: Option<String>,
+            conversation_id: Option<String>,
+        ) -> Result<crate::code_review_commands::StoredReview, String> {
+            self.reviews
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(request.clone());
+            Ok(crate::code_review_commands::StoredReview {
+                id: "rv_test".to_string(),
+                created_at: "2026-11-06T00:00:00Z".to_string(),
+                workspace_id,
+                conversation_id,
+                by_agent: true,
+                report: shodh_rag::code_review::ReviewReport {
+                    check: request.check,
+                    summary: "No problems found.".to_string(),
+                    findings: Vec::new(),
+                    diagram: None,
+                    dropped: 0,
+                },
+                request,
+            })
+        }
         fn calendar_changed(&self, change: CalendarChange) {
             self.calendar
                 .lock()
@@ -449,6 +489,7 @@ pub(crate) mod testing {
             indexing_state: shodh_rag::indexing::IndexingState::default(),
             removed_sources: Mutex::default(),
             shown_status: Mutex::default(),
+            reviews: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());

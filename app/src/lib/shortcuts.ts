@@ -34,7 +34,8 @@ export type ShortcutId =
   | 'close'
   | 'openSystemStatus'
   | 'toggleIndexingPause'
-  | 'cycleMode';
+  | 'cycleMode'
+  | 'reviewCode';
 
 export interface Shortcut {
   /** What it does, for lists of shortcuts. */
@@ -139,6 +140,8 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   toggleIndexingPause: letter('Pause or resume indexing', 'p', { shift: true, shownIn: ['components/shell/SystemStatusStrip.tsx'] }),
   // Shift+Tab in the empty composer: the next of Ask, Accept edits and Plan (never Auto).
   cycleMode: { ...plain('Switch the mode', 'Tab', ['Tab'], ['Tab'], true), shownIn: ['features/agent/ModePicker.tsx'] },
+  // Ctrl+Shift+E (⌘⇧E): "fresh eyes". Ctrl+Shift+R is the webview's hard reload.
+  reviewCode: letter('Review the selected code', 'e', { shift: true, shownIn: ['features/code/ReviewPane.tsx'] }),
 };
 
 /** Whether this computer is a Mac (⌘ instead of Ctrl). */

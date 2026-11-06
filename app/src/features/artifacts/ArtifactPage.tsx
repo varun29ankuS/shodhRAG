@@ -52,6 +52,10 @@ import type {
   PreviewShown,
 } from './model';
 import type { ArtifactSelection } from './ArtifactsView';
+import { CodeDiff, CodeFileView } from '../code/CodeDiff';
+import { languageOf } from '../code/diffModel';
+import type { LineSelection } from '../code/diffModel';
+import { ReviewThisButton } from '../code/ReviewThisButton';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -481,12 +485,10 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
                     {openFile.path} · {sizeLabel(openFile.size)}
                     {openFile.truncated ? ' · only the start is shown' : ''}
                   </p>
-                  {openFile.binary ? (
+                  {openFile.binary || openFile.text === null ? (
                     <p className="m-0 px-3 py-3 text-small text-shodh-text-muted">This file is not text, so it is not shown here. Open the folder to see it.</p>
                   ) : (
-                    <pre className="m-0 p-3 text-caption leading-relaxed text-shodh-text overflow-auto max-h-[64vh] whitespace-pre font-mono">
-                      {openFile.text}
-                    </pre>
+                    <ArtifactFile path={openFile.path} text={openFile.text} title={creation.title} />
                   )}
                 </>
               ) : (
@@ -535,7 +537,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
               {changes === null ? null : changes.length === 0 ? (
                 <p className="m-0 text-small text-shodh-text-muted">Nothing changed.</p>
               ) : (
-                changes.map(change => <ChangeView key={change.path} change={change} />)
+                <VersionChanges changes={changes} title={`${creation.title}, version ${shownVersion}`} />
               )}
             </div>
           </div>
@@ -832,49 +834,40 @@ export function FinishSummary({ summary, choices }: { summary: string | null; ch
   );
 }
 
-const STATUS_WORDS: Record<FileChange['status'], string> = {
-  added: 'Added',
-  removed: 'Removed',
-  changed: 'Changed',
-};
-
-/** One file's change between two versions. */
-function ChangeView({ change }: { change: FileChange }) {
+/** What changed in a version, in the app's one diff view, reviewable. */
+function VersionChanges({ changes, title }: { changes: FileChange[]; title: string }) {
+  const [selection, setSelection] = useState<LineSelection | null>(null);
   return (
-    <section className="rounded-xl border border-shodh-border-subtle overflow-hidden">
-      <p className="m-0 px-3 py-2 text-caption text-shodh-text-secondary border-b border-shodh-border-subtle">
-        <span className="font-semibold">{STATUS_WORDS[change.status]}</span> · {change.path}
-      </p>
-      {change.binary ? (
-        <p className="m-0 px-3 py-2 text-small text-shodh-text-muted">Not text: only that it changed is shown.</p>
-      ) : change.tooLarge ? (
-        <p className="m-0 px-3 py-2 text-small text-shodh-text-muted">Too large to compare line by line.</p>
-      ) : (
-        <div className="overflow-x-auto">
-          {change.hunks.map((hunk, index) => (
-            <pre key={index} className="m-0 py-1 text-caption leading-relaxed font-mono border-b border-shodh-border-subtle last:border-b-0">
-              {hunk.lines.map((line, at) => (
-                <div
-                  key={at}
-                  className={cn(
-                    'px-3 whitespace-pre',
-                    line.kind === 'added' && 'bg-shodh-success/10 text-shodh-text',
-                    line.kind === 'removed' && 'bg-shodh-error/10 text-shodh-text',
-                    line.kind === 'same' && 'text-shodh-text-muted',
-                  )}
-                >
-                  <span className="select-none inline-block w-4 text-shodh-text-faint" aria-hidden="true">
-                    {line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}
-                  </span>
-                  <span className="sr-only">{line.kind === 'added' ? 'Added: ' : line.kind === 'removed' ? 'Removed: ' : ''}</span>
-                  {line.text}
-                </div>
-              ))}
-            </pre>
-          ))}
-        </div>
-      )}
-    </section>
+    <CodeDiff
+      changes={changes}
+      label={`What changed in ${title}`}
+      selection={selection}
+      onSelect={setSelection}
+      maxHeight={640}
+      actions={<ReviewThisButton subject={() => ({ kind: 'diff', title, changes, workspaceId: null, selection })} />}
+    />
+  );
+}
+
+/** A file of a creation, with line numbers, reviewable. */
+function ArtifactFile({ path, text, title }: { path: string; text: string; title: string }) {
+  const [selection, setSelection] = useState<LineSelection | null>(null);
+  const language = languageOf(path);
+  return (
+    <CodeFileView
+      path={path}
+      text={text}
+      language={language}
+      label={`${path} of ${title}`}
+      selection={selection}
+      onSelect={setSelection}
+      maxHeight={640}
+      actions={
+        <ReviewThisButton
+          subject={() => ({ kind: 'file', title: path, path, text, language, firstLine: 1, workspaceId: null, selection })}
+        />
+      }
+    />
   );
 }
 

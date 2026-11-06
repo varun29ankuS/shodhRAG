@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, HTMLAttributes } from 'react';
 
 export interface CodeHighlightProps {
   code: string;
@@ -10,6 +10,13 @@ export interface CodeHighlightProps {
   wrapLongLines?: boolean;
   /** Element wrapping the code (`pre` unless given). */
   preTag?: 'div' | 'pre';
+  /** First line's number when line numbers are shown (1 unless given). */
+  startingLineNumber?: number;
+  /**
+   * Attributes of each line's element, by its 1-based index in `code` (the diff view
+   * marks added and removed lines, the file view a selection). Wraps each line.
+   */
+  lineProps?: (line: number) => HTMLAttributes<HTMLElement> & { [data: `data-${string}`]: string };
 }
 
 // Prism with every grammar is one of the largest libraries in the app; it

@@ -6,6 +6,9 @@ import { DiffView } from '../workspaces/DiffView';
 import { parseDiff } from '../workspaces/model';
 import { REVIEW_BLOCK_KEYS, reviewTokenFor, unreviewedFiles } from './reviewList';
 import { revealHidden } from './hiddenChars';
+import { CodeDiff } from '../code/CodeDiff';
+import { parseFileChanges } from '../code/diffModel';
+import { ReviewThisButton } from '../code/ReviewThisButton';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -58,12 +61,20 @@ export function previewChanges(preview: unknown): FieldChange[] {
     }));
 }
 
+/** Preview key of a code diff (an edit, a write, a push): a list of file changes. */
+const CODE_DIFF = 'codeDiff';
+
+/** Text rows the code diff shows better: left out when the diff is there. */
+const SHOWN_BY_DIFF = ['replace', 'with', 'content'];
+
 /** The preview as label/value rows (without `changes`); non-object previews become one row. */
 function previewRows(preview: unknown): Array<[string, string]> {
   if (isRecord(preview)) {
+    const diffShown = parseFileChanges(preview[CODE_DIFF]) !== null;
     return Object.entries(preview)
-      // Shown as their own blocks: field changes and an instruction diff.
-      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE && !REVIEW_BLOCK_KEYS.includes(k))
+      // Shown as their own blocks: field changes, an instruction diff and a code diff.
+      .filter(([k]) => k !== 'changes' && k !== 'instructionsDiff' && k !== 'diff' && k !== CODE_DIFF && k !== ALLOW_FOR_CONVERSATION && k !== ALLOW_FOR_CONVERSATION_NOTE && !REVIEW_BLOCK_KEYS.includes(k))
+      .filter(([k]) => !(diffShown && SHOWN_BY_DIFF.includes(k)))
       .filter(([, v]) => v !== null && v !== undefined && v !== '' && v !== false)
       .map(([k, v]) => [humanKey(k), displayValue(v)]);
   }
@@ -121,6 +132,7 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
   const rows = previewRows(approval.preview);
   const changes = previewChanges(approval.preview);
   const diff = isRecord(approval.preview) ? parseDiff(approval.preview.instructionsDiff) : null;
+  const codeDiff = isRecord(approval.preview) ? parseFileChanges(approval.preview[CODE_DIFF]) : null;
   const allowance = conversationAllowance(approval.preview);
   const allowanceNote = conversationAllowanceNote(approval.preview);
   const allowanceNoteId = useId();
@@ -208,6 +220,18 @@ export function ApprovalPrompt({ approval, onDecide, compact = false }: Approval
         </div>
       )}
       {diff && <DiffView lines={diff} label="Proposed change to the instructions" />}
+      {codeDiff && (
+        <CodeDiff
+          changes={codeDiff}
+          label={`The code this changes: ${approval.label}`}
+          maxHeight={compact ? 260 : 380}
+          actions={
+            <ReviewThisButton
+              subject={() => ({ kind: 'diff', title: approval.label, changes: codeDiff, workspaceId: null, selection: null })}
+            />
+          }
+        />
+      )}
       <div className="flex items-center gap-2">
         <button
           ref={approveRef}

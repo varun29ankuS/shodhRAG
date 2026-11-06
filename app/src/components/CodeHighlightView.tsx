@@ -30,7 +30,7 @@ const renderHighlighter: ((props: SyntaxHighlighterProps) => ReactElement) | nul
     : null;
 
 /** Prism highlighting; load it through `CodeHighlight`, which keeps Prism's grammars out of the startup bundle. */
-export function CodeHighlightView({ code, language, dark, customStyle, showLineNumbers = false, wrapLongLines = false, preTag }: CodeHighlightProps) {
+export function CodeHighlightView({ code, language, dark, customStyle, showLineNumbers = false, wrapLongLines = false, preTag, startingLineNumber, lineProps }: CodeHighlightProps) {
   const styleKey = customStyle ? JSON.stringify(customStyle) : '';
   return useMemo(() => {
     const props: SyntaxHighlighterProps = {
@@ -41,8 +41,11 @@ export function CodeHighlightView({ code, language, dark, customStyle, showLineN
       wrapLongLines,
       customStyle,
       children: code,
+      ...(startingLineNumber !== undefined ? { startingLineNumber } : {}),
+      ...(lineProps ? { wrapLines: true, lineProps } : {}),
     };
-    if (!renderHighlighter) return <SyntaxHighlighter {...props} />;
+    // Per-line attributes change with the selection: such a block is not kept.
+    if (!renderHighlighter || lineProps) return <SyntaxHighlighter {...props} />;
     const key = [dark ? 'd' : 'l', language, preTag ?? 'pre', showLineNumbers ? 1 : 0, wrapLongLines ? 1 : 0, styleKey, code].join('\u0001');
     const cached = highlighted.get(key);
     if (cached) return cached;
@@ -50,5 +53,5 @@ export function CodeHighlightView({ code, language, dark, customStyle, showLineN
     highlighted.set(key, tree, code.length);
     return tree;
     // styleKey stands for customStyle's content.
-  }, [code, language, dark, preTag, showLineNumbers, wrapLongLines, styleKey]);
+  }, [code, language, dark, preTag, showLineNumbers, wrapLongLines, styleKey, startingLineNumber, lineProps]);
 }

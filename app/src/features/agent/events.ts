@@ -275,6 +275,23 @@ export interface ArtifactTarget {
   pane: string | null;
 }
 
+/** Code of a workspace's code folder in the code pane: a file at lines, or its changes. */
+export interface CodeTarget {
+  kind: "code";
+  workspaceId: string;
+  path: string | null;
+  line: number | null;
+  endLine: number | null;
+  /** "file" or "diff". */
+  view: string | null;
+}
+
+/** A code review the assistant ran, opened in the code pane. */
+export interface ReviewTarget {
+  kind: "review";
+  reviewId: string;
+}
+
 export type NavigationTarget =
   | DocumentTarget
   | CalendarTarget
@@ -283,7 +300,9 @@ export type NavigationTarget =
   | SourceTarget
   | VisualTarget
   | WorkspaceTarget
-  | ArtifactTarget;
+  | ArtifactTarget
+  | CodeTarget
+  | ReviewTarget;
 
 export interface NavigatedEvent {
   type: "navigated";

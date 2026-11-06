@@ -108,6 +108,12 @@ export interface SendExtra {
    * what is learned from and checked (`agent_send`'s `attachedContext`).
    */
   attachedContext?: AttachedContext[];
+  /**
+   * The app wrote the message, not the user (a check or fix sent from the code review
+   * pane): it is shown and answered like any other, but never learned from or taken
+   * for the user's own words (`agent_send`'s `textOrigin` `composed`).
+   */
+  composed?: boolean;
 }
 
 /** What the rest of the app needs to know about the running answer. */
@@ -610,7 +616,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     publish(conversationId, userMessage, 'debounced');
 
     // runAgent reports its own failures in the answer; acceptance is decided above.
-    void runAgent(conversationId, prompt, history, options, sideSummary ? 'composed' : 'typed', extra?.fallback ?? null, attachedContext);
+    void runAgent(conversationId, prompt, history, options, sideSummary || extra?.composed ? 'composed' : 'typed', extra?.fallback ?? null, attachedContext);
     return true;
   }, [publish, runAgent]);
 

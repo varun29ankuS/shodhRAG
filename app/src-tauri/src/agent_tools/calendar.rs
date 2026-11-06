@@ -1189,7 +1189,7 @@ impl HostTool for DeleteEventTool {
         self.host
             .effects
             .calendar_changed(CalendarChange::EventRemoved(removed.id.clone()));
-        reveal_removed(ctx, day_of(Some(&removed.start_time)));
+        reveal_removed(ctx, day_of(Some(removed.start_time.as_str())));
         Ok(ToolOutput {
             text_for_model: format!("Deleted event \"{}\" (id {}).", removed.title, removed.id),
             summary_for_ui: format!("Deleted “{}”", removed.title),
@@ -1230,7 +1230,7 @@ fn reveal_event(ctx: &ToolContext, event: &CalendarEvent) {
         "tasks",
         Some(event.id.clone()),
         Some(NavigationTarget::Calendar {
-            date: day_of(Some(&event.start_time)),
+            date: day_of(Some(event.start_time.as_str())),
             task_id: None,
             event_id: Some(event.id.clone()),
         }),

@@ -260,11 +260,13 @@ async fn the_reply_is_ranked_and_only_what_points_at_the_code_is_kept() {
  {"severity":"high","title":"invented line","path":"src/sum.rs","line":99,"scenario":"s","fix":"f",
   "replace":{"old":"not in the code","new":"x"}},
  {"severity":"medium","title":"hidden command","path":"src/sum.rs","line":2,"scenario":"s","fix":"f",
-  "verify":{"command":"echo ‮ hidden","expect":"passes"}},
+  "verify":{"command":"echo HIDDEN_MARK hidden","expect":"passes"}},
  {"severity":"bogus","title":"no severity"}
 ]}
-```"#;
-    let model = Recording::new(reply);
+```"#
+    // A right-to-left override, as JSON writes it (never a raw one in this source).
+    .replace("HIDDEN_MARK", "\\u202e");
+    let model = Recording::new(&reply);
     let asked = request(
         ReviewCheck::Algorithm,
         vec![piece("src/sum.rs", 2, &SUM_LINES)],

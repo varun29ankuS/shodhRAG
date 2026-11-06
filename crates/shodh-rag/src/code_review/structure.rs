@@ -317,7 +317,7 @@ pub fn cycles(modules: &[String], edges: &[ImportEdge]) -> Vec<Vec<String>> {
 struct Scanned {
     file: SourceFile,
     /// Rust: (module path named after `crate::`/`super::`/`self::` resolved
-    /// to this crate, line). Other crates: (crate name, line).
+    /// to this crate, line). Other crates: (the `use` path, line).
     rust_paths: Vec<(String, usize)>,
     rust_crates: Vec<(String, usize)>,
     /// Scripts: (resolved relative path without extension, line).
@@ -337,8 +337,10 @@ impl Patterns {
         Patterns {
             rust_path: Regex::new(r"\b(crate|super|self)((?:::[A-Za-z_][A-Za-z0-9_]*)+)")
                 .expect("valid regex"),
-            rust_use_crate: Regex::new(r"^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+::?([A-Za-z_][A-Za-z0-9_]*)::")
-                .expect("valid regex"),
+            rust_use_crate: Regex::new(
+                r"^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+(?:::)?([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)",
+            )
+            .expect("valid regex"),
             rust_public: Regex::new(
                 r"^\s*pub\s+(?:(?:async|const|unsafe|extern\s+\S+)\s+)*(fn|struct|enum|trait|type|const|static|mod|union)\s+([A-Za-z_][A-Za-z0-9_]*)",
             )
@@ -420,13 +422,13 @@ impl LightStructure {
                 if let Some(m) = patterns.rust_public.captures(line) {
                     public.push(format!("{} {}", &m[1], &m[2]));
                 }
+                // `use other_crate::a::b`: the whole path, resolved to the deepest
+                // module of that crate the folder has.
                 if let Some(m) = patterns.rust_use_crate.captures(line) {
-                    let name = m[1].to_string();
-                    if !matches!(
-                        name.as_str(),
-                        "crate" | "super" | "self" | "std" | "core" | "alloc"
-                    ) {
-                        rust_crates.push((name, at + 1));
+                    let path = m[1].to_string();
+                    let first = path.split("::").next().unwrap_or("");
+                    if !matches!(first, "crate" | "super" | "self" | "std" | "core" | "alloc") {
+                        rust_crates.push((path, at + 1));
                     }
                 }
                 for m in patterns.rust_path.captures_iter(line) {
@@ -605,9 +607,15 @@ impl StructureSource for LightStructure {
                     }
                 }
             }
-            for (name, line) in &item.rust_crates {
-                if crate_names.contains(name) && known.contains(name) {
-                    add(from, name, &item.file.path, *line);
+            for (path, line) in &item.rust_crates {
+                let krate = path.split("::").next().unwrap_or("");
+                if !crate_names.contains(krate) {
+                    continue;
+                }
+                if let Some(to) = known_prefix(path, &known) {
+                    if to != from {
+                        add(from, to, &item.file.path, *line);
+                    }
                 }
             }
             for (spec, line) in &item.script_imports {
@@ -884,7 +892,10 @@ mod tests {
         assert!(view.modules.contains(&"my_core::index".to_string()));
         assert!(view.has_edge("my_core::store", "my_core::index"));
         assert!(view.has_edge("my_core::index", "my_core::store"));
-        assert!(view.has_edge("app", "my_core"));
+        assert!(
+            view.has_edge("app", "my_core::store"),
+            "an import of another crate reaches its module"
+        );
         assert_eq!(
             view.cycles,
             vec![vec![

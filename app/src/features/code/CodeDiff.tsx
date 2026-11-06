@@ -92,6 +92,7 @@ function CodeColumn({ path, lines, numbers, language, dark, selection, onLine }:
           return (
             <li
               key={i}
+              data-selected={selected ? 'true' : undefined}
               className={cn('flex gap-1 pl-1.5 pr-1 tabular-nums', rowClass(line.kind, selected), onLine && 'cursor-pointer hover:text-shodh-text')}
               style={{ height: ROW }}
               onClick={onLine ? e => onLine(shownNumber(line), e.shiftKey) : undefined}
@@ -261,6 +262,11 @@ export function CodeDiff({ changes, label, selection = null, onSelect, language,
   const { theme } = useTheme();
   const dark = theme === 'dark';
   const [sideways, setSideways] = useState(false);
+  const box = React.useRef<HTMLDivElement>(null);
+  // A citation's lines are brought into view (only when they are out of it).
+  React.useEffect(() => {
+    box.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [selection]);
   const totals = changes.reduce(
     (sum, change) => {
       const c = changeCounts(change);
@@ -290,7 +296,7 @@ export function CodeDiff({ changes, label, selection = null, onSelect, language,
           </button>
         </div>
       </div>
-      <div className="overflow-y-auto scrollbar-thin" style={{ maxHeight }}>
+      <div ref={box} className="overflow-y-auto scrollbar-thin" style={{ maxHeight }}>
         {changes.map((change, index) => (
           <FileDiff
             key={change.path}

@@ -105,7 +105,7 @@ jobs:
   # Nothing is tagged or released from a commit on which CI did not pass.
   # CI runs alongside this (the same push started it), so this waits for it.
   ci:
-    name: CI passed
+    name: Wait for CI
     needs: decide
     if: needs.decide.outputs.release == 'true'
     runs-on: ubuntu-latest

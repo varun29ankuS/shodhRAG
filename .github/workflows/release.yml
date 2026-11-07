@@ -41,13 +41,17 @@ name: Release
 #   - bump the version (Prepare release) when the tagged commit itself is
 #     wrong: a tag is never moved.
 #
-# Pull request touching the release inputs: plan, build, then verify checks
-# the installers the builds uploaded, with update bundles signed by a
-# throwaway key made for that run (pr-key): pull requests never see the
-# release key. verify also stages them as a release and runs the publish-time
-# checks on the result. published-release runs the publish and smoke checks,
-# read-only, against the latest published release. No release is created or
-# changed.
+# Build-only runs (called by ci.yml without a tag: on pull requests whose
+# changed files can affect the installers, on every master push and in the
+# nightly run): plan, build, then verify checks the installers the builds
+# uploaded, with update bundles signed by a throwaway key made for that run
+# (pr-key): pull requests never see the release key. verify also stages them
+# as a release and runs the publish-time checks on the result.
+# published-release runs the publish and smoke checks, read-only, against the
+# latest published release. No release is created or changed. ci.yml's
+# Changes job decides when a pull request needs this (a deny-list: only
+# documentation and the crates the app never builds are skippable), and its
+# CI gate check counts the result.
 #
 # Signing key: the TAURI_SIGNING_PRIVATE_KEY secret (and its password)
 # belong in the `release` environment (deployment policy: master and v*
@@ -66,31 +70,12 @@ name: Release
 on:
   push:
     tags: ['v*']
-  pull_request:
-    branches: [master]
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - .github/workflows/release.yml
-      - .github/workflows/tag-release.yml
-      - .github/release-notes.md
-      - .github/actions/onnxruntime/**
-      - scripts/release/**
-      - scripts/ci/ort_archive.py
-      - scripts/ci/install-protoc.ps1
-      - app/src-tauri/tauri.conf.json
-      - app/src-tauri/build.rs
-      - app/src-tauri/windows-app-manifest.xml
-      - app/src-tauri/icons/**
-      - app/package.json
-      - app/package-lock.json
-      - '**/Cargo.toml'
-      - Cargo.lock
-      - rust-toolchain.toml
   workflow_call:
     inputs:
       tag:
-        description: The release tag (vX.Y.Z), already pointing at the commit to build.
-        required: true
+        description: The release tag (vX.Y.Z), already pointing at the commit to build; empty (ci.yml) builds and verifies the installers without publishing.
+        required: false
+        default: ''
         type: string
     secrets:
       # Optional: once the key is a secret of the `release` environment, the
@@ -109,9 +94,14 @@ on:
 permissions:
   contents: read
 
+# Publishing runs one at a time per tag. A build-only run (called by ci.yml)
+# has a group of its own: ci.yml's concurrency already cancels a pull
+# request's superseded run, and a shared group would cancel a master push's
+# pending installer builds when the next push or the nightly run queued its
+# own, leaving that commit without a passing CI gate.
 concurrency:
-  group: release-${{ inputs.tag || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: release-${{ inputs.tag || (github.ref_type == 'tag' && github.ref) || format('build-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -341,11 +331,14 @@ jobs:
 
       # Caches are saved by master runs only (a pull request's or a tag's
       # cache is not readable by other refs), so a release restores what
-      # master built. The Windows key is the footprint job's.
+      # master built. The Windows key is the footprint job's (one entry for
+      # both). The macOS release build saves nothing: master builds it on
+      # every push now (ci.yml calls this workflow), and its cache would push
+      # the 10 GB pool, already full, into evicting caches on every master run.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2  # zizmor: ignore[cache-poisoning]
         with:
           shared-key: release-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' && runner.os == 'Windows' }}
 
       # LanceDB's protobuf definitions are compiled at build time: a pinned,
       # checksum-verified protoc from the official release (the Chocolatey

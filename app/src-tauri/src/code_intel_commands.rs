@@ -239,4 +239,49 @@ mod tests {
         assert_eq!(json["sources"][0]["project"], "obra/superpowers");
         assert!(json["sources"][0].get("licenseText").is_none());
     }
+
+    /// The repository's NOTICE credits every project the bundled skills and
+    /// output compression come from, with the pinned commit or tag, and says
+    /// rtk's BUSL engine is not used. (Read here, not in shodh-rag, whose
+    /// files the retrieval evals must not depend on.)
+    #[test]
+    fn the_notice_credits_every_source() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let notice = std::fs::read_to_string(root.join("NOTICE")).unwrap();
+        for source in code_skills::BUNDLED.iter().flat_map(|s| s.sources) {
+            assert!(notice.contains(source.url), "NOTICE lacks {}", source.url);
+            assert!(
+                notice.contains(source.commit),
+                "NOTICE lacks {}",
+                source.commit
+            );
+        }
+        for skill in &code_skills::BUNDLED {
+            let path = format!("skills/{}/SKILL.md", skill.name);
+            assert!(notice.contains(&path), "NOTICE lacks {path}");
+            assert!(
+                root.join("crates/shodh-rag").join(&path).is_file(),
+                "{path} is not where NOTICE says"
+            );
+        }
+        for rtk in [
+            "https://github.com/rtk-ai/rtk, tag v1.1.0",
+            "crates/shodh-rag/src/harness/compress/mod.rs",
+            "Business Source License 1.1",
+        ] {
+            assert!(notice.contains(rtk), "NOTICE lacks {rtk:?}");
+        }
+        for license in [
+            "superpowers-MIT.txt",
+            "ECC-MIT.txt",
+            "elephant-goldfish-model-Apache-2.0.txt",
+        ] {
+            assert!(
+                root.join("crates/shodh-rag/skills/licenses")
+                    .join(license)
+                    .is_file(),
+                "{license} is missing"
+            );
+        }
+    }
 }

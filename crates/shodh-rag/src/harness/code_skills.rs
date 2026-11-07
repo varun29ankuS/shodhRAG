@@ -357,28 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_credits_every_source() {
-        let notice =
-            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../NOTICE"))
-                .unwrap();
-        for source in BUNDLED.iter().flat_map(|s| s.sources) {
-            assert!(notice.contains(source.url), "NOTICE lacks {}", source.url);
-            assert!(
-                notice.contains(source.commit),
-                "NOTICE lacks {}",
-                source.commit
-            );
-        }
-        for skill in &BUNDLED {
-            assert!(
-                notice.contains(&format!("skills/{}/SKILL.md", skill.name)),
-                "{}",
-                skill.name
-            );
-        }
-    }
-
-    #[test]
     fn no_skill_changes_modes_or_approvals_or_ships_a_script() {
         for skill in &BUNDLED {
             let lowered = skill.skill_md.to_lowercase();

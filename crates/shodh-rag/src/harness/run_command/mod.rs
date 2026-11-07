@@ -653,6 +653,14 @@ impl CommandOutcome {
     /// What the model gets back: how it ended, then the output's start and
     /// end.
     pub fn text_for_model(&self, limits: &CommandLimits) -> String {
+        self.text_for_model_with(limits, &self.output)
+    }
+
+    /// [`CommandOutcome::text_for_model`] with `output` standing for the
+    /// command's output: the model's copy when output compression shortened
+    /// it ([`super::compress`]). The user's copy is always
+    /// [`CommandOutcome::output`].
+    pub fn text_for_model_with(&self, limits: &CommandLimits, output: &str) -> String {
         let secs = self.duration.as_secs_f64();
         let mut text = match self.state {
             CommandState::Done => match self.exit_code {
@@ -686,18 +694,45 @@ impl CommandOutcome {
             text.push_str(note);
         }
         if self.state != CommandState::Refused {
-            if self.output.trim().is_empty() {
+            if output.trim().is_empty() {
                 text.push_str("\nNo output.");
             } else {
                 text.push_str("\nOutput (stdout and stderr):\n");
-                text.push_str(&head_and_tail(
-                    &self.output,
-                    MODEL_HEAD_CHARS,
-                    MODEL_TAIL_CHARS,
-                ));
+                text.push_str(&head_and_tail(output, MODEL_HEAD_CHARS, MODEL_TAIL_CHARS));
             }
         }
         text
+    }
+
+    /// What the model gets back with output compression on: the result text
+    /// of the compressed output (with [`super::compress::note`]) when that is
+    /// shorter than the plain one, which is returned otherwise. Also returns
+    /// the estimated tokens of the plain result and of the one sent, both
+    /// after the head-and-tail cut, so a saving is never counted against
+    /// output the model would not have got anyway.
+    pub fn compressed_text_for_model(
+        &self,
+        limits: &CommandLimits,
+        command: &str,
+    ) -> (String, u64, u64) {
+        use super::compress::{compress, note, savings::estimate_tokens};
+        let plain = self.text_for_model(limits);
+        let original = estimate_tokens(&plain);
+        if self.state == CommandState::Refused {
+            return (plain, original, original);
+        }
+        let compressed = compress(command, &self.output);
+        if !compressed.changed() {
+            return (plain, original, original);
+        }
+        let mut short = self.text_for_model_with(limits, &compressed.text);
+        short.push('\n');
+        short.push_str(&note(&compressed));
+        let sent = estimate_tokens(&short);
+        if sent >= original {
+            return (plain, original, original);
+        }
+        (short, original, sent)
     }
 }
 

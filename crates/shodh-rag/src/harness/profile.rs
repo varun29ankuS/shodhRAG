@@ -64,12 +64,16 @@ pub mod app_tools {
     pub const SHOW_SETTING: &str = "show_setting";
     pub const SHOW_PAPER: &str = "show_paper";
     pub const SHOW_SNIPPET: &str = "show_snippet";
+    /// The tokens Code mode's output compression saved: a conversation's and the total.
+    pub const CODE_TOKENS_SAVED: &str = "code_tokens_saved";
+    /// Shodh's bundled Code skills: which are on, what each does, where it came from.
+    pub const CODE_SKILLS: &str = "code_skills";
     /// A Code session's own tool (with its workspace), not in [`ALL`]: a Research chat
     /// has no code folder to send to a reviewer.
     pub const REVIEW_CODE: &str = "review_code";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 55] = [
+    pub const ALL: [&str; 57] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -125,6 +129,8 @@ pub mod app_tools {
         SHOW_SETTING,
         SHOW_PAPER,
         SHOW_SNIPPET,
+        CODE_TOKENS_SAVED,
+        CODE_SKILLS,
     ];
 }
 

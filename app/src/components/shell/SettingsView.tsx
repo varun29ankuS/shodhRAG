@@ -12,13 +12,14 @@ import TableModelSettings from '../TableModelSettings';
 import EvidenceTableSettings from '../EvidenceTableSettings';
 import ScanReaderSettings from '../ScanReaderSettings';
 import ToolsSettings from '../ToolsSettings';
+import CodeSkillsSettings from '../../features/codeIntel/CodeSkillsSettings';
 import AppearanceSettings from '../AppearanceSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
-export type SettingsSection = 'models' | 'search' | 'tools' | 'tables' | 'general' | 'appearance' | 'notifications' | 'privacy' | 'memory' | 'data';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'code' | 'tables' | 'general' | 'appearance' | 'notifications' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -35,6 +36,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'tools',
     label: 'Tools & connections',
     description: 'What the assistant can use: its built-in tools, MCP servers you connect (with which tools ask first), and skills.',
+  },
+  {
+    id: 'code',
+    label: 'Code',
+    description: 'The building skills the assistant follows in Code mode, and how it reads command output.',
   },
   {
     id: 'tables',
@@ -201,6 +207,8 @@ export default function SettingsView({
                 </>
               ) : section === 'tools' ? (
                 <ToolsSettings />
+              ) : section === 'code' ? (
+                <CodeSkillsSettings />
               ) : section === 'tables' ? (
                 <EvidenceTableSettings />
               ) : section === 'general' ? (

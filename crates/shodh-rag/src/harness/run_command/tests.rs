@@ -625,6 +625,62 @@ fn outcomes_tell_the_model_and_the_user_how_the_command_ended() {
 }
 
 #[test]
+fn only_the_models_copy_of_the_output_is_compressed() {
+    let limits = CommandLimits::for_call(&settings(600, 4096, 80), Some(30));
+    let mut output = String::from("   Compiling shodh v0.1.0\n\nrunning 120 tests\n");
+    for i in 0..120 {
+        output.push_str(&format!("test suite::case_{i} ... ok\n"));
+    }
+    output.push_str("test suite::rounding ... FAILED\n\nfailures:\n\n---- suite::rounding stdout ----\nthread 'suite::rounding' panicked at src/lib.rs:9:5:\nassertion failed: x == 10\n\ntest result: FAILED. 120 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n");
+    let ran = CommandOutcome {
+        state: CommandState::Done,
+        exit_code: Some(101),
+        note: None,
+        output: output.clone(),
+        duration: Duration::from_millis(900),
+        escaped: false,
+    };
+    let (text, original, sent) = ran.compressed_text_for_model(&limits, "cargo test");
+    // The user's copy is untouched; the plain result is what the model got before.
+    assert_eq!(ran.output, output);
+    assert_eq!(
+        original,
+        crate::harness::compress::savings::estimate_tokens(&ran.text_for_model(&limits))
+    );
+    assert_eq!(
+        sent,
+        crate::harness::compress::savings::estimate_tokens(&text)
+    );
+    assert!(sent * 4 < original, "sent {sent} of {original}");
+    assert!(text.starts_with("Exit code 101 after 0.9 s."), "{text}");
+    for kept in [
+        "test suite::rounding ... FAILED",
+        "thread 'suite::rounding' panicked at src/lib.rs:9:5:",
+        "assertion failed: x == 10",
+        "[120 passing tests not listed]",
+        "test result: FAILED. 120 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+    ] {
+        assert!(text.lines().any(|l| l == kept), "{kept:?} missing:\n{text}");
+    }
+    assert!(text.contains("The user sees the full output."), "{text}");
+    assert!(!text.contains("... ok"));
+
+    // Nothing to shorten: the plain result, counted as no saving.
+    let plain = CommandOutcome {
+        output: "hello\n".into(),
+        ..ran.clone()
+    };
+    let (text, original, sent) = plain.compressed_text_for_model(&limits, "echo hello");
+    assert_eq!(text, plain.text_for_model(&limits));
+    assert_eq!(original, sent);
+    // A refused command has no output to compress.
+    let refused = CommandOutcome::refused(NO_GIT_BASH);
+    let (text, original, sent) = refused.compressed_text_for_model(&limits, "cargo test");
+    assert_eq!(text, refused.text_for_model(&limits));
+    assert_eq!(original, sent);
+}
+
+#[test]
 fn commands_are_quoted_for_git_bash_as_one_argument() {
     assert_eq!(msys_quoted("ls"), "\"ls\"");
     assert_eq!(

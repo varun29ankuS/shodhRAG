@@ -53,7 +53,7 @@ function positiveInt(value: unknown): number | null {
 const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'tasks', 'memory', 'visuals', 'results', 'tables'];
 
 /** Sections of Settings a target may open (`SettingsView`; the Rust coverage test checks both agree). */
-export const SETTINGS_SECTIONS: readonly string[] = ['models', 'search', 'tools', 'tables', 'general', 'appearance', 'notifications', 'privacy', 'memory', 'data'];
+export const SETTINGS_SECTIONS: readonly string[] = ['models', 'search', 'tools', 'code', 'tables', 'general', 'appearance', 'notifications', 'privacy', 'memory', 'data'];
 
 /** Parts of the Library a target may open: the snippet shelf, the paper graph, a paper's page. */
 export const LIBRARY_SECTIONS: readonly string[] = ['snippets', 'graph', 'paper'];

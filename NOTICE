@@ -25,7 +25,52 @@ Copyright 2025 Anthropic
   layering (allow, deny, re-allow, deny again) and the directory metadata
   allowance for realpath of src/sandbox/macos-sandbox-utils.ts.
 
+rtk (Rust Token Killer)
+https://github.com/rtk-ai/rtk, tag v1.1.0
+Copyright 2026 RTK AI Labs
+- crates/shodh-rag/src/harness/compress/mod.rs follows the design of rtk's
+  Apache-2.0 command filters (src/cmds/rust/cargo_cmd.rs,
+  src/cmds/git/git_cmd.rs, src/cmds/python/pytest_cmd.rs,
+  src/cmds/js/vitest_cmd.rs, src/cmds/go/go_cmd.rs, and the grep and find
+  grouping of src/cmds/system/): one filter per program that drops success
+  noise, and a never-worse guard. Modified: rewritten without regular
+  expressions, and rtk's caps and truncation of failure output are left
+  out, so failures are never shortened. rtk's compression engine (engine/,
+  rtk-engine) is under the Business Source License 1.1, not Apache-2.0;
+  none of it is used. rtk ships no NOTICE file.
+
+Elephant-Goldfish Model (EGM)
+https://github.com/google/elephant-goldfish-model, commit e9e1f06aa4e26e95cd4ed37210a0632202c429e9
+(Its README: "This is not an officially supported Google product.")
+- crates/shodh-rag/skills/plan-before-building/SKILL.md is adapted from the
+  skills egm-brainstorm and egm-draft, and
+  crates/shodh-rag/skills/fresh-eyes-review/SKILL.md from egm-review and
+  egm-resolve. Changed: condensed and merged with the superpowers and ECC
+  skills below, and the goldfish review runs on Shodh's own stateless
+  reviewer (review_code) instead of spawned agents. Only instruction text is
+  used; none of EGM's Python tooling. The licence text is kept in
+  crates/shodh-rag/skills/licenses/elephant-goldfish-model-Apache-2.0.txt
+  and beside each skill that uses it. EGM ships no NOTICE file.
+
 Third-party components distributed with the app (not under Apache-2.0)
+
+Code mode's bundled skills (MIT License)
+The skills in crates/shodh-rag/skills/ are rewritten from these projects,
+whose MIT licence texts are kept in crates/shodh-rag/skills/licenses/ and
+beside each skill that uses them:
+- superpowers, https://github.com/obra/superpowers, commit
+  22f0b463e7a5e579904dd6211a520321035526f7, Copyright (c) 2025 Jesse
+  Vincent: brainstorming and writing-plans
+  (skills/plan-before-building/SKILL.md), test-driven-development
+  (skills/test-first/SKILL.md), systematic-debugging
+  (skills/debug-systematically/SKILL.md), verification-before-completion
+  (skills/verify-before-done/SKILL.md), requesting-code-review and
+  receiving-code-review (skills/fresh-eyes-review/SKILL.md).
+- ECC, https://github.com/affaan-m/ECC, commit
+  d2ef2680594f9a17526a6e1a2e18b3d242c5d17b, Copyright (c) 2026 Affaan
+  Mustafa: search-first (skills/plan-before-building/SKILL.md), tdd-workflow
+  (skills/test-first/SKILL.md), verification-loop
+  (skills/verify-before-done/SKILL.md).
 
 ONNX Runtime
 https://github.com/microsoft/onnxruntime

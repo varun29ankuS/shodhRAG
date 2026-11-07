@@ -39,9 +39,11 @@ use super::code_mode::{
     project_fingerprint, read_for_diff, ProjectFingerprint, CODE_DIFF_KEY, CREATION_UNDO,
     CREATOR_MODE_KEY, NETWORK_KEY, PROJECT_CODE_KEY, PROJECT_CODE_TEXT, REVIEW_TOKEN_KEY,
 };
+use super::compress::savings::SavingsStore;
 use super::error::HarnessError;
 use super::events::{
-    AgentEvent, ClaimCheck, GroundingReport, NeedCheck, RevisionReason, RiskTier, ScoringMethod,
+    AgentEvent, ClaimCheck, CommandState, GroundingReport, NeedCheck, RevisionReason, RiskTier,
+    ScoringMethod,
 };
 use super::grounding::absence::flag_unverified_absence;
 use super::grounding::followup::{self, Next, Retrieval, RetrieveResult, Rounds};
@@ -56,7 +58,8 @@ use super::protocol::{
     OutboundFrame, ResponseFrame, StreamingBehavior, SubagentLevel, ToolResultPayload,
 };
 use super::run_command::{
-    self, asked_timeout, CommandExecutor, CommandLimits, CommandSpec, RunControl, RUN_COMMAND,
+    self, asked_timeout, CommandExecutor, CommandLimits, CommandOutcome, CommandSpec, RunControl,
+    RUN_COMMAND,
 };
 use super::sidecar::{self, LaunchSpec};
 use super::tools::plan::UPDATE_PLAN;
@@ -274,6 +277,53 @@ impl CodeRuntime {
             compares: tokio::sync::watch::channel(0).0,
             creates: false,
         }
+    }
+
+    /// What the model gets back of a command that ran: its output compressed
+    /// ([`super::compress`]) unless the user turned compression off for this
+    /// conversation, which is read at every command so a change applies to
+    /// the next one. Each command counted adds to the conversation's savings
+    /// ([`SavingsStore`]); a refused command is not counted. The full output
+    /// is kept for [`super::command_output`] under `command_id`, which every
+    /// shortened or cut result names. The files and the compression run off
+    /// the async runtime.
+    async fn model_copy(
+        &self,
+        ran: &CommandOutcome,
+        limits: &CommandLimits,
+        command: &str,
+        command_id: &str,
+    ) -> String {
+        let data_dir = self.data_dir.clone();
+        let conversation = self.conversation_id.clone();
+        let (ran, limits, command, command_id) = (
+            ran.clone(),
+            *limits,
+            command.to_string(),
+            command_id.to_string(),
+        );
+        let fallback = ran.text_for_model_with(&limits, &ran.output, Some(&command_id));
+        let made = tokio::task::spawn_blocking(move || {
+            if ran.state != CommandState::Refused {
+                super::command_output::remember(&conversation, &command_id, &command, &ran.output);
+            }
+            let savings = SavingsStore::in_dir(&data_dir);
+            if !savings.compression_on(&conversation) {
+                return ran.text_for_model_with(&limits, &ran.output, Some(&command_id));
+            }
+            let (text, original, sent) = ran.compressed_text_for_model(&limits, &command, &command_id);
+            if ran.state != CommandState::Refused {
+                if let Err(e) = savings.record(&conversation, original, sent) {
+                    tracing::warn!(target: "shodh::harness", error = %e, "tokens saved were not counted; the savings file could not be written");
+                }
+            }
+            text
+        })
+        .await;
+        made.unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::harness", error = %e, "output compression did not finish; the plain result is sent");
+            fallback
+        })
     }
 
     /// The workspace's Code settings now. Without them (none, or unreadable)
@@ -1709,6 +1759,13 @@ impl Inner {
         // What it changed is listed before its result goes back, so the
         // next decision waits for the comparison.
         code.command_ended(step_id);
+        // The model's copy of the output, compressed unless the user turned
+        // that off for this conversation; the user's copy (the live output and
+        // the step) is the full output. Counted before CommandFinished, so the
+        // session's savings are current when the UI reads them on that event.
+        let text_for_model = code
+            .model_copy(&ran, &limits, &args.command, &command_id)
+            .await;
         self.emit(AgentEvent::CommandFinished {
             run_id: run_id.to_string(),
             step_id: step_id.to_string(),
@@ -1720,7 +1777,7 @@ impl Inner {
         });
         let outcome = DispatchOutcome {
             ok: ran.succeeded(),
-            text_for_model: ran.text_for_model(&limits),
+            text_for_model,
             summary: truncate_chars(&ran.summary(&limits), 160),
             detail: Some(json!({
                 "commandId": command_id,
@@ -4430,6 +4487,70 @@ mod tests {
                 data_dir: data.to_path_buf(),
             },
         ))
+    }
+
+    #[tokio::test]
+    async fn the_models_copy_is_compressed_counted_and_switched_off_per_conversation() {
+        let folder = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let code = code_runtime(folder.path(), data.path());
+        let limits = CommandLimits::for_call(&CodeSettings::default(), None);
+        let mut output = String::from("running 50 tests\n");
+        for i in 0..50 {
+            output.push_str(&format!("test t{i} ... ok\n"));
+        }
+        output.push_str(
+            "test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+        );
+        let ran = CommandOutcome {
+            state: CommandState::Done,
+            exit_code: Some(0),
+            note: None,
+            output: output.clone(),
+            duration: Duration::from_millis(5),
+            escaped: false,
+        };
+        let text = code
+            .model_copy(&ran, &limits, "cargo test", "copy-test-1")
+            .await;
+        assert!(text.contains("[50 passing tests not listed]"), "{text}");
+        assert!(
+            text.contains("command copy-test-1: read or search it with read_command_output"),
+            "{text}"
+        );
+        // The model can read the full output back.
+        let tool = crate::harness::command_output::ReadCommandOutputTool::new("conv-1");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ctx = crate::harness::tools::ToolContext::new("r", "s", tx);
+        let full = crate::harness::tools::HostTool::execute(
+            &tool,
+            serde_json::json!({"command_id": "copy-test-1", "search": "t49 ..."}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert!(
+            full.text_for_model.contains("| test t49 ... ok"),
+            "{}",
+            full.text_for_model
+        );
+        assert_eq!(ran.output, output, "the user's copy is the full output");
+        let store = SavingsStore::in_dir(data.path());
+        let first = store.get("conv-1").unwrap().0.tally;
+        assert_eq!(first.commands, 1);
+        assert_eq!(first.shortened, 1);
+        assert!(first.saved_tokens() > 0);
+        // Off for this conversation: the plain result, and nothing counted.
+        store.set_compression("conv-1", false).unwrap();
+        let text = code
+            .model_copy(&ran, &limits, "cargo test", "copy-test-2")
+            .await;
+        assert_eq!(
+            text,
+            ran.text_for_model_with(&limits, &ran.output, Some("copy-test-2"))
+        );
+        assert_eq!(store.get("conv-1").unwrap().0.tally, first);
+        assert!(store.compression_on("conv-2"));
     }
 
     fn guard_dialog(

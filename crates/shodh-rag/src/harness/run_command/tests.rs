@@ -621,7 +621,133 @@ fn outcomes_tell_the_model_and_the_user_how_the_command_ended() {
         ..done
     };
     let text = long.text_for_model(&limits);
-    assert!(text.contains("[… 100 characters cut …]"), "{text}");
+    assert!(
+        text.contains("[… 100 characters cut from the middle of the output …]"),
+        "{text}"
+    );
+}
+
+#[test]
+fn only_the_models_copy_of_the_output_is_compressed() {
+    let limits = CommandLimits::for_call(&settings(600, 4096, 80), Some(30));
+    let mut output = String::from("   Compiling shodh v0.1.0\n\nrunning 120 tests\n");
+    for i in 0..120 {
+        output.push_str(&format!("test suite::case_{i} ... ok\n"));
+    }
+    output.push_str("test suite::rounding ... FAILED\n\nfailures:\n\n---- suite::rounding stdout ----\nthread 'suite::rounding' panicked at src/lib.rs:9:5:\nassertion failed: x == 10\n\ntest result: FAILED. 120 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n");
+    let ran = CommandOutcome {
+        state: CommandState::Done,
+        exit_code: Some(101),
+        note: None,
+        output: output.clone(),
+        duration: Duration::from_millis(900),
+        escaped: false,
+    };
+    let (text, original, sent) = ran.compressed_text_for_model(&limits, "cargo test", "cmd-1");
+    // The user's copy is untouched; the plain result is what the model got before.
+    assert_eq!(ran.output, output);
+    assert_eq!(
+        original,
+        crate::harness::compress::savings::estimate_tokens(&ran.text_for_model_with(
+            &limits,
+            &ran.output,
+            Some("cmd-1")
+        ))
+    );
+    assert_eq!(
+        sent,
+        crate::harness::compress::savings::estimate_tokens(&text)
+    );
+    assert!(sent * 4 < original, "sent {sent} of {original}");
+    assert!(text.starts_with("Exit code 101 after 0.9 s."), "{text}");
+    for kept in [
+        "test suite::rounding ... FAILED",
+        "thread 'suite::rounding' panicked at src/lib.rs:9:5:",
+        "assertion failed: x == 10",
+        "[120 passing tests not listed]",
+        // A failed run keeps its progress (a hang or lock shows there).
+        "   Compiling shodh v0.1.0",
+        "test result: FAILED. 120 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+    ] {
+        assert!(text.lines().any(|l| l == kept), "{kept:?} missing:\n{text}");
+    }
+    assert!(
+        text.contains(
+            "The full output is command cmd-1: read or search it with read_command_output."
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("... ok"));
+
+    // Nothing to shorten: the plain result, counted as no saving.
+    let plain = CommandOutcome {
+        output: "hello\n".into(),
+        ..ran.clone()
+    };
+    let (text, original, sent) = plain.compressed_text_for_model(&limits, "echo hello", "cmd-2");
+    assert_eq!(text, plain.text_for_model(&limits));
+    assert_eq!(original, sent);
+    // A refused command has no output to compress.
+    let refused = CommandOutcome::refused(NO_GIT_BASH);
+    let (text, original, sent) = refused.compressed_text_for_model(&limits, "cargo test", "cmd-3");
+    assert_eq!(text, refused.text_for_model(&limits));
+    assert_eq!(original, sent);
+}
+
+#[test]
+fn a_failure_in_the_cut_middle_of_a_long_output_reaches_the_model() {
+    let limits = CommandLimits::for_call(&settings(600, 4096, 80), Some(30));
+    // `cargo test --no-fail-fast`, as libtest writes it: a failing test binary,
+    // its failures listed after its tests, then the next binary.
+    let mut output = String::from("     Running unittests src/lib.rs\n\nrunning 1501 tests\n");
+    for i in 0..1_500 {
+        output.push_str(&format!("test suite::first_binary_case_{i} ... ok\n"));
+    }
+    output.push_str(
+        "test suite::rounding ... FAILED\n\nfailures:\n\n---- suite::rounding stdout ----\nthread 'suite::rounding' panicked at src/lib.rs:9:5:\nassertion `left == right` failed\n  left: 4\n right: 5\n\n\nfailures:\n    suite::rounding\n\ntest result: FAILED. 1500 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n\n     Running tests/more.rs\n\nrunning 1500 tests\n",
+    );
+    for i in 0..1_500 {
+        output.push_str(&format!("test more::second_binary_case_{i} ... ok\n"));
+    }
+    output.push_str(
+        "\ntest result: ok. 1500 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+    );
+    let ran = CommandOutcome {
+        state: CommandState::Done,
+        exit_code: Some(101),
+        note: None,
+        output,
+        duration: Duration::from_millis(900),
+        escaped: false,
+    };
+    // Compression off (the plain result): the cut alone must keep the failure.
+    let text = ran.text_for_model_with(&limits, &ran.output, Some("cmd-9"));
+    assert!(
+        text.contains("characters cut from the middle of the output"),
+        "cut expected"
+    );
+    for kept in [
+        "test suite::rounding ... FAILED",
+        "---- suite::rounding stdout ----",
+        "thread 'suite::rounding' panicked at src/lib.rs:9:5:",
+        "assertion `left == right` failed",
+        "  left: 4",
+        " right: 5",
+    ] {
+        assert!(text.lines().any(|l| l == kept), "{kept:?} was cut");
+    }
+    assert!(text.contains(
+        "[The whole output is command cmd-9: read or search it with read_command_output.]"
+    ));
+    assert!(text.ends_with(
+        "test result: ok. 1500 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+    ));
+    // Compressed, the passing lines go and nothing needs cutting.
+    let (short, _, _) =
+        ran.compressed_text_for_model(&limits, "cargo test --no-fail-fast", "cmd-9");
+    assert!(!short.contains("characters cut"), "{short}");
+    assert!(short.contains("assertion `left == right` failed"));
+    assert!(short.contains("[1500 passing tests not listed]\ntest result: FAILED."));
 }
 
 #[test]

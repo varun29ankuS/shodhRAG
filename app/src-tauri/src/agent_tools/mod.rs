@@ -12,6 +12,7 @@
 mod artifacts;
 mod audit;
 mod calendar;
+mod code_intel;
 mod code_review;
 pub(crate) mod export;
 mod figures;
@@ -55,6 +56,7 @@ use crate::visual_commands::VisualState;
 use crate::workspace_commands::WorkspaceState;
 
 pub use artifacts::{creator_tools, CREATOR_TOOL_NAMES};
+pub use code_intel::{code_intel_tools, CODE_INTEL_TOOL_NAMES};
 pub use code_review::{code_review_tools, CODE_REVIEW_TOOL_NAMES};
 pub use files::{IndexedRoots, SourceRoots};
 /// For the coverage test, which checks them against the frontend.
@@ -276,6 +278,7 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     workspaces::register(&mut registry, &host)?;
     artifacts::register(&mut registry, &host)?;
     code_review::register(&mut registry, &host)?;
+    code_intel::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }

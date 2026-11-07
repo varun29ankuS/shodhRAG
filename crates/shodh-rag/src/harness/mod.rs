@@ -11,6 +11,9 @@
 pub mod catalog_cache;
 pub mod catalog_fetch;
 pub mod code_mode;
+pub mod code_skills;
+pub mod command_output;
+pub mod compress;
 pub mod error;
 pub mod events;
 pub mod grounding;

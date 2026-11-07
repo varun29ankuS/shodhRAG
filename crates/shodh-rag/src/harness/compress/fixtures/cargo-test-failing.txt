@@ -1,0 +1,117 @@
+   Compiling shodh-ontology v0.1.0 (D:\a\shodhRAG\shodhRAG\crates\shodh-ontology)
+   Compiling ort-sys v2.0.0-rc.13
+   Compiling shodh-rag v0.0.10 (D:\a\shodhRAG\shodhRAG\crates\shodh-rag)
+   Compiling shodh-rag-app v0.0.10 (D:\a\shodhRAG\shodhRAG\app\src-tauri)
+   Compiling ort v2.0.0-rc.13
+   Compiling sandbox-probe v0.1.0 (D:\a\shodhRAG\shodhRAG\crates\sandbox-probe)
+   Compiling docling-onnx v1.91.0
+   Compiling docling-pdf v1.91.0
+   Compiling shodh-eval v0.1.0 (D:\a\shodhRAG\shodhRAG\crates\shodh-eval)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11m 39s
+     Running unittests src\lib.rs (target\debug\deps\shodh_rag-15acd141d24c6976.exe)
+
+running 1922 tests
+test agent::calendar_indexer::tests::event_text_includes_the_location ... ok
+test audit::canonical::tests::insertion_order_does_not_matter ... ok
+test audit::payload::tests::cloud_detection ... ok
+test audit::canonical::tests::keys_are_sorted_recursively_and_whitespace_free ... ok
+test audit::payload::tests::large_tool_arguments_are_truncated ... ok
+test audit::payload::tests::model_switch_never_includes_the_key ... ok
+test audit::payload::tests::memory_tool_arguments_are_stored_without_the_words ... ok
+test audit::payload::tests::source_changes_merge_details ... ok
+test audit::payload::tests::retrieval_keeps_locations_and_caps_snippets ... ok
+test audit::store::tests::a_key_without_sqlcipher_is_refused_not_ignored ... ok
+test audit::store::tests::a_queued_event_that_finds_the_database_busy_is_counted_with_its_error ... ok
+test audit::store::tests::a_version_1_database_migrates_to_statement_tables_with_its_chain_intact ... ok
+test audit::store::tests::appended_events_form_a_verifiable_chain ... ok
+test audit::store::tests::deleted_first_row_without_checkpoint_is_detected ... ok
+test audit::store::tests::deleted_row_reports_the_first_surviving_row_after_the_gap ... ok
+test audit::store::tests::deleting_the_newest_checkpoint_unanchors_the_chain ... ok
+test audit::store::tests::exports_contain_every_matching_row_oldest_first ... ok
+test audit::store::tests::migrations_are_recorded_and_idempotent ... ok
+test agent::calendar_indexer::tests::startup_indexing_embeds_only_items_missing_from_the_index ... ok
+test agent::calendar_indexer::tests::startup_indexing_writes_the_calendar_as_it_is_now ... ok
+test audit::store::tests::modified_row_is_detected_at_that_row ... ok
+test audit::store::tests::modified_row_with_recomputed_hash_breaks_the_next_link ... ok
+test audit::store::tests::query_filters_by_type_time_conversation_and_text ... ok
+test audit::store::tests::retention_bounds_are_enforced_and_changes_are_audited ... ok
+test audit::store::tests::reordered_rows_are_detected ... ok
+test audit::store::tests::retention_after_a_backwards_clock_jump_keeps_in_window_events ... ok
+test audit::store::tests::settings_change_payload_never_contains_the_key ... ok
+test audit::store::tests::retention_checkpoint_keeps_the_chain_verifiable ... ok
+test audit::store::tests::retention_keeps_an_event_at_the_cutoff_and_everything_after_it ... ok
+test audit::tap::tests::citation_patterns_match_the_transcript ... ok
+test audit::tap::tests::finished_runs_report_usage_and_cited_files ... ok
+test audit::tap::tests::revised_answers_audit_only_the_final_text_and_its_grounding ... ok
+test audit::tap::tests::unknown_runs_still_produce_an_answer_event ... ok
+test audit::tap::tests::working_notes_before_tool_calls_are_not_the_answer ... ok
+test audit::tests::event_types_round_trip ... ok
+test audit::tests::keys_round_trip_and_never_print ... ok
+test audit::tests::queries_deserialise_from_the_ui_shape ... ok
+test audit::store::tests::stats_count_month_usage_and_cloud_cost ... ok
+test audit::write_gate::tests::a_path_without_a_canonical_form_is_keyed_by_its_absolute_path ... ok
+test audit::store::tests::submitted_events_are_committed_before_drop_returns ... ok
+test audit::write_gate::tests::a_failed_or_panicking_write_rolls_back_and_passes_the_turn_on ... ok
+test audit::write_gate::tests::a_queued_audit_event_inside_a_write_is_recorded_after_it ... ok
+test audit::write_gate::tests::a_read_inside_a_write_is_refused_on_any_handle ... ok
+test audit::write_gate::tests::a_reader_of_a_store_is_not_held_up_by_its_writer_waiting_for_the_turn ... ok
+test audit::write_gate::tests::a_write_inside_a_write_on_the_same_handle_is_refused_not_deadlocked ... ok
+test audit::store::tests::the_inbox_is_rebuilt_for_connector_items_with_its_rows ... ok
+test audit::write_gate::tests::a_write_or_second_read_while_holding_a_read_is_refused ... ok
+test audit::write_gate::tests::a_write_inside_a_write_through_another_handle_is_refused ... ok
+test audit::write_gate::tests::a_write_outside_a_turn_is_refused ... ok
+test audit::write_gate::tests::a_writer_that_asks_again_at_once_goes_behind_the_one_waiting ... ok
+test audit::write_gate::tests::waiting_for_the_audit_writer_inside_a_read_or_write_is_refused ... ok
+test audit::write_gate::tests::handles_to_one_file_share_a_gate_and_other_files_do_not ... ok
+test audit::write_gate::tests::with_the_gate_a_second_writer_waits_for_its_turn_instead_of_failing_busy ... ok
+test code_review::diff::tests::a_new_file_is_all_added_and_a_removed_one_all_removed ... ok
+test code_review::diff::tests::a_unified_diff_reads_into_files_hunks_and_line_numbers ... ok
+test code_review::diff::tests::capped_diffs_keep_every_file_by_name ... ok
+test code_review::diff::tests::equal_texts_have_no_hunk ... ok
+test code_review::diff::tests::far_apart_changes_are_separate_hunks_and_near_ones_merge ... ok
+test code_review::diff::tests::large_files_are_not_compared_line_by_line ... ok
+test code_review::diff::tests::one_changed_line_shows_with_its_context ... ok
+test harness::compress::savings::tests::the_switch_is_per_conversation_and_on_by_default ... ok
+test harness::compress::tests::a_failing_cargo_build_keeps_errors_and_warnings_whole ... ok
+test harness::compress::tests::a_failing_cargo_test_keeps_every_failure_line ... ok
+test harness::compress::tests::a_failing_go_test_keeps_the_failure ... ok
+test harness::compress::tests::a_failing_jest_run_keeps_the_failure ... ok
+test harness::compress::tests::a_failing_pytest_keeps_its_failure_and_drops_only_dot_progress ... ok
+test harness::compress::tests::a_passing_cargo_test_run_is_mostly_its_summary ... ok
+test harness::compress::tests::a_progress_word_that_names_a_problem_is_kept ... ok
+test harness::compress::tests::compound_commands_get_only_the_lossless_steps ... FAILED
+test harness::compress::tests::file_lists_are_grouped_by_folder ... ok
+test harness::compress::tests::git_status_hints_and_transfer_progress_are_dropped ... ok
+test harness::compress::tests::output_that_cannot_be_shortened_goes_unchanged ... ok
+test harness::compress::tests::programs_are_recognised_behind_cd_and_environment_assignments ... ok
+test harness::compress::tests::redrawn_progress_keeps_its_last_state_and_never_an_error ... ok
+test harness::compress::tests::repeated_lines_are_written_once_with_a_count ... ok
+test harness::compress::tests::search_matches_are_grouped_by_file_without_losing_any ... ok
+test harness::compress::tests::the_note_says_what_was_removed_and_that_the_user_sees_everything ... FAILED
+test harness::compress::tests::verbose_pytest_passes_are_counted ... ok
+test harness::events::tests::an_audit_target_from_an_older_build_has_no_entry ... ok
+test harness::events::tests::claims_saved_before_the_suggested_passage_existed_still_load ... ok
+test harness::events::tests::enums_use_snake_case ... ok
+test harness::events::tests::every_variant_round_trips_with_pinned_keys ... ok
+test harness::events::tests::grounding_report_serialises_every_pinned_key_and_round_trips ... ok
+test harness::events::tests::navigated_without_a_target_still_parses ... ok
+test harness::events::tests::navigation_targets_round_trip_with_pinned_keys ... ok
+test harness::events::tests::optional_fields_serialise_as_null ... ok
+failures:
+
+---- harness::compress::tests::compound_commands_get_only_the_lossless_steps stdout ----
+
+thread 'harness::compress::tests::compound_commands_get_only_the_lossless_steps' (6600) panicked at crates\shodh-rag\src\harness\compress\tests.rs:358:5:
+assertion failed: out.text.contains("   Compiling libc v0.2.150")
+
+---- harness::compress::tests::the_note_says_what_was_removed_and_that_the_user_sees_everything stdout ----
+
+thread 'harness::compress::tests::the_note_says_what_was_removed_and_that_the_user_sees_everything' (7464) panicked at crates\shodh-rag\src\harness\compress\tests.rs:463:5:
+assertion failed: note(&grouped).contains("grouped (nothing dropped)")
+
+
+failures:
+    harness::compress::tests::compound_commands_get_only_the_lossless_steps
+    harness::compress::tests::the_note_says_what_was_removed_and_that_the_user_sees_everything
+
+test result: FAILED. 1891 passed; 2 failed; 29 ignored; 0 measured; 0 filtered out; finished in 257.89s

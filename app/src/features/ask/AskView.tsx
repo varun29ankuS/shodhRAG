@@ -72,6 +72,7 @@ import { COMPOSER_INSERT_EVENT, onWindowEvent, takePendingInserts } from '../res
 import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
+import { TokensSavedChip } from '../codeIntel/TokensSavedChip';
 import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
 import { CreatorFinishCard } from '../artifacts/CreatorFinishCard';
@@ -1311,12 +1312,19 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
               answerRunning={isStreaming}
               onProblem={setCodeProblem}
             />}
+            {mode === 'code' && conversationId && (
+              <TokensSavedChip
+                conversationId={conversationId}
+                answerRunning={isStreaming}
+                onOpenActivity={() => onNavigate('activity')}
+              />
+            )}
             <ToolsChip
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}
               answerRunning={isStreaming}
-              onOpenSettings={() => {
-                requestSettingsSection('tools');
+              onOpenSettings={section => {
+                requestSettingsSection(section);
                 onNavigate('settings');
               }}
             />

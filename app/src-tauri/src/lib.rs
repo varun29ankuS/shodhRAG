@@ -56,6 +56,7 @@ mod agent_session_commands;
 mod agent_tools;
 mod calendar_commands;
 mod calendar_store;
+mod code_intel_commands;
 mod code_review_commands;
 mod conversation_commands;
 mod event_emitter;
@@ -773,6 +774,13 @@ pub fn run() {
             mcp_commands::skills_cancel_install,
             mcp_commands::skills_set_enabled,
             mcp_commands::skills_remove,
+            // Code intelligence: tokens saved (Code status line, Activity), Settings → Code skills
+            code_intel_commands::code_savings_get,
+            code_intel_commands::code_savings_total,
+            code_intel_commands::code_savings_set_enabled,
+            code_intel_commands::code_savings_set_default,
+            code_intel_commands::code_skills_list,
+            code_intel_commands::code_skills_set_enabled,
             mcp_commands::tools_for_chat,
             // Document Upload commands
             document_upload_commands::upload_document_file,

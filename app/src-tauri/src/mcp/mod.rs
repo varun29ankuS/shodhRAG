@@ -541,7 +541,14 @@ impl McpManager {
             }
         }
 
-        let skills = skills::enabled_skills(&self.data_dir, workspace, mode);
+        let installed = skills::enabled_skills(&self.data_dir, workspace, mode);
+        // Code mode also gets Shodh's bundled building skills (Settings → Code).
+        let skills = match mode {
+            Mode::Code => {
+                skills::code_chat_skills(skills::enabled_code_skills(&self.data_dir), installed)
+            }
+            Mode::Research => installed,
+        };
         let summaries: Vec<SkillSummary> = skills
             .iter()
             .map(|s| SkillSummary {
@@ -678,6 +685,44 @@ mod tests {
             .await;
         assert!(refused.is_err());
         assert_eq!(manager.read(None).unwrap().1.servers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn code_chats_get_the_bundled_skills_that_are_on() {
+        use shodh_rag::harness::code_skills::BUNDLED;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = McpManager::new(dir.path().to_path_buf());
+        let names = |view: &ChatToolsView| -> Vec<String> {
+            view.skills.iter().map(|s| s.name.clone()).collect()
+        };
+        let all: Vec<String> = BUNDLED.iter().map(|s| s.name.to_string()).collect();
+        let code = manager
+            .chat_tools(None, Mode::Code, None, &[], 8, false)
+            .await;
+        assert_eq!(names(&code.view), all);
+        let load = code
+            .tools
+            .iter()
+            .find(|t| t.name() == shodh_rag::harness::skills::LOAD_SKILL)
+            .expect("load_skill");
+        assert!(load
+            .description()
+            .contains("- test-first: Use when implementing"));
+        // Research chats do not get them.
+        let research = manager
+            .chat_tools(None, Mode::Research, None, &[], 8, false)
+            .await;
+        assert!(research.view.skills.is_empty());
+        // Turned off in Settings → Code: gone from the next session.
+        skills::set_code_skill(dir.path(), "test-first", false).unwrap();
+        assert!(!skills::code_skill_enabled(dir.path(), "test-first"));
+        let off = manager
+            .chat_tools(None, Mode::Code, None, &[], 8, false)
+            .await;
+        assert!(!names(&off.view).contains(&"test-first".to_string()));
+        assert_eq!(off.view.skills.len(), BUNDLED.len() - 1);
+        assert_ne!(off.fingerprint, code.fingerprint);
+        assert!(skills::set_code_skill(dir.path(), "not-ours", true).is_err());
     }
 
     #[tokio::test]

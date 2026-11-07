@@ -443,9 +443,12 @@ jobs:
   # baseline-int8-arm64.json (Apple-silicon int8 rounds differently from x86
   # VNNI, so each class has its own numbers). It fails, never skips, when the
   # runner's int8 kernels are not exact: a gate that cannot run is a failure.
+  # macos-26 (arm64, Apple M1 virtual), the image macos-latest names and the
+  # macOS job and the release dmg build run on. GitHub retired macos-14, which
+  # cancelled this job before it started on every run.
   eval-retrieval-int8:
     name: Retrieval eval (int8, Apple silicon)
-    runs-on: macos-14
+    runs-on: macos-26
     # Slowest 71 minutes on a cold cache (run 41984775872: build and probe 15,
     # model tests 8, the three int8 evals 47; run 41966083623 took 63); the
     # limit leaves a quarter on top.

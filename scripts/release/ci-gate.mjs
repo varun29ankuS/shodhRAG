@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A release is built only from a commit on which CI passed: every job of
-// ci.yml (REQUIRED_CHECKS) has a successful check run on that commit.
+// ci.yml (REQUIRED_CHECKS) has a successful check run on that commit, and so
+// has the nightly run of that commit when there is one (NIGHTLY_CHECK).
 //
 //   node scripts/release/ci-gate.mjs --repo O/R --sha SHA [--timeout-minutes N] [--interval-seconds S]
 //
@@ -17,8 +18,10 @@ export class GateError extends Error {}
 
 // ci.yml's job names (its check run names). On a master commit every job
 // runs (pull requests alone skip heavy jobs a change cannot affect), so a
-// skipped one fails the gate. test/ci-gate.test.mjs fails when
-// they drift apart.
+// skipped one fails the gate. The release builds job calls release.yml, so
+// its check runs are named after release.yml's jobs ("Release builds / ..."):
+// it is not listed here, and CI gate, which fails when it did not pass,
+// stands for it. test/ci-gate.test.mjs fails when they drift apart.
 export const REQUIRED_CHECKS = [
   'Changes',
   'Workflow lint',
@@ -31,28 +34,34 @@ export const REQUIRED_CHECKS = [
   'Retrieval eval (int8, Apple silicon)',
   'Frontend Typecheck + Tests',
   'Footprint budget',
-  'CI passed',
+  'CI gate',
 ];
 
+// nightly.yml's aggregate on the same commit (its job "CI" calls ci.yml). It
+// is not required, since most commits are never measured by a nightly run,
+// but when one ran, a release waits for it and is blocked unless it passed:
+// a commit whose push run passed and whose nightly run failed (a runner
+// image, a retired label) is not released until a re-run passes.
+export const NIGHTLY_CHECK = 'CI / CI gate';
+
 const GITHUB_ACTIONS_APP = 'github-actions';
+
+const newest = (checkRuns, name) =>
+  checkRuns.filter((r) => r.name === name && r.app?.slug === GITHUB_ACTIONS_APP).sort((a, b) => b.id - a.id)[0];
 
 /**
  * Evaluates a commit's check runs (the API's check_runs array). For each
  * required name the newest run by GitHub Actions counts (a re-run replaces
- * the run it repeats). Returns { state: 'success' | 'pending' | 'failure',
- * lines } with one line per required check.
+ * the run it repeats); the nightly aggregate counts the same way when present.
+ * Returns { state: 'success' | 'pending' | 'failure', lines } with one line
+ * per required check (and one for the nightly run when there is one).
  */
 export function evaluateChecks(checkRuns, required = REQUIRED_CHECKS) {
   const lines = [];
   let pending = false;
   let failed = false;
-  for (const name of required) {
-    const runs = checkRuns.filter((r) => r.name === name && r.app?.slug === GITHUB_ACTIONS_APP);
-    const run = runs.sort((a, b) => b.id - a.id)[0];
-    if (!run) {
-      pending = true;
-      lines.push(`${name}: not started`);
-    } else if (run.status !== 'completed') {
+  const judge = (name, run) => {
+    if (run.status !== 'completed') {
       pending = true;
       lines.push(`${name}: ${run.status}`);
     } else if (run.conclusion === 'success') {
@@ -61,7 +70,18 @@ export function evaluateChecks(checkRuns, required = REQUIRED_CHECKS) {
       failed = true;
       lines.push(`${name}: ${run.conclusion} (${run.html_url ?? run.id})`);
     }
+  };
+  for (const name of required) {
+    const run = newest(checkRuns, name);
+    if (!run) {
+      pending = true;
+      lines.push(`${name}: not started`);
+    } else {
+      judge(name, run);
+    }
   }
+  const nightly = newest(checkRuns, NIGHTLY_CHECK);
+  if (nightly) judge(`${NIGHTLY_CHECK} (nightly)`, nightly);
   return { state: failed ? 'failure' : pending ? 'pending' : 'success', lines };
 }
 

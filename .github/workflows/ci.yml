@@ -44,25 +44,29 @@ env:
 # minutes at a time).
 #
 # Heavy jobs run on a pull request only when it changes a file they read:
-# Retrieval eval, Retrieval eval (int8, Apple silicon) and Footprint budget
-# are skipped when every changed file is in their known-irrelevant set (the
-# Changes job; an unknown or new path always runs them). Every other job runs
-# on every pull request. Pushes to master, release pull requests (release/*)
-# and the nightly run (nightly.yml) run every job: master's push run is what
-# a release is gated on (scripts/release/ci-gate.mjs requires every job to
-# have passed), uploads the footprint build that pull requests compare
-# against, and saves the caches pull requests restore. CI passed is the one
-# check that stands for all of them: it fails when any job failed, was
-# cancelled or was skipped without the Changes job saying it was not needed.
+# Retrieval eval, Retrieval eval (int8, Apple silicon), Footprint budget and
+# the release builds (release.yml: the Windows and macOS installers, built and
+# verified as a release would be, without publishing) are skipped when every
+# changed file is in their known-irrelevant set (the Changes job; an unknown
+# or new path always runs them). Every other job runs on every pull request.
+# Pushes to master, release pull requests (release/*) and the nightly run
+# (nightly.yml) run every job: master's push run is what a release is gated on
+# (scripts/release/ci-gate.mjs requires every job to have passed), uploads the
+# footprint build that pull requests compare against, and saves the caches
+# pull requests restore. CI gate is the one check that stands for all of
+# them: it fails when any job failed, was cancelled or was skipped without
+# the Changes job saying it was not needed.
 
 jobs:
   # Which heavy jobs this change needs: each output is 'true' or 'false' and
-  # is named after the job it decides (CI passed reads it under that name).
+  # is named after the job it decides (CI gate reads it under that name).
   # Each heavy job reads (or builds) more than its own directory, so the sets
   # are of files it can skip, never of files it needs: shodh-rag's modules
   # reach each other (rag_engine uses harness, research and workspaces, which
   # use embeddings, processing and rag_engine), so any change under
-  # crates/shodh-rag runs every heavy job.
+  # crates/shodh-rag runs every heavy job. scripts/release/test/ci-gate.test.mjs
+  # resolves every include_*! and CARGO_MANIFEST_DIR path in the crates
+  # against these sets, so a file a build or test reads is never skippable.
   changes:
     name: Changes
     runs-on: ubuntu-latest
@@ -71,6 +75,7 @@ jobs:
       eval-retrieval: ${{ steps.filter.outputs.eval-retrieval }}
       eval-retrieval-int8: ${{ steps.filter.outputs.eval-retrieval-int8 }}
       footprint: ${{ steps.filter.outputs.footprint }}
+      release-builds: ${{ steps.filter.outputs.release-builds }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -81,9 +86,10 @@ jobs:
         id: filter
         env:
           HEAD_REF: ${{ github.head_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          heavy=(eval-retrieval eval-retrieval-int8 footprint)
+          heavy=(eval-retrieval eval-retrieval-int8 footprint release-builds)
           run_all() {
             for job in "${heavy[@]}"; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
             echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -96,7 +102,15 @@ jobs:
             run_all "Release pull request ($HEAD_REF): every job runs."
             exit 0
           fi
-          base=$(git rev-parse HEAD^1)
+          # The diff is right only against GitHub's test merge: two parents,
+          # the base commit and this pull request's head. Anything else (a
+          # checkout of another ref, a merge queue, one parent) runs everything.
+          read -r -a parents <<< "$(git rev-list --parents -n 1 HEAD)"
+          if [ "${#parents[@]}" -ne 3 ] || [ "${parents[2]}" != "$PR_HEAD_SHA" ]; then
+            run_all "HEAD is not the test merge of this pull request's head ${PR_HEAD_SHA} (parents: ${parents[*]:1}): every job runs."
+            exit 0
+          fi
+          base=${parents[1]}
           # --no-renames: a renamed file counts at its old path and its new one.
           diff=$(git diff --name-only --no-renames "$base" HEAD)
           if [ -z "$diff" ]; then
@@ -104,25 +118,34 @@ jobs:
             exit 0
           fi
           mapfile -t files <<< "$diff"
+          echo "### Heavy jobs for this change" >> "$GITHUB_STEP_SUMMARY"
+          # File names are the pull request's own text: no line of them is
+          # read as a workflow command while they are printed.
+          token=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
+          echo "::stop-commands::${token}"
           echo "${#files[@]} files changed against the base commit $base:"
           printf '  %s\n' "${files[@]}"
-          echo "### Heavy jobs for this change" >> "$GITHUB_STEP_SUMMARY"
 
-          # No heavy job reads these: documentation, the release workflows and
-          # their scripts (release.yml and the Release and CI scripts job check
-          # them) and zizmor's configuration (Workflow lint always runs).
-          # Markdown is skipped only at the root and under docs/: the eval
-          # corpora hold Markdown documents.
-          none='^(docs/|marketing/|scripts/release/|[^/]+\.md$|LICENSE$|NOTICE$|\.gitignore$|\.github/zizmor\.yml$|\.github/release-notes\.md$|\.github/workflows/(release|tag-release|prepare-release)\.yml$)'
+          # Documentation and lint configuration (Workflow lint always runs):
+          # no heavy job reads them. Markdown is skipped only at the root and
+          # under docs/: the eval corpora hold Markdown documents.
+          docs='^(docs/|marketing/|[^/]+\.md$|LICENSE$|NOTICE$|\.gitignore$|\.github/zizmor\.yml$)'
+          # The release workflows and their scripts: the release builds read
+          # them, the evals and the footprint build do not.
+          release_files='^(scripts/release/|\.github/release-notes\.md$|\.github/workflows/(release|tag-release|prepare-release)\.yml$)'
           # The evals build shodh-eval and shodh-rag only, never the app or
           # the sandbox probe. shodh-rag's tests read one app file
           # (harness/events.rs includes app/src/features/agent/events.ts), and
           # the E5 model tests build those tests.
-          eval_skip="$none|^(app/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
+          eval_skip="$docs|$release_files|^(app/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
           eval_keep='^app/src/features/agent/events\.ts$'
           # The footprint build is the app (app/, shodh-rag, shodh-ontology);
           # it never builds shodh-eval or the sandbox probe.
-          footprint_skip="$none|^(crates/shodh-eval/|crates/sandbox-probe/)"
+          footprint_skip="$docs|$release_files|^(crates/shodh-eval/|crates/sandbox-probe/)"
+          # The installers are the app too, bundled with release.yml and its
+          # scripts, so only documentation and the crates the app never
+          # builds are skippable.
+          release_skip="$docs|^(crates/shodh-eval/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
 
           decide() {
             local job=$1 skip=$2 keep=$3 f
@@ -141,6 +164,8 @@ jobs:
           # files.
           decide eval-retrieval-int8 "$eval_skip" "$eval_keep"
           decide footprint "$footprint_skip" ''
+          decide release-builds "$release_skip" ''
+          echo "::${token}::"
 
   # actionlint (workflow syntax, expressions, shellcheck on run scripts) and
   # zizmor (workflow security: injection, credentials, permissions, pinning).
@@ -548,6 +573,11 @@ jobs:
   # macos-26 (arm64, Apple M1 virtual), the image macos-latest names and the
   # macOS job and the release dmg build run on. GitHub retired macos-14, which
   # cancelled this job before it started on every run.
+  # When GitHub retires macos-26 this job is cancelled again, and CI gate
+  # fails on every pull request that needs it, every master push and every
+  # release until the label moves to the next arm64 image (re-measure there
+  # and compare with baseline-int8-arm64.json, as this move did). The
+  # retirement is announced in actions/runner-images.
   eval-retrieval-int8:
     name: Retrieval eval (int8, Apple silicon)
     needs: changes
@@ -736,8 +766,8 @@ jobs:
   #     not move with master, so a series of small regressions that each pass
   #     the ratio still reaches this ceiling.
   # The base commit's build comes from master's push run (artifact
-  # footprint-exe-<sha>, uploaded right after its build), else from this PR's
-  # cache, else it is built here (about 35 more minutes). The anchor is a
+  # footprint-exe-<sha>, uploaded right after its build), else it is built
+  # here (about 35 more minutes; a pull request saves no cache). The anchor is a
   # 90-day artifact of a master run (footprint-anchor-<sha>), else the cache,
   # else built. Push runs on master upload their build, seed the anchor
   # artifact, and record their time against the anchor.
@@ -866,7 +896,7 @@ jobs:
           $runId = gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts?name=$name" --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "master" and .workflow_run.head_repository_id == .workflow_run.repository_id)][0].workflow_run.id // empty'
           if ($LASTEXITCODE -ne 0) { throw "Listing the artifact $name failed" }
           if (-not $runId) {
-            Write-Host "No artifact $name (master's push run has not uploaded it yet, or it expired): trying this PR's cache, else building it here."
+            Write-Host "No artifact $name (master's push run has not uploaded it yet, or it expired): building it here (a pull request saves no cache: master saves caches only)."
             "found=false" >> $env:GITHUB_OUTPUT
             exit 0
           }
@@ -874,14 +904,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Downloading $name from run $runId failed" }
           Write-Host "Base commit's build: artifact $name from run $runId"
           "found=true" >> $env:GITHUB_OUTPUT
-
-      - name: Restore the base commit's build
-        id: reference-cache
-        if: github.event_name == 'pull_request' && steps.reference-artifact.outputs.found != 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ${{ runner.temp }}/footprint-bin/reference
-          key: footprint-reference-${{ steps.builds.outputs.reference }}
 
       # The anchor never changes, so it is kept as a 90-day artifact of a
       # master run (the repository's maximum), found the same way as the base
@@ -931,12 +953,11 @@ jobs:
         env:
           REFERENCE: ${{ steps.builds.outputs.reference }}
           REFERENCE_ARTIFACT: ${{ steps.reference-artifact.outputs.found }}
-          REFERENCE_CACHE: ${{ steps.reference-cache.outputs.cache-hit }}
           ANCHOR_ARTIFACT: ${{ steps.anchor-artifact.outputs.found }}
           ANCHOR_CACHE: ${{ steps.anchor-cache.outputs.cache-hit }}
         run: |
           $missing = New-Object System.Collections.ArrayList
-          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and $env:REFERENCE_ARTIFACT -ne 'true' -and $env:REFERENCE_CACHE -ne 'true') {
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and $env:REFERENCE_ARTIFACT -ne 'true') {
             [void]$missing.Add(@{ Label = 'reference'; Sha = $env:REFERENCE })
           }
           if ($env:ANCHOR_ARTIFACT -ne 'true' -and $env:ANCHOR_CACHE -ne 'true') {
@@ -965,13 +986,6 @@ jobs:
             git worktree remove --force $src
             "$($build.Label)=true" >> $env:GITHUB_OUTPUT
           }
-
-      - name: Cache the base commit's build
-        if: steps.build-missing.outputs.reference == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ${{ runner.temp }}/footprint-bin/reference
-          key: footprint-reference-${{ steps.builds.outputs.reference }}
 
       # Master only (the artifact is the durable copy; a PR's copy would only
       # fill the pool).
@@ -1043,19 +1057,39 @@ jobs:
           path: footprint.json
           if-no-files-found: ignore
 
+  # The installers (release.yml, build-only: no tag, so nothing is published
+  # and the update bundles are signed with a throwaway key): the Windows NSIS
+  # installer and the Apple Silicon dmg are built and checked as a release
+  # checks them, and the latest published release is verified read-only.
+  # release.yml declares the permissions its publishing jobs need (contents:
+  # write, checks: read) and a caller must grant at least those for the call
+  # to load; in this build-only call those jobs are skipped and the jobs that
+  # run ask for contents: read.
+  release-builds:
+    name: Release builds
+    needs: changes
+    if: needs.changes.outputs.release-builds == 'true'
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+      checks: read
+
   # The one check that stands for every job above: branch protection requires
-  # it (with the fast checks). It always runs, so it is never skipped (a
-  # skipped required check would count as passed). A job counts when it
-  # passed, or when it was skipped and the Changes job's output of the same
-  # name is 'false' (not needed by this change). Anything else fails it: a
-  # failure, a cancellation (how a retired runner label once went unnoticed),
-  # a timeout, or a skip the Changes job did not ask for (Changes itself
+  # it (with the fast checks). It is named CI gate, a name no workflow here
+  # has used before, so no older check run on a commit can stand in for it.
+  # It always runs, so it is never skipped (a skipped required check would
+  # count as passed). A job counts when it passed, or when it was skipped and
+  # the Changes job's output of the same name is 'false' (not needed by this
+  # change). Anything else fails it: a failure, a cancellation (how a retired
+  # runner label once went unnoticed), a timeout, or a skip the Changes job
+  # did not ask for (Changes itself failed). The release builds count as one
+  # job (a reusable workflow's result is a failure when any of its jobs
   # failed). scripts/release/test/ci-gate.test.mjs checks that needs lists
   # every other job.
-  ci-passed:
-    name: CI passed
+  ci-gate:
+    name: CI gate
     if: always()
-    needs: [changes, lint, scripts, fmt, check, test, macos, eval-retrieval, eval-retrieval-int8, frontend, footprint]
+    needs: [changes, lint, scripts, fmt, check, test, macos, eval-retrieval, eval-retrieval-int8, frontend, footprint, release-builds]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

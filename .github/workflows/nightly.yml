@@ -1,12 +1,15 @@
 name: Nightly
 
-# Every CI job (ci.yml) on master once a day, none skipped: a pull request
-# skips a heavy job only when its Changes job judges every changed file
-# irrelevant to it, and master's push run already runs every job after each
-# merge. This run also measures master again when nothing merged (a runner
-# image, a retired runner label or a dependency outside the lockfile can
-# break a job without a commit). When it does not pass, it opens an issue
-# naming the jobs that did not, at most one open issue per commit.
+# Every CI job (ci.yml) on master once a day, none skipped, including the
+# release builds and installer checks ci.yml calls (release.yml, build-only):
+# a pull request skips a heavy job only when its Changes job judges every
+# changed file irrelevant to it, and master's push run already runs every job
+# after each merge. This run also measures master again when nothing merged
+# (a runner image, a retired runner label or a dependency outside the
+# lockfile can break a job without a commit). When it does not pass, it opens
+# one issue, or updates the one already open. A release waits for and is
+# blocked by a nightly run of its commit that did not pass
+# (scripts/release/ci-gate.mjs reads this run's "CI / CI gate").
 
 on:
   schedule:
@@ -20,9 +23,13 @@ jobs:
   ci:
     name: CI
     uses: ./.github/workflows/ci.yml
+    # What the called jobs declare: the footprint job reads artifacts; the
+    # release builds' publishing jobs (skipped in this build-only call)
+    # declare contents: write and checks: read, and a call must grant them.
     permissions:
-      contents: read
-      actions: read  # the footprint job finds the anchor build
+      contents: write
+      checks: read
+      actions: read
 
   report:
     name: Open an issue when the nightly run failed
@@ -34,31 +41,35 @@ jobs:
       actions: read  # this run's jobs
       issues: write
     steps:
-      - name: Open the issue
+      - name: Open or update the issue
         env:
           GH_TOKEN: ${{ github.token }}
           RESULT: ${{ needs.ci.result }}
         run: |
           set -euo pipefail
-          short="${GITHUB_SHA:0:7}"
-          title="Nightly CI failed on master at ${short}"
-          # The title is fixed text and a hex SHA, so it is safe inside the jq filter.
-          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title \
-            --jq "[.[] | select(.title == \"${title}\")][0].number // empty")
-          if [ -n "$existing" ]; then
-            echo "Issue #${existing} already reports the nightly failure at ${short}."
-            exit 0
-          fi
+          title="Nightly CI is failing on master"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           jobs=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs \
-            --jq '.jobs[] | select(.conclusion != null and .conclusion != "success") | "- \(.name): \(.conclusion) (\(.url))"')
+            --jq '.jobs[] | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped") | "- \(.name): \(.conclusion) (\(.url))"')
           body=$(printf '%s\n' \
-            "The nightly CI run on master (${GITHUB_SHA}) ended with: ${RESULT}." \
+            "The latest nightly CI run on master did not pass: ${RESULT}." \
             "" \
+            "Commit: ${GITHUB_SHA}" \
             "Run: ${run_url}" \
+            "Updated: $(date -u +%Y-%m-%dT%H:%MZ)" \
             "" \
             "Jobs that did not pass:" \
             "${jobs:-(none listed; see the run)}" \
             "" \
-            "The nightly run is unfiltered: every job ran, including the heavy jobs a pull request skips when its files cannot affect them.")
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+            "The nightly run is unfiltered: every job ran, including the heavy jobs and release builds a pull request skips when its files cannot affect them. While this commit's nightly run has not passed, it is not released (scripts/release/ci-gate.mjs). This issue is updated by each failing nightly run; close it once master passes again.")
+          # The title is fixed text, safe inside the jq filter. Open issues
+          # are searched by title, newest first, across every page.
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null and .title == \"${title}\") | .number")
+          existing=$(printf '%s\n' "$existing" | sed -n 1p)  # the newest match
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "Updated issue #${existing}."
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

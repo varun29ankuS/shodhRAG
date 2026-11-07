@@ -9,6 +9,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [master]
+  # nightly.yml: every job, unfiltered, on master once a day.
+  workflow_call:
 
 permissions:
   contents: read
@@ -40,8 +42,106 @@ env:
 # from the Actions cache (saved by master), checked against ort-sys's SHA-256,
 # so builds no longer download it from cdn.pyke.io (where it stalled for 30
 # minutes at a time).
+#
+# Heavy jobs run on a pull request only when it changes a file they read:
+# Retrieval eval, Retrieval eval (int8, Apple silicon) and Footprint budget
+# are skipped when every changed file is in their known-irrelevant set (the
+# Changes job; an unknown or new path always runs them). Every other job runs
+# on every pull request. Pushes to master, release pull requests (release/*)
+# and the nightly run (nightly.yml) run every job: master's push run is what
+# a release is gated on (scripts/release/ci-gate.mjs requires every job to
+# have passed), uploads the footprint build that pull requests compare
+# against, and saves the caches pull requests restore. CI passed is the one
+# check that stands for all of them: it fails when any job failed, was
+# cancelled or was skipped without the Changes job saying it was not needed.
 
 jobs:
+  # Which heavy jobs this change needs: each output is 'true' or 'false' and
+  # is named after the job it decides (CI passed reads it under that name).
+  # Each heavy job reads (or builds) more than its own directory, so the sets
+  # are of files it can skip, never of files it needs: shodh-rag's modules
+  # reach each other (rag_engine uses harness, research and workspaces, which
+  # use embeddings, processing and rag_engine), so any change under
+  # crates/shodh-rag runs every heavy job.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      eval-retrieval: ${{ steps.filter.outputs.eval-retrieval }}
+      eval-retrieval-int8: ${{ steps.filter.outputs.eval-retrieval-int8 }}
+      footprint: ${{ steps.filter.outputs.footprint }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 2  # the merge commit's first parent is the base commit
+          persist-credentials: false
+
+      - name: Which heavy jobs this change needs
+        id: filter
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          heavy=(eval-retrieval eval-retrieval-int8 footprint)
+          run_all() {
+            for job in "${heavy[@]}"; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
+            echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            run_all "Full run ($GITHUB_EVENT_NAME): every job runs."
+            exit 0
+          fi
+          if [[ "$HEAD_REF" == release/* ]]; then
+            run_all "Release pull request ($HEAD_REF): every job runs."
+            exit 0
+          fi
+          base=$(git rev-parse HEAD^1)
+          # --no-renames: a renamed file counts at its old path and its new one.
+          diff=$(git diff --name-only --no-renames "$base" HEAD)
+          if [ -z "$diff" ]; then
+            run_all "No changed files against the base commit $base: every job runs."
+            exit 0
+          fi
+          mapfile -t files <<< "$diff"
+          echo "${#files[@]} files changed against the base commit $base:"
+          printf '  %s\n' "${files[@]}"
+          echo "### Heavy jobs for this change" >> "$GITHUB_STEP_SUMMARY"
+
+          # No heavy job reads these: documentation, the release workflows and
+          # their scripts (release.yml and the Release and CI scripts job check
+          # them) and zizmor's configuration (Workflow lint always runs).
+          # Markdown is skipped only at the root and under docs/: the eval
+          # corpora hold Markdown documents.
+          none='^(docs/|marketing/|scripts/release/|[^/]+\.md$|LICENSE$|NOTICE$|\.gitignore$|\.github/zizmor\.yml$|\.github/release-notes\.md$|\.github/workflows/(release|tag-release|prepare-release)\.yml$)'
+          # The evals build shodh-eval and shodh-rag only, never the app or
+          # the sandbox probe. shodh-rag's tests read one app file
+          # (harness/events.rs includes app/src/features/agent/events.ts), and
+          # the E5 model tests build those tests.
+          eval_skip="$none|^(app/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
+          eval_keep='^app/src/features/agent/events\.ts$'
+          # The footprint build is the app (app/, shodh-rag, shodh-ontology);
+          # it never builds shodh-eval or the sandbox probe.
+          footprint_skip="$none|^(crates/shodh-eval/|crates/sandbox-probe/)"
+
+          decide() {
+            local job=$1 skip=$2 keep=$3 f
+            for f in "${files[@]}"; do
+              if { [ -n "$keep" ] && [[ $f =~ $keep ]]; } || ! [[ $f =~ $skip ]]; then
+                echo "$job=true" >> "$GITHUB_OUTPUT"
+                echo "- $job runs: $f can change what it checks" | tee -a "$GITHUB_STEP_SUMMARY"
+                return
+              fi
+            done
+            echo "$job=false" >> "$GITHUB_OUTPUT"
+            echo "- $job is skipped: none of the ${#files[@]} changed files can change what it checks" | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          decide eval-retrieval "$eval_skip" "$eval_keep"
+          # The same retrieval pipeline on the same three corpora, so the same
+          # files.
+          decide eval-retrieval-int8 "$eval_skip" "$eval_keep"
+          decide footprint "$footprint_skip" ''
+
   # actionlint (workflow syntax, expressions, shellcheck on run scripts) and
   # zizmor (workflow security: injection, credentials, permissions, pinning).
   lint:
@@ -277,6 +377,8 @@ jobs:
   # model is missing rather than measuring another engine.
   eval-retrieval:
     name: Retrieval eval
+    needs: changes
+    if: needs.changes.outputs.eval-retrieval == 'true'
     runs-on: windows-latest
     # Slowest 48 minutes for the fp16 evals (three corpora, AMD Zen 3 runners,
     # PR #125). The int8 evals on VNNI runners measured 40 minutes on their own
@@ -448,6 +550,8 @@ jobs:
   # cancelled this job before it started on every run.
   eval-retrieval-int8:
     name: Retrieval eval (int8, Apple silicon)
+    needs: changes
+    if: needs.changes.outputs.eval-retrieval-int8 == 'true'
     runs-on: macos-26
     # Slowest 71 minutes on a cold cache (run 41984775872: build and probe 15,
     # model tests 8, the three int8 evals 47; run 41966083623 took 63); the
@@ -559,15 +663,36 @@ jobs:
         with:
           persist-credentials: false
 
+      # npm's download cache is restored here and saved by master only (as the
+      # Rust caches are): setup-node's own cache would save a copy from every
+      # pull request into the 10 GB cache pool, which no other ref can read.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: app/package-lock.json
+          package-manager-cache: false
+
+      - name: Locate the npm cache
+        id: npm-cache-dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the npm cache
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
 
       - name: Install dependencies
         working-directory: app
         run: npm ci
+
+      - name: Save the npm cache
+        if: github.ref == 'refs/heads/master' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
 
       - name: Typecheck
         working-directory: app
@@ -623,6 +748,8 @@ jobs:
   # of compiling every dependency from scratch.
   footprint:
     name: Footprint budget
+    needs: changes
+    if: needs.changes.outputs.footprint == 'true'
     runs-on: windows-latest
     # Slowest 94 minutes (the base commit's build missing). With both the base
     # commit's build and the anchor missing, three release builds of about
@@ -671,17 +798,36 @@ jobs:
 
       - uses: ./.github/actions/onnxruntime
 
+      # npm's download cache, saved by master only (as in the frontend job).
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: app/package-lock.json
+          package-manager-cache: false
+
+      - name: Locate the npm cache
+        id: npm-cache-dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the npm cache
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
 
       - name: Build frontend
         working-directory: app
         run: |
           npm ci
           npm run build
+
+      - name: Save the npm cache
+        if: github.ref == 'refs/heads/master' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
 
       - name: Build release app
         run: cargo build --release -p shodh-rag-app --features tauri/custom-protocol
@@ -896,3 +1042,43 @@ jobs:
           name: footprint
           path: footprint.json
           if-no-files-found: ignore
+
+  # The one check that stands for every job above: branch protection requires
+  # it (with the fast checks). It always runs, so it is never skipped (a
+  # skipped required check would count as passed). A job counts when it
+  # passed, or when it was skipped and the Changes job's output of the same
+  # name is 'false' (not needed by this change). Anything else fails it: a
+  # failure, a cancellation (how a retired runner label once went unnoticed),
+  # a timeout, or a skip the Changes job did not ask for (Changes itself
+  # failed). scripts/release/test/ci-gate.test.mjs checks that needs lists
+  # every other job.
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [changes, lint, scripts, fmt, check, test, macos, eval-retrieval, eval-retrieval-int8, frontend, footprint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed or was not needed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          rows=$(jq -r '. as $n | to_entries[] | [.key, .value.result, ($n.changes.outputs[.key] // "none")] | @tsv' <<< "$NEEDS")
+          count=$(jq 'length' <<< "$NEEDS")
+          if [ "$count" -lt 2 ] || [ -z "$rows" ]; then
+            echo "::error::No job results to check ($count)"
+            exit 1
+          fi
+          failed=0
+          while IFS=$'\t' read -r job result needed; do
+            if [ "$result" = success ]; then
+              echo "$job: passed"
+            elif [ "$result" = skipped ] && [ "$needed" = false ]; then
+              echo "$job: skipped, not needed by this change"
+            else
+              echo "::error::$job: $result (needed by this change: $needed)"
+              failed=1
+            fi
+          done <<< "$rows"
+          exit "$failed"

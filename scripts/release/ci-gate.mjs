@@ -15,9 +15,12 @@ import { pathToFileURL } from 'node:url';
 
 export class GateError extends Error {}
 
-// ci.yml's job names (its check run names). test/ci-gate.test.mjs fails when
+// ci.yml's job names (its check run names). On a master commit every job
+// runs (pull requests alone skip heavy jobs a change cannot affect), so a
+// skipped one fails the gate. test/ci-gate.test.mjs fails when
 // they drift apart.
 export const REQUIRED_CHECKS = [
+  'Changes',
   'Workflow lint',
   'Release and CI scripts',
   'Format',
@@ -28,6 +31,7 @@ export const REQUIRED_CHECKS = [
   'Retrieval eval (int8, Apple silicon)',
   'Frontend Typecheck + Tests',
   'Footprint budget',
+  'CI passed',
 ];
 
 const GITHUB_ACTIONS_APP = 'github-actions';

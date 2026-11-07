@@ -77,7 +77,9 @@ on:
       - scripts/release/**
       - scripts/ci/ort_archive.py
       - scripts/ci/install-protoc.ps1
-      - app/src-tauri/tauri.conf.json
+      - app/src-tauri/tauri.conf*.json
+      - app/src-tauri/capabilities/**
+      - app/src-tauri/permissions/**
       - app/src-tauri/build.rs
       - app/src-tauri/windows-app-manifest.xml
       - app/src-tauri/icons/**

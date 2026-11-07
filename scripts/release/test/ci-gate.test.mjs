@@ -16,6 +16,44 @@ test("the required checks are exactly ci.yml's jobs", () => {
   assert.deepEqual([...names].sort(), [...REQUIRED_CHECKS].sort());
 });
 
+const ciJobs = () => {
+  const yml = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const jobs = yml.slice(yml.indexOf('\njobs:\n'));
+  // Each job's id and its block (up to the next job).
+  const starts = [...jobs.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)];
+  return starts.map((m, i) => ({ id: m[1], block: jobs.slice(m.index, starts[i + 1]?.index ?? jobs.length) }));
+};
+
+test('CI passed waits for every other job of ci.yml', () => {
+  const jobs = ciJobs();
+  const aggregate = jobs.find((j) => j.id === 'ci-passed');
+  assert.ok(aggregate, 'ci.yml has a ci-passed job');
+  assert.match(aggregate.block, /^ {4}name: CI passed$/m);
+  assert.match(aggregate.block, /^ {4}if: always\(\)$/m);
+  const needs = aggregate.block.match(/^ {4}needs: \[(.+)\]$/m)[1].split(',').map((s) => s.trim());
+  const others = jobs.map((j) => j.id).filter((id) => id !== 'ci-passed');
+  assert.deepEqual([...needs].sort(), [...others].sort());
+});
+
+test('a job skipped by the Changes job is decided by its own output', () => {
+  // CI passed accepts a skipped job only when the Changes output named after
+  // that job is 'false', so each filtered job must read its own output, and
+  // every output must belong to a filtered job.
+  const jobs = ciJobs();
+  const changes = jobs.find((j) => j.id === 'changes');
+  const outputs = [...changes.block.matchAll(/^ {6}([a-z][a-z0-9-]*): \$\{\{ steps\.filter\.outputs\.\1 \}\}$/gm)].map((m) => m[1]);
+  const filtered = [];
+  for (const job of jobs) {
+    const condition = job.block.match(/^ {4}if: (.+)$/m)?.[1];
+    if (!condition?.includes('needs.changes.outputs.')) continue;
+    assert.equal(condition, `needs.changes.outputs.${job.id} == 'true'`, job.id);
+    assert.match(job.block, /^ {4}needs: changes$/m, job.id);
+    filtered.push(job.id);
+  }
+  assert.deepEqual([...outputs].sort(), [...filtered].sort());
+  assert.deepEqual([...filtered].sort(), ['eval-retrieval', 'eval-retrieval-int8', 'footprint']);
+});
+
 test('all required checks passed', () => {
   assert.equal(evaluateChecks(allPassed()).state, 'success');
 });

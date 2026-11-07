@@ -1,0 +1,64 @@
+name: Nightly
+
+# Every CI job (ci.yml) on master once a day, none skipped: a pull request
+# skips a heavy job only when its Changes job judges every changed file
+# irrelevant to it, and master's push run already runs every job after each
+# merge. This run also measures master again when nothing merged (a runner
+# image, a retired runner label or a dependency outside the lockfile can
+# break a job without a commit). When it does not pass, it opens an issue
+# naming the jobs that did not, at most one open issue per commit.
+
+on:
+  schedule:
+    - cron: '30 21 * * *'  # 03:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read  # the footprint job finds the anchor build
+
+  report:
+    name: Open an issue when the nightly run failed
+    needs: ci
+    if: always() && needs.ci.result != 'success' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read  # this run's jobs
+      issues: write
+    steps:
+      - name: Open the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.ci.result }}
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA:0:7}"
+          title="Nightly CI failed on master at ${short}"
+          # The title is fixed text and a hex SHA, so it is safe inside the jq filter.
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title \
+            --jq "[.[] | select(.title == \"${title}\")][0].number // empty")
+          if [ -n "$existing" ]; then
+            echo "Issue #${existing} already reports the nightly failure at ${short}."
+            exit 0
+          fi
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          jobs=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs \
+            --jq '.jobs[] | select(.conclusion != null and .conclusion != "success") | "- \(.name): \(.conclusion) (\(.url))"')
+          body=$(printf '%s\n' \
+            "The nightly CI run on master (${GITHUB_SHA}) ended with: ${RESULT}." \
+            "" \
+            "Run: ${run_url}" \
+            "" \
+            "Jobs that did not pass:" \
+            "${jobs:-(none listed; see the run)}" \
+            "" \
+            "The nightly run is unfiltered: every job ran, including the heavy jobs a pull request skips when its files cannot affect them.")
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"

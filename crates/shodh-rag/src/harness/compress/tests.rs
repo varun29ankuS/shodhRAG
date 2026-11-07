@@ -355,7 +355,8 @@ fn compound_commands_get_only_the_lossless_steps() {
     }
     // Progress words survive when the output may not be cargo's.
     let out = compress("cargo test | tee log.txt", CARGO_TEST_FAILING);
-    assert!(out.text.contains("   Compiling libc v0.2.150"));
+    assert!(out.text.contains("Compiling libc v0.2.150"));
+    assert!(out.text.contains("   Compiling serde v1.0.190"));
     assert!(out.text.contains("test parse::reads_numbers ... ok"));
 }
 
@@ -459,6 +460,7 @@ fn the_note_says_what_was_removed_and_that_the_user_sees_everything() {
         "{said}"
     );
     assert!(said.contains("The user sees the full output."));
-    let grouped = compress("rg -n x", "a.rs:1:x\na.rs:2:x\n");
+    let grouped = compress("rg -n x", "src/harness/a.rs:1:x\nsrc/harness/a.rs:2:x\n");
+    assert!(grouped.changed());
     assert!(note(&grouped).contains("grouped (nothing dropped)"));
 }

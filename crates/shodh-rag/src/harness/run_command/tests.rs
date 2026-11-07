@@ -697,17 +697,21 @@ fn only_the_models_copy_of_the_output_is_compressed() {
 #[test]
 fn a_failure_in_the_cut_middle_of_a_long_output_reaches_the_model() {
     let limits = CommandLimits::for_call(&settings(600, 4096, 80), Some(30));
-    let mut output = String::from("running 3000 tests\n");
+    // `cargo test --no-fail-fast`, as libtest writes it: a failing test binary,
+    // its failures listed after its tests, then the next binary.
+    let mut output = String::from("     Running unittests src/lib.rs\n\nrunning 1501 tests\n");
     for i in 0..1_500 {
-        output.push_str(&format!("test suite::first_half_case_{i} ... ok\n"));
+        output.push_str(&format!("test suite::first_binary_case_{i} ... ok\n"));
     }
     output.push_str(
-        "test suite::rounding ... FAILED\n\n---- suite::rounding stdout ----\nthread 'suite::rounding' panicked at src/lib.rs:9:5:\nassertion `left == right` failed\n  left: 4\n right: 5\n\n",
+        "test suite::rounding ... FAILED\n\nfailures:\n\n---- suite::rounding stdout ----\nthread 'suite::rounding' panicked at src/lib.rs:9:5:\nassertion `left == right` failed\n  left: 4\n right: 5\n\n\nfailures:\n    suite::rounding\n\ntest result: FAILED. 1500 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n\n     Running tests/more.rs\n\nrunning 1500 tests\n",
     );
     for i in 0..1_500 {
-        output.push_str(&format!("test suite::second_half_case_{i} ... ok\n"));
+        output.push_str(&format!("test more::second_binary_case_{i} ... ok\n"));
     }
-    output.push_str("test result: FAILED. 2999 passed; 1 failed\n");
+    output.push_str(
+        "\ntest result: ok. 1500 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+    );
     let ran = CommandOutcome {
         state: CommandState::Done,
         exit_code: Some(101),
@@ -735,11 +739,15 @@ fn a_failure_in_the_cut_middle_of_a_long_output_reaches_the_model() {
     assert!(text.contains(
         "[The whole output is command cmd-9: read or search it with read_command_output.]"
     ));
-    assert!(text.ends_with("test result: FAILED. 2999 passed; 1 failed\n"));
+    assert!(text.ends_with(
+        "test result: ok. 1500 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+    ));
     // Compressed, the passing lines go and nothing needs cutting.
-    let (short, _, _) = ran.compressed_text_for_model(&limits, "cargo test", "cmd-9");
+    let (short, _, _) =
+        ran.compressed_text_for_model(&limits, "cargo test --no-fail-fast", "cmd-9");
     assert!(!short.contains("characters cut"), "{short}");
     assert!(short.contains("assertion `left == right` failed"));
+    assert!(short.contains("[1500 passing tests not listed]\ntest result: FAILED."));
 }
 
 #[test]

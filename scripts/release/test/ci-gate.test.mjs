@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { GateError, REQUIRED_CHECKS, evaluateChecks, waitForCi } from '../ci-gate.mjs';
@@ -23,6 +23,20 @@ const ciJobs = () => {
   const starts = [...jobs.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)];
   return starts.map((m, i) => ({ id: m[1], block: jobs.slice(m.index, starts[i + 1]?.index ?? jobs.length) }));
 };
+
+test("no other workflow has a job named like one of ci.yml's checks", () => {
+  // The gate (and branch protection) find checks by name on the commit, and
+  // every workflow's check runs come from the same app: a job of the same
+  // name elsewhere (tag-release.yml's wait was once named CI passed) would be
+  // read in its place.
+  const dir = new URL('../../../.github/workflows/', import.meta.url);
+  for (const file of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f) && f !== 'ci.yml')) {
+    const yml = readFileSync(new URL(file, dir), 'utf8');
+    const jobs = yml.slice(yml.indexOf('\njobs:\n'));
+    const names = [...jobs.matchAll(/^ {4}name: (.+)$/gm)].map((m) => m[1].trim());
+    for (const name of names) assert.ok(!REQUIRED_CHECKS.includes(name), `${file} has a job named ${name}`);
+  }
+});
 
 test('CI passed waits for every other job of ci.yml', () => {
   const jobs = ciJobs();

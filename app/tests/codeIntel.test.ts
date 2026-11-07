@@ -35,10 +35,11 @@ test('every number is an estimate and says so', () => {
   );
 });
 
-test('the chip waits for a first command, and shows when shortening is off', () => {
+test('the chip shows from the start of a Code conversation, so its switch is reachable', () => {
   assert.equal(showsChip(null), false);
   const fresh = { ...counted, savedTokens: 0, originalTokens: 0, sentTokens: 0, commands: 0, shortenedCommands: 0 };
-  assert.equal(showsChip(fresh), false);
+  assert.equal(showsChip(fresh), true);
+  assert.equal(chipLabel(fresh), 'Output shortening on');
   assert.equal(showsChip(counted), true);
   const off = { ...fresh, compressionOn: false };
   assert.equal(showsChip(off), true);

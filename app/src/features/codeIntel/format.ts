@@ -22,16 +22,19 @@ function plural(n: number, word: string): string {
   return `${n.toLocaleString('en-US')} ${word}${n === 1 ? '' : 's'}`;
 }
 
-/** The status line's chip: "≈41,200 tokens saved", or why there is no number. */
+/** The status line's chip: "≈41,200 tokens saved", or whether shortening is on before a command ran. */
 export function chipLabel(view: SavingsCounts & { compressionOn: boolean }): string {
   if (!view.compressionOn) return 'Output shortening off';
+  if (view.commands === 0) return 'Output shortening on';
   return `${approxTokens(view.savedTokens)} tokens saved`;
 }
 
-/** Whether the status line shows the chip: once a command was counted, or while shortening is off. */
+/**
+ * Whether the status line shows the chip: in every Code conversation, from before its first command, so the
+ * switch can be reached before anything is shortened. Not before its savings are read.
+ */
 export function showsChip(view: (SavingsCounts & { compressionOn: boolean }) | null): boolean {
-  if (view === null) return false;
-  return !view.compressionOn || view.commands > 0;
+  return view !== null;
 }
 
 /** "Saved ≈41,200 tokens this session". */

@@ -24,7 +24,8 @@ interface TokensSavedChipProps {
  * Code mode's status line: the tokens this conversation saved because Shodh
  * shortens what the model reads of command output ("≈41,200 tokens saved").
  * One number per conversation, never per answer. Click for what it means and
- * the conversation's switch. Hidden until the first command is counted.
+ * the conversation's switch. Shown from the start, so the switch is there before
+ * the first command ("Output shortening on").
  */
 export function TokensSavedChip({ conversationId, answerRunning, onOpenActivity }: TokensSavedChipProps) {
   const [view, setView] = useState<ConversationSavings | null>(null);

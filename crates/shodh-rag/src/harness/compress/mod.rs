@@ -6,11 +6,14 @@
 //! the model gets back is shortened ([`compress`]). The rules:
 //!
 //! - **Failures are kept whole.** Filters remove only lines they recognise
-//!   exactly as success noise: build progress (`Compiling foo v1.0`), passing
-//!   test lines (`test a::b ... ok`, `✓ renders`, `--- PASS: TestX`), git's
-//!   transfer progress and its `(use "git add"...)` hints. Every other line,
-//!   and so every error, warning, failing test, panic and stack trace, stays
-//!   word for word. Nothing is cut to a length or a count.
+//!   exactly as success noise: cargo's own progress (`   Compiling foo v1.0`,
+//!   right-aligned as cargo writes it, never inside a test's captured output
+//!   or a program `cargo run` started), passing test lines (`test a::b ...
+//!   ok`, `✓ renders`, `--- PASS: TestX`), git's transfer progress and its
+//!   `(use "git add"...)` hints, and a blank line their removal left next to
+//!   another. Every other line, and so every error, warning, failing test,
+//!   panic and stack trace, stays word for word. Nothing is cut to a length
+//!   or a count.
 //! - **Reversible regrouping.** Search and file-list output is regrouped by
 //!   file or folder (the path written once), and a run of identical lines is
 //!   written once with how many more there were: no information is lost.
@@ -18,8 +21,10 @@
 //!   returned unchanged.
 //! - **Known programs only.** Command-specific filters apply only to a single
 //!   recognised program (optionally after `cd <dir> &&` and environment
-//!   assignments, with `2>&1`); pipes, lists and redirections get only the
-//!   generic, lossless steps, since `cargo test | tail` is not cargo's output.
+//!   assignments, with `2>&1`); any other command, pipes, lists and
+//!   redirections included, gets only the lossless repeat step, since
+//!   `cargo test | tail` is not cargo's output and a diff's blank and
+//!   look-alike lines are content.
 //! - **Honest.** The model is told what was removed and that the user sees
 //!   the full output ([`note`]).
 //!
@@ -114,13 +119,15 @@ pub fn compress_as(program: Program, output: &str) -> Compressed {
     let mut removed = 0;
     let mut passing = 0;
     let filtered = match program {
-        Program::Cargo => Some(drop_noise(&lines, cargo_line)),
-        Program::CargoTest => Some(drop_noise(&lines, cargo_test_line)),
-        Program::GitStatus => Some(drop_noise(&lines, git_status_line)),
-        Program::GitTransfer => Some(drop_noise(&lines, git_transfer_line)),
-        Program::Pytest => Some(drop_noise(&lines, pytest_line)),
-        Program::JsTest => Some(drop_noise(&lines, js_test_line)),
-        Program::GoTest => Some(drop_noise(&lines, go_test_line)),
+        Program::Cargo | Program::CargoTest => {
+            let mut cargo = CargoFilter::new(program == Program::CargoTest);
+            Some(drop_noise(&lines, &mut |line| cargo.classify(line)))
+        }
+        Program::GitStatus => Some(drop_noise(&lines, &mut git_status_line)),
+        Program::GitTransfer => Some(drop_noise(&lines, &mut git_transfer_line)),
+        Program::Pytest => Some(drop_noise(&lines, &mut pytest_line)),
+        Program::JsTest => Some(drop_noise(&lines, &mut js_test_line)),
+        Program::GoTest => Some(drop_noise(&lines, &mut go_test_line)),
         Program::Search | Program::Find | Program::Other => None,
     };
     if let Some(filtered) = filtered {
@@ -145,20 +152,11 @@ pub fn compress_as(program: Program, output: &str) -> Compressed {
         });
     }
 
-    let (collapsed, progress) = collapse_progress(&lines);
-    if progress > 0 {
-        removed += progress;
-        lines = collapsed;
-        steps.push("progress lines");
-    }
+    // The one generic step, for every command: it loses nothing (the line
+    // and how many times it repeated are both kept).
     if let Some(collapsed) = collapse_repeats(&lines) {
         lines = collapsed;
         steps.push("repeated lines");
-    }
-    let (collapsed, blanks) = collapse_blank_runs(&lines);
-    if blanks > 0 {
-        lines = collapsed;
-        steps.push("blank lines");
     }
 
     if steps.is_empty() {
@@ -209,7 +207,7 @@ pub fn note(compressed: &Compressed) -> String {
         parts.push("matching lines grouped (nothing dropped)".to_string());
     }
     if parts.is_empty() {
-        parts.push("runs of blank lines joined".to_string());
+        parts.push("nothing dropped".to_string());
     }
     format!(
         "[Shodh shortened this output for you: {}. Every error, warning and failing test is \
@@ -406,12 +404,16 @@ struct Filtered {
 
 /// `lines` without the ones `classify` calls noise or passing tests. The
 /// passing tests removed since the last suite end are counted in a line just
-/// before the next one (or at the end).
-fn drop_noise(lines: &[String], classify: fn(&str) -> Line) -> Filtered {
-    let mut out = Vec::with_capacity(lines.len());
+/// before the next one (or at the end). A blank line that only became next
+/// to another blank line because the lines between them were removed is
+/// removed too; blank lines the output itself has next to each other stay.
+fn drop_noise(lines: &[String], classify: &mut dyn FnMut(&str) -> Line) -> Filtered {
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut removed = 0;
     let mut passing = 0;
     let mut pending = 0;
+    // A line was removed since the last one kept.
+    let mut gap = false;
     let flush = |out: &mut Vec<String>, pending: &mut usize| {
         if *pending > 0 {
             out.push(format!(
@@ -424,16 +426,28 @@ fn drop_noise(lines: &[String], classify: fn(&str) -> Line) -> Filtered {
     };
     for line in lines {
         match classify(line) {
-            Line::Keep => out.push(line.clone()),
-            Line::Noise => removed += 1,
+            Line::Keep => {
+                let blank = line.trim().is_empty();
+                let after_blank = out.last().is_some_and(|l| l.trim().is_empty());
+                if !(blank && after_blank && gap) {
+                    out.push(line.clone());
+                }
+                gap = false;
+            }
+            Line::Noise => {
+                removed += 1;
+                gap = true;
+            }
             Line::Passed => {
                 removed += 1;
                 passing += 1;
                 pending += 1;
+                gap = true;
             }
             Line::SuiteEnd => {
                 flush(&mut out, &mut pending);
                 out.push(line.clone());
+                gap = false;
             }
         }
     }
@@ -465,14 +479,91 @@ const CARGO_PROGRESS: [&str; 16] = [
     "Unchanged",
 ];
 
-/// A cargo progress line: one of [`CARGO_PROGRESS`], then a space, with
-/// nothing else on the line that could be a message.
+/// Width of the field cargo right-aligns its status word in
+/// (`   Compiling`, `  Downloaded`).
+const CARGO_STATUS_WIDTH: usize = 12;
+
+/// A cargo progress line exactly as cargo writes one: one of
+/// [`CARGO_PROGRESS`] right-aligned in [`CARGO_STATUS_WIDTH`] columns, then a
+/// space and what it is about, with no word of trouble. A program's own line
+/// that merely starts with one of those words is not one.
 fn is_cargo_progress(line: &str) -> bool {
-    let text = line.trim_start();
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    let text = &line[indent..];
     let Some((word, rest)) = text.split_once(' ') else {
         return false;
     };
-    CARGO_PROGRESS.contains(&word) && !rest.trim().is_empty() && !mentions_trouble(rest)
+    indent + word.len() == CARGO_STATUS_WIDTH
+        && CARGO_PROGRESS.contains(&word)
+        && !rest.trim().is_empty()
+        && !mentions_trouble(rest)
+}
+
+/// cargo's output, read line by line. Progress is dropped only where cargo
+/// itself writes: never inside a test's captured output (`---- name stdout
+/// ----` up to the `failures:` list), and never after `cargo run` starts the
+/// program (`Running \`target/...\``), whose own output follows. `test`
+/// also drops passing test lines.
+struct CargoFilter {
+    test: bool,
+    /// Inside a failing test's captured output.
+    captured: bool,
+    /// The program `cargo run` started is writing.
+    program: bool,
+}
+
+impl CargoFilter {
+    fn new(test: bool) -> Self {
+        CargoFilter {
+            test,
+            captured: false,
+            program: false,
+        }
+    }
+
+    fn classify(&mut self, line: &str) -> Line {
+        let text = line.trim_start();
+        if self.program {
+            return Line::Keep;
+        }
+        if text.starts_with("---- ")
+            && (text.ends_with(" stdout ----") || text.ends_with(" stderr ----"))
+        {
+            self.captured = true;
+            return Line::Keep;
+        }
+        if self.captured {
+            if line == "failures:" || text.starts_with("test result:") {
+                self.captured = false;
+            } else {
+                return Line::Keep;
+            }
+        }
+        if text.starts_with("Running `")
+            && line.len() - text.len() + "Running".len() == CARGO_STATUS_WIDTH
+        {
+            self.program = true;
+            return Line::Keep;
+        }
+        if is_cargo_progress(line) {
+            return Line::Noise;
+        }
+        if !self.test {
+            return Line::Keep;
+        }
+        // libtest: `test path::name ... ok` (also `- should panic ... ok`).
+        if text.starts_with("test ") && text.ends_with(" ... ok") {
+            return Line::Passed;
+        }
+        // nextest: `PASS [   0.004s] crate::test`.
+        if text.starts_with("PASS [") {
+            return Line::Passed;
+        }
+        if text.starts_with("test result:") || text.starts_with("Summary [") {
+            return Line::SuiteEnd;
+        }
+        Line::Keep
+    }
 }
 
 /// Words that mark a line as part of a problem; a line with one is never
@@ -498,33 +589,6 @@ fn mentions_trouble(text: &str) -> bool {
     ]
     .iter()
     .any(|word| lowered.contains(word))
-}
-
-fn cargo_line(line: &str) -> Line {
-    if is_cargo_progress(line) {
-        Line::Noise
-    } else {
-        Line::Keep
-    }
-}
-
-fn cargo_test_line(line: &str) -> Line {
-    let text = line.trim_start();
-    if is_cargo_progress(line) {
-        return Line::Noise;
-    }
-    // libtest: `test path::name ... ok` (also `- should panic ... ok`).
-    if text.starts_with("test ") && text.ends_with(" ... ok") {
-        return Line::Passed;
-    }
-    // nextest: `PASS [   0.004s] crate::test`.
-    if text.starts_with("PASS [") {
-        return Line::Passed;
-    }
-    if text.starts_with("test result:") || text.starts_with("Summary [") {
-        return Line::SuiteEnd;
-    }
-    Line::Keep
 }
 
 fn git_status_line(line: &str) -> Line {
@@ -719,60 +783,6 @@ fn group_paths(lines: &[String]) -> Option<Vec<String>> {
 
 // ── Generic steps ─────────────────────────────────────────────────────────────
 
-/// A line with each run of digits as one `#` and each run of spaces as one
-/// space, so `Receiving  9% (9/100)` and `Receiving 10% (10/100)` read the
-/// same (numbers are padded to a width).
-fn digits_masked(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    for word in line.split_whitespace() {
-        if !out.is_empty() {
-            out.push(' ');
-        }
-        let mut in_digits = false;
-        for c in word.chars() {
-            if c.is_ascii_digit() {
-                if !in_digits {
-                    out.push('#');
-                }
-                in_digits = true;
-            } else {
-                out.push(c);
-                in_digits = false;
-            }
-        }
-    }
-    out
-}
-
-/// A redrawn progress line (a carriage return becomes a line break in the
-/// output): a percentage and words (a row of numbers is a table, not
-/// progress), and no word of trouble.
-fn is_progress(line: &str) -> bool {
-    line.contains('%')
-        && line.chars().filter(|c| c.is_alphabetic()).count() >= 3
-        && !mentions_trouble(line)
-}
-
-/// Runs of progress lines that differ only in their numbers, kept as their
-/// last line. Returns the lines and how many were removed.
-fn collapse_progress(lines: &[String]) -> (Vec<String>, usize) {
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let mut removed = 0;
-    let mut last_mask: Option<String> = None;
-    for line in lines {
-        let mask = is_progress(line).then(|| digits_masked(line));
-        match (&mask, &last_mask, out.last_mut()) {
-            (Some(mask), Some(previous), Some(last)) if mask == previous && *last != *line => {
-                *last = line.clone();
-                removed += 1;
-            }
-            _ => out.push(line.clone()),
-        }
-        last_mask = mask;
-    }
-    (out, removed)
-}
-
 /// Runs of at least [`MIN_REPEAT_RUN`] identical non-blank lines, written
 /// once with how many more there were. `None` when there is none.
 fn collapse_repeats(lines: &[String]) -> Option<Vec<String>> {
@@ -795,19 +805,4 @@ fn collapse_repeats(lines: &[String]) -> Option<Vec<String>> {
         i = end;
     }
     changed.then_some(out)
-}
-
-/// Runs of blank lines as one. Returns the lines and how many were removed.
-fn collapse_blank_runs(lines: &[String]) -> (Vec<String>, usize) {
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
-    let mut removed = 0;
-    for line in lines {
-        let blank = line.trim().is_empty();
-        if blank && out.last().is_some_and(|l| l.trim().is_empty()) {
-            removed += 1;
-            continue;
-        }
-        out.push(line.clone());
-    }
-    (out, removed)
 }

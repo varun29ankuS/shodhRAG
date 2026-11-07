@@ -34,8 +34,9 @@ fn assert_failures_kept(output: &str, text: &str) {
     }
 }
 
-const CARGO_TEST_FAILING: &str = "\
-   Compiling libc v0.2.150
+// The first line follows the quote directly: a `\` line continuation would
+// drop its indent, and cargo's progress is recognised by its alignment.
+const CARGO_TEST_FAILING: &str = "   Compiling libc v0.2.150
    Compiling serde v1.0.190
    Compiling shodh v0.1.0 (/work/shodh)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 12.40s
@@ -104,8 +105,7 @@ fn a_failing_cargo_test_keeps_every_failure_line() {
     assert!(out.text.len() < CARGO_TEST_FAILING.len());
 }
 
-const CARGO_BUILD_ERROR: &str = "\
-    Updating crates.io index
+const CARGO_BUILD_ERROR: &str = "    Updating crates.io index
   Downloaded anyhow v1.0.75
    Compiling anyhow v1.0.75
    Compiling shodh v0.1.0 (/work/shodh)
@@ -355,8 +355,7 @@ fn compound_commands_get_only_the_lossless_steps() {
     }
     // Progress words survive when the output may not be cargo's.
     let out = compress("cargo test | tee log.txt", CARGO_TEST_FAILING);
-    assert!(out.text.contains("Compiling libc v0.2.150"));
-    assert!(out.text.contains("   Compiling serde v1.0.190"));
+    assert_eq!(out.text, CARGO_TEST_FAILING, "unchanged: nothing repeats");
     assert!(out.text.contains("test parse::reads_numbers ... ok"));
 }
 
@@ -403,14 +402,70 @@ fn repeated_lines_are_written_once_with_a_count() {
 }
 
 #[test]
-fn redrawn_progress_keeps_its_last_state_and_never_an_error() {
-    let output = "Downloading model  10% (1/10)\nDownloading model  50% (5/10)\nDownloading model 100% (10/10)\nerror at 40% (4/10)\nerror at 50% (5/10)\ndone\n";
-    let out = compress("./fetch.sh", output);
+fn a_failing_tests_own_output_is_kept_even_when_it_looks_like_cargo() {
+    let mut output = String::from("running 6 tests\n");
+    for name in ["saves", "lists", "counts", "sorts", "merges"] {
+        output.push_str(&format!("test store::{name} ... ok\n"));
+    }
+    output.push_str(
+        "test store::loads ... FAILED\n\nfailures:\n\n---- store::loads stdout ----\n    Checking invariants of 3 records\n      Adding item 3\n   Compiling the index\ntest store::inner ... ok\nthread 'store::loads' panicked at src/store.rs:40:9:\nindex out of date\n\nfailures:\n    store::loads\n\ntest result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n",
+    );
+    let out = compress("cargo test", &output);
+    assert!(out.changed());
+    for kept in [
+        "    Checking invariants of 3 records",
+        "      Adding item 3",
+        "   Compiling the index",
+        "test store::inner ... ok",
+        "index out of date",
+    ] {
+        assert!(
+            out.text.lines().any(|l| l == kept),
+            "{kept:?} dropped:\n{}",
+            out.text
+        );
+    }
+    assert_eq!(out.passing_tests, 5);
+    assert_eq!(out.removed_lines, 5);
+}
+
+#[test]
+fn the_output_of_a_program_cargo_run_started_is_kept() {
+    let output = "   Compiling app v0.1.0 (/work/app)\n    Finished `dev` profile [unoptimized] target(s) in 0.52s\n     Running `target/debug/app`\n    Updating the cache\n   Compiling report for 3 users\n";
+    let out = compress("cargo run -- --report", output);
+    assert_eq!(out.removed_lines, 1);
     assert_eq!(
         out.text,
-        "Downloading model 100% (10/10)\nerror at 40% (4/10)\nerror at 50% (5/10)\ndone\n"
+        "    Finished `dev` profile [unoptimized] target(s) in 0.52s\n     Running `target/debug/app`\n    Updating the cache\n   Compiling report for 3 users\n"
     );
-    assert_eq!(out.removed_lines, 2);
+    // A line that only starts with a progress word, not aligned as cargo writes it, stays.
+    let own = "Checking 4 files\n   Compiling app v0.1.0\n";
+    assert_eq!(compress("cargo check", own).text, "Checking 4 files\n");
+}
+
+#[test]
+fn a_diff_or_any_unrecognised_output_passes_unchanged() {
+    let diff = "diff --git a/a.css b/a.css\n--- a/a.css\n+++ b/a.css\n@@ -1,6 +1,6 @@\n .box {\n-  opacity: 10%;\n+  opacity: 20%;\n+  opacity: 30%;\n \n \n }\n\n\n";
+    for command in [
+        "git diff",
+        "git diff | cat",
+        "cat a.css.diff",
+        "git show HEAD",
+    ] {
+        let out = compress(command, diff);
+        assert!(!out.changed(), "{command}: {:?}", out.steps);
+        assert_eq!(out.text, diff);
+    }
+}
+
+#[test]
+fn only_blank_lines_left_together_by_removed_lines_are_joined() {
+    let output = "running 4 tests\n\ntest a ... ok\n\ntest b ... ok\n\ntest c ... ok\n\ntest d ... FAILED\n\n\ndone\n";
+    let out = compress("cargo test", output);
+    assert_eq!(
+        out.text,
+        "running 4 tests\n\ntest d ... FAILED\n\n\ndone\n[3 passing tests not listed]\n"
+    );
 }
 
 #[test]

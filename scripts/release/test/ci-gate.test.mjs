@@ -223,8 +223,9 @@ test('the skip sets skip documentation and keep everything a build reads', () =>
     '.github/workflows/ci.yml',
     '.github/actions/onnxruntime/action.yml',
     'scripts/ci/ort_archive.py',
-    'crates/shodh-eval/data/papers/corpus/notes.md',
   ];
+  // The corpora hold Markdown: the evals never skip them.
+  assert.ok(!skippable('crates/shodh-eval/data/papers/corpus/notes.md', eval_skip, eval_keep));
   for (const path of everyBuild) {
     assert.ok(!skippable(path, eval_skip, eval_keep), `the evals skip ${path}`);
     assert.ok(!skippable(path, footprint_skip), `Footprint budget skips ${path}`);

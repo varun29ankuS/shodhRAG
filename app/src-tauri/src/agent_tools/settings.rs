@@ -211,10 +211,11 @@ impl HostTool for UpdateSettingTool {
 
 /// The sections of the Settings view, in its order (`SettingsView.tsx`; the
 /// coverage test checks the two agree).
-pub const SETTINGS_SECTIONS: [&str; 10] = [
+pub const SETTINGS_SECTIONS: [&str; 11] = [
     "models",
     "search",
     "tools",
+    "code",
     "tables",
     "general",
     "appearance",
@@ -231,6 +232,7 @@ fn section_label(section: &str) -> &str {
         "models" => "Models",
         "search" => "Search",
         "tools" => "Tools & connections",
+        "code" => "Code",
         "tables" => "Tables",
         "general" => "General",
         "appearance" => "Appearance",
@@ -275,7 +277,7 @@ impl HostTool for ShowSettingTool {
     }
     fn description(&self) -> &'static str {
         "Open Settings for the user at a section: models, search, tools (tools, MCP servers and \
-         skills), tables, general (running in the background), appearance (text size), \
+         skills), code (Code mode's building skills), tables, general (running in the background), appearance (text size), \
          notifications, privacy (Local-only mode and web access), memory or data. Give `key` \
          (a setting you may change) to highlight it, or `memory_id` (from recall) to highlight \
          a memory in the memory section. Use it to show the user where to change a setting \

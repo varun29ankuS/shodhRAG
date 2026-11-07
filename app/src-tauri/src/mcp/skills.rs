@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use shodh_rag::harness::code_skills;
 use shodh_rag::harness::mcp::Mode;
 use shodh_rag::harness::skills::{find_skills, is_valid_name, Skill, SkillProblem};
 
@@ -191,6 +192,55 @@ pub fn enabled_skills(data_dir: &Path, workspace: Option<&str>, mode: Mode) -> V
         .into_iter()
         .filter(|s| settings.enabled(&s.name, workspace) && settings.in_mode(&s.name, mode))
         .collect()
+}
+
+/// Shodh's bundled Code mode skills ([`code_skills::BUNDLED`]) that are on
+/// (Settings → Code), written out for the skill tools to read. They are on
+/// unless the user turned them off, and that choice is global, in the same
+/// `skills.json` as the installed skills. When they cannot be written the
+/// session starts without them, and the log says why.
+pub fn enabled_code_skills(data_dir: &Path) -> Vec<Skill> {
+    let settings = load_settings(data_dir);
+    match code_skills::materialize(data_dir) {
+        Ok(skills) => skills
+            .into_iter()
+            .filter(|s| settings.enabled(&s.name, None))
+            .collect(),
+        Err(e) => {
+            tracing::warn!(target: "shodh::mcp", error = %e, "Code mode's bundled skills could not be written; the session starts without them");
+            Vec::new()
+        }
+    }
+}
+
+/// Whether the bundled skill `name` is on.
+pub fn code_skill_enabled(data_dir: &Path, name: &str) -> bool {
+    load_settings(data_dir).enabled(name, None)
+}
+
+/// Turn the bundled skill `name` on or off everywhere.
+pub fn set_code_skill(data_dir: &Path, name: &str, enabled: bool) -> Result<(), String> {
+    if !code_skills::is_bundled(name) {
+        return Err(format!("{name} is not one of Shodh's Code skills."));
+    }
+    let mut settings = load_settings(data_dir);
+    settings.set(name, None, enabled);
+    save_settings(data_dir, &settings)
+}
+
+/// The skills of a Code chat: the bundled ones that are on, then the
+/// installed ones, except any named like a bundled skill (the bundled one
+/// is offered; two skills of one name would make `load_skill` ambiguous).
+pub fn code_chat_skills(bundled: Vec<Skill>, installed: Vec<Skill>) -> Vec<Skill> {
+    let mut skills = bundled;
+    for skill in installed {
+        if code_skills::is_bundled(&skill.name) {
+            tracing::warn!(target: "shodh::mcp", skill = %skill.name, "an installed skill has the name of a bundled Code skill; the bundled one is used in Code mode");
+            continue;
+        }
+        skills.push(skill);
+    }
+    skills
 }
 
 /// Remove an installed skill; returns whether it existed.
@@ -695,6 +745,33 @@ mod tests {
         assert!(!remove(data.path(), "alpha").unwrap());
         assert!(remove(data.path(), "../x").is_err());
         assert_eq!(on(None), ["beta"]);
+    }
+
+    #[test]
+    fn a_bundled_code_skill_wins_over_an_installed_one_of_its_name() {
+        let data = tempfile::tempdir().unwrap();
+        let installed_root = tempfile::tempdir().unwrap();
+        write_skill(installed_root.path(), "test-first");
+        write_skill(installed_root.path(), "pdf-tools");
+        let (user_skills, _) = find_skills(installed_root.path(), 1);
+        let bundled = enabled_code_skills(data.path());
+        let names: Vec<String> = code_chat_skills(bundled, user_skills)
+            .into_iter()
+            .map(|s| format!("{} {}", s.name, s.dir.starts_with(data.path())))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "plan-before-building true",
+                "test-first true",
+                "debug-systematically true",
+                "verify-before-done true",
+                "fresh-eyes-review true",
+                "pdf-tools false",
+            ]
+        );
+        // The bundled skills are not installed skills: Tools & connections does not list them.
+        assert!(installed(data.path()).0.is_empty());
     }
 
     #[test]

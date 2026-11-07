@@ -99,7 +99,6 @@ jobs:
           base=$(git rev-parse HEAD^1)
           # --no-renames: a renamed file counts at its old path and its new one.
           diff=$(git diff --name-only --no-renames "$base" HEAD)
-          diff=$(printf '%s\n' README.md docs/adr/README.md)  # TEMPORARY: measure a docs-only pull request; reverted before the final head
           if [ -z "$diff" ]; then
             run_all "No changed files against the base commit $base: every job runs."
             exit 0

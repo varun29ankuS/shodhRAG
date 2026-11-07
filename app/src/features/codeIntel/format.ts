@@ -37,9 +37,9 @@ export function showsChip(view: (SavingsCounts & { compressionOn: boolean }) | n
   return view !== null;
 }
 
-/** "Saved ≈41,200 tokens this session". */
+/** "Saved ≈41,200 tokens in this conversation" (one number per conversation, kept with it). */
 export function sessionSentence(view: SavingsCounts): string {
-  return `Saved ${approxTokens(view.savedTokens)} tokens this session`;
+  return `Saved ${approxTokens(view.savedTokens)} tokens in this conversation`;
 }
 
 /** "The model read ≈8,800 tokens of command output instead of ≈50,000, over 12 commands." */

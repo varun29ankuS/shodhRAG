@@ -40,27 +40,31 @@ export function UsageCards({ stats }: { stats: AuditStats | null }) {
   const placeholder = '—';
   const tokens = month ? month.cloudInputTokens + month.cloudOutputTokens : 0;
   return (
-    <dl aria-label="Usage" className="grid grid-cols-2 lg:grid-cols-5 gap-3 m-0">
-      <Card label="Questions this month" value={month ? month.questions.toLocaleString() : placeholder} />
-      <Card label="Tool calls" value={month ? month.toolCalls.toLocaleString() : placeholder} />
-      <Card label="Approvals" value={month ? month.approvals.toLocaleString() : placeholder} />
-      <Card
-        label="Cloud tokens & cost"
-        value={month ? formatTokens(tokens) : placeholder}
-        detail={
-          month
-            ? `${formatTokens(month.cloudInputTokens)} in · ${formatTokens(month.cloudOutputTokens)} out · ${
-                formatCost(month.cloudCostUsd) ?? '$0.00'
-              }`
-            : undefined
-        }
-      />
-      <Card
-        label="Tokens saved in Code mode"
-        value={saved ? approxTokens(saved.savedTokens) : placeholder}
-        detail={saved ? totalDetail(saved) : undefined}
-        title={saved ? `In all, since the first Code mode command. ${saved.method}` : undefined}
-      />
-    </dl>
+    <div className="flex flex-col gap-3">
+      <dl aria-label="Usage this month" className="grid grid-cols-2 lg:grid-cols-4 gap-3 m-0">
+        <Card label="Questions this month" value={month ? month.questions.toLocaleString() : placeholder} />
+        <Card label="Tool calls" value={month ? month.toolCalls.toLocaleString() : placeholder} />
+        <Card label="Approvals" value={month ? month.approvals.toLocaleString() : placeholder} />
+        <Card
+          label="Cloud tokens & cost"
+          value={month ? formatTokens(tokens) : placeholder}
+          detail={
+            month
+              ? `${formatTokens(month.cloudInputTokens)} in · ${formatTokens(month.cloudOutputTokens)} out · ${
+                  formatCost(month.cloudCostUsd) ?? '$0.00'
+                }`
+              : undefined
+          }
+        />
+      </dl>
+      <dl aria-label="Code mode, in all" className="grid grid-cols-2 lg:grid-cols-4 gap-3 m-0">
+        <Card
+          label="Tokens saved in Code mode, in all"
+          value={saved ? approxTokens(saved.savedTokens) : placeholder}
+          detail={saved ? totalDetail(saved) : undefined}
+          title={saved ? `Since the first Code mode command. ${saved.method}` : undefined}
+        />
+      </dl>
+    </div>
   );
 }

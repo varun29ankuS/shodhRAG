@@ -54,7 +54,17 @@ no refactor of the code around it, no "while I am here".
 
 Run the test again and see it pass. Then run the **whole** test suite of the
 project (or the package you changed), not only your test. Fix anything you
-broke now. A failure you did not cause still goes in your report, by name.
+broke now, in the code, at its root cause. A failure you did not cause still goes in
+your report, by name.
+
+### Never make a test pass by weakening it
+
+Never weaken an assertion, widen a tolerance, raise a threshold or a timeout,
+add a retry, skip, ignore or delete a test (`#[ignore]`, `@pytest.mark.skip`,
+`.skip`, `t.Skip`), or update a snapshot or golden file to get green. A failing
+existing test means your change or that test is wrong: find out which. If you
+believe the test is wrong, show the user the failure and why, and change it
+only when they agree.
 
 ### 4. Refactor with the tests green
 

@@ -204,7 +204,7 @@ pub fn enabled_code_skills(data_dir: &Path) -> Vec<Skill> {
     match code_skills::materialize(data_dir) {
         Ok(skills) => skills
             .into_iter()
-            .filter(|s| settings.enabled(&s.name, None))
+            .filter(|s| code_skill_on(&settings, &s.name))
             .collect(),
         Err(e) => {
             tracing::warn!(target: "shodh::mcp", error = %e, "Code mode's bundled skills could not be written; the session starts without them");
@@ -213,9 +213,21 @@ pub fn enabled_code_skills(data_dir: &Path) -> Vec<Skill> {
     }
 }
 
+/// The key a bundled skill's switch is kept under in `skills.json`: its own
+/// (`code:<name>`), so it never shares a switch with an installed skill of
+/// the same name.
+pub fn code_skill_key(name: &str) -> String {
+    format!("code:{name}")
+}
+
+/// Whether the bundled skill `name` is on in `settings`.
+pub fn code_skill_on(settings: &SkillSettings, name: &str) -> bool {
+    settings.enabled(&code_skill_key(name), None)
+}
+
 /// Whether the bundled skill `name` is on.
 pub fn code_skill_enabled(data_dir: &Path, name: &str) -> bool {
-    load_settings(data_dir).enabled(name, None)
+    code_skill_on(&load_settings(data_dir), name)
 }
 
 /// Turn the bundled skill `name` on or off everywhere.
@@ -224,7 +236,7 @@ pub fn set_code_skill(data_dir: &Path, name: &str, enabled: bool) -> Result<(), 
         return Err(format!("{name} is not one of Shodh's Code skills."));
     }
     let mut settings = load_settings(data_dir);
-    settings.set(name, None, enabled);
+    settings.set(&code_skill_key(name), None, enabled);
     save_settings(data_dir, &settings)
 }
 
@@ -772,6 +784,22 @@ mod tests {
         );
         // The bundled skills are not installed skills: Tools & connections does not list them.
         assert!(installed(data.path()).0.is_empty());
+    }
+
+    #[test]
+    fn a_bundled_skills_switch_never_moves_an_installed_skill_of_its_name() {
+        let data = tempfile::tempdir().unwrap();
+        write_skill(&skills_dir(data.path()), "test-first");
+        set_code_skill(data.path(), "test-first", false).unwrap();
+        assert!(!code_skill_enabled(data.path(), "test-first"));
+        let research = enabled_skills(data.path(), None, Mode::Research);
+        assert_eq!(research.len(), 1, "the installed test-first stays on");
+        let mut settings = load_settings(data.path());
+        settings.set("test-first", None, false);
+        save_settings(data.path(), &settings).unwrap();
+        set_code_skill(data.path(), "test-first", true).unwrap();
+        assert!(code_skill_enabled(data.path(), "test-first"));
+        assert!(enabled_skills(data.path(), None, Mode::Research).is_empty());
     }
 
     #[test]

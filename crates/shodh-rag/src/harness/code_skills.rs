@@ -356,6 +356,35 @@ mod tests {
         }
     }
 
+    /// The user's standing quality rule is in the skills that run checks.
+    #[test]
+    fn the_checking_skills_forbid_weakening_tests_to_get_green() {
+        for name in ["test-first", "verify-before-done"] {
+            let body = parse_skill_md(bundled(name).unwrap().skill_md)
+                .unwrap()
+                .body;
+            for rule in [
+                "weaken an assertion",
+                "widen a tolerance",
+                "skip, ignore or delete a test",
+                "#[ignore]",
+                "@pytest.mark.skip",
+                "snapshot",
+                "root cause",
+            ] {
+                assert!(body.contains(rule), "{name} lacks {rule:?}");
+            }
+        }
+        // Searching output is allowed: no skill forbids grep.
+        for skill in &BUNDLED {
+            assert!(
+                !skill.skill_md.contains("Do not pipe it through"),
+                "{}",
+                skill.name
+            );
+        }
+    }
+
     #[test]
     fn no_skill_changes_modes_or_approvals_or_ships_a_script() {
         for skill in &BUNDLED {

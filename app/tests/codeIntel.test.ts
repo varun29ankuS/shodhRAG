@@ -28,7 +28,7 @@ test('every number is an estimate and says so', () => {
   assert.equal(approxTokens(0), '≈0');
   assert.equal(approxTokens(-3), '≈0');
   assert.equal(chipLabel(counted), '≈41,200 tokens saved');
-  assert.equal(sessionSentence(counted), 'Saved ≈41,200 tokens this session');
+  assert.equal(sessionSentence(counted), 'Saved ≈41,200 tokens in this conversation');
   assert.equal(
     sessionDetail(counted),
     'The model read ≈8,800 tokens of command output instead of ≈50,000, over 12 commands.',

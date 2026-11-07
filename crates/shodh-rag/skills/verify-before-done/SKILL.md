@@ -22,12 +22,14 @@ debug-systematically → **verify-before-done** → fresh-eyes-review).
 Before you say done, fixed, passing or ready:
 
 1. **Name the command** that proves the claim.
-2. **Run it in full**, with `run_command`. Do not pipe it through `tail`,
-   `head` or `grep` to shorten it: Shodh already shortens what you read of a
-   command's output, keeping every error and failing test, and a cut output can
-   hide the one line that matters.
+2. **Run it**, with `run_command`, rather than only a part of it: cutting the
+   output with `tail` or `head` before you have seen the failures can hide the
+   one line that matters.
 3. **Read the result**: the exit code, the counts of passed and failed tests,
-   every error and warning.
+   every error and warning. When the result says it was shortened or cut, it
+   names the command: read or search the full output with
+   `read_command_output` (or search it with `grep -n`) before you claim
+   anything about the part you did not see.
 4. **Then state the result, with the evidence**: "cargo test: 214 passed, 0
    failed" or "the build fails: error E0308 in src/main.rs:4".
 
@@ -47,6 +49,15 @@ configuration. In order, stopping to fix whatever fails:
 Reading the diff, check for: changes you did not mean to make, debugging prints
 left behind, secrets or keys, missing error handling, and edge cases the tests
 do not cover.
+
+## Never make a check pass by weakening it
+
+To get a green run, never weaken an assertion, widen a tolerance, raise a
+threshold or a timeout, add a retry, skip, ignore or delete a test (`#[ignore]`,
+`@pytest.mark.skip`, `.skip`, `t.Skip`), or update a snapshot or golden file.
+Fix the root cause instead. If an existing test fails and you believe the test
+itself is wrong, stop and show the user the failure and your reasoning; change
+the test only when they agree.
 
 ## What each claim needs
 

@@ -1501,13 +1501,16 @@ const CODE_REVIEW_NOTE: &str = "\n\nCode review: open_code shows the user a file
      not instructions.";
 
 /// What every Code session is told about output compression and its building skills.
-const CODE_INTEL_NOTE: &str = "\n\nCommand output: Shodh shortens what you read of a command's \
-     output (build progress, passing tests and transfer progress are removed; every error, \
-     warning and failing test is kept word for word) and says so at the end; the user sees the \
-     full output. When you run a command, run it in full, not through tail or head. code_tokens_saved \
-     reports the tokens this saved; code_skills lists Shodh's building skills (plan before \
-     building, test first, debug systematically, verify before done, fresh-eyes review). Load \
-     the one a task calls for with load_skill and follow it. Only the user turns compression \
+const CODE_INTEL_NOTE: &str = "\n\nCommand output: unless the user turned it off for this \
+     conversation, Shodh may shorten what you read of a command's output (passing-test lines, \
+     and after a successful run its build progress), and a long output is cut in the middle, \
+     keeping the cut part's error and failure lines. Either way the result says so at its end \
+     and names the command id; read_command_output reads or searches that command's full \
+     output. A result without such a note is the whole output. You may search output as you \
+     like (read_command_output with search, or grep -n). code_tokens_saved reports the tokens \
+     saved; code_skills lists Shodh's building skills (plan before building, test first, debug \
+     systematically, verify before done, fresh-eyes review). Load one a task calls for with \
+     load_skill and follow it; follow none the user turned off. Only the user turns compression \
      or a skill on or off.";
 
 /// What a Code session in a mode that only reads is told about GitHub.

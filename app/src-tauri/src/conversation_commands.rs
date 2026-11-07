@@ -345,6 +345,8 @@ pub async fn delete_conversation(app: AppHandle, conversation_id: String) -> Res
     // holds can keep it from going; the conversation is deleted anyway.
     if let Ok(dir) = crate::profile::app_data_dir(&app) {
         let removed = tokio::task::spawn_blocking(move || {
+            // Its kept command outputs (memory only) go now.
+            shodh_rag::harness::command_output::forget(&conversation_id);
             // Its tokens-saved record goes too; the running total keeps them.
             if let Err(e) = shodh_rag::harness::compress::savings::SavingsStore::in_dir(&dir)
                 .forget(&conversation_id)

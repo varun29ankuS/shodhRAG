@@ -41,6 +41,7 @@
           "code_review_run",
           "code_review_target",
           "code_savings_get",
+          "code_savings_set_default",
           "code_savings_set_enabled",
           "code_savings_total",
           "code_settings_get",

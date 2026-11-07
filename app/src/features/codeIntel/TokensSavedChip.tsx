@@ -130,15 +130,16 @@ export function TokensSavedChip({ conversationId, answerRunning, onOpenActivity 
           id={popoverId}
           role="dialog"
           aria-labelledby={headingId}
-          className="absolute bottom-full left-0 mb-2 z-40 w-[340px] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
+          className="absolute bottom-full left-0 mb-2 z-40 w-[340px] max-w-[calc(100vw-32px)] rounded-[14px] border border-shodh-border bg-shodh-raised p-3.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] flex flex-col gap-3"
         >
           <h2 id={headingId} className="m-0 text-small font-semibold text-shodh-text tabular-nums">
             {sessionSentence(view)}
           </h2>
           <p className="m-0 text-small text-shodh-text-secondary tabular-nums">{sessionDetail(view)}</p>
           <p className="m-0 text-small text-shodh-text-muted">
-            Shodh removes build progress and passing tests from what the model reads of a command&apos;s output. Every
-            error, warning and failing test is kept. You always see the full output.
+            Shodh removes passing-test lines, and after a successful run build progress, from what the model reads of a
+            command&apos;s output. Errors, warnings and failing tests are kept, and the model can read the full output.
+            You always see it.
           </p>
           <p className="m-0 text-caption text-shodh-text-faint">{view.method}</p>
           <SwitchRow

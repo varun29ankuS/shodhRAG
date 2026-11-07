@@ -132,6 +132,7 @@
     "code_savings_get": { "tool": "code_tokens_saved" },
     "code_savings_total": { "tool": "code_tokens_saved" },
     "code_savings_set_enabled": { "excluded": "Turns output shortening on or off for a Code conversation, which decides what the agent reads of command output; only the user changes how the agent's own inputs are shaped." },
+    "code_savings_set_default": { "excluded": "Sets whether new Code conversations shorten command output for the agent; only the user decides how the agent's own inputs are shaped." },
     "code_skills_list": { "tool": "code_skills" },
     "code_skills_set_enabled": { "excluded": "Which bundled Code skills are on decides the instructions the agent may load; only the user changes it, as with installed skills." },
     "creation_get": { "tools": ["list_artifacts", "open_artifact"] },

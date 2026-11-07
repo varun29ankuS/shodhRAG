@@ -11,12 +11,13 @@ function sourcesLine(skill: CodeSkill): string {
 }
 
 /**
- * Settings → Code: Shodh's building skills for Code mode, each on or off. The
- * agent loads one when a task calls for it; it can list them but never turn
- * one on or off.
+ * Settings → Code: Shodh's building skills for Code mode, each on or off, and
+ * whether Code conversations shorten command output for the model by default.
+ * The agent can list both but never change them.
  */
 export default function CodeSkillsSettings() {
   const [skills, setSkills] = useState<CodeSkill[] | null>(null);
+  const [shortenByDefault, setShortenByDefault] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -26,6 +27,14 @@ export default function CodeSkillsSettings() {
       .skills()
       .then(next => {
         if (active) setSkills(next);
+      })
+      .catch(err => {
+        if (active) setError(errorText(err));
+      });
+    codeIntelApi
+      .total()
+      .then(total => {
+        if (active) setShortenByDefault(total.defaultOn);
       })
       .catch(err => {
         if (active) setError(errorText(err));
@@ -49,6 +58,15 @@ export default function CodeSkillsSettings() {
       .finally(() => setSaving(null));
   };
 
+  const toggleDefault = (enabled: boolean) => {
+    setSaving('default');
+    codeIntelApi
+      .setDefaultShortening(enabled)
+      .then(total => setShortenByDefault(total.defaultOn))
+      .catch(err => notify.error('Could not change shorter command output', { description: errorText(err) }))
+      .finally(() => setSaving(null));
+  };
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1">
@@ -56,7 +74,7 @@ export default function CodeSkillsSettings() {
         <p className="m-0 text-small text-shodh-text-muted">
           Instructions the assistant follows in Code mode when a task calls for one: plan first, test first, find the
           cause of a failure, check the work before calling it done, and have it reviewed. They never change the mode
-          or what needs your approval.
+          or what needs your approval. A skill you turn off is not followed.
         </p>
       </div>
       {error && (
@@ -80,13 +98,15 @@ export default function CodeSkillsSettings() {
           ))}
         </ul>
       )}
-      <div className="flex flex-col gap-1 border-t border-shodh-border-subtle pt-4">
-        <h3 className="m-0 text-body font-semibold text-shodh-text">Shorter command output</h3>
-        <p className="m-0 text-small text-shodh-text-muted">
-          In Code mode the model reads command output without build progress and passing tests; every error and failing
-          test is kept, and you always see the full output. The tokens saved show in each Code conversation&apos;s
-          message box, where you can turn this off for that conversation, and in total in Activity.
-        </p>
+      <div className="flex flex-col gap-3 border-t border-shodh-border-subtle pt-4">
+        <SwitchRow
+          label="Shorten command output"
+          description="In Code conversations the model reads command output without passing-test lines, and, after a successful run, without build progress. Errors, warnings and failing tests are kept, the model can read the full output, and you always see it. Each conversation can change this from its message box; this is what new ones start with."
+          checked={shortenByDefault ?? true}
+          disabled={saving !== null || shortenByDefault === null}
+          onChange={toggleDefault}
+        />
+        <p className="m-0 text-small text-shodh-text-muted">The tokens saved show in each Code conversation and, in total, in Activity.</p>
       </div>
     </div>
   );

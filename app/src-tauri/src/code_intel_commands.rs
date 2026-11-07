@@ -76,11 +76,11 @@ pub struct ConversationSavingsView {
 }
 
 impl ConversationSavingsView {
-    fn of(conversation_id: String, record: &ConversationSavings) -> Self {
+    fn of(conversation_id: String, record: &ConversationSavings, on: bool) -> Self {
         ConversationSavingsView {
             conversation_id,
             tally: TallyView::from(&record.tally),
-            compression_on: !record.compression_off,
+            compression_on: on,
         }
     }
 }
@@ -91,8 +91,11 @@ impl ConversationSavingsView {
 pub struct TotalSavingsView {
     #[serde(flatten)]
     pub tally: TallyView,
-    pub conversations: usize,
+    /// Conversations ever counted (deleted ones too, as in the tally).
+    pub conversations: u64,
     pub since: Option<String>,
+    /// Compression in Code conversations that did not choose for themselves.
+    pub default_on: bool,
 }
 
 impl From<TotalSavings> for TotalSavingsView {
@@ -101,6 +104,7 @@ impl From<TotalSavings> for TotalSavingsView {
             tally: TallyView::from(&total.tally),
             conversations: total.conversations,
             since: total.since,
+            default_on: total.default_on,
         }
     }
 }
@@ -131,7 +135,7 @@ pub fn code_skill_views(data_dir: &std::path::Path) -> Vec<CodeSkillView> {
                 .map(|doc| doc.description)
                 .unwrap_or_else(|_| skill.summary.to_string()),
             sources: skill.sources,
-            enabled: settings.enabled(skill.name, None),
+            enabled: skill_settings::code_skill_on(&settings, skill.name),
         })
         .collect()
 }
@@ -144,15 +148,19 @@ pub async fn code_savings_get(
 ) -> CommandResult<ConversationSavingsView> {
     let id = conversation(&conversation_id)?;
     let store = SavingsStore::in_dir(&data_dir(&app)?);
-    let record = store.get(&id)?;
-    Ok(ConversationSavingsView::of(id, &record))
+    blocking(move || {
+        let (record, on) = store.get(&id)?;
+        Ok(ConversationSavingsView::of(id, &record, on))
+    })
+    .await
 }
 
-/// The tokens saved over every Code conversation (Activity).
+/// The tokens saved over every Code conversation (Activity), and the default
+/// switch (Settings → Code).
 #[tauri::command]
 pub async fn code_savings_total(app: AppHandle) -> CommandResult<TotalSavingsView> {
     let store = SavingsStore::in_dir(&data_dir(&app)?);
-    Ok(store.total()?.into())
+    blocking(move || Ok(store.total()?.into())).await
 }
 
 /// Turn output compression on or off for one Code conversation. It applies
@@ -165,9 +173,37 @@ pub async fn code_savings_set_enabled(
 ) -> CommandResult<ConversationSavingsView> {
     let id = conversation(&conversation_id)?;
     let store = SavingsStore::in_dir(&data_dir(&app)?);
-    let record = store.set_compression(&id, enabled)?;
-    tracing::info!(target: "shodh::harness", conversation = %id, on = enabled, "output compression switched");
-    Ok(ConversationSavingsView::of(id, &record))
+    blocking(move || {
+        let record = store.set_compression(&id, enabled)?;
+        tracing::info!(target: "shodh::harness", conversation = %id, on = enabled, "output compression switched");
+        Ok(ConversationSavingsView::of(id, &record, enabled))
+    })
+    .await
+}
+
+/// Turn output compression on or off for Code conversations that did not
+/// choose for themselves, new ones included (Settings → Code).
+#[tauri::command]
+pub async fn code_savings_set_default(
+    app: AppHandle,
+    enabled: bool,
+) -> CommandResult<TotalSavingsView> {
+    let store = SavingsStore::in_dir(&data_dir(&app)?);
+    blocking(move || {
+        store.set_default(enabled)?;
+        tracing::info!(target: "shodh::harness", on = enabled, "default output compression switched");
+        Ok(store.total()?.into())
+    })
+    .await
+}
+
+/// Run file work off the async runtime.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> CommandResult<T> + Send + 'static,
+) -> CommandResult<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The bundled Code skills (Settings → Code).
@@ -206,7 +242,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SavingsStore::in_dir(dir.path());
         let record = store.record("c1", 1_000, 250).unwrap();
-        let view = ConversationSavingsView::of("c1".into(), &record);
+        let view = ConversationSavingsView::of("c1".into(), &record, true);
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["savedTokens"], 750);
         assert_eq!(json["shortenedCommands"], 1);
@@ -217,6 +253,7 @@ mod tests {
         let json = serde_json::to_value(&total).unwrap();
         assert_eq!(json["savedTokens"], 750);
         assert_eq!(json["conversations"], 1);
+        assert_eq!(json["defaultOn"], true);
     }
 
     #[test]

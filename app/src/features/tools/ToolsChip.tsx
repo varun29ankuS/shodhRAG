@@ -14,8 +14,8 @@ interface ToolsChipProps {
   mode: ToolMode;
   /** Re-read after each answer (a server may have started or stopped). */
   answerRunning: boolean;
-  /** Open Settings → Tools & connections. */
-  onOpenSettings: () => void;
+  /** Open Settings at Tools & connections, or at Code (the bundled Code skills). */
+  onOpenSettings: (section: 'tools' | 'code') => void;
 }
 
 /**
@@ -168,12 +168,24 @@ export function ToolsChip({ workspaceId, mode, answerRunning, onOpenSettings }: 
             type="button"
             onClick={() => {
               close(false);
-              onOpenSettings();
+              onOpenSettings('tools');
             }}
             className={cn('self-start text-small font-medium text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
           >
             Manage tools and connections
           </button>
+          {mode === 'code' && (
+            <button
+              type="button"
+              onClick={() => {
+                close(false);
+                onOpenSettings('code');
+              }}
+              className={cn('self-start text-small font-medium text-shodh-accent-text hover:underline rounded', FOCUS_RING)}
+            >
+              Manage Code mode skills
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -19,8 +19,11 @@ export interface ConversationSavings extends SavingsTally {
 
 /** The running total over every Code conversation (Activity). */
 export interface TotalSavings extends SavingsTally {
+  /** Conversations ever counted, deleted ones included. */
   conversations: number;
   since: string | null;
+  /** Shortening in Code conversations that did not choose for themselves. */
+  defaultOn: boolean;
 }
 
 /** A project a bundled Code skill was written from. */
@@ -51,6 +54,8 @@ export const codeIntelApi = {
     invoke<ConversationSavings>('code_savings_set_enabled', { conversationId, enabled }),
   /** The tokens saved over every Code conversation. */
   total: () => invoke<TotalSavings>('code_savings_total'),
+  /** Shortening for Code conversations that did not choose for themselves (Settings → Code). */
+  setDefaultShortening: (enabled: boolean) => invoke<TotalSavings>('code_savings_set_default', { enabled }),
   /** The bundled Code skills with their switches. */
   skills: () => invoke<CodeSkill[]>('code_skills_list'),
   /** Turn a bundled Code skill on or off; returns them all. */

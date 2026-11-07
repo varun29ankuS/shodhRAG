@@ -1,7 +1,6 @@
 use super::*;
 
-/// Every line of `output` that tells of a problem, found in `text` word for
-/// word: compression never drops or rewrites one.
+/// Every line of `output` that tells of a problem is in `text` word for word.
 fn assert_failures_kept(output: &str, text: &str) {
     for line in output.lines() {
         // A passing test line may name an error (`test errors_are_plain ... ok`).
@@ -22,6 +21,7 @@ fn assert_failures_kept(output: &str, text: &str) {
             "right:",
             "-->",
             "^",
+            "blocking",
         ]
         .iter()
         .any(|w| lowered.contains(w));
@@ -34,175 +34,290 @@ fn assert_failures_kept(output: &str, text: &str) {
     }
 }
 
-// The first line follows the quote directly: a `\` line continuation would
-// drop its indent, and cargo's progress is recognised by its alignment.
-const CARGO_TEST_FAILING: &str = "   Compiling libc v0.2.150
-   Compiling serde v1.0.190
-   Compiling shodh v0.1.0 (/work/shodh)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.40s
-     Running unittests src/lib.rs (target/debug/deps/shodh-1a2b3c)
-
-running 6 tests
-test parse::reads_numbers ... ok
-test parse::reads_words ... ok
-test parse::error_messages_are_plain ... ok
-test math::adds ... FAILED
-test math::subtracts ... ok
-test slow::big ... ignored
-
-failures:
-
----- math::adds stdout ----
-thread 'math::adds' panicked at src/math.rs:12:9:
-assertion `left == right` failed
-  left: 4
- right: 5
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-
-
-failures:
-    math::adds
-
-test result: FAILED. 4 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s
-
-error: test failed, to rerun pass `--lib`
-";
+/// Real output: `cargo test --workspace --all-targets` of this repository on
+/// CI (Windows, Rust 1.97.1, run 42382635564), colour codes removed as
+/// run_command's output filter removes them, and the lines between the
+/// excerpts left out.
+const REAL_CARGO_TEST_FAILING: &str = include_str!("fixtures/cargo-test-failing.txt");
 
 #[test]
-fn a_failing_cargo_test_keeps_every_failure_line() {
-    let out = compress("cargo test", CARGO_TEST_FAILING);
+fn a_real_failing_cargo_test_keeps_its_failures_and_progress() {
+    let out = compress(
+        "cargo test --workspace --all-targets",
+        REAL_CARGO_TEST_FAILING,
+        false,
+    );
     assert!(out.changed());
-    assert_failures_kept(CARGO_TEST_FAILING, &out.text);
+    assert_failures_kept(REAL_CARGO_TEST_FAILING, &out.text);
     for kept in [
-        "test math::adds ... FAILED",
-        "test slow::big ... ignored",
-        "---- math::adds stdout ----",
-        "thread 'math::adds' panicked at src/math.rs:12:9:",
-        "  left: 4",
-        " right: 5",
-        "    math::adds",
-        "     Running unittests src/lib.rs (target/debug/deps/shodh-1a2b3c)",
-        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.40s",
-        "error: test failed, to rerun pass `--lib`",
+        "   Compiling shodh-rag v0.0.10 (D:\\a\\shodhRAG\\shodhRAG\\crates\\shodh-rag)",
+        "test harness::compress::tests::compound_commands_get_only_the_lossless_steps ... FAILED",
+        "---- harness::compress::tests::compound_commands_get_only_the_lossless_steps stdout ----",
+        "assertion failed: out.text.contains(\"   Compiling libc v0.2.150\")",
+        "    harness::compress::tests::the_note_says_what_was_removed_and_that_the_user_sees_everything",
     ] {
-        assert!(
-            out.text.lines().any(|l| l == kept),
-            "{kept:?} missing:\n{}",
-            out.text
-        );
+        assert!(out.text.lines().any(|l| l == kept), "{kept:?} missing:\n{}", out.text);
     }
-    assert!(!out.text.contains("Compiling"));
-    assert!(!out.text.contains("... ok"));
-    assert_eq!(out.passing_tests, 4);
-    assert_eq!(out.removed_lines, 7);
-    // The count stands just above the suite's result line.
+    let passing = REAL_CARGO_TEST_FAILING
+        .lines()
+        .filter(|l| l.starts_with("test ") && l.ends_with(" ... ok"))
+        .count();
+    assert!(passing > 50);
+    assert_eq!(out.passing_tests, passing);
+    assert_eq!(
+        out.removed_lines, passing,
+        "a failed run loses only passing tests"
+    );
     let lines: Vec<&str> = out.text.lines().collect();
     let result = lines
         .iter()
         .position(|l| l.starts_with("test result: FAILED"))
         .unwrap();
-    assert_eq!(lines[result - 1], "[4 passing tests not listed]");
-    assert!(out.text.len() < CARGO_TEST_FAILING.len());
+    assert_eq!(
+        lines[result - 1],
+        format!("[{passing} passing tests not listed]")
+    );
+}
+
+#[test]
+fn a_successful_cargo_run_loses_its_progress() {
+    let mut output = String::from("   Compiling shodh v0.1.0\n    Finished `test` profile in 3.2s\n     Running unittests src/lib.rs\n\nrunning 200 tests\n");
+    for i in 0..200 {
+        output.push_str(&format!("test module_{i}::does_the_thing_{i} ... ok\n"));
+    }
+    output.push_str("\ntest result: ok. 200 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s\n");
+    let out = compress("cargo test", &output, true);
+    assert_eq!(out.passing_tests, 200);
+    assert_eq!(out.removed_lines, 201);
+    assert!(!out.text.contains("Compiling"));
+    assert!(out
+        .text
+        .contains("[200 passing tests not listed]\ntest result: ok. 200 passed"));
+    let saved = savings::estimate_tokens(&output) - savings::estimate_tokens(&out.text);
+    assert!(saved * 10 > savings::estimate_tokens(&output) * 9);
+}
+
+#[test]
+fn a_command_that_did_not_succeed_keeps_its_progress() {
+    // Blocked on a lock and stopped at its time limit: the lock line is the diagnosis.
+    let blocked =
+        "    Updating crates.io index\n    Blocking waiting for file lock on package cache\n";
+    assert_eq!(compress("cargo build", blocked, false).text, blocked);
+    // Killed mid-build: the last Compiling line names what hung.
+    let hung = "   Compiling libc v0.2.150\n   Compiling openssl-sys v0.9.103\n";
+    let out = compress("cargo build --release", hung, false);
+    assert!(!out.changed());
+    assert_eq!(out.text, hung);
+    // A lock line is never progress, even when the command succeeded.
+    let waited = "    Blocking waiting for file lock on build directory\n   Compiling shodh v0.1.0\n    Finished `dev` profile in 9s\n";
+    let out = compress("cargo build", waited, true);
+    assert_eq!(
+        out.text,
+        "    Blocking waiting for file lock on build directory\n    Finished `dev` profile in 9s\n"
+    );
 }
 
 const CARGO_BUILD_ERROR: &str = "    Updating crates.io index
   Downloaded anyhow v1.0.75
    Compiling anyhow v1.0.75
-   Compiling shodh v0.1.0 (/work/shodh)
 error[E0308]: mismatched types
   --> src/main.rs:4:18
    |
 4  |     let x: u32 = \"five\";
    |            ---   ^^^^^^ expected `u32`, found `&str`
-   |            |
-   |            expected due to this
 
-warning: unused variable: `y`
- --> src/main.rs:5:9
-  |
-5 |     let y = 2;
-  |         ^ help: if this is intentional, prefix it with an underscore: `_y`
-
-For more information about this error, try `rustc --explain E0308`.
-warning: `shodh` (bin \"shodh\") generated 1 warning
-error: could not compile `shodh` (bin \"shodh\") due to 1 previous error; 1 warning emitted
+error: could not compile `shodh` (bin \"shodh\") due to 1 previous error
 ";
 
 #[test]
-fn a_failing_cargo_build_keeps_errors_and_warnings_whole() {
-    let out = compress("cd app && cargo build --release 2>&1", CARGO_BUILD_ERROR);
-    assert!(out.changed());
-    assert_failures_kept(CARGO_BUILD_ERROR, &out.text);
-    // The diagnostic block is kept exactly, blank lines and all.
-    let block = "error[E0308]: mismatched types\n  --> src/main.rs:4:18\n   |\n4  |     let x: u32 = \"five\";";
-    assert!(out.text.contains(block), "{}", out.text);
-    assert!(out
-        .text
-        .contains("|            expected due to this\n\nwarning: unused variable"));
-    assert!(!out.text.contains("Compiling") && !out.text.contains("Downloaded"));
-    assert_eq!(out.removed_lines, 4);
-    assert_eq!(out.passing_tests, 0);
+fn a_failing_build_is_passed_whole() {
+    let out = compress("cargo build", CARGO_BUILD_ERROR, false);
+    assert!(!out.changed());
+    assert_eq!(out.text, CARGO_BUILD_ERROR);
+    // Succeeding, only cargo's own aligned progress goes.
+    let out = compress(
+        "cargo check",
+        "Checking 4 files\n   Compiling app v0.1.0\n",
+        true,
+    );
+    assert_eq!(out.text, "Checking 4 files\n");
 }
 
 #[test]
-fn a_progress_word_that_names_a_problem_is_kept() {
-    let output = "   Compiling shodh v0.1.0\n    Blocking waiting for file lock on build directory\nUpdating failed: network unreachable\n";
-    let out = compress("cargo build", output);
-    assert!(out.text.contains("Updating failed: network unreachable"));
-    assert!(!out.text.contains("Blocking waiting for file lock"));
-    assert!(!out.text.contains("Compiling"));
+fn cargo_update_and_fetch_keep_their_results() {
+    let update = "    Updating crates.io index\n     Locking 1 package to latest compatible version\n    Updating serde v1.0.190 -> v1.0.210\n      Adding serde_derive v1.0.210\n";
+    for command in ["cargo update -p serde", "cargo fetch"] {
+        assert_eq!(program_of(command), Program::Other, "{command}");
+        assert_eq!(compress(command, update, true).text, update);
+    }
 }
 
-const PYTEST_FAILING: &str = "\
-============================= test session starts ==============================
-platform linux -- Python 3.12.1, pytest-8.0.0
-collected 7 items
+#[test]
+fn a_failing_tests_captured_output_is_kept_even_when_it_looks_like_cargo() {
+    let mut output = String::from("running 6 tests\n");
+    for name in ["saves", "lists", "counts", "sorts", "merges"] {
+        output.push_str(&format!("test store::{name} ... ok\n"));
+    }
+    output.push_str(
+        "test store::loads ... FAILED\n\nfailures:\n\n---- store::loads stdout ----\n    Checking invariants of 3 records\n   Compiling the index\ntest store::inner ... ok\nthread 'store::loads' panicked at src/store.rs:40:9:\nindex out of date\n\nfailures:\n    store::loads\n\ntest result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n",
+    );
+    // As if it had succeeded: the captured block is protected by itself, not by the exit code.
+    let out = compress("cargo test", &output, true);
+    for kept in [
+        "    Checking invariants of 3 records",
+        "   Compiling the index",
+        "test store::inner ... ok",
+    ] {
+        assert!(
+            out.text.lines().any(|l| l == kept),
+            "{kept:?} dropped:\n{}",
+            out.text
+        );
+    }
+    assert_eq!(out.passing_tests, 5);
+}
 
-tests/test_parse.py ....                                                  [ 57%]
-tests/test_math.py .F.                                                    [100%]
+/// nextest's format, from nextest-runner's displayer (`{:>12}` status words,
+/// the failing test's output after its status line under `stdout ───`).
+const NEXTEST_FAILING: &str = "    Starting 4 tests across 1 binary
+        PASS [   0.004s] store store::saves
+        PASS [   0.005s] store store::lists
+        FAIL [   0.010s] store store::loads
+  stdout ───
+    Checking invariants of 3 records
+    test inner ... ok
+  stderr ───
+    thread 'store::loads' panicked at src/store.rs:40:9:
+    index out of date
 
+        PASS [   0.004s] store store::counts
+────────────
+     Summary [   0.020s] 4 tests run: 3 passed, 1 failed, 0 skipped
+        FAIL [   0.010s] store store::loads
+error: test run failed
+";
+
+#[test]
+fn nextest_keeps_a_failing_tests_output() {
+    assert_eq!(program_of("cargo nextest run"), Program::CargoTest);
+    let out = compress("cargo nextest run", NEXTEST_FAILING, true);
+    assert_failures_kept(NEXTEST_FAILING, &out.text);
+    for kept in [
+        "    Checking invariants of 3 records",
+        "    test inner ... ok",
+        "  stdout ───",
+    ] {
+        assert!(
+            out.text.lines().any(|l| l == kept),
+            "{kept:?} dropped:\n{}",
+            out.text
+        );
+    }
+    assert_eq!(out.passing_tests, 3);
+    assert!(out
+        .text
+        .contains("[3 passing tests not listed]\n     Summary [   0.020s] 4 tests run"));
+}
+
+#[test]
+fn streamed_test_output_keeps_its_cargo_looking_lines() {
+    let output = "   Compiling shodh v0.1.0\n    Finished `test` profile in 1s\n     Running unittests src/lib.rs\n\nrunning 2 tests\n    Checking the cache\n   Compiling report\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
+    let streamed = compress("cargo test -- --nocapture", output, true);
+    assert_eq!(
+        streamed.text,
+        "    Finished `test` profile in 1s\n     Running unittests src/lib.rs\n\nrunning 2 tests\n    Checking the cache\n   Compiling report\n\n[2 passing tests not listed]\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+    );
+    // Captured (the default), such lines can only be cargo's.
+    let captured = compress("cargo test", output, true);
+    assert!(!captured.text.contains("Checking the cache"));
+}
+
+#[test]
+fn the_output_of_a_program_cargo_run_started_is_kept() {
+    let output = "   Compiling app v0.1.0 (/work/app)\n    Finished `dev` profile [unoptimized] target(s) in 0.52s\n     Running `target/debug/app`\n    Updating the cache\n   Compiling report for 3 users\n";
+    let out = compress("cargo run -- --report", output, true);
+    assert_eq!(out.removed_lines, 1);
+    assert_eq!(
+        out.text,
+        "    Finished `dev` profile [unoptimized] target(s) in 0.52s\n     Running `target/debug/app`\n    Updating the cache\n   Compiling report for 3 users\n"
+    );
+    // `-q` prints no Running line to tell the program's output from cargo's.
+    assert_eq!(program_of("cargo run -q"), Program::Other);
+    assert_eq!(program_of("cargo run -- -q"), Program::Cargo);
+}
+
+/// pytest `-q`: bare progress, no session header, a bare last line.
+const PYTEST_Q_FAILING: &str = "..F.                                                                     [100%]
 =================================== FAILURES ===================================
-__________________________________ test_add ____________________________________
+___________________________________ test_add ___________________________________
 
     def test_add():
->       assert add(2, 2) == 5
-E       assert 4 == 5
-E        +  where 4 = add(2, 2)
+        status = build()
+>       assert status == \"pkg::build PASSED\"
+E       AssertionError: assert 'pkg::build FAILED' == 'pkg::build PASSED'
 
-tests/test_math.py:4: AssertionError
+tests/test_math.py:5: AssertionError
 =========================== short test summary info ============================
-FAILED tests/test_math.py::test_add - assert 4 == 5
-========================= 1 failed, 6 passed in 0.05s ==========================
+FAILED tests/test_math.py::test_add - AssertionError: assert 'pkg::build FAILED' == 'pkg::build PASSED'
+1 failed, 3 passed in 0.05s
 ";
 
 #[test]
-fn a_failing_pytest_keeps_its_failure_and_drops_only_dot_progress() {
-    let out = compress("python -m pytest -q", PYTEST_FAILING);
-    assert!(out.changed());
-    assert_failures_kept(PYTEST_FAILING, &out.text);
-    assert!(!out.text.contains("tests/test_parse.py ...."));
-    // A progress line with a failure mark is kept.
-    assert!(out.text.contains("tests/test_math.py .F."));
-    assert!(out.text.contains("E       assert 4 == 5"));
-    assert!(out
-        .text
-        .contains("FAILED tests/test_math.py::test_add - assert 4 == 5"));
+fn pytest_q_failures_pass_whole() {
+    let out = compress("python -m pytest -q", PYTEST_Q_FAILING, false);
+    assert!(!out.changed(), "{:?}", out.steps);
+    // Passing: the dot line goes, the result stays.
+    let passed =
+        "........                                                                 [100%]\n8 passed in 0.02s\n";
+    assert_eq!(
+        compress("pytest -q", passed, true).text,
+        "8 passed in 0.02s\n"
+    );
 }
+
+const PYTEST_V_FAILING: &str =
+    "tests/test_math.py::test_one PASSED                                      [ 25%]
+tests/test_math.py::test_two PASSED                                      [ 50%]
+tests/test_math.py::test_three PASSED                                    [ 75%]
+tests/test_math.py::test_add FAILED                                      [100%]
+
+=================================== FAILURES ===================================
+___________________________________ test_add ___________________________________
+
+    def test_add():
+>       assert status == \"pkg::build PASSED\"
+----------------------------- Captured stdout call -----------------------------
+tests/test_inner.py::helper PASSED
+E       AssertionError
+
+tests/test_math.py:5: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_math.py::test_add - AssertionError
+========================= 1 failed, 3 passed in 0.05s ==========================
+";
 
 #[test]
-fn verbose_pytest_passes_are_counted() {
-    let output = "tests/a.py::test_one PASSED  [ 33%]\ntests/a.py::test_two PASSED  [ 66%]\ntests/a.py::test_three FAILED [100%]\n====== 1 failed, 2 passed in 0.01s ======\n";
-    let out = compress("pytest -v", output);
-    assert_eq!(out.passing_tests, 2);
-    assert!(out.text.contains("tests/a.py::test_three FAILED [100%]"));
+fn pytest_v_drops_passes_but_never_inside_its_failures() {
+    let out = compress("pytest -v", PYTEST_V_FAILING, false);
+    assert_failures_kept(PYTEST_V_FAILING, &out.text);
+    assert_eq!(out.passing_tests, 3);
+    for kept in [
+        ">       assert status == \"pkg::build PASSED\"",
+        "tests/test_inner.py::helper PASSED",
+        "tests/test_math.py::test_add FAILED                                      [100%]",
+    ] {
+        assert!(
+            out.text.lines().any(|l| l == kept),
+            "{kept:?} dropped:\n{}",
+            out.text
+        );
+    }
     assert!(out
         .text
-        .contains("[2 passing tests not listed]\n====== 1 failed, 2 passed"));
+        .contains("[3 passing tests not listed]\n========================= 1 failed"));
 }
 
-const JEST_FAILING: &str = "\
-PASS src/utils/format.test.ts
-PASS src/utils/parse.test.ts
+const JEST_FAILING: &str = "PASS src/utils/format.test.ts
 FAIL src/cart/total.test.ts
   cart total
     ✓ sums items (3 ms)
@@ -216,134 +331,119 @@ FAIL src/cart/total.test.ts
     Expected: 10.01
     Received: 10.009999
 
-      12 |   it('rounds to cents', () => {
-    > 13 |     expect(total([5.005, 5.005])).toBe(10.01);
-         |                                   ^
+  console.log
+    ✓ step done
 
-      at Object.<anonymous> (src/cart/total.test.ts:13:35)
-
-Test Suites: 1 failed, 2 passed, 3 total
+Test Suites: 1 failed, 1 passed, 2 total
 Tests:       1 failed, 2 passed, 3 total
 ";
 
 #[test]
-fn a_failing_jest_run_keeps_the_failure() {
-    let out = compress("npm test", JEST_FAILING);
-    assert!(out.changed());
+fn jest_drops_passes_but_never_inside_a_block() {
+    let out = compress("npm test", JEST_FAILING, false);
     assert_failures_kept(JEST_FAILING, &out.text);
-    assert!(out.text.contains("FAIL src/cart/total.test.ts"));
-    assert!(out.text.contains("    ✕ rounds to cents (4 ms)"));
+    assert_eq!(out.passing_tests, 2);
+    for kept in [
+        "PASS src/utils/format.test.ts",
+        "    ✕ rounds to cents (4 ms)",
+        "    ✓ step done",
+    ] {
+        assert!(
+            out.text.lines().any(|l| l == kept),
+            "{kept:?} dropped:\n{}",
+            out.text
+        );
+    }
+    // Passing: a file's PASS line goes unless console output under it needs it.
+    let passing = "PASS src/a.test.ts\n  ✓ one (1 ms)\nPASS src/b.test.ts\n  console.warn\n    act() warning\n\nTest Suites: 2 passed, 2 total\nTests:       2 passed, 2 total\n";
+    let out = compress("npx jest", passing, true);
+    assert!(!out.text.contains("PASS src/a.test.ts"));
     assert!(out
         .text
-        .contains("    > 13 |     expect(total([5.005, 5.005])).toBe(10.01);"));
-    assert!(!out.text.contains("PASS src/utils"));
-    assert!(!out.text.contains("✓ sums items"));
-    assert_eq!(out.passing_tests, 2);
+        .contains("PASS src/b.test.ts\n  console.warn\n    act() warning"));
 }
 
-const GO_FAILING: &str = "\
-=== RUN   TestAdd
---- PASS: TestAdd (0.00s)
-=== RUN   TestDivide
-    calc_test.go:21: Divide(1, 0) = 0, want error
+const GO_FAILING: &str = "=== RUN   TestDivide
+=== RUN   TestDivide/by_zero
+    calc_test.go:21: got 0, want error
+=== RUN   TestDivide/by_one
 --- FAIL: TestDivide (0.00s)
-=== RUN   TestSub
---- PASS: TestSub (0.00s)
+    --- FAIL: TestDivide/by_zero (0.00s)
+    --- PASS: TestDivide/by_one (0.00s)
 FAIL
 FAIL\texample.com/calc\t0.004s
 FAIL
 ";
 
 #[test]
-fn a_failing_go_test_keeps_the_failure() {
-    let out = compress("go test -v ./...", GO_FAILING);
-    assert!(out.changed());
+fn go_keeps_its_run_lines_when_a_test_fails() {
+    let out = compress("go test -v ./...", GO_FAILING, false);
     assert_failures_kept(GO_FAILING, &out.text);
     assert!(out
         .text
-        .contains("    calc_test.go:21: Divide(1, 0) = 0, want error"));
-    assert!(out.text.contains("--- FAIL: TestDivide (0.00s)"));
-    assert!(!out.text.contains("=== RUN"));
-    assert!(!out.text.contains("--- PASS"));
-    assert_eq!(out.passing_tests, 2);
+        .contains("=== RUN   TestDivide/by_zero\n    calc_test.go:21: got 0, want error"));
+    assert_eq!(out.passing_tests, 1);
+    let passing = "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestSub\n--- PASS: TestSub (0.00s)\nPASS\nok  \texample.com/calc\t0.004s\n";
+    assert_eq!(
+        compress("go test -v", passing, true).text,
+        "[2 passing tests not listed]\nPASS\nok  \texample.com/calc\t0.004s\n"
+    );
 }
 
 #[test]
-fn git_status_hints_and_transfer_progress_are_dropped() {
-    let status = "\
-On branch main
+fn git_status_hints_go_and_git_transfers_pass_whole() {
+    let status = "On branch main
 Changes not staged for commit:
   (use \"git add <file>...\" to update what will be committed)
   (use \"git restore <file>...\" to discard changes in working directory)
 \tmodified:   src/lib.rs
 
-Untracked files:
-  (use \"git add <file>...\" to include in what will be committed)
-\tnotes.md
-
 no changes added to commit (use \"git add\" and/or \"git commit -a\")
 ";
-    let out = compress("git status", status);
-    assert_eq!(out.removed_lines, 3);
+    let out = compress("git status", status, true);
+    assert_eq!(out.removed_lines, 2);
     assert!(out.text.contains("\tmodified:   src/lib.rs"));
-    assert!(out.text.contains("\tnotes.md"));
-    assert!(out.text.contains("no changes added to commit"));
-    // The short format has no hints and is left alone.
     assert_eq!(program_of("git status --porcelain"), Program::Other);
-
-    let push = "\
-Enumerating objects: 9, done.
-Counting objects: 100% (9/9), done.
-Delta compression using up to 8 threads
-Compressing objects: 100% (5/5), done.
-Writing objects: 100% (5/5), 1.02 KiB | 1.02 MiB/s, done.
-Total 5 (delta 4), reused 0 (delta 0), pack-reused 0
-remote: Resolving deltas: 100% (4/4), completed with 4 local objects.
-To github.com:me/repo.git
- ! [rejected]        main -> main (fetch first)
-error: failed to push some refs to 'github.com:me/repo.git'
-hint: Updates were rejected because the remote contains work that you do not
-";
-    let out = compress("git push origin main", push);
-    assert_failures_kept(push, &out.text);
-    assert_eq!(out.removed_lines, 7);
-    assert!(out
-        .text
-        .starts_with("To github.com:me/repo.git\n ! [rejected]"));
+    // Through a pipe git writes no transfer progress; a push is left alone.
+    let push = "To github.com:me/repo.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'github.com:me/repo.git'\nremote: Total size of new objects exceeds the 100 MB limit\n";
+    assert_eq!(program_of("git push origin main"), Program::Other);
+    assert_eq!(compress("git push origin main", push, false).text, push);
 }
 
 #[test]
-fn search_matches_are_grouped_by_file_without_losing_any() {
-    let output = "\
-src/harness/session.rs:120:    let x = error_count();
-src/harness/session.rs:144:    // error handling
-src/harness/session.rs:200:    return Err(error);
-src/lib.rs:7:pub mod error;
-README.md:3:See the error guide.
-README.md:9:Errors are plain.
-";
-    let out = compress("rg -n error", output);
-    assert!(out.changed());
+fn search_matches_with_line_numbers_are_grouped_exactly() {
+    let output = "src/harness/session.rs:120:    let x = error_count();\nsrc/harness/session.rs:144:    // error handling\nsrc/lib.rs:7:pub mod error;\n";
+    let out = compress("rg -n error", output, true);
     assert_eq!(
         out.text,
-        "src/harness/session.rs\n  120:     let x = error_count();\n  144:     // error handling\n  200:     return Err(error);\nsrc/lib.rs:7:pub mod error;\nREADME.md\n  3: See the error guide.\n  9: Errors are plain.\n"
+        "src/harness/session.rs\n  120:    let x = error_count();\n  144:    // error handling\nsrc/lib.rs:7:pub mod error;\n"
     );
-    assert_eq!(out.removed_lines, 0);
+    // Without line numbers there is nothing to group by.
+    assert_eq!(program_of("rg error"), Program::Other);
+    assert_eq!(program_of("grep -rn error src"), Program::Search);
+    // One file's matches have no path: a timestamp is not one.
+    let log = "12:2026-11-07 10:15:32 ERROR db timeout\n13:2026-11-07 10:15:40 ERROR db timeout\n";
+    assert!(!compress("grep -n ERROR app.log", log, true).changed());
+    let stamps = "2026-11-07 10:15:32 ERROR db timeout\n2026-11-07 10:15:40 ERROR db timeout\n";
+    assert!(!compress("grep -n ERROR app.log", stamps, true).changed());
 }
 
 #[test]
 fn file_lists_are_grouped_by_folder() {
     let output = "./src/a.rs\n./src/b.rs\n./src/c.rs\n./docs/readme.md\n./Cargo.toml\n";
-    let out = compress("find . -name '*.rs'", output);
     assert_eq!(
-        out.text,
+        compress("find . -name '*.rs'", output, true).text,
         "./src/\n  a.rs\n  b.rs\n  c.rs\n./docs/readme.md\n./Cargo.toml\n"
     );
 }
 
 #[test]
-fn compound_commands_get_only_the_lossless_steps() {
+fn anything_unrecognised_passes_unchanged() {
+    let diff = "diff --git a/a.css b/a.css\n@@ -1,6 +1,6 @@\n .box {\n-  opacity: 10%;\n+  opacity: 20%;\n+  opacity: 30%;\n \n \n }\n }\n }\n\n\n";
     for command in [
+        "git diff",
+        "git diff | cat",
+        "cat a.css.diff",
         "cargo test | tail -20",
         "cargo test; echo done",
         "cargo test > out.txt",
@@ -351,12 +451,13 @@ fn compound_commands_get_only_the_lossless_steps() {
         "echo $(cargo test)",
         "cargo test &",
     ] {
-        assert_eq!(program_of(command), Program::Other, "{command}");
+        let out = compress(command, diff, true);
+        assert!(!out.changed(), "{command}: {:?}", out.steps);
+        assert_eq!(out.text, diff);
     }
-    // Progress words survive when the output may not be cargo's.
-    let out = compress("cargo test | tee log.txt", CARGO_TEST_FAILING);
-    assert_eq!(out.text, CARGO_TEST_FAILING, "unchanged: nothing repeats");
-    assert!(out.text.contains("test parse::reads_numbers ... ok"));
+    // Identical lines are not merged either.
+    let repeated = "retrying\nretrying\nretrying\nretrying\n";
+    assert_eq!(compress("./run.sh", repeated, true).text, repeated);
 }
 
 #[test]
@@ -373,10 +474,6 @@ fn programs_are_recognised_behind_cd_and_environment_assignments() {
         program_of("cargo clippy --all-targets 2>&1"),
         Program::Cargo
     );
-    assert_eq!(
-        program_of("/usr/bin/git -C repo push"),
-        Program::GitTransfer
-    );
     assert_eq!(program_of("git grep -n foo"), Program::Search);
     assert_eq!(program_of("npx vitest run"), Program::JsTest);
     assert_eq!(program_of("pnpm run test"), Program::JsTest);
@@ -384,86 +481,20 @@ fn programs_are_recognised_behind_cd_and_environment_assignments() {
     assert_eq!(program_of("go test ./..."), Program::GoTest);
     assert_eq!(program_of("fd -e rs"), Program::Find);
     assert_eq!(program_of("cargo fmt"), Program::Other);
+    assert_eq!(program_of("cargo test --quiet"), Program::Other);
     assert_eq!(program_of("npm install"), Program::Other);
     assert_eq!(program_of("cd a b && cargo test"), Program::Other);
     assert_eq!(program_of(""), Program::Other);
-}
-
-#[test]
-fn repeated_lines_are_written_once_with_a_count() {
-    let output = "start\nretrying connection\nretrying connection\nretrying connection\nretrying connection\nerror: gave up\n";
-    let out = compress("./run.sh", output);
-    assert_eq!(
-        out.text,
-        "start\nretrying connection\n[the line above repeated 3 more times]\nerror: gave up\n"
-    );
-    // Two in a row are left alone.
-    assert!(!compress("x", "a\na\nb\n").changed());
-}
-
-#[test]
-fn a_failing_tests_own_output_is_kept_even_when_it_looks_like_cargo() {
-    let mut output = String::from("running 6 tests\n");
-    for name in ["saves", "lists", "counts", "sorts", "merges"] {
-        output.push_str(&format!("test store::{name} ... ok\n"));
-    }
-    output.push_str(
-        "test store::loads ... FAILED\n\nfailures:\n\n---- store::loads stdout ----\n    Checking invariants of 3 records\n      Adding item 3\n   Compiling the index\ntest store::inner ... ok\nthread 'store::loads' panicked at src/store.rs:40:9:\nindex out of date\n\nfailures:\n    store::loads\n\ntest result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n",
-    );
-    let out = compress("cargo test", &output);
-    assert!(out.changed());
-    for kept in [
-        "    Checking invariants of 3 records",
-        "      Adding item 3",
-        "   Compiling the index",
-        "test store::inner ... ok",
-        "index out of date",
-    ] {
-        assert!(
-            out.text.lines().any(|l| l == kept),
-            "{kept:?} dropped:\n{}",
-            out.text
-        );
-    }
-    assert_eq!(out.passing_tests, 5);
-    assert_eq!(out.removed_lines, 5);
-}
-
-#[test]
-fn the_output_of_a_program_cargo_run_started_is_kept() {
-    let output = "   Compiling app v0.1.0 (/work/app)\n    Finished `dev` profile [unoptimized] target(s) in 0.52s\n     Running `target/debug/app`\n    Updating the cache\n   Compiling report for 3 users\n";
-    let out = compress("cargo run -- --report", output);
-    assert_eq!(out.removed_lines, 1);
-    assert_eq!(
-        out.text,
-        "    Finished `dev` profile [unoptimized] target(s) in 0.52s\n     Running `target/debug/app`\n    Updating the cache\n   Compiling report for 3 users\n"
-    );
-    // A line that only starts with a progress word, not aligned as cargo writes it, stays.
-    let own = "Checking 4 files\n   Compiling app v0.1.0\n";
-    assert_eq!(compress("cargo check", own).text, "Checking 4 files\n");
-}
-
-#[test]
-fn a_diff_or_any_unrecognised_output_passes_unchanged() {
-    let diff = "diff --git a/a.css b/a.css\n--- a/a.css\n+++ b/a.css\n@@ -1,6 +1,6 @@\n .box {\n-  opacity: 10%;\n+  opacity: 20%;\n+  opacity: 30%;\n \n \n }\n\n\n";
-    for command in [
-        "git diff",
-        "git diff | cat",
-        "cat a.css.diff",
-        "git show HEAD",
-    ] {
-        let out = compress(command, diff);
-        assert!(!out.changed(), "{command}: {:?}", out.steps);
-        assert_eq!(out.text, diff);
-    }
+    assert!(command_of("cargo test -- --nocapture").streams_output);
+    assert!(command_of("cargo nextest run --no-capture").streams_output);
+    assert!(!command_of("cargo test").streams_output);
 }
 
 #[test]
 fn only_blank_lines_left_together_by_removed_lines_are_joined() {
     let output = "running 4 tests\n\ntest a ... ok\n\ntest b ... ok\n\ntest c ... ok\n\ntest d ... FAILED\n\n\ndone\n";
-    let out = compress("cargo test", output);
     assert_eq!(
-        out.text,
+        compress("cargo test", output, false).text,
         "running 4 tests\n\ntest d ... FAILED\n\n\ndone\n[3 passing tests not listed]\n"
     );
 }
@@ -479,43 +510,63 @@ fn output_that_cannot_be_shortened_goes_unchanged() {
         ("echo", ""),
         ("echo", "   \n"),
     ] {
-        let out = compress(command, output);
+        let out = compress(command, output, true);
         assert!(!out.changed(), "{command}: {:?}", out.steps);
         assert_eq!(out.text, output);
     }
 }
 
 #[test]
-fn a_passing_cargo_test_run_is_mostly_its_summary() {
-    let mut output = String::from("   Compiling shodh v0.1.0\n    Finished `test` profile in 3.2s\n     Running unittests src/lib.rs\n\nrunning 200 tests\n");
-    for i in 0..200 {
-        output.push_str(&format!("test module_{i}::does_the_thing_{i} ... ok\n"));
-    }
-    output.push_str("\ntest result: ok. 200 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s\n");
-    let out = compress("cargo test", &output);
-    assert_eq!(out.passing_tests, 200);
-    assert!(out
-        .text
-        .contains("[200 passing tests not listed]\ntest result: ok. 200 passed"));
-    let saved = savings::estimate_tokens(&output) - savings::estimate_tokens(&out.text);
+fn the_note_says_what_was_removed_and_how_to_read_the_rest() {
+    let out = compress("cargo test", REAL_CARGO_TEST_FAILING, false);
+    let said = note(&out, "abc123");
     assert!(
-        saved * 10 > savings::estimate_tokens(&output) * 9,
-        "saved {saved} of {}",
-        savings::estimate_tokens(&output)
+        said.contains(&format!("{} passing-test lines removed", out.passing_tests)),
+        "{said}"
     );
+    assert!(
+        !said.contains("progress"),
+        "a failed run keeps its progress: {said}"
+    );
+    assert!(said.contains("No other line was removed."));
+    assert!(said.contains("command abc123: read or search it with read_command_output"));
+    let grouped = compress(
+        "rg -n x",
+        "src/harness/a.rs:1:x\nsrc/harness/a.rs:2:x\n",
+        true,
+    );
+    assert!(grouped.changed());
+    assert!(note(&grouped, "g").contains("grouped under their file or folder (none removed)"));
 }
 
 #[test]
-fn the_note_says_what_was_removed_and_that_the_user_sees_everything() {
-    let out = compress("cargo test", CARGO_TEST_FAILING);
-    let said = note(&out);
-    assert!(said.contains("4 passing test lines not listed"), "{said}");
-    assert!(
-        said.contains("3 progress or status lines removed"),
-        "{said}"
-    );
-    assert!(said.contains("The user sees the full output."));
-    let grouped = compress("rg -n x", "src/harness/a.rs:1:x\nsrc/harness/a.rs:2:x\n");
-    assert!(grouped.changed());
-    assert!(note(&grouped).contains("grouped (nothing dropped)"));
+fn a_cut_keeps_the_failure_lines_of_the_middle_and_says_so() {
+    let mut text = String::new();
+    for i in 0..400 {
+        text.push_str(&format!("line {i} fine\n"));
+    }
+    text.push_str("error[E0425]: cannot find value `x`\n  --> src/a.rs:3:5\n\n");
+    for i in 400..800 {
+        text.push_str(&format!("line {i} fine\n"));
+    }
+    let cut = cut_keeping_failures(&text, 500, 500, Some("c7"));
+    assert!(cut.contains("characters cut from the middle of the output"));
+    assert!(cut.contains("[2 lines from the cut part that tell of an error, a failure or a warning, in order:]\nerror[E0425]: cannot find value `x`\n  --> src/a.rs:3:5\n"));
+    assert!(cut
+        .contains("[The whole output is command c7: read or search it with read_command_output.]"));
+    assert!(!cut.contains("line 300 fine"));
+    // Short enough: untouched.
+    assert_eq!(cut_keeping_failures("short\n", 10, 10, None), "short\n");
+}
+
+#[test]
+fn a_cut_says_when_failure_lines_did_not_fit() {
+    let mut text = "start\n".repeat(200);
+    for i in 0..2_000 {
+        text.push_str(&format!("error: problem number {i} in the build\n"));
+    }
+    text.push_str(&"end\n".repeat(200));
+    let cut = cut_keeping_failures(&text, 400, 400, None);
+    assert!(cut.contains("more failure lines of the cut part did not fit here."));
+    assert!(cut.chars().count() < 400 + 400 + MIDDLE_FAILURE_CHARS + 1_000);
 }

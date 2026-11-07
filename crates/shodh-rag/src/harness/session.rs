@@ -283,19 +283,47 @@ impl CodeRuntime {
     /// ([`super::compress`]) unless the user turned compression off for this
     /// conversation, which is read at every command so a change applies to
     /// the next one. Each command counted adds to the conversation's savings
-    /// ([`SavingsStore`]); a refused command is not counted.
-    fn model_copy(&self, ran: &CommandOutcome, limits: &CommandLimits, command: &str) -> String {
-        let savings = SavingsStore::in_dir(&self.data_dir);
-        if !savings.compression_on(&self.conversation_id) {
-            return ran.text_for_model(limits);
-        }
-        let (text, original, sent) = ran.compressed_text_for_model(limits, command);
-        if ran.state != CommandState::Refused {
-            if let Err(e) = savings.record(&self.conversation_id, original, sent) {
-                tracing::warn!(target: "shodh::harness", error = %e, "tokens saved were not counted; the savings file is unreadable");
+    /// ([`SavingsStore`]); a refused command is not counted. The full output
+    /// is kept for [`super::command_output`] under `command_id`, which every
+    /// shortened or cut result names. The files and the compression run off
+    /// the async runtime.
+    async fn model_copy(
+        &self,
+        ran: &CommandOutcome,
+        limits: &CommandLimits,
+        command: &str,
+        command_id: &str,
+    ) -> String {
+        let data_dir = self.data_dir.clone();
+        let conversation = self.conversation_id.clone();
+        let (ran, limits, command, command_id) = (
+            ran.clone(),
+            *limits,
+            command.to_string(),
+            command_id.to_string(),
+        );
+        let fallback = ran.text_for_model_with(&limits, &ran.output, Some(&command_id));
+        let made = tokio::task::spawn_blocking(move || {
+            if ran.state != CommandState::Refused {
+                super::command_output::remember(&conversation, &command_id, &command, &ran.output);
             }
-        }
-        text
+            let savings = SavingsStore::in_dir(&data_dir);
+            if !savings.compression_on(&conversation) {
+                return ran.text_for_model_with(&limits, &ran.output, Some(&command_id));
+            }
+            let (text, original, sent) = ran.compressed_text_for_model(&limits, &command, &command_id);
+            if ran.state != CommandState::Refused {
+                if let Err(e) = savings.record(&conversation, original, sent) {
+                    tracing::warn!(target: "shodh::harness", error = %e, "tokens saved were not counted; the savings file could not be written");
+                }
+            }
+            text
+        })
+        .await;
+        made.unwrap_or_else(|e| {
+            tracing::warn!(target: "shodh::harness", error = %e, "output compression did not finish; the plain result is sent");
+            fallback
+        })
     }
 
     /// The workspace's Code settings now. Without them (none, or unreadable)
@@ -1735,7 +1763,9 @@ impl Inner {
         // that off for this conversation; the user's copy (the live output and
         // the step) is the full output. Counted before CommandFinished, so the
         // session's savings are current when the UI reads them on that event.
-        let text_for_model = code.model_copy(&ran, &limits, &args.command);
+        let text_for_model = code
+            .model_copy(&ran, &limits, &args.command, &command_id)
+            .await;
         self.emit(AgentEvent::CommandFinished {
             run_id: run_id.to_string(),
             step_id: step_id.to_string(),
@@ -4459,8 +4489,8 @@ mod tests {
         ))
     }
 
-    #[test]
-    fn the_models_copy_is_compressed_counted_and_switched_off_per_conversation() {
+    #[tokio::test]
+    async fn the_models_copy_is_compressed_counted_and_switched_off_per_conversation() {
         let folder = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let code = code_runtime(folder.path(), data.path());
@@ -4480,19 +4510,46 @@ mod tests {
             duration: Duration::from_millis(5),
             escaped: false,
         };
-        let text = code.model_copy(&ran, &limits, "cargo test");
+        let text = code
+            .model_copy(&ran, &limits, "cargo test", "copy-test-1")
+            .await;
         assert!(text.contains("[50 passing tests not listed]"), "{text}");
+        assert!(
+            text.contains("command copy-test-1: read or search it with read_command_output"),
+            "{text}"
+        );
+        // The model can read the full output back.
+        let tool = crate::harness::command_output::ReadCommandOutputTool::new("conv-1");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ctx = crate::harness::tools::ToolContext::new("r", "s", tx);
+        let full = crate::harness::tools::HostTool::execute(
+            &tool,
+            serde_json::json!({"command_id": "copy-test-1", "search": "t49 ..."}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert!(
+            full.text_for_model.contains("| test t49 ... ok"),
+            "{}",
+            full.text_for_model
+        );
         assert_eq!(ran.output, output, "the user's copy is the full output");
         let store = SavingsStore::in_dir(data.path());
-        let first = store.get("conv-1").unwrap().tally;
+        let first = store.get("conv-1").unwrap().0.tally;
         assert_eq!(first.commands, 1);
         assert_eq!(first.shortened, 1);
         assert!(first.saved_tokens() > 0);
         // Off for this conversation: the plain result, and nothing counted.
         store.set_compression("conv-1", false).unwrap();
-        let text = code.model_copy(&ran, &limits, "cargo test");
-        assert_eq!(text, ran.text_for_model(&limits));
-        assert_eq!(store.get("conv-1").unwrap().tally, first);
+        let text = code
+            .model_copy(&ran, &limits, "cargo test", "copy-test-2")
+            .await;
+        assert_eq!(
+            text,
+            ran.text_for_model_with(&limits, &ran.output, Some("copy-test-2"))
+        );
+        assert_eq!(store.get("conv-1").unwrap().0.tally, first);
         assert!(store.compression_on("conv-2"));
     }
 

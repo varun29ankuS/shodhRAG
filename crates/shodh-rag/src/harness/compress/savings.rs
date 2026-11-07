@@ -10,12 +10,17 @@
 //! about four characters a token (the same estimate Shodh uses to check that
 //! a prompt fits a model, `model_fallback::resolve::estimate_tokens`), and the
 //! UI writes every number with "≈". Both sides of a saving are what the model
-//! would get back from the tool (the result text after its head-and-tail
-//! cut), so a 1 MB log cut to 18,000 characters either way saves nothing.
+//! would get back from the tool (the result text after its cut), so a 1 MB
+//! log cut either way saves nothing.
 //!
-//! Each conversation also keeps its compression switch (on unless the user
-//! turned it off for that conversation); a session reads it at every command,
-//! so a change applies to the next command.
+//! The compression switch: each conversation may set its own; otherwise the
+//! default for Code conversations applies (on unless the user turned it off
+//! in Settings → Code), so it can be chosen before a conversation exists. A
+//! session reads it at every command, so a change applies to the next one.
+//!
+//! A file that cannot be parsed is moved aside (to `code_savings.json.bad`,
+//! for the user to look at) and counting starts afresh, with a warning in
+//! the log, so a broken file never locks the switch.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,9 +77,9 @@ impl Tally {
 pub struct ConversationSavings {
     #[serde(default)]
     pub tally: Tally,
-    /// The user turned compression off for this conversation.
+    /// The user's choice for this conversation; `None`: the default.
     #[serde(default)]
-    pub compression_off: bool,
+    pub compression: Option<bool>,
     /// When a command was last counted (RFC 3339).
     #[serde(default)]
     pub updated_at: Option<String>,
@@ -89,9 +94,21 @@ struct SavingsFile {
     /// Every conversation's, deleted ones included.
     #[serde(default)]
     total: Tally,
+    /// Conversations ever counted, deleted ones included.
+    #[serde(default)]
+    counted_conversations: u64,
     /// Since when the total counts (RFC 3339).
     #[serde(default)]
     since: Option<String>,
+    /// The switch for conversations that did not set their own; `None`: on.
+    #[serde(default)]
+    default_on: Option<bool>,
+}
+
+impl SavingsFile {
+    fn default_on(&self) -> bool {
+        self.default_on.unwrap_or(true)
+    }
 }
 
 /// The running total.
@@ -99,9 +116,11 @@ struct SavingsFile {
 #[serde(rename_all = "camelCase")]
 pub struct TotalSavings {
     pub tally: Tally,
-    /// Conversations counted that still exist.
-    pub conversations: usize,
+    /// Conversations ever counted (deleted ones included, as in `tally`).
+    pub conversations: u64,
     pub since: Option<String>,
+    /// Compression in conversations that did not choose for themselves.
+    pub default_on: bool,
 }
 
 /// The savings file of a data folder.
@@ -119,6 +138,8 @@ fn now() -> String {
 
 impl SavingsStore {
     pub const FILE: &'static str = "code_savings.json";
+    /// Where a file that could not be parsed is moved.
+    pub const SET_ASIDE: &'static str = "code_savings.json.bad";
 
     pub fn in_dir(data_dir: &Path) -> Self {
         Self {
@@ -126,12 +147,24 @@ impl SavingsStore {
         }
     }
 
+    /// The file; one that cannot be parsed is moved aside and counting
+    /// starts afresh. Fails only when the file cannot be read at all.
     fn read(&self) -> Result<SavingsFile, String> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(text) => serde_json::from_str(&text)
-                .map_err(|e| format!("{} is not readable: {e}", self.path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SavingsFile::default()),
-            Err(e) => Err(format!("{} is not readable: {e}", self.path.display())),
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SavingsFile::default()),
+            Err(e) => return Err(format!("{} is not readable: {e}", self.path.display())),
+        };
+        match serde_json::from_str(&text) {
+            Ok(file) => Ok(file),
+            Err(e) => {
+                let aside = self.path.with_file_name(Self::SET_ASIDE);
+                let moved = std::fs::rename(&self.path, &aside);
+                tracing::warn!(target: "shodh::harness", error = %e, moved = moved.is_ok(), aside = %aside.display(), "the tokens-saved file could not be parsed; it was set aside and counting starts afresh");
+                moved
+                    .map_err(|e| format!("{} could not be set aside: {e}", self.path.display()))?;
+                Ok(SavingsFile::default())
+            }
         }
     }
 
@@ -145,14 +178,17 @@ impl SavingsStore {
         std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
     }
 
-    /// Change the file with `edit`. An unreadable file is left as it is (its
-    /// total would be lost), and the change fails.
     fn update<T>(&self, edit: impl FnOnce(&mut SavingsFile) -> T) -> Result<T, String> {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut file = self.read()?;
         let out = edit(&mut file);
         self.write(&file)?;
         Ok(out)
+    }
+
+    fn view<T>(&self, look: impl FnOnce(SavingsFile) -> T) -> Result<T, String> {
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(look(self.read()?))
     }
 
     /// Count one command of `conversation_id`: `original` tokens without
@@ -171,27 +207,34 @@ impl SavingsStore {
                 .conversations
                 .entry(conversation_id.to_string())
                 .or_default();
+            if record.tally.commands == 0 {
+                file.counted_conversations = file.counted_conversations.saturating_add(1);
+            }
             record.tally.add(original, sent);
             record.updated_at = Some(at);
             record.clone()
         })
     }
 
-    /// The record of `conversation_id` (empty when nothing was counted).
-    pub fn get(&self, conversation_id: &str) -> Result<ConversationSavings, String> {
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        Ok(self
-            .read()?
-            .conversations
-            .remove(conversation_id)
-            .unwrap_or_default())
+    /// The record of `conversation_id` (empty when nothing was counted) and
+    /// whether compression is on there.
+    pub fn get(&self, conversation_id: &str) -> Result<(ConversationSavings, bool), String> {
+        self.view(|mut file| {
+            let default_on = file.default_on();
+            let record = file
+                .conversations
+                .remove(conversation_id)
+                .unwrap_or_default();
+            let on = record.compression.unwrap_or(default_on);
+            (record, on)
+        })
     }
 
-    /// Whether compression is on for `conversation_id`. On when the file is
-    /// unreadable too: compression never drops failures, so on is safe.
+    /// Whether compression is on for `conversation_id`. On when the file
+    /// cannot be read at all: compression never drops failures.
     pub fn compression_on(&self, conversation_id: &str) -> bool {
         match self.get(conversation_id) {
-            Ok(record) => !record.compression_off,
+            Ok((_, on)) => on,
             Err(e) => {
                 tracing::warn!(target: "shodh::harness", error = %e, "savings file unreadable; output compression stays on");
                 true
@@ -210,36 +253,41 @@ impl SavingsStore {
                 .conversations
                 .entry(conversation_id.to_string())
                 .or_default();
-            record.compression_off = !on;
+            record.compression = Some(on);
             record.clone()
         })
     }
 
+    /// Set the switch for conversations that did not choose for themselves.
+    pub fn set_default(&self, on: bool) -> Result<(), String> {
+        self.update(|file| file.default_on = Some(on))
+    }
+
     /// The running total.
     pub fn total(&self) -> Result<TotalSavings, String> {
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let file = self.read()?;
-        Ok(TotalSavings {
-            tally: file.total,
-            conversations: file
+        self.view(|file| {
+            let default_on = file.default_on();
+            // A file from before the counter: the conversations it still has.
+            let listed = file
                 .conversations
                 .values()
                 .filter(|c| c.tally.commands > 0)
-                .count(),
-            since: file.since,
+                .count();
+            TotalSavings {
+                tally: file.total,
+                conversations: file
+                    .counted_conversations
+                    .max(u64::try_from(listed).unwrap_or(u64::MAX)),
+                since: file.since,
+                default_on,
+            }
         })
     }
 
     /// Forget a deleted conversation's record (the total keeps its savings).
     /// Returns whether it had one.
     pub fn forget(&self, conversation_id: &str) -> Result<bool, String> {
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut file = self.read()?;
-        if file.conversations.remove(conversation_id).is_none() {
-            return Ok(false);
-        }
-        self.write(&file)?;
-        Ok(true)
+        self.update(|file| file.conversations.remove(conversation_id).is_some())
     }
 }
 
@@ -260,7 +308,7 @@ mod tests {
     fn savings_add_up_per_conversation_and_in_total() {
         let dir = tempfile::tempdir().unwrap();
         let store = SavingsStore::in_dir(dir.path());
-        assert_eq!(store.get("c1").unwrap(), ConversationSavings::default());
+        assert_eq!(store.get("c1").unwrap().0, ConversationSavings::default());
         store.record("c1", 1_000, 400).unwrap();
         store.record("c1", 500, 500).unwrap();
         let c1 = store.record("c1", 300, 100).unwrap();
@@ -270,7 +318,7 @@ mod tests {
         assert_eq!(c1.tally.commands, 3);
         assert_eq!(c1.tally.shortened, 2);
         store.record("c2", 200, 50).unwrap();
-        assert_eq!(store.get("c2").unwrap().tally.saved_tokens(), 150);
+        assert_eq!(store.get("c2").unwrap().0.tally.saved_tokens(), 150);
         let total = store.total().unwrap();
         assert_eq!(total.tally.saved_tokens(), 950);
         assert_eq!(total.tally.commands, 4);
@@ -286,13 +334,15 @@ mod tests {
             .unwrap();
         // A new store over the same folder (the app restarted) reads them back.
         let store = SavingsStore::in_dir(dir.path());
-        assert_eq!(store.get("c1").unwrap().tally.saved_tokens(), 600);
+        assert_eq!(store.get("c1").unwrap().0.tally.saved_tokens(), 600);
         assert!(store.forget("c1").unwrap());
         assert!(!store.forget("c1").unwrap());
-        assert_eq!(store.get("c1").unwrap().tally.commands, 0);
+        assert_eq!(store.get("c1").unwrap().0.tally.commands, 0);
         let total = store.total().unwrap();
         assert_eq!(total.tally.saved_tokens(), 600, "the total keeps them");
-        assert_eq!(total.conversations, 0);
+        // Its commands still count, and so does the conversation they ran in.
+        assert_eq!(total.tally.commands, 1);
+        assert_eq!(total.conversations, 1);
     }
 
     #[test]
@@ -306,26 +356,36 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_per_conversation_and_on_by_default() {
+    fn the_switch_is_per_conversation_over_a_default() {
         let dir = tempfile::tempdir().unwrap();
         let store = SavingsStore::in_dir(dir.path());
         assert!(store.compression_on("c1"));
+        assert!(store.total().unwrap().default_on);
         store.set_compression("c1", false).unwrap();
         assert!(!store.compression_on("c1"));
         assert!(store.compression_on("c2"));
-        store.set_compression("c1", true).unwrap();
-        assert!(store.compression_on("c1"));
+        // Off by default: new conversations start off, a conversation's own choice wins.
+        store.set_compression("c3", true).unwrap();
+        store.set_default(false).unwrap();
+        assert!(!store.compression_on("c2"));
+        assert!(!store.compression_on("new"));
+        assert!(store.compression_on("c3"));
+        assert!(!store.total().unwrap().default_on);
     }
 
     #[test]
-    fn an_unreadable_file_is_never_overwritten() {
+    fn an_unparsable_file_is_set_aside_and_never_locks_the_switch() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(SavingsStore::FILE);
         std::fs::write(&path, "{ not json").unwrap();
         let store = SavingsStore::in_dir(dir.path());
-        assert!(store.record("c1", 10, 5).is_err());
-        assert!(store.total().is_err());
-        assert!(store.compression_on("c1"), "compression stays on");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+        store.set_compression("c1", false).unwrap();
+        assert!(!store.compression_on("c1"), "the switch works again");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(SavingsStore::SET_ASIDE)).unwrap(),
+            "{ not json",
+            "the broken file is kept for the user"
+        );
+        assert_eq!(store.record("c1", 10, 5).unwrap().tally.commands, 1);
     }
 }

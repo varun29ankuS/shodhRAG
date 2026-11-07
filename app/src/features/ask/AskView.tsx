@@ -1323,8 +1323,8 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}
               answerRunning={isStreaming}
-              onOpenSettings={() => {
-                requestSettingsSection('tools');
+              onOpenSettings={section => {
+                requestSettingsSection(section);
                 onNavigate('settings');
               }}
             />

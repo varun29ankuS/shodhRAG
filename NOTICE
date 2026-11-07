@@ -28,16 +28,16 @@ Copyright 2025 Anthropic
 rtk (Rust Token Killer)
 https://github.com/rtk-ai/rtk, tag v1.1.0
 Copyright 2026 RTK AI Labs
-- crates/shodh-rag/src/harness/compress/mod.rs follows the design of rtk's
-  Apache-2.0 command filters (src/cmds/rust/cargo_cmd.rs,
-  src/cmds/git/git_cmd.rs, src/cmds/python/pytest_cmd.rs,
-  src/cmds/js/vitest_cmd.rs, src/cmds/go/go_cmd.rs, and the grep and find
-  grouping of src/cmds/system/): one filter per program that drops success
-  noise, and a never-worse guard. Modified: rewritten without regular
-  expressions, and rtk's caps and truncation of failure output are left
-  out, so failures are never shortened. rtk's compression engine (engine/,
-  rtk-engine) is under the Business Source License 1.1, not Apache-2.0;
-  none of it is used. rtk ships no NOTICE file.
+- crates/shodh-rag/src/harness/compress/mod.rs takes these ideas from rtk's
+  Apache-2.0 code, and only these: filtering a command's output by the
+  program that ran, dropping that program's success lines while keeping its
+  failures (src/cmds/rust/cargo_cmd.rs, src/cmds/python/pytest_cmd.rs,
+  src/cmds/js/vitest_cmd.rs, src/cmds/go/go_cmd.rs); grouping grep matches
+  under their file (src/cmds/system/pipe_cmd.rs); and returning the output
+  unchanged when filtering would not shorten it (src/core/guard.rs). The
+  code is Shodh's own; no rtk source is copied. rtk's compression engine
+  (engine/, rtk-engine) is under the Business Source License 1.1, not
+  Apache-2.0; nothing of it is used. rtk ships no NOTICE file.
 
 Elephant-Goldfish Model (EGM)
 https://github.com/google/elephant-goldfish-model, commit e9e1f06aa4e26e95cd4ed37210a0632202c429e9

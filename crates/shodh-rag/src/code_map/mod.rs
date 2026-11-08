@@ -172,7 +172,7 @@ enum Prepared {
         hash: String,
         lines: u32,
         skipped: Option<String>,
-        facts: Option<FileFacts>,
+        facts: Option<Box<FileFacts>>,
         config: Option<String>,
     },
     Touch {
@@ -305,7 +305,7 @@ impl CodeMap {
                         lines: *lines,
                         skipped: skipped.as_deref(),
                     },
-                    facts.as_ref(),
+                    facts.as_deref(),
                     config.as_deref(),
                 )?,
                 Prepared::Touch { id, mtime } => Store::touch(&tx, *id, *mtime)?,
@@ -399,7 +399,7 @@ impl CodeMap {
         match listed {
             Listed::Source(_, lang) => {
                 let (facts, skipped) = match extract::extract(*lang, &bytes) {
-                    Ok(facts) => (Some(facts), None),
+                    Ok(facts) => (Some(Box::new(facts)), None),
                     Err(e) => {
                         report.skipped += 1;
                         (None, Some(e))

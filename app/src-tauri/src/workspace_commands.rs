@@ -446,8 +446,7 @@ pub async fn workspaces_delete(
             Some(root) => code_folder_still_used(&state, root).await,
             None => false,
         };
-        let maps = app
-            .state::<crate::code_map_commands::CodeMapState>()
+        let maps = tauri::Manager::state::<crate::code_map_commands::CodeMapState>(&app)
             .inner()
             .clone();
         let forgotten = workspace_id.clone();

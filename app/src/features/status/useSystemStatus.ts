@@ -13,6 +13,10 @@ import type { SystemStatus } from './systemStatus';
 /** Emitted by the backend when what runs search changed (`indexing_control.rs`). */
 const SYSTEM_STATUS_EVENT = 'system-status-changed';
 const PROGRESS_EVENT = 'indexing-progress';
+/** A Code project's code map started, progressed or finished (`code_map_commands.rs`). */
+const CODE_MAP_EVENT = 'code-map-status';
+/** How soon the status is read after a code map's progress. */
+const CODE_MAP_REFRESH_MS = 1_000;
 /** How often the status is read again while something indexes. */
 const BUSY_REFRESH_MS = 5_000;
 /** ... and otherwise (the model may have been unloaded while idle). */
@@ -79,10 +83,20 @@ export function useSystemStatus(): SystemStatusState {
 
   useEffect(() => {
     mounted.current = true;
+    let codeMapTimer: number | null = null;
     refresh();
     const unlisteners: Array<Promise<() => void>> = [
       listen(SYSTEM_STATUS_EVENT, () => refresh()),
       listen(INDEXING_PAUSED_EVENT, () => refresh()),
+      // A code map sends progress several times a second: read the status at
+      // most once a second, and once more after the last event.
+      listen(CODE_MAP_EVENT, () => {
+        if (codeMapTimer !== null) return;
+        codeMapTimer = window.setTimeout(() => {
+          codeMapTimer = null;
+          refresh();
+        }, CODE_MAP_REFRESH_MS);
+      }),
       listen(PROGRESS_EVENT, event => {
         const read = progressOf(event.payload);
         if (!read) return;
@@ -98,13 +112,14 @@ export function useSystemStatus(): SystemStatusState {
     ];
     return () => {
       mounted.current = false;
+      if (codeMapTimer !== null) window.clearTimeout(codeMapTimer);
       for (const unlisten of unlisteners) {
         unlisten.then(fn => fn()).catch(() => undefined);
       }
     };
   }, [refresh]);
 
-  const busy = (status?.running.length ?? 0) > 0;
+  const busy = (status?.running.length ?? 0) > 0 || (status?.codeMaps.length ?? 0) > 0;
   useEffect(() => {
     const timer = window.setInterval(refresh, busy ? BUSY_REFRESH_MS : IDLE_REFRESH_MS);
     return () => window.clearInterval(timer);

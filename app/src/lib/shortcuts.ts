@@ -35,7 +35,8 @@ export type ShortcutId =
   | 'openSystemStatus'
   | 'toggleIndexingPause'
   | 'cycleMode'
-  | 'reviewCode';
+  | 'reviewCode'
+  | 'goToSymbol';
 
 export interface Shortcut {
   /** What it does, for lists of shortcuts. */
@@ -142,6 +143,8 @@ export const SHORTCUTS: Record<ShortcutId, Shortcut> = {
   cycleMode: { ...plain('Switch the mode', 'Tab', ['Tab'], ['Tab'], true), shownIn: ['features/agent/ModePicker.tsx'] },
   // Ctrl+Shift+E (⌘⇧E): "fresh eyes". Ctrl+Shift+R is the webview's hard reload.
   reviewCode: letter('Review the selected code', 'e', { shift: true, shownIn: ['features/code/ReviewPane.tsx'] }),
+  // Ctrl+Shift+O (⌘⇧O), as in code editors: a symbol of the file in the code pane, or of the project.
+  goToSymbol: letter('Go to a symbol', 'o', { shift: true, shownIn: ['features/code/SymbolJump.tsx'] }),
 };
 
 /** Whether this computer is a Mac (⌘ instead of Ctrl). */

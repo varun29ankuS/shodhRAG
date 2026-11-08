@@ -28,6 +28,7 @@ import { resolveAgentMode } from '../agent/agentModes';
 import { revealHidden } from '../agent/hiddenChars';
 import { MermaidBlock } from '../ask/visual/MermaidBlock';
 import { CodeDiff, CodeFileView } from './CodeDiff';
+import { SymbolJump } from './SymbolJump';
 import { useCodeReview } from './CodeReviewContext';
 import { codeApi } from './api';
 import type { ReviewTarget } from './api';
@@ -390,6 +391,7 @@ export function ReviewPane() {
         {subject.kind === 'diff' && changes && (
           <CodeDiff changes={changes} label={subject.title} selection={selection} onSelect={pane.setSelection} language={subject.language} maxHeight={360} />
         )}
+        {subject.kind === 'file' && subject.workspaceId && <SymbolJump workspaceId={subject.workspaceId} path={subject.path} />}
         {subject.kind === 'file' && (
           <CodeFileView
             path={subject.path}

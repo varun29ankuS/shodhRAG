@@ -73,6 +73,7 @@ import { appendToDraft } from '../research/snippetModel';
 import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { TokensSavedChip } from '../codeIntel/TokensSavedChip';
+import { CodeMapChip } from '../codeIntel/CodeMapChip';
 import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
 import { CreatorFinishCard } from '../artifacts/CreatorFinishCard';
@@ -1319,6 +1320,7 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
                 onOpenActivity={() => onNavigate('activity')}
               />
             )}
+            {mode === 'code' && codeWorkspaceId && <CodeMapChip workspaceId={codeWorkspaceId} />}
             <ToolsChip
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}

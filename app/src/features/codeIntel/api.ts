@@ -68,3 +68,90 @@ export function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
+
+/** What a project's code map holds (`shodh_rag::code_map::MapStatus`). */
+export interface CodeMapCounts {
+  files: number;
+  symbols: number;
+  references: number;
+  /** Source files by language: [language, files]. */
+  languages: [string, number][];
+  /** When a refresh last went through every file. */
+  completeAt: string | null;
+  updatedAt: string | null;
+  partial: boolean;
+}
+
+/** What the last refresh did. */
+export interface CodeMapRefresh {
+  listed: number;
+  read: number;
+  unchanged: number;
+  removed: number;
+  skipped: number;
+  millis: number;
+  stopped: boolean;
+  partial: boolean;
+}
+
+/** A Code project's code map as the UI shows it (`code_map_commands::CodeMapView`). */
+export interface CodeMapView {
+  workspaceId: string | null;
+  sourceId: string;
+  name: string;
+  state: 'idle' | 'queued' | 'building' | 'failed';
+  done?: number;
+  total?: number;
+  error?: string;
+  /** Indexing is paused: a refresh waits. */
+  paused: boolean;
+  watching: boolean;
+  map: CodeMapCounts | null;
+  lastRun: CodeMapRefresh | null;
+}
+
+/** A definition the code map knows (`shodh_rag::code_map::SymbolHit`). */
+export interface SymbolHit {
+  name: string;
+  kind: string;
+  path: string;
+  line: number;
+  endLine: number;
+  container: string | null;
+  module: string;
+  signature: string;
+  exported: boolean;
+  language: string;
+}
+
+export interface OutlineFile {
+  path: string;
+  module: string;
+  language: string;
+  lines: number;
+  symbols: SymbolHit[];
+  skipped: string | null;
+}
+
+export interface Outline {
+  target: string;
+  files: OutlineFile[];
+  truncated: boolean;
+}
+
+/** The code map's commands (`code_map_commands.rs`). */
+export const codeMapApi = {
+  /** A Code conversation of the workspace is shown: build or refresh its map and watch its folder. */
+  open: (workspaceId: string) => invoke<CodeMapView>('code_map_open', { workspaceId }),
+  /** It is no longer shown. */
+  close: (workspaceId: string) => invoke<void>('code_map_close', { workspaceId }),
+  status: (workspaceId: string) => invoke<CodeMapView>('code_map_status', { workspaceId }),
+  /** Empty the map and read every file again. */
+  rebuild: (workspaceId: string) => invoke<CodeMapView>('code_map_rebuild', { workspaceId }),
+  /** Stop the refresh running now. */
+  cancel: (workspaceId: string) => invoke<CodeMapView>('code_map_cancel', { workspaceId }),
+  /** A file's symbols. */
+  outline: (workspaceId: string, path: string) => invoke<Outline>('code_map_outline', { workspaceId, path }),
+  /** Symbols whose names start with `query`. */
+  find: (workspaceId: string, query: string) => invoke<SymbolHit[]>('code_map_find', { workspaceId, query }),
+};

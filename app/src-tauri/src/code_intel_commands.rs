@@ -319,6 +319,9 @@ mod tests {
             "tree-sitter-python",
             "tree-sitter-go",
             "streaming-iterator",
+            "ignore",
+            "globset",
+            "bstr",
         ] {
             let entry = format!("name = \"{name}\"\nversion = \"");
             let at = lock
@@ -329,6 +332,9 @@ mod tests {
             assert!(notice.contains(&credited), "NOTICE lacks {credited}");
         }
         assert!(notice.contains("Permission is hereby granted, free of charge"));
+        // tree-sitter's runtime carries ICU code, whose notice goes with it.
+        assert!(notice.contains("COPYRIGHT AND PERMISSION NOTICE (ICU 58 and later)"));
+        assert!(notice.contains("Copyright © 1991-2019 Unicode, Inc."));
         for license in [
             "superpowers-MIT.txt",
             "ECC-MIT.txt",

@@ -1502,14 +1502,19 @@ const CODE_REVIEW_NOTE: &str = "\n\nCode review: open_code shows the user a file
 
 /// What a Code session of a workspace is told about the code map.
 const CODE_MAP_NOTE: &str = "\n\nCode map: Shodh keeps a map of this project's Rust, \
-     TypeScript/JavaScript, Python and Go code, brought up to date before each answer. For \
-     where something is defined use code_definition; for who calls or uses it, \
-     code_references; for a file's or module's symbols, code_outline; for what a module \
-     imports, what imports it and its cycles, code_dependencies. Prefer them to grep and to \
-     reading whole files for these questions: they answer with path:line receipts and show \
-     the place in the code pane. Cite those receipts. A use the map lists by name only (a \
-     method call on a value) is not proven to be the same symbol; check it. For text that is \
-     not a symbol, or files in other languages, use grep.";
+     TypeScript/JavaScript, Python and Go code, usually brought up to date before each \
+     answer; an answer says when it could not be (indexing paused, the map still being built, \
+     many files changed) and how old the map is. For where something is defined use \
+     code_definition; for who calls or uses it, code_references; for a file's or module's \
+     symbols, code_outline; for what a module imports, what imports it and its cycles, \
+     code_dependencies. Prefer them to grep and to reading whole files for these questions: \
+     they answer with path:line receipts and show the place in the code pane. Cite those \
+     receipts. The map has no types: a use it lists as resolved was tied through its file, \
+     an import, a path or Self, which is strong evidence but not type checking; a use listed \
+     by name only (such as a method call on a value) may be another symbol of the same name, \
+     so check it before changing it. When an answer says only some uses are shown, narrow \
+     it with within, or grep for the rest. For text that is not a symbol, or files in other \
+     languages, use grep.";
 
 /// What every Code session is told about output compression and its building skills.
 const CODE_INTEL_NOTE: &str = "\n\nCommand output: unless the user turned it off for this \
@@ -1600,22 +1605,45 @@ fn finish_detail(detail: Option<&serde_json::Value>) -> Option<(String, Vec<Stri
     Some((summary, choices))
 }
 
+/// What a Code session has under way that may change files: writing steps
+/// and commands, by id.
+#[derive(Debug, Default)]
+pub(crate) struct ChangingSteps {
+    writing: HashSet<String>,
+    /// Commands started, with whether they can only read.
+    commands: std::collections::HashMap<String, bool>,
+}
+
 /// Whether `event` of a Code session may have changed the project's files, so
-/// its code map is refreshed: a command finished, or a step that writes (an
-/// edit, a file written) ended. `changing` holds the writing steps under way.
-pub(crate) fn code_map_refresh_after(changing: &mut HashSet<String>, event: &AgentEvent) -> bool {
+/// its code map is refreshed: a step that writes (an edit, a file written)
+/// ended, or a command ended that is not known to only read
+/// ([`crate::code_map_commands::reads_only`]).
+pub(crate) fn code_map_refresh_after(changing: &mut ChangingSteps, event: &AgentEvent) -> bool {
     match event {
         AgentEvent::StepStarted { step_id, tier, .. } => {
             if matches!(
                 tier,
                 shodh_rag::harness::RiskTier::Write | shodh_rag::harness::RiskTier::Destructive
             ) {
-                changing.insert(step_id.clone());
+                changing.writing.insert(step_id.clone());
             }
             false
         }
-        AgentEvent::StepFinished { step_id, .. } => changing.remove(step_id),
-        AgentEvent::CommandFinished { .. } => true,
+        AgentEvent::StepFinished { step_id, .. } => changing.writing.remove(step_id),
+        AgentEvent::CommandStarted {
+            command_id,
+            command,
+            ..
+        } => {
+            changing.commands.insert(
+                command_id.clone(),
+                crate::code_map_commands::reads_only(command),
+            );
+            false
+        }
+        AgentEvent::CommandFinished { command_id, .. } => {
+            !changing.commands.remove(command_id).unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -1907,6 +1935,7 @@ async fn start_attempt(
                 &registry,
                 workspace_id.as_deref(),
                 code_folder.as_ref(),
+                creates,
                 local_only,
             )
             .await,
@@ -2195,7 +2224,7 @@ async fn start_attempt(
         // Builds each run's `answer` audit event from the stream.
         let mut tap = RunAuditTap::new();
         // Steps that may change files, whose end refreshes the code map.
-        let mut changing_steps: HashSet<String> = HashSet::new();
+        let mut changing_steps = ChangingSteps::default();
         // Steps of the export tool, so a finished export reaches the Inbox.
         let mut export_steps: HashSet<String> = HashSet::new();
         // Steps of `finish_creation`, whose summary and choices are kept.
@@ -3404,6 +3433,7 @@ async fn chat_tools_with(
     registry: &ToolRegistry,
     workspace: Option<&str>,
     code: Option<&CodeFolder>,
+    creates: bool,
     local_only: bool,
 ) -> crate::mcp::ChatTools {
     let manager = app.state::<crate::mcp_commands::McpState>().0.clone();
@@ -3422,13 +3452,21 @@ async fn chat_tools_with(
                 .chain(crate::agent_tools::CODE_INTEL_TOOL_NAMES)
                 .chain(crate::agent_tools::CODE_MAP_TOOL_NAMES)
                 .collect(),
-            CODE_BUILTIN_TOOLS
-                + shodh_rag::connectors::github::tools::all_names().len()
-                + 1
-                + crate::agent_tools::CREATOR_TOOL_NAMES.len()
-                + crate::agent_tools::CODE_REVIEW_TOOL_NAMES.len()
-                + crate::agent_tools::CODE_INTEL_TOOL_NAMES.len()
-                + crate::agent_tools::CODE_MAP_TOOL_NAMES.len(),
+            // The tools this kind of session has: a Creator session its
+            // finish card and Artifacts tools; a Code session GitHub, the mode
+            // suggestion, the code pane, review and the code map.
+            if creates {
+                CODE_BUILTIN_TOOLS
+                    + crate::agent_tools::CREATOR_TOOL_NAMES.len()
+                    + crate::agent_tools::CODE_INTEL_TOOL_NAMES.len()
+            } else {
+                CODE_BUILTIN_TOOLS
+                    + shodh_rag::connectors::github::tools::all_names().len()
+                    + 1
+                    + crate::agent_tools::CODE_REVIEW_TOOL_NAMES.len()
+                    + crate::agent_tools::CODE_INTEL_TOOL_NAMES.len()
+                    + crate::agent_tools::CODE_MAP_TOOL_NAMES.len()
+            },
         ),
         None => {
             let names = registry.names();
@@ -3490,7 +3528,7 @@ pub(crate) async fn chat_extra_tools(
             )
             .await);
     }
-    Ok(chat_tools_with(app, &registry, workspace, code.as_ref(), local_only).await)
+    Ok(chat_tools_with(app, &registry, workspace, code.as_ref(), false, local_only).await)
 }
 
 /// The registry and profile of one session: the built-in tools (Research)

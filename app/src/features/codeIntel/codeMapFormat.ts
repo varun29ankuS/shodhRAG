@@ -31,7 +31,7 @@ export function readCodeMapView(value: unknown): CodeMapView | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
   if (typeof v.sourceId !== 'string' || typeof v.name !== 'string') return null;
-  if (v.state !== 'idle' && v.state !== 'queued' && v.state !== 'building' && v.state !== 'failed') return null;
+  if (v.state !== 'idle' && v.state !== 'queued' && v.state !== 'building' && v.state !== 'waiting' && v.state !== 'failed') return null;
   return value as CodeMapView;
 }
 
@@ -43,6 +43,13 @@ export function codeMapChipLabel(view: CodeMapView): string {
       const total = view.total ?? 0;
       if (total === 0) return 'Code map: listing files';
       return `Code map: ${grouped(Math.min(view.done ?? 0, total))} of ${plural(total, 'file')}`;
+    }
+    case 'waiting': {
+      const total = view.total ?? 0;
+      const where = total > 0 ? ` (${grouped(Math.min(view.done ?? 0, total))} of ${plural(total, 'file')})` : '';
+      return view.reason === 'otherIndexing' && !view.paused
+        ? `Code map: waiting for other indexing${where}`
+        : `Code map: paused${where}`;
     }
     case 'queued':
       return view.map?.completeAt ? `Code map: updating · ${plural(view.map.symbols, 'symbol')}` : 'Code map: starting';
@@ -56,6 +63,7 @@ export function codeMapChipLabel(view: CodeMapView): string {
 
 export function codeMapTone(view: CodeMapView): CodeMapTone {
   if (view.state === 'failed') return 'bad';
+  if (view.state === 'waiting') return 'warn';
   if (view.state === 'building' || view.state === 'queued') return view.paused ? 'warn' : 'busy';
   return view.map?.completeAt ? 'good' : 'warn';
 }

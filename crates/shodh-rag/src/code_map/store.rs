@@ -142,6 +142,38 @@ fn sql_err(e: rusqlite::Error) -> String {
     format!("the code map's database: {e}")
 }
 
+const CLEAR: &str = "DELETE FROM symbols; DELETE FROM refs; DELETE FROM imports; DELETE FROM mods;
+     DELETE FROM configs; DELETE FROM files;
+     DELETE FROM meta WHERE key <> 'extractor' AND key <> 'root';";
+
+/// A file or folder filter for SQL: (the path itself, `LIKE` pattern for
+/// what is below it), both `None` for no filter.
+fn path_filter(path: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(path) = path
+        .map(|p| p.trim().trim_start_matches("./").trim_end_matches('/'))
+        .filter(|p| !p.is_empty() && *p != ".")
+    else {
+        return (None, None);
+    };
+    // `!` escapes `LIKE`'s wildcards (and itself) in the folder's name.
+    let mut escaped = String::with_capacity(path.len() + 4);
+    for c in path.chars() {
+        if matches!(c, '%' | '_' | '!') {
+            escaped.push('!');
+        }
+        escaped.push(c);
+    }
+    (Some(path.to_string()), Some(format!("{escaped}/%")))
+}
+
+/// A file SQLite cannot read as a database.
+fn is_corrupt(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+    )
+}
+
 /// A stored keyword back as the `'static` one extraction uses.
 fn keyword_of(text: &str) -> &'static str {
     const KEYWORDS: [&str; 16] = [
@@ -191,25 +223,55 @@ const SYMBOL_COLUMNS: &str =
 
 impl Store {
     /// Open (or create) the map at `path`. A map of another extractor
-    /// version is emptied.
+    /// version is emptied. A file SQLite cannot read as a database (cut off
+    /// mid-write, overwritten) is moved aside and a new map started, so the
+    /// map can always be built again.
     pub fn open(path: &Path) -> Result<Store, String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("the code map's folder could not be made: {e}"))?;
         }
-        let conn = Connection::open(path).map_err(sql_err)?;
-        conn.busy_timeout(std::time::Duration::from_secs(10))
-            .map_err(sql_err)?;
-        // `journal_mode` answers with a row, which execute refuses.
-        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))
-            .map_err(sql_err)?;
-        conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;")
-            .map_err(sql_err)?;
-        conn.execute_batch(SCHEMA).map_err(sql_err)?;
+        match Self::open_at(path) {
+            Ok(store) => Ok(store),
+            Err(e) if is_corrupt(&e) => {
+                let aside = path.with_extension(format!(
+                    "corrupt-{}.db",
+                    chrono::Utc::now().format("%Y%m%d%H%M%S")
+                ));
+                std::fs::rename(path, &aside)
+                    .map_err(|e| format!("the damaged code map could not be moved aside ({e})"))?;
+                for side in ["-wal", "-shm"] {
+                    let mut name = path.as_os_str().to_os_string();
+                    name.push(side);
+                    let _ = std::fs::remove_file(std::path::PathBuf::from(name));
+                }
+                tracing::warn!(target: "shodh::code_map", aside = %aside.display(), "a damaged code map was moved aside; it is built again");
+                Self::open_at(path).map_err(sql_err)
+            }
+            Err(e) => Err(sql_err(e)),
+        }
+    }
+
+    fn open_at(path: &Path) -> Result<Store, rusqlite::Error> {
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
+        conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+        conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;")?;
+        conn.execute_batch(SCHEMA)?;
         let store = Store { conn };
-        if store.meta("extractor")?.as_deref() != Some(EXTRACTOR_VERSION) {
-            store.clear()?;
-            store.set_meta("extractor", EXTRACTOR_VERSION)?;
+        let version: Option<String> = store
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'extractor'", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if version.as_deref() != Some(EXTRACTOR_VERSION) {
+            store.conn.execute_batch(CLEAR)?;
+            store.conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('extractor', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [EXTRACTOR_VERSION],
+            )?;
         }
         Ok(store)
     }
@@ -234,12 +296,30 @@ impl Store {
 
     /// Everything but the extractor version: the map is built again.
     pub fn clear(&self) -> Result<(), String> {
+        self.conn.execute_batch(CLEAR).map_err(sql_err)
+    }
+
+    /// Give the space of what was deleted back to the disk.
+    pub fn vacuum(&self) -> Result<(), String> {
+        self.conn.execute_batch("VACUUM").map_err(sql_err)
+    }
+
+    /// What the map knew of the file at `path` when it last read it.
+    pub fn stamp(&self, path: &str) -> Result<Option<Stamp>, String> {
         self.conn
-            .execute_batch(
-                "DELETE FROM symbols; DELETE FROM refs; DELETE FROM imports; DELETE FROM mods;
-                 DELETE FROM configs; DELETE FROM files;
-                 DELETE FROM meta WHERE key <> 'extractor' AND key <> 'root';",
+            .query_row(
+                "SELECT id, size, mtime, hash FROM files WHERE path = ?1",
+                [path],
+                |r| {
+                    Ok(Stamp {
+                        id: r.get(0)?,
+                        size: r.get(1)?,
+                        mtime: r.get(2)?,
+                        hash: r.get(3)?,
+                    })
+                },
             )
+            .optional()
             .map_err(sql_err)
     }
 
@@ -559,13 +639,23 @@ impl Store {
         Ok(out)
     }
 
-    /// Symbols named exactly `name`, at most `limit`.
-    pub fn symbols_named(&self, name: &str, limit: usize) -> Result<Vec<SymbolRow>, String> {
+    /// Symbols named exactly `name`, of `kind` and in the file or folder
+    /// `path` when given, filtered in SQL before `limit`.
+    pub fn symbols_named(
+        &self,
+        name: &str,
+        kind: Option<&str>,
+        path: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SymbolRow>, String> {
+        let (exact, below) = path_filter(path);
         let sql = format!(
             "SELECT s.file_id, f.path, {SYMBOL_COLUMNS} FROM symbols s JOIN files f ON f.id = s.file_id
-             WHERE s.name = ?1 ORDER BY f.path, s.line LIMIT ?2"
+             WHERE s.name = ?1 AND (?2 IS NULL OR s.kind = ?2)
+               AND (?3 IS NULL OR f.path = ?3 OR f.path LIKE ?4 ESCAPE '!')
+             ORDER BY f.path, s.line LIMIT ?5"
         );
-        self.symbol_rows(&sql, params![name, limit as i64])
+        self.symbol_rows(&sql, params![name, kind, exact, below, limit as i64])
     }
 
     /// Symbols whose name starts with `prefix`, ignoring case, at most `limit`
@@ -609,34 +699,68 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
     }
 
-    /// References to `name`, at most `limit`, in path and line order.
-    pub fn refs_named(&self, name: &str, limit: usize) -> Result<Vec<RefRow>, String> {
+    /// Every reference to `name` (in the file or folder `within` when
+    /// given), in path and line order, handed to `each` one at a time until
+    /// it returns false or `cap` rows were read. Returns how many were read.
+    pub fn each_ref_named(
+        &self,
+        name: &str,
+        within: Option<&str>,
+        cap: usize,
+        each: &mut dyn FnMut(RefRow) -> bool,
+    ) -> Result<usize, String> {
+        let (exact, below) = path_filter(within);
         let mut statement = self
             .conn
             .prepare(
                 "SELECT r.file_id, f.path, r.name, r.qualifier, r.line, r.kind, r.caller, r.scope
                  FROM refs r JOIN files f ON f.id = r.file_id
-                 WHERE r.name = ?1 ORDER BY f.path, r.line LIMIT ?2",
+                 WHERE r.name = ?1
+                   AND (?2 IS NULL OR f.path = ?2 OR f.path LIKE ?3 ESCAPE '!')
+                 ORDER BY f.path, r.line",
             )
             .map_err(sql_err)?;
-        let rows = statement
-            .query_map(params![name, limit as i64], |r| {
-                let kind: String = r.get(5)?;
-                Ok(RefRow {
-                    file_id: r.get(0)?,
-                    path: r.get(1)?,
-                    reference: Reference {
-                        name: r.get(2)?,
-                        qualifier: r.get(3)?,
-                        line: r.get(4)?,
-                        kind: RefKind::parse(&kind).unwrap_or(RefKind::Use),
-                        caller: r.get(6)?,
-                        scope: r.get(7)?,
-                    },
-                })
-            })
+        let mut rows = statement
+            .query(params![name, exact, below])
             .map_err(sql_err)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sql_err)
+        let mut read = 0usize;
+        while let Some(r) = rows.next().map_err(sql_err)? {
+            if read >= cap {
+                break;
+            }
+            read += 1;
+            let kind: String = r.get(5).map_err(sql_err)?;
+            let row = RefRow {
+                file_id: r.get(0).map_err(sql_err)?,
+                path: r.get(1).map_err(sql_err)?,
+                reference: Reference {
+                    name: r.get(2).map_err(sql_err)?,
+                    qualifier: r.get(3).map_err(sql_err)?,
+                    line: r.get(4).map_err(sql_err)?,
+                    kind: RefKind::parse(&kind).unwrap_or(RefKind::Use),
+                    caller: r.get(6).map_err(sql_err)?,
+                    scope: r.get(7).map_err(sql_err)?,
+                },
+            };
+            if !each(row) {
+                break;
+            }
+        }
+        Ok(read)
+    }
+
+    /// How many references to `name` the map holds (in `within`).
+    pub fn count_refs_named(&self, name: &str, within: Option<&str>) -> Result<u64, String> {
+        let (exact, below) = path_filter(within);
+        self.conn
+            .query_row(
+                "SELECT count(*) FROM refs r JOIN files f ON f.id = r.file_id
+                 WHERE r.name = ?1 AND (?2 IS NULL OR f.path = ?2 OR f.path LIKE ?3 ESCAPE '!')",
+                params![name, exact, below],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| u64::try_from(n).unwrap_or(0))
+            .map_err(sql_err)
     }
 
     /// (source files, symbols, references) in the map.

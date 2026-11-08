@@ -4,17 +4,23 @@
 //!
 //! - **When it refreshes**: when a Code conversation of the project is shown
 //!   ([`code_map_open`]), when one of its sessions starts, after the agent's
-//!   edits and commands ([`touched`]), and on a file change while the project
-//!   is shown (a watcher, dropped with the last view). Requests that come close
-//!   together run as one refresh ([`DEBOUNCE`]); a refresh reads only files
-//!   whose size, time or contents changed.
-//! - **How it runs**: each refresh is an indexing run
-//!   ([`IndexingState::begin_run_at`]) under the source `code-map:<key>`, so
-//!   the status strip shows it and its Pause and Cancel hold and stop it. It
-//!   also waits while any other indexing runs: the Library goes first.
-//! - **What it costs at rest**: nothing. The state holds no file open until a
-//!   Code project asks for its map; no watcher runs while no Code project is
-//!   shown.
+//!   edits and the commands that may change files ([`touched`]), and on a
+//!   file change while the project is shown (a watcher). Requests are
+//!   coalesced until they go quiet ([`DEBOUNCE`], at most [`MAX_DEBOUNCE`]);
+//!   a refresh reads only files whose size, time or contents changed.
+//! - **How it runs**: each refresh is an indexing run under the source
+//!   `code-map:<key>` (without a path, so the Library never takes it for one
+//!   of its folders): the status strip shows it, Pause and Stop hold and stop
+//!   it, and it waits while other indexing runs, unless an agent tool needs
+//!   the map now ([`CodeMapState::request`] with `urgent`). While it waits it
+//!   holds nothing, so the agent's tools read and update the map meanwhile.
+//! - **Leases**: each shown conversation holds a lease ([`code_map_open`]
+//!   returns its id, [`code_map_close`] gives it back). The watcher runs
+//!   while a lease is held; a reload of the window drops every lease; a
+//!   workspace deleted drops its leases and its map's file.
+//! - **What it costs at rest**: nothing before first use. After the last
+//!   lease is given back and nothing used the map for [`IDLE`], its database
+//!   and model are closed and its worker ends.
 //!
 //! The agent reads the map through Code sessions' `code_definition`,
 //! `code_references`, `code_outline` and `code_dependencies`
@@ -22,8 +28,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -39,8 +45,12 @@ use crate::workspace_commands::WorkspaceState;
 pub const CODE_MAP_SOURCE_PREFIX: &str = "code-map:";
 /// Emitted with a [`CodeMapView`] when a map's state or progress changes.
 pub const CODE_MAP_EVENT: &str = "code-map-status";
-/// Requests this close together run as one refresh.
+/// A refresh starts once requests have been quiet this long...
 pub const DEBOUNCE: Duration = Duration::from_millis(1_200);
+/// ...or this long after the first of them, whichever comes first.
+pub const MAX_DEBOUNCE: Duration = Duration::from_secs(10);
+/// A map nobody looks at or used for this long is closed.
+pub const IDLE: Duration = Duration::from_secs(5 * 60);
 /// Progress is sent at most this often.
 const PROGRESS_EVERY: Duration = Duration::from_millis(300);
 /// Symbols a jump search returns at most.
@@ -52,12 +62,19 @@ const MAX_FOUND: usize = 30;
 pub enum Phase {
     /// Nothing is running.
     Idle,
-    /// A refresh is asked for and starts after a short wait.
+    /// A refresh is asked for and starts once requests go quiet.
     Queued,
     /// Reading files: `done` of `total` looked at.
     Building {
         done: usize,
         total: usize,
+    },
+    /// A refresh waits: indexing is paused, or other indexing runs first.
+    Waiting {
+        done: usize,
+        total: usize,
+        /// `paused` or `otherIndexing`.
+        reason: &'static str,
     },
     Failed {
         error: String,
@@ -68,12 +85,6 @@ pub enum Phase {
 struct Pending {
     wanted: bool,
     rebuild: bool,
-}
-
-#[derive(Default)]
-struct WatchSlot {
-    users: usize,
-    watcher: Option<RecommendedWatcher>,
 }
 
 /// One project's map and its refresh worker.
@@ -89,7 +100,15 @@ pub struct Project {
     worker: AtomicBool,
     phase: Mutex<Phase>,
     last_run: Mutex<Option<RefreshReport>>,
-    watch: Mutex<WatchSlot>,
+    watcher: Mutex<Option<RecommendedWatcher>>,
+    /// Leases held on it (shown conversations).
+    viewers: AtomicUsize,
+    /// An agent tool needs the map now: the refresh does not wait behind
+    /// other indexing (it still holds for the user's pause).
+    urgent: AtomicBool,
+    last_used: Mutex<Instant>,
+    /// Its workspace was deleted: the map's file goes once nothing uses it.
+    forgotten: AtomicBool,
 }
 
 impl Project {
@@ -105,7 +124,18 @@ impl Project {
         *self.phase.lock().unwrap_or_else(|e| e.into_inner()) = phase;
     }
 
-    /// Ask for a refresh (the worker runs it after [`DEBOUNCE`]).
+    fn touch(&self) {
+        *self.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.last_used
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed()
+    }
+
+    /// Ask for a refresh (the worker runs it once requests go quiet).
     fn request(&self, rebuild: bool) {
         {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -131,12 +161,29 @@ impl Project {
         Some(rebuild)
     }
 
-    fn is_watched(&self) -> bool {
-        self.watch
+    fn has_pending(&self) -> bool {
+        self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .watcher
+            .wanted
+    }
+
+    fn is_watched(&self) -> bool {
+        self.watcher
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .is_some()
+    }
+
+    fn is_open(&self) -> bool {
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    fn busy(&self) -> bool {
+        matches!(
+            self.phase(),
+            Phase::Queued | Phase::Building { .. } | Phase::Waiting { .. }
+        )
     }
 
     /// The project-relative path of an absolute one the watcher reports.
@@ -149,6 +196,12 @@ impl Project {
     }
 }
 
+/// A shown conversation's hold on its project's map.
+struct Lease {
+    project: Arc<Project>,
+    workspace_id: String,
+}
+
 /// Every Code project's map, opened when first asked for.
 #[derive(Clone)]
 pub struct CodeMapState {
@@ -157,10 +210,14 @@ pub struct CodeMapState {
 
 struct Inner {
     data_dir: PathBuf,
-    /// The indexing pause (the strip's and the tray's), which also holds a
-    /// refresh the agent's tools would run.
+    /// The indexing pause (the strip's and the tray's).
     pause: Option<PauseSwitch>,
     projects: Mutex<HashMap<String, Arc<Project>>>,
+    leases: Mutex<HashMap<u64, Lease>>,
+    next_lease: AtomicU64,
+    /// The app, once it runs: refreshes go through its indexing runs. Without
+    /// it (tests) a refresh asked for runs at once on the caller's thread.
+    app: OnceLock<AppHandle>,
 }
 
 impl CodeMapState {
@@ -170,8 +227,16 @@ impl CodeMapState {
                 data_dir,
                 pause,
                 projects: Mutex::new(HashMap::new()),
+                leases: Mutex::new(HashMap::new()),
+                next_lease: AtomicU64::new(1),
+                app: OnceLock::new(),
             }),
         }
+    }
+
+    /// Refreshes asked for from now on run as the app's indexing runs.
+    pub fn attach(&self, app: AppHandle) {
+        let _ = self.inner.app.set(app);
     }
 
     /// Indexing is paused by the user.
@@ -183,6 +248,7 @@ impl CodeMapState {
     }
 
     /// The project at `root` (registered on first use; nothing is read yet).
+    /// Blocking (canonicalizes the folder).
     pub fn project(&self, root: &Path) -> Result<Arc<Project>, String> {
         let canonical = std::fs::canonicalize(root)
             .map_err(|e| format!("the code folder could not be read ({e})"))?;
@@ -210,7 +276,11 @@ impl CodeMapState {
                     worker: AtomicBool::new(false),
                     phase: Mutex::new(Phase::Idle),
                     last_run: Mutex::new(None),
-                    watch: Mutex::new(WatchSlot::default()),
+                    watcher: Mutex::new(None),
+                    viewers: AtomicUsize::new(0),
+                    urgent: AtomicBool::new(false),
+                    last_used: Mutex::new(Instant::now()),
+                    forgotten: AtomicBool::new(false),
                 })
             })
             .clone())
@@ -218,6 +288,7 @@ impl CodeMapState {
 
     /// The project's map, opened (or created) on first use. Blocking.
     pub fn map_of(&self, project: &Project) -> Result<Arc<CodeMap>, String> {
+        project.touch();
         let mut slot = project.map.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(map) = slot.as_ref() {
             return Ok(map.clone());
@@ -227,20 +298,48 @@ impl CodeMapState {
         Ok(map)
     }
 
-    /// The map of the project at `root`, opened on a blocking thread.
-    pub async fn map_for(&self, root: &Path) -> Result<Arc<CodeMap>, String> {
+    /// The project and map of the folder at `root`, on a blocking thread.
+    pub async fn open_for(&self, root: &Path) -> Result<(Arc<Project>, Arc<CodeMap>), String> {
         let state = self.clone();
         let root = root.to_path_buf();
         tokio::task::spawn_blocking(move || {
             let project = state.project(&root)?;
-            state.map_of(&project)
+            let map = state.map_of(&project)?;
+            Ok((project, map))
         })
         .await
         .map_err(|e| format!("opening the code map did not finish: {e}"))?
     }
 
-    /// Every project with a refresh reading files now.
-    pub fn building(&self) -> Vec<Arc<Project>> {
+    /// Ask for a refresh of `project`: in the app, a background indexing run
+    /// (`urgent`: it does not wait behind other indexing); without the app,
+    /// at once on this thread. Blocking only without the app.
+    pub fn request(&self, project: &Arc<Project>, rebuild: bool, urgent: bool) {
+        if urgent {
+            project.urgent.store(true, Ordering::SeqCst);
+        }
+        match self.inner.app.get() {
+            Some(app) => schedule(app, self, project, rebuild),
+            None => {
+                let result = self.map_of(project).and_then(|map| {
+                    if rebuild {
+                        map.clear()?;
+                    }
+                    map.refresh(&|| Pace::Go, &mut |_, _| {})
+                });
+                match result {
+                    Ok(report) => {
+                        *project.last_run.lock().unwrap_or_else(|e| e.into_inner()) = Some(report);
+                        project.set_phase(Phase::Idle);
+                    }
+                    Err(error) => project.set_phase(Phase::Failed { error }),
+                }
+            }
+        }
+    }
+
+    /// Every project with a refresh reading files or waiting now.
+    pub fn running(&self) -> Vec<Arc<Project>> {
         let projects = self
             .inner
             .projects
@@ -248,12 +347,183 @@ impl CodeMapState {
             .unwrap_or_else(|e| e.into_inner());
         let mut out: Vec<Arc<Project>> = projects
             .values()
-            .filter(|p| matches!(p.phase(), Phase::Building { .. }))
+            .filter(|p| matches!(p.phase(), Phase::Building { .. } | Phase::Waiting { .. }))
             .cloned()
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
+
+    /// Hold the project's map for a shown conversation of `workspace_id`;
+    /// the returned lease id gives it back ([`Self::release`]).
+    pub fn lease(&self, project: &Arc<Project>, workspace_id: &str) -> u64 {
+        let id = self.inner.next_lease.fetch_add(1, Ordering::SeqCst);
+        project.viewers.fetch_add(1, Ordering::SeqCst);
+        project.touch();
+        if let Err(e) = start_watching(project) {
+            tracing::warn!(target: "shodh::code_map", project = %project.name, error = %e, "file changes are not watched");
+        }
+        self.inner
+            .leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                id,
+                Lease {
+                    project: project.clone(),
+                    workspace_id: workspace_id.to_string(),
+                },
+            );
+        id
+    }
+
+    /// Give back a lease; the last one of a project stops its watcher.
+    /// Returns whether the lease was held.
+    pub fn release(&self, lease: u64) -> bool {
+        let taken = self
+            .inner
+            .leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&lease);
+        match taken {
+            Some(lease) => {
+                release_viewer(&lease.project);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Give back every lease (the window was reloaded: its conversations
+    /// are gone without saying so).
+    pub fn release_all(&self) -> usize {
+        let all: Vec<Lease> = self
+            .inner
+            .leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .map(|(_, lease)| lease)
+            .collect();
+        for lease in &all {
+            release_viewer(&lease.project);
+        }
+        all.len()
+    }
+
+    /// Leases held now (for tests and diagnostics).
+    pub fn leases(&self) -> usize {
+        self.inner
+            .leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// The workspace `workspace_id` was deleted: its leases are given back,
+    /// and the map of `root` (when given and no other workspace uses it) is
+    /// closed and its file deleted, at once or as soon as a running refresh
+    /// ends. Blocking.
+    pub fn forget(&self, workspace_id: &str, root: Option<&Path>, still_used: bool) {
+        let mine: Vec<u64> = self
+            .inner
+            .leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, lease)| lease.workspace_id == workspace_id)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in mine {
+            self.release(id);
+        }
+        let (Some(root), false) = (root, still_used) else {
+            return;
+        };
+        let Ok(canonical) = std::fs::canonicalize(root) else {
+            // The folder is gone too: its map is found by its key alone.
+            return;
+        };
+        let key = CodeMap::key_of(&canonical);
+        let project = self
+            .inner
+            .projects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .cloned();
+        let path = CodeMap::map_path_of(&self.inner.data_dir, &canonical);
+        match project {
+            Some(project) => {
+                project.forgotten.store(true, Ordering::SeqCst);
+                if let Some(app) = self.inner.app.get() {
+                    app.state::<IndexingState>()
+                        .cancel_source(&project.source_id());
+                }
+                if !project.busy() {
+                    self.close_forgotten(&project);
+                }
+            }
+            None => {
+                if let Err(e) = CodeMap::delete_files(&path) {
+                    tracing::warn!(target: "shodh::code_map", error = %e, "the code map of a deleted workspace was not deleted");
+                }
+            }
+        }
+    }
+
+    /// Close a forgotten project's map and delete its file.
+    fn close_forgotten(&self, project: &Arc<Project>) {
+        *project.map.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *project.watcher.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.inner
+            .projects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&project.key);
+        let path = CodeMap::map_path_of(&self.inner.data_dir, &project.canonical);
+        match CodeMap::delete_files(&path) {
+            Ok(()) => {
+                tracing::info!(target: "shodh::code_map", project = %project.name, "the code map of a deleted workspace was deleted")
+            }
+            Err(e) => {
+                tracing::warn!(target: "shodh::code_map", project = %project.name, error = %e, "the code map of a deleted workspace was not deleted")
+            }
+        }
+    }
+
+    /// Close `project`'s map when nobody looks at it, nothing runs, and it
+    /// was not used for `idle`. Returns whether it was closed.
+    pub fn close_if_idle(&self, project: &Project, idle: Duration) -> bool {
+        if project.viewers.load(Ordering::SeqCst) > 0
+            || project.busy()
+            || project.has_pending()
+            || project.idle_for() < idle
+        {
+            return false;
+        }
+        let mut slot = project.map.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            return false;
+        }
+        *slot = None;
+        tracing::debug!(target: "shodh::code_map", project = %project.name, "idle code map closed");
+        true
+    }
+}
+
+fn release_viewer(project: &Project) {
+    let before = project
+        .viewers
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            Some(n.saturating_sub(1))
+        })
+        .unwrap_or(0);
+    if before <= 1 {
+        *project.watcher.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    project.touch();
 }
 
 /// A map as the UI shows it.
@@ -269,9 +539,11 @@ pub struct CodeMapView {
     pub paused: bool,
     /// File changes are being watched (the project is shown).
     pub watching: bool,
-    /// What the map holds; `None` before it is opened.
+    /// What the map holds; `None` while it is not open.
     pub map: Option<MapStatus>,
     pub last_run: Option<RefreshReport>,
+    /// The lease [`code_map_open`] took (give it back with [`code_map_close`]).
+    pub lease: Option<u64>,
 }
 
 /// The view of `project` (reads the map's counts; blocking).
@@ -299,17 +571,41 @@ pub fn view_of(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone(),
+        lease: None,
     }
 }
 
-fn emit_view(app: &AppHandle, state: &CodeMapState, project: &Project) {
+/// Send the project's view to the window (counts read on a blocking thread,
+/// never on the caller's).
+fn emit_view(app: &AppHandle, state: &CodeMapState, project: &Arc<Project>) {
+    let (app, state, project) = (app.clone(), state.clone(), project.clone());
+    tauri::async_runtime::spawn_blocking(move || emit_view_now(&app, &state, &project));
+}
+
+fn emit_view_now(app: &AppHandle, state: &CodeMapState, project: &Project) {
     let view = view_of(state, project, None);
     if let Err(e) = app.emit(CODE_MAP_EVENT, &view) {
         tracing::debug!("Failed to emit {CODE_MAP_EVENT}: {e}");
     }
 }
 
-/// Ask for a refresh of `project`, starting its worker on first use.
+/// Wait until requests have been quiet for [`DEBOUNCE`] (at most
+/// [`MAX_DEBOUNCE`] from the first).
+async fn quiet(project: &Project) {
+    let started = Instant::now();
+    loop {
+        let left = MAX_DEBOUNCE.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return;
+        }
+        tokio::select! {
+            () = project.wake.notified() => {}
+            () = tokio::time::sleep(DEBOUNCE.min(left)) => return,
+        }
+    }
+}
+
+/// Ask for a refresh of `project`, starting its worker when it has none.
 pub fn schedule(app: &AppHandle, state: &CodeMapState, project: &Arc<Project>, rebuild: bool) {
     project.request(rebuild);
     if !project.worker.swap(true, Ordering::SeqCst) {
@@ -318,19 +614,56 @@ pub fn schedule(app: &AppHandle, state: &CodeMapState, project: &Arc<Project>, r
         let project = project.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                project.wake.notified().await;
-                tokio::time::sleep(DEBOUNCE).await;
+                tokio::select! {
+                    () = project.wake.notified() => {}
+                    () = tokio::time::sleep(IDLE) => {
+                        if close_idle(&state, &project) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                // An urgent request runs at once; others once things go quiet.
+                if !project.urgent.load(Ordering::SeqCst) {
+                    quiet(&project).await;
+                }
                 let Some(rebuild) = project.take_pending() else {
                     continue;
                 };
                 run_refresh(&app, &state, &project, rebuild).await;
+                if project.forgotten.load(Ordering::SeqCst) {
+                    let (closing_state, closing) = (state.clone(), project.clone());
+                    let _ = tokio::task::spawn_blocking(move || {
+                        closing_state.close_forgotten(&closing)
+                    })
+                    .await;
+                    project.worker.store(false, Ordering::SeqCst);
+                    break;
+                }
             }
         });
     }
     emit_view(app, state, project);
 }
 
-/// Another indexing run (not a code map) is in progress: the map waits.
+/// The worker ends with an idle map: closed, and no request came meanwhile.
+fn close_idle(state: &CodeMapState, project: &Project) -> bool {
+    if !state.close_if_idle(project, IDLE) && project.is_open() {
+        return false;
+    }
+    if project.viewers.load(Ordering::SeqCst) > 0 {
+        return false;
+    }
+    project.worker.store(false, Ordering::SeqCst);
+    // A request that came in between is not lost: its worker goes on.
+    if project.has_pending() && !project.worker.swap(true, Ordering::SeqCst) {
+        project.wake.notify_one();
+        return false;
+    }
+    true
+}
+
+/// Another indexing run (not a code map) is in progress.
 fn others_indexing(app: &AppHandle) -> bool {
     app.state::<IndexingState>()
         .running_sources()
@@ -363,8 +696,8 @@ async fn run_refresh(app: &AppHandle, state: &CodeMapState, project: &Arc<Projec
         }
     };
     let indexing = app.state::<IndexingState>();
-    let root_text = project.root.display().to_string();
-    let Some(run) = indexing.begin_run_at(&project.source_id(), &root_text) else {
+    // Registered without a path: it is not one of the Library's folders.
+    let Some(run) = indexing.begin_run(&project.source_id()) else {
         project.set_phase(Phase::Idle);
         return;
     };
@@ -372,26 +705,59 @@ async fn run_refresh(app: &AppHandle, state: &CodeMapState, project: &Arc<Projec
     emit_view(app, state, project);
     let control = run.control();
     let pace_app = app.clone();
+    let pace_state = state.clone();
+    let pace_project = project.clone();
     let progress_app = app.clone();
     let progress_state = state.clone();
     let progress_project = project.clone();
     let started = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         let pace = move || {
+            let (done, total) = match pace_project.phase() {
+                Phase::Building { done, total } | Phase::Waiting { done, total, .. } => {
+                    (done, total)
+                }
+                _ => (0, 0),
+            };
             if control.stopped() {
-                Pace::Stop
-            } else if control.is_paused() || others_indexing(&pace_app) {
-                Pace::Hold
+                return Pace::Stop;
+            }
+            let waiting = if control.is_paused() {
+                Some("paused")
+            } else if !pace_project.urgent.load(Ordering::SeqCst) && others_indexing(&pace_app) {
+                Some("otherIndexing")
             } else {
-                Pace::Go
+                None
+            };
+            match waiting {
+                Some(reason) => {
+                    let now = Phase::Waiting {
+                        done,
+                        total,
+                        reason,
+                    };
+                    if pace_project.phase() != now {
+                        pace_project.set_phase(now);
+                        emit_view_now(&pace_app, &pace_state, &pace_project);
+                    }
+                    Pace::Hold
+                }
+                None => {
+                    if matches!(pace_project.phase(), Phase::Waiting { .. }) {
+                        pace_project.set_phase(Phase::Building { done, total });
+                    }
+                    Pace::Go
+                }
             }
         };
         let mut last = Instant::now();
         let mut progress = move |done: usize, total: usize| {
-            progress_project.set_phase(Phase::Building { done, total });
+            if !matches!(progress_project.phase(), Phase::Waiting { .. }) {
+                progress_project.set_phase(Phase::Building { done, total });
+            }
             if last.elapsed() >= PROGRESS_EVERY || done == total {
                 last = Instant::now();
-                emit_view(&progress_app, &progress_state, &progress_project);
+                emit_view_now(&progress_app, &progress_state, &progress_project);
             }
         };
         map.refresh(&pace, &mut progress)
@@ -400,6 +766,7 @@ async fn run_refresh(app: &AppHandle, state: &CodeMapState, project: &Arc<Projec
     .map_err(|e| e.to_string())
     .and_then(|r| r);
     drop(run);
+    project.urgent.store(false, Ordering::SeqCst);
     match result {
         Ok(report) => {
             tracing::info!(
@@ -445,12 +812,10 @@ fn relevant(project: &Project, event: &Event) -> bool {
     })
 }
 
-/// Start watching `project` for changes (once per viewer; the watcher runs
-/// while anyone looks).
-fn watch_acquire(project: &Arc<Project>) -> Result<(), String> {
-    let mut slot = project.watch.lock().unwrap_or_else(|e| e.into_inner());
-    slot.users += 1;
-    if slot.watcher.is_some() {
+/// Start the project's watcher, if it has none.
+fn start_watching(project: &Arc<Project>) -> Result<(), String> {
+    let mut slot = project.watcher.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
         return Ok(());
     }
     let weak = Arc::downgrade(project);
@@ -471,32 +836,29 @@ fn watch_acquire(project: &Arc<Project>) -> Result<(), String> {
     watcher
         .watch(&project.root, RecursiveMode::Recursive)
         .map_err(|e| format!("the code folder cannot be watched: {e}"))?;
-    slot.watcher = Some(watcher);
+    *slot = Some(watcher);
     Ok(())
 }
 
-fn watch_release(project: &Project) {
-    let mut slot = project.watch.lock().unwrap_or_else(|e| e.into_inner());
-    slot.users = slot.users.saturating_sub(1);
-    if slot.users == 0 {
-        slot.watcher = None;
-    }
-}
-
-/// A Code session of the project at `root` started: bring its map up to date.
-pub fn session_started(app: &AppHandle, root: &Path) {
-    let state = app.state::<CodeMapState>().inner().clone();
-    match state.project(root) {
-        Ok(project) => schedule(app, &state, &project, false),
-        Err(e) => {
-            tracing::debug!(target: "shodh::code_map", error = %e, "no code map for the session")
-        }
-    }
-}
-
-/// The agent edited files or ran a command in the project at `root`.
+/// A Code session of the project at `root` started, or the agent changed
+/// files there: bring its map up to date (in the background).
 pub fn touched(app: &AppHandle, root: &Path) {
-    session_started(app, root);
+    let app = app.clone();
+    let root = root.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<CodeMapState>().inner().clone();
+        match state.project(&root) {
+            Ok(project) => schedule(&app, &state, &project, false),
+            Err(e) => {
+                tracing::debug!(target: "shodh::code_map", error = %e, "no code map for the folder")
+            }
+        }
+    });
+}
+
+/// A Code session of the project at `root` started.
+pub fn session_started(app: &AppHandle, root: &Path) {
+    touched(app, root);
 }
 
 async fn project_of(
@@ -506,7 +868,11 @@ async fn project_of(
 ) -> Result<(CodeMapState, Arc<Project>), String> {
     let folder = workspace_code_folder(workspaces, Some(workspace_id)).await?;
     let state = app.state::<CodeMapState>().inner().clone();
-    let project = state.project(folder.root())?;
+    let root = folder.root().to_path_buf();
+    let found = state.clone();
+    let project = tokio::task::spawn_blocking(move || found.project(&root))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok((state, project))
 }
 
@@ -521,7 +887,7 @@ async fn view_async(
 }
 
 /// A Code conversation of the workspace is shown: build or refresh its map and
-/// watch its folder until [`code_map_close`].
+/// watch its folder until [`code_map_close`] gives back the view's `lease`.
 #[tauri::command]
 pub async fn code_map_open(
     app: AppHandle,
@@ -530,22 +896,25 @@ pub async fn code_map_open(
 ) -> Result<CodeMapView, String> {
     let (state, project) = project_of(&app, &workspaces, &workspace_id).await?;
     schedule(&app, &state, &project, false);
-    if let Err(e) = watch_acquire(&project) {
-        tracing::warn!(target: "shodh::code_map", project = %project.name, error = %e, "file changes are not watched");
-    }
-    view_async(state, project, workspace_id).await
+    let lease = {
+        let (state, project, workspace) = (state.clone(), project.clone(), workspace_id.clone());
+        tokio::task::spawn_blocking(move || state.lease(&project, &workspace))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    let mut view = view_async(state, project, workspace_id).await?;
+    view.lease = Some(lease);
+    Ok(view)
 }
 
-/// The Code conversation is no longer shown: stop watching when no other is.
+/// The conversation is no longer shown: give its lease back (also when its
+/// workspace or folder has changed since). Unknown leases are ignored.
 #[tauri::command]
-pub async fn code_map_close(
-    app: AppHandle,
-    workspaces: State<'_, WorkspaceState>,
-    workspace_id: String,
-) -> Result<(), String> {
-    let (_, project) = project_of(&app, &workspaces, &workspace_id).await?;
-    watch_release(&project);
-    Ok(())
+pub async fn code_map_close(app: AppHandle, lease: u64) -> Result<bool, String> {
+    let state = app.state::<CodeMapState>().inner().clone();
+    tokio::task::spawn_blocking(move || state.release(lease))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -614,7 +983,7 @@ pub async fn code_map_find(
         .map_err(|e| e.to_string())?
 }
 
-/// A code map refresh reading files now, for the status strip.
+/// A code map refresh reading files or waiting now, for the status strip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeMapRun {
@@ -622,15 +991,17 @@ pub struct CodeMapRun {
     pub name: String,
     pub done: usize,
     pub total: usize,
+    /// Why it waits (`paused`, `otherIndexing`), when it does.
+    pub waiting: Option<&'static str>,
 }
 
-/// The code map refreshes reading files now.
+/// The code map refreshes reading files or waiting now.
 pub fn runs(app: &AppHandle) -> Vec<CodeMapRun> {
     let Some(state) = app.try_state::<CodeMapState>() else {
         return Vec::new();
     };
     state
-        .building()
+        .running()
         .iter()
         .filter_map(|p| match p.phase() {
             Phase::Building { done, total } => Some(CodeMapRun {
@@ -638,15 +1009,62 @@ pub fn runs(app: &AppHandle) -> Vec<CodeMapRun> {
                 name: p.name.clone(),
                 done,
                 total,
+                waiting: None,
+            }),
+            Phase::Waiting {
+                done,
+                total,
+                reason,
+            } => Some(CodeMapRun {
+                source_id: p.source_id(),
+                name: p.name.clone(),
+                done,
+                total,
+                waiting: Some(reason),
             }),
             _ => None,
         })
         .collect()
 }
 
+/// Whether a command a Code session ran can only have read files, so the map
+/// need not be refreshed after it. Conservative: anything not known to only
+/// read counts as a change.
+pub fn reads_only(command: &str) -> bool {
+    const SEPARATORS: [&str; 6] = ["&&", "||", ";", "|", ">", "`"];
+    let command = command.trim();
+    if command.is_empty()
+        || SEPARATORS.iter().any(|s| command.contains(s))
+        || command.contains("$(")
+    {
+        return false;
+    }
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let program = words[0]
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(words[0])
+        .trim_end_matches(".exe");
+    match program {
+        "ls" | "dir" | "cat" | "head" | "tail" | "wc" | "pwd" | "echo" | "grep" | "rg"
+        | "which" | "type" | "file" | "stat" | "tree" | "less" | "more" => true,
+        "git" => matches!(
+            words.get(1).copied(),
+            Some("status" | "log" | "diff" | "show" | "blame" | "grep" | "ls-files" | "rev-parse")
+        ),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write(root: &Path, path: &str, text: &str) {
+        let full = root.join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
 
     #[test]
     fn projects_are_registered_without_reading_anything() {
@@ -666,19 +1084,84 @@ mod tests {
         assert_eq!(project.phase(), Phase::Queued);
         assert_eq!(project.take_pending(), Some(true));
         assert_eq!(project.take_pending(), None);
+        project.set_phase(Phase::Idle);
         let view = view_of(&state, &project, Some("ws".into()));
         let json = serde_json::to_value(&view).unwrap();
-        assert_eq!(json["state"], "queued");
+        assert_eq!(json["state"], "idle");
         assert_eq!(json["workspaceId"], "ws");
         assert!(json["map"].is_null());
         let map = state.map_of(&project).unwrap();
         assert!(data.path().join("code-map").is_dir());
         assert!(Arc::ptr_eq(&map, &state.map_of(&project).unwrap()));
+        project.set_phase(Phase::Waiting {
+            done: 3,
+            total: 9,
+            reason: "otherIndexing",
+        });
+        let json = serde_json::to_value(view_of(&state, &project, None)).unwrap();
+        assert_eq!(json["state"], "waiting");
+        assert_eq!(json["reason"], "otherIndexing");
+    }
+
+    #[test]
+    fn leases_start_and_stop_the_watcher_and_survive_a_changed_workspace() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let state = CodeMapState::new(data.path().to_path_buf(), None);
+        let project = state.project(folder.path()).unwrap();
+        let a = state.lease(&project, "ws-1");
+        let b = state.lease(&project, "ws-1");
+        assert!(project.is_watched());
+        assert!(state.release(a));
+        assert!(project.is_watched(), "another conversation still shows it");
+        assert!(!state.release(a), "a lease is given back once");
+        assert!(state.release(b));
+        assert!(!project.is_watched());
+        // A reload of the window gives every lease back.
+        state.lease(&project, "ws-1");
+        state.lease(&project, "ws-2");
+        assert_eq!(state.release_all(), 2);
+        assert_eq!(state.leases(), 0);
+        assert!(!project.is_watched());
+        // A deleted workspace gives its leases back, and its map file goes.
+        state.lease(&project, "ws-3");
+        write(folder.path(), "src/a.rs", "pub fn a() {}\n");
+        state.request(&project, false, false);
+        let file = CodeMap::map_path(data.path(), folder.path()).unwrap();
+        assert!(file.is_file());
+        state.forget("ws-3", Some(folder.path()), false);
+        assert_eq!(state.leases(), 0);
+        assert!(!project.is_watched());
+        assert!(!file.exists(), "the map of a deleted workspace is deleted");
+    }
+
+    #[test]
+    fn an_idle_map_is_closed_and_its_file_released() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        write(folder.path(), "src/a.rs", "pub fn a() {}\n");
+        let state = CodeMapState::new(data.path().to_path_buf(), None);
+        let project = state.project(folder.path()).unwrap();
+        let lease = state.lease(&project, "ws");
+        state.request(&project, false, false);
+        assert!(project.is_open());
+        assert!(
+            !state.close_if_idle(&project, Duration::ZERO),
+            "not while shown"
+        );
+        state.release(lease);
+        assert!(state.close_if_idle(&project, Duration::ZERO));
+        assert!(!project.is_open());
+        // Closed means the database is closed: its file can be deleted.
+        let file = CodeMap::map_path(data.path(), folder.path()).unwrap();
+        CodeMap::delete_files(&file).unwrap();
+        assert!(!file.exists());
     }
 
     /// Indexes this repository, checks what the map finds in it, and reports
-    /// the speed (in CI, on the run's summary page). The build is a test
-    /// build: Shodh's own code is unoptimized here, the grammars are not.
+    /// the speed (in CI, on the run's summary page). It measures; it is not a
+    /// gate on speed. The build is a test build: Shodh's own code is
+    /// unoptimized here, the grammars are not.
     #[test]
     fn the_code_map_indexes_this_repository_and_reports_its_speed() {
         use shodh_rag::code_map::SymbolKind;
@@ -712,7 +1195,7 @@ mod tests {
                 .any(|e| e.module == "shodh_rag::code_review::structure"),
             "{deps:?}"
         );
-        let callers = map.references("code_map_tools", None, 20).unwrap();
+        let callers = map.references("code_map_tools", None, None, 20).unwrap();
         assert!(
             callers
                 .resolved
@@ -720,10 +1203,36 @@ mod tests {
                 .any(|r| r.path == "app/src-tauri/src/agent_session_commands.rs"),
             "{callers:?}"
         );
+        // `Store::open(…)` in the file that defines `CodeMap::open` is not a use of it.
+        let open = map.references("CodeMap::open", None, None, 200).unwrap();
+        assert!(
+            !open
+                .resolved
+                .iter()
+                .any(|r| r.qualifier.as_deref() == Some("Store")),
+            "{open:?}"
+        );
+        // A common name: every use is looked at, and the counts are honest.
+        let news = map.references("new", None, None, 12).unwrap();
+        assert!(news.uses_named > 4_000, "{}", news.uses_named);
+        assert_eq!(news.uses_scanned, news.uses_named, "every use is looked at");
+        assert!(news.resolved.len() <= 12 && news.by_name.len() <= 12);
+        assert_eq!(
+            news.resolved_total + news.by_name_total,
+            news.uses_named as usize,
+            "each use is counted once, resolved or by name"
+        );
+        assert!(news.truncated);
+        // A refresh that changes nothing keeps the model.
+        map.model().unwrap();
         let again_started = Instant::now();
         let again = map.refresh(&|| Pace::Go, &mut |_, _| {}).unwrap();
         let again_ms = again_started.elapsed().as_millis();
         assert_eq!(again.read, 0, "nothing changed, so nothing is read again");
+        assert!(
+            map.model_is_current(),
+            "an unchanged refresh keeps the model"
+        );
         let seconds = elapsed.as_secs_f64().max(0.001);
         let line = format!(
             "Code map of this repository: {} source files ({} KB read), {} symbols and {} \
@@ -749,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn edits_and_commands_refresh_the_map_and_reads_do_not() {
+    fn edits_and_commands_that_may_change_files_refresh_the_map() {
         use shodh_rag::harness::events::{AgentEvent, CommandState};
         use shodh_rag::harness::RiskTier;
         let started = |step: &str, tier: RiskTier| AgentEvent::StepStarted {
@@ -771,8 +1280,26 @@ mod tests {
             duration_ms: 1,
             invalid_arguments: false,
         };
+        let command_started = |id: &str, command: &str| AgentEvent::CommandStarted {
+            run_id: "r".into(),
+            step_id: "s".into(),
+            command_id: id.into(),
+            command: command.into(),
+            time_limit_secs: 60,
+            sandbox: String::new(),
+            at_ms: 0,
+        };
+        let command_finished = |id: &str| AgentEvent::CommandFinished {
+            run_id: "r".into(),
+            step_id: "s".into(),
+            command_id: id.into(),
+            state: CommandState::Done,
+            exit_code: Some(0),
+            note: None,
+            duration_ms: 5,
+        };
         let refresh = crate::agent_session_commands::code_map_refresh_after;
-        let mut changing = std::collections::HashSet::new();
+        let mut changing = crate::agent_session_commands::ChangingSteps::default();
         assert!(!refresh(&mut changing, &started("read", RiskTier::Read)));
         assert!(
             !refresh(&mut changing, &finished("read")),
@@ -783,20 +1310,27 @@ mod tests {
             refresh(&mut changing, &finished("edit")),
             "an edit refreshes the map"
         );
-        assert!(changing.is_empty());
-        let command = AgentEvent::CommandFinished {
-            run_id: "r".into(),
-            step_id: "s".into(),
-            command_id: "c".into(),
-            state: CommandState::Done,
-            exit_code: Some(0),
-            note: None,
-            duration_ms: 5,
-        };
+        assert!(!refresh(
+            &mut changing,
+            &command_started("c1", "git status")
+        ));
         assert!(
-            refresh(&mut changing, &command),
-            "a command may have changed files"
+            !refresh(&mut changing, &command_finished("c1")),
+            "git status only reads"
         );
+        assert!(!refresh(&mut changing, &command_started("c2", "cargo fmt")));
+        assert!(
+            refresh(&mut changing, &command_finished("c2")),
+            "a command may change files"
+        );
+        assert!(
+            refresh(&mut changing, &command_finished("unknown")),
+            "unknown: a change"
+        );
+        assert!(reads_only("ls -la src"));
+        assert!(!reads_only("cat a > b"));
+        assert!(!reads_only("git checkout main"));
+        assert!(!reads_only("grep x a && rm a"));
     }
 
     #[test]

@@ -82,3 +82,13 @@ test('only a code map view is read as one, and symbol rows name kind and place',
     { title: 'method Store::open', where: 'src/store.rs:12' },
   );
 });
+
+test('a map that waits says why', () => {
+  assert.equal(
+    codeMapChipLabel(view({ state: 'waiting', reason: 'otherIndexing', done: 12, total: 900 })),
+    'Code map: waiting for other indexing (12 of 900 files)',
+  );
+  assert.equal(codeMapChipLabel(view({ state: 'waiting', reason: 'paused', paused: true })), 'Code map: paused');
+  assert.equal(codeMapTone(view({ state: 'waiting', reason: 'paused' })), 'warn');
+  assert.ok(readCodeMapView({ sourceId: 'x', name: 'y', state: 'waiting' }));
+});

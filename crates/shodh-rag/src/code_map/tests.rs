@@ -488,7 +488,7 @@ fn typescript_aliases_index_files_and_reexports_resolve() {
         "web/src/App".to_string(),
         "web/src/lib/api".to_string()
     ]));
-    let refs = map.references("fetchAll", None, 50).unwrap();
+    let refs = map.references("fetchAll", None, None, 50).unwrap();
     assert_eq!(refs.definitions[0].path, "web/src/lib/api.ts");
     assert!(refs
         .resolved
@@ -527,12 +527,12 @@ fn python_and_go_modules_resolve_inside_the_project() {
         "example.com/proj/cmd",
         "example.com/proj/internal/state"
     ));
-    let refs = map.references("Load", None, 50).unwrap();
+    let refs = map.references("Load", None, None, 50).unwrap();
     assert!(refs
         .resolved
         .iter()
         .any(|r| r.path == "cmd/main.go" && r.how == "through an imported module"));
-    let refs = map.references("tidy", None, 50).unwrap();
+    let refs = map.references("tidy", None, None, 50).unwrap();
     assert!(refs
         .resolved
         .iter()
@@ -582,7 +582,11 @@ fn a_refresh_reads_only_what_changed_and_drops_what_was_deleted() {
         .unwrap()
         .matches
         .is_empty());
-    assert!(map.references("alpha", None, 5).unwrap().by_name.is_empty());
+    assert!(map
+        .references("alpha", None, None, 5)
+        .unwrap()
+        .by_name
+        .is_empty());
     assert_eq!(map.status().unwrap().files, 1);
 
     // A map reopened later keeps what it read.
@@ -687,7 +691,7 @@ fn the_queries_answer_with_file_and_line_receipts() {
     let similar = map.definitions("tota", None, None, 5).unwrap();
     assert!(similar.similar.iter().any(|s| s.name == "total"));
 
-    let refs = map.references("empty", None, 50).unwrap();
+    let refs = map.references("empty", None, None, 50).unwrap();
     let receipt: Vec<(&str, u32, &str, Option<&str>)> = refs
         .resolved
         .iter()
@@ -697,12 +701,12 @@ fn the_queries_answer_with_file_and_line_receipts() {
         receipt.contains(&("src/checkout.rs", 3, "through its module path", Some("pay"))),
         "{receipt:?}"
     );
-    let uses = map.references("Cart", None, 50).unwrap();
+    let uses = map.references("Cart", None, None, 50).unwrap();
     assert!(uses
         .resolved
         .iter()
         .any(|r| r.path == "src/checkout.rs" && r.line == 2 && r.how == "imported"));
-    let methods = map.references("total", None, 50).unwrap();
+    let methods = map.references("total", None, None, 50).unwrap();
     assert!(
         methods
             .by_name
@@ -932,4 +936,428 @@ fn the_open_map_reads_the_view_after_bringing_itself_up_to_date() {
         view.edges
     );
     assert!(map.build(dir.path(), &dir.path().join("..")).is_err());
+}
+
+// ---- the review's fix round ----------------------------------------------------
+
+#[test]
+fn a_qualified_call_is_tied_only_through_its_qualifier() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "Cargo.toml", "[package]\nname = \"shop\"\n");
+    write(root, "src/lib.rs", "pub mod store;\npub mod other;\n");
+    write(
+        root,
+        "src/store.rs",
+        "pub struct Store;\nimpl Store {\n    pub fn new() -> Self { let _v: Vec<u8> = Vec::new(); Self::new_inner() }\n    fn new_inner() -> Self { Store }\n    pub fn open() -> Self { Self::new() }\n}\npub fn build() -> Store { Store::new() }\n",
+    );
+    write(
+        root,
+        "src/other.rs",
+        "use crate::store::Store;\npub struct Other;\nimpl Other { pub fn new() -> Self { Other } }\npub fn make() { let _s = Store::new(); let _o = Other::new(); let _m = std::collections::HashMap::<u8, u8>::new(); }\n",
+    );
+    let map = built(root, data.path());
+    let refs = map.references("Store::new", None, None, 50).unwrap();
+    let resolved: Vec<(&str, u32, Option<&str>)> = refs
+        .resolved
+        .iter()
+        .map(|r| (r.path.as_str(), r.line, r.qualifier.as_deref()))
+        .collect();
+    assert!(
+        resolved.contains(&("src/store.rs", 5, Some("Self"))),
+        "{resolved:?}"
+    );
+    assert!(
+        resolved.contains(&("src/store.rs", 7, Some("Store"))),
+        "{resolved:?}"
+    );
+    assert!(
+        resolved.contains(&("src/other.rs", 4, Some("Store"))),
+        "{resolved:?}"
+    );
+    for wrong in ["Vec", "Other", "std::collections::HashMap"] {
+        assert!(
+            !refs
+                .resolved
+                .iter()
+                .any(|r| r.qualifier.as_deref() == Some(wrong)),
+            "{wrong}::new() is never a proven use of Store::new: {resolved:?}"
+        );
+    }
+    assert!(refs
+        .by_name
+        .iter()
+        .any(|r| r.qualifier.as_deref() == Some("Vec")));
+    assert_eq!(
+        refs.resolved_total + refs.by_name_total,
+        refs.uses_named as usize
+    );
+}
+
+#[test]
+fn every_use_is_counted_and_the_nearest_are_listed_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "Cargo.toml", "[package]\nname = \"many\"\n");
+    write(
+        root,
+        "src/lib.rs",
+        "pub mod a;\npub mod far;\npub fn ping() {}\n",
+    );
+    let calls: String = (0..300)
+        .map(|i| format!("fn c{i}() {{ crate::ping(); }}\n"))
+        .collect();
+    write(root, "src/a.rs", &calls);
+    write(
+        root,
+        "src/far.rs",
+        "pub fn ping() {}\npub fn local() { ping(); }\n",
+    );
+    let map = built(root, data.path());
+    let refs = map.references("crate::ping", None, None, 10).unwrap();
+    assert_eq!(refs.uses_named, 301);
+    assert_eq!(refs.uses_scanned, 301);
+    assert_eq!(refs.resolved.len(), 10);
+    assert_eq!(
+        refs.resolved_total, 300,
+        "every call through the path is counted"
+    );
+    assert!(refs.truncated);
+    let narrowed = map
+        .references("crate::ping", None, Some("src/far.rs"), 10)
+        .unwrap();
+    assert_eq!(narrowed.uses_named, 1);
+    assert_eq!(narrowed.resolved_total, 0);
+    assert_eq!(
+        narrowed.by_name_total, 1,
+        "far.rs calls its own ping, not this one"
+    );
+    // Definitions are filtered before they are cut.
+    let found = map
+        .definitions("ping", None, Some("src/far.rs"), 1)
+        .unwrap();
+    assert_eq!(
+        (found.matches[0].path.as_str(), found.total),
+        ("src/far.rs", 1)
+    );
+    assert_eq!(map.definitions("ping", None, None, 1).unwrap().total, 2);
+}
+
+#[test]
+fn a_refresh_that_waits_holds_nothing_and_another_reads_the_edit_meanwhile() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    write(&root, "src/a.rs", "pub fn first() {}\n");
+    let map = Arc::new(built(&root, data.path()));
+    // A background refresh held behind other indexing, as long as `hold` is set.
+    let hold = Arc::new(AtomicBool::new(true));
+    let waiting = {
+        let (map, hold) = (map.clone(), hold.clone());
+        std::thread::spawn(move || {
+            let pace = || {
+                if hold.load(Ordering::SeqCst) {
+                    Pace::Hold
+                } else {
+                    Pace::Go
+                }
+            };
+            map.refresh(&pace, &mut |_, _| {}).unwrap()
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(map.is_refreshing());
+    write(&root, "src/a.rs", "\n\n\npub fn first() {}\n");
+    let started = std::time::Instant::now();
+    let report = map.refresh(&go, &mut |_, _| {}).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "never kept waiting behind the held refresh"
+    );
+    assert_eq!(report.read, 1);
+    let found = map.definitions("first", None, None, 5).unwrap();
+    assert_eq!(
+        found.matches[0].line, 4,
+        "the edited file's lines, not the old ones"
+    );
+    hold.store(false, Ordering::SeqCst);
+    waiting.join().unwrap();
+}
+
+#[test]
+fn a_view_of_a_map_not_yet_complete_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "Cargo.toml", "[package]\nname = \"demo\"\n");
+    write(root, "src/lib.rs", "pub mod a;\n");
+    write(root, "src/a.rs", "pub fn a() {}\n");
+    let map = CodeMap::open(data.path(), root).unwrap();
+    let stop = || Pace::Stop;
+    map.refresh(&stop, &mut |_, _| {}).unwrap();
+    let view = map.structure(".").unwrap();
+    let why = view
+        .incomplete
+        .clone()
+        .expect("an incomplete map's view says so");
+    assert!(why.contains("still being built"), "{why}");
+    assert!(view.render().contains("INCOMPLETE VIEW"));
+    // A refresh cut off by its deadline says so too.
+    let view = map
+        .review_view(root, root, std::time::Duration::ZERO)
+        .unwrap();
+    assert!(view.incomplete.is_some());
+    // Complete: nothing to say.
+    let view = map
+        .review_view(root, root, std::time::Duration::from_secs(30))
+        .unwrap();
+    assert_eq!(view.incomplete, None);
+    assert!(!view.render().contains("INCOMPLETE VIEW"));
+}
+
+#[test]
+fn a_cut_listing_keeps_what_it_did_not_reach_and_always_lists_configs() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "a.py", "def a(): pass\n");
+    write(root, "b.py", "def b(): pass\n");
+    write(root, "c.py", "def c(): pass\n");
+    write(root, "z/tsconfig.json", "{}\n");
+    built(root, data.path());
+    let limited = CodeMap::open(data.path(), root)
+        .unwrap()
+        .with_limits(walk::Limits {
+            max_files: 2,
+            ..walk::Limits::default()
+        });
+    let report = limited.refresh(&go, &mut |_, _| {}).unwrap();
+    assert!(report.partial);
+    assert_eq!(
+        report.removed, 0,
+        "a file past the cut is not taken for deleted"
+    );
+    assert_eq!(
+        limited
+            .definitions("c", None, None, 5)
+            .unwrap()
+            .matches
+            .len(),
+        1
+    );
+    let listing = walk::list_with(
+        root,
+        &walk::Limits {
+            max_files: 2,
+            ..walk::Limits::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        listing.files.iter().any(|f| f.path() == "z/tsconfig.json"),
+        "configs past the cut are listed"
+    );
+    assert_eq!(listing.cut.as_deref(), Some("c.py"));
+}
+
+#[test]
+fn a_rename_is_taken_back_before_anything_else_even_when_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "src/store.rs", "pub struct Store;\n");
+    let map = built(root, data.path());
+    std::fs::rename(root.join("src/store.rs"), root.join("src/storage.rs")).unwrap();
+    let stop = || Pace::Stop;
+    let report = map.refresh(&stop, &mut |_, _| {}).unwrap();
+    assert!(report.stopped);
+    assert_eq!(report.removed, 1);
+    assert!(
+        map.definitions("Store", None, None, 5)
+            .unwrap()
+            .matches
+            .is_empty(),
+        "the old file is gone at once; the new one is read next time"
+    );
+}
+
+#[test]
+fn an_unchanged_refresh_keeps_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.py", "def a(): pass\n");
+    let map = built(dir.path(), data.path());
+    map.model().unwrap();
+    assert!(map.model_is_current());
+    map.refresh(&go, &mut |_, _| {}).unwrap();
+    assert!(map.model_is_current(), "touched times change no answer");
+    write(dir.path(), "a.py", "def b(): pass\n");
+    map.refresh(&go, &mut |_, _| {}).unwrap();
+    assert!(!map.model_is_current(), "a changed file does");
+}
+
+#[test]
+fn a_slow_or_minified_file_is_listed_not_read() {
+    let big: String = (0..20_000)
+        .map(|i| format!("fn f{i}() {{ g({i}); }}\n"))
+        .collect();
+    let timed_out = extract::extract_within(
+        Lang::Rust,
+        big.as_bytes(),
+        std::time::Duration::ZERO,
+        &|| false,
+    );
+    assert!(timed_out.unwrap_err().contains("longer than"));
+    let stopped = extract::extract_within(
+        Lang::Rust,
+        big.as_bytes(),
+        std::time::Duration::from_secs(60),
+        &|| true,
+    );
+    assert!(stopped.unwrap_err().contains("stopped"));
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let minified = format!("{}\n", "var a=1;".repeat(4_000));
+    write(dir.path(), "dist2/app.min.js", &minified);
+    let map = built(dir.path(), data.path());
+    let model = map.model().unwrap();
+    let file = &model.files[model.by_path["dist2/app.min.js"]];
+    assert!(
+        file.skipped
+            .as_deref()
+            .is_some_and(|s| s.contains("minified")),
+        "{:?}",
+        file.skipped
+    );
+}
+
+#[test]
+fn python_prefers_the_scripts_own_folder_and_ties_nothing_ambiguous() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "a/utils.py", "def helper(): pass\n");
+    write(root, "b/utils.py", "def helper(): pass\n");
+    write(root, "b/main.py", "import utils\nutils.helper()\n");
+    write(root, "c/main.py", "import utils\nutils.helper()\n");
+    let map = built(root, data.path());
+    let model = map.model().unwrap();
+    let has = |from: &str, to: &str| model.edges.iter().any(|e| e.from == from && e.to == to);
+    assert!(has("b/main", "b/utils"), "{:?}", model.edges);
+    assert!(!has("b/main", "a/utils"));
+    assert!(
+        !model.edges.iter().any(|e| e.from == "c/main"),
+        "two utils: neither is assumed"
+    );
+}
+
+#[test]
+fn local_modules_win_over_crate_names_and_a_binary_is_its_own_crate() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "config/Cargo.toml", "[package]\nname = \"config\"\n");
+    write(root, "config/src/lib.rs", "pub fn load() {}\n");
+    write(
+        root,
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\n\n[dependencies]\nserde = \"1\"\n",
+    );
+    write(root, "app/src/lib.rs", "pub mod config;\npub mod x;\n");
+    write(root, "app/src/config.rs", "pub fn load() {}\n");
+    write(
+        root,
+        "app/src/x.rs",
+        "pub fn run() { config::load(); crate::config::load(); }\n",
+    );
+    write(
+        root,
+        "app/src/main.rs",
+        "mod cli;\nfn main() { crate::cli::go(); app::x::run(); }\n",
+    );
+    write(root, "app/src/cli.rs", "pub fn go() {}\n");
+    write(
+        root,
+        "tool/Cargo.toml",
+        "[package]\nname = \"tool\"\n\n[dependencies]\nconfig = { workspace = true }\n",
+    );
+    write(root, "tool/src/main.rs", "fn main() { config::load(); }\n");
+    let map = built(root, data.path());
+    let model = map.model().unwrap();
+    let module = |path: &str| model.files[model.by_path[path]].module.clone();
+    assert_eq!(
+        module("app/src/main.rs"),
+        "app::main",
+        "a binary beside a library is its own crate"
+    );
+    assert_eq!(module("app/src/cli.rs"), "app::main::cli");
+    let has = |from: &str, to: &str| model.edges.iter().any(|e| e.from == from && e.to == to);
+    assert!(
+        has("app::main", "app::main::cli") || !has("app::main", "app::cli"),
+        "{:?}",
+        model.edges
+    );
+    assert!(
+        has("app::main", "app::x"),
+        "the binary reaches the library by name"
+    );
+    assert!(
+        !has("app::x", "config"),
+        "app does not depend on the config crate: {:?}",
+        model.edges
+    );
+    assert!(
+        has("tool", "config"),
+        "a workspace dependency is a dependency"
+    );
+    let refs = map
+        .references("config::load", Some("config/src/lib.rs"), None, 20)
+        .unwrap();
+    assert!(
+        !refs.resolved.iter().any(|r| r.path == "app/src/x.rs"),
+        "{refs:?}"
+    );
+}
+
+#[test]
+fn outside_git_the_walk_still_honours_gitignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, ".gitignore", "scratch/\nlocal_settings.py\n");
+    write(root, "app.py", "def run(): pass\n");
+    write(root, "local_settings.py", "SECRET_NAME = 1\n");
+    write(root, "scratch/try.py", "def t(): pass\n");
+    let map = built(root, data.path());
+    let model = map.model().unwrap();
+    let paths: Vec<&str> = model.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["app.py"]);
+}
+
+#[test]
+fn a_damaged_map_file_is_moved_aside_and_built_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.py", "def a(): pass\n");
+    let file = CodeMap::map_path(data.path(), dir.path()).unwrap();
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        b"this is not a database at all, not even close to one",
+    )
+    .unwrap();
+    let map = built(dir.path(), data.path());
+    assert_eq!(
+        map.definitions("a", None, None, 5).unwrap().matches.len(),
+        1
+    );
+    let aside = std::fs::read_dir(file.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.file_name().to_string_lossy().contains("corrupt"));
+    assert!(aside, "the damaged file is kept aside");
 }

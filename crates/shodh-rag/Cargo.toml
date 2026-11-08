@@ -109,6 +109,8 @@ tree-sitter-go = "0.25.0"
 # Utilities
 regex = "1"
 walkdir = "2"
+# The code map's folder walk outside git: honours .gitignore (Unlicense OR MIT).
+ignore = "0.4"
 dirs = "5"
 
 [features]

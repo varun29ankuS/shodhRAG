@@ -16,16 +16,17 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use shodh_rag::code_map::{CodeMap, Pace, SymbolHit, SymbolKind};
+use shodh_rag::code_map::{CodeMap, Pace, RefreshOptions, SymbolHit, SymbolKind};
 use shodh_rag::harness::events::NavigationTarget;
 use shodh_rag::harness::tools::navigate::{emit_shown, SHOWN_TO_USER};
 use shodh_rag::harness::tools::{HostTool, ToolContext, ToolError, ToolOutput};
 use shodh_rag::harness::RiskTier;
 
+use super::code_intel::grouped;
 use super::{invalid, str_arg};
 use crate::agent_session_commands::workspace_code_folder;
 use crate::code_map_commands::CodeMapState;
@@ -48,8 +49,11 @@ pub const CODE_MAP_TOOL_NAMES: [&str; 4] = [
 const MAX_DEFINITIONS: usize = 10;
 /// Uses listed at most.
 const MAX_USES: usize = 60;
-/// How long a tool waits for a map being built for the first time.
-const FIRST_BUILD_WAIT: Duration = Duration::from_secs(120);
+/// Changed files a tool reads itself before answering at most; more are
+/// left to the background refresh.
+const MAX_INLINE_READS: usize = 200;
+/// The time a tool spends bringing the map up to date at most.
+const INLINE_TIME: Duration = Duration::from_secs(5);
 /// Lines of a definition selected in the code pane at most.
 const MAX_SELECTED: u32 = 60;
 
@@ -107,8 +111,8 @@ pub fn code_map_tools(maps: CodeMapState, folder: Arc<dyn CodeFolderOf>) -> Vec<
 }
 
 /// A path the agent gives, as the map stores paths (`/`, no `./`).
-fn path_arg(args: &Value, tool: &str) -> Result<Option<String>, ToolError> {
-    let Some(path) = str_arg(args, "path") else {
+fn path_arg(args: &Value, key: &str, tool: &str) -> Result<Option<String>, ToolError> {
+    let Some(path) = str_arg(args, key) else {
         return Ok(None);
     };
     let path = path.replace('\\', "/");
@@ -121,7 +125,10 @@ fn path_arg(args: &Value, tool: &str) -> Result<Option<String>, ToolError> {
         || path.contains(':') && !path.contains("::")
         || path.split('/').any(|part| part == "..")
     {
-        return Err(invalid(tool, "path must be relative to the code folder"));
+        return Err(invalid(
+            tool,
+            format!("{key} must be relative to the code folder"),
+        ));
     }
     Ok(Some(path))
 }
@@ -141,52 +148,78 @@ impl Shared {
         &self,
         ctx: &ToolContext,
         tool: &str,
-    ) -> Result<(String, Arc<CodeMap>, Option<&'static str>), ToolError> {
+    ) -> Result<(String, Arc<CodeMap>, Option<String>), ToolError> {
         let (workspace, root) = self.folder.folder(ctx, tool).await?;
-        let map = self
+        let (project, map) = self
             .maps
-            .map_for(&root)
+            .open_for(&root)
             .await
             .map_err(ToolError::Unavailable)?;
         let maps = self.maps.clone();
         let fresh = map.clone();
-        let note = tokio::task::spawn_blocking(move || -> Result<Option<&'static str>, String> {
-            let complete = fresh.is_complete();
-            if maps.paused() {
-                return Ok(Some(if complete {
-                    "Indexing is paused, so the code map was not brought up to date first: files \
-                     changed since the last update may be missed."
-                } else {
-                    "Indexing is paused and the code map is not fully built: the answer covers \
-                     only the files read so far."
-                }));
+        let note = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+            if !fresh.is_complete() {
+                // Never built here: the background build is pushed ahead (it
+                // shows in the status strip, and Pause and Stop reach it), and
+                // the answer is from what it has read so far.
+                maps.request(&project, false, true);
+                if fresh.is_complete() {
+                    return Ok(None);
+                }
+                let status = fresh.status()?;
+                return Ok(Some(format!(
+                    "The code map is still being built: {} of {} files read, so the answer covers only those. The build runs in the status strip; ask again later for the rest.",
+                    status.files,
+                    status.listed.map(|n| n.to_string()).unwrap_or_else(|| "the".into())
+                )));
             }
-            let wait = if complete {
-                Duration::ZERO
-            } else {
-                FIRST_BUILD_WAIT
+            if maps.paused() {
+                let status = fresh.status()?;
+                return Ok(Some(format!(
+                    "Indexing is paused, so the code map was not brought up to date first: it was last checked {}, and files changed since may be missed.",
+                    age(status.checked_at.as_deref().or(status.updated_at.as_deref()))
+                )));
+            }
+            // The files changed since the last refresh are read now (this
+            // never waits behind another refresh); many at once are left to
+            // the background.
+            let options = RefreshOptions {
+                max_reads: Some(MAX_INLINE_READS),
+                deadline: Some(Instant::now() + INLINE_TIME),
             };
             let pace = || if maps.paused() { Pace::Stop } else { Pace::Go };
-            Ok(match fresh.refresh_within(wait, &pace, &mut |_, _| {})? {
-                Some(report) if report.stopped => Some(
-                    "Indexing was paused while the code map was brought up to date: the answer \
-                     may miss recent changes.",
-                ),
-                Some(_) => None,
-                None if complete => Some(
-                    "The code map was being updated by another refresh: the answer is from the \
-                     map as it was a moment ago.",
-                ),
-                None => Some(
-                    "The code map is still being built: the answer covers only the files read \
-                     so far.",
-                ),
-            })
+            let report = fresh.refresh_with(options, &pace, &mut |_, _| {})?;
+            if !report.stopped {
+                return Ok(None);
+            }
+            maps.request(&project, false, true);
+            let status = fresh.status()?;
+            Ok(Some(format!(
+                "Many files changed: {} were read now and the rest are being read in the background (in the status strip); the map was last complete {}. Answers about the other changed files may be out of date.",
+                report.read,
+                age(status.complete_at.as_deref())
+            )))
         })
         .await
         .map_err(|e| ToolError::Failed(format!("updating the code map did not finish: {e}")))?
         .map_err(ToolError::Unavailable)?;
         Ok((workspace, map, note))
+    }
+}
+
+/// "3 min ago" from an RFC 3339 time.
+fn age(at: Option<&str>) -> String {
+    let Some(at) = at.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()) else {
+        return "never".to_string();
+    };
+    let seconds = (chrono::Utc::now() - at.with_timezone(&chrono::Utc))
+        .num_seconds()
+        .max(0);
+    match seconds {
+        0..=59 => "under a minute ago".to_string(),
+        60..=3_599 => format!("{} min ago", seconds / 60),
+        3_600..=86_399 => format!("{} h ago", seconds / 3_600),
+        _ => format!("{} days ago", seconds / 86_400),
     }
 }
 
@@ -221,10 +254,10 @@ fn show(ctx: &ToolContext, workspace: &str, path: &str, line: u32, end: u32, wha
     );
 }
 
-fn with_note(mut text: String, note: Option<&str>) -> String {
+fn with_note(mut text: String, note: Option<String>) -> String {
     if let Some(note) = note {
         text.push_str("\n\nNote: ");
-        text.push_str(note);
+        text.push_str(&note);
     }
     text
 }
@@ -298,7 +331,7 @@ impl HostTool for DefinitionTool {
             ),
             None => None,
         };
-        let path = path_arg(&args, tool)?;
+        let path = path_arg(&args, "path", tool)?;
         let (workspace, map, note) = self.shared.map(ctx, tool).await?;
         let asked = name.clone();
         let found = query(map, move |m| {
@@ -370,10 +403,12 @@ impl HostTool for ReferencesTool {
     }
     fn description(&self) -> &str {
         "Find who calls or uses a symbol in this project, from Shodh's code map: each use as \
-         path:line with the function it is in and how it was tied to the definition (in the \
-         defining file, imported, through its module path or type, in the same module). Uses \
-         of the same name it could not tie to the definition (such as x.open() on a value) are \
-         listed apart, by name only. name as for code_definition; path keeps the definition \
+         path:line with the function it is in and how it was resolved to the definition (in \
+         the defining file, imported, through its module path, its type or Self, in the same \
+         module). Uses of the same name it could not resolve (such as x.open() on a value, or \
+         Vec::new() for Store::new) are listed apart, by name only. Every use of the name is \
+         looked at; the nearest are listed first, with how many there are in all. name as for \
+         code_definition; path keeps the definition to a file or folder; within keeps the uses \
          to a file or folder. Prefer this to grep for who calls X. Shows the first use in the \
          code pane. This changes nothing."
     }
@@ -382,7 +417,8 @@ impl HostTool for ReferencesTool {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "minLength": 1, "maxLength": 300},
-                "path": {"type": "string", "minLength": 1, "maxLength": 1024}
+                "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "within": {"type": "string", "minLength": 1, "maxLength": 1024}
             },
             "required": ["name"],
             "additionalProperties": false
@@ -394,17 +430,19 @@ impl HostTool for ReferencesTool {
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = CODE_REFERENCES;
         let name = name_arg(&args, "name", tool)?.to_string();
-        let path = path_arg(&args, tool)?;
+        let path = path_arg(&args, "path", tool)?;
+        let within = path_arg(&args, "within", tool)?;
         let (workspace, map, note) = self.shared.map(ctx, tool).await?;
         let asked = name.clone();
+        let scope = within.clone();
         let found = query(map, move |m| {
-            m.references(&asked, path.as_deref(), MAX_USES)
+            m.references(&asked, path.as_deref(), scope.as_deref(), MAX_USES)
         })
         .await?;
         let mut text = String::new();
         match found.definitions.as_slice() {
             [] => text.push_str(&format!(
-                "The code map has no definition named {name}, so no use is tied to one.\n"
+                "The code map has no definition named {name}, so no use is resolved to one.\n"
             )),
             [one] => text.push_str(&format!(
                 "{} {} is defined at {}:{}.\n",
@@ -414,13 +452,30 @@ impl HostTool for ReferencesTool {
                 one.line
             )),
             many => {
-                text.push_str(&format!("{name} has {} definitions:\n", many.len()));
+                text.push_str(&format!(
+                    "{name} has {} definitions{}:\n",
+                    found.definitions_total,
+                    if found.definitions_total > many.len() {
+                        format!(" (uses are resolved to the first {})", many.len())
+                    } else {
+                        String::new()
+                    }
+                ));
                 for hit in many.iter().take(MAX_DEFINITIONS) {
                     text.push_str(&definition_line(hit));
                     text.push('\n');
                 }
             }
         }
+        let where_ = within
+            .as_deref()
+            .map(|w| format!(" in {w}"))
+            .unwrap_or_default();
+        text.push_str(&format!(
+            "The map has {} use{} named {name}{where_}.\n",
+            grouped(found.uses_named),
+            if found.uses_named == 1 { "" } else { "s" }
+        ));
         let use_line = |r: &shodh_rag::code_map::RefHit| {
             let mut line = format!("- {}:{}", r.path, r.line);
             if let Some(caller) = &r.caller {
@@ -429,32 +484,55 @@ impl HostTool for ReferencesTool {
             line.push_str(&format!(" ({}, {})", r.kind, r.how));
             line
         };
-        if found.resolved.is_empty() {
-            text.push_str("No use is tied to it.\n");
+        let shown = |listed: usize, total: usize| {
+            if listed < total {
+                format!(
+                    "{} of {} shown, nearest first",
+                    grouped(listed as u64),
+                    grouped(total as u64)
+                )
+            } else {
+                "all shown".to_string()
+            }
+        };
+        if found.resolved_total == 0 {
+            text.push_str("No use is resolved to it.\n");
         } else {
             text.push_str(&format!(
-                "{} use{} tied to it:\n",
-                found.resolved.len(),
-                if found.resolved.len() == 1 { "" } else { "s" }
+                "{} use{} resolved to it through its file, an import, a path or Self ({}):\n",
+                grouped(found.resolved_total as u64),
+                if found.resolved_total == 1 { "" } else { "s" },
+                shown(found.resolved.len(), found.resolved_total)
             ));
             for r in &found.resolved {
                 text.push_str(&use_line(r));
                 text.push('\n');
             }
         }
-        if !found.by_name.is_empty() {
+        if found.by_name_total > 0 {
             text.push_str(&format!(
-                "{} more use{} of the name the map could not tie to a definition (check them):\n",
-                found.by_name.len(),
-                if found.by_name.len() == 1 { "" } else { "s" }
+                "{} use{} of the name could not be resolved to a definition, by name only, \
+                 so they may be other symbols; check them ({}):\n",
+                grouped(found.by_name_total as u64),
+                if found.by_name_total == 1 { "" } else { "s" },
+                shown(found.by_name.len(), found.by_name_total)
             ));
             for r in &found.by_name {
                 text.push_str(&use_line(r));
                 text.push('\n');
             }
         }
+        if found.uses_scanned < found.uses_named {
+            text.push_str(&format!(
+                "Only the first {} uses were looked at; grep for the rest.\n",
+                grouped(found.uses_scanned)
+            ));
+        }
         if found.truncated {
-            text.push_str(&format!("Only the first {MAX_USES} are listed.\n"));
+            text.push_str(
+                "Not every use is listed: narrow it with within (a file or folder) or path (the \
+                 definition's file), or grep for the rest.\n",
+            );
         }
         let first = found
             .resolved
@@ -468,8 +546,8 @@ impl HostTool for ReferencesTool {
             });
         let summary = format!(
             "{} use{} of {name}",
-            found.resolved.len(),
-            if found.resolved.len() == 1 { "" } else { "s" }
+            grouped(found.resolved_total as u64),
+            if found.resolved_total == 1 { "" } else { "s" }
         );
         if let Some((path, line, end)) = first {
             let what = format!("{path}:{line}");
@@ -484,7 +562,10 @@ impl HostTool for ReferencesTool {
             detail: Some(json!({
                 "definitions": found.definitions,
                 "resolved": found.resolved,
+                "resolvedTotal": found.resolved_total,
                 "byName": found.by_name,
+                "byNameTotal": found.by_name_total,
+                "usesNamed": found.uses_named,
                 "truncated": found.truncated,
             })),
         })
@@ -530,7 +611,8 @@ impl HostTool for OutlineTool {
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = CODE_OUTLINE;
-        let target = path_arg(&args, tool)?.ok_or_else(|| invalid(tool, "path is required"))?;
+        let target =
+            path_arg(&args, "path", tool)?.ok_or_else(|| invalid(tool, "path is required"))?;
         let (workspace, map, note) = self.shared.map(ctx, tool).await?;
         let asked = target.clone();
         let outline = query(map, move |m| m.outline(&asked)).await?;
@@ -641,7 +723,8 @@ impl HostTool for DependenciesTool {
     }
     async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let tool = CODE_DEPENDENCIES;
-        let target = path_arg(&args, tool)?.ok_or_else(|| invalid(tool, "path is required"))?;
+        let target =
+            path_arg(&args, "path", tool)?.ok_or_else(|| invalid(tool, "path is required"))?;
         let (workspace, map, note) = self.shared.map(ctx, tool).await?;
         let asked = target.clone();
         let all = query(map, move |m| m.dependencies(&asked)).await?;

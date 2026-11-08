@@ -98,6 +98,11 @@ pub struct StructureView {
     pub cycles: Vec<Vec<String>>,
     /// More than [`MAX_FILES`] source files: the view covers the first ones.
     pub partial: bool,
+    /// Why the view may miss files, imports or cycles (the code map was not
+    /// complete, or could not be brought up to date in time); the reviewer
+    /// is told, so it does not report an absence as a finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete: Option<String>,
 }
 
 /// Builds the structural view of a folder (the code map: [`crate::code_map::CodeMap`]).
@@ -214,12 +219,20 @@ impl StructureView {
             self.folder,
             self.files.len(),
             self.modules.len(),
-            if self.partial {
+            if self.partial && self.files.len() >= MAX_FILES {
                 format!("; only the first {MAX_FILES} files were read")
+            } else if self.partial {
+                "; the project has more files than the code map holds".to_string()
             } else {
                 String::new()
             }
         ));
+        if let Some(why) = &self.incomplete {
+            out.push_str(&format!(
+                "INCOMPLETE VIEW: {why}. Files, imports and cycles may be missing: do not report \
+                 that something is absent (no cycle, no import, unused) as a finding.\n"
+            ));
+        }
         if !self.crates.is_empty() {
             out.push_str("\nCrates (from Cargo.toml):\n");
             for c in &self.crates {
@@ -399,6 +412,7 @@ mod tests {
             crates: Vec::new(),
             cycles: Vec::new(),
             partial: false,
+            incomplete: None,
         };
         let diagram = view.diagram(&[("b".into(), "c".into())]);
         assert!(diagram.starts_with("flowchart LR\n"));

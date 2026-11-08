@@ -204,6 +204,16 @@ pub fn run() {
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
                 app_settings::on_page_loaded(webview);
             }
+            // A (re)load of the main window starts with no conversation shown:
+            // the code map leases of the page before it are given back.
+            if payload.event() == tauri::webview::PageLoadEvent::Started && webview.label() == "main" {
+                if let Some(maps) = webview.app_handle().try_state::<code_map_commands::CodeMapState>() {
+                    let released = maps.release_all();
+                    if released > 0 {
+                        tracing::info!(target: "shodh::code_map", released, "code map leases of a reloaded window given back");
+                    }
+                }
+            }
         })
         // Creator mode's previews: agent-built pages, served only to their own
         // preview window, which holds no grants (creations/preview.rs, preview_window.rs).
@@ -603,10 +613,10 @@ pub fn run() {
             app.manage(folder_sync);
             // Code mode's code maps: nothing is opened or read until a Code
             // project asks for its map.
-            app.manage(code_map_commands::CodeMapState::new(
-                app_data_dir.clone(),
-                Some(pause.clone()),
-            ));
+            let code_maps =
+                code_map_commands::CodeMapState::new(app_data_dir.clone(), Some(pause.clone()));
+            code_maps.attach(app.handle().clone());
+            app.manage(code_maps);
             // Re-indexing for faster search: one that Shodh closed in the middle of
             // goes on (and waits while indexing is paused).
             app.manage(search_model_switch::SearchModelSwitchState::default());

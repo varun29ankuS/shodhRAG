@@ -79,6 +79,10 @@ export interface CodeMapCounts {
   /** When a refresh last went through every file. */
   completeAt: string | null;
   updatedAt: string | null;
+  /** When a refresh last ended. */
+  checkedAt?: string | null;
+  /** Files the last listing found. */
+  listed?: number | null;
   partial: boolean;
 }
 
@@ -99,8 +103,10 @@ export interface CodeMapView {
   workspaceId: string | null;
   sourceId: string;
   name: string;
-  state: 'idle' | 'queued' | 'building' | 'failed';
+  state: 'idle' | 'queued' | 'building' | 'waiting' | 'failed';
   done?: number;
+  /** Why a refresh waits: indexing is paused, or other indexing runs first. */
+  reason?: 'paused' | 'otherIndexing';
   total?: number;
   error?: string;
   /** Indexing is paused: a refresh waits. */
@@ -108,6 +114,8 @@ export interface CodeMapView {
   watching: boolean;
   map: CodeMapCounts | null;
   lastRun: CodeMapRefresh | null;
+  /** The hold `open` took on the map; `close` gives it back. */
+  lease?: number | null;
 }
 
 /** A definition the code map knows (`shodh_rag::code_map::SymbolHit`). */
@@ -144,7 +152,7 @@ export const codeMapApi = {
   /** A Code conversation of the workspace is shown: build or refresh its map and watch its folder. */
   open: (workspaceId: string) => invoke<CodeMapView>('code_map_open', { workspaceId }),
   /** It is no longer shown. */
-  close: (workspaceId: string) => invoke<void>('code_map_close', { workspaceId }),
+  close: (lease: number) => invoke<boolean>('code_map_close', { lease }),
   status: (workspaceId: string) => invoke<CodeMapView>('code_map_status', { workspaceId }),
   /** Empty the map and read every file again. */
   rebuild: (workspaceId: string) => invoke<CodeMapView>('code_map_rebuild', { workspaceId }),

@@ -38,8 +38,12 @@ pub struct SourceInfo {
     pub lines: u32,
     /// The module this file is.
     pub module: String,
-    /// Rust: the root module of its crate (`my_core`, or `crate` outside any).
+    /// Rust: the root module of the crate target it is part of (`my_core`
+    /// for the library, `app::main` for a binary beside a library,
+    /// `app::bin::x`, `app::tests::it`), or `crate` outside any crate.
     pub crate_root: Option<String>,
+    /// Rust: the folder of its package (`""` at the project root).
+    pub crate_dir: Option<String>,
     pub skipped: Option<String>,
 }
 
@@ -59,7 +63,8 @@ pub struct CrateRec {
     /// Its folder, relative to the project (`""` at the root).
     pub dir: String,
     pub manifest: String,
-    /// The project's other crates it depends on by `path`.
+    /// The project's other crates it depends on (by `path`, or by name
+    /// with `workspace = true`).
     pub depends_on: Vec<String>,
 }
 
@@ -77,11 +82,15 @@ pub struct Model {
     pub edges: Vec<ImportEdge>,
     /// Each file's imports, resolved (same order as `files`).
     pub imports: Vec<Vec<ResolvedImport>>,
-    /// Workspace crate names (with `_`) to their root module.
+    /// Workspace crate names (with `_`) to their library's root module.
     crate_roots: HashMap<String, String>,
+    /// The crate names (with `_`) code of each package may use: its own
+    /// library and the workspace crates it depends on, by package folder.
+    crate_allowed: HashMap<String, HashSet<String>>,
+    python_modules: HashSet<String>,
     script_modules: HashSet<String>,
-    /// Python dotted names to their module.
-    python_dotted: HashMap<String, String>,
+    /// Python dotted names to their modules (more than one: ambiguous).
+    python_dotted: HashMap<String, Vec<String>>,
     go_modules: HashSet<String>,
     /// Python files' dotted names, by path.
     python_dotted_of: HashMap<String, String>,
@@ -102,6 +111,9 @@ pub struct Manifest {
     pub lib_name: Option<String>,
     /// `[[bin]] path`s.
     pub bin_paths: Vec<String>,
+    /// Every dependency's name, whatever its source (`path`, a version,
+    /// `workspace = true`).
+    pub dep_names: Vec<String>,
 }
 
 /// Reads a `Cargo.toml` as text: the `name` of `[package]`, every `path =` of
@@ -132,6 +144,27 @@ pub fn read_manifest(text: &str) -> Manifest {
         if section.ends_with("dependencies") || section.contains("dependencies.") {
             if let Some(path) = path {
                 manifest.path_deps.push(path);
+            }
+            // `x = …` in a dependency table, or the `x` of `[dependencies.x]`.
+            let named = if section.ends_with("dependencies") {
+                line.split_once('=').map(|(key, _)| {
+                    // `serde.workspace = true` is the dependency `serde`.
+                    let key = key.trim().trim_matches('"');
+                    key.split('.')
+                        .next()
+                        .unwrap_or(key)
+                        .trim_matches('"')
+                        .to_string()
+                })
+            } else {
+                section
+                    .rsplit_once("dependencies.")
+                    .map(|(_, key)| key.trim().trim_matches('"').to_string())
+            };
+            if let Some(dep) = named.filter(|d| !d.is_empty()) {
+                if !manifest.dep_names.contains(&dep) {
+                    manifest.dep_names.push(dep);
+                }
             }
         } else if section == "lib" {
             if let Some(path) = path {
@@ -270,6 +303,7 @@ impl Model {
                 lines: row.lines,
                 module: String::new(),
                 crate_root: None,
+                crate_dir: None,
                 skipped: row.skipped.clone(),
             });
         }
@@ -333,21 +367,40 @@ impl Model {
                 )
             })
             .collect();
+        let workspace_names: HashSet<String> = manifests
+            .iter()
+            .filter_map(|(_, m)| m.name.clone())
+            .collect();
         for (path, manifest) in &manifests {
             let dir = parent_dir(path).to_string();
+            let name = manifest.name.clone().unwrap_or_default();
             let mut depends_on: Vec<String> = manifest
                 .path_deps
                 .iter()
                 .filter_map(|dep| join_normal(&dir, dep))
                 .filter_map(|dep_dir| by_dir.get(&dep_dir).cloned())
+                .chain(
+                    manifest
+                        .dep_names
+                        .iter()
+                        .filter(|dep| workspace_names.contains(*dep) && **dep != name)
+                        .cloned(),
+                )
                 .collect();
             depends_on.sort();
             depends_on.dedup();
-            let name = manifest.name.clone().unwrap_or_default();
             let root = name.replace('-', "_");
+            // What this package's code may name as a crate: its own library
+            // (by package and `[lib]` name) and the crates it depends on.
+            let mut allowed: HashSet<String> =
+                depends_on.iter().map(|d| d.replace('-', "_")).collect();
+            allowed.insert(root.clone());
             if let Some(lib) = &manifest.lib_name {
-                self.crate_roots.insert(lib.replace('-', "_"), root.clone());
+                let lib = lib.replace('-', "_");
+                self.crate_roots.insert(lib.clone(), root.clone());
+                allowed.insert(lib);
             }
+            self.crate_allowed.insert(dir.clone(), allowed);
             self.crate_roots.insert(root.clone(), root);
             self.crates.push(CrateRec {
                 name,
@@ -379,6 +432,7 @@ impl Model {
         let crates = self.crates.clone();
         let mut assigned: Vec<Option<String>> = vec![None; self.files.len()];
         let mut crate_root_of: Vec<Option<String>> = vec![None; self.files.len()];
+        let mut target_root: Vec<Option<String>> = vec![None; self.files.len()];
         for (i, file) in self.files.iter().enumerate() {
             if file.lang != Lang::Rust {
                 continue;
@@ -400,11 +454,13 @@ impl Model {
             let in_crate = |path: &str, model: &Model| -> bool {
                 model.crate_of(path).is_some_and(|c| c.dir == krate.dir)
             };
-            let mut queue: Vec<(usize, String)> = Vec::new();
+            // (file, its module, the root module of the target it belongs to)
+            let mut queue: Vec<(usize, String, String)> = Vec::new();
             let lib = lib_path
                 .as_deref()
                 .and_then(|p| join_normal(&krate.dir, p))
                 .unwrap_or_else(|| join_normal(&krate.dir, "src/lib.rs").unwrap_or_default());
+            let has_lib = self.by_path.contains_key(&lib);
             let explicit_bins: Vec<String> = bin_paths
                 .iter()
                 .filter_map(|p| join_normal(&krate.dir, p))
@@ -427,17 +483,22 @@ impl Model {
                 if !is_root {
                     continue;
                 }
+                // A binary beside a library is a crate of its own: `crate::` in
+                // it is its own tree, not the library's.
                 let module = if file.path == lib {
                     root.clone()
+                } else if rel == "src/main.rs" && has_lib {
+                    join_module(&root, "main")
                 } else {
                     join_module(&root, &rust_module_path(rel))
                 };
                 if assigned[i].is_none() {
                     assigned[i] = Some(module.clone());
-                    queue.push((i, module));
+                    target_root[i] = Some(module.clone());
+                    queue.push((i, module.clone(), module));
                 }
             }
-            while let Some((i, module)) = queue.pop() {
+            while let Some((i, module, target)) = queue.pop() {
                 let path = self.files[i].path.clone();
                 let Some(decls) = mods_by_id.get(&self.files[i].id) else {
                     continue;
@@ -447,7 +508,7 @@ impl Model {
                 // A crate root or a `mod.rs` holds its submodules in its own
                 // folder; `a.rs` holds them in `a/`.
                 let mod_rs = name == "mod.rs"
-                    || assigned[i].as_deref() == Some(root.as_str())
+                    || assigned[i].as_deref() == Some(target.as_str())
                     || queue_root(&path, &krate.dir);
                 let own_dir = if mod_rs {
                     dir.clone()
@@ -482,14 +543,15 @@ impl Model {
                         }
                     };
                     for candidate in candidates {
-                        let Some(&target) = self.by_path.get(&candidate) else {
+                        let Some(&found) = self.by_path.get(&candidate) else {
                             continue;
                         };
-                        if self.files[target].lang != Lang::Rust || assigned[target].is_some() {
+                        if self.files[found].lang != Lang::Rust || assigned[found].is_some() {
                             continue;
                         }
-                        assigned[target] = Some(child.clone());
-                        queue.push((target, child.clone()));
+                        assigned[found] = Some(child.clone());
+                        target_root[found] = Some(target.clone());
+                        queue.push((found, child.clone(), target.clone()));
                         break;
                     }
                 }
@@ -515,7 +577,13 @@ impl Model {
                     join_module(&root, &rust_module_path(inside(&file.path, &dir)))
                 }
             };
-            file.crate_root = Some(root);
+            file.crate_dir = self
+                .crates
+                .iter()
+                .filter(|c| under(&file.path, &c.dir))
+                .max_by_key(|c| c.dir.len())
+                .map(|c| c.dir.clone());
+            file.crate_root = Some(target_root[i].take().unwrap_or(root));
         }
     }
 
@@ -549,9 +617,11 @@ impl Model {
                     let m = python_module(&path);
                     let dotted = python_dotted(&path, &inits);
                     self.python_dotted_of.insert(path.clone(), dotted.clone());
+                    self.python_modules.insert(m.clone());
                     self.python_dotted
                         .entry(dotted)
-                        .or_insert_with(|| m.clone());
+                        .or_default()
+                        .push(m.clone());
                     m
                 }
                 _ => {
@@ -669,21 +739,28 @@ impl Model {
                 (base, &segments[at..])
             }
             "std" | "core" | "alloc" => return None,
+            // As rustc looks a name up: a module of the current scope, then a
+            // name a `use` brought in, then a crate this package may use.
             name => {
                 let child = join_module(&current, name);
-                if let Some(root) = self.crate_roots.get(name) {
-                    (root.clone(), &segments[1..])
-                } else if self.known_rust(&child) {
-                    (current, &segments[..])
-                } else if let Some(target) = uses.and_then(|uses| {
+                let imported = uses.and_then(|uses| {
                     uses.iter().find_map(|u| {
                         let named = u.import.alias.as_deref().or(u.import.name.as_deref());
                         (named == Some(name) && u.import.kind != ImportKind::Path)
                             .then(|| u.target.clone())
                             .flatten()
                     })
-                }) {
+                });
+                if self.known_rust(&child) {
+                    (current, &segments[..])
+                } else if let Some(target) = imported {
                     (target, &segments[1..])
+                } else if let Some(root) = self
+                    .crate_roots
+                    .get(name)
+                    .filter(|root| self.may_use_crate(info, root))
+                {
+                    (root.clone(), &segments[1..])
                 } else {
                     return None;
                 }
@@ -706,6 +783,20 @@ impl Model {
             }
         }
         Some(base)
+    }
+
+    /// Whether code of `info`'s package may name the crate whose library
+    /// root is `root`: its own library, or a crate it depends on.
+    fn may_use_crate(&self, info: &SourceInfo, root: &str) -> bool {
+        match info
+            .crate_dir
+            .as_ref()
+            .and_then(|dir| self.crate_allowed.get(dir))
+        {
+            Some(allowed) => allowed.contains(root),
+            // Outside any package: every crate of the project.
+            None => true,
+        }
     }
 
     /// A script specifier's module from `file`.
@@ -756,8 +847,29 @@ impl Model {
             }
             bases.push(base);
         } else {
+            // A script's own folder comes first, as Python puts it first on
+            // its path.
+            let dir = parent_dir(path);
+            let local = |dotted: &str| -> Option<String> {
+                let module = join_normal(dir, &dotted.replace('.', "/"))?;
+                self.python_modules.contains(&module).then_some(module)
+            };
+            if let Some(name) = &import.name {
+                if let Some(m) = local(&format!("{rest}.{name}")) {
+                    return Some(m);
+                }
+            }
+            if let Some(m) = local(rest) {
+                return Some(m);
+            }
             bases.push(rest.to_string());
         }
+        // A dotted name two files have is ambiguous: tied to neither.
+        let unique = |dotted: &str| -> Option<Option<String>> {
+            self.python_dotted
+                .get(dotted)
+                .map(|found| (found.len() == 1).then(|| found[0].clone()))
+        };
         for base in bases {
             if let Some(name) = &import.name {
                 let sub = if base.is_empty() {
@@ -765,14 +877,14 @@ impl Model {
                 } else {
                     format!("{base}.{name}")
                 };
-                if let Some(m) = self.python_dotted.get(&sub) {
-                    return Some(m.clone());
+                if let Some(found) = unique(&sub) {
+                    return found;
                 }
             }
             let mut candidate = base;
             loop {
-                if let Some(m) = self.python_dotted.get(&candidate) {
-                    return Some(m.clone());
+                if let Some(found) = unique(&candidate) {
+                    return found;
                 }
                 match candidate.rsplit_once('.') {
                     Some((parent, _)) => candidate = parent.to_string(),

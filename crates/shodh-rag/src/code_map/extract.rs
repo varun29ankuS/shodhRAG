@@ -14,8 +14,9 @@
 
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Node, ParseOptions, ParseState, Parser, Point};
 
 use super::lang::Lang;
 
@@ -31,6 +32,8 @@ const MAX_QUALIFIER_CHARS: usize = 120;
 const MAX_SIGNATURE_CHARS: usize = 200;
 /// Tokens of one macro body scanned at most.
 const MAX_TOKENS_SCANNED: usize = 50_000;
+/// Syntax nodes of one file walked at most.
+const MAX_NODES: usize = 2_000_000;
 
 /// What a symbol is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -275,15 +278,57 @@ pub struct FileFacts {
     pub had_errors: bool,
 }
 
-/// Read `source` as `lang`.
+/// Read `source` as `lang`, with the default time budget and no way to stop.
 pub fn extract(lang: Lang, source: &[u8]) -> Result<FileFacts, String> {
+    extract_within(lang, source, super::PARSE_BUDGET, &|| false)
+}
+
+/// Read `source` as `lang`. The parse ends early (an error) when it takes
+/// longer than `budget` or when `should_stop` says so; tree-sitter asks
+/// between its steps, so a slow file never holds a refresh for long.
+pub fn extract_within(
+    lang: Lang,
+    source: &[u8],
+    budget: Duration,
+    should_stop: &dyn Fn() -> bool,
+) -> Result<FileFacts, String> {
     let mut parser = Parser::new();
     parser
         .set_language(&lang.grammar())
         .map_err(|e| format!("the {} grammar did not load: {e}", lang.name()))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| "the file could not be parsed".to_string())?;
+    let started = Instant::now();
+    let mut timed_out = false;
+    // Returning true halts the parse (tree-sitter's `progress_callback`).
+    let mut halt = |_: &ParseState| -> bool {
+        if started.elapsed() > budget {
+            timed_out = true;
+            return true;
+        }
+        should_stop()
+    };
+    let len = source.len();
+    let mut input = |at: usize, _: Point| {
+        if at < len {
+            &source[at..]
+        } else {
+            &source[len..]
+        }
+    };
+    let tree = parser.parse_with_options(
+        &mut input,
+        None,
+        Some(ParseOptions::new().progress_callback(&mut halt)),
+    );
+    let Some(tree) = tree else {
+        return Err(if timed_out {
+            format!(
+                "it took longer than {} s to read, so it is not read",
+                budget.as_secs()
+            )
+        } else {
+            "the refresh stopped while reading it".to_string()
+        });
+    };
     let root = tree.root_node();
     let mut walker = Walker::new(lang, source);
     walker.facts.had_errors = root.has_error();
@@ -414,7 +459,12 @@ impl<'s> Walker<'s> {
 
     fn walk(&mut self, root: Node<'_>) {
         let mut stack: Vec<(Node<'_>, Ctx)> = vec![(root, Ctx::default())];
+        let mut visited = 0usize;
         while let Some((node, ctx)) = stack.pop() {
+            visited += 1;
+            if visited > MAX_NODES {
+                break;
+            }
             if self.handled.contains(&node.id()) {
                 continue;
             }

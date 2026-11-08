@@ -33,9 +33,10 @@ whenever something fails, including the tests test-first just ran.
 
 - **Trace backwards.** Start at the line that fails and ask where the bad
   value came from, then where that came from, until you reach the place it
-  was first wrong. Fix it there, not where it surfaced. `code_references`
-  lists every caller of a function with `path:line`, and `code_definition`
-  jumps to where a value's type or helper is defined.
+  was first wrong. Fix it there, not where it surfaced. When this session has
+  Shodh's code map tools, `code_references` lists the callers of a function
+  with `path:line`, and `code_definition` jumps to where a value's type or
+  helper is defined.
 - **Compare with what works.** Find similar code in the project that works and
   list every difference, however small.
 - **Find the failing layer.** When data passes through several parts (a

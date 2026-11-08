@@ -8,7 +8,7 @@ import { Kbd } from '../../components/ui/Kbd';
 import { codeMapApi, errorText } from '../codeIntel/api';
 import type { SymbolHit } from '../codeIntel/api';
 import { symbolRow } from '../codeIntel/codeMapFormat';
-import { useCodeReview } from './CodeReviewContext';
+import { isTextEntry, useCodeReview } from './CodeReviewContext';
 import { codeApi } from './api';
 import { languageOf } from './diffModel';
 
@@ -40,16 +40,21 @@ export function SymbolJump({ workspaceId, path }: SymbolJumpProps) {
   const listId = useId();
   const generation = useRef(0);
 
-  // The shortcut opens it from anywhere in the pane's window.
+  // The shortcut opens it, except while the user types in a field outside the
+  // pane (the composer keeps its keys and its focus).
+  const paneRef = pane?.paneRef;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!matchesShortcut(e, 'goToSymbol')) return;
+      const focus = document.activeElement;
+      const inPane = !!(paneRef?.current && focus && paneRef.current.contains(focus));
+      if (!inPane && isTextEntry(focus)) return;
       e.preventDefault();
       setOpen(true);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [paneRef]);
 
   useEffect(() => {
     if (open) inputRef.current?.focus();

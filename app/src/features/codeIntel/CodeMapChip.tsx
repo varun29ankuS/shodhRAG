@@ -51,17 +51,25 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
   // Shown: build or refresh the map and watch the folder; hidden: stop watching.
   useEffect(() => {
     let live = true;
+    // The lease this mount took, given back by its id (by the time it
+    // unmounts, the workspace may be gone or point at another folder).
+    let lease: number | null = null;
     setView(null);
     setOpen(false);
     codeMapApi
       .open(workspaceId)
       .then(next => {
-        if (live) setView(next);
+        lease = next.lease ?? null;
+        if (!live) {
+          if (lease !== null) codeMapApi.close(lease).catch(() => undefined);
+          return;
+        }
+        setView(next);
       })
       .catch(err => console.error('Code map unavailable:', errorText(err)));
     return () => {
       live = false;
-      codeMapApi.close(workspaceId).catch(() => undefined);
+      if (lease !== null) codeMapApi.close(lease).catch(() => undefined);
     };
   }, [workspaceId]);
 
@@ -114,7 +122,7 @@ export function CodeMapChip({ workspaceId }: CodeMapChipProps) {
   };
 
   if (!view) return null;
-  const building = view.state === 'building' || view.state === 'queued';
+  const building = view.state === 'building' || view.state === 'queued' || view.state === 'waiting';
   const label = codeMapChipLabel(view);
   const details = codeMapDetails(view, new Date());
 

@@ -274,6 +274,7 @@ mod tests {
                 name: "shodh".to_string(),
                 done: 3,
                 total: 9,
+                waiting: None,
             }],
             model_switch: SwitchStatus::default(),
         };

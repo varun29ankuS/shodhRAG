@@ -74,13 +74,15 @@ beside each skill that uses them:
 
 Code mode's code map: tree-sitter and its grammars (MIT License)
 Compiled into the app (crates/shodh-rag/src/code_map/) to read source files:
-- tree-sitter 0.25.10 and tree-sitter-language 0.1.9,
-  https://github.com/tree-sitter/tree-sitter, Copyright (c) 2018 Max Brunsfeld
+- tree-sitter 0.25.10, https://github.com/tree-sitter/tree-sitter, Copyright
+  (c) 2018-2024 Max Brunsfeld
+- tree-sitter-language 0.1.9, https://github.com/tree-sitter/tree-sitter,
+  Copyright (c) 2018 Max Brunsfeld
 - tree-sitter-rust 0.24.2, https://github.com/tree-sitter/tree-sitter-rust,
   Copyright (c) 2017 Maxim Sokolov
 - tree-sitter-typescript 0.23.2,
   https://github.com/tree-sitter/tree-sitter-typescript, Copyright (c) 2017
-  GitHub
+  Max Brunsfeld
 - tree-sitter-javascript 0.25.0,
   https://github.com/tree-sitter/tree-sitter-javascript, Copyright (c) 2014
   Max Brunsfeld

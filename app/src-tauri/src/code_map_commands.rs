@@ -737,9 +737,11 @@ mod tests {
             status.files as f64 / seconds,
             again_ms
         );
-        println!("{line}");
+        // Written to the process's own stdout (libtest captures only the
+        // print macros), so the Tests job's log shows it as well.
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout().lock(), "{line}");
         if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY") {
-            use std::io::Write;
             if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(summary) {
                 let _ = writeln!(file, "### Code map indexing speed\n\n{line}\n");
             }

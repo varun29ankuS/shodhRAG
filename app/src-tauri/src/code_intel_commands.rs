@@ -308,6 +308,27 @@ mod tests {
         ] {
             assert!(notice.contains(rtk), "NOTICE lacks {rtk:?}");
         }
+        // The code map's parser and grammars, at the versions Cargo.lock builds.
+        let lock = std::fs::read_to_string(root.join("Cargo.lock")).unwrap();
+        for name in [
+            "tree-sitter",
+            "tree-sitter-language",
+            "tree-sitter-rust",
+            "tree-sitter-typescript",
+            "tree-sitter-javascript",
+            "tree-sitter-python",
+            "tree-sitter-go",
+            "streaming-iterator",
+        ] {
+            let entry = format!("name = \"{name}\"\nversion = \"");
+            let at = lock
+                .find(&entry)
+                .unwrap_or_else(|| panic!("Cargo.lock has no {name}"));
+            let version = lock[at + entry.len()..].split('"').next().unwrap();
+            let credited = format!("{name} {version}");
+            assert!(notice.contains(&credited), "NOTICE lacks {credited}");
+        }
+        assert!(notice.contains("Permission is hereby granted, free of charge"));
         for license in [
             "superpowers-MIT.txt",
             "ECC-MIT.txt",

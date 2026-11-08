@@ -174,10 +174,6 @@ impl CodeMapState {
         }
     }
 
-    pub fn data_dir(&self) -> &Path {
-        &self.inner.data_dir
-    }
-
     /// Indexing is paused by the user.
     pub fn paused(&self) -> bool {
         self.inner

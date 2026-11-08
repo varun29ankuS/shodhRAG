@@ -97,6 +97,15 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Audit log: database key generation (OS CSPRNG)
 rand = "0.8"
 
+# Code mode's code map (code_map/): syntax trees of Rust, TypeScript/TSX,
+# JavaScript, Python and Go source files. All MIT (see NOTICE).
+tree-sitter = "0.25.10"
+tree-sitter-rust = "0.24.2"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-go = "0.25.0"
+
 # Utilities
 regex = "1"
 walkdir = "2"

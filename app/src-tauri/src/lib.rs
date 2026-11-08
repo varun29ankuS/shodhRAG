@@ -57,6 +57,7 @@ mod agent_tools;
 mod calendar_commands;
 mod calendar_store;
 mod code_intel_commands;
+mod code_map_commands;
 mod code_review_commands;
 mod conversation_commands;
 mod event_emitter;
@@ -600,6 +601,12 @@ pub fn run() {
             }
             app.manage(indexing_state);
             app.manage(folder_sync);
+            // Code mode's code maps: nothing is opened or read until a Code
+            // project asks for its map.
+            app.manage(code_map_commands::CodeMapState::new(
+                app_data_dir.clone(),
+                Some(pause.clone()),
+            ));
             // Re-indexing for faster search: one that Shodh closed in the middle of
             // goes on (and waits while indexing is paused).
             app.manage(search_model_switch::SearchModelSwitchState::default());
@@ -781,6 +788,13 @@ pub fn run() {
             code_intel_commands::code_savings_set_default,
             code_intel_commands::code_skills_list,
             code_intel_commands::code_skills_set_enabled,
+            code_map_commands::code_map_open,
+            code_map_commands::code_map_close,
+            code_map_commands::code_map_status,
+            code_map_commands::code_map_rebuild,
+            code_map_commands::code_map_cancel,
+            code_map_commands::code_map_outline,
+            code_map_commands::code_map_find,
             mcp_commands::tools_for_chat,
             // Document Upload commands
             document_upload_commands::upload_document_file,

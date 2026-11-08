@@ -21,12 +21,13 @@ use shodh_rag::code_review::diff::FileChange;
 use shodh_rag::code_review::secrets::secret_path;
 use shodh_rag::code_review::structure::language_of;
 use shodh_rag::code_review::{
-    run_review, LightStructure, ReviewCheck, ReviewReport, ReviewRequest, StructureSource,
+    run_review, ReviewCheck, ReviewReport, ReviewRequest, StructureSource,
 };
 use shodh_rag::harness::code_mode::{git_ignores, working_changes, CodeBranchStore};
 use tauri::{AppHandle, Manager, State};
 
 use crate::agent_session_commands::{inside_code_folder, workspace_code_folder};
+use crate::code_map_commands::CodeMapState;
 use crate::llm_commands::LLMState;
 use crate::model_fallback::Purpose;
 use crate::workspace_commands::WorkspaceState;
@@ -81,9 +82,11 @@ fn data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 /// The structural view of `folder` (relative to the workspace's code folder;
-/// `.` for all of it).
+/// `.` for all of it), from the project's code map, brought up to date first
+/// (built on the spot when the project has none yet).
 async fn structure_of(
     workspaces: &WorkspaceState,
+    maps: &CodeMapState,
     workspace_id: Option<&str>,
     folder: &str,
 ) -> Result<shodh_rag::code_review::StructureView, String> {
@@ -96,7 +99,8 @@ async fn structure_of(
         inside_code_folder(&root, folder)
             .ok_or_else(|| format!("{folder} is not a folder of the code folder."))?
     };
-    tokio::task::spawn_blocking(move || LightStructure.build(&root, &target))
+    let map = maps.map_for(&root).await?;
+    tokio::task::spawn_blocking(move || map.build(&root, &target))
         .await
         .map_err(|e| format!("Reading the folder did not finish: {e}"))?
 }
@@ -124,6 +128,7 @@ pub(crate) fn conversation_base(
 pub(crate) async fn review_with(
     model: &dyn shodh_rag::research::results::TextModel,
     workspaces: &WorkspaceState,
+    maps: &CodeMapState,
     mut request: ReviewRequest,
     workspace_id: Option<String>,
     conversation_id: Option<String>,
@@ -131,7 +136,7 @@ pub(crate) async fn review_with(
 ) -> Result<StoredReview, String> {
     let structure = match (&request.check, request.folder.as_deref()) {
         (ReviewCheck::Architecture, Some(folder)) => {
-            Some(structure_of(workspaces, workspace_id.as_deref(), folder).await?)
+            Some(structure_of(workspaces, maps, workspace_id.as_deref(), folder).await?)
         }
         _ => None,
     };
@@ -166,9 +171,11 @@ pub(crate) async fn run_and_store(
     let llm = app.state::<LLMState>();
     let model = crate::memory_learn::answering_model(app, &dir, &llm, Purpose::CodeReview)?;
     let workspaces = app.state::<WorkspaceState>();
+    let maps = app.state::<CodeMapState>();
     let review = review_with(
         model.as_ref(),
         &workspaces,
+        &maps,
         request,
         workspace_id,
         conversation_id,
@@ -485,9 +492,11 @@ mod review_path_tests {
             context: None,
             can_verify: true,
         };
+        let maps = CodeMapState::new(t.host.data_dir.clone(), None);
         let review = review_with(
             &model,
             &t.host.workspaces,
+            &maps,
             snippet,
             Some(workspace.clone()),
             Some("conv-1".into()),
@@ -513,6 +522,7 @@ mod review_path_tests {
         review_with(
             &model,
             &t.host.workspaces,
+            &maps,
             architecture,
             Some(workspace),
             None,

@@ -39,7 +39,10 @@ already specified exactly. Say that you are skipping it and why.
 
 Before proposing anything new, search the code folder for what already does
 part of the job: a helper, a similar feature, a library already in the
-dependencies. Read the code around the place the change goes, and the tests
+dependencies. Ask Shodh's code map first: `code_definition` finds where a
+name is defined, `code_references` who calls it, `code_outline` a file's
+shape and `code_dependencies` what a module touches, each with `path:line`
+receipts. Read the code around the place the change goes, and the tests
 that cover it. Reuse beats a second copy.
 
 ### 3. Weigh two or three approaches

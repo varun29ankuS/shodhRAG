@@ -13,6 +13,7 @@ mod artifacts;
 mod audit;
 mod calendar;
 mod code_intel;
+mod code_map;
 mod code_review;
 pub(crate) mod export;
 mod figures;
@@ -57,6 +58,7 @@ use crate::workspace_commands::WorkspaceState;
 
 pub use artifacts::{creator_tools, CREATOR_TOOL_NAMES};
 pub use code_intel::{code_intel_tools, CODE_INTEL_TOOL_NAMES};
+pub use code_map::{code_map_tools, CodeFolderOf, WorkspaceFolder, CODE_MAP_TOOL_NAMES};
 pub use code_review::{code_review_tools, CODE_REVIEW_TOOL_NAMES};
 pub use files::{IndexedRoots, SourceRoots};
 /// For the coverage test, which checks them against the frontend.

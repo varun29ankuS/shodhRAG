@@ -28,7 +28,7 @@ pub use report::{
 pub use request::{
     check_request, reviewer_prompt, LineKind, PieceLine, ReviewCheck, ReviewPiece, ReviewRequest,
 };
-pub use structure::{LightStructure, StructureSource, StructureView};
+pub use structure::{StructureSource, StructureView};
 
 use crate::research::results::TextModel;
 

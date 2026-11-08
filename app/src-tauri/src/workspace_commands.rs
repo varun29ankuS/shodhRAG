@@ -393,6 +393,22 @@ pub async fn workspaces_remove_source(
     Ok(removed)
 }
 
+/// Whether a workspace left has `root` as its code folder.
+async fn code_folder_still_used(state: &WorkspaceState, root: &std::path::Path) -> bool {
+    let Ok(target) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    let others = state.run(|s| s.list(true)).await.unwrap_or_default();
+    for other in others {
+        let folder =
+            crate::agent_session_commands::workspace_code_folder(state, Some(&other.id)).await;
+        if folder.is_ok_and(|f| std::fs::canonicalize(f.root()).is_ok_and(|p| p == target)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Deletes a workspace (its instructions history and source list; never the sources).
 /// Its chats and tasks are kept and move to "No workspace", and so do the files added in
 /// its chats ([`keep_workspace_uploads`]); its memories, snippets and results are kept and
@@ -416,9 +432,27 @@ pub async fn workspaces_delete(
             message,
         }
     })?;
+    // Its code folder, whose code map goes with it (unless another workspace
+    // still uses the folder).
+    let code_root =
+        crate::agent_session_commands::workspace_code_folder(&state, Some(&workspace_id))
+            .await
+            .ok()
+            .map(|folder| folder.root().to_path_buf());
     let removed = state.run(move |s| s.delete(&id)).await?;
     if removed {
         crate::mcp_commands::forget_workspace(&app, &workspace_id);
+        let still_used = match &code_root {
+            Some(root) => code_folder_still_used(&state, root).await,
+            None => false,
+        };
+        let maps = tauri::Manager::state::<crate::code_map_commands::CodeMapState>(&app)
+            .inner()
+            .clone();
+        let forgotten = workspace_id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            maps.forget(&forgotten, code_root.as_deref(), still_used)
+        });
     }
     // In the background (opening the memory store may wait for the index), and not fatal:
     // the workspace is gone either way, and what is left in its scope becomes global at

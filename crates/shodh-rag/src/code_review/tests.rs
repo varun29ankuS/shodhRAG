@@ -166,7 +166,8 @@ async fn a_snippet_review_sees_only_the_selected_lines_and_the_users_words() {
 #[tokio::test]
 async fn an_architecture_review_gets_names_and_imports_never_bodies() {
     let project = project();
-    let view = LightStructure
+    let data = tempfile::tempdir().unwrap();
+    let view = crate::code_map::MapStructure::in_dir(data.path())
         .build(project.path(), project.path())
         .unwrap();
     let model = Recording::new(

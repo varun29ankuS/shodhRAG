@@ -410,6 +410,11 @@ impl IndexingState {
             .collect()
     }
 
+    /// The sources with a run in progress (each once), with or without a path.
+    pub fn running_sources(&self) -> Vec<String> {
+        self.runs.borrow().keys().cloned().collect()
+    }
+
     /// Whether `source_id` was removed from the Library.
     pub fn is_removed(&self, source_id: &str) -> bool {
         self.removed

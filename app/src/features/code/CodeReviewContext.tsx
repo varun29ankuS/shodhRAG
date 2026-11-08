@@ -71,7 +71,8 @@ export function snippetSelection(container: HTMLElement | null, code: string, pa
   return lines ? { path, side: 'new', from: lines.from, to: lines.to } : null;
 }
 
-function isTextEntry(element: Element | null): boolean {
+/** Whether `element` takes typed text (a field, a text area, an editable element). */
+export function isTextEntry(element: Element | null): boolean {
   if (!element) return false;
   const tag = element.tagName;
   return tag === 'TEXTAREA' || tag === 'INPUT' || (element as HTMLElement).isContentEditable;

@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  codeMapRunText,
   cpuNotice,
   cpuReasonDetail,
   cpuReasonText,
@@ -47,6 +48,7 @@ function status(extra: Partial<SystemStatus> = {}): SystemStatus {
     scanReaderInstalled: true,
     indexingPaused: false,
     running: [],
+    codeMaps: [],
     modelSwitch: readModelSwitch(null),
     ...extra,
   };
@@ -219,12 +221,15 @@ test('the backend report is read field by field, and junk is dropped', () => {
     scanReaderInstalled: false,
     indexingPaused: true,
     running: [{ sourceId: 'folder-papers', path: 'C:/Papers' }, { sourceId: 7 }, 'x'],
+    codeMaps: [{ sourceId: 'code-map:ab12', name: 'shodhRAG', done: 120, total: 900 }, { sourceId: 'code-map:x' }],
   });
   assert.ok(read);
   assert.equal(read.useGpu, false);
   assert.equal(read.search?.accelerator, 'directml');
   assert.equal(read.search?.device, 'NVIDIA GeForce RTX 4060');
   assert.deepEqual(read.running, [{ sourceId: 'folder-papers', path: 'C:/Papers' }]);
+  assert.deepEqual(read.codeMaps, [{ sourceId: 'code-map:ab12', name: 'shodhRAG', done: 120, total: 900, waiting: null }]);
+  assert.deepEqual(readSystemStatus({})?.codeMaps, [], 'an older backend sends none');
   assert.equal(readSystemStatus('nope'), null);
   // A report without a known target is not shown as one.
   assert.equal(readSystemStatus({ search: { accelerator: 'tpu', speed: 'fast', pagesPerMinute: 1 } })?.search, null);
@@ -315,4 +320,11 @@ test('the indexing line says paused, running or idle, counting folders and files
   assert.equal(indexingText(status(), 1), 'Indexing 1 item');
   assert.equal(indexingText(status(), 3), 'Indexing 3 items');
   assert.equal(indexingText(status(), 0), 'Nothing indexing');
+});
+
+test('a code map run reads as files done of files listed', () => {
+  assert.equal(codeMapRunText({ sourceId: 'code-map:a', name: 'app', done: 0, total: 0, waiting: null }), 'Listing files');
+  assert.equal(codeMapRunText({ sourceId: 'code-map:a', name: 'app', done: 120, total: 1_079, waiting: null }), '120 of 1,079 files');
+  assert.equal(codeMapRunText({ sourceId: 'code-map:a', name: 'app', done: 2, total: 1, waiting: null }), '1 of 1 file');
+  assert.equal(codeMapRunText({ sourceId: 'code-map:a', name: 'app', done: 3, total: 9, waiting: 'otherIndexing' }), '3 of 9 files · waiting for other indexing');
 });

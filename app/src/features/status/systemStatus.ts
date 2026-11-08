@@ -88,7 +88,20 @@ export interface SystemStatus {
   scanReaderInstalled: boolean;
   indexingPaused: boolean;
   running: RunningIndex[];
+  /** Code mode code maps reading files now (`code_map_commands::CodeMapRun`). */
+  codeMaps: CodeMapRun[];
   modelSwitch: ModelSwitch;
+}
+
+/** A code map refresh reading a Code project's files. */
+export interface CodeMapRun {
+  sourceId: string;
+  /** The project folder's name. */
+  name: string;
+  done: number;
+  total: number;
+  /** Why it waits (`paused`, `otherIndexing`), when it does. */
+  waiting: string | null;
 }
 
 /** The colour a state is shown in. */
@@ -163,6 +176,16 @@ export function readSystemStatus(value: unknown): SystemStatus | null {
         return sourceId && path ? [{ sourceId, path }] : [];
       })
     : [];
+  const codeMaps = Array.isArray(value.codeMaps)
+    ? value.codeMaps.flatMap(r => {
+        if (!isRecord(r)) return [];
+        const sourceId = text(r.sourceId);
+        const name = text(r.name);
+        return sourceId && name
+          ? [{ sourceId, name, done: count(r.done) ?? 0, total: count(r.total) ?? 0, waiting: text(r.waiting) }]
+          : [];
+      })
+    : [];
   return {
     searchInstalled: value.searchInstalled === true,
     useGpu: value.useGpu !== false,
@@ -171,6 +194,7 @@ export function readSystemStatus(value: unknown): SystemStatus | null {
     scanReaderInstalled: value.scanReaderInstalled === true,
     indexingPaused: value.indexingPaused === true,
     running,
+    codeMaps,
     modelSwitch: readModelSwitch(value.modelSwitch),
   };
 }
@@ -532,6 +556,16 @@ export function indexingText(status: SystemStatus | null, items: number): string
   if (status.indexingPaused) return items > 0 ? 'Indexing paused' : 'Indexing paused (nothing waiting)';
   if (items === 0) return 'Nothing indexing';
   return items === 1 ? 'Indexing 1 item' : `Indexing ${items} items`;
+}
+
+/** "120 of 900 files" for a code map refresh, "Listing files" before it knows. */
+export function codeMapRunText(run: CodeMapRun): string {
+  const files = run.total === 0
+    ? 'Listing files'
+    : `${Math.min(run.done, run.total).toLocaleString()} of ${run.total.toLocaleString()} ${run.total === 1 ? 'file' : 'files'}`;
+  if (run.waiting === 'otherIndexing') return `${files} · waiting for other indexing`;
+  if (run.waiting === 'paused') return `${files} · paused`;
+  return files;
 }
 
 /** "about 3 min left" from seconds, or null when unknown. */

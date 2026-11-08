@@ -72,6 +72,85 @@ beside each skill that uses them:
   (skills/test-first/SKILL.md), verification-loop
   (skills/verify-before-done/SKILL.md).
 
+Code mode's code map: tree-sitter and its grammars (MIT License)
+Compiled into the app (crates/shodh-rag/src/code_map/) to read source files:
+- tree-sitter 0.25.10, https://github.com/tree-sitter/tree-sitter, Copyright
+  (c) 2018-2024 Max Brunsfeld
+- tree-sitter-language 0.1.9, https://github.com/tree-sitter/tree-sitter,
+  Copyright (c) 2018 Max Brunsfeld
+- tree-sitter-rust 0.24.2, https://github.com/tree-sitter/tree-sitter-rust,
+  Copyright (c) 2017 Maxim Sokolov
+- tree-sitter-typescript 0.23.2,
+  https://github.com/tree-sitter/tree-sitter-typescript, Copyright (c) 2017
+  Max Brunsfeld
+- tree-sitter-javascript 0.25.0,
+  https://github.com/tree-sitter/tree-sitter-javascript, Copyright (c) 2014
+  Max Brunsfeld
+- tree-sitter-python 0.25.0, https://github.com/tree-sitter/tree-sitter-python,
+  Copyright (c) 2016 Max Brunsfeld
+- tree-sitter-go 0.25.0, https://github.com/tree-sitter/tree-sitter-go,
+  Copyright (c) 2014 Max Brunsfeld
+- streaming-iterator 0.1.9 (a dependency of tree-sitter),
+  https://github.com/sfackler/streaming-iterator, Copyright (c) 2016 Steven
+  Fackler, MIT or Apache-2.0, used under MIT.
+- ignore 0.4.34 and globset 0.4.21 (the code map's folder walk outside
+  git, which honours .gitignore), https://github.com/BurntSushi/ripgrep,
+  Copyright (c) 2015 Andrew Gallant, Unlicense or MIT, used under MIT.
+- bstr 1.13.1 (a dependency of globset), https://github.com/BurntSushi/bstr,
+  Copyright (c) 2018-2019 Andrew Gallant, MIT or Apache-2.0, used under MIT.
+Each is licensed under these terms:
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the
+  following conditions:
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.
+tree-sitter's runtime includes ICU's UTF-8 and UTF-16 macros
+(lib/src/unicode/ of tree-sitter 0.25.10), under this licence:
+  COPYRIGHT AND PERMISSION NOTICE (ICU 58 and later)
+  Copyright © 1991-2019 Unicode, Inc. All rights reserved.
+  Distributed under the Terms of Use in https://www.unicode.org/copyright.html.
+  Permission is hereby granted, free of charge, to any person obtaining
+  a copy of the Unicode data files and any associated documentation
+  (the "Data Files") or Unicode software and any associated documentation
+  (the "Software") to deal in the Data Files or Software
+  without restriction, including without limitation the rights to use,
+  copy, modify, merge, publish, distribute, and/or sell copies of
+  the Data Files or Software, and to permit persons to whom the Data Files
+  or Software are furnished to do so, provided that either
+  (a) this copyright and permission notice appear with all copies
+  of the Data Files or Software, or
+  (b) this copyright and permission notice appear in associated
+  Documentation.
+  THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
+  ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+  WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT OF THIRD PARTY RIGHTS.
+  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS
+  NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL
+  DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+  DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+  TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+  PERFORMANCE OF THE DATA FILES OR SOFTWARE.
+  Except as contained in this notice, the name of a copyright holder
+  shall not be used in advertising or otherwise to promote the sale,
+  use or other dealings in these Data Files or Software without prior
+  written authorization of the copyright holder.
+The code map's design (per-file symbols, references and imports, resolved
+across the project when asked) follows codanna
+(https://github.com/bartolli/codanna, Apache-2.0) and code-review-graph
+(https://github.com/tirth8205/code-review-graph). No code of either is used.
+
 ONNX Runtime
 https://github.com/microsoft/onnxruntime
 Copyright (c) Microsoft Corporation. Licensed under the MIT License.

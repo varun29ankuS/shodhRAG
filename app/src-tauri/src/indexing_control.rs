@@ -186,8 +186,10 @@ pub struct SystemStatus {
     pub scan_reader_installed: bool,
     /// Indexing is paused.
     pub indexing_paused: bool,
-    /// The folders and files being indexed now.
+    /// The folders and files being indexed now (code maps are apart).
     pub running: Vec<RunningIndex>,
+    /// Code mode code maps reading files now.
+    pub code_maps: Vec<crate::code_map_commands::CodeMapRun>,
     /// Re-indexing for the faster search model: offered, running or ready.
     pub model_switch: SwitchStatus,
 }
@@ -210,6 +212,9 @@ async fn read_status(
     let mut running: Vec<RunningIndex> = indexing
         .running_paths()
         .into_iter()
+        .filter(|(source_id, _)| {
+            !source_id.starts_with(crate::code_map_commands::CODE_MAP_SOURCE_PREFIX)
+        })
         .map(|(source_id, path)| RunningIndex { source_id, path })
         .collect();
     running.sort_by(|a, b| a.source_id.cmp(&b.source_id).then(a.path.cmp(&b.path)));
@@ -226,6 +231,7 @@ async fn read_status(
         scan_reader_installed,
         indexing_paused: indexing.is_paused(),
         running,
+        code_maps: crate::code_map_commands::runs(app),
         model_switch,
     }
 }
@@ -263,6 +269,13 @@ mod tests {
                 source_id: "folder-papers".to_string(),
                 path: "C:/Papers".to_string(),
             }],
+            code_maps: vec![crate::code_map_commands::CodeMapRun {
+                source_id: "code-map:abc".to_string(),
+                name: "shodh".to_string(),
+                done: 3,
+                total: 9,
+                waiting: None,
+            }],
             model_switch: SwitchStatus::default(),
         };
         let json = serde_json::to_value(&status).expect("json");
@@ -270,5 +283,7 @@ mod tests {
         assert_eq!(json["running"][0]["sourceId"], "folder-papers");
         assert_eq!(json["scanReaderInstalled"], false);
         assert!(json["search"].is_null());
+        assert_eq!(json["codeMaps"][0]["sourceId"], "code-map:abc");
+        assert_eq!(json["codeMaps"][0]["total"], 9);
     }
 }

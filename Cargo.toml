@@ -53,6 +53,27 @@ opt-level = 3
 [profile.dev.package.zune-jpeg]
 opt-level = 3
 
+# Code mode's code map parses every source file of a project with these
+# grammars; unoptimized C parsers make a dev build's map (and the indexing
+# speed CI reports) many times slower than a user's.
+[profile.dev.package.tree-sitter]
+opt-level = 3
+
+[profile.dev.package.tree-sitter-rust]
+opt-level = 3
+
+[profile.dev.package.tree-sitter-typescript]
+opt-level = 3
+
+[profile.dev.package.tree-sitter-javascript]
+opt-level = 3
+
+[profile.dev.package.tree-sitter-python]
+opt-level = 3
+
+[profile.dev.package.tree-sitter-go]
+opt-level = 3
+
 # llama-cpp-sys-2's build script links `msvcrtd` (the debug CRT) whenever the build
 # script itself was compiled with debug assertions, even though it builds llama.cpp
 # as Release /MD. In dev/test builds that pulled the debug CRT into every binary

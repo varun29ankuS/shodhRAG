@@ -2678,26 +2678,54 @@ pub fn git_ignores(folder: &Path, relative: &str) -> bool {
 /// The files of `within` (inside `folder`) that git tracks or would add,
 /// relative to `folder` with `/`: every file `.gitignore` does not exclude.
 /// `None` outside a repository. Blocking; runs no program of the repository.
+///
+/// `safe.directory` is set for this folder alone, on this one listing: a
+/// repository owned by another account (an external drive, a shared folder)
+/// is listed as git lists it, so `.gitignore` still decides, instead of git
+/// refusing and the caller reading the folder without it. A listing runs no
+/// program of the repository (hooks and fsmonitor are off), so trusting the
+/// folder for it gives the folder's owner nothing to run.
 pub fn listed_files(folder: &Path, within: &str) -> Option<Vec<String>> {
-    let raw = run_git_raw(
-        folder,
-        &[
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            within,
-        ],
-    )
-    .ok()?;
+    let safe = safe_directory_settings(folder);
+    let mut args: Vec<&str> = Vec::new();
+    for setting in &safe {
+        args.push("-c");
+        args.push(setting);
+    }
+    args.extend([
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        within,
+    ]);
+    let raw = run_git_raw(folder, &args).ok()?;
     Some(
         raw.split(|b| *b == 0)
             .filter(|n| !n.is_empty())
             .map(|n| String::from_utf8_lossy(n).into_owned())
             .collect(),
     )
+}
+
+/// `safe.directory=<folder>` for `folder` as given and as git writes its
+/// canonical path (forward slashes, no `\\?\`), never `*`.
+fn safe_directory_settings(folder: &Path) -> Vec<String> {
+    let mut out = vec![format!(
+        "safe.directory={}",
+        folder.to_string_lossy().replace('\\', "/")
+    )];
+    if let Ok(canonical) = std::fs::canonicalize(folder) {
+        let text = canonical.to_string_lossy().replace('\\', "/");
+        let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
+        let setting = format!("safe.directory={text}");
+        if !out.contains(&setting) {
+            out.push(setting);
+        }
+    }
+    out
 }
 
 /// Split a shell command into lowercased words per command segment. Quotes

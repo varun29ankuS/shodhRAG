@@ -158,6 +158,7 @@ pub fn tool_group(name: &str) -> &'static str {
         "open_code" | "review_code" | "design_check" => "Code review",
         "code_tokens_saved" | "code_skills" => "Code skills and savings",
         "code_definition" | "code_references" | "code_outline" | "code_dependencies" => "Code map",
+        "recall_search" | "recall_scope" | "recall_open" => "Coding sessions",
         "list_workspaces"
         | "open_workspace"
         | "create_workspace"

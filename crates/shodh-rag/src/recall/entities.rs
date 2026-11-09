@@ -94,7 +94,7 @@ fn regex(pattern: &str) -> Regex {
 
 static ISSUE: LazyLock<Regex> = LazyLock::new(|| {
     regex(
-        r"(?i)(?:^|[\s(\[,])#(\d{1,6})\b|\b(?:pr|pull request|issue|pull)\s*#?\s*(\d{1,6})\b|/(?:pull|issues)/(\d{1,6})\b",
+        r"(?i)(?:^|[\s(\[,])#(\d{1,6})\b|\b(?:pr|pull request|issue|pull)\s*#?\s*(\d{1,6})\b|\b(?:pull|issues)/(\d{1,6})\b",
     )
 });
 static COMMIT: LazyLock<Regex> = LazyLock::new(|| regex(r"\b[0-9a-f]{7,40}\b"));

@@ -190,6 +190,8 @@ pub struct SystemStatus {
     pub running: Vec<RunningIndex>,
     /// Code mode code maps reading files now.
     pub code_maps: Vec<crate::code_map_commands::CodeMapRun>,
+    /// Recall indexing coding sessions now.
+    pub recall: Option<crate::recall_commands::RecallRun>,
     /// Re-indexing for the faster search model: offered, running or ready.
     pub model_switch: SwitchStatus,
 }
@@ -232,6 +234,7 @@ async fn read_status(
         indexing_paused: indexing.is_paused(),
         running,
         code_maps: crate::code_map_commands::runs(app),
+        recall: crate::recall_commands::current_run(app),
         model_switch,
     }
 }
@@ -276,6 +279,13 @@ mod tests {
                 total: 9,
                 waiting: None,
             }],
+            recall: Some(crate::recall_commands::RecallRun {
+                source_id: crate::recall_commands::RECALL_SOURCE_ID,
+                done: 2,
+                total: 5,
+                current: Some("lumen-cache".to_string()),
+                paused: false,
+            }),
             model_switch: SwitchStatus::default(),
         };
         let json = serde_json::to_value(&status).expect("json");
@@ -285,5 +295,7 @@ mod tests {
         assert!(json["search"].is_null());
         assert_eq!(json["codeMaps"][0]["sourceId"], "code-map:abc");
         assert_eq!(json["codeMaps"][0]["total"], 9);
+        assert_eq!(json["recall"]["sourceId"], "recall");
+        assert_eq!(json["recall"]["total"], 5);
     }
 }

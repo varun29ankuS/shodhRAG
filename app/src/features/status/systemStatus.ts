@@ -90,7 +90,18 @@ export interface SystemStatus {
   running: RunningIndex[];
   /** Code mode code maps reading files now (`code_map_commands::CodeMapRun`). */
   codeMaps: CodeMapRun[];
+  /** Recall indexing coding sessions now (`recall_commands::RecallRun`). */
+  recall: RecallSyncRun | null;
   modelSwitch: ModelSwitch;
+}
+
+/** Recall indexing the user's coding sessions. */
+export interface RecallSyncRun {
+  sourceId: string;
+  done: number;
+  total: number;
+  /** The project of the session being indexed. */
+  current: string | null;
 }
 
 /** A code map refresh reading a Code project's files. */
@@ -195,6 +206,7 @@ export function readSystemStatus(value: unknown): SystemStatus | null {
     indexingPaused: value.indexingPaused === true,
     running,
     codeMaps,
+    recall: readRecallRun(value.recall),
     modelSwitch: readModelSwitch(value.modelSwitch),
   };
 }
@@ -577,4 +589,25 @@ export function etaText(seconds: number | null | undefined): string | null {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `about ${hours} h left` : `about ${hours} h ${rest} min left`;
+}
+
+function readRecallRun(value: unknown): RecallSyncRun | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const run = value as Record<string, unknown>;
+  const sourceId = typeof run.sourceId === 'string' && run.sourceId.length > 0 ? run.sourceId : null;
+  if (!sourceId) return null;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
+  return {
+    sourceId,
+    done: n(run.done),
+    total: n(run.total),
+    current: typeof run.current === 'string' && run.current.length > 0 ? run.current : null,
+  };
+}
+
+/** "3 of 40 sessions (lumen-cache)" for Recall, "Looking for new sessions" before it knows. */
+export function recallRunText(run: RecallSyncRun): string {
+  if (run.total === 0) return 'Looking for new sessions';
+  const where = run.current ? ` (${run.current})` : '';
+  return `${Math.min(run.done, run.total).toLocaleString()} of ${run.total.toLocaleString()} ${run.total === 1 ? 'session' : 'sessions'}${where}`;
 }

@@ -15,6 +15,8 @@ const SYSTEM_STATUS_EVENT = 'system-status-changed';
 const PROGRESS_EVENT = 'indexing-progress';
 /** A Code project's code map started, progressed or finished (`code_map_commands.rs`). */
 const CODE_MAP_EVENT = 'code-map-status';
+/** Recall started, progressed or finished a sync (`recall_commands.rs`). */
+const RECALL_EVENT = 'recall-status';
 /** How soon the status is read after a code map's progress. */
 const CODE_MAP_REFRESH_MS = 1_000;
 /** How often the status is read again while something indexes. */
@@ -97,6 +99,14 @@ export function useSystemStatus(): SystemStatusState {
           refresh();
         }, CODE_MAP_REFRESH_MS);
       }),
+      // Recall's progress, read at most once a second like the code map's.
+      listen(RECALL_EVENT, () => {
+        if (codeMapTimer !== null) return;
+        codeMapTimer = window.setTimeout(() => {
+          codeMapTimer = null;
+          refresh();
+        }, CODE_MAP_REFRESH_MS);
+      }),
       listen(PROGRESS_EVENT, event => {
         const read = progressOf(event.payload);
         if (!read) return;
@@ -119,7 +129,7 @@ export function useSystemStatus(): SystemStatusState {
     };
   }, [refresh]);
 
-  const busy = (status?.running.length ?? 0) > 0 || (status?.codeMaps.length ?? 0) > 0;
+  const busy = (status?.running.length ?? 0) > 0 || (status?.codeMaps.length ?? 0) > 0 || status?.recall != null;
   useEffect(() => {
     const timer = window.setInterval(refresh, busy ? BUSY_REFRESH_MS : IDLE_REFRESH_MS);
     return () => window.clearInterval(timer);

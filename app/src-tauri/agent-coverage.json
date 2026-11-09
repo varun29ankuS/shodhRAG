@@ -136,6 +136,13 @@
     "code_map_cancel": { "excluded": "Stops the code map refresh running now, the user's control of background work, like the status strip's Cancel." },
     "code_map_outline": { "excluded": "Lists a file's symbols for the code pane's symbol jump; the agent lists them with code_outline, a Code session's own tool." },
     "code_map_find": { "excluded": "Finds symbols by the first letters the user types in the code pane's symbol jump; the agent finds definitions with code_definition, a Code session's own tool." },
+    "recall_status": { "excluded": "Shows the user how Recall is set up (tools, projects, what is indexed); the agent's recall_search, recall_scope and recall_open say when Recall is off and what it holds." },
+    "recall_save_settings": { "excluded": "Turns Recall on or off and chooses which coding tools, projects and sensitive patterns it reads: what of the user's transcripts is indexed is the user's privacy decision, never the agent's." },
+    "recall_sync_now": { "excluded": "Asks Recall to look at the transcripts now, a control of background work; it looks by itself every two minutes and the agent reads what is indexed." },
+    "recall_remove_session": { "excluded": "Removes a coding session from Recall for good: forgetting the user's own sessions is the user's decision." },
+    "recall_search": { "tool": "recall_search" },
+    "recall_scope": { "tool": "recall_scope" },
+    "recall_open": { "tool": "recall_open" },
     "code_savings_get": { "tool": "code_tokens_saved" },
     "code_savings_total": { "tool": "code_tokens_saved" },
     "code_savings_set_enabled": { "excluded": "Turns output shortening on or off for a Code conversation, which decides what the agent reads of command output; only the user changes how the agent's own inputs are shaped." },
@@ -355,13 +362,14 @@
       "review": ["review_code"],
       "design_check": ["design_check"],
       "setting": ["show_setting", "update_setting"],
-      "library": ["show_paper", "show_snippet", "create_snippet"],
+      "library": ["show_paper", "show_snippet", "create_snippet", "recall_open"],
       "status": ["system_status", "pause_indexing", "resume_indexing", "cancel_indexing"]
     },
     "librarySections": {
       "snippets": ["show_snippet", "create_snippet"],
       "graph": ["show_paper"],
-      "paper": ["show_paper"]
+      "paper": ["show_paper"],
+      "recall": ["recall_open"]
     }
   }
 }

@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type React from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { Cpu, FileSearch, Gauge, ListOrdered, MessageSquare, Network, Pause, Play, Plug, RotateCcw, ScanText, Trash2, X, Zap } from 'lucide-react';
+import { Cpu, FileSearch, Gauge, History, ListOrdered, MessageSquare, Network, Pause, Play, Plug, RotateCcw, ScanText, Trash2, X, Zap } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
@@ -26,6 +26,7 @@ import { useSystemStatusContext } from '../../features/status/SystemStatusContex
 import type { FolderProgress } from '../../features/status/useSystemStatus';
 import {
   codeMapRunText,
+  recallRunText,
   cpuNotice,
   cpuReasonDetail,
   etaText,
@@ -352,7 +353,7 @@ function SystemStatusPanel({
   const notice = cpuNotice(status);
   const pill = pillView(connection);
   const paused = status?.indexingPaused ?? false;
-  const running = Math.max(status?.running.length ?? 0, jobs.length) + (status?.codeMaps.length ?? 0);
+  const running = Math.max(status?.running.length ?? 0, jobs.length) + (status?.codeMaps.length ?? 0) + (status?.recall ? 1 : 0);
   const toggleId = useId();
 
   return (
@@ -456,6 +457,19 @@ function SystemStatusPanel({
               </button>
             </div>
           ))}
+          {status?.recall && (
+            <div className="flex items-center gap-2">
+              <History className="w-3.5 h-3.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
+              <div className="min-w-0 flex-1 flex flex-col">
+                <span className="text-caption font-medium text-shodh-text truncate">AI coding sessions</span>
+                <span className="text-caption text-shodh-text-muted tabular-nums">{recallRunText(status.recall)}</span>
+              </div>
+              <button type="button" className={SMALL_BUTTON} onClick={() => onCancel(status.recall?.sourceId ?? 'recall')} aria-label="Stop indexing coding sessions">
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+                Stop
+              </button>
+            </div>
+          )}
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             <button
               type="button"
@@ -632,9 +646,12 @@ export function SystemStatusStrip({
   const job = jobs[0] ?? null;
   const jobProgress = job ? progress[job.id] : undefined;
   const percent = job ? Math.max(0, Math.min(100, Math.round(job.progress ?? 0))) : 0;
-  const running = Math.max(status?.running.length ?? 0, jobs.length) + (status?.codeMaps.length ?? 0);
+  const running = Math.max(status?.running.length ?? 0, jobs.length) + (status?.codeMaps.length ?? 0) + (status?.recall ? 1 : 0);
   const codeMap = status?.codeMaps[0] ?? null;
   const codeMapPercent = codeMap && codeMap.total > 0 ? Math.max(0, Math.min(100, Math.round((codeMap.done / codeMap.total) * 100))) : 0;
+  // Shown in the strip only while it indexes sessions (a look that finds nothing new is brief).
+  const recallRun = status?.recall && status.recall.total > 0 ? status.recall : null;
+  const recallPercent = recallRun ? Math.max(0, Math.min(100, Math.round((recallRun.done / recallRun.total) * 100))) : 0;
   const stripLabel = `System status. Search: ${search.sentence}${job || paused ? ` ${indexingText(status, running)}.` : ''}`;
   const SearchIcon = status?.search?.accelerator === 'cpu' ? Cpu : Gauge;
 
@@ -665,7 +682,7 @@ export function SystemStatusStrip({
       </button>
 
       {/* A pause is shown even with nothing waiting: it is kept across restarts. */}
-      {paused && !job && !codeMap && !collapsed && (
+      {paused && !job && !codeMap && !recallRun && !collapsed && (
         <div className="flex items-center gap-1 px-1">
           <span className="min-w-0 flex-1 flex items-center gap-1.5 text-caption font-semibold text-shodh-text">
             <Pause className="w-3.5 h-3.5 shrink-0 text-shodh-warning" aria-hidden="true" />
@@ -794,6 +811,58 @@ export function SystemStatusStrip({
             <div
               className={cn('h-full origin-left transition-transform duration-panel ease-standard', paused ? 'bg-shodh-text-faint' : 'bg-shodh-accent')}
               style={{ transform: `scaleX(${codeMapPercent / 100})` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Recall indexing coding sessions, when no folder or code map is shown above. */}
+      {recallRun && !job && !codeMap && !collapsed && (
+        <div className="flex flex-col gap-1 px-1">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              aria-label={`${paused ? 'Paused: coding sessions' : 'Indexing coding sessions'}: ${recallRunText(recallRun)}. Open System status`}
+              className={cn('min-w-0 flex-1 flex flex-col text-left rounded-sm', FOCUS_RING)}
+            >
+              <span className="text-caption font-semibold text-shodh-text truncate flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                {paused ? 'Paused: coding sessions' : 'Coding sessions'}
+              </span>
+              <span className="text-caption text-shodh-text-faint tabular-nums truncate">{recallRunText(recallRun)}</span>
+            </button>
+            <button
+              type="button"
+              className={ICON_BUTTON}
+              onClick={() => onPause(!paused)}
+              aria-label={paused ? 'Resume indexing' : 'Pause indexing'}
+              aria-keyshortcuts={ariaKeyShortcuts('toggleIndexingPause', IS_MAC)}
+              title={withShortcut(paused ? 'Resume indexing' : 'Pause indexing', 'toggleIndexingPause', IS_MAC)}
+            >
+              {paused ? <Play className="w-3.5 h-3.5" aria-hidden="true" /> : <Pause className="w-3.5 h-3.5" aria-hidden="true" />}
+            </button>
+            <button
+              type="button"
+              className={ICON_BUTTON}
+              onClick={() => onCancel(recallRun.sourceId)}
+              aria-label="Stop indexing coding sessions"
+              title="Stop indexing coding sessions (what is indexed is kept)"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Coding sessions indexed"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={recallPercent}
+            className="h-[3px] rounded-[3px] bg-shodh-border overflow-hidden"
+          >
+            <div
+              className={cn('h-full origin-left transition-transform duration-panel ease-standard', paused ? 'bg-shodh-text-faint' : 'bg-shodh-accent')}
+              style={{ transform: `scaleX(${recallPercent / 100})` }}
             />
           </div>
         </div>

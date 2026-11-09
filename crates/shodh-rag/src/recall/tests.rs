@@ -1207,14 +1207,19 @@ async fn removed_sessions_and_deleted_transcripts_leave_the_index() {
         .await
         .unwrap();
     assert_eq!(report.indexed, 0, "{report:?}");
-    assert!(index
+    // The other sessions' chunks still come back (the test embedder ranks everything);
+    // none of the removed session's does.
+    let hits = index
         .engine()
         .read()
         .await
-        .search("evicts one entry too early", 10)
+        .search("evicts one entry too early", 50)
         .await
-        .unwrap()
-        .is_empty());
+        .unwrap();
+    assert!(!hits.is_empty(), "the other sessions are still indexed");
+    assert!(hits
+        .iter()
+        .all(|h| !h.text.contains("evicts one entry too early")));
 
     // A transcript deleted from disk leaves the index and the catalog.
     std::fs::remove_file(&home.harbor).unwrap();
@@ -1418,4 +1423,17 @@ fn settings_are_off_by_default_and_checked() {
         !back.wants(Tool::Codex, &project_key("/y")),
         "a project not chosen is not read"
     );
+}
+
+#[test]
+fn the_home_folder_is_written_as_a_tilde() {
+    assert_eq!(
+        super::hide_home(
+            r"read C:\Users\Ada\code\app\src\a.rs and c:/users/ada/notes",
+            r"C:\Users\Ada"
+        ),
+        r"read ~\code\app\src\a.rs and ~/notes"
+    );
+    assert_eq!(super::hide_home("/home/ada/x", "/home/ada/"), "~/x");
+    assert_eq!(super::hide_home("nothing here", "/"), "nothing here");
 }

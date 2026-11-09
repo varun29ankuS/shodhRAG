@@ -255,8 +255,51 @@ pub fn clip(text: &str, max: usize) -> String {
 }
 
 /// Parses an RFC 3339 time.
-pub(crate) fn parse_time(text: &str) -> Option<DateTime<Utc>> {
+pub fn parse_time(text: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text.trim())
         .ok()
         .map(|t| t.with_timezone(&Utc))
+}
+
+/// `text` with the user's home folder (`home`) written as `~`, ignoring case and `\`
+/// versus `/`: what the model reads of a session never holds the user's name and
+/// folders, which an answer could quote.
+pub fn hide_home(text: &str, home: &str) -> String {
+    let home = home.trim_end_matches(['/', '\\']);
+    if home.len() < 3 {
+        return text.to_string();
+    }
+    let fold = |s: &str| -> Vec<u8> {
+        s.bytes()
+            .map(|b| {
+                if b == b'\\' {
+                    b'/'
+                } else {
+                    b.to_ascii_lowercase()
+                }
+            })
+            .collect()
+    };
+    let hay = fold(text);
+    let needle = fold(home);
+    let mut out = String::with_capacity(text.len());
+    let (mut i, mut last) = (0, 0);
+    while i + needle.len() <= hay.len() {
+        let end = i + needle.len();
+        if hay[i..end] == needle[..] && text.is_char_boundary(i) && text.is_char_boundary(end) {
+            out.push_str(&text[last..i]);
+            out.push('~');
+            i = end;
+            last = end;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// The user's home folder, as [`hide_home`] takes it.
+pub fn home_folder() -> Option<String> {
+    dirs::home_dir().map(|h| h.display().to_string())
 }

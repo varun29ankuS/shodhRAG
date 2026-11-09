@@ -3447,6 +3447,10 @@ pub(crate) async fn base_registry(app: &AppHandle) -> CommandResult<Arc<ToolRegi
                     .clone(),
                 workspaces: app.state::<WorkspaceState>().inner().clone(),
                 github: Arc::new(crate::connectors::github::AppGitHub::new(app.clone())),
+                recall: app
+                    .state::<crate::recall_commands::RecallState>()
+                    .inner()
+                    .clone(),
             });
             build_registry(host)
                 .map(Arc::new)

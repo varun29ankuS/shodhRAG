@@ -1,4 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type { UnlistenFn } from '@tauri-apps/api/event';
+import type { DesignCheckUpdate, StoredDesignCheck } from './designModel';
 import type { FileChange } from './diffModel';
 import type { ReviewRequest, StoredReview } from './reviewModel';
 
@@ -30,3 +33,48 @@ export const codeApi = {
   /** The model a review would be sent to now (null: none set up). */
   target: () => invoke<ReviewTarget | null>('code_review_target'),
 };
+
+/** Which files a design check reads: a creation, or a file or folder of a project (`.` for all of it). */
+export interface DesignCheckRequest {
+  workspaceId?: string | null;
+  conversationId?: string | null;
+  creationId?: string | null;
+  path?: string | null;
+  /** A Code conversation's changed UI files instead of `path`. */
+  changes?: boolean;
+}
+
+/** The design check's backend (`design_check_commands.rs`): deterministic, no model. */
+export const designApi = {
+  run: (request: DesignCheckRequest) =>
+    invoke<StoredDesignCheck>('design_check_run', {
+      workspaceId: request.workspaceId ?? null,
+      conversationId: request.conversationId ?? null,
+      creationId: request.creationId ?? null,
+      path: request.path ?? null,
+      changes: request.changes ?? null,
+    }),
+  /** A check the pane or the assistant ran (by id). */
+  get: (id: string) => invoke<StoredDesignCheck>('design_check_get', { id }),
+  /** The latest check of a creation, else of a conversation (its badge). */
+  latest: (conversationId: string | null, creationId: string | null) =>
+    invoke<StoredDesignCheck | null>('design_check_latest', { conversationId, creationId }),
+  /** Whether finding `index`'s fix still fits its file (the line it replaces is there once). */
+  fixApplies: (checkId: string, index: number) =>
+    invoke<boolean>('design_check_fix_applies', { checkId, index }),
+};
+
+/** `design-check-updated`: a check finished (on demand, by the assistant, or after the agent wrote files). */
+export function onDesignCheckUpdated(handler: (update: DesignCheckUpdate) => void): Promise<UnlistenFn> {
+  return listen<Partial<DesignCheckUpdate>>('design-check-updated', event => {
+    const p = event.payload ?? {};
+    if (typeof p.id !== 'string') return;
+    handler({
+      id: p.id,
+      conversationId: typeof p.conversationId === 'string' ? p.conversationId : null,
+      creationId: typeof p.creationId === 'string' ? p.creationId : null,
+      workspaceId: typeof p.workspaceId === 'string' ? p.workspaceId : null,
+      total: typeof p.total === 'number' ? p.total : 0,
+    });
+  });
+}

@@ -20,7 +20,8 @@ use shodh_rag::harness::tools::{
 };
 use shodh_rag::harness::RiskTier;
 
-use super::{invalid, limit_arg, str_arg, AgentHost};
+use super::design_check::{DesignCheckTool, Place};
+use super::{invalid, limit_arg, str_arg, AgentHost, HostEffects};
 use crate::creations::{valid_id, Creation, CreationStatus, CreationStore};
 
 /// The panes of an artifact the agent may show.
@@ -30,15 +31,22 @@ const DEFAULT_RESULTS: usize = 20;
 const MAX_RESULTS: usize = 50;
 
 /// The tools a Creator session gets on top of its coding tools.
-pub const CREATOR_TOOL_NAMES: [&str; 3] = [
+pub const CREATOR_TOOL_NAMES: [&str; 4] = [
     FINISH_CREATION,
     app_tools::OPEN_ARTIFACT,
     app_tools::LIST_ARTIFACTS,
+    app_tools::DESIGN_CHECK,
 ];
 
-/// A Creator session's own tools ([`CREATOR_TOOL_NAMES`]): its finish card
-/// and the Artifacts tab's tools, which know the session's conversation.
-pub fn creator_tools(data_dir: &std::path::Path, conversation_id: &str) -> Vec<Arc<dyn HostTool>> {
+/// A Creator session's own tools ([`CREATOR_TOOL_NAMES`]): its finish card,
+/// the Artifacts tab's tools, which know the session's conversation, and the
+/// design check of its creation (`creation_id`).
+pub fn creator_tools(
+    effects: Arc<dyn HostEffects>,
+    data_dir: &std::path::Path,
+    conversation_id: &str,
+    creation_id: Option<String>,
+) -> Vec<Arc<dyn HostTool>> {
     vec![
         Arc::new(FinishCreationTool),
         Arc::new(OpenArtifactTool {
@@ -47,6 +55,11 @@ pub fn creator_tools(data_dir: &std::path::Path, conversation_id: &str) -> Vec<A
         Arc::new(ListArtifactsTool {
             data_dir: data_dir.to_path_buf(),
             conversation_id: Some(conversation_id.to_string()),
+        }),
+        Arc::new(DesignCheckTool {
+            effects,
+            data_dir: data_dir.to_path_buf(),
+            place: Place::Creator { creation_id },
         }),
     ]
 }
@@ -61,6 +74,12 @@ pub(super) fn register(
     }))?;
     registry.register(Arc::new(OpenArtifactTool {
         data_dir: host.data_dir.clone(),
+    }))?;
+    // A Research chat checks the design of artifacts (it has no code folder).
+    registry.register(Arc::new(DesignCheckTool {
+        effects: host.effects.clone(),
+        data_dir: host.data_dir.clone(),
+        place: Place::Chat,
     }))?;
     Ok(())
 }
@@ -486,14 +505,15 @@ mod tests {
             .contains("private-app"));
     }
 
-    #[test]
-    fn a_creator_session_gets_its_finish_card_and_the_artifact_tools() {
+    #[tokio::test]
+    async fn a_creator_session_gets_its_finish_card_the_artifact_tools_and_the_design_check() {
+        let t = crate::agent_tools::testing::host().await;
         let dir = tempfile::tempdir().unwrap();
-        let tools = creator_tools(dir.path(), "conv-1");
+        let tools = creator_tools(t.effects.clone(), dir.path(), "conv-1", None);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert_eq!(names, CREATOR_TOOL_NAMES);
         // None of them changes anything: they run in every mode, Plan included.
-        for tool in creator_tools(dir.path(), "conv-1") {
+        for tool in creator_tools(t.effects.clone(), dir.path(), "conv-1", None) {
             assert_eq!(tool.tier(), RiskTier::Read, "{}", tool.name());
             assert!(
                 !tool.edits_locally() && !tool.changes_state(),

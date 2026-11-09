@@ -74,6 +74,7 @@ import { ModelChip } from '../modelPicker/ModelChip';
 import { CodeModeSwitch } from '../agent/CodeModeSwitch';
 import { TokensSavedChip } from '../codeIntel/TokensSavedChip';
 import { CodeMapChip } from '../codeIntel/CodeMapChip';
+import { DesignCheckChip } from '../code/DesignCheckChip';
 import { ModePicker } from '../agent/ModePicker';
 import { ModeActions } from '../agent/ModeActions';
 import { CreatorFinishCard } from '../artifacts/CreatorFinishCard';
@@ -1321,6 +1322,14 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
               />
             )}
             {mode === 'code' && codeWorkspaceId && <CodeMapChip workspaceId={codeWorkspaceId} />}
+            {conversationId && (mode === 'code' || agentMode === 'creator') && (
+              <DesignCheckChip
+                conversationId={conversationId}
+                workspaceId={agentMode === 'creator' ? null : codeWorkspaceId ?? null}
+                creates={agentMode === 'creator'}
+                answerRunning={isStreaming}
+              />
+            )}
             <ToolsChip
               workspaceId={session.activeConversation?.workspaceId ?? null}
               mode={mode}

@@ -777,6 +777,7 @@ mod tests {
                 "plan-before-building true",
                 "test-first true",
                 "debug-systematically true",
+                "design-polish true",
                 "verify-before-done true",
                 "fresh-eyes-review true",
                 "pdf-tools false",

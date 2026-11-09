@@ -155,7 +155,7 @@ pub fn tool_group(name: &str) -> &'static str {
         }
         "remember" | "recall" | "update_memory" | "forget" => "Memory",
         "list_artifacts" | "open_artifact" | "finish_creation" => "Artifacts",
-        "open_code" | "review_code" => "Code review",
+        "open_code" | "review_code" | "design_check" => "Code review",
         "code_tokens_saved" | "code_skills" => "Code skills and savings",
         "code_definition" | "code_references" | "code_outline" | "code_dependencies" => "Code map",
         "list_workspaces"

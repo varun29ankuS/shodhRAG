@@ -300,6 +300,12 @@ export interface ReviewTarget {
   reviewId: string;
 }
 
+/** A design check the assistant ran, its findings opened in the code pane. */
+export interface DesignCheckTarget {
+  kind: "design_check";
+  checkId: string;
+}
+
 /** A Settings section, with a setting (its key) or, in "memory", a memory (its id) highlighted. */
 export interface SettingTarget {
   kind: "setting";
@@ -331,6 +337,7 @@ export type NavigationTarget =
   | ArtifactTarget
   | CodeTarget
   | ReviewTarget
+  | DesignCheckTarget
   | SettingTarget
   | LibraryTarget
   | StatusTarget;

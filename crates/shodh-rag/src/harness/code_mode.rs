@@ -2675,6 +2675,53 @@ pub fn git_ignores(folder: &Path, relative: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+/// Files of `folder` changed against `base` (a branch or commit; `HEAD` when
+/// `None`) or not tracked yet, relative to `folder` with `/`, sorted, at most
+/// `max_files`. Names only, nothing read: the paths [`working_changes`] would
+/// show. `None` outside a repository or when git cannot tell. Blocking; git
+/// runs hardened with the repository's content filters off.
+pub fn changed_paths(folder: &Path, base: Option<&str>, max_files: usize) -> Option<Vec<String>> {
+    let base = base.unwrap_or("HEAD");
+    if base.starts_with('-') || base.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let prefix = run_git(folder, &["rev-parse", "--show-prefix"]).ok()?;
+    let changed = run_git_raw(
+        folder,
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            base,
+            "--",
+            ".",
+        ],
+    )
+    .ok()?;
+    // `ls-files` names paths relative to the folder it runs in.
+    let untracked = run_git_raw(
+        folder,
+        &[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ],
+    )
+    .ok()?;
+    let mut paths = folder_paths(&changed, &prefix);
+    paths.extend(folder_paths(&untracked, ""));
+    paths.sort_unstable();
+    paths.dedup();
+    paths.truncate(max_files);
+    Some(paths)
+}
+
 /// The files of `within` (inside `folder`) that git tracks or would add,
 /// relative to `folder` with `/`: every file `.gitignore` does not exclude.
 /// `None` outside a repository. Blocking; runs no program of the repository.

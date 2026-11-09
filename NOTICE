@@ -52,6 +52,34 @@ https://github.com/google/elephant-goldfish-model, commit e9e1f06aa4e26e95cd4ed3
   crates/shodh-rag/skills/licenses/elephant-goldfish-model-Apache-2.0.txt
   and beside each skill that uses it. EGM ships no NOTICE file.
 
+impeccable
+https://github.com/pbakaus/impeccable, commit a90602e9f6fed600d6d9b18cf78275d66cac7a6c
+Copyright 2025 Paul Bakaus
+- crates/shodh-rag/src/design_check/ (the design check of UI files) ports
+  the rules of impeccable's source-text detector
+  (crates/detect/src/regex_matchers.rs and the rule registry,
+  crates/foundation/src/registry.rs): the rule ids, names and descriptions
+  are impeccable's, word for word, and the detectors follow its tokens and
+  thresholds, including side-tab's gate (a stripe is reported only on a box
+  rounded away from it). Changed: a new Rust implementation over source text
+  only (no rendered-page or browser checks); some rules narrowed to what
+  source text can show (side-tab reads the radius of the element's own
+  classes, or of every CSS rule of the same file with its selector, not of
+  rules in other files, and its
+  Tailwind form also skips blockquote, nav, pre, code, a, input and span,
+  which impeccable exempts only in CSS); gradient-text, ai-color-palette and
+  overused-font lowered to advisory, since a user may ask for exactly that;
+  a suggested fix added to every rule; and Shodh's own accessibility and
+  consistency rules added beside them. No impeccable code or script is run
+  or bundled.
+- crates/shodh-rag/skills/design-polish/SKILL.md is adapted from the
+  commands polish and audit (skill/reference/polish.md and audit.md).
+  Changed: condensed into one order of work around Shodh's design_check
+  tool, with the user's interface rules added. The licence text is kept in
+  crates/shodh-rag/skills/licenses/impeccable-Apache-2.0.txt and beside the
+  skill. impeccable's NOTICE.md credits ehmo/platform-design-skills (MIT)
+  for its iOS and Android references, which Shodh does not use.
+
 Third-party components distributed with the app (not under Apache-2.0)
 
 Code mode's bundled skills (MIT License)
@@ -72,8 +100,10 @@ beside each skill that uses them:
   (skills/test-first/SKILL.md), verification-loop
   (skills/verify-before-done/SKILL.md).
 
-Code mode's code map: tree-sitter and its grammars (MIT License)
-Compiled into the app (crates/shodh-rag/src/code_map/) to read source files:
+Code mode's code map and design check: tree-sitter, its grammars and the
+Tailwind palette (MIT License)
+Compiled into the app (crates/shodh-rag/src/code_map/ and
+crates/shodh-rag/src/design_check/) to read source files:
 - tree-sitter 0.25.10, https://github.com/tree-sitter/tree-sitter, Copyright
   (c) 2018-2024 Max Brunsfeld
 - tree-sitter-language 0.1.9, https://github.com/tree-sitter/tree-sitter,
@@ -90,6 +120,16 @@ Compiled into the app (crates/shodh-rag/src/code_map/) to read source files:
   Copyright (c) 2016 Max Brunsfeld
 - tree-sitter-go 0.25.0, https://github.com/tree-sitter/tree-sitter-go,
   Copyright (c) 2014 Max Brunsfeld
+- tree-sitter-html 0.23.2 (the design check: HTML, and Vue and Svelte
+  templates), https://github.com/tree-sitter/tree-sitter-html, Copyright
+  (c) 2014 Max Brunsfeld
+- tree-sitter-css 0.25.0 (the design check: CSS, SCSS and Less),
+  https://github.com/tree-sitter/tree-sitter-css, Copyright (c) 2018 Max
+  Brunsfeld
+- Tailwind CSS's default colour palette (the hex values of
+  src/public/colors.js at v3.4.17), https://github.com/tailwindlabs/tailwindcss,
+  Copyright (c) Tailwind Labs, Inc.: crates/shodh-rag/src/design_check/tailwind.rs,
+  which the design check's contrast of Tailwind colour classes reads.
 - streaming-iterator 0.1.9 (a dependency of tree-sitter),
   https://github.com/sfackler/streaming-iterator, Copyright (c) 2016 Steven
   Fackler, MIT or Apache-2.0, used under MIT.

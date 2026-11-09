@@ -3,6 +3,7 @@ import {
   AppWindow,
   ArrowLeft,
   Check,
+  CheckCircle2,
   Download,
   FileText,
   Folder,
@@ -10,6 +11,7 @@ import {
   Globe,
   Loader2,
   MessageCircle,
+  Palette,
   Pencil,
   RefreshCw,
   ShieldAlert,
@@ -56,6 +58,10 @@ import { CodeDiff, CodeFileView } from '../code/CodeDiff';
 import { languageOf } from '../code/diffModel';
 import type { LineSelection } from '../code/diffModel';
 import { ReviewThisButton } from '../code/ReviewThisButton';
+import { useCodeReview } from '../code/CodeReviewContext';
+import { designApi, onDesignCheckUpdated } from '../code/api';
+import { badgeDetail, badgeText, totalIssues } from '../code/designModel';
+import type { StoredDesignCheck } from '../code/designModel';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-surface';
@@ -289,6 +295,7 @@ export function ArtifactPage({ selection, onBack, onOpenChat, onChange, onDelete
             </p>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
+            <ArtifactDesignCheck creationId={creation.id} conversationId={creation.conversationId} />
             <button type="button" onClick={() => onOpenChat(creation.conversationId)} className={QUIET_BUTTON}>
               <MessageCircle className="w-3.5 h-3.5" aria-hidden="true" />
               Open chat
@@ -868,6 +875,94 @@ function ArtifactFile({ path, text, title }: { path: string; text: string; title
         />
       }
     />
+  );
+}
+
+/**
+ * The artifact's design badge ("Design check: 3 issues", "No issues"), which opens the
+ * findings in the code pane, and "Design check", which checks its files now. Shodh also
+ * checks them after each round of writes while it builds. No model is used.
+ */
+function ArtifactDesignCheck({ creationId, conversationId }: { creationId: string; conversationId: string }) {
+  const pane = useCodeReview();
+  const [check, setCheck] = useState<StoredDesignCheck | null>(null);
+  const [busy, setBusy] = useState(false);
+  const generation = useRef(0);
+
+  const load = useCallback(() => {
+    const mine = ++generation.current;
+    designApi
+      .latest(null, creationId)
+      .then(found => {
+        if (mine === generation.current) setCheck(found);
+      })
+      .catch(e => console.error('Design check unavailable:', String(e)));
+  }, [creationId]);
+
+  useEffect(() => {
+    setCheck(null);
+    load();
+    let disposed = false;
+    let unlisten: UnlistenFn | null = null;
+    onDesignCheckUpdated(update => {
+      if (update.creationId === creationId) load();
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(e => console.error('Failed to listen for design-check-updated:', e));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [creationId, load]);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const found = await designApi.run({ creationId, conversationId });
+      generation.current += 1;
+      setCheck(found);
+      pane?.openDesign(found);
+    } catch (e) {
+      notify.error('The design check did not run', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const errors = check?.report.counts.error ?? 0;
+  return (
+    <>
+      {check && (
+        <button
+          type="button"
+          onClick={() => pane?.openDesign(check)}
+          title={`${badgeDetail(check)} Click to see the findings.`}
+          className={cn(QUIET_BUTTON, errors > 0 && 'text-shodh-text')}
+        >
+          {totalIssues(check.report) === 0
+            ? <CheckCircle2 className="w-3.5 h-3.5 text-shodh-success" aria-hidden="true" />
+            : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
+          {badgeText(check)}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => void run()}
+        disabled={busy}
+        title="Check this artifact's HTML, CSS and components with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
+        className={QUIET_BUTTON}
+      >
+        {busy
+          ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+          : check
+            ? <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+            : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
+        {check ? 'Check again' : 'Design check'}
+      </button>
+    </>
   );
 }
 

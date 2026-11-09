@@ -363,7 +363,7 @@ pub(crate) mod tests {
             "visual" => Some("features/visuals/VisualNavigator.tsx"),
             "workspace" => Some("features/workspaces/WorkspacesView.tsx"),
             "artifact" => Some("features/artifacts/ArtifactsView.tsx"),
-            "code" | "review" => Some("features/code/CodeReviewContext.tsx"),
+            "code" | "review" | "design_check" => Some("features/code/CodeReviewContext.tsx"),
             "setting" => Some("components/shell/SettingsView.tsx"),
             "library" => Some("features/library/LibraryView.tsx"),
             "status" => Some("components/shell/SystemStatusStrip.tsx"),

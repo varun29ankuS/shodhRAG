@@ -12,9 +12,10 @@ metadata:
 Code written before the problem is understood gets rewritten. A few minutes of
 questions and a short plan are cheaper than a wrong implementation.
 
-This is the first of Shodh's five building skills. The order is:
+This is the first of Shodh's six building skills. The order is:
 **plan-before-building** → **test-first** → **debug-systematically** (when
-something fails) → **verify-before-done** → **fresh-eyes-review**.
+something fails) → **design-polish** (for user interface work) →
+**verify-before-done** → **fresh-eyes-review**.
 
 ## When to use it
 

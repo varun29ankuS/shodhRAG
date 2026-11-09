@@ -12,8 +12,9 @@ metadata:
 A test you never saw fail proves nothing: it may pass whatever the code does.
 Writing the test first is how you know it can catch the bug.
 
-Second of Shodh's five building skills (plan-before-building → **test-first**
-→ debug-systematically → verify-before-done → fresh-eyes-review). Each step
+Second of Shodh's six building skills (plan-before-building → **test-first**
+→ debug-systematically → design-polish for UI work → verify-before-done →
+fresh-eyes-review). Each step
 of an agreed plan names the test that proves it; this skill is how that test
 gets written.
 

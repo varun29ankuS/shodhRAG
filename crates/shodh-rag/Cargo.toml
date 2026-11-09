@@ -105,6 +105,10 @@ tree-sitter-typescript = "0.23.2"
 tree-sitter-javascript = "0.25.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-go = "0.25.0"
+# The design check (design_check/): HTML (also Vue and Svelte templates) and
+# CSS, SCSS and Less. MIT (see NOTICE).
+tree-sitter-html = "0.23.2"
+tree-sitter-css = "0.25.0"
 
 # Utilities
 regex = "1"

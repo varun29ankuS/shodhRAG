@@ -318,6 +318,8 @@ mod tests {
             "tree-sitter-javascript",
             "tree-sitter-python",
             "tree-sitter-go",
+            "tree-sitter-html",
+            "tree-sitter-css",
             "streaming-iterator",
             "ignore",
             "globset",
@@ -339,6 +341,7 @@ mod tests {
             "superpowers-MIT.txt",
             "ECC-MIT.txt",
             "elephant-goldfish-model-Apache-2.0.txt",
+            "impeccable-Apache-2.0.txt",
         ] {
             assert!(
                 root.join("crates/shodh-rag/skills/licenses")

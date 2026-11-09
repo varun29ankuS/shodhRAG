@@ -146,6 +146,10 @@ export function parseTarget(value: unknown): NavigationTarget | null {
       const reviewId = reqString(value.reviewId);
       return reviewId ? { kind: 'review', reviewId } : null;
     }
+    case 'design_check': {
+      const checkId = reqString(value.checkId);
+      return checkId ? { kind: 'design_check', checkId } : null;
+    }
     case 'setting': {
       const section = reqString(value.section);
       return section && SETTINGS_SECTIONS.includes(section)

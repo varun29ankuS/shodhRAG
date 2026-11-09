@@ -318,6 +318,8 @@ mod tests {
             "tree-sitter-javascript",
             "tree-sitter-python",
             "tree-sitter-go",
+            "tree-sitter-html",
+            "tree-sitter-css",
             "streaming-iterator",
             "ignore",
             "globset",

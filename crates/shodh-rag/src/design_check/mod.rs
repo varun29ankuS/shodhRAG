@@ -20,9 +20,11 @@
 //! file; what is left out is counted in the report.
 
 pub mod color;
+pub mod parse;
 pub mod rules;
 pub mod scan;
 pub mod source;
+pub mod tailwind;
 
 #[cfg(test)]
 mod tests;
@@ -151,11 +153,58 @@ pub fn is_ui_file(path: &str) -> bool {
 /// text always gives the same findings in the same order. Also returns how
 /// many findings the per-rule limit left out, by severity.
 pub fn check_source(path: &str, text: &str) -> (Vec<DesignFinding>, SeverityCounts) {
+    check_source_with(path, text, &Context::default())
+        .unwrap_or_else(|_| (Vec::new(), SeverityCounts::default()))
+}
+
+/// What a check knows of the project besides the file: the colours of its
+/// Tailwind config (`tailwind.config.*` at the folder's top), by class name
+/// (`brand-500`).
+#[derive(Debug, Clone, Default)]
+pub struct Context {
+    pub colors: std::collections::HashMap<String, color::Rgba>,
+}
+
+impl Context {
+    /// The context of the project at `root`: its Tailwind config's plain
+    /// literal colours, when it has one. Blocking.
+    pub fn of_project(root: &Path) -> Context {
+        let mut colors = std::collections::HashMap::new();
+        for name in [
+            "tailwind.config.js",
+            "tailwind.config.cjs",
+            "tailwind.config.mjs",
+            "tailwind.config.ts",
+        ] {
+            let path = root.join(name);
+            let small = std::fs::symlink_metadata(&path)
+                .is_ok_and(|m| m.is_file() && m.len() <= MAX_FILE_BYTES);
+            let Some(text) = small.then(|| std::fs::read_to_string(&path).ok()).flatten() else {
+                continue;
+            };
+            for (key, value) in parse::tailwind_config_colors(&text, name.ends_with(".ts")) {
+                if let Some(rgba) = color::parse(&value) {
+                    colors.insert(key, rgba);
+                }
+            }
+            break;
+        }
+        Context { colors }
+    }
+}
+
+/// [`check_source`] with what is known of the project. `Err` when the file
+/// cannot be read within the parse budget (it is skipped, with the reason).
+pub fn check_source_with(
+    path: &str,
+    text: &str,
+    context: &Context,
+) -> Result<(Vec<DesignFinding>, SeverityCounts), String> {
     let Some(kind) = UiKind::of_path(path) else {
-        return (Vec::new(), SeverityCounts::default());
+        return Ok((Vec::new(), SeverityCounts::default()));
     };
-    let source = source::Source::new(path, text, kind);
-    let mut hits = scan::run(&source);
+    let source = source::Source::new(path, text, kind)?;
+    let mut hits = scan::run(&source, context);
     hits.sort_by(|a, b| {
         a.start
             .cmp(&b.start)
@@ -210,7 +259,7 @@ pub fn check_source(path: &str, text: &str) -> (Vec<DesignFinding>, SeverityCoun
             replace,
         });
     }
-    (findings, left_out)
+    Ok((findings, left_out))
 }
 
 /// The spans of one line replaced (`(start, end, new)` in file offsets), as
@@ -309,6 +358,11 @@ pub fn check_files(root: &Path, paths: &[String]) -> DesignReport {
     let mut paths: Vec<&String> = paths.iter().filter(|p| is_ui_file(p)).collect();
     paths.sort();
     paths.dedup();
+    let context = if paths.is_empty() {
+        Context::default()
+    } else {
+        Context::of_project(root)
+    };
     let mut total: u64 = 0;
     for path in paths {
         if report.files_checked >= MAX_FILES {
@@ -351,8 +405,26 @@ pub fn check_files(root: &Path, paths: &[String]) -> DesignReport {
             }
         };
         total += meta.len();
+        // The code map's stop rule: very long lines are generated, not written.
+        let average = text.len() / text.lines().count().max(1);
+        if text.len() > 16 * 1024 && average > crate::code_map::MAX_AVERAGE_LINE {
+            report.skipped.push(SkippedFile {
+                path: path.clone(),
+                reason: "it looks minified or generated (very long lines)".to_string(),
+            });
+            continue;
+        }
+        let (findings, left_out) = match check_source_with(path, &text, &context) {
+            Ok(found) => found,
+            Err(why) => {
+                report.skipped.push(SkippedFile {
+                    path: path.clone(),
+                    reason: why,
+                });
+                continue;
+            }
+        };
         report.files_checked += 1;
-        let (findings, left_out) = check_source(path, &text);
         report.left_out += left_out.total();
         report.counts.merge(&left_out);
         report.findings.extend(findings);

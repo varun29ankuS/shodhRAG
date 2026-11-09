@@ -1196,3 +1196,175 @@ fn written_files_skip_build_output_and_tests() {
         vec!["src/App.tsx".to_string()]
     );
 }
+
+// ─── Exact parsing, Tailwind contrast, merged CSS rules ──────────────────────
+
+/// Strings, template literals, regexes and JSX text come from the grammar:
+/// nothing in a string is a comment or a tag, and code between components is
+/// never element text.
+#[test]
+fn the_parser_tells_strings_comments_and_jsx_text_apart() {
+    let tsx = r#"const html = "<img src='x.png'>";
+const note = `<!-- ${a} -->`;
+export function A() {
+  return <p className="x">Lorem ipsum</p>;
+}
+const notText = "Supercharge your workflow";
+export function B() {
+  return <div>Plain words</div>;
+}
+"#;
+    let found = ids("a.tsx", tsx);
+    assert!(
+        !found.contains(&"img-missing-alt"),
+        "a tag inside a string is not a tag: {found:?}"
+    );
+    assert!(found.contains(&"placeholder-text"));
+    assert!(
+        !found.contains(&"marketing-buzzword"),
+        "a string is not element text: {found:?}"
+    );
+    // Vue and Svelte templates, with their script and style parsed by their own grammars.
+    let vue = "<template><img :src=\"s\"></template>\n<script setup lang=\"ts\">const g = '/* not a comment';</script>\n<style>.a { font-size: 9px; }</style>\n";
+    let found = ids("a.vue", vue);
+    assert!(
+        found.contains(&"img-missing-alt") && found.contains(&"tiny-text"),
+        "{found:?}"
+    );
+    let svelte = "<script>let n = 0;</script>\n<button>{n} 🗑️</button>\n<p>Your text goes here</p>";
+    assert!(ids("a.svelte", svelte).contains(&"placeholder-text"));
+    // SCSS `//` comments, never inside a string.
+    let scss = "// .x { font-size: 8px; }\n.a::after { content: '//'; }\n.b { font-size: 9px; }";
+    let found = check_source("a.scss", scss).0;
+    let tiny: Vec<usize> = found
+        .iter()
+        .filter(|f| f.rule == "tiny-text")
+        .map(|f| f.line)
+        .collect();
+    assert_eq!(tiny, vec![3]);
+}
+
+/// The parse has the code map's budget, and minified files are not read.
+#[test]
+fn minified_files_are_skipped_with_the_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let line = ".a{font-size:9px}".repeat(2_000);
+    std::fs::write(dir.path().join("bundle.css"), &line).unwrap();
+    std::fs::write(dir.path().join("ok.css"), ".a { font-size: 9px; }\n").unwrap();
+    let report = check_files(dir.path(), &["bundle.css".into(), "ok.css".into()]);
+    assert_eq!(report.files_checked, 1);
+    assert!(report
+        .skipped
+        .iter()
+        .any(|s| s.path == "bundle.css" && s.reason.contains("minified")));
+    assert_eq!(crate::code_map::PARSE_BUDGET.as_secs(), 2);
+}
+
+/// Limit 2: Tailwind text and background classes on one element, against
+/// Tailwind's palette and opacity modifiers, at WCAG's 4.5:1 and 3:1.
+#[test]
+fn tailwind_colour_pairs_meet_wcag() {
+    fires(
+        "low-contrast",
+        "a.tsx",
+        r#"<p className="text-gray-400 bg-white">Note</p>"#,
+        r#"<p className="text-gray-700 bg-white">Note</p>"#,
+    );
+    fires(
+        "low-contrast",
+        "a.tsx",
+        r#"<p className="text-black/40 bg-white">Note</p>"#,
+        r#"<p className="text-black/90 bg-white">Note</p>"#,
+    );
+    fires(
+        "low-contrast",
+        "a.html",
+        r#"<p class="text-white bg-yellow-400">Sale</p>"#,
+        r#"<p class="text-white bg-blue-700">Sale</p>"#,
+    );
+    // gray-500 on white is 4.8:1: fine for body text; gray-400 is 2.5:1 even when large.
+    assert!(
+        !ids("a.tsx", r#"<p className="text-gray-500 bg-white">x</p>"#).contains(&"low-contrast")
+    );
+    // Large text needs 3:1: amber-600 on white (3.2:1) passes at text-2xl, fails at body size.
+    assert!(!ids(
+        "a.tsx",
+        r#"<h2 className="text-2xl text-amber-600 bg-white">x</h2>"#
+    )
+    .contains(&"low-contrast"));
+    assert!(
+        ids("a.tsx", r#"<p className="text-amber-600 bg-white">x</p>"#).contains(&"low-contrast")
+    );
+    // What cannot be resolved is not judged: a see-through background, a
+    // variable, a colour behind a variant, an unknown name.
+    for fine in [
+        r#"<p className="text-gray-400 bg-white/50">x</p>"#,
+        r#"<p className="text-[var(--ink)] bg-white">x</p>"#,
+        r#"<p className="dark:text-gray-400 bg-white">x</p>"#,
+        r#"<p className="text-brand-500 bg-white">x</p>"#,
+    ] {
+        assert!(!ids("a.tsx", fine).contains(&"low-contrast"), "{fine}");
+    }
+    // Arbitrary colours resolve.
+    assert!(ids(
+        "a.tsx",
+        r#"<p className="text-[#bbbbbb] bg-[#ffffff]">x</p>"#
+    )
+    .contains(&"low-contrast"));
+}
+
+/// Limit 2: the project's own Tailwind colours, when they are plain literals.
+#[test]
+fn tailwind_config_colours_are_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("tailwind.config.js"),
+        "module.exports = { theme: { extend: { colors: { brand: { DEFAULT: '#2563eb', pale: '#c7d2fe' }, ink: \"#111111\", glow: ({ theme }) => theme('x') } } } };\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("a.tsx"),
+        "<p className=\"text-brand-pale bg-white\">x</p>\n<p className=\"text-ink bg-white\">y</p>\n<p className=\"text-glow bg-white\">z</p>\n",
+    )
+    .unwrap();
+    let context = Context::of_project(dir.path());
+    assert!(context.colors.contains_key("brand") && context.colors.contains_key("brand-pale"));
+    assert!(
+        !context.colors.contains_key("glow"),
+        "a function is not a literal"
+    );
+    let report = check_files(dir.path(), &["a.tsx".into()]);
+    let lines: Vec<usize> = report
+        .findings
+        .iter()
+        .filter(|f| f.rule == "low-contrast")
+        .map(|f| f.line)
+        .collect();
+    assert_eq!(
+        lines,
+        vec![1],
+        "brand-pale on white is low, ink is fine, glow is unknown"
+    );
+}
+
+/// Limit 3: rules with the same selector in one file are one box.
+#[test]
+fn side_tab_reads_every_rule_of_its_selector_in_the_file() {
+    fires(
+        "side-tab",
+        "a.css",
+        ".card { border-left: 4px solid #3b82f6; }\n.card { border-radius: 12px; }",
+        ".card { border-left: 4px solid #3b82f6; }\n.other { border-radius: 12px; }",
+    );
+    assert!(ids(
+        "a.css",
+        ".card, .panel { border-radius: 12px; }\n.card { border-left: 4px solid #3b82f6; }"
+    )
+    .contains(&"side-tab"));
+    // A later rule that squares the box wins, as in the cascade.
+    assert!(!ids("a.css", ".card { border-radius: 12px; border-left: 4px solid #3b82f6; }\n.card { border-radius: 0; }").contains(&"side-tab"));
+    // In a page's <style> too.
+    let html =
+        "<style>.card { border-left: 4px solid #3b82f6; }\n.card { border-radius: 12px; }</style>";
+    assert!(ids("a.html", html).contains(&"side-tab"));
+}

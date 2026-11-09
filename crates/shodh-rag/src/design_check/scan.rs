@@ -245,7 +245,7 @@ impl Out {
 }
 
 /// Every rule's hits in `src`, in no particular order.
-pub fn run(src: &Source) -> Vec<Hit> {
+pub fn run(src: &Source, context: &super::Context) -> Vec<Hit> {
     let mut out = Out { hits: Vec::new() };
     if src.kind.has_markup() {
         images(src, &mut out);
@@ -261,6 +261,9 @@ pub fn run(src: &Source) -> Vec<Hit> {
     focus(src, &mut out);
     declarations(src, &mut out);
     contrast_rule(src, &mut out);
+    if src.kind.has_markup() {
+        tailwind_contrast(src, context, &mut out);
+    }
     token_rules(src, &mut out);
     fonts(src, &mut out);
     easing(src, &mut out);
@@ -539,6 +542,36 @@ fn radius_px(value: &str) -> Option<f64> {
 /// declares no radius (the initial square box).
 fn declared_corners(src: &Source, start: usize, end: usize) -> Option<Corners> {
     let mut corners = Corners::square();
+    apply_corners(src, start, end, &mut corners).then_some(corners)
+}
+
+/// The corners of the CSS rule around `offset` with every rule of the file
+/// that names one of its selectors merged in, in source order (a later
+/// declaration wins, as in the cascade): `.card { border-left: … }` and a
+/// later `.card { border-radius: … }` are one box. Rules of other files are
+/// not seen. `None` when the offset is in no rule (an inline style), or when
+/// none of those rules declares a radius.
+fn merged_rule_corners(src: &Source, offset: usize) -> Option<Option<Corners>> {
+    let rule = src
+        .css_rules
+        .iter()
+        .filter(|r| r.start <= offset && offset < r.end)
+        .min_by_key(|r| r.end - r.start)?;
+    let mut corners = Corners::square();
+    let mut declared = false;
+    for other in src
+        .css_rules
+        .iter()
+        .filter(|o| o.selectors.iter().any(|s| rule.selectors.contains(s)))
+    {
+        declared |= apply_corners(src, other.start, other.end, &mut corners);
+    }
+    Some(declared.then_some(corners))
+}
+
+/// Apply the radius declarations of `start..end` to `corners`; whether any
+/// was found.
+fn apply_corners(src: &Source, start: usize, end: usize, corners: &mut Corners) -> bool {
     let mut declared = false;
     for d in src.decls_in(start, end) {
         let one = |v: &str| {
@@ -561,7 +594,7 @@ fn declared_corners(src: &Source, start: usize, end: usize) -> Option<Corners> {
                     4 => [at(0), at(1), at(2), at(3)],
                     _ => [None; 4],
                 };
-                corners = Corners(all);
+                *corners = Corners(all);
             }
             "border-top-left-radius" => {
                 declared = true;
@@ -582,7 +615,7 @@ fn declared_corners(src: &Source, start: usize, end: usize) -> Option<Corners> {
             _ => {}
         }
     }
-    declared.then_some(corners)
+    declared
 }
 
 fn is_rounded(tokens: &[&Token]) -> bool {
@@ -1624,7 +1657,13 @@ fn borders(src: &Source, d: &Decl, out: &mut Out) {
             .any(|w| w == *e)
     });
     let (scope, start) = src.scope_at(d.start);
-    let corners = declared_corners(src, start, start + scope.len());
+    // A stylesheet rule reads every rule of the file with its selector; an
+    // inline style or a JSX style object reads its own declarations.
+    let corners = match src.tag_at(d.start) {
+        Some(_) => declared_corners(src, start, start + scope.len()),
+        None => merged_rule_corners(src, d.start)
+            .unwrap_or_else(|| declared_corners(src, start, start + scope.len())),
+    };
     let radius = corners.is_some_and(|c| c != Corners::square());
     // impeccable's gate: a side stripe is reported only on a box rounded away
     // from it; a block that declares no radius is the initial square box.
@@ -1684,6 +1723,67 @@ fn borders(src: &Source, d: &Decl, out: &mut Out) {
             }
         }
         _ => {}
+    }
+}
+
+/// Tailwind sizes in pixels and weights that make text "large" for WCAG.
+fn tailwind_large(tokens: &[&Token]) -> bool {
+    let size = tokens
+        .iter()
+        .rev()
+        .filter(|t| t.variants.is_empty())
+        .find_map(|t| tw_text_size(&t.base))
+        .unwrap_or(16);
+    let bold = tokens.iter().any(|t| {
+        t.variants.is_empty()
+            && matches!(
+                t.base.as_str(),
+                "font-bold" | "font-extrabold" | "font-black"
+            )
+    });
+    size >= 24 || (size >= 19 && bold)
+}
+
+/// Tailwind text and background colours on one element, below WCAG AA
+/// (4.5:1, 3:1 for large text), from Tailwind's default palette and the
+/// project's config colours. A colour that cannot be resolved, a
+/// see-through background (what is behind it is unknown) or a class behind
+/// a variant (`hover:`, `dark:`) is not judged.
+fn tailwind_contrast(src: &Source, context: &super::Context, out: &mut Out) {
+    for tag in src.tags.iter().filter(|t| !t.closing) {
+        let tokens = tokens_of(src, tag);
+        // The last class of each kind wins, as in Tailwind's own order.
+        let resolved = |prefix: &str| {
+            tokens
+                .iter()
+                .rev()
+                .filter(|t| t.variants.is_empty())
+                .find_map(|t| {
+                    let part = t.base.strip_prefix(prefix)?;
+                    super::tailwind::resolve(part, &context.colors).map(|c| (*t, c))
+                })
+        };
+        let (Some((text_token, text)), Some((bg_token, ground))) =
+            (resolved("text-"), resolved("bg-"))
+        else {
+            continue;
+        };
+        if ground.a < 0.99 || text.a < 0.05 {
+            continue;
+        }
+        let needed = if tailwind_large(&tokens) { 3.0 } else { 4.5 };
+        let ratio = contrast(&text.over(&ground), &ground);
+        if ratio < needed {
+            out.hit(
+                "low-contrast",
+                text_token.start,
+                text_token.end,
+                format!(
+                    "{} on {} is {:.1}:1 (needs {needed}:1)",
+                    text_token.base, bg_token.base, ratio
+                ),
+            );
+        }
     }
 }
 

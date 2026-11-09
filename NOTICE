@@ -64,7 +64,8 @@ Copyright 2025 Paul Bakaus
   rounded away from it). Changed: a new Rust implementation over source text
   only (no rendered-page or browser checks); some rules narrowed to what
   source text can show (side-tab reads the radius of the element's own
-  classes or CSS block, not of other rules for the same element, and its
+  classes, or of every CSS rule of the same file with its selector, not of
+  rules in other files, and its
   Tailwind form also skips blockquote, nav, pre, code, a, input and span,
   which impeccable exempts only in CSS); gradient-text, ai-color-palette and
   overused-font lowered to advisory, since a user may ask for exactly that;
@@ -99,8 +100,10 @@ beside each skill that uses them:
   (skills/test-first/SKILL.md), verification-loop
   (skills/verify-before-done/SKILL.md).
 
-Code mode's code map: tree-sitter and its grammars (MIT License)
-Compiled into the app (crates/shodh-rag/src/code_map/) to read source files:
+Code mode's code map and design check: tree-sitter, its grammars and the
+Tailwind palette (MIT License)
+Compiled into the app (crates/shodh-rag/src/code_map/ and
+crates/shodh-rag/src/design_check/) to read source files:
 - tree-sitter 0.25.10, https://github.com/tree-sitter/tree-sitter, Copyright
   (c) 2018-2024 Max Brunsfeld
 - tree-sitter-language 0.1.9, https://github.com/tree-sitter/tree-sitter,
@@ -117,6 +120,16 @@ Compiled into the app (crates/shodh-rag/src/code_map/) to read source files:
   Copyright (c) 2016 Max Brunsfeld
 - tree-sitter-go 0.25.0, https://github.com/tree-sitter/tree-sitter-go,
   Copyright (c) 2014 Max Brunsfeld
+- tree-sitter-html 0.23.2 (the design check: HTML, and Vue and Svelte
+  templates), https://github.com/tree-sitter/tree-sitter-html, Copyright
+  (c) 2014 Max Brunsfeld
+- tree-sitter-css 0.25.0 (the design check: CSS, SCSS and Less),
+  https://github.com/tree-sitter/tree-sitter-css, Copyright (c) 2018 Max
+  Brunsfeld
+- Tailwind CSS's default colour palette (the hex values of
+  src/public/colors.js at v3.4.17), https://github.com/tailwindlabs/tailwindcss,
+  Copyright (c) Tailwind Labs, Inc.: crates/shodh-rag/src/design_check/tailwind.rs,
+  which the design check's contrast of Tailwind colour classes reads.
 - streaming-iterator 0.1.9 (a dependency of tree-sitter),
   https://github.com/sfackler/streaming-iterator, Copyright (c) 2016 Steven
   Fackler, MIT or Apache-2.0, used under MIT.

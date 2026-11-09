@@ -14,7 +14,8 @@
 //! for exactly that font, colour or gradient; side-tab's Tailwind form also
 //! skips the elements impeccable exempts only in CSS (blockquote, nav, pre,
 //! code, a, input, span); and side-tab reads the radius of the element's own
-//! classes or block, not of other rules for the same element.
+//! classes, or of every rule of the same file with its selector (rules of
+//! other files are not seen).
 //! Rules marked [`RuleOrigin::Shodh`] are Shodh's own (accessibility and
 //! consistency checks the user asked for; impeccable covers them only on a
 //! rendered page).

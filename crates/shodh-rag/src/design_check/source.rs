@@ -6,6 +6,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+pub use super::parse::CssRule;
+
 /// What kind of UI file a path is, by its extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiKind {
@@ -42,15 +44,6 @@ impl UiKind {
     /// Whether the file holds markup (tags and element text).
     pub fn has_markup(self) -> bool {
         !matches!(self, Self::Css | Self::Scss)
-    }
-
-    fn line_comments(self) -> bool {
-        matches!(self, Self::Scss | Self::Jsx | Self::Vue | Self::Svelte)
-    }
-
-    /// Files with JavaScript: template literals and regular expressions.
-    fn scripts(self) -> bool {
-        matches!(self, Self::Jsx | Self::Vue | Self::Svelte)
     }
 }
 
@@ -140,6 +133,8 @@ pub struct Source<'a> {
     pub decls: Vec<Decl>,
     pub tokens: Vec<Token>,
     pub runs: Vec<TextRun>,
+    /// CSS rules (stylesheets, `<style>` blocks), in order.
+    pub css_rules: Vec<CssRule>,
 }
 
 /// CSS properties the rules read (others are skipped when declarations are collected).
@@ -195,8 +190,6 @@ fn is_border_prop(prop: &str) -> bool {
 static DECL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(-?-?[A-Za-z][A-Za-z-]*)[ \t]*:[ \t]*").expect("declaration pattern")
 });
-static TAG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<(/?)([A-Za-z][A-Za-z0-9.:_-]*)").expect("tag pattern"));
 
 /// `fontSize` → `font-size`; `WebkitBackgroundClip` → `-webkit-background-clip`.
 fn kebab(prop: &str) -> String {
@@ -214,190 +207,29 @@ fn kebab(prop: &str) -> String {
     out
 }
 
-/// The last character before `i` on the same line that is not a space or a
-/// tab (`None` at the start of a line).
-fn prev_on_line(bytes: &[u8], i: usize) -> Option<u8> {
-    bytes[..i]
-        .iter()
-        .rev()
-        .take_while(|b| **b != b'\n')
-        .find(|b| !matches!(**b, b' ' | b'\t' | b'\r'))
-        .copied()
-}
-
-/// Whether a quote at `i` opens a string: an attribute value inside a tag
-/// (after `=`), or a string in code or CSS (after an operator, a bracket, a
-/// comma or a colon). A quote after a letter (`Don't`) is prose. JavaScript's
-/// backtick always opens a template literal.
-fn opens_string(bytes: &[u8], i: usize, in_tag: bool, scripts: bool) -> bool {
-    let quote = bytes[i];
-    if quote == b'`' {
-        return scripts;
-    }
-    match prev_on_line(bytes, i) {
-        None => !in_tag,
-        Some(b'=') => true,
-        Some(b) => matches!(
-            b,
-            b'(' | b',' | b'[' | b'{' | b':' | b'?' | b'+' | b'!' | b'&' | b'|' | b';'
-        ),
-    }
-}
-
-/// Just past the string opened at `i`: its closing quote (backslash escapes
-/// skipped), or the end of the line for an unclosed `'` or `"`. A template
-/// literal may span lines.
-fn string_end(bytes: &[u8], i: usize) -> usize {
-    let quote = bytes[i];
-    let mut j = i + 1;
-    while j < bytes.len() {
-        match bytes[j] {
-            b'\\' => j += 2,
-            b'\n' if quote != b'`' => return j,
-            b if b == quote => return j + 1,
-            _ => j += 1,
-        }
-    }
-    bytes.len()
-}
-
-/// Just past a regular expression literal at `i` (`/…/flags` on one line),
-/// when the `/` there starts one: after an operator, a bracket or a comma,
-/// never `//`, `/*` or the `/` of a closing tag.
-fn regex_end(bytes: &[u8], i: usize) -> Option<usize> {
-    if matches!(bytes.get(i + 1), Some(b'/' | b'*') | None) {
-        return None;
-    }
-    if !matches!(
-        prev_on_line(bytes, i),
-        Some(b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b';')
-    ) {
-        return None;
-    }
-    let mut class = false;
-    let mut j = i + 1;
-    while j < bytes.len() {
-        match bytes[j] {
-            b'\n' => return None,
-            b'\\' => j += 1,
-            b'[' => class = true,
-            b']' => class = false,
-            b'/' if !class => return Some(j + 1),
-            _ => {}
-        }
-        j += 1;
-    }
-    None
-}
-
-/// `raw` with `/* */`, `<!-- -->` and (for `line` kinds) `//` comments
-/// blanked. Strings, attribute values, template literals and regular
-/// expressions are copied as they are: `accept="image/*"`, `'./*.svg'` or
-/// `fetch('/api/*')` never start a comment. A `//` is a comment at the start of
-/// a line or after code punctuation, never in element text (`<code> // x`)
-/// or a URL.
-fn blank_comments(raw: &str, kind: UiKind) -> String {
-    let bytes = raw.as_bytes();
+/// `raw` with the `comments` spans replaced by spaces, byte for byte (line
+/// breaks kept), so every offset still points where it did.
+fn blank(raw: &str, comments: &[(usize, usize)]) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut i = 0;
-    let markup = kind.has_markup();
-    let scripts = kind.scripts();
-    let mut in_tag = false;
-    let blank = |out: &mut String, s: &str| {
-        for c in s.chars() {
-            if c == '\n' {
-                out.push('\n');
+    let mut at = 0;
+    for &(from, to) in comments {
+        if from < at || to > raw.len() {
+            continue;
+        }
+        out.push_str(&raw[at..from]);
+        for c in raw[from..to].chars() {
+            if c == '\n' || c == '\r' {
+                out.push(c);
             } else {
                 for _ in 0..c.len_utf8() {
                     out.push(' ');
                 }
             }
         }
-    };
-    while i < bytes.len() {
-        let rest = &raw[i..];
-        let b = bytes[i];
-        if matches!(b, b'"' | b'\'' | b'`') && opens_string(bytes, i, in_tag, scripts) {
-            let end = string_end(bytes, i);
-            out.push_str(&raw[i..end]);
-            i = end;
-            continue;
-        }
-        if b == b'/' && scripts {
-            if let Some(end) = regex_end(bytes, i) {
-                out.push_str(&raw[i..end]);
-                i = end;
-                continue;
-            }
-        }
-        if markup {
-            match b {
-                b'<' if bytes
-                    .get(i + 1)
-                    .is_some_and(|n| n.is_ascii_alphabetic() || *n == b'/') =>
-                {
-                    in_tag = true
-                }
-                b'>' => in_tag = false,
-                _ => {}
-            }
-        }
-        let (open, close) = if rest.starts_with("/*") {
-            ("/*", "*/")
-        } else if markup && !in_tag && rest.starts_with("<!--") {
-            ("<!--", "-->")
-        } else if kind.line_comments()
-            && rest.starts_with("//")
-            && matches!(
-                prev_on_line(bytes, i),
-                None | Some(b';' | b'{' | b'}' | b')' | b',' | b']')
-            )
-        {
-            ("//", "\n")
-        } else {
-            let c = rest.chars().next().unwrap_or(' ');
-            out.push(c);
-            i += c.len_utf8();
-            continue;
-        };
-        let body_end = rest[open.len()..]
-            .find(close)
-            .map(|at| open.len() + at + if close == "\n" { 0 } else { close.len() })
-            .unwrap_or(rest.len());
-        blank(&mut out, &rest[..body_end]);
-        i += body_end;
+        at = to;
     }
+    out.push_str(&raw[at..]);
     out
-}
-
-/// Just past the `>` that ends the tag opened at `start`, skipping quoted
-/// values and `{…}` expressions. `None` for text that is not a tag.
-fn tag_end(text: &str, start: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut quote: Option<u8> = None;
-    let mut depth = 0usize;
-    let limit = (start + 16 * 1024).min(bytes.len());
-    let mut i = start + 1;
-    while i < limit {
-        let b = bytes[i];
-        match quote {
-            Some(q) => {
-                if b == q {
-                    quote = None;
-                }
-            }
-            None => match b {
-                b'"' | b'\'' | b'`' => quote = Some(b),
-                b'{' => depth += 1,
-                b'}' => depth = depth.saturating_sub(1),
-                b'>' if depth == 0 => return Some(i + 1),
-                b'<' if depth == 0 && i > start + 1 => return None,
-                _ => {}
-            },
-        }
-        i += 1;
-    }
-    None
 }
 
 /// How long the unquoted value at the start of `rest` is. A CSS value ends at
@@ -445,154 +277,49 @@ fn value_len(rest: &str, jsx: bool) -> usize {
     bytes.len()
 }
 
-/// `text` with every balanced `{…}` removed (an unclosed one to the end).
-/// Also returns where each kept piece starts: `(byte in the result, byte in
-/// `text`)`.
-fn without_expressions(text: &str) -> (String, Vec<(usize, usize)>) {
-    let mut out = String::with_capacity(text.len());
-    let mut map = Vec::new();
-    let mut depth = 0usize;
-    let mut kept_last = false;
-    for (i, c) in text.char_indices() {
-        let keep = match c {
-            '{' => {
-                depth += 1;
-                false
-            }
-            '}' if depth > 0 => {
-                depth -= 1;
-                false
-            }
-            _ => depth == 0,
-        };
-        if keep {
-            if !kept_last {
-                map.push((out.len(), i));
-            }
-            out.push(c);
-        }
-        kept_last = keep;
-    }
-    (out, map)
-}
-
-/// Whether a run between JSX tags is code rather than element text.
-fn looks_like_code(text: &str) -> bool {
-    let t = text.trim();
-    t.starts_with(')')
-        || t.starts_with('}')
-        || t.ends_with('(')
-        || t.contains("=>")
-        || t.contains("return ")
-        || t.contains("function ")
-        || t.contains("const ")
-        || (t.contains(';') && t.contains('\n'))
-}
-
 impl<'a> Source<'a> {
-    pub fn new(path: &'a str, raw: &'a str, kind: UiKind) -> Self {
-        let text = blank_comments(raw, kind);
+    /// Prepare `raw` (the file at `path`) for the rules: read it with
+    /// tree-sitter ([`super::parse`]), blank its comments, and collect its
+    /// tags, element text, declarations and class tokens. `Err` when the file
+    /// cannot be read within the parse budget.
+    pub fn new(path: &'a str, raw: &'a str, kind: UiKind) -> Result<Self, String> {
+        let parsed = super::parse::parse(path, kind, raw)?;
+        let text = blank(raw, &parsed.comments);
         let mut line_starts = vec![0];
         line_starts.extend(raw.match_indices('\n').map(|(at, _)| at + 1));
+        let runs = parsed
+            .runs
+            .iter()
+            .map(|spans| {
+                let mut run_text = String::new();
+                let mut map = Vec::with_capacity(spans.len());
+                for &(from, to) in spans {
+                    map.push((run_text.len(), from));
+                    run_text.push_str(&text[from..to]);
+                }
+                TextRun {
+                    start: spans[0].0,
+                    text: run_text,
+                    map,
+                }
+            })
+            .filter(|run| !run.text.trim().is_empty())
+            .collect();
         let mut source = Source {
             path,
             kind,
             raw,
             text,
             line_starts,
-            tags: Vec::new(),
+            tags: parsed.tags,
             decls: Vec::new(),
             tokens: Vec::new(),
-            runs: Vec::new(),
+            runs,
+            css_rules: parsed.css_rules,
         };
-        if kind.has_markup() {
-            source.tags = source.find_tags();
-            source.runs = source.find_runs();
-        }
         source.decls = source.find_decls();
         source.tokens = source.find_tokens();
-        source
-    }
-
-    fn find_tags(&self) -> Vec<Tag> {
-        let mut tags: Vec<Tag> = Vec::new();
-        let mut after = 0;
-        for caps in TAG_RE.captures_iter(&self.text) {
-            let whole = caps.get(0).expect("match");
-            if whole.start() < after {
-                continue;
-            }
-            let Some(end) = tag_end(&self.text, whole.start()) else {
-                continue;
-            };
-            let written = &caps[2];
-            let is_html = written
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_lowercase());
-            let name = if is_html {
-                written.to_ascii_lowercase()
-            } else {
-                written.to_string()
-            };
-            let self_closing = self.text[..end].trim_end_matches('>').ends_with('/');
-            tags.push(Tag {
-                start: whole.start(),
-                end,
-                name,
-                closing: &caps[1] == "/",
-                self_closing,
-            });
-            after = end;
-        }
-        tags
-    }
-
-    /// Element text between tags, skipping `<script>` and `<style>` bodies.
-    fn find_runs(&self) -> Vec<TextRun> {
-        let mut runs = Vec::new();
-        let mut skip_until: Option<&str> = None;
-        for pair in self.tags.windows(2) {
-            let (a, b) = (&pair[0], &pair[1]);
-            if let Some(name) = skip_until {
-                if a.closing && a.name == name {
-                    skip_until = None;
-                } else {
-                    continue;
-                }
-            }
-            if !a.closing && !a.self_closing && (a.name == "script" || a.name == "style") {
-                skip_until = Some(if a.name == "script" {
-                    "script"
-                } else {
-                    "style"
-                });
-                continue;
-            }
-            if b.start <= a.end {
-                continue;
-            }
-            let between = &self.text[a.end..b.start];
-            let (text, map) = if matches!(self.kind, UiKind::Html) {
-                (between.to_string(), vec![(0, a.end)])
-            } else {
-                if looks_like_code(between) {
-                    continue;
-                }
-                let (text, pieces) = without_expressions(between);
-                let map = pieces.into_iter().map(|(t, f)| (t, a.end + f)).collect();
-                (text, map)
-            };
-            if text.trim().is_empty() {
-                continue;
-            }
-            runs.push(TextRun {
-                start: a.end,
-                text,
-                map,
-            });
-        }
-        runs
+        Ok(source)
     }
 
     fn find_decls(&self) -> Vec<Decl> {
@@ -817,7 +544,16 @@ impl<'a> Source<'a> {
 
     /// The first element text right after the tag ending at `end`.
     pub fn text_after(&self, end: usize) -> Option<&TextRun> {
-        self.runs.iter().find(|r| r.start == end)
+        // Before the next tag: the element's own text, not a child's.
+        let next_tag = self
+            .tags
+            .iter()
+            .find(|t| t.start >= end)
+            .map(|t| t.start)
+            .unwrap_or(usize::MAX);
+        self.runs
+            .iter()
+            .find(|r| r.start >= end && r.start < next_tag)
     }
 }
 

@@ -298,7 +298,7 @@ pub async fn search(
     };
     // Several chunks per session wanted, so a session's best turns reach the grouping;
     // the source decay spreads them over sessions.
-    let chunks_wanted = (limit * 4).max(20);
+    let chunks_wanted = (limit * 3).max(15);
     let searching = std::time::Instant::now();
     let (results, trace) = index
         .engine()

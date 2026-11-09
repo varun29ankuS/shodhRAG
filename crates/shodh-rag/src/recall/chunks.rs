@@ -17,14 +17,14 @@ use crate::rag_engine::GivenChunk;
 /// Turns per part of a session.
 pub const PART_TURNS: usize = 40;
 /// Characters of a prompt or reply window.
-pub const WINDOW_CHARS: usize = 1400;
+pub const WINDOW_CHARS: usize = 1000;
 /// Characters a window shares with the one before it.
-pub const WINDOW_OVERLAP: usize = 150;
+pub const WINDOW_OVERLAP: usize = 120;
 /// A tool output up to this length is indexed whole.
-pub const OUTPUT_WHOLE_CHARS: usize = 1600;
+pub const OUTPUT_WHOLE_CHARS: usize = 1000;
 /// Characters of a longer output's head and tail that are indexed.
-pub const OUTPUT_HEAD_CHARS: usize = 900;
-pub const OUTPUT_TAIL_CHARS: usize = 500;
+pub const OUTPUT_HEAD_CHARS: usize = 600;
+pub const OUTPUT_TAIL_CHARS: usize = 300;
 /// Turns too short to say anything (`ok`, `y`) are not indexed on their own.
 const MIN_TURN_CHARS: usize = 2;
 

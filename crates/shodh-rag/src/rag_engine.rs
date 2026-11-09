@@ -3689,6 +3689,14 @@ impl RAGEngine {
             None
         };
         if let Some(reranker) = &reranker {
+            let cap = self.config.search.rerank_candidates;
+            if cap > 0 && results.len() > cap {
+                // Only the best fused candidates are read; the rest would rank below
+                // them on a scale the cross-encoder's scores do not share.
+                results.sort_by(|a, b| b.score.total_cmp(&a.score));
+                results.truncate(cap);
+                trace.record_results(sub_query, "rerank_capped", &results);
+            }
             if results.len() > 1 {
                 // The cross-encoder reads each passage with the context it was
                 // embedded with: which document, its opening, which section.

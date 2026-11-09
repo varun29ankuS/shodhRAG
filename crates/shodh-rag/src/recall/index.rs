@@ -24,13 +24,16 @@ use crate::RAGEngine;
 
 /// Version of how sessions are indexed (chunking, context, metadata). Raised whenever it
 /// changes, so every session is indexed again the new way.
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 /// The vector and keyword index, in Recall's folder.
 pub const INDEX_DIR: &str = "index";
 /// The catalog, in Recall's folder.
 pub const CATALOG_FILE: &str = "recall.db";
 /// Candidates the reranker reads per chunk a search asks for.
 pub const SEARCH_CANDIDATE_MULTIPLIER: usize = 3;
+/// Candidates the reranker reads at most (one batch of the cross-encoder): on a CI
+/// runner's CPU each whole-turn candidate costs about a tenth of a second.
+pub const RERANK_CANDIDATES: usize = 16;
 /// `source_type` of every chunk Recall stores.
 pub const SOURCE_TYPE: &str = "recall";
 
@@ -79,6 +82,7 @@ impl RecallIndex {
         // three per chunk asked for keeps a search of five sessions under the 2 s target
         // on a CPU (the scorecard, crates/shodh-eval/src/recall.rs, measures it).
         config.search.candidate_multiplier = SEARCH_CANDIDATE_MULTIPLIER;
+        config.search.rerank_candidates = RERANK_CANDIDATES;
         let engine = RAGEngine::new(config)
             .await
             .context("Recall's index could not be opened")?;
@@ -258,7 +262,7 @@ impl RecallIndex {
                 s.state == FileState::Indexed
                     && s.size == record.size
                     && s.mtime == record.mtime
-                    && s.fingerprint.as_deref() == Some(redactor.fingerprint())
+                    && s.fingerprint.as_deref() == Some(index_fingerprint(&redactor).as_str())
             });
             let failed_unchanged = stored.is_some_and(|s| {
                 s.state == FileState::Failed && s.size == record.size && s.mtime == record.mtime
@@ -639,6 +643,12 @@ fn indexed_file(
         errors: transcript.errors.clone(),
         error_count: transcript.errors.len() as u32,
         redacted: transcript.redacted as u32,
-        fingerprint: redactor.fingerprint().to_string(),
+        fingerprint: index_fingerprint(redactor),
     }
+}
+
+/// What a file is recorded as indexed under: the redaction rules and patterns, and
+/// [`INDEX_VERSION`]. A file recorded under another is indexed again.
+fn index_fingerprint(redactor: &Redactor) -> String {
+    format!("{}-v{INDEX_VERSION}", redactor.fingerprint())
 }

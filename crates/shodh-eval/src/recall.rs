@@ -818,6 +818,8 @@ pub struct QuestionResult {
     pub sub_queries: usize,
     /// The same search with the reranker off (a diagnosis, not gated).
     pub ms_without_rerank: f64,
+    /// The right session's rank with the reranker off.
+    pub rank_without_rerank: Option<usize>,
     /// What came back, by story key.
     pub returned: Vec<String>,
 }
@@ -841,6 +843,7 @@ pub struct Scorecard {
     pub p50_ms_without_rerank: f64,
     pub p95_ms_without_rerank: f64,
     pub split_questions: usize,
+    pub hit_at_5_without_rerank: f64,
     pub index_seconds: f64,
     pub target_hit_at_5: f64,
     pub target_p95_ms: f64,
@@ -961,6 +964,7 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
             search_ms: answer.search_ms as f64,
             sub_queries: answer.sub_queries,
             ms_without_rerank: 0.0,
+            rank_without_rerank: None,
             returned,
         });
     }
@@ -972,7 +976,7 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
     }
     for r in &mut results {
         let started = Instant::now();
-        query::search(
+        let answer = query::search(
             &index,
             &settings,
             &RecallQuery {
@@ -983,7 +987,17 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
         )
         .await?;
         r.ms_without_rerank = started.elapsed().as_secs_f64() * 1000.0;
+        r.rank_without_rerank = answer
+            .sessions
+            .iter()
+            .position(|s| by_session.get(&s.session_id).is_some_and(|k| *k == r.story))
+            .map(|i| i + 1);
     }
+    let hit_at_5_without_rerank = results
+        .iter()
+        .filter(|r| r.rank_without_rerank.is_some_and(|x| x <= 5))
+        .count() as f64
+        / results.len().max(1) as f64;
     let sorted = |values: Vec<f64>| {
         let mut values = values;
         values.sort_by(f64::total_cmp);
@@ -1023,6 +1037,7 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
         p50_ms_without_rerank: percentile(&plain_times, 0.50),
         p95_ms_without_rerank: percentile(&plain_times, 0.95),
         split_questions: results.iter().filter(|r| r.sub_queries > 1).count(),
+        hit_at_5_without_rerank,
         index_seconds,
         target_hit_at_5: TARGET_HIT_AT_5,
         target_p95_ms: TARGET_P95_MS,
@@ -1070,12 +1085,13 @@ impl Scorecard {
         });
         out.push_str(&format!(
             "Where the time goes (not gated): the hybrid search alone {:.0} ms median, {:.0} ms p95; \
-             the whole search with the reranker off {:.0} ms median, {:.0} ms p95; \
+             the whole search with the reranker off {:.0} ms median, {:.0} ms p95 and {:.1}% in the top 5; \
              {} of {} questions split into several queries.\n\n",
             self.p50_search_ms,
             self.p95_search_ms,
             self.p50_ms_without_rerank,
             self.p95_ms_without_rerank,
+            self.hit_at_5_without_rerank * 100.0,
             self.split_questions,
             self.questions
         ));

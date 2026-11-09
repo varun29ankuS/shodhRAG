@@ -54,5 +54,20 @@
   { "id": "G3-a", "story": "G3", "question": "the nightly backfill was slow because it inserted one row at a time" },
   { "id": "G3-b", "story": "G3", "question": "COPY in batches of 10 000, nine hours down to 35 minutes" },
   { "id": "G4-a", "story": "G4", "question": "converting amounts to euros with ECB exchange rates" },
-  { "id": "G4-b", "story": "G4", "question": "no exchange rates are published on weekends" }
+  { "id": "G4-b", "story": "G4", "question": "no exchange rates are published on weekends" },
+  { "id": "T1-c", "story": "T1", "question": "retrying deliveries that failed, waiting longer each time" },
+  { "id": "H1-c", "story": "H1", "question": "it crashed instead of trying again when the server said too many requests" },
+  { "id": "T3-c", "story": "T3", "question": "where do deliveries go after they keep failing" },
+  { "id": "G2-c", "story": "G2", "question": "the same rows showed up twice after loading a file again" },
+  { "id": "H2-c", "story": "H2", "question": "not sending data the other side already has" },
+  { "id": "Q4-c", "story": "Q4", "question": "notifications fired at the wrong local time" },
+  { "id": "G4-c", "story": "G4", "question": "values missing on Saturdays and Sundays" },
+  { "id": "T4-c", "story": "T4", "question": "the service ran out of database connections under load" },
+  { "id": "Q2-c", "story": "Q2", "question": "one page load made more than a thousand database round trips" },
+  { "id": "G3-c", "story": "G3", "question": "a job that ran all night got down to well under an hour" },
+  { "id": "L2-c", "story": "L2", "question": "many threads waiting on one lock" },
+  { "id": "T2-c", "story": "T2", "question": "incoming requests rejected because the computed hash did not match" },
+  { "id": "H3-c", "story": "H3", "question": "where the login secret is kept between runs" },
+  { "id": "O5-c", "story": "O5", "question": "a browser test that passes sometimes and fails other times" },
+  { "id": "O4-c", "story": "O4", "question": "the javascript shipped to users suddenly got much bigger" }
 ]

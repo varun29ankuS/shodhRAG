@@ -211,6 +211,47 @@ impl RecallState {
         Ok(())
     }
 
+    /// Turns Recall off and deletes everything it made: the index (vectors and keyword
+    /// index), the catalog with its journal, and the settings with the user's hidden
+    /// words. The folder is removed whole, so nothing deleted lingers in free pages or
+    /// soft-deleted segments; the transcripts are untouched. Waits for a sync in progress
+    /// and for searches holding the index.
+    pub async fn delete_all(&self) -> Result<(), String> {
+        let _one = self.0.sync_lock.lock().await;
+        *self.0.settings.lock().unwrap_or_else(|e| e.into_inner()) = RecallSettings::default();
+        let taken = self.0.index.write().await.take();
+        if let Some(index) = taken {
+            // A search or an open may hold it a moment longer; its files close with it.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let mut index = index;
+            loop {
+                match Arc::try_unwrap(index) {
+                    Ok(owned) => {
+                        drop(owned);
+                        break;
+                    }
+                    Err(shared) if std::time::Instant::now() < deadline => {
+                        index = shared;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(_) => {
+                        return Err(
+                            "Recall's index is still in use; try again in a moment.".to_string()
+                        )
+                    }
+                }
+            }
+        }
+        *self.0.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self.0.error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .0
+            .settings_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        remove_folder(&self.0.dir).await
+    }
+
     /// One sync: an indexing run of [`RECALL_SOURCE_ID`] that the status strip shows, holds
     /// and stops. Only one runs at a time.
     pub async fn sync_once(&self, app: &AppHandle) {
@@ -311,6 +352,26 @@ impl RecallState {
     }
 }
 
+/// Removes Recall's folder, trying again for a few seconds while Windows still holds a
+/// file the index just closed.
+async fn remove_folder(dir: &Path) -> Result<(), String> {
+    let mut last_error = None;
+    for _ in 0..50 {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                last_error = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Err(format!(
+        "Recall's folder could not be deleted ({})",
+        last_error.map_or_else(|| "unknown error".to_string(), |e| e.to_string())
+    ))
+}
+
 fn last_sync(report: &SyncReport) -> LastSync {
     LastSync {
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -393,6 +454,17 @@ pub struct RecallStatus {
     pub last_sync: Option<LastSync>,
     pub error: Option<String>,
     pub search_models: bool,
+    /// Sessions indexed under other hidden words or rules, not served until they are
+    /// indexed again.
+    pub stale_sessions: usize,
+    /// The model the assistant answers with now: what it reads of the sessions goes there.
+    pub assistant_model: Option<crate::agent_tools::ModelInfo>,
+}
+
+/// The model the assistant answers with, as the configuration says.
+fn assistant_model(app: &AppHandle) -> Option<crate::agent_tools::ModelInfo> {
+    use crate::agent_tools::HostEffects;
+    crate::agent_tools::TauriEffects::new(app.clone()).model_info()
 }
 
 fn count_files(tool: Tool, root: Option<&Path>) -> usize {
@@ -404,14 +476,19 @@ fn count_files(tool: Tool, root: Option<&Path>) -> usize {
 pub async fn status(state: &RecallState, app: &AppHandle) -> RecallStatus {
     let settings = state.settings();
     let roots = state.0.roots.clone();
-    let counts = tokio::task::spawn_blocking(move || {
-        Tool::ALL
-            .iter()
-            .map(|t| (*t, count_files(*t, roots.of(*t))))
-            .collect::<BTreeMap<_, _>>()
-    })
-    .await
-    .unwrap_or_default();
+    // While Recall is off not even the tools' folders are listed.
+    let counts = if settings.enabled {
+        tokio::task::spawn_blocking(move || {
+            Tool::ALL
+                .iter()
+                .map(|t| (*t, count_files(*t, roots.of(*t))))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     let tools = Tool::ALL
         .iter()
         .map(|t| ToolView {
@@ -452,6 +529,8 @@ pub async fn status(state: &RecallState, app: &AppHandle) -> RecallStatus {
                     .clone()
             }),
         search_models: false,
+        stale_sessions: 0,
+        assistant_model: assistant_model(app),
     };
     if !settings.enabled && !state.has_index_on_disk() {
         return out;
@@ -460,6 +539,10 @@ pub async fn status(state: &RecallState, app: &AppHandle) -> RecallStatus {
         return out;
     };
     out.search_models = index.engine().read().await.has_search_models();
+    out.stale_sessions = shodh_rag::recall::query::stale_files(&index, &settings).unwrap_or(0);
+    // Folders are shown under the current hidden words (redacted again, so a word added
+    // since they were found is hidden too).
+    let redactor = settings.redactor().unwrap_or_default();
     let files = match index.catalog().files() {
         Ok(files) => files,
         Err(e) => {
@@ -469,6 +552,7 @@ pub async fn status(state: &RecallState, app: &AppHandle) -> RecallStatus {
     };
     struct Acc {
         dir: String,
+        chain: Vec<String>,
         sessions: BTreeSet<(Tool, String)>,
         indexed: BTreeSet<(Tool, String)>,
         failed: BTreeSet<(Tool, String)>,
@@ -484,7 +568,12 @@ pub async fn status(state: &RecallState, app: &AppHandle) -> RecallStatus {
         let acc = projects
             .entry(f.project_key.clone())
             .or_insert_with(|| Acc {
-                dir: f.project_dir.clone(),
+                dir: redactor.redact(&f.project_dir),
+                chain: f
+                    .chains
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| vec![f.project_key.clone()]),
                 sessions: BTreeSet::new(),
                 indexed: BTreeSet::new(),
                 failed: BTreeSet::new(),
@@ -514,7 +603,7 @@ pub async fn status(state: &RecallState, app: &AppHandle) -> RecallStatus {
         .into_iter()
         .map(|(key, acc)| ProjectView {
             name: discover::project_name(&acc.dir),
-            included: settings.projects.get(&key).copied(),
+            included: settings.decide(&acc.chain),
             dir: acc.dir,
             sessions: acc.sessions.len(),
             indexed_sessions: acc.indexed.len(),
@@ -551,7 +640,13 @@ pub async fn recall_save_settings(
     state: State<'_, RecallState>,
     settings: RecallSettings,
 ) -> Result<RecallStatus, String> {
-    state.save_settings(settings)?;
+    if settings.enabled {
+        state.save_settings(settings)?;
+    } else {
+        // Off means deleted: nothing Recall made is kept, and nothing runs after.
+        state.delete_all().await?;
+        emit(&app);
+    }
     Ok(status(&state, &app).await)
 }
 

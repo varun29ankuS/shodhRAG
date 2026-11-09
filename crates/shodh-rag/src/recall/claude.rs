@@ -25,18 +25,19 @@ use serde_json::Value;
 use super::lines::{for_each_line, Line};
 use super::redact::Redactor;
 use super::{
-    parse_time, Format, LineError, ParseBudget, Role, SessionInfo, Tool, Transcript, Turn,
+    keep_text, parse_time, Format, LineError, ParseBudget, Role, SessionInfo, Tool, Transcript,
+    Turn,
 };
 
-/// What an output kept back for a file that may hold secrets says.
+/// What a call and its output kept back say.
 pub const SECRET_FILE_KEPT_BACK: &str =
-    "Not indexed: the tool read a file that may hold secrets (keys, tokens, passwords).";
+    "Not indexed: the tool read or wrote a file that may hold secrets (keys, tokens, passwords), or ran a command that prints them.";
 
 /// A tool call, remembered until its output arrives.
 struct Call {
     name: String,
-    /// The output reads a file that may hold secrets.
-    secret_file: bool,
+    /// The call and its output are kept back.
+    kept_back: bool,
 }
 
 /// Reads a Claude Code transcript.
@@ -52,6 +53,8 @@ pub fn read(path: &Path, redactor: &Redactor, budget: ParseBudget) -> std::io::R
         custom_title: None,
         ai_title: None,
         summary_title: None,
+        line: 0,
+        offset: 0,
     };
     let mut errors: Vec<LineError> = Vec::new();
     let mut error_count = 0usize;
@@ -61,10 +64,7 @@ pub fn read(path: &Path, redactor: &Redactor, budget: ParseBudget) -> std::io::R
         budget,
         &mut errors,
         &mut error_count,
-        |line| {
-            reader.line(line);
-            true
-        },
+        |line| reader.line(line),
     )?;
     let Reader {
         mut info,
@@ -125,6 +125,9 @@ struct Reader<'a> {
     custom_title: Option<String>,
     ai_title: Option<String>,
     summary_title: Option<String>,
+    /// The line being read.
+    line: u64,
+    offset: u64,
 }
 
 fn string<'v>(value: &'v Value, key: &str) -> Option<&'v str> {
@@ -134,6 +137,15 @@ fn string<'v>(value: &'v Value, key: &str) -> Option<&'v str> {
         .filter(|s| !s.trim().is_empty())
 }
 
+/// Records the folder a session worked in (its key chain, made from the folder as
+/// written, never shown).
+pub(crate) fn note_cwd(info: &mut SessionInfo, cwd: &str) {
+    let chain = super::discover::project_chain(cwd);
+    if !info.cwd_chains.contains(&chain) {
+        info.cwd_chains.push(chain);
+    }
+}
+
 impl Reader<'_> {
     fn clean(&mut self, text: &str) -> String {
         let (out, count) = self.redactor.redact_counted(text);
@@ -141,16 +153,19 @@ impl Reader<'_> {
         out
     }
 
-    fn line(&mut self, line: Line) {
+    /// Reads one line; `false` once the turns asked for are read.
+    fn line(&mut self, line: Line) -> bool {
+        self.line = line.number;
+        self.offset = line.offset;
         let value = line.value;
         let Some(kind) = string(&value, "type").map(str::to_string) else {
             self.skipped += 1;
-            return;
+            return true;
         };
         self.session_fields(&value);
         match kind.as_str() {
-            "user" => self.user(&value, line.number),
-            "assistant" => self.assistant(&value, line.number),
+            "user" => self.user(&value),
+            "assistant" => self.assistant(&value),
             "ai-title" => self.ai_title = string(&value, "aiTitle").map(|t| self.clean(t)),
             "custom-title" => {
                 self.custom_title = string(&value, "customTitle").map(|t| self.clean(t))
@@ -177,6 +192,7 @@ impl Reader<'_> {
             }
             _ => self.skipped += 1,
         }
+        self.turns.len() < self.budget.max_turns
     }
 
     /// The fields every line may carry.
@@ -194,6 +210,7 @@ impl Reader<'_> {
             }
         }
         if let Some(cwd) = string(value, "cwd") {
+            note_cwd(&mut self.info, cwd);
             if self.info.cwd.is_none() {
                 self.info.cwd = Some(self.clean(cwd));
             }
@@ -218,7 +235,6 @@ impl Reader<'_> {
         at: Option<chrono::DateTime<chrono::Utc>>,
         tool_name: Option<String>,
         text: String,
-        line: u64,
         kept_back: Option<&'static str>,
     ) {
         if self.turns.len() >= self.budget.max_turns {
@@ -228,18 +244,21 @@ impl Reader<'_> {
         if text.trim().is_empty() && kept_back.is_none() {
             return;
         }
+        let (text, left_out) = keep_text(text);
         self.turns.push(Turn {
-            index: self.turns.len() as u32,
+            index: self.budget.first_turn + self.turns.len() as u32,
             role,
             at,
             tool_name,
             text,
-            line,
+            line: self.line,
+            offset: self.offset,
+            left_out,
             kept_back,
         });
     }
 
-    fn user(&mut self, value: &Value, line: u64) {
+    fn user(&mut self, value: &Value) {
         if value.get("isMeta").and_then(Value::as_bool) == Some(true)
             || value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
         {
@@ -254,7 +273,7 @@ impl Reader<'_> {
         match content {
             Value::String(text) => {
                 let text = self.clean(text);
-                self.push(Role::User, at, None, text, line, None);
+                self.push(Role::User, at, None, text, None);
             }
             Value::Array(blocks) => {
                 for block in blocks {
@@ -262,10 +281,10 @@ impl Reader<'_> {
                         Some("text") => {
                             if let Some(text) = block.get("text").and_then(Value::as_str) {
                                 let text = self.clean(text);
-                                self.push(Role::User, at, None, text, line, None);
+                                self.push(Role::User, at, None, text, None);
                             }
                         }
-                        Some("tool_result") => self.tool_result(block, at, line),
+                        Some("tool_result") => self.tool_result(block, at),
                         _ => {}
                     }
                 }
@@ -274,16 +293,15 @@ impl Reader<'_> {
         }
     }
 
-    fn tool_result(&mut self, block: &Value, at: Option<chrono::DateTime<chrono::Utc>>, line: u64) {
+    fn tool_result(&mut self, block: &Value, at: Option<chrono::DateTime<chrono::Utc>>) {
         let call = string(block, "tool_use_id").and_then(|id| self.calls.remove(id));
         let name = call.as_ref().map(|c| c.name.clone());
-        if call.as_ref().is_some_and(|c| c.secret_file) {
+        if call.as_ref().is_some_and(|c| c.kept_back) {
             self.push(
                 Role::ToolOutput,
                 at,
                 name,
                 String::new(),
-                line,
                 Some(SECRET_FILE_KEPT_BACK),
             );
             return;
@@ -293,10 +311,10 @@ impl Reader<'_> {
             text = format!("Error: {text}");
         }
         let text = self.clean(&text);
-        self.push(Role::ToolOutput, at, name, text, line, None);
+        self.push(Role::ToolOutput, at, name, text, None);
     }
 
-    fn assistant(&mut self, value: &Value, line: u64) {
+    fn assistant(&mut self, value: &Value) {
         let at = string(value, "timestamp").and_then(parse_time);
         let Some(message) = value.get("message") else {
             self.skipped += 1;
@@ -318,35 +336,45 @@ impl Reader<'_> {
         for block in blocks {
             if let Value::String(text) = block {
                 let text = self.clean(text);
-                self.push(Role::Assistant, at, None, text, line, None);
+                self.push(Role::Assistant, at, None, text, None);
                 continue;
             }
             match string(block, "type") {
                 Some("text") => {
                     if let Some(text) = block.get("text").and_then(Value::as_str) {
                         let text = self.clean(text);
-                        self.push(Role::Assistant, at, None, text, line, None);
+                        self.push(Role::Assistant, at, None, text, None);
                     }
                 }
                 Some("tool_use") | Some("server_tool_use") => {
                     let name = string(block, "name").unwrap_or("tool").to_string();
                     let input = block.get("input").cloned().unwrap_or(Value::Null);
-                    let secret_file = reads_secret_file(&name, &input);
+                    let kept_back = keeps_back(&name, &input);
                     if let Some(id) = string(block, "id") {
                         self.calls.insert(
                             id.to_string(),
                             Call {
                                 name: name.clone(),
-                                secret_file,
+                                kept_back,
                             },
                         );
+                    }
+                    let shown_name = self.clean(&name);
+                    if kept_back {
+                        self.push(
+                            Role::ToolCall,
+                            at,
+                            Some(shown_name),
+                            String::new(),
+                            Some(SECRET_FILE_KEPT_BACK),
+                        );
+                        continue;
                     }
                     let summary = super::clip(
                         &self.clean(&summarize_input(&input)),
                         MAX_CALL_SUMMARY_CHARS,
                     );
-                    let name = self.clean(&name);
-                    self.push(Role::ToolCall, at, Some(name), summary, line, None);
+                    self.push(Role::ToolCall, at, Some(shown_name), summary, None);
                 }
                 _ => {}
             }
@@ -354,7 +382,44 @@ impl Reader<'_> {
     }
 }
 
-/// The text of a tool result's `content`: a string, or `text` blocks (images are named).
+/// Every string of a JSON value as readable lines (`key: value`, nested keys joined with
+/// dots), never as JSON text: escapes would hide line starts and word boundaries from
+/// the redactor (`\nAKIA…`).
+pub(crate) fn flatten_value(value: &Value, key: &str, out: &mut Vec<String>) {
+    let child = |k: &str| {
+        if key.is_empty() {
+            k.to_string()
+        } else {
+            format!("{key}.{k}")
+        }
+    };
+    match value {
+        Value::Null => {}
+        Value::String(s) => out.push(if key.is_empty() {
+            s.clone()
+        } else {
+            format!("{key}: {s}")
+        }),
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                flatten_value(item, &child(&i.to_string()), out);
+            }
+        }
+        Value::Object(map) => {
+            for (k, v) in map {
+                flatten_value(v, &child(k), out);
+            }
+        }
+        other => out.push(if key.is_empty() {
+            other.to_string()
+        } else {
+            format!("{key}: {other}")
+        }),
+    }
+}
+
+/// The text of a tool result's `content`: a string, or `text` blocks (images are named),
+/// or any other shape as readable lines.
 pub(crate) fn content_text(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(text)) => text.clone(),
@@ -365,13 +430,21 @@ pub(crate) fn content_text(content: Option<&Value>) -> String {
                 _ => match string(item, "type") {
                     Some("text") => item.get("text").and_then(Value::as_str).map(str::to_string),
                     Some("image") => Some("[image]".to_string()),
-                    _ => None,
+                    _ => {
+                        let mut lines = Vec::new();
+                        flatten_value(item, "", &mut lines);
+                        Some(lines.join("\n"))
+                    }
                 },
             })
             .collect::<Vec<_>>()
             .join("\n"),
         Some(Value::Null) | None => String::new(),
-        Some(other) => other.to_string(),
+        Some(other) => {
+            let mut lines = Vec::new();
+            flatten_value(other, "", &mut lines);
+            lines.join("\n")
+        }
     }
 }
 
@@ -395,86 +468,223 @@ const SUMMARY_KEYS: [&str; 12] = [
 pub const MAX_CALL_SUMMARY_CHARS: usize = 1200;
 
 /// A tool call's arguments in a few readable lines: the known keys first (a command, a
-/// file, a pattern), then the rest as JSON. Not yet redacted, and not cut: it is cut only
-/// after redaction, so a cut never splits a secret into a part no rule recognises.
+/// file, a pattern), then every other string as `key: value`. Not yet redacted, and not
+/// cut: it is cut only after redaction, so a cut never splits a secret into a part no
+/// rule recognises.
 pub(crate) fn summarize_input(input: &Value) -> String {
     let Value::Object(map) = input else {
-        return match input {
-            Value::Null => String::new(),
-            Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
+        let mut lines = Vec::new();
+        flatten_value(input, "", &mut lines);
+        return lines.join("\n");
     };
     let mut lines = Vec::new();
     for key in SUMMARY_KEYS {
         if let Some(value) = map.get(key) {
             let text = match value {
                 Value::String(s) => s.clone(),
-                Value::Array(items) => items
+                Value::Array(items) if items.iter().all(Value::is_string) => items
                     .iter()
-                    .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string))
+                    .filter_map(Value::as_str)
                     .collect::<Vec<_>>()
                     .join(" "),
-                other => other.to_string(),
+                other => {
+                    let mut parts = Vec::new();
+                    flatten_value(other, "", &mut parts);
+                    parts.join("\n")
+                }
             };
             if !text.trim().is_empty() {
                 lines.push(format!("{key}: {text}"));
             }
         }
     }
-    let rest: serde_json::Map<String, Value> = map
-        .iter()
-        .filter(|(k, _)| !SUMMARY_KEYS.contains(&k.as_str()))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    if !rest.is_empty() {
-        lines.push(Value::Object(rest).to_string());
+    for (key, value) in map {
+        if !SUMMARY_KEYS.contains(&key.as_str()) {
+            flatten_value(value, key, &mut lines);
+        }
     }
     lines.join("\n")
 }
 
-/// Whether a tool call reads a file that may hold secrets (`.env`, keys, credentials:
-/// [`crate::code_review::secrets::secret_path`]), so its output is kept back.
-pub(crate) fn reads_secret_file(name: &str, input: &Value) -> bool {
-    let reading = matches!(
-        name,
-        "Read" | "NotebookRead" | "read_file" | "view" | "cat" | "Glob" | "Grep"
-    );
-    if reading
-        && ["file_path", "path", "notebook_path"]
-            .iter()
-            .filter_map(|key| input.get(*key).and_then(Value::as_str))
-            .any(|path| crate::code_review::secrets::secret_path(path).is_some())
+/// Whether a tool call, and its output, are kept back: it reads or writes a file that
+/// may hold secrets (`.env`, keys, credentials: [`crate::code_review::secrets::secret_path`]),
+/// or runs a command that names one or prints secrets (`printenv`, `gh auth token`).
+pub(crate) fn keeps_back(_name: &str, input: &Value) -> bool {
+    let mut strings = Vec::new();
+    collect_paths(input, "", &mut strings);
+    if strings
+        .iter()
+        .any(|path| crate::code_review::secrets::secret_path(path).is_some())
     {
         return true;
     }
-    // A shell command that names such a file (`cat .env`, `type id_rsa`).
-    ["command", "cmd"]
+    // A patch's files (`*** Update File: .env`).
+    if let Value::String(patch) = input {
+        if patch_names_secret_file(patch) {
+            return true;
+        }
+    }
+    if let Some(Value::String(patch)) = input.get("input").or_else(|| input.get("patch")) {
+        if patch_names_secret_file(patch) {
+            return true;
+        }
+    }
+    ["command", "cmd", "script"]
         .iter()
         .filter_map(|key| input.get(*key))
-        .any(|command| command_names_secret_file(command))
+        .any(|command| command_names_secret_file(command) || command_prints_secrets(command))
 }
 
-/// Whether a command (a string, or an argument list) names a file that may hold secrets.
-pub(crate) fn command_names_secret_file(command: &Value) -> bool {
-    let words: Vec<String> = match command {
+/// The values of every key that names a path or a file, at any depth.
+fn collect_paths(value: &Value, key: &str, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => {
+            let k = key.to_ascii_lowercase();
+            if k.contains("path") || k.contains("file") || k == "target" || k == "destination" {
+                out.push(s.clone());
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_paths(item, key, out);
+            }
+        }
+        Value::Object(map) => {
+            for (k, v) in map {
+                collect_paths(v, k, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether a patch adds, updates, deletes or moves a file that may hold secrets.
+pub(crate) fn patch_names_secret_file(patch: &str) -> bool {
+    patch.lines().any(|line| {
+        let line = line.trim();
+        [
+            "*** Add File:",
+            "*** Update File:",
+            "*** Delete File:",
+            "*** Move to:",
+            "+++ ",
+            "--- ",
+        ]
+        .iter()
+        .find_map(|p| line.strip_prefix(p))
+        .map(|path| {
+            path.trim()
+                .trim_start_matches("a/")
+                .trim_start_matches("b/")
+        })
+        .is_some_and(|path| crate::code_review::secrets::secret_path(path).is_some())
+    })
+}
+
+fn command_texts(command: &Value) -> Vec<String> {
+    match command {
         Value::String(s) => vec![s.clone()],
         Value::Array(items) => items
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
-        _ => return false,
-    };
-    words.iter().any(|text| {
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a command (a string, or an argument list) names a file that may hold secrets.
+pub(crate) fn command_names_secret_file(command: &Value) -> bool {
+    command_texts(command).iter().any(|text| {
         text.split(|c: char| {
             c.is_whitespace()
                 || matches!(
                     c,
-                    '"' | '\'' | '`' | ';' | '|' | '&' | '<' | '>' | '(' | ')'
+                    '"' | '\'' | '`' | ';' | '|' | '&' | '<' | '>' | '(' | ')' | '='
                 )
         })
         .filter(|w| !w.is_empty() && !w.starts_with('-'))
         .any(|w| crate::code_review::secrets::secret_path(w).is_some())
+    })
+}
+
+/// Commands whose output is secrets, by their first words; a flag a command needs to
+/// print them follows after a `+`.
+const SECRET_COMMANDS: [&str; 26] = [
+    "printenv",
+    "gh auth token",
+    "gh auth status +--show-token",
+    "gh auth status +-t",
+    "kubectl config view +--raw",
+    "kubectl get secret",
+    "kubectl get secrets",
+    "docker inspect",
+    "heroku config",
+    "vercel env pull",
+    "vercel env ls",
+    "netlify env:list",
+    "aws configure get",
+    "aws configure export-credentials",
+    "aws sts get-session-token",
+    "aws ecr get-login-password",
+    "gcloud auth print-access-token",
+    "gcloud auth print-identity-token",
+    "az account get-access-token",
+    "op read",
+    "op item get",
+    "security find-generic-password",
+    "security find-internet-password",
+    "vault read",
+    "vault kv get",
+    "doppler secrets",
+];
+
+/// Whether a command prints secrets: `env` or `set` alone, `export -p`, or one of
+/// [`SECRET_COMMANDS`], anywhere in a pipeline or a list of commands.
+pub(crate) fn command_prints_secrets(command: &Value) -> bool {
+    command_texts(command).iter().any(|text| {
+        text.split(['|', ';', '\n', '&'])
+            .any(|segment| segment_prints_secrets(segment))
+    })
+}
+
+fn segment_prints_secrets(segment: &str) -> bool {
+    let mut words: Vec<&str> = segment
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c| c == '"' || c == '\'' || c == '(' || c == ')'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    // `sudo`, `exec` and `NAME=value` prefixes run what follows.
+    while let Some(first) = words.first() {
+        if matches!(
+            *first,
+            "sudo" | "exec" | "command" | "bash" | "-lc" | "sh" | "-c"
+        ) || (first.contains('=') && !first.starts_with('-'))
+        {
+            words.remove(0);
+        } else {
+            break;
+        }
+    }
+    let Some(first) = words.first() else {
+        return false;
+    };
+    match *first {
+        // `printenv NAME` prints that variable, a secret as often as not.
+        "printenv" => return true,
+        "env" => return words[1..].iter().all(|w| w.starts_with('-')),
+        "set" => return words.len() == 1,
+        "export" => return words.len() == 1 || words[1..] == ["-p"],
+        _ => {}
+    }
+    SECRET_COMMANDS.iter().any(|entry| {
+        let (prefix, flag) = match entry.split_once(" +") {
+            Some((p, f)) => (p, Some(f)),
+            None => (*entry, None),
+        };
+        let wanted: Vec<&str> = prefix.split(' ').collect();
+        words.len() >= wanted.len()
+            && words[..wanted.len()] == wanted[..]
+            && flag.is_none_or(|f| words.contains(&f))
     })
 }

@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { AlertTriangle, ChevronDown, ChevronRight, History, Lock, Play, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, History, Lock, Play, RefreshCw, Search, ShieldCheck, Trash2, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { notify } from '../../lib/notify';
 import { agentItemKey } from '../../lib/agentHighlight';
 import { recallApi, RECALL_EVENT } from './api';
-import type { RecallScopeAnswer, RecallSearchAnswer, RecallSettings, RecallStatus } from './api';
+import type { RecallAssistantAccess, RecallScopeAnswer, RecallSearchAnswer, RecallSettings, RecallStatus } from './api';
 import {
+  assistantLine,
   dayOf,
-  includeUndecided,
   parsePatterns,
+  staleLine,
   recallStage,
   recallStatusLine,
   toolLabel,
@@ -135,22 +136,60 @@ export function RecallSection({ onOpenReceipt }: RecallSectionProps) {
   );
 }
 
-function PrivacyNote() {
+function PrivacyNote({ status }: { status: RecallStatus }) {
   return (
     <ul className="m-0 p-0 list-none flex flex-col gap-1.5 text-small text-shodh-text-secondary">
       <li className="flex items-start gap-2">
         <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
-        <span>Transcripts stay where the tools keep them; nothing is copied or uploaded.</span>
+        <span>Transcripts stay where the tools keep them. Recall&apos;s index of them is kept on this computer.</span>
       </li>
       <li className="flex items-start gap-2">
         <ShieldCheck className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
-        <span>Keys, tokens, passwords and private keys are removed before anything is indexed or shown.</span>
+        <span>
+          Keys, tokens, passwords, private keys{status.settings.keepEmails ? '' : ', email addresses'} and your hidden words are removed
+          before anything is indexed or shown. Long random ids, such as request ids and hashes, are hidden too.
+        </span>
+      </li>
+      <li className="flex items-start gap-2">
+        <Bot className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
+        <span>{assistantLine(status.settings.assistant, status.assistantModel)}</span>
       </li>
       <li className="flex items-start gap-2">
         <History className="w-3.5 h-3.5 mt-0.5 shrink-0 text-shodh-text-muted" aria-hidden="true" />
         <span>Only the tools and projects you choose are read. Slack and Telegram answers never use them.</span>
       </li>
     </ul>
+  );
+}
+
+const ACCESS_CHOICES: { value: RecallAssistantAccess; label: string }[] = [
+  { value: 'off', label: 'No' },
+  { value: 'local_models', label: 'Only with a model on this computer' },
+  { value: 'any_model', label: 'Yes, with the model I choose' },
+];
+
+/** Whether the assistant may read the sessions: off until the user says so. */
+function AssistantChoice({ status, saving, onSave }: { status: RecallStatus; saving: boolean; onSave: CardProps['onSave'] }) {
+  const settings = status.settings;
+  const name = useId();
+  return (
+    <fieldset className="m-0 p-0 border-0 flex flex-col gap-1.5">
+      <legend className="text-small font-semibold text-shodh-text mb-1">Let the assistant read your coding sessions</legend>
+      {ACCESS_CHOICES.map(choice => (
+        <label key={choice.value} className="flex items-center gap-2 text-small text-shodh-text cursor-pointer">
+          <input
+            type="radio"
+            name={name}
+            className={CHECKBOX}
+            checked={settings.assistant === choice.value}
+            disabled={saving}
+            onChange={() => void onSave({ ...settings, assistant: choice.value })}
+          />
+          {choice.label}
+        </label>
+      ))}
+      <p className="m-0 text-caption text-shodh-text-muted">{assistantLine(settings.assistant, status.assistantModel)}</p>
+    </fieldset>
   );
 }
 
@@ -170,15 +209,13 @@ function RecallCard({ status, saving, onSave, onRefresh, onOpenReceipt }: CardPr
   const choicesId = useId();
 
   if (stage === 'off') {
-    const found = status.tools.reduce((sum, t) => sum + t.files, 0);
     return (
       <div className="flex flex-col gap-3">
         <p className="m-0 text-body text-shodh-text">
-          {found > 0
-            ? `${found.toLocaleString()} session ${found === 1 ? 'file' : 'files'} found on this computer. Recall indexes the ones you choose.`
-            : 'Index your Claude Code and Codex sessions to search what you did.'}
+          Index your Claude Code and Codex sessions to search what you did. Nothing is read until you choose the tools and the
+          projects.
         </p>
-        <PrivacyNote />
+        <PrivacyNote status={status} />
         <div>
           <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void onSave({ ...settings, enabled: true })}>
             <Play className="w-4 h-4" aria-hidden="true" />
@@ -221,6 +258,7 @@ function RecallCard({ status, saving, onSave, onRefresh, onOpenReceipt }: CardPr
             </button>
           </div>
           {waitingLine(status) && <p className="m-0 text-caption text-shodh-text-muted">{waitingLine(status)}</p>}
+          {staleLine(status) && <p className="m-0 text-caption text-shodh-text-muted">{staleLine(status)}</p>}
           <RecallSearch onOpenReceipt={onOpenReceipt} />
         </>
       )}
@@ -240,8 +278,22 @@ function RecallCard({ status, saving, onSave, onRefresh, onOpenReceipt }: CardPr
             <div id={choicesId} className="flex flex-col gap-4 rounded-lg bg-shodh-raised p-3">
               <ToolChoice status={status} saving={saving} onSave={onSave} />
               <ProjectChoice status={status} saving={saving} onSave={onSave} />
+              <AssistantChoice status={status} saving={saving} onSave={onSave} />
               <PatternChoice settings={settings} saving={saving} onSave={onSave} />
-              <PrivacyNote />
+              <label className="flex items-start gap-2 text-small text-shodh-text cursor-pointer">
+                <input
+                  type="checkbox"
+                  className={cn(CHECKBOX, 'mt-0.5')}
+                  checked={settings.keepEmails}
+                  disabled={saving}
+                  onChange={e => void onSave({ ...settings, keepEmails: e.target.checked })}
+                />
+                <span className="flex flex-col">
+                  <span>Keep email addresses</span>
+                  <span className="text-caption text-shodh-text-muted">Off: they are hidden like keys. Changing it indexes every session again.</span>
+                </span>
+              </label>
+              <PrivacyNote status={status} />
               {confirmOff ? (
                 <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Turn Recall off">
                   <span className="text-small text-shodh-text">Delete Recall's index? Your transcripts are not touched.</span>
@@ -322,7 +374,6 @@ function ProjectChoice({
 }) {
   const settings = status.settings;
   const projects = status.projects;
-  const undecided = projects.filter(p => p.included === null).length;
   return (
     <fieldset className="m-0 p-0 border-0 flex flex-col gap-2">
       <legend className="text-small font-semibold text-shodh-text mb-1">Which projects to index</legend>
@@ -332,7 +383,10 @@ function ProjectChoice({
         </p>
       ) : (
         <>
-          {firstTime && <p className="m-0 text-caption text-shodh-text-muted">Nothing of a project is indexed until you include it.</p>}
+          <p className="m-0 text-caption text-shodh-text-muted">
+            {firstTime ? 'Nothing of a project is indexed until you include it. ' : ''}A session that also worked in a project you
+            excluded is not indexed. A worktree or a copy in another folder is a project of its own.
+          </p>
           <ul className="m-0 p-0 list-none flex flex-col gap-1.5 max-h-64 overflow-y-auto scrollbar-thin">
             {projects.map(project => (
               <li key={project.key}>
@@ -346,6 +400,7 @@ function ProjectChoice({
                   />
                   <span className="min-w-0 flex flex-col">
                     <span className="truncate" title={project.dir}>{project.name}</span>
+                    <span className="text-caption text-shodh-text-muted break-all">{project.dir}</span>
                     <span className="text-caption text-shodh-text-muted">
                       {`${project.sessions.toLocaleString()} ${project.sessions === 1 ? 'session' : 'sessions'}`}
                       {project.included ? ` · ${project.indexedSessions.toLocaleString()} indexed` : project.included === false ? ' · excluded' : ' · not included yet'}
@@ -357,19 +412,6 @@ function ProjectChoice({
               </li>
             ))}
           </ul>
-          {undecided > 0 && (
-            <div>
-              <button
-                type="button"
-                className={QUIET_BUTTON}
-                disabled={saving}
-                onClick={() => void onSave(includeUndecided(settings, projects.map(p => p.key)), 'Recall will index these projects')}
-              >
-                <Play className="w-3.5 h-3.5" aria-hidden="true" />
-                {`Include the ${undecided.toLocaleString()} new ${undecided === 1 ? 'project' : 'projects'}`}
-              </button>
-            </div>
-          )}
         </>
       )}
     </fieldset>
@@ -384,10 +426,11 @@ function PatternChoice({ settings, saving, onSave }: { settings: RecallSettings;
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={fieldId} className="text-small font-semibold text-shodh-text">
-        Your own sensitive patterns
+        Your own hidden words
       </label>
       <p className="m-0 text-caption text-shodh-text-muted">
-        One regular expression a line, removed like keys (a client code, an internal host). Changing them indexes every session again.
+        One a line: a word, a name or a code to hide like a key, in any case (a client&apos;s name, an internal host). To hide a
+        family of codes, write a pattern between slashes, like /ACME-[0-9]{'{6}'}/. Changing them indexes every session again.
       </p>
       <textarea
         id={fieldId}
@@ -396,17 +439,17 @@ function PatternChoice({ settings, saving, onSave }: { settings: RecallSettings;
         rows={3}
         spellCheck={false}
         className={cn('w-full rounded-lg border border-shodh-border bg-shodh-surface p-2 font-mono text-small text-shodh-text', FOCUS_RING)}
-        placeholder={'ACME-[0-9]{6}\ninternal\\.example\\.com'}
+        placeholder={'Globex\ninternal.example.com\n/ACME-[0-9]{6}/'}
       />
       <div>
         <button
           type="button"
           className={QUIET_BUTTON}
           disabled={saving || !changed}
-          onClick={() => void onSave({ ...settings, patterns: parsePatterns(text) }, 'Patterns saved')}
+          onClick={() => void onSave({ ...settings, patterns: parsePatterns(text) }, 'Hidden words saved')}
         >
           <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-          Save patterns
+          Save hidden words
         </button>
       </div>
     </div>

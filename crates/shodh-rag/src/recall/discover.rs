@@ -103,17 +103,63 @@ pub fn transcripts(tool: Tool, root: &Path) -> Vec<TranscriptFile> {
     out
 }
 
-/// A project's key: its folder with `/` separators and no trailing `/`, lower case on
-/// Windows (where folder names ignore case).
+/// A project's key: a hash of its folder ([`folder_key`]).
 pub fn project_key(cwd: &str) -> String {
-    let normal = cwd.trim().replace('\\', "/");
-    let normal = normal.trim_end_matches('/');
-    let normal = if normal.is_empty() { "/" } else { normal };
+    folder_key(&normal_folder(cwd))
+}
+
+/// A folder as keys are made of it: `/` separators, no trailing `/`, lower case on
+/// Windows (where folder names ignore case), and an MSYS spelling (`/c/Users`) as its
+/// drive (`c:/Users`).
+fn normal_folder(cwd: &str) -> String {
+    let mut normal = cwd.trim().replace('\\', "/");
+    while normal.contains("//") {
+        normal = normal.replace("//", "/");
+    }
+    let bytes = normal.as_bytes();
+    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
+        normal = format!("{}:{}", &normal[1..2], &normal[2..]);
+    }
+    let trimmed = normal.trim_end_matches('/');
+    let normal = if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    };
     if cfg!(windows) {
         normal.to_lowercase()
     } else {
-        normal.to_string()
+        normal
     }
+}
+
+/// The key of a normal folder: a hash of the folder as written (never redacted, so two
+/// folders a hidden word makes look alike stay apart), which is all the settings and the
+/// catalog keep of it.
+fn folder_key(normal: &str) -> String {
+    let digest = Sha256::digest(normal.as_bytes());
+    digest.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The keys of a folder and of each folder above it, nearest first: a decision about a
+/// folder applies to the folders inside it ([`super::settings::RecallSettings::decide`]).
+pub fn project_chain(cwd: &str) -> Vec<String> {
+    let mut folder = normal_folder(cwd);
+    let mut chain = vec![folder_key(&folder)];
+    while let Some(at) = folder.rfind('/') {
+        if at == 0 {
+            if folder.len() > 1 {
+                chain.push(folder_key("/"));
+            }
+            break;
+        }
+        folder.truncate(at);
+        chain.push(folder_key(&folder));
+        if folder.ends_with(':') {
+            break;
+        }
+    }
+    chain
 }
 
 /// The index space of a tool's sessions in a project.
@@ -177,26 +223,30 @@ fn claude_folder_name(path: &Path) -> Option<String> {
     Some(dir.file_name()?.to_str()?.to_string())
 }
 
-/// What the catalog records of a transcript found on disk. `known` is the project the
-/// catalog already has for this path (a file's project never changes, so its head is not
-/// read again).
+/// What the catalog records of a transcript found on disk. `known` is what the catalog
+/// already has for this path: its project's key, its folder as shown, and the key chains
+/// of the folders the session worked in (a file's starting folder never changes, so its
+/// head is not read again).
 pub fn found_file(
     tool: Tool,
     file: &TranscriptFile,
-    known: Option<(&str, &str)>,
+    known: Option<(&str, &str, &[Vec<String>])>,
     redactor: &super::redact::Redactor,
 ) -> FoundFile {
-    let (project_key, project_dir) = match known {
-        Some((key, dir)) => (key.to_string(), dir.to_string()),
-        None => {
+    let (project_key, project_dir, chains) = match known {
+        Some((key, dir, chains)) if !chains.is_empty() => {
+            (key.to_string(), dir.to_string(), chains.to_vec())
+        }
+        _ => {
             let dir = project_dir(tool, &file.path)
                 .or_else(|| match tool {
                     Tool::ClaudeCode => claude_folder_name(&file.path),
                     Tool::Codex => None,
                 })
                 .unwrap_or_else(|| "Unknown project".to_string());
-            let dir = redactor.redact(&dir);
-            (project_key(&dir), dir)
+            // The key is of the folder as written; what is shown of it is redacted.
+            let chain = project_chain(&dir);
+            (chain[0].clone(), redactor.redact(&dir), vec![chain])
         }
     };
     let (session_id, thread) = match tool {
@@ -221,6 +271,7 @@ pub fn found_file(
         thread,
         project_key,
         project_dir,
+        chains,
         size: file.size,
         mtime: file.mtime,
     }

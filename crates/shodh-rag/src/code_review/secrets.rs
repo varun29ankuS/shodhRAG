@@ -15,8 +15,15 @@ const SECRET_FOLDERS: [&str; 8] = [
 ];
 
 /// File names that hold credentials, exactly.
-const SECRET_NAMES: [&str; 12] = [
+const SECRET_NAMES: [&str; 19] = [
     ".netrc",
+    ".pgpass",
+    ".my.cnf",
+    "auth.json",
+    ".credentials.json",
+    "rclone.conf",
+    ".dockercfg",
+    "kubeconfig",
     "_netrc",
     ".npmrc",
     ".pypirc",
@@ -31,7 +38,9 @@ const SECRET_NAMES: [&str; 12] = [
 ];
 
 /// File endings of keys and certificates with private parts.
-const SECRET_ENDINGS: [&str; 9] = [
+const SECRET_ENDINGS: [&str; 11] = [
+    ".tfvars",
+    ".tfstate",
     ".pem",
     ".key",
     ".p12",
@@ -107,6 +116,11 @@ mod tests {
             "config\\credentials.json",
             "secrets.yaml",
             ".ssh/known_hosts",
+            "/home/u/.pgpass",
+            "C:/Users/u/.codex/auth.json",
+            "/home/u/.claude/.credentials.json",
+            "infra/prod.tfvars",
+            "infra/terraform.tfstate",
         ] {
             assert!(secret_path(path).is_some(), "{path}");
         }

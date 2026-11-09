@@ -13,7 +13,6 @@ use super::chunks::{head_and_tail, turn_heading};
 use super::discover::{project_name, space_id};
 use super::entities::{self, EntityKind};
 use super::index::{parse_source, RecallIndex};
-use super::redact::Redactor;
 use super::settings::RecallSettings;
 use super::{clip, read_transcript, ParseBudget, Role, Tool};
 use crate::types::{MetadataFilter, SourceSet};
@@ -196,12 +195,16 @@ fn reachable(
         .map(|p| p.trim().to_lowercase())
         .filter(|p| !p.is_empty())
         .collect();
+    // Only what was indexed under the current rules and hidden words: after a change
+    // nothing indexed before it is served, until the sync has indexed it again.
+    let current = current_fingerprint(settings)?;
     Ok(index
         .catalog()
         .files()?
         .into_iter()
         .filter(|f| f.state == FileState::Indexed)
-        .filter(|f| settings.wants(f.tool, &f.project_key))
+        .filter(|f| f.fingerprint.as_deref() == Some(current.as_str()))
+        .filter(|f| settings.wants(f.tool, &f.chains))
         .filter(|f| query_tools.is_empty() || query_tools.contains(&f.tool))
         .filter(|f| {
             wanted_projects.is_empty()
@@ -210,6 +213,26 @@ fn reachable(
                     .any(|p| f.project_dir.to_lowercase().contains(p.as_str()))
         })
         .collect())
+}
+
+/// What a file indexed under the current settings is recorded under.
+fn current_fingerprint(settings: &RecallSettings) -> Result<String> {
+    let redactor = settings.redactor().map_err(|e| anyhow!("{e}"))?;
+    Ok(super::index::index_fingerprint(&redactor))
+}
+
+/// Indexed files whose text is stale (indexed under other rules or hidden words): not
+/// served until the sync has indexed them again.
+pub fn stale_files(index: &RecallIndex, settings: &RecallSettings) -> Result<usize> {
+    let current = current_fingerprint(settings)?;
+    Ok(index
+        .catalog()
+        .files()?
+        .iter()
+        .filter(|f| f.state == FileState::Indexed)
+        .filter(|f| settings.wants(f.tool, &f.chains))
+        .filter(|f| f.fingerprint.as_deref() != Some(current.as_str()))
+        .count())
 }
 
 fn overlaps(file: &FileRecord, since: Option<i64>, until: Option<i64>) -> bool {
@@ -569,9 +592,11 @@ pub fn scope(
     Ok(ScopeAnswer { sessions, more })
 }
 
-/// Opens a receipt: reads the transcript again (redacted with the current rules and the
-/// user's patterns) and returns the turn with `around` turns before and after it. Only a
-/// transcript Recall indexed, of a tool and project still chosen, opens.
+/// Opens a receipt: reads the transcript again from the line of the first turn wanted
+/// (never the whole file), redacted with the current rules and the user's hidden words,
+/// and returns the turn with `around` turns before and after it. Only a transcript Recall
+/// indexed under the current rules, of a tool and folders still chosen, opens; a turn kept
+/// back when it was indexed stays kept back.
 pub fn open(
     index: &RecallIndex,
     settings: &RecallSettings,
@@ -580,58 +605,97 @@ pub fn open(
 ) -> Result<Opened> {
     let (file_id, turn) = parse_receipt(receipt)
         .ok_or_else(|| anyhow!("\"{receipt}\" is not a receipt: receipts look like 12:40"))?;
-    let file = index
-        .catalog()
+    let current = current_fingerprint(settings)?;
+    let catalog = index.catalog();
+    let file = catalog
         .file(file_id)?
-        .filter(|f| f.state == FileState::Indexed && settings.wants(f.tool, &f.project_key))
-        .ok_or_else(|| anyhow!("Recall has no session for the receipt {receipt} (it may have been removed or excluded)"))?;
-    let redactor = Redactor::new(&settings.patterns).map_err(|e| anyhow!("{e}"))?;
+        .filter(|f| {
+            f.state == FileState::Indexed
+                && f.fingerprint.as_deref() == Some(current.as_str())
+                && settings.wants(f.tool, &f.chains)
+        })
+        .ok_or_else(|| {
+            anyhow!("Recall has no session for the receipt {receipt} (it may have been removed, excluded, or is being indexed again)")
+        })?;
+    let redactor = settings.redactor().map_err(|e| anyhow!("{e}"))?;
     let path = std::path::PathBuf::from(&file.path);
     if !path.is_file() {
         return Err(anyhow!(
-            "The transcript is no longer on disk: {}",
-            file.path
+            "The transcript of this session is no longer on disk."
         ));
     }
-    let transcript = read_transcript(file.tool, &path, &redactor, ParseBudget::default())?;
-    let total = transcript.turns.len() as u32;
+    let total = file.turns;
     if turn >= total {
         return Err(anyhow!(
-            "The session has {total} turns; turn {} is not in it (it changed since it was indexed)",
+            "The session has {total} turns; turn {} is not in it",
             turn + 1
         ));
     }
     let around = around.min(MAX_AROUND);
     let first = turn.saturating_sub(around);
     let last = (turn + around).min(total.saturating_sub(1));
-    let turns = transcript.turns[first as usize..=last as usize]
-        .iter()
-        .map(|t| {
-            let shown = match t.role {
-                Role::ToolOutput => head_and_tail_for_open(&t.text),
-                _ => clip(&t.text, OPEN_TURN_CHARS),
-            };
-            let left_out = t.text.chars().count().saturating_sub(shown.chars().count());
-            OpenedTurn {
-                turn: t.index,
-                role: t.role,
-                tool_name: t.tool_name.clone(),
-                at: t
-                    .at
-                    .map(|a| a.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
-                heading: turn_heading(t),
-                text: shown,
-                left_out,
-                kept_back: t.kept_back.map(str::to_string),
-                line: t.line,
-                target: t.index == turn,
+    let rows = catalog.turn_range(file_id, first, last)?;
+    let Some(first_row) = rows.first() else {
+        return Err(anyhow!("Recall has no turns recorded for this session"));
+    };
+    // A line can hold several turns: reading starts at the first of its line.
+    let start_turn = catalog
+        .first_turn_of_line(file_id, first_row.line)?
+        .unwrap_or(first_row.turn);
+    let budget = ParseBudget {
+        start_offset: first_row.offset,
+        start_line: first_row.line.saturating_sub(1),
+        first_turn: start_turn,
+        max_turns: (last - start_turn + 1) as usize,
+        ..ParseBudget::default()
+    };
+    let transcript = read_transcript(file.tool, &path, &redactor, budget)?;
+    let changed =
+        || anyhow!("The transcript changed since it was indexed; Recall indexes it again shortly.");
+    let mut turns = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let t = transcript
+            .turns
+            .iter()
+            .find(|t| t.index == row.turn)
+            .filter(|t| t.role == row.role)
+            .ok_or_else(changed)?;
+        let (text, left_out, kept_back) = match &row.kept_back {
+            Some(reason) => (String::new(), 0, Some(reason.clone())),
+            None => {
+                let shown = match t.role {
+                    Role::ToolOutput => head_and_tail_for_open(&t.text),
+                    _ => clip(&t.text, OPEN_TURN_CHARS),
+                };
+                let cut = t.text.chars().count().saturating_sub(shown.chars().count());
+                (shown, t.left_out + cut, t.kept_back.map(str::to_string))
             }
-        })
-        .collect();
-    let title = transcript
-        .info
+        };
+        let at =
+            t.at.map(|a| a.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                .or_else(|| rfc3339(row.at));
+        let mut shown_turn = t.clone();
+        shown_turn.tool_name = t.tool_name.clone().or_else(|| row.tool_name.clone());
+        turns.push(OpenedTurn {
+            turn: t.index,
+            role: t.role,
+            tool_name: shown_turn.tool_name.clone(),
+            at,
+            heading: turn_heading(&shown_turn),
+            text,
+            left_out,
+            kept_back,
+            line: t.line,
+            target: t.index == turn,
+        });
+    }
+    // What the catalog holds of the session was redacted when it was indexed under these
+    // same rules; it is redacted again all the same.
+    let title = file
         .title
-        .clone()
+        .as_deref()
+        .map(|t| redactor.redact(t))
+        .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| session_title(&file));
     Ok(Opened {
         tool: file.tool,
@@ -639,13 +703,13 @@ pub fn open(
         title,
         project: project_name(&file.project_dir),
         project_dir: file.project_dir.clone(),
-        branch: transcript.info.branch.clone().or(file.branch.clone()),
+        branch: file.branch.as_deref().map(|b| redactor.redact(b)),
         file_id,
         path: file.path.clone(),
         turn,
         turns_total: total,
         turns,
-        unreadable_lines: transcript.errors.len() as u32,
+        unreadable_lines: file.errors,
     })
 }
 

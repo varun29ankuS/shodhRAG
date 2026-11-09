@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::catalog::{Catalog, FileState};
-use super::discover::{project_key, Roots};
+use super::discover::{project_chain, project_key, Roots};
 use super::entities::{extract, EntityKind};
 use super::index::{parse_source, source_id, RecallIndex, SyncControl, SyncProgress};
 use super::query::{self, RecallQuery};
@@ -33,36 +33,29 @@ const TIDEPOOL_SESSION: &str = "9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b";
 const ORBIT_SESSION: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const HARBOR_SESSION: &str = "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d";
 
-/// The user's own pattern in the tests, and the secret it covers.
-const USER_PATTERN: &str = r"ACME-STAGE-[0-9]{6}";
+/// The user's own pattern in the tests (between slashes: a pattern, not a word), and the
+/// secret it covers.
+const USER_PATTERN: &str = r"/ACME-STAGE-[0-9]{6}/";
 const USER_SECRET: &str = "ACME-STAGE-482913";
 
-/// A deterministic string of `n` characters from `alphabet`, with no run of more than
-/// three lower-case letters (so a key never reads as a word).
+/// A deterministic string of `n` characters drawn uniformly from `alphabet`: real keys
+/// have long lower-case runs and missing digits as often as chance gives them.
 fn random(seed: u64, n: usize, alphabet: &str) -> String {
     let chars: Vec<char> = alphabet.chars().collect();
     let mut state = seed
         .wrapping_mul(6364136223846793005)
         .wrapping_add(1442695040888963407);
     let mut out = String::with_capacity(n);
-    let mut lower_run = 0;
     while out.chars().count() < n {
         state = state
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        let c = chars[((state >> 33) as usize) % chars.len()];
-        if c.is_ascii_lowercase() {
-            if lower_run == 3 {
-                continue;
-            }
-            lower_run += 1;
-        } else {
-            lower_run = 0;
-        }
-        out.push(c);
+        out.push(chars[((state >> 33) as usize) % chars.len()]);
     }
     out
 }
+
+const BASE64: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 const ALNUM: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
@@ -516,7 +509,11 @@ fn codex_v1_flat_items_outputs_and_context() {
     let out = t.turns.iter().find(|x| x.role == Role::ToolOutput).unwrap();
     assert!(out.text.starts_with("src/auth/login.ts:12"), "{}", out.text);
     // `cat .env.local` names a secrets file: kept back.
-    assert_eq!(t.turns.iter().filter(|x| x.kept_back.is_some()).count(), 1);
+    assert_eq!(
+        t.turns.iter().filter(|x| x.kept_back.is_some()).count(),
+        2,
+        "the call and its output"
+    );
     assert!(t.turns.iter().any(|x| x
         .text
         .starts_with("Exit code 1\nFAIL src/auth/deviceFlow.test.ts")));
@@ -767,9 +764,9 @@ fn user_patterns_are_redacted_and_bad_ones_refused() {
         .redact(&format!("passphrase is {USER_SECRET}"))
         .contains(USER_SECRET));
     assert_ne!(r.fingerprint(), Redactor::default().fingerprint());
-    assert!(Redactor::new(&["(unclosed".to_string()]).is_err());
+    assert!(Redactor::new(&["/(unclosed/".to_string()]).is_err());
     assert!(
-        Redactor::new(&["a*".to_string()]).is_err(),
+        Redactor::new(&["/a*/".to_string()]).is_err(),
         "matches empty text"
     );
     assert!(Redactor::new(&[String::new()]).is_err());
@@ -1410,17 +1407,17 @@ fn settings_are_off_by_default_and_checked() {
     let dir = tempfile::tempdir().unwrap();
     let loaded = RecallSettings::load(dir.path()).unwrap();
     assert!(!loaded.enabled);
-    assert!(!loaded.wants(Tool::ClaudeCode, "/x"));
-    let mut s = settings(&["/x"], &["(bad"]);
+    assert!(!loaded.wants(Tool::ClaudeCode, &[project_chain("/x")]));
+    let mut s = settings(&["/x"], &["/(bad/"]);
     assert!(s.save(dir.path()).is_err());
     s.patterns = vec![USER_PATTERN.to_string()];
     s.idle_minutes = 0;
     s.save(dir.path()).unwrap();
     let back = RecallSettings::load(dir.path()).unwrap();
     assert_eq!(back.idle_minutes, super::settings::MIN_IDLE_MINUTES);
-    assert!(back.wants(Tool::Codex, &project_key("/x")));
+    assert!(back.wants(Tool::Codex, &[project_chain("/x")]));
     assert!(
-        !back.wants(Tool::Codex, &project_key("/y")),
+        !back.wants(Tool::Codex, &[project_chain("/y")]),
         "a project not chosen is not read"
     );
 }
@@ -1436,4 +1433,582 @@ fn the_home_folder_is_written_as_a_tilde() {
     );
     assert_eq!(super::hide_home("/home/ada/x", "/home/ada/"), "~/x");
     assert_eq!(super::hide_home("nothing here", "/"), "nothing here");
+}
+
+// ── Review round: every shape the security review found getting through ─────────────
+
+/// Each case: the text, and what of it must not survive.
+fn assert_redacted(cases: &[(String, String)]) {
+    let r = Redactor::default();
+    for (text, secret) in cases {
+        let out = r.redact(text);
+        assert!(
+            !out.contains(secret.as_str()),
+            "not redacted: {text}\n-> {out}"
+        );
+    }
+}
+
+#[test]
+fn credentials_on_command_lines_and_in_urls_are_redacted() {
+    let mailgun = format!(
+        "key-{}",
+        random(40, 32, "abcdefghijklmnopqrstuvwxyz0123456789")
+    );
+    let aws = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY".to_string();
+    assert_redacted(&[
+        (
+            "curl -u admin:S3cr3tPass https://es.internal:9200/_cat".into(),
+            "S3cr3tPass".into(),
+        ),
+        (
+            format!("curl --user api:{mailgun} https://api.mailgun.net/v3"),
+            mailgun.clone(),
+        ),
+        (
+            "CELERY_BROKER_URL = 'redis://:hunter2@redis:6379/0'".into(),
+            "hunter2".into(),
+        ),
+        (
+            "docker login -u me -p hunter2pass registry.acme.dev".into(),
+            "hunter2pass".into(),
+        ),
+        (
+            "sshpass -p 'hunter2pass' ssh deploy@host".into(),
+            "hunter2pass".into(),
+        ),
+        ("mysql -uroot -phunter2pass app".into(), "hunter2pass".into()),
+        (
+            "gh secret set DB_PASSWORD --body \"hunter2pass\"".into(),
+            "hunter2pass".into(),
+        ),
+        (
+            format!("aws configure set aws_secret_access_key {aws}"),
+            aws.clone(),
+        ),
+        (
+            "npm config set //registry.npmjs.org/:_authToken abc123def456".into(),
+            "abc123def456".into(),
+        ),
+        (
+            "aws_secret_access_key=wJalrXUtnFEMI%2FK7MDENG%2BbPxRfiCYEXAMPLEKEY".into(),
+            "K7MDENG".into(),
+        ),
+        (
+            "https://s3.amazonaws.com/b/k?X-Amz-Security-Token=IQoJb3JpZ2luX2VjEJr%2Fabcdef&X-Amz-Signature=deadbeef1234".into(),
+            "IQoJb3JpZ2luX2VjEJr".into(),
+        ),
+    ]);
+}
+
+#[test]
+fn every_secret_name_hides_its_value_whatever_it_looks_like() {
+    let hex64 = random(41, 64, "0123456789abcdef");
+    let hex32 = random(42, 32, "0123456789abcdef");
+    let uuid = "3fa85f64-5717-4562-b3fc-2c963f66afa6".to_string();
+    assert_redacted(&[
+        (
+            "SMTP_PASS=abcdefghijklmnop".into(),
+            "abcdefghijklmnop".into(),
+        ),
+        ("DB_PASS=hunter2".into(), "hunter2".into()),
+        ("ADMIN_PW=correcthorse".into(), "correcthorse".into()),
+        ("PASSWD=letmein".into(), "letmein".into()),
+        (format!("ENCRYPTION_KEY={hex64}"), hex64.clone()),
+        (format!("HEROKU_KEY={uuid}"), uuid.clone()),
+        (format!("OPENWEATHER_KEY={hex32}"), hex32.clone()),
+        (
+            "MY_APP_TOKEN=abcdefghijklmnopqrstuvwx".into(),
+            "abcdefghijklmnopqrstuvwx".into(),
+        ),
+        (
+            "WEBHOOK_SECRET=plainwordsecret".into(),
+            "plainwordsecret".into(),
+        ),
+        (
+            "docker run -e SMTP_PASS=abcdefghijklmnop app".into(),
+            "abcdefghijklmnop".into(),
+        ),
+        (
+            "encryption_key = \"abcdefabcdefabcdef\"".into(),
+            "abcdefabcdefabcdef".into(),
+        ),
+        ("\"password\": \"admin:admin\"".into(), "admin:admin".into()),
+        (
+            "\"password\": \"correct.horse.battery.staple\"".into(),
+            "correct.horse.battery.staple".into(),
+        ),
+        ("password: \"{noop}hunter2\"".into(), "{noop}hunter2".into()),
+        ("+DB_PASSWORD=fromadiffline".into(), "fromadiffline".into()),
+    ]);
+    // Names that hold no secret keep their values, and so do references to secrets.
+    let r = Redactor::default();
+    for text in [
+        "KEYBOARD_LAYOUT=us",
+        "max_tokens = 4096",
+        "token: string;",
+        "api_key = ${OPENAI_API_KEY}",
+        "api_key: <your key here>",
+        "password = os.environ[\"DB_PASSWORD\"]",
+    ] {
+        assert_eq!(r.redact(text), text, "changed: {text}");
+    }
+}
+
+#[test]
+fn provider_tokens_are_caught_in_every_written_form() {
+    let telegram = format!(
+        "{}:{}",
+        random(43, 10, "0123456789"),
+        random(
+            44,
+            35,
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+        )
+    );
+    let discord = format!(
+        "M{}.{}.{}",
+        random(45, 23, ALNUM),
+        random(46, 6, ALNUM),
+        random(47, 27, ALNUM)
+    );
+    let xoxe = format!("xoxe-1-{}", random(48, 40, ALNUM));
+    let akia = format!("AKIA{}", random(49, 16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"));
+    let ghp = format!("ghp_{}", random(50, 36, ALNUM));
+    let head = format!("sk-ant-api03-{}", random(51, 2, ALNUM));
+    let tail = random(52, 80, ALNUM);
+    assert_redacted(&[
+        (
+            format!("curl https://api.telegram.org/bot{telegram}/getMe"),
+            telegram.clone(),
+        ),
+        (format!("DISCORD_TOKEN: {discord}"), discord.clone()),
+        (format!("refresh {xoxe}"), xoxe.clone()),
+        // After an escaped line break, as JSON text holds it.
+        (
+            format!("{{\"content\":\"access key:\\n{akia}\\nregion us-east-1\"}}"),
+            akia.clone(),
+        ),
+        (format!("{{\"content\":\"x\\n{ghp}\"}}"), ghp.clone()),
+        // Wrapped right after its prefix.
+        (format!("echo {head}\n{tail}\ndone"), tail.clone()),
+    ]);
+}
+
+#[test]
+fn long_random_secrets_are_caught_however_long_and_whatever_runs_they_hold() {
+    let r = Redactor::default();
+    for (alphabet, name) in [(BASE64, "base64"), (ALNUM, "base62")] {
+        for length in [40usize, 64, 100, 300, 1700] {
+            let trials = 300u64;
+            let mut missed = 0;
+            for seed in 0..trials {
+                let secret = random(10_000 + seed * 7 + length as u64, length, alphabet);
+                let out = r.redact(&format!("value {secret} end"));
+                if out.contains(&secret[length / 2 - 6..length / 2 + 6]) {
+                    missed += 1;
+                }
+            }
+            assert!(
+                missed * 200 <= trials,
+                "{name} of {length}: {missed} of {trials} missed"
+            );
+        }
+    }
+    // A private key's base64 body at its real length, and base64-encoded PEM as
+    // Kubernetes writes it.
+    let body: Vec<String> = (0..26).map(|i| random(900 + i, 64, BASE64)).collect();
+    let pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+        body.join("\n")
+    );
+    let out = r.redact(&pem);
+    for line in &body {
+        assert!(!out.contains(line.as_str()), "{line}");
+    }
+    let encoded = format!(
+        "  ca: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t{}",
+        random(901, 1600, BASE64)
+    );
+    assert!(!r.redact(&encoded).contains(&encoded[60..90]));
+    let kubeconfig = format!("    client-key-data: {}", random(902, 1600, BASE64));
+    assert!(!r.redact(&kubeconfig).contains(&kubeconfig[40..70]));
+}
+
+#[test]
+fn emails_are_hidden_unless_the_user_keeps_them() {
+    let text = "Signed-off-by: Ada Lovelace <ada.lovelace@example.org>";
+    let hidden = Redactor::default().redact(text);
+    assert!(!hidden.contains("ada.lovelace@example.org"), "{hidden}");
+    assert!(hidden.contains(super::redact::EMAIL));
+    let kept = Redactor::with_options(&[], super::redact::RedactOptions { keep_emails: true })
+        .unwrap()
+        .redact(text);
+    assert_eq!(kept, text);
+}
+
+#[test]
+fn hidden_words_are_literal_and_any_case_and_never_echoed() {
+    let r = Redactor::new(&["Globex Corp".to_string(), "price$.list".to_string()]).unwrap();
+    let out = r.redact("Mail globex corp about the PRICE$.LIST today");
+    assert!(!out.to_lowercase().contains("globex"), "{out}");
+    assert!(!out.to_lowercase().contains("price$.list"), "{out}");
+    let error = Redactor::new(&["fine".to_string(), "/(sekrit/".to_string()]).unwrap_err();
+    assert_eq!(error.line, 2);
+    assert!(!error.to_string().contains("sekrit"), "{error}");
+}
+
+#[test]
+fn the_home_folder_is_hidden_in_every_spelling() {
+    let home = r"C:\Users\Ada";
+    for text in [
+        r#"{"path":"C:\\Users\\Ada\\code\\app"}"#,
+        "cd /c/Users/Ada/code/app",
+        "project C--Users-Ada-code-app",
+        "read C:/Users/Ada/notes",
+    ] {
+        let out = super::hide_home(text, home);
+        assert!(!out.contains("Ada"), "{text} -> {out}");
+    }
+}
+
+#[test]
+fn writes_to_secret_files_and_commands_that_print_secrets_are_kept_back() {
+    use serde_json::json;
+    for (name, input) in [
+        (
+            "Write",
+            json!({"file_path": "/home/u/app/.env", "content": "TOKEN=abc"}),
+        ),
+        (
+            "Edit",
+            json!({"file_path": "/home/u/app/certs/server.key", "old_string": "a", "new_string": "b"}),
+        ),
+        (
+            "MultiEdit",
+            json!({"file_path": "/home/u/.pgpass", "edits": [{"old_string": "a", "new_string": "b"}]}),
+        ),
+        (
+            "apply_patch",
+            json!("*** Begin Patch\n*** Update File: config/.env.production\n@@\n+KEY=x\n*** End Patch"),
+        ),
+        ("Bash", json!({"command": "printenv"})),
+        ("Bash", json!({"command": "printenv AWS_SECRET_ACCESS_KEY"})),
+        ("Bash", json!({"command": "env | grep -i token"})),
+        ("Bash", json!({"command": "kubectl config view --raw"})),
+        ("Bash", json!({"command": "gh auth token"})),
+        (
+            "Bash",
+            json!({"command": "aws configure get aws_secret_access_key"}),
+        ),
+        ("Bash", json!({"command": "cat ~/.codex/auth.json"})),
+        (
+            "shell",
+            json!({"command": ["bash", "-lc", "sudo printenv AWS_SECRET_ACCESS_KEY"]}),
+        ),
+    ] {
+        assert!(super::claude::keeps_back(name, &input), "{name} {input}");
+    }
+    for (name, input) in [
+        (
+            "Write",
+            json!({"file_path": "/home/u/app/README.md", "content": "hi"}),
+        ),
+        ("Bash", json!({"command": "env FOO=1 cargo test"})),
+        ("Bash", json!({"command": "kubectl config view"})),
+    ] {
+        assert!(!super::claude::keeps_back(name, &input), "{name} {input}");
+    }
+}
+
+#[test]
+fn tool_inputs_are_summarized_without_json_escapes() {
+    use serde_json::json;
+    let akia = format!("AKIA{}", random(60, 16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"));
+    let input = json!({
+        "file_path": "/home/u/app/notes/aws.txt",
+        "content": format!("access key:\n{akia}\nregion us-east-1"),
+        "edits": [{"new_string": "APP_ENV=prod\nMY_APP_TOKEN=abcdefghijklmnopqrstuvwx"}],
+    });
+    let summary = super::claude::summarize_input(&input);
+    assert!(!summary.contains("\\n"), "{summary}");
+    let out = Redactor::default().redact(&summary);
+    assert!(!out.contains(&akia), "{out}");
+    assert!(!out.contains("abcdefghijklmnopqrstuvwx"), "{out}");
+}
+
+const TWO_FOLDER_SESSION: &str = "aaaa1111-0000-4000-8000-000000000002";
+
+/// A session that started in one folder and worked in another.
+fn two_folder_session(dir: &Path) {
+    let file = dir
+        .join("home/.claude/projects/-home-dev-mono")
+        .join(format!("{TWO_FOLDER_SESSION}.jsonl"));
+    let line = |cwd: &str, text: &str, at: &str| {
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": text},
+            "timestamp": at, "cwd": cwd, "sessionId": TWO_FOLDER_SESSION})
+        .to_string()
+    };
+    let text = [
+        line(
+            "/home/dev/mono",
+            "Start in the monorepo.",
+            "2026-10-01T10:00:00Z",
+        ),
+        line(
+            "/home/dev/clients/globex/app",
+            "Now fix the invoice export of the client app.",
+            "2026-10-01T10:01:00Z",
+        ),
+    ]
+    .join("\n")
+        + "\n";
+    write(&file, &text);
+}
+
+#[tokio::test]
+async fn a_session_that_touched_an_excluded_folder_is_not_indexed() {
+    let dir = tempfile::tempdir().unwrap();
+    two_folder_session(dir.path());
+    let roots = Roots {
+        claude_code: Some(dir.path().join("home/.claude/projects")),
+        codex: None,
+    };
+    let index = test_index(&dir.path().join("recall")).await;
+    let mut s = settings(&["/home/dev/mono"], &[]);
+    // Excluding the clients folder excludes everything under it.
+    s.projects.insert(project_key("/home/dev/clients"), false);
+    let report = index.sync(&s, &roots, later(), &CONTROL).await.unwrap();
+    assert_eq!(report.indexed, 0, "{report:?}");
+    assert_eq!(report.excluded, 1, "{report:?}");
+    let query = RecallQuery {
+        text: "invoice export".into(),
+        ..RecallQuery::default()
+    };
+    assert!(query::search(&index, &s, &query)
+        .await
+        .unwrap()
+        .sessions
+        .is_empty());
+    // Allowed again: indexed.
+    s.projects.insert(project_key("/home/dev/clients"), true);
+    let report = index.sync(&s, &roots, later(), &CONTROL).await.unwrap();
+    assert_eq!(report.indexed, 1, "{report:?}");
+    // A worktree elsewhere is a project of its own; a subfolder follows its parent.
+    assert_ne!(
+        project_key("/home/wt/mono-hotfix"),
+        project_key("/home/dev/mono")
+    );
+    assert!(
+        project_chain("/home/dev/clients/globex/app").contains(&project_key("/home/dev/clients"))
+    );
+    // Keys are of the folder as written, so a hidden word never makes two folders one;
+    // one folder spelled two ways is one project.
+    assert_ne!(
+        project_key("C:/clients/AcmeCorp/app"),
+        project_key("C:/clients/Globex/app")
+    );
+    assert_eq!(
+        project_key("/c/Users/Ada/app"),
+        project_key("C:/Users/Ada/app")
+    );
+}
+
+#[tokio::test]
+async fn after_new_hidden_words_nothing_indexed_before_is_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = Secrets::new();
+    let s = settings(&all_projects(), &[]);
+    let (index, home) = synced(dir.path(), &secrets, &s).await;
+    let query = RecallQuery {
+        text: "staging passphrase".into(),
+        limit: 20,
+        ..RecallQuery::default()
+    };
+    let answer = query::search(&index, &s, &query).await.unwrap();
+    let lumen = answer
+        .sessions
+        .iter()
+        .find(|x| x.session_id == LUMEN_SESSION)
+        .expect("found before the change");
+    let receipt = lumen.receipts[0].id.clone();
+    let indexed = index
+        .catalog()
+        .files()
+        .unwrap()
+        .iter()
+        .filter(|f| f.state == FileState::Indexed)
+        .count();
+    // The user hides the passphrase; no sync has run since.
+    let hidden = settings(&all_projects(), &[USER_PATTERN]);
+    let answer = query::search(&index, &hidden, &query).await.unwrap();
+    assert!(
+        answer.sessions.is_empty(),
+        "stale sessions are served: {answer:?}"
+    );
+    assert!(query::scope(&index, &hidden, None, None, &[], &[])
+        .unwrap()
+        .sessions
+        .is_empty());
+    assert!(query::open(&index, &hidden, &receipt, 2).is_err());
+    assert_eq!(query::stale_files(&index, &hidden).unwrap(), indexed);
+    // Indexed again: served, without the hidden words.
+    index
+        .sync(&hidden, &home.roots, later(), &CONTROL)
+        .await
+        .unwrap();
+    let answer = query::search(&index, &hidden, &query).await.unwrap();
+    assert!(!answer.sessions.is_empty());
+    assert!(!serde_json::to_string(&answer)
+        .unwrap()
+        .contains(USER_SECRET));
+    assert_eq!(query::stale_files(&index, &hidden).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn open_reads_only_around_its_turn_and_keeps_kept_back_turns_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = Secrets::new();
+    let s = settings(&all_projects(), &[]);
+    let (index, _home) = synced(dir.path(), &secrets, &s).await;
+    let lumen = index
+        .catalog()
+        .files()
+        .unwrap()
+        .into_iter()
+        .find(|f| f.session_id == LUMEN_SESSION)
+        .unwrap();
+    // Every turn opens on its own, read from its line, as reading the whole file does.
+    let whole = read_transcript(
+        Tool::ClaudeCode,
+        Path::new(&lumen.path),
+        &s.redactor().unwrap(),
+        ParseBudget::default(),
+    )
+    .unwrap();
+    assert_eq!(whole.turns.len() as u32, lumen.turns);
+    let mut kept = 0;
+    for turn in 0..lumen.turns {
+        let one = query::open(&index, &s, &query::receipt_id(lumen.id, turn), 0).unwrap();
+        assert_eq!(one.turns.len(), 1);
+        let t = &one.turns[0];
+        let same = &whole.turns[turn as usize];
+        assert_eq!((t.turn, t.role, &t.text), (turn, same.role, &same.text));
+        if t.kept_back.is_some() {
+            assert!(t.text.is_empty());
+            kept += 1;
+        }
+    }
+    assert!(kept >= 2, "the .env read and its output are kept back");
+    assert!(whole
+        .turns
+        .iter()
+        .any(|t| t.text.contains("opened PR #214")));
+}
+
+#[test]
+fn very_long_turns_keep_their_head_and_tail_only() {
+    let text: String = "x".repeat(super::KEEP_TURN_CHARS * 3);
+    let (kept, left_out) = super::keep_text(text);
+    assert!(kept.chars().count() < super::KEEP_TURN_CHARS + 100);
+    assert_eq!(left_out, super::KEEP_TURN_CHARS * 2);
+    let short = "a short turn".to_string();
+    assert_eq!(super::keep_text(short.clone()), (short, 0));
+}
+
+#[tokio::test]
+async fn hard_secrets_planted_in_a_session_never_leave_it() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let akia = format!("AKIA{}", random(70, 16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"));
+    let telegram = format!("{}:{}", random(71, 10, "0123456789"), random(72, 35, ALNUM));
+    let long = random(73, 120, BASE64);
+    let planted = [
+        "S3cr3tPassX1".to_string(),
+        "hunter2redis".to_string(),
+        "abcdefghijklmnop".to_string(),
+        akia.clone(),
+        telegram.clone(),
+        long.clone(),
+        "ada.lovelace@example.org".to_string(),
+    ];
+    let session = "bbbb2222-0000-4000-8000-000000000003";
+    let file = dir
+        .path()
+        .join("home/.claude/projects/-home-dev-vault")
+        .join(format!("{session}.jsonl"));
+    let line = |kind: &str, message: serde_json::Value| {
+        json!({"type": kind, "message": message, "timestamp": "2026-10-03T10:00:00Z",
+            "cwd": "/home/dev/vault", "sessionId": session})
+        .to_string()
+    };
+    let lines = [
+        line(
+            "user",
+            json!({"role": "user", "content": "Set up the vault deploy. I am ada.lovelace@example.org."}),
+        ),
+        line(
+            "assistant",
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash",
+                "input": {"command": "curl -u admin:S3cr3tPassX1 https://es.internal:9200/_cat"}}]}),
+        ),
+        line(
+            "user",
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                "content": "BROKER=redis://:hunter2redis@redis:6379/0\nSMTP_PASS=abcdefghijklmnop"}]}),
+        ),
+        line(
+            "assistant",
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Write",
+                "input": {"file_path": "/home/dev/vault/notes/aws.txt",
+                    "content": format!("key:\n{akia}\nbot https://api.telegram.org/bot{telegram}/getMe")}}]}),
+        ),
+        line(
+            "user",
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2",
+                "content": [{"type": "json", "data": {"token": long}}]}]}),
+        ),
+    ];
+    write(&file, &(lines.join("\n") + "\n"));
+    let roots = Roots {
+        claude_code: Some(dir.path().join("home/.claude/projects")),
+        codex: None,
+    };
+    let index = test_index(&dir.path().join("recall")).await;
+    let s = settings(&["/home/dev/vault"], &[]);
+    let report = index.sync(&s, &roots, later(), &CONTROL).await.unwrap();
+    assert_eq!(report.indexed, 1, "{report:?}");
+    let stored = stored_text(&index).await;
+    assert!(stored.contains("vault deploy"), "{stored}");
+    let record = index.catalog().files().unwrap().remove(0);
+    let mut exits = vec![stored];
+    for turn in 0..record.turns {
+        let opened = query::open(&index, &s, &query::receipt_id(record.id, turn), 0).unwrap();
+        exits.push(serde_json::to_string(&opened).unwrap());
+    }
+    exits.push(
+        serde_json::to_string(&query::scope(&index, &s, None, None, &[], &[]).unwrap()).unwrap(),
+    );
+    exits.push(format!(
+        "{:?}",
+        index.catalog().file_entities(record.id, &[], 1000).unwrap()
+    ));
+    exits.push(format!("{:?}", index.catalog().files().unwrap()));
+    for secret in &planted {
+        let query = RecallQuery {
+            text: secret.clone(),
+            limit: 20,
+            ..RecallQuery::default()
+        };
+        let answer = query::search(&index, &s, &query).await.unwrap();
+        exits.push(serde_json::to_string(&answer).unwrap());
+    }
+    for text in &exits {
+        for secret in &planted {
+            assert!(
+                !text.contains(secret.as_str()),
+                "{secret} left the session:\n{text}"
+            );
+        }
+    }
 }

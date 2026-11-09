@@ -13,6 +13,8 @@ use super::{LineError, ParseBudget, ERROR_PREVIEW_CHARS};
 pub(super) struct Line {
     /// 1-based.
     pub number: u64,
+    /// Byte offset of the line in the file.
+    pub offset: u64,
     pub value: Value,
 }
 
@@ -27,11 +29,15 @@ pub(super) fn for_each_line(
     error_count: &mut usize,
     mut each: impl FnMut(Line) -> bool,
 ) -> std::io::Result<()> {
-    let file = std::fs::File::open(path)?;
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    if budget.start_offset > 0 {
+        file.seek(SeekFrom::Start(budget.start_offset))?;
+    }
     let mut reader = BufReader::with_capacity(256 * 1024, file);
     let mut buffer: Vec<u8> = Vec::new();
-    let mut offset: u64 = 0;
-    let mut number: u64 = 0;
+    let mut offset: u64 = budget.start_offset;
+    let mut number: u64 = budget.start_line;
     loop {
         buffer.clear();
         let read = read_line_bounded(&mut reader, &mut buffer, budget.max_line_bytes)?;
@@ -62,7 +68,11 @@ pub(super) fn for_each_line(
         }
         match serde_json::from_slice::<Value>(text) {
             Ok(value) => {
-                if !each(Line { number, value }) {
+                if !each(Line {
+                    number,
+                    offset: line_offset,
+                    value,
+                }) {
                     break;
                 }
             }

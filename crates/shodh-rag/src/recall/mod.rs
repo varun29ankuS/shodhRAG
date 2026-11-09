@@ -129,6 +129,10 @@ pub struct Turn {
     pub text: String,
     /// 1-based line of the file the turn was read from.
     pub line: u64,
+    /// Byte offset of that line: a receipt is opened by reading from there.
+    pub offset: u64,
+    /// Characters of the turn not kept (the middle of a very long output or paste).
+    pub left_out: usize,
     /// Why the turn's text is not kept (the output of reading a file that may hold
     /// secrets): its text is then empty.
     pub kept_back: Option<&'static str>,
@@ -153,8 +157,11 @@ pub struct SessionInfo {
     pub session_id: Option<String>,
     /// A subagent's id, when the file is a subagent's thread of a session.
     pub thread: Option<String>,
-    /// The project folder the session ran in.
+    /// The project folder the session ran in (redacted, as shown).
     pub cwd: Option<String>,
+    /// The key chains ([`discover::project_chain`]) of every folder the session worked
+    /// in, the first first: excluding any of them excludes the session.
+    pub cwd_chains: Vec<Vec<String>>,
     pub branch: Option<String>,
     pub title: Option<String>,
     pub model: Option<String>,
@@ -215,14 +222,22 @@ pub struct ParseBudget {
     pub max_turns: usize,
     /// Errors recorded at most (the rest are counted).
     pub max_errors: usize,
+    /// Where reading starts: a byte offset at a line start, the lines before it, and the
+    /// index of the first turn there (all 0: the start of the file).
+    pub start_offset: u64,
+    pub start_line: u64,
+    pub first_turn: u32,
 }
 
 impl Default for ParseBudget {
     fn default() -> Self {
         Self {
-            max_line_bytes: 48 * 1024 * 1024,
+            max_line_bytes: 16 * 1024 * 1024,
             max_turns: 20_000,
             max_errors: 200,
+            start_offset: 0,
+            start_line: 0,
+            first_turn: 0,
         }
     }
 }
@@ -269,6 +284,24 @@ pub fn hide_home(text: &str, home: &str) -> String {
     if home.len() < 3 {
         return text.to_string();
     }
+    let mut out = text.to_string();
+    // As written, JSON-escaped (`C:\\Users\\Ada`), as MSYS writes it (`/c/Users/Ada`),
+    // and as Claude Code names a project's folder (`C--Users-Ada`).
+    let normal = home.replace('\\', "/");
+    let mut forms = vec![home.to_string(), home.replace('\\', "\\\\")];
+    let bytes = normal.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        forms.push(format!("/{}{}", &normal[..1], &normal[2..]));
+    }
+    forms.push(normal.replace([':', '/'], "-"));
+    for form in forms {
+        out = replace_folded(&out, &form);
+    }
+    out
+}
+
+/// `text` with every `needle` (ignoring ASCII case and `\` versus `/`) written as `~`.
+fn replace_folded(text: &str, needle: &str) -> String {
     let fold = |s: &str| -> Vec<u8> {
         s.bytes()
             .map(|b| {
@@ -281,7 +314,10 @@ pub fn hide_home(text: &str, home: &str) -> String {
             .collect()
     };
     let hay = fold(text);
-    let needle = fold(home);
+    let needle = fold(needle);
+    if needle.is_empty() {
+        return text.to_string();
+    }
     let mut out = String::with_capacity(text.len());
     let (mut i, mut last) = (0, 0);
     while i + needle.len() <= hay.len() {
@@ -302,4 +338,26 @@ pub fn hide_home(text: &str, home: &str) -> String {
 /// The user's home folder, as [`hide_home`] takes it.
 pub fn home_folder() -> Option<String> {
     dirs::home_dir().map(|h| h.display().to_string())
+}
+
+/// Characters of a turn's text kept at most: a longer output or paste keeps its head
+/// and tail (what is indexed and opened of it), so a huge session is never held whole.
+pub const KEEP_TURN_CHARS: usize = 16_000;
+
+/// `text` cut to [`KEEP_TURN_CHARS`] (its head and tail, with a note between), and the
+/// characters left out. Cut only after redaction, so no cut splits a secret.
+pub(crate) fn keep_text(text: String) -> (String, usize) {
+    let count = text.chars().count();
+    if count <= KEEP_TURN_CHARS {
+        return (text, 0);
+    }
+    let head_chars = KEEP_TURN_CHARS * 2 / 3;
+    let tail_chars = KEEP_TURN_CHARS - head_chars;
+    let head: String = text.chars().take(head_chars).collect();
+    let tail: String = text.chars().skip(count - tail_chars).collect();
+    let left_out = count - head_chars - tail_chars;
+    (
+        format!("{head}\n[… {left_out} characters not kept …]\n{tail}"),
+        left_out,
+    )
 }

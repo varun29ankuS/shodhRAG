@@ -1,4 +1,4 @@
-//! Secret redaction for Recall, applied at index time.
+//! Secret redaction for Recall, applied at index time and again whenever a turn is read.
 //!
 //! Every string Recall takes from a transcript passes through one [`Redactor`] before
 //! it reaches anything else: the chunks that are embedded and keyword-indexed, the
@@ -8,21 +8,26 @@
 //! model.
 //!
 //! What is redacted:
-//! - private key blocks (PEM, OpenSSH, PGP), including a block cut off before its end;
+//! - private key blocks (PEM, OpenSSH, PGP, PuTTY), also cut short, JSON-escaped or
+//!   base64-encoded (Kubernetes secrets, kubeconfig `*-key-data`);
 //! - tokens with a provider's prefix (Anthropic, OpenAI, OpenRouter, GitHub, GitLab,
-//!   Slack, Google, Hugging Face, Groq, xAI, Perplexity, npm, PyPI, Stripe, SendGrid,
-//!   AWS access key ids, Telegram bots, JWTs, Slack and Discord webhooks), also when a
-//!   terminal wrapped one over several lines;
+//!   Slack, Discord, Google, Hugging Face, Groq, xAI, Perplexity, npm, PyPI, Stripe,
+//!   SendGrid, AWS ids, Telegram bots also inside their API URLs, JWTs, webhooks), also
+//!   when a terminal wrapped one over several lines, even right after its prefix;
 //! - credentials in headers (`Authorization`, `Bearer`, `x-api-key`, cookies), in URLs
-//!   (`user:password@host`, `?token=`), on command lines (`--password x`);
-//! - the values of `.env`-style lines and of assignments whose name says key, token,
-//!   secret or password, quoted or not;
-//! - long random-looking strings of mixed letters and digits (keys without a known
-//!   prefix);
-//! - the user's own patterns (regular expressions).
+//!   (`user:password@host`, `:password@host` with no user, secret query parameters), on
+//!   command lines (`--password x`, `-u user:pass`, `docker login -p`, `sshpass -p`,
+//!   `mysql -pX`, `gh secret set --body`, `aws configure set`, npm `_authToken`);
+//! - the value of every assignment whose name says it holds a secret (`*_KEY`,
+//!   `*_TOKEN`, `*_SECRET`, `*_PASS`, `*_PW`, `password`, `api_key`, `tls.key`…), quoted
+//!   or not, whatever the value looks like;
+//! - email addresses (unless the user keeps them);
+//! - long random-looking strings (keys without a known prefix);
+//! - the user's own words and patterns.
 //!
-//! Over-masking a hash costs a little recall; leaking a key costs the user the key, so
-//! the rules err towards masking.
+//! A text that holds JSON escapes (`\n`, `\"`) is unescaped first, so a key after an
+//! escaped line break is seen at the start of its line. Over-masking a hash costs a
+//! little recall; leaking a key costs the user the key, so the rules err towards masking.
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -32,20 +37,25 @@ use sha2::{Digest, Sha256};
 
 /// What a secret is replaced with.
 pub const REDACTED: &str = "[REDACTED]";
+/// What an email address is replaced with.
+pub const EMAIL: &str = "[EMAIL]";
 
 /// Version of the built-in rules. Raised whenever a rule changes, so every session is
-/// indexed again under the new rules ([`Redactor::fingerprint`]).
-pub const RULES_VERSION: u32 = 1;
+/// indexed again under the new rules ([`Redactor::fingerprint`]), and what was indexed
+/// under the old ones is not served meanwhile.
+pub const RULES_VERSION: u32 = 2;
 
 /// Longest user pattern accepted (characters).
 pub const MAX_PATTERN_CHARS: usize = 300;
 /// Most user patterns accepted.
 pub const MAX_PATTERNS: usize = 50;
 
-/// A user pattern that is not a valid regular expression, or too long.
+/// A user pattern Shodh cannot use. It names the line, never the pattern itself (the
+/// pattern is what the user wants hidden).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternError {
-    pub pattern: String,
+    /// 1-based line of the patterns.
+    pub line: usize,
     pub reason: String,
 }
 
@@ -53,33 +63,43 @@ impl std::fmt::Display for PatternError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "\"{}\" is not a pattern Shodh can use: {}",
-            self.pattern, self.reason
+            "Line {} of your hidden words: {}",
+            self.line, self.reason
         )
     }
 }
 
 impl std::error::Error for PatternError {}
 
+/// What the user chose about redaction beyond the built-in rules.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RedactOptions {
+    /// Email addresses are kept (by default they are hidden).
+    pub keep_emails: bool,
+}
+
 /// Redacts secrets from transcript text with the built-in rules and the user's patterns.
 #[derive(Debug, Clone)]
 pub struct Redactor {
     user: Vec<Regex>,
+    options: RedactOptions,
     fingerprint: String,
 }
 
 impl Default for Redactor {
     fn default() -> Self {
-        Self::new(&[]).unwrap_or_else(|_| Self {
+        Self {
             user: Vec::new(),
-            fingerprint: fingerprint(&[]),
-        })
+            options: RedactOptions::default(),
+            fingerprint: fingerprint(&[], &RedactOptions::default()),
+        }
     }
 }
 
-fn fingerprint(patterns: &[String]) -> String {
+fn fingerprint(patterns: &[String], options: &RedactOptions) -> String {
     let mut hash = Sha256::new();
     hash.update(RULES_VERSION.to_le_bytes());
+    hash.update([u8::from(options.keep_emails)]);
     for pattern in patterns {
         hash.update((pattern.len() as u64).to_le_bytes());
         hash.update(pattern.as_bytes());
@@ -91,35 +111,47 @@ fn fingerprint(patterns: &[String]) -> String {
         .collect()
 }
 
-/// Checks the user's patterns: each must be a regular expression of at most
-/// [`MAX_PATTERN_CHARS`], at most [`MAX_PATTERNS`] of them, and none may match the empty
-/// text (it would redact nothing, or everything, between every character).
+/// Checks the user's hidden words, one a line: a line is a literal word or phrase
+/// (any case), or a regular expression written between slashes (`/ACME-[0-9]{6}/`, also
+/// any case). At most [`MAX_PATTERNS`] lines of at most [`MAX_PATTERN_CHARS`]; a pattern
+/// may not match empty text.
 pub fn check_patterns(patterns: &[String]) -> Result<Vec<Regex>, PatternError> {
     if patterns.len() > MAX_PATTERNS {
         return Err(PatternError {
-            pattern: patterns[MAX_PATTERNS].clone(),
-            reason: format!("at most {MAX_PATTERNS} patterns are kept"),
+            line: MAX_PATTERNS + 1,
+            reason: format!("at most {MAX_PATTERNS} lines are kept"),
         });
     }
     patterns
         .iter()
-        .map(|pattern| {
+        .enumerate()
+        .map(|(i, pattern)| {
             let error = |reason: String| PatternError {
-                pattern: pattern.clone(),
+                line: i + 1,
                 reason,
             };
-            if pattern.trim().is_empty() {
+            let trimmed = pattern.trim();
+            if trimmed.is_empty() {
                 return Err(error("it is empty".to_string()));
             }
-            if pattern.chars().count() > MAX_PATTERN_CHARS {
+            if trimmed.chars().count() > MAX_PATTERN_CHARS {
                 return Err(error(format!(
                     "it is longer than {MAX_PATTERN_CHARS} characters"
                 )));
             }
-            let regex = regex::RegexBuilder::new(pattern)
+            let source = match trimmed
+                .strip_prefix('/')
+                .and_then(|r| r.strip_suffix('/'))
+                .filter(|r| !r.is_empty())
+            {
+                Some(regex) => regex.to_string(),
+                None => regex::escape(trimmed),
+            };
+            let regex = regex::RegexBuilder::new(&source)
+                .case_insensitive(true)
                 .size_limit(1 << 20)
                 .build()
-                .map_err(|e| error(e.to_string()))?;
+                .map_err(|_| error("it is not a pattern Shodh can read".to_string()))?;
             if regex.is_match("") {
                 return Err(error("it matches empty text".to_string()));
             }
@@ -129,16 +161,22 @@ pub fn check_patterns(patterns: &[String]) -> Result<Vec<Regex>, PatternError> {
 }
 
 impl Redactor {
-    /// The built-in rules and `patterns` (the user's own, regular expressions).
+    /// The built-in rules and `patterns` (the user's own hidden words).
     pub fn new(patterns: &[String]) -> Result<Self, PatternError> {
+        Self::with_options(patterns, RedactOptions::default())
+    }
+
+    /// [`Self::new`] with the user's other choices.
+    pub fn with_options(patterns: &[String], options: RedactOptions) -> Result<Self, PatternError> {
         Ok(Self {
             user: check_patterns(patterns)?,
-            fingerprint: fingerprint(patterns),
+            fingerprint: fingerprint(patterns, &options),
+            options,
         })
     }
 
-    /// Identifies the rules and patterns: text indexed under another fingerprint is
-    /// indexed again.
+    /// Identifies the rules, patterns and options: text indexed under another fingerprint
+    /// is indexed again, and not served before it is.
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
@@ -150,10 +188,30 @@ impl Redactor {
 
     /// [`Self::redact`], and how many secrets were replaced.
     pub fn redact_counted(&self, text: &str) -> (String, usize) {
+        let (out, count) = self.redact_core(text);
+        // Text with JSON escapes is also read with them undone: `\nAKIA…` is a key at the
+        // start of a line. That reading is kept only when it finds more secrets, so a
+        // Windows path (`C:\Users\runner`) is not turned into a line break needlessly.
+        if has_json_escapes(text) {
+            let (unescaped, more) = self.redact_core(&unescape_json(text));
+            if more > count {
+                return (unescaped, more);
+            }
+        }
+        (out, count)
+    }
+
+    fn redact_core(&self, text: &str) -> (String, usize) {
         let mut count = 0usize;
         let mut out = Cow::Borrowed(text);
+        if let Some(split) = redact_split_prefixes(&out, &mut count) {
+            out = Cow::Owned(split);
+        }
         for rule in RULES.iter() {
             out = apply(out, rule, &mut count);
+        }
+        if !self.options.keep_emails {
+            out = apply(out, &EMAIL_RULE, &mut count);
         }
         if let Some(wrapped) = redact_wrapped_tokens(&out, &mut count) {
             out = Cow::Owned(wrapped);
@@ -187,6 +245,11 @@ impl Redactor {
     }
 }
 
+/// Whether `text` holds JSON string escapes that hide line starts and word boundaries.
+fn has_json_escapes(text: &str) -> bool {
+    text.contains("\\n") || text.contains("\\t") || text.contains("\\r") || text.contains("\\\"")
+}
+
 /// One built-in rule: where it matches, the text is replaced by what `replace` makes of
 /// the captures.
 struct Rule {
@@ -203,15 +266,6 @@ fn keep_first(caps: &Captures) -> String {
     format!("{}{REDACTED}", &caps[1])
 }
 
-/// An `.env`-style line: keeps the prefix, the name and the `=`, replaces the value.
-fn keep_assignment(caps: &Captures) -> String {
-    let value = caps.get(4).map_or("", |m| m.as_str());
-    if is_placeholder(value) || (!env_style_name(&caps[2]) && looks_like_code(value)) {
-        return caps[0].to_string();
-    }
-    format!("{}{}{}{REDACTED}", &caps[1], &caps[2], &caps[3])
-}
-
 /// A name written like an environment variable (`DB_PASSWORD`): no lower-case letter.
 /// Its value is always a value, never code.
 fn env_style_name(name: &str) -> bool {
@@ -221,7 +275,8 @@ fn env_style_name(name: &str) -> bool {
 /// A value that reads as code rather than a secret (`token = tokens.next()`,
 /// `password = form.password`, `key = map[k]`): it starts with a lower-case identifier,
 /// holds no digit, and is a field, a call, a path or an index. A plain word is not code:
-/// `password: changeme` is a password.
+/// `password: changeme` is a password. Only unquoted values are ever read as code: a
+/// quoted one is a literal.
 fn looks_like_code(value: &str) -> bool {
     let v = value.trim().trim_end_matches(';').trim_end_matches(',');
     let starts_like_identifier = v
@@ -234,40 +289,142 @@ fn looks_like_code(value: &str) -> bool {
             c.is_ascii_alphanumeric()
                 || matches!(
                     c,
-                    '_' | '.'
-                        | '('
-                        | ')'
-                        | '['
-                        | ']'
-                        | ':'
-                        | '&'
-                        | '*'
-                        | '!'
-                        | '?'
-                        | ' '
-                        | ','
-                        | '\''
-                        | '"'
+                    '_' | '.' | '(' | ')' | '[' | ']' | ':' | '&' | '*' | '!' | '?'
                 )
         })
-        && v.contains(['(', '.', '[', ':'])
+        && (v.contains(['(', '[']) || v.contains("::") || v.matches('.').count() == 1)
 }
 
-/// Whether a secret-bearing name is about a password or a secret (any value counts) rather
-/// than a key or token (only key-shaped values count: `max_tokens` is no secret).
-fn password_like_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [
-        "passw",
-        "pwd",
-        "passphrase",
-        "secret",
-        "credential",
-        "cookie",
-        "dsn",
-    ]
-    .iter()
-    .any(|w| lower.contains(w))
+/// Type names that follow a name in code (`token: string`), never secrets.
+const TYPE_WORDS: [&str; 20] = [
+    "string", "str", "number", "boolean", "bool", "int", "integer", "any", "unknown", "object",
+    "bytes", "text", "varchar", "uuid", "option", "string?", "vec", "char", "float", "double",
+];
+
+/// A value that only names where a secret comes from (`${TOKEN}`, `<your key>`,
+/// `process.env.KEY`, `$TOKEN`), a type, or nothing. Only a value that is wholly such a
+/// reference counts: `{noop}hunter2` and `$ecret1` are passwords.
+fn is_placeholder(value: &str) -> bool {
+    static REFERENCE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^(?:\$\{[^}]*\}|\{\{[^}]*\}\}|<[^<>]*>|\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%|process\.env\.[A-Za-z0-9_]+|os\.environ(?:\.get)?[\[(].*|env\(.*\)|std::env::var\(.*\)|\[REDACTED\]|\[EMAIL\])$",
+        )
+        .unwrap_or_else(|e| panic!("{e}"))
+    });
+    let v = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    v.is_empty()
+        || REFERENCE.is_match(v)
+        // The first word of `<your key here>` once a value stops at a space.
+        || (v.starts_with('<') && !v.chars().any(|c| c.is_ascii_digit()))
+        || ["null", "none", "nil", "true", "false", "undefined", "required", "optional"]
+            .iter()
+            .any(|w| v.eq_ignore_ascii_case(w))
+        || TYPE_WORDS.iter().any(|w| v.eq_ignore_ascii_case(w))
+        || v.chars().all(|c| c == '*' || c == 'x' || c == 'X' || c == '.' || c == '•')
+}
+
+/// How strongly a name says its value is secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Secrecy {
+    /// Nothing secret about it.
+    None,
+    /// `*_KEY`, `*_TOKEN`, `password`, `client_secret`: any value is a secret.
+    Strong,
+    /// `token_count`, `keymap`: only a value shaped like a key is.
+    Weak,
+}
+
+/// The words of a name, lower case: `DB_PASS` → `db`, `pass`; `authToken` → `auth`,
+/// `token`; `tls.key` → `tls`, `key`.
+fn name_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut previous_lower = false;
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            if c.is_ascii_uppercase() && previous_lower && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            previous_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+            word.push(c.to_ascii_lowercase());
+        } else {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            previous_lower = false;
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Words that make a name secret wherever they are in it.
+const SECRET_ANYWHERE: [&str; 13] = [
+    "password",
+    "passwd",
+    "passphrase",
+    "pwd",
+    "secret",
+    "secrets",
+    "credential",
+    "credentials",
+    "apikey",
+    "privatekey",
+    "authorization",
+    "dsn",
+    "cookie",
+];
+/// Words that make a name secret when they end it (`SMTP_PASS`, `ADMIN_PW`, `tls.key`).
+const SECRET_LAST: [&str; 9] = [
+    "pass",
+    "pw",
+    "key",
+    "token",
+    "secret",
+    "auth",
+    "sig",
+    "signature",
+    "salt",
+];
+/// Pairs of words that make a name secret together (`api_key`, `client_secret`).
+const SECRET_PAIRS: [(&str, &str); 12] = [
+    ("api", "key"),
+    ("access", "key"),
+    ("private", "key"),
+    ("secret", "key"),
+    ("client", "secret"),
+    ("auth", "token"),
+    ("access", "token"),
+    ("refresh", "token"),
+    ("session", "key"),
+    ("signing", "key"),
+    ("key", "data"),
+    ("webhook", "url"),
+];
+
+fn secrecy(name: &str) -> Secrecy {
+    let words = name_words(name.trim_matches(|c| c == '"' || c == '\''));
+    if words.is_empty() {
+        return Secrecy::None;
+    }
+    let last = words.last().map(String::as_str).unwrap_or("");
+    let strong = words.iter().any(|w| SECRET_ANYWHERE.contains(&w.as_str()))
+        || SECRET_LAST.contains(&last)
+        || words
+            .windows(2)
+            .any(|p| SECRET_PAIRS.contains(&(p[0].as_str(), p[1].as_str())));
+    if strong {
+        return Secrecy::Strong;
+    }
+    if words
+        .iter()
+        .any(|w| matches!(w.as_str(), "token" | "key" | "auth" | "pass" | "pw"))
+    {
+        return Secrecy::Weak;
+    }
+    Secrecy::None
 }
 
 /// A value shaped like a key or token: a digit in it, or long.
@@ -276,30 +433,54 @@ fn key_shaped(value: &str) -> bool {
     v.len() >= 8 && !v.contains(' ') && (v.chars().any(|c| c.is_ascii_digit()) || v.len() >= 20)
 }
 
-/// A value that only names where a secret comes from (`${TOKEN}`, `<your key>`,
-/// `process.env.KEY`), or is empty: kept, it holds nothing secret and tells what the
-/// session did.
-fn is_placeholder(value: &str) -> bool {
-    let v = value.trim().trim_matches(|c| c == '"' || c == '\'');
-    v.is_empty()
-        || v.starts_with('$')
-        || v.starts_with('<')
-        || v.starts_with('{')
-        || v.starts_with("process.env")
-        || v.starts_with("os.environ")
-        || v.starts_with("env(")
-        || v.starts_with("std::env")
-        || v.eq_ignore_ascii_case("null")
-        || v.eq_ignore_ascii_case("none")
-        || v.eq_ignore_ascii_case("true")
-        || v.eq_ignore_ascii_case("false")
-        || v.chars()
-            .all(|c| c == '*' || c == 'x' || c == 'X' || c == '.')
-        || v == REDACTED
+/// Whether the value of an assignment to `name` is a secret. `quoted`: the value was
+/// written in quotes (a literal, never code).
+fn secret_value(name: &str, value: &str, quoted: bool) -> bool {
+    if is_placeholder(value) {
+        return false;
+    }
+    match secrecy(name) {
+        Secrecy::None => false,
+        Secrecy::Strong => quoted || env_style_name(name) || !looks_like_code(value),
+        Secrecy::Weak => key_shaped(value) && !looks_like_code(value),
+    }
 }
 
-/// Words that make a name secret-bearing (`API_KEY`, `db_password`, `authToken`).
-const SECRET_NAME: &str = r"(?:api[_-]?key|apikey|secret|token|passw(?:or)?d|passphrase|pwd|private[_-]?key|client[_-]?secret|access[_-]?key|credential|auth[_-]?(?:token|key|header)|authorization|session[_-]?key|cookie|dsn|signing[_-]?key|webhook[_-]?url)";
+/// `NAME=value` at the start of a line (`.env`, shell exports, YAML `tls.key: …`, a
+/// diff's `+NAME=value`): the rest of the line is the value.
+fn line_assignment(c: &Captures) -> String {
+    let (prefix, name, sep, value) = (&c[1], &c[2], &c[3], &c[4]);
+    let trimmed = value.trim();
+    let quoted = trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')));
+    if !secret_value(name, trimmed, quoted) {
+        return c[0].to_string();
+    }
+    format!("{prefix}{name}{sep}{REDACTED}")
+}
+
+/// `name = value` or `"name": "value"` anywhere in a line.
+fn inline_assignment(c: &Captures) -> String {
+    let name = &c[2];
+    let value = &c[5];
+    let quoted = value.starts_with('"') || value.starts_with('\'');
+    let inner = if quoted && value.len() >= 2 {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
+    if !secret_value(name, inner, quoted) {
+        return c[0].to_string();
+    }
+    let replaced = if quoted {
+        let q = &value[..1];
+        format!("{q}{REDACTED}{q}")
+    } else {
+        REDACTED.to_string()
+    };
+    format!("{}{}{}{}{replaced}", &c[1], name, &c[3], &c[4])
+}
 
 static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     let rule = |pattern: &str, replace: fn(&Captures) -> String| Rule {
@@ -313,6 +494,9 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             r"(?s)-----BEGIN[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----.*?(?:-----END[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----|\z)",
             whole,
         ),
+        // A PEM block base64-encoded ("-----BEGIN" → LS0tLS1CRUdJTi): Kubernetes secrets,
+        // kubeconfig client keys.
+        rule(r"LS0tLS1CRUdJT[A-Za-z0-9+/=\r\n]*", whole),
         // PuTTY key files.
         rule(
             r"(?s)PuTTY-User-Key-File-\d+:.*?(?:Private-MAC: *[0-9a-fA-F]+|\z)",
@@ -327,19 +511,24 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+",
             whole,
         ),
-        // Credentials in a URL: scheme://user:password@host.
+        // Telegram bot tokens, also inside an API URL (`/bot<id>:<secret>/getMe`).
+        rule(r"(bot|\b)\d{8,12}:[A-Za-z0-9_-]{35}", |c| {
+            format!("{}{REDACTED}", &c[1])
+        }),
+        // Credentials in a URL: scheme://user:password@host, also with no user
+        // (redis://:password@host).
         rule(
-            r#"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@"'<>]+:)[^\s@/"'<>]+@"#,
+            r#"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@"'<>]*:)[^\s@/"'<>]+@"#,
             |c| format!("{}{REDACTED}@", &c[1]),
         ),
-        // Secret query parameters.
+        // Secret query parameters (any name that says secret: X-Amz-Signature, sig, key).
         rule(
-            r#"(?i)([?&](?:access_token|refresh_token|id_token|token|api_key|apikey|api-key|key|secret|client_secret|password|passwd|pwd|sig|signature|auth|code_verifier)=)[^&\s"'#<>]+"#,
+            r#"(?i)([?&;](?:[a-z0-9_.-]*(?:token|secret|password|passwd|pwd|signature|credential|api[_-]?key|apikey|auth)[a-z0-9_.-]*|key|sig|code_verifier|code)=)[^&\s"'#<>]+"#,
             keep_first,
         ),
         // Authorization headers (any scheme).
         rule(
-            r#"(?i)\b((?:proxy-)?authorization\s*[:=]\s*["']?\s*)(?:(bearer|basic|token|bot|digest|apikey)\s+)?[A-Za-z0-9._~+/=:-]{6,}"#,
+            r#"(?i)\b((?:proxy-)?authorization\s*[:=]\s*["']?\s*)(?:(bearer|basic|token|bot|digest|apikey)\s+)?[A-Za-z0-9._~+/=:%-]{6,}"#,
             |c| match c.get(2) {
                 Some(scheme) => format!("{}{} {REDACTED}", &c[1], scheme.as_str()),
                 None => format!("{}{REDACTED}", &c[1]),
@@ -354,7 +543,7 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         }),
         // API key and cookie headers.
         rule(
-            r#"(?i)\b((?:x-)?(?:api-key|apikey|auth-token|access-token|goog-api-key|github-token|gitlab-token|private-token|subscription-key|functions-key)\s*:\s*["']?)[^\s"',;]{6,}"#,
+            r#"(?i)\b((?:x-)?(?:api-key|apikey|auth-token|access-token|goog-api-key|github-token|gitlab-token|private-token|subscription-key|functions-key|amz-security-token)\s*:\s*["']?)[^\s"',;]{6,}"#,
             keep_first,
         ),
         rule(r#"(?i)\b((?:set-)?cookie\s*:\s*)[^\r\n"]+"#, keep_first),
@@ -364,8 +553,13 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}", whole),
         rule(r"\bgithub_pat_[A-Za-z0-9_]{20,}", whole),
         rule(r"\bglpat-[A-Za-z0-9_-]{16,}", whole),
-        rule(r"\bxox[abposr]-[A-Za-z0-9-]{10,}", whole),
+        rule(r"\bxox[abposre]-[A-Za-z0-9-]{10,}", whole),
         rule(r"\bxapp-[A-Za-z0-9-]{10,}", whole),
+        // Discord bot tokens: three dot-separated base64url parts.
+        rule(
+            r"\b[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,40}\b",
+            whole,
+        ),
         rule(r"\bAIza[0-9A-Za-z_-]{30,}", whole),
         rule(r"\bya29\.[0-9A-Za-z_-]{20,}", whole),
         rule(r"\b(?:hf|gsk|npm)_[A-Za-z0-9]{20,}", whole),
@@ -381,72 +575,68 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(r"\b(?:dop|doo|dor)_v1_[a-f0-9]{40,}", whole),
         rule(r"\bshp(?:at|ss|ca|pa)_[a-fA-F0-9]{32}", whole),
         rule(r"\blin_(?:api|oauth)_[A-Za-z0-9]{20,}", whole),
-        rule(r"\b\d{8,10}:AA[A-Za-z0-9_-]{30,}", whole),
+        rule(r"\bkey-[a-z0-9]{32}\b", whole),
         rule(
             r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
             whole,
         ),
-        // AWS secret keys and session tokens by name.
+        // AWS secret keys and session tokens by name, after `=`, `:` or a space
+        // (`aws configure set aws_secret_access_key …`), URL-encoded or not.
         rule(
-            r#"(?i)\b((?:aws_)?(?:secret_access_key|session_token|secret_key)["']?\s*[:=]\s*["']?)[A-Za-z0-9/+=]{16,}"#,
+            r#"(?i)\b((?:aws_)?(?:secret_access_key|session_token|secret_key)["']?\s*[:=\s]\s*["']?)[A-Za-z0-9/+=%]{16,}"#,
             keep_first,
         ),
-        // Secrets on a command line: --password x, --token=x, -p'x' is left (too common).
+        // `aws configure set <secret name> <value>`.
         rule(
-            r#"(?i)(--?(?:password|passwd|pass|token|api-key|apikey|secret|auth-token|access-token|client-secret)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)"#,
-            |c| format!("{}{REDACTED}", &c[1]),
+            r#"(?i)\b(aws\s+configure\s+set\s+\S*(?:secret|token|key)\S*\s+)("[^"]*"|'[^']*'|\S+)"#,
+            keep_first,
         ),
-        // `.env`-style lines and shell exports: NAME=value, where the name is secret-bearing.
+        // Secrets on a command line: --password x, --token=x, --body for gh secrets.
         rule(
-            &format!(
-                r#"(?im)^(\s*(?:export\s+|set\s+|setx\s+|\$env:)?)([A-Za-z_][A-Za-z0-9_.-]*{SECRET_NAME}[A-Za-z0-9_.-]*|{SECRET_NAME}[A-Za-z0-9_.-]*)(\s*[:=]\s*)(.+)$"#
-            ),
-            keep_assignment,
+            r#"(?i)(--?(?:password|passwd|pass|pw|token|api-key|apikey|secret|auth-token|access-token|client-secret|secret-access-key)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)"#,
+            keep_first,
         ),
-        // Quoted assignments anywhere: "api_key": "value", password = 'value'.
         rule(
-            &format!(
-                r#"(?i)((?:["']?)[A-Za-z0-9_.-]*{SECRET_NAME}[A-Za-z0-9_.-]*["']?)(\s*[:=]\s*)(["'])([^"'\\\r\n]{{3,}})["']"#
-            ),
-            |c| {
-                let value = &c[4];
-                let secret = if password_like_name(&c[1]) {
-                    !looks_like_code(value) || env_style_name(&c[1])
-                } else {
-                    key_shaped(value)
-                };
-                if is_placeholder(value) || !secret {
-                    c[0].to_string()
-                } else {
-                    format!("{}{}{}{REDACTED}{}", &c[1], &c[2], &c[3], &c[3])
-                }
-            },
+            r#"(?i)(\bgh\s+secret\s+set\b[^\n]*?\s(?:--body|-b)(?:=|\s+))("[^"]*"|'[^']*'|\S+)"#,
+            keep_first,
         ),
-        // Unquoted assignments of passwords and secrets anywhere (`Password=x;`).
+        // curl -u user:password, --user user:password (the user is kept).
         rule(
-            r#"(?i)\b([A-Za-z0-9_.-]*(?:passw(?:or)?d|pwd|passphrase|secret)[A-Za-z0-9_.-]*)(\s*[:=]\s*)([^\s"',;)}\]]{3,})"#,
-            |c| {
-                let code = !env_style_name(&c[1]) && looks_like_code(&c[3]);
-                if is_placeholder(&c[3]) || c[3].starts_with('(') || code {
-                    c[0].to_string()
-                } else {
-                    format!("{}{}{REDACTED}", &c[1], &c[2])
-                }
-            },
+            r#"(\s(?:-u|--user|--proxy-user)(?:=|\s*)["']?[^\s:"']*:)([^\s"']+)"#,
+            keep_first,
         ),
-        // Unquoted assignments of keys and tokens whose value looks like one (a digit in it).
+        // docker login -p x, sshpass -p x, mysql -px (and mysqldump, mysqladmin).
         rule(
-            r#"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|token|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?key)[A-Za-z0-9_.-]*)(\s*[:=]\s*)([A-Za-z0-9_+/=~-]{8,})"#,
-            |c| {
-                let value = &c[3];
-                if is_placeholder(value) || !value.chars().any(|ch| ch.is_ascii_digit()) {
-                    c[0].to_string()
-                } else {
-                    format!("{}{}{REDACTED}", &c[1], &c[2])
-                }
-            },
+            r#"(?i)(\bdocker\s+login\b[^\n]*?\s-p(?:=|\s+))("[^"]*"|'[^']*'|\S+)"#,
+            keep_first,
+        ),
+        rule(r#"(\bsshpass\s+-p\s*)("[^"]*"|'[^']*'|\S+)"#, keep_first),
+        rule(
+            r#"(\bmysql(?:dump|admin|sh)?\b[^\n]*?\s-p)("[^"]*"|'[^']*'|[^\s"']+)"#,
+            keep_first,
+        ),
+        // npm's auth (`//registry.npmjs.org/:_authToken abc`, `_auth=…`).
+        rule(
+            r#"(?i)(_auth(?:token)?["']?\s*[:=\s]\s*["']?)([^\s"']+)"#,
+            keep_first,
+        ),
+        // Assignments at the start of a line: .env, shell exports, YAML, diff lines.
+        rule(
+            r#"(?m)^(\s*[+-]?\s*(?:export\s+|set\s+|setx\s+|\$env:|-\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*[:=]\s*)(\S.*?)\s*$"#,
+            line_assignment,
+        ),
+        // Assignments anywhere: "api_key": "value", password='value', DB_PASS=x.
+        rule(
+            r#"(^|[^A-Za-z0-9_.-])(["']?[A-Za-z_][A-Za-z0-9_.-]*)(["']?)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;)\]]+)"#,
+            inline_assignment,
         ),
     ]
+});
+
+static EMAIL_RULE: LazyLock<Rule> = LazyLock::new(|| Rule {
+    regex: Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
+        .unwrap_or_else(|e| panic!("{e}")),
+    replace: |_| EMAIL.to_string(),
 });
 
 fn apply<'a>(text: Cow<'a, str>, rule: &Rule, count: &mut usize) -> Cow<'a, str> {
@@ -461,6 +651,48 @@ fn apply<'a>(text: Cow<'a, str>, rule: &Rule, count: &mut usize) -> Cow<'a, str>
         out
     });
     Cow::Owned(replaced.into_owned())
+}
+
+/// Provider prefixes that begin a key.
+const KEY_PREFIXES: [&str; 14] = [
+    "sk-ant-",
+    "sk-proj-",
+    "sk-or-",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat-",
+    "AIza",
+    "hf_",
+    "xoxb-",
+];
+
+/// A key a terminal wrapped right after its prefix (`sk-ant-api03-ab` then the rest on
+/// the next line): too short on its line for its own rule, it is redacted with the
+/// random-looking line that continues it.
+fn redact_split_prefixes(text: &str, count: &mut usize) -> Option<String> {
+    static DANGLING: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)(?:\b|_)(?:sk-ant-|sk-proj-|sk-or-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|AIza|hf_|xox[abposre]-)[A-Za-z0-9_-]*(\r?\n|\\n)([A-Za-z0-9_-]{8,})")
+            .unwrap_or_else(|e| panic!("{e}"))
+    });
+    if !KEY_PREFIXES.iter().any(|p| text.contains(p)) && !text.contains("xox") {
+        return None;
+    }
+    let mut changed = false;
+    let replaced = DANGLING.replace_all(text, |c: &Captures| {
+        if looks_random(&c[2]) {
+            changed = true;
+            *count += 1;
+            format!("{REDACTED}{}{REDACTED}", &c[1])
+        } else {
+            c[0].to_string()
+        }
+    });
+    changed.then(|| replaced.into_owned())
 }
 
 /// A redacted token that a terminal or an editor wrapped onto the next line(s): each
@@ -515,28 +747,39 @@ fn redact_wrapped_tokens(text: &str, count: &mut usize) -> Option<String> {
     Some(out)
 }
 
-/// Mixed case and digits, or long mixed alphanumerics, and few long runs of lowercase
-/// letters (words): the shape of a key, not of a word or an identifier.
+/// Mixed classes and not word-like: the shape of a key's continuation, not of a word or
+/// an identifier.
 fn looks_random(piece: &str) -> bool {
     let digits = piece.chars().filter(char::is_ascii_digit).count();
     let upper = piece.chars().filter(char::is_ascii_uppercase).count();
     let lower = piece.chars().filter(char::is_ascii_lowercase).count();
     let classes = usize::from(digits > 0) + usize::from(upper > 0) + usize::from(lower > 0);
-    classes >= 2 && longest_lower_run(piece) <= 6 && (digits > 0 || piece.len() >= 16)
+    classes >= 2 && word_share(piece) < 0.6 && (digits > 0 || piece.len() >= 16)
 }
 
-fn longest_lower_run(piece: &str) -> usize {
-    let mut best = 0;
-    let mut run = 0;
+/// Share of `piece` in runs of four or more lower-case letters (words, identifier
+/// parts). Random base64 has few such runs; text and identifiers are mostly made of them.
+fn word_share(piece: &str) -> f64 {
+    let total = piece.chars().count();
+    if total == 0 {
+        return 0.0;
+    }
+    let mut in_words = 0usize;
+    let mut run = 0usize;
     for c in piece.chars() {
         if c.is_ascii_lowercase() {
             run += 1;
-            best = best.max(run);
         } else {
+            if run >= 4 {
+                in_words += run;
+            }
             run = 0;
         }
     }
-    best
+    if run >= 4 {
+        in_words += run;
+    }
+    in_words as f64 / total as f64
 }
 
 /// Shannon entropy of `piece` in bits per character.
@@ -563,34 +806,50 @@ static RANDOM_CANDIDATE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/=_-]{24,}").unwrap_or_else(|e| panic!("{e}")));
 
 /// Whether `token` is a key without a known prefix: long, of upper and lower case letters
-/// and digits, high entropy, and no word-like part. Hex hashes (no upper case), UUIDs,
-/// file paths and identifiers are left.
+/// (and digits when short), high entropy, and not word-like. Hex hashes and UUIDs (no
+/// upper case), file paths and identifiers are left. The longer a candidate, the less a
+/// word-like run inside it can be chance, so long ones need only their entropy.
 fn is_random_secret(token: &str) -> bool {
     let core = token.trim_matches(|c| c == '=' || c == '-' || c == '_');
-    if core.len() < 24 {
+    let length = core.chars().count();
+    if length < 24 {
         return false;
     }
-    // A path: a part of three or more lower-case letters between slashes.
-    if core.contains('/')
-        && core.split('/').any(|part| {
-            part.len() >= 3
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c == '_' || c == '-')
-        })
-    {
-        return false;
+    // A path: two or more lower-case parts between slashes (`src`, `lumen-cache`,
+    // `lru.rs`) holding most of it. A short lower-case run that chance puts next to a
+    // slash in a base64 key does not exempt the key.
+    if core.contains('/') {
+        let wordy: Vec<&str> = core
+            .split('/')
+            .filter(|p| {
+                p.len() >= 2
+                    && p.chars().any(|c| c.is_ascii_lowercase())
+                    && p.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.')
+                    })
+            })
+            .collect();
+        let wordy_chars: usize = wordy.iter().map(|p| p.len()).sum();
+        if wordy.len() >= 2 && wordy_chars * 2 >= length {
+            return false;
+        }
     }
     let digits = core.chars().filter(char::is_ascii_digit).count();
     let upper = core.chars().filter(char::is_ascii_uppercase).count();
     let lower = core.chars().filter(char::is_ascii_lowercase).count();
-    if digits < 2 || upper < 2 || lower < 2 {
+    if upper == 0 || lower == 0 {
         return false;
     }
-    if longest_lower_run(core) > 7 {
+    if length > 64 {
+        return entropy(core) >= 4.5 && word_share(core) < 0.5;
+    }
+    if digits == 0 && length < 32 {
         return false;
     }
-    let threshold = if core.len() >= 32 { 4.0 } else { 3.8 };
+    if word_share(core) >= 0.5 {
+        return false;
+    }
+    let threshold = if length >= 32 { 4.0 } else { 3.8 };
     entropy(core) >= threshold
 }
 

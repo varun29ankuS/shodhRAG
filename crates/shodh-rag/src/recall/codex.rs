@@ -27,11 +27,12 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde_json::Value;
 
-use super::claude::{command_names_secret_file, summarize_input, SECRET_FILE_KEPT_BACK};
+use super::claude::{flatten_value, keeps_back, note_cwd, summarize_input, SECRET_FILE_KEPT_BACK};
 use super::lines::{for_each_line, Line};
 use super::redact::Redactor;
 use super::{
-    parse_time, Format, LineError, ParseBudget, Role, SessionInfo, Tool, Transcript, Turn,
+    keep_text, parse_time, Format, LineError, ParseBudget, Role, SessionInfo, Tool, Transcript,
+    Turn,
 };
 
 static CWD_TAG: LazyLock<Regex> =
@@ -52,7 +53,7 @@ pub fn session_from_path(path: &Path) -> Option<String> {
 
 struct Call {
     name: String,
-    secret_file: bool,
+    kept_back: bool,
 }
 
 struct Reader<'a> {
@@ -64,6 +65,8 @@ struct Reader<'a> {
     calls: HashMap<String, Call>,
     skipped: usize,
     redacted: usize,
+    /// Byte offset of the line being read.
+    offset: u64,
 }
 
 fn string<'v>(value: &'v Value, key: &str) -> Option<&'v str> {
@@ -84,6 +87,7 @@ pub fn read(path: &Path, redactor: &Redactor, budget: ParseBudget) -> std::io::R
         calls: HashMap::new(),
         skipped: 0,
         redacted: 0,
+        offset: 0,
     };
     let mut errors: Vec<LineError> = Vec::new();
     let mut error_count = 0usize;
@@ -93,10 +97,7 @@ pub fn read(path: &Path, redactor: &Redactor, budget: ParseBudget) -> std::io::R
         budget,
         &mut errors,
         &mut error_count,
-        |line| {
-            reader.line(line);
-            true
-        },
+        |line| reader.line(line),
     )?;
     let Reader {
         format,
@@ -150,7 +151,14 @@ impl Reader<'_> {
         }
     }
 
-    fn line(&mut self, line: Line) {
+    /// Reads one line; `false` once the turns asked for are read.
+    fn line(&mut self, line: Line) -> bool {
+        self.offset = line.offset;
+        self.read_line(line);
+        self.turns.len() < self.budget.max_turns
+    }
+
+    fn read_line(&mut self, line: Line) {
         let value = line.value;
         // v2: an envelope.
         if let (Some(kind), Some(payload)) = (string(&value, "type"), value.get("payload")) {
@@ -165,8 +173,9 @@ impl Reader<'_> {
                     if let Some(model) = string(payload, "model") {
                         self.info.model = Some(self.clean(model));
                     }
-                    if self.info.cwd.is_none() {
-                        if let Some(cwd) = string(payload, "cwd") {
+                    if let Some(cwd) = string(payload, "cwd") {
+                        note_cwd(&mut self.info, cwd);
+                        if self.info.cwd.is_none() {
                             self.info.cwd = Some(self.clean(cwd));
                         }
                     }
@@ -204,6 +213,7 @@ impl Reader<'_> {
             self.info.session_id = Some(self.clean(id));
         }
         if let Some(cwd) = string(meta, "cwd") {
+            note_cwd(&mut self.info, cwd);
             self.info.cwd = Some(self.clean(cwd));
         }
         if let Some(version) = string(meta, "cli_version") {
@@ -237,13 +247,16 @@ impl Reader<'_> {
         if text.trim().is_empty() && kept_back.is_none() {
             return;
         }
+        let (text, left_out) = keep_text(text);
         self.turns.push(Turn {
-            index: self.turns.len() as u32,
+            index: self.budget.first_turn + self.turns.len() as u32,
             role,
             at,
             tool_name,
             text,
             line,
+            offset: self.offset,
+            left_out,
             kept_back,
         });
     }
@@ -286,7 +299,7 @@ impl Reader<'_> {
             Some("function_call_output") | Some("custom_tool_call_output") => {
                 let call = string(item, "call_id").and_then(|id| self.calls.remove(id));
                 let name = call.as_ref().map(|c| c.name.clone());
-                if call.as_ref().is_some_and(|c| c.secret_file) {
+                if call.as_ref().is_some_and(|c| c.kept_back) {
                     self.push(
                         Role::ToolOutput,
                         at,
@@ -314,16 +327,27 @@ impl Reader<'_> {
         at: Option<DateTime<Utc>>,
         line: u64,
     ) {
-        let secret_file = input.get("command").is_some_and(command_names_secret_file)
-            || super::claude::reads_secret_file(&name, input);
+        let kept_back = keeps_back(&name, input);
         if let Some(id) = call_id {
             self.calls.insert(
                 id.to_string(),
                 Call {
                     name: name.clone(),
-                    secret_file,
+                    kept_back,
                 },
             );
+        }
+        if kept_back {
+            let name = self.clean(&name);
+            self.push(
+                Role::ToolCall,
+                at,
+                Some(name),
+                String::new(),
+                line,
+                Some(SECRET_FILE_KEPT_BACK),
+            );
+            return;
         }
         let summary = super::clip(
             &self.clean(&summarize_input(input)),
@@ -364,8 +388,9 @@ impl Reader<'_> {
                 || trimmed.starts_with("<user_instructions>")
                 || trimmed.starts_with("# AGENTS.md instructions"))
         {
-            if self.info.cwd.is_none() {
-                if let Some(cwd) = CWD_TAG.captures(trimmed).map(|c| c[1].to_string()) {
+            if let Some(cwd) = CWD_TAG.captures(trimmed).map(|c| c[1].to_string()) {
+                note_cwd(&mut self.info, &cwd);
+                if self.info.cwd.is_none() {
                     self.info.cwd = Some(self.clean(&cwd));
                 }
             }
@@ -401,7 +426,11 @@ fn output_text(output: Option<&Value>) -> String {
         }
         Some(Value::Object(map)) => match map.get("content") {
             Some(content) => output_text(Some(content)),
-            None => Value::Object(map.clone()).to_string(),
+            None => {
+                let mut lines = Vec::new();
+                flatten_value(&Value::Object(map.clone()), "", &mut lines);
+                lines.join("\n")
+            }
         },
         Some(Value::Array(items)) => items
             .iter()
@@ -418,6 +447,10 @@ fn output_text(output: Option<&Value>) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         Some(Value::Null) | None => String::new(),
-        Some(other) => other.to_string(),
+        Some(other) => {
+            let mut lines = Vec::new();
+            flatten_value(other, "", &mut lines);
+            lines.join("\n")
+        }
     }
 }

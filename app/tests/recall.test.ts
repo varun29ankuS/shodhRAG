@@ -7,13 +7,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   agoText,
+  assistantLine,
   dayOf,
-  includeUndecided,
   isReceipt,
   parsePatterns,
   recallStage,
   recallStatusLine,
   roleLabel,
+  staleLine,
   timeOf,
   waitingLine,
   withProject,
@@ -25,7 +26,7 @@ import { readSystemStatus, recallRunText } from '../src/features/status/systemSt
 const NOW = new Date('2026-11-09T12:00:00Z');
 
 function settings(extra: Partial<RecallSettings> = {}): RecallSettings {
-  return { enabled: false, tools: [], projects: {}, patterns: [], idleMinutes: 10, ...extra };
+  return { enabled: false, tools: [], projects: {}, patterns: [], idleMinutes: 10, keepEmails: false, assistant: 'off', ...extra };
 }
 
 function status(extra: Partial<RecallStatus> = {}): RecallStatus {
@@ -41,6 +42,8 @@ function status(extra: Partial<RecallStatus> = {}): RecallStatus {
     lastSync: null,
     error: null,
     searchModels: true,
+    staleSessions: 0,
+    assistantModel: null,
     ...extra,
   };
 }
@@ -62,7 +65,6 @@ test('choices change only what they name', () => {
   assert.deepEqual(withTool(s, 'claude_code', true).tools, ['claude_code', 'codex']);
   assert.deepEqual(withTool(s, 'codex', false).tools, []);
   assert.deepEqual(withProject(s, '/b', true).projects, { '/a': false, '/b': true });
-  assert.deepEqual(includeUndecided(s, ['/a', '/b', '/c']).projects, { '/a': false, '/b': true, '/c': true }, 'an exclusion stays');
   assert.deepEqual(s.projects, { '/a': false }, 'the settings given are not changed');
 });
 
@@ -116,4 +118,21 @@ test('the status strip reads Recall\'s run', () => {
   assert.equal(readSystemStatus({ recall: { done: 1 } })?.recall, null);
   assert.equal(recallRunText({ sourceId: 'recall', done: 2, total: 5, current: 'lumen-cache' }), '2 of 5 sessions (lumen-cache)');
   assert.equal(recallRunText({ sourceId: 'recall', done: 0, total: 0, current: null }), 'Looking for new sessions');
+});
+
+test('the card says where what the assistant reads goes, and what is not searchable yet', () => {
+  const cloud = { provider: 'openrouter', model: 'claude-sonnet-4', cloud: true };
+  const local = { provider: 'local', model: 'qwen3-8b.gguf', cloud: false };
+  assert.equal(assistantLine('off', cloud), 'The assistant cannot read your coding sessions.');
+  assert.equal(
+    assistantLine('any_model', cloud),
+    'When you ask the assistant about your sessions, the cleaned text it opens goes to claude-sonnet-4 (openrouter), off this computer.',
+  );
+  assert.match(assistantLine('local_models', cloud), /only while you use a model on this computer, and you do not now/);
+  assert.match(assistantLine('local_models', local), /goes to qwen3-8b.gguf \(local\)\. It reads them only while/);
+  assert.equal(staleLine(status()), null);
+  assert.equal(
+    staleLine(status({ staleSessions: 3 })),
+    '3 sessions are being indexed again under your hidden words, and cannot be searched until then.',
+  );
 });

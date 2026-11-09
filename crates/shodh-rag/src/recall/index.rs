@@ -87,8 +87,16 @@ impl RecallIndex {
         let engine = RAGEngine::new(config)
             .await
             .context("Recall's index could not be opened")?;
+        let mut engine = engine;
         let catalog = Catalog::open(&dir.join(CATALOG_FILE))
             .context("Recall's catalog could not be opened")?;
+        if catalog.was_reset() {
+            // A catalog of another version was emptied: its chunks are no one's now.
+            engine
+                .clear_all_data()
+                .await
+                .context("Recall's old index could not be emptied")?;
+        }
         Ok(Self::with_parts(
             dir,
             Arc::new(RwLock::new(engine)),
@@ -177,7 +185,7 @@ impl RecallIndex {
         now: i64,
         control: &SyncControl<'_>,
     ) -> Result<SyncReport> {
-        let redactor = Redactor::new(&settings.patterns).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let redactor = settings.redactor().map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut report = SyncReport::default();
         let catalog = self.catalog.clone();
 
@@ -201,17 +209,14 @@ impl RecallIndex {
                     .context("listing transcripts")?;
                 for file in files {
                     let path = file.path.display().to_string();
-                    let known_project = known
-                        .get(&path)
-                        .map(|r| (r.project_key.clone(), r.project_dir.clone()));
-                    let found = discover::found_file(
-                        tool,
-                        &file,
-                        known_project
-                            .as_ref()
-                            .map(|(k, d)| (k.as_str(), d.as_str())),
-                        &redactor,
-                    );
+                    let known_project = known.get(&path).map(|r| {
+                        (
+                            r.project_key.as_str(),
+                            r.project_dir.as_str(),
+                            r.chains.as_slice(),
+                        )
+                    });
+                    let found = discover::found_file(tool, &file, known_project, &redactor);
                     let mut record = catalog.upsert_found(&found)?;
                     // What is on disk now, to compare with what was indexed.
                     on_disk.insert(path);
@@ -245,7 +250,7 @@ impl RecallIndex {
         let mut work: Vec<FileRecord> = Vec::new();
         for record in records {
             let stored = known.get(&record.path);
-            let wanted = settings.wants(record.tool, &record.project_key)
+            let wanted = settings.wants(record.tool, &record.chains)
                 && !removed.contains(&(record.tool, record.session_id.clone()));
             if !wanted {
                 let has_index =
@@ -301,11 +306,15 @@ impl RecallIndex {
                 total,
                 current: Some(discover::project_name(&record.project_dir)),
             });
-            match self.index_file(&record, &redactor, now, control).await {
+            match self
+                .index_file(&record, settings, &redactor, now, control)
+                .await
+            {
                 Ok(FileOutcome::Indexed { parts }) => {
                     report.indexed += 1;
                     report.parts_embedded += parts;
                 }
+                Ok(FileOutcome::Excluded) => report.excluded += 1,
                 Ok(FileOutcome::Stopped(why)) => {
                     report.stopped = Some(why);
                     break;
@@ -358,6 +367,7 @@ impl RecallIndex {
     async fn index_file(
         &self,
         record: &FileRecord,
+        settings: &RecallSettings,
         redactor: &Redactor,
         now: i64,
         control: &SyncControl<'_>,
@@ -370,7 +380,28 @@ impl RecallIndex {
         })
         .await
         .context("reading the transcript")?
-        .with_context(|| format!("the transcript {} could not be read", record.path))?;
+        .context("the transcript could not be read")?;
+
+        // A session that worked in an excluded folder is not read, wherever it started.
+        let mut chains = record.chains.clone();
+        for chain in &transcript.info.cwd_chains {
+            if !chains.contains(chain) {
+                chains.push(chain.clone());
+            }
+        }
+        if !settings.wants(record.tool, &chains) {
+            let stored = FileRecord {
+                parts: record
+                    .parts
+                    .max(self.catalog.part_hashes(record.id)?.len() as u32),
+                ..record.clone()
+            };
+            self.delete_parts(&stored).await?;
+            self.catalog
+                .set_state(record.id, FileState::Excluded, None)?;
+            self.catalog.set_chains(record.id, &chains)?;
+            return Ok(FileOutcome::Excluded);
+        }
 
         let label = label_of(record, &transcript);
         let parts = chunks::parts(&transcript, &label, redactor.fingerprint());
@@ -495,7 +526,11 @@ impl RecallIndex {
 }
 
 enum FileOutcome {
-    Indexed { parts: usize },
+    Indexed {
+        parts: usize,
+    },
+    /// It worked in a folder the user excluded.
+    Excluded,
     Stopped(Stopped),
 }
 
@@ -586,6 +621,8 @@ fn indexed_file(
             tool_name: turn.tool_name.clone(),
             at: turn.at.map(|t| t.timestamp()),
             line: turn.line,
+            offset: turn.offset,
+            kept_back: turn.kept_back.map(str::to_string),
         });
         if turn.kept_back.is_none() {
             // The indexed text only: a long output's middle is not looked up either.
@@ -645,11 +682,20 @@ fn indexed_file(
         error_count: transcript.errors.len() as u32,
         redacted: transcript.redacted as u32,
         fingerprint: index_fingerprint(redactor),
+        chains: {
+            let mut chains = record.chains.clone();
+            for chain in &info.cwd_chains {
+                if !chains.contains(chain) {
+                    chains.push(chain.clone());
+                }
+            }
+            chains
+        },
     }
 }
 
 /// What a file is recorded as indexed under: the redaction rules and patterns, and
 /// [`INDEX_VERSION`]. A file recorded under another is indexed again.
-fn index_fingerprint(redactor: &Redactor) -> String {
+pub(crate) fn index_fingerprint(redactor: &Redactor) -> String {
     format!("{}-v{INDEX_VERSION}", redactor.fingerprint())
 }

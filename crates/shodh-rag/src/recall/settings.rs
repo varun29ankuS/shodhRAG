@@ -29,9 +29,28 @@ pub struct RecallSettings {
     /// `true` included, `false` excluded. A project not listed is not read until the
     /// user includes it.
     pub projects: BTreeMap<String, bool>,
-    /// The user's own sensitive patterns (regular expressions), redacted like keys.
+    /// The user's own hidden words, one a line: a word or phrase, or a pattern between
+    /// slashes ([`super::redact::check_patterns`]), redacted like keys.
     pub patterns: Vec<String>,
     pub idle_minutes: u32,
+    /// Email addresses are kept in what is indexed (hidden by default).
+    pub keep_emails: bool,
+    /// Whether the assistant may read the coding sessions, and with which models: what it
+    /// reads goes to the model the user chose.
+    pub assistant: AssistantAccess,
+}
+
+/// Whether the assistant may read the coding sessions ([`RecallSettings::assistant`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantAccess {
+    /// Never: the sessions are searched in the Library only.
+    #[default]
+    Off,
+    /// Only while the assistant answers with a model on this computer.
+    LocalModels,
+    /// With any model the user chose, also one off this computer.
+    AnyModel,
 }
 
 impl Default for RecallSettings {
@@ -42,6 +61,8 @@ impl Default for RecallSettings {
             projects: BTreeMap::new(),
             patterns: Vec::new(),
             idle_minutes: DEFAULT_IDLE_MINUTES,
+            keep_emails: false,
+            assistant: AssistantAccess::Off,
         }
     }
 }
@@ -65,9 +86,31 @@ impl std::fmt::Display for SettingsError {
 impl std::error::Error for SettingsError {}
 
 impl RecallSettings {
-    /// Whether the sessions of `tool` in the project `project_key` are read.
-    pub fn wants(&self, tool: Tool, project_key: &str) -> bool {
-        self.enabled && self.tools.contains(&tool) && self.projects.get(project_key) == Some(&true)
+    /// The user's decision for a folder: its own, else its nearest parent's. `chain` is
+    /// the folder's key and its parents' ([`super::discover::project_chain`]).
+    pub fn decide(&self, chain: &[String]) -> Option<bool> {
+        chain.iter().find_map(|k| self.projects.get(k).copied())
+    }
+
+    /// Whether a session of `tool` is read: its tool is chosen, the folder it started in
+    /// (`chains[0]`) is included, and no folder it worked in (any of `chains`) is
+    /// excluded. A project excluded excludes its subfolders and worktrees inside it.
+    pub fn wants(&self, tool: Tool, chains: &[Vec<String>]) -> bool {
+        self.enabled
+            && self.tools.contains(&tool)
+            && chains.first().is_some_and(|c| self.decide(c) == Some(true))
+            && chains.iter().all(|c| self.decide(c) != Some(false))
+    }
+
+    /// The redactor these settings ask for: the built-in rules, the user's hidden words
+    /// and whether emails are kept.
+    pub fn redactor(&self) -> Result<super::redact::Redactor, PatternError> {
+        super::redact::Redactor::with_options(
+            &self.patterns,
+            super::redact::RedactOptions {
+                keep_emails: self.keep_emails,
+            },
+        )
     }
 
     /// Checks the settings before they are kept: the patterns compile, the idle time is

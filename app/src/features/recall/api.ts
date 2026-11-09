@@ -12,9 +12,23 @@ export interface RecallSettings {
   tools: RecallToolId[];
   /** Project key → included (true) or excluded (false); a project not listed is not read. */
   projects: Record<string, boolean>;
-  /** The user's own sensitive patterns (regular expressions). */
+  /** The user's hidden words, one a line; `/…/` is a regular expression. */
   patterns: string[];
   idleMinutes: number;
+  /** Email addresses are kept in what is indexed (hidden by default). */
+  keepEmails: boolean;
+  /** Whether the assistant may read the sessions, and with which models. */
+  assistant: RecallAssistantAccess;
+}
+
+/** `shodh_rag::recall::settings::AssistantAccess`. */
+export type RecallAssistantAccess = 'off' | 'local_models' | 'any_model';
+
+/** The model the assistant answers with (`agent_tools::ModelInfo`). */
+export interface RecallAssistantModel {
+  provider: string;
+  model: string | null;
+  cloud: boolean;
 }
 
 export interface RecallToolView {
@@ -69,6 +83,9 @@ export interface RecallStatus {
   lastSync: RecallLastSync | null;
   error: string | null;
   searchModels: boolean;
+  /** Sessions indexed under other hidden words, not searchable until indexed again. */
+  staleSessions: number;
+  assistantModel: RecallAssistantModel | null;
 }
 
 export interface RecallReceipt {

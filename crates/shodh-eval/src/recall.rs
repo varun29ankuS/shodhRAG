@@ -844,6 +844,8 @@ pub struct Scorecard {
     pub p95_ms_without_rerank: f64,
     pub split_questions: usize,
     pub hit_at_5_without_rerank: f64,
+    pub hit_at_1_without_rerank: f64,
+    pub mrr_without_rerank: f64,
     pub index_seconds: f64,
     pub target_hit_at_5: f64,
     pub target_p95_ms: f64,
@@ -998,6 +1000,16 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
         .filter(|r| r.rank_without_rerank.is_some_and(|x| x <= 5))
         .count() as f64
         / results.len().max(1) as f64;
+    let hit_at_1_without_rerank = results
+        .iter()
+        .filter(|r| r.rank_without_rerank == Some(1))
+        .count() as f64
+        / results.len().max(1) as f64;
+    let mrr_without_rerank = results
+        .iter()
+        .map(|r| r.rank_without_rerank.map_or(0.0, |x| 1.0 / x as f64))
+        .sum::<f64>()
+        / results.len().max(1) as f64;
     let sorted = |values: Vec<f64>| {
         let mut values = values;
         values.sort_by(f64::total_cmp);
@@ -1038,6 +1050,8 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
         p95_ms_without_rerank: percentile(&plain_times, 0.95),
         split_questions: results.iter().filter(|r| r.sub_queries > 1).count(),
         hit_at_5_without_rerank,
+        hit_at_1_without_rerank,
+        mrr_without_rerank,
         index_seconds,
         target_hit_at_5: TARGET_HIT_AT_5,
         target_p95_ms: TARGET_P95_MS,
@@ -1085,13 +1099,17 @@ impl Scorecard {
         });
         out.push_str(&format!(
             "Where the time goes (not gated): the hybrid search alone {:.0} ms median, {:.0} ms p95; \
-             the whole search with the reranker off {:.0} ms median, {:.0} ms p95 and {:.1}% in the top 5; \
-             {} of {} questions split into several queries.\n\n",
+             the whole search with the reranker off {:.0} ms median, {:.0} ms p95 and {:.1}% in the top 5, {:.1}% first, MRR {:.3} \
+             (with it: {:.1}% first, MRR {:.3}); {} of {} questions split into several queries.\n\n",
             self.p50_search_ms,
             self.p95_search_ms,
             self.p50_ms_without_rerank,
             self.p95_ms_without_rerank,
             self.hit_at_5_without_rerank * 100.0,
+            self.hit_at_1_without_rerank * 100.0,
+            self.mrr_without_rerank,
+            self.hit_at_1 * 100.0,
+            self.mrr,
             self.split_questions,
             self.questions
         ));

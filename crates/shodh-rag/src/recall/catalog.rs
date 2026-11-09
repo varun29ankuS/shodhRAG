@@ -1,8 +1,10 @@
 //! Recall's catalog (`recall.db`, SQLite, beside its index): every transcript found,
 //! what of it is indexed (parts and their hashes), where each turn's chunks are, the
 //! entities of each turn, the lines that could not be read, and the sessions the user
-//! removed. It holds no transcript text: turns are read from the transcript itself when
-//! a receipt opens them. Previews of unreadable lines are redacted.
+//! removed. Of a transcript's text it holds only short redacted pieces: each session's
+//! title (its generated title or the start of its first prompt), branch and model, the
+//! entities, and previews of unreadable lines. Turns are read from the transcript itself
+//! when a receipt opens them.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -37,7 +39,8 @@ CREATE TABLE IF NOT EXISTS files (
     indexed_at INTEGER,
     fingerprint TEXT,
     state TEXT NOT NULL,
-    failure TEXT
+    failure TEXT,
+    cwd_chains TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS files_session ON files(tool, session_id);
 CREATE INDEX IF NOT EXISTS files_project ON files(tool, project_key);
@@ -57,6 +60,8 @@ CREATE TABLE IF NOT EXISTS turns (
     tool_name TEXT,
     at INTEGER,
     line INTEGER NOT NULL,
+    offset INTEGER NOT NULL DEFAULT 0,
+    kept_back TEXT,
     PRIMARY KEY (file_id, turn)
 );
 CREATE INDEX IF NOT EXISTS turns_chunks ON turns(file_id, part, chunk_first);
@@ -145,6 +150,9 @@ pub struct FileRecord {
     pub fingerprint: Option<String>,
     pub state: FileState,
     pub failure: Option<String>,
+    /// The key chains of the folders the session worked in, the one it started in first
+    /// ([`super::settings::RecallSettings::wants`]).
+    pub chains: Vec<Vec<String>>,
 }
 
 /// Where a turn is: its part, its chunks in the part, and what it is.
@@ -159,6 +167,10 @@ pub struct TurnRow {
     pub tool_name: Option<String>,
     pub at: Option<i64>,
     pub line: u64,
+    /// Byte offset of its line: opening a receipt reads from there.
+    pub offset: u64,
+    /// Why the turn's text is never shown (a call or an output of a secret file).
+    pub kept_back: Option<String>,
 }
 
 /// What a sync stores for a transcript it indexed.
@@ -181,6 +193,7 @@ pub struct IndexedFile {
     pub error_count: u32,
     pub redacted: u32,
     pub fingerprint: String,
+    pub chains: Vec<Vec<String>>,
 }
 
 /// A transcript found on disk.
@@ -192,17 +205,28 @@ pub struct FoundFile {
     pub thread: Option<String>,
     pub project_key: String,
     pub project_dir: String,
+    pub chains: Vec<Vec<String>>,
     pub size: u64,
     pub mtime: i64,
 }
 
 pub struct Catalog {
     conn: Mutex<Connection>,
+    /// The catalog was made by another version and emptied when opened: whatever the
+    /// index holds must go too ([`super::index::RecallIndex::open`]).
+    reset: bool,
 }
 
 type Result<T> = std::result::Result<T, rusqlite::Error>;
 
-const FILE_COLUMNS: &str = "id, path, tool, session_id, thread, project_key, project_dir, format, title, branch, model, started_at, ended_at, turns, size, mtime, parts, errors, redacted, indexed_at, fingerprint, state, failure";
+/// Version of the catalog's tables. A catalog of another version is emptied when opened.
+pub const CATALOG_VERSION: &str = "2";
+
+const FILE_COLUMNS: &str = "id, path, tool, session_id, thread, project_key, project_dir, format, title, branch, model, started_at, ended_at, turns, size, mtime, parts, errors, redacted, indexed_at, fingerprint, state, failure, cwd_chains";
+
+fn chains_json(chains: &[Vec<String>]) -> String {
+    serde_json::to_string(chains).unwrap_or_else(|_| "[]".to_string())
+}
 
 fn file_row(row: &rusqlite::Row<'_>) -> Result<FileRecord> {
     let tool: String = row.get(2)?;
@@ -231,6 +255,7 @@ fn file_row(row: &rusqlite::Row<'_>) -> Result<FileRecord> {
         fingerprint: row.get(20)?,
         state: FileState::from_id(&state),
         failure: row.get(22)?,
+        chains: serde_json::from_str(&row.get::<_, String>(23)?).unwrap_or_default(),
     })
 }
 
@@ -247,11 +272,13 @@ fn turn_row(row: &rusqlite::Row<'_>) -> Result<TurnRow> {
         tool_name: row.get(6)?,
         at: row.get(7)?,
         line: row.get::<_, i64>(8)?.max(0) as u64,
+        offset: row.get::<_, i64>(9)?.max(0) as u64,
+        kept_back: row.get(10)?,
     })
 }
 
 const TURN_COLUMNS: &str =
-    "file_id, turn, part, chunk_first, chunk_last, role, tool_name, at, line";
+    "file_id, turn, part, chunk_first, chunk_last, role, tool_name, at, line, offset, kept_back";
 
 impl Catalog {
     /// Opens (or creates) the catalog at `path`.
@@ -272,11 +299,43 @@ impl Catalog {
     fn with_connection(conn: Connection) -> Result<Self> {
         // In memory the journal stays `memory`: the answer is read, not checked.
         conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
-        conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+        conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA secure_delete = ON;")?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
+        let version: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'catalog_version'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let has_files: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'files'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        let reset = has_files && version.as_deref() != Some(CATALOG_VERSION);
+        if reset {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS parts; DROP TABLE IF EXISTS turns;
+                 DROP TABLE IF EXISTS entities; DROP TABLE IF EXISTS errors; DROP TABLE IF EXISTS removed_sessions;",
+            )?;
+        }
         conn.execute_batch(SCHEMA)?;
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('catalog_version', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [CATALOG_VERSION],
+        )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            reset,
         })
+    }
+
+    /// The catalog was emptied when opened (made by another version).
+    pub fn was_reset(&self) -> bool {
+        self.reset
     }
 
     fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -302,16 +361,18 @@ impl Catalog {
     pub fn upsert_found(&self, found: &FoundFile) -> Result<FileRecord> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO files (path, tool, session_id, thread, project_key, project_dir, size, mtime, state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 'found')
-             ON CONFLICT(path) DO UPDATE SET project_key = excluded.project_key, project_dir = excluded.project_dir",
+            "INSERT INTO files (path, tool, session_id, thread, project_key, project_dir, size, mtime, state, cwd_chains)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, 'found', ?7)
+             ON CONFLICT(path) DO UPDATE SET project_key = excluded.project_key, project_dir = excluded.project_dir,
+                 cwd_chains = CASE WHEN files.cwd_chains = '[]' THEN excluded.cwd_chains ELSE files.cwd_chains END",
             params![
                 found.path,
                 found.tool.id(),
                 found.session_id,
                 found.thread,
                 found.project_key,
-                found.project_dir
+                found.project_dir,
+                chains_json(&found.chains)
             ],
         )?;
         conn.query_row(
@@ -364,7 +425,8 @@ impl Catalog {
         tx.execute(
             "UPDATE files SET format = ?2, session_id = ?3, thread = ?4, title = ?5, branch = ?6, model = ?7,
                  started_at = ?8, ended_at = ?9, turns = ?10, size = ?11, mtime = ?12, parts = ?13,
-                 errors = ?14, redacted = ?15, indexed_at = ?16, fingerprint = ?17, state = 'indexed', failure = NULL
+                 errors = ?14, redacted = ?15, indexed_at = ?16, fingerprint = ?17, state = 'indexed', failure = NULL,
+                 cwd_chains = CASE WHEN ?18 = '[]' THEN cwd_chains ELSE ?18 END
              WHERE id = ?1",
             params![
                 file_id,
@@ -384,6 +446,7 @@ impl Catalog {
                 indexed.redacted,
                 now,
                 indexed.fingerprint,
+                chains_json(&indexed.chains),
             ],
         )?;
         {
@@ -393,8 +456,8 @@ impl Catalog {
                 part.execute(params![file_id, number, hash])?;
             }
             let mut turn = tx.prepare(
-                "INSERT INTO turns (file_id, turn, part, chunk_first, chunk_last, role, tool_name, at, line)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO turns (file_id, turn, part, chunk_first, chunk_last, role, tool_name, at, line, offset, kept_back)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
             for t in &indexed.turns {
                 turn.execute(params![
@@ -406,7 +469,9 @@ impl Catalog {
                     t.role.id(),
                     t.tool_name,
                     t.at,
-                    t.line as i64
+                    t.line as i64,
+                    t.offset as i64,
+                    t.kept_back
                 ])?;
             }
             let mut entity = tx.prepare(
@@ -438,10 +503,20 @@ impl Catalog {
         let tx = conn.transaction()?;
         clear_children(&tx, file_id)?;
         tx.execute(
-            "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL, state = ?2, failure = ?3 WHERE id = ?1",
+            "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL, state = ?2, failure = ?3,
+                 title = NULL, branch = NULL, model = NULL WHERE id = ?1",
             params![file_id, state.id(), reason],
         )?;
         tx.commit()
+    }
+
+    /// Records the folders a session worked in.
+    pub fn set_chains(&self, file_id: i64, chains: &[Vec<String>]) -> Result<()> {
+        self.conn().execute(
+            "UPDATE files SET cwd_chains = ?2 WHERE id = ?1",
+            params![file_id, chains_json(chains)],
+        )?;
+        Ok(())
     }
 
     /// Marks a file failed at the size and time it had (`reason` in plain words): it is
@@ -451,7 +526,8 @@ impl Catalog {
         let tx = conn.transaction()?;
         clear_children(&tx, file_id)?;
         tx.execute(
-            "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL, state = 'failed', failure = ?2, size = ?3, mtime = ?4 WHERE id = ?1",
+            "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL, state = 'failed', failure = ?2, size = ?3, mtime = ?4,
+                 title = NULL, branch = NULL, model = NULL WHERE id = ?1",
             params![file_id, reason, size as i64, mtime],
         )?;
         tx.commit()
@@ -495,6 +571,25 @@ impl Catalog {
                 turn_row,
             )
             .optional()
+    }
+
+    /// The turns `from..=to` of a file, in order.
+    pub fn turn_range(&self, file_id: i64, from: u32, to: u32) -> Result<Vec<TurnRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {TURN_COLUMNS} FROM turns WHERE file_id = ?1 AND turn >= ?2 AND turn <= ?3 ORDER BY turn"
+        ))?;
+        let rows = stmt.query_map(params![file_id, from, to], turn_row)?;
+        rows.collect()
+    }
+
+    /// The first turn read from a line of a file (a line can hold several turns).
+    pub fn first_turn_of_line(&self, file_id: i64, line: u64) -> Result<Option<u32>> {
+        self.conn().query_row(
+            "SELECT MIN(turn) FROM turns WHERE file_id = ?1 AND line = ?2",
+            params![file_id, line as i64],
+            |r| r.get(0),
+        )
     }
 
     /// The first turn of a file at or after `at` (Unix seconds).

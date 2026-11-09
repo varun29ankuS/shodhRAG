@@ -3,7 +3,7 @@
  * imports only) so Node's strip-types runner tests it (`app/tests/recall.test.ts`).
  */
 
-import type { RecallRole, RecallSettings, RecallStatus, RecallToolId } from './api';
+import type { RecallAssistantAccess, RecallAssistantModel, RecallRole, RecallSettings, RecallStatus, RecallToolId } from './api';
 
 /** Where the card is in its setup. */
 export type RecallStage =
@@ -41,13 +41,28 @@ export function withProject(settings: RecallSettings, key: string, included: boo
   return { ...settings, projects: { ...settings.projects, [key]: included } };
 }
 
-/** The settings with every listed project included that the user has not excluded. */
-export function includeUndecided(settings: RecallSettings, keys: readonly string[]): RecallSettings {
-  const projects = { ...settings.projects };
-  for (const key of keys) {
-    if (projects[key] === undefined) projects[key] = true;
+/** The model the assistant answers with, in plain words: "claude-sonnet-4 (anthropic)". */
+export function modelWords(model: RecallAssistantModel | null): string {
+  if (!model) return 'the model you choose';
+  return model.model ? `${model.model} (${model.provider})` : model.provider;
+}
+
+/** What the card says about what the assistant may read, and where it goes. */
+export function assistantLine(access: RecallAssistantAccess, model: RecallAssistantModel | null): string {
+  if (access === 'off') return 'The assistant cannot read your coding sessions.';
+  const where = `When you ask the assistant about your sessions, the cleaned text it opens goes to ${modelWords(model)}${model?.cloud ? ', off this computer' : ''}.`;
+  if (access === 'local_models') {
+    return model && !model.cloud
+      ? `${where} It reads them only while you use a model on this computer.`
+      : 'The assistant reads your coding sessions only while you use a model on this computer, and you do not now.';
   }
-  return { ...settings, projects };
+  return where;
+}
+
+/** Sessions being indexed again under new hidden words, unsearchable meanwhile. */
+export function staleLine(status: RecallStatus): string | null {
+  if (status.staleSessions === 0) return null;
+  return `${plural(status.staleSessions, 'session')} ${status.staleSessions === 1 ? 'is' : 'are'} being indexed again under your hidden words, and cannot be searched until then.`;
 }
 
 /** One pattern a line, blank lines dropped. */

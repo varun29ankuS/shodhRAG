@@ -949,6 +949,7 @@ pub fn run() {
             design_check_commands::design_check_run,
             design_check_commands::design_check_get,
             design_check_commands::design_check_latest,
+            design_check_commands::design_check_fix_applies,
             creation_commands::creation_preview,
             creation_commands::creation_preview_status,
             creation_commands::creation_preview_focus,

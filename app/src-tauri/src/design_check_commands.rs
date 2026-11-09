@@ -13,14 +13,18 @@
 //! watcher or thread otherwise. Each check is bounded by the engine's limits
 //! ([`shodh_rag::design_check::MAX_FILES`] and the byte caps).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
-use shodh_rag::design_check::{changed_ui_files, check_files, ui_files, DesignReport, MAX_FILES};
+use shodh_rag::design_check::{
+    changed_ui_files, check_files, fix_applies, relative_inside, ui_files, written_ui_files,
+    DesignReport, MAX_FILES,
+};
+use shodh_rag::harness::AgentEvent;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::agent_session_commands::{inside_code_folder, workspace_code_folder};
@@ -30,6 +34,11 @@ use crate::workspace_commands::WorkspaceState;
 
 /// Checks kept for the pane (the newest).
 const MAX_KEPT: usize = 32;
+/// Conversations and creations whose latest check is kept for their badge,
+/// besides the newest checks (the oldest badge is dropped past it).
+const MAX_LATEST: usize = 256;
+/// Files remembered per conversation as written by its agent.
+const MAX_WRITTEN: usize = 2_000;
 /// How long a session's writes must be quiet before the automatic check runs.
 pub const DEBOUNCE: Duration = Duration::from_millis(1_500);
 /// The event the badges refresh on.
@@ -82,6 +91,8 @@ pub enum Scope {
     Path(String),
     /// The UI files changed against `base` (the last commit when `None`).
     Changes { base: Option<String> },
+    /// The files the conversation's agent wrote (relative to `root`).
+    Written(Vec<String>),
 }
 
 /// Run the check on `subject` (blocking). `None` when `Changes` was asked
@@ -103,6 +114,11 @@ pub fn check_subject(subject: &Subject) -> Option<(CheckedTarget, DesignReport)>
             "changes",
             ".".to_string(),
             changed_ui_files(&subject.root, base.as_deref())?,
+        ),
+        Scope::Written(paths) => (
+            "changes",
+            ".".to_string(),
+            written_ui_files(&subject.root, paths),
         ),
     };
     let kind = if subject.creation_id.is_some() && kind == "folder" {
@@ -189,13 +205,38 @@ pub fn checked_relative(root: &Path, path: &str) -> Result<String, String> {
     Ok(shown.to_string())
 }
 
-/// The newest checks, the latest one per conversation and per creation (for
-/// the badges), and the automatic checks waiting for writes to go quiet.
+/// The latest check of each conversation and creation, oldest key first.
+#[derive(Default)]
+struct Latest {
+    by_key: HashMap<String, StoredDesignCheck>,
+    order: VecDeque<String>,
+}
+
+impl Latest {
+    fn put(&mut self, key: String, check: &StoredDesignCheck) {
+        if self.by_key.insert(key.clone(), check.clone()).is_some() {
+            self.order.retain(|k| k != &key);
+        }
+        self.order.push_back(key);
+        while self.order.len() > MAX_LATEST {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_key.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// The newest checks, the latest one per conversation and per creation (kept
+/// whole, so a badge never loses its check to newer checks elsewhere), the
+/// files each conversation's agent wrote, and the automatic checks waiting
+/// for writes to go quiet.
 #[derive(Default)]
 pub struct DesignCheckState {
     checks: Mutex<VecDeque<StoredDesignCheck>>,
-    /// Latest check id by `conversation:<id>` and `creation:<id>`.
-    latest: Mutex<HashMap<String, String>>,
+    /// By `conversation:<id>` and `creation:<id>`.
+    latest: Mutex<Latest>,
+    /// The files each conversation's agent wrote, relative to its folder.
+    written: Mutex<HashMap<String, BTreeSet<String>>>,
     /// The newest request of each conversation's automatic check.
     waiting: Mutex<HashMap<String, u64>>,
     generation: AtomicU64,
@@ -206,10 +247,10 @@ impl DesignCheckState {
         {
             let mut latest = self.latest.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(conversation) = &check.conversation_id {
-                latest.insert(format!("conversation:{conversation}"), check.id.clone());
+                latest.put(format!("conversation:{conversation}"), &check);
             }
             if let Some(creation) = &check.creation_id {
-                latest.insert(format!("creation:{creation}"), check.id.clone());
+                latest.put(format!("creation:{creation}"), &check);
             }
         }
         let mut checks = self.checks.lock().unwrap_or_else(|e| e.into_inner());
@@ -218,12 +259,22 @@ impl DesignCheckState {
     }
 
     pub fn get(&self, id: &str) -> Option<StoredDesignCheck> {
-        self.checks
+        let newest = self
+            .checks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|c| c.id == id)
-            .cloned()
+            .cloned();
+        newest.or_else(|| {
+            self.latest
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .by_key
+                .values()
+                .find(|c| c.id == id)
+                .cloned()
+        })
     }
 
     /// The latest check of a conversation or a creation.
@@ -237,13 +288,37 @@ impl DesignCheckState {
             (None, Some(conversation)) => format!("conversation:{conversation}"),
             (None, None) => return None,
         };
-        let id = self
-            .latest
+        self.latest
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .by_key
             .get(&key)
-            .cloned()?;
-        self.get(&id)
+            .cloned()
+    }
+
+    /// The conversation's agent wrote `path` (relative to its folder).
+    pub fn wrote(&self, conversation_id: &str, path: String) {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if !written.contains_key(conversation_id) && written.len() >= MAX_LATEST {
+            // The map stays bounded: a conversation long gone is forgotten.
+            if let Some(any) = written.keys().next().cloned() {
+                written.remove(&any);
+            }
+        }
+        let files = written.entry(conversation_id.to_string()).or_default();
+        if files.len() < MAX_WRITTEN {
+            files.insert(path);
+        }
+    }
+
+    /// The files the conversation's agent wrote, sorted.
+    pub fn written(&self, conversation_id: &str) -> Vec<String> {
+        self.written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(conversation_id)
+            .map(|files| files.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// A new request for `key`'s automatic check; returns its number.
@@ -369,12 +444,23 @@ pub async fn design_check_run(
     let (mut subject, creation_conversation) =
         subject_of(&app, &workspaces, workspace_id, creation_id, path).await?;
     if changes == Some(true) && subject.creation_id.is_none() {
-        let base = match conversation_id.as_deref() {
-            Some(id) => conversation_base(&data_dir(&app)?, id, &subject.root)?,
-            None => None,
-        };
-        subject.scope = Scope::Changes { base };
-        subject.label = "the changes".to_string();
+        // The files this conversation's agent wrote, when Shodh saw it write;
+        // otherwise what changed since the conversation's branch started.
+        let written = conversation_id
+            .as_deref()
+            .map(|id| app.state::<DesignCheckState>().written(id))
+            .unwrap_or_default();
+        if written.is_empty() {
+            let base = match conversation_id.as_deref() {
+                Some(id) => conversation_base(&data_dir(&app)?, id, &subject.root)?,
+                None => None,
+            };
+            subject.label = changes_label(base.is_some()).to_string();
+            subject.scope = Scope::Changes { base };
+        } else {
+            subject.scope = Scope::Written(written);
+            subject.label = WRITTEN_LABEL.to_string();
+        }
     }
     let conversation = creation_conversation.or(conversation_id);
     let check = run_detached(subject, conversation, false).await?;
@@ -394,6 +480,61 @@ pub async fn design_check_get(
     })
 }
 
+/// What a check of the files the conversation's agent wrote is called.
+pub const WRITTEN_LABEL: &str = "the files this conversation changed";
+
+/// What a check of a project's git changes is called.
+pub fn changes_label(on_branch: bool) -> &'static str {
+    if on_branch {
+        "the changes since this conversation's branch started"
+    } else {
+        "the changes since the last commit"
+    }
+}
+
+/// Whether finding `index` of check `check_id` still has a fix that applies:
+/// the file still holds the line it replaces, exactly once. The pane asks
+/// before it offers to send a fix, so a fix made stale by later edits is never
+/// sent.
+#[tauri::command]
+pub async fn design_check_fix_applies(
+    app: AppHandle,
+    check_id: String,
+    index: usize,
+    state: State<'_, DesignCheckState>,
+    workspaces: State<'_, WorkspaceState>,
+) -> Result<bool, String> {
+    let check = state
+        .get(check_id.trim())
+        .ok_or_else(|| "That design check is no longer kept; run it again.".to_string())?;
+    let Some(fix) = check
+        .report
+        .findings
+        .get(index)
+        .and_then(|f| f.replace.clone())
+    else {
+        return Ok(false);
+    };
+    let root = match (&check.creation_id, &check.workspace_id) {
+        (Some(id), _) => {
+            let (data, docs, id) = (data_dir(&app)?, documents(&app)?, id.clone());
+            tokio::task::spawn_blocking(move || creation_subject(&data, &docs, &id, "."))
+                .await
+                .map_err(|e| format!("Reading the creation did not finish: {e}"))??
+                .0
+                .root
+        }
+        (None, Some(workspace)) => workspace_code_folder(&workspaces, Some(workspace.as_str()))
+            .await?
+            .root()
+            .to_path_buf(),
+        (None, None) => return Ok(false),
+    };
+    tokio::task::spawn_blocking(move || fix_applies(&root, &fix.path, &fix.old))
+        .await
+        .map_err(|e| format!("Reading the file did not finish: {e}"))?
+}
+
 /// The latest check of a creation or a conversation, for its badge.
 #[tauri::command]
 pub async fn design_check_latest(
@@ -402,6 +543,50 @@ pub async fn design_check_latest(
     state: State<'_, DesignCheckState>,
 ) -> Result<Option<StoredDesignCheck>, String> {
     Ok(state.latest(conversation_id.as_deref(), creation_id.as_deref()))
+}
+
+/// Follows a session's write steps: the path of each one that finished (an
+/// `edit` or a `write`), relative to the session's folder. A command that
+/// writes files (a build) is not followed: what it emits is not the agent's
+/// own UI code.
+#[derive(Debug, Default)]
+pub struct WriteTracker {
+    pending: HashMap<String, String>,
+}
+
+impl WriteTracker {
+    pub fn observe(&mut self, root: &Path, event: &AgentEvent) -> Option<String> {
+        match event {
+            AgentEvent::StepStarted {
+                step_id,
+                args,
+                tier,
+                ..
+            } if matches!(
+                tier,
+                shodh_rag::harness::RiskTier::Write | shodh_rag::harness::RiskTier::Destructive
+            ) =>
+            {
+                let path = args
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
+                    .and_then(serde_json::Value::as_str)?;
+                let relative = relative_inside(root, path)?;
+                self.pending.insert(step_id.clone(), relative);
+                None
+            }
+            AgentEvent::StepFinished { step_id, ok, .. } => {
+                let path = self.pending.remove(step_id)?;
+                ok.then_some(path)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The conversation's agent wrote `path` (relative to its folder).
+pub fn wrote(app: &AppHandle, conversation_id: &str, path: String) {
+    app.state::<DesignCheckState>().wrote(conversation_id, path);
 }
 
 /// A Code or Creator session whose writes are followed by a design check.
@@ -438,9 +623,11 @@ pub fn touched(app: &AppHandle, target: &AutoTarget) {
             }
         };
         let had_check = state.latest(Some(key.as_str()), None).is_some();
+        let written = state.written(&key);
         let run = target.clone();
         let outcome =
-            tokio::task::spawn_blocking(move || automatic_check(&data, &run, had_check)).await;
+            tokio::task::spawn_blocking(move || automatic_check(&data, &run, &written, had_check))
+                .await;
         let state = app.state::<DesignCheckState>();
         let newest = state.is_newest(&key, n);
         state.done(&key, n);
@@ -460,6 +647,7 @@ pub fn touched(app: &AppHandle, target: &AutoTarget) {
 fn automatic_check(
     data_dir: &Path,
     target: &AutoTarget,
+    written: &[String],
     had_check: bool,
 ) -> Option<StoredDesignCheck> {
     let subject = if target.creates {
@@ -475,15 +663,14 @@ fn automatic_check(
             label: creation.title,
         }
     } else {
-        let base = conversation_base(data_dir, &target.conversation_id, &target.root)
-            .ok()
-            .flatten();
+        // Only the files this conversation's agent wrote: not what a build
+        // emitted, not other uncommitted work in the project.
         Subject {
             root: target.root.clone(),
-            scope: Scope::Changes { base },
+            scope: Scope::Written(written.to_vec()),
             workspace_id: target.workspace_id.clone(),
             creation_id: None,
-            label: "the changes".to_string(),
+            label: WRITTEN_LABEL.to_string(),
         }
     };
     let (checked, report) = check_subject(&subject)?;
@@ -651,38 +838,20 @@ mod tests {
         assert!(!state.is_newest("conv", second));
     }
 
+    /// M8: the automatic check of a Code session reads only the UI files its
+    /// agent wrote: not a build's output, not other files of the project.
     #[test]
-    fn an_automatic_check_of_a_code_session_reads_its_changed_ui_files() {
+    fn an_automatic_check_of_a_code_session_reads_only_what_its_agent_wrote() {
         let dir = folder();
         let root = dir.path();
-        let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "--quiet"]);
-        git(&[
-            "-c",
-            "user.email=t@example.invalid",
-            "-c",
-            "user.name=t",
-            "add",
-            ".",
-        ]);
-        git(&[
-            "-c",
-            "user.email=t@example.invalid",
-            "-c",
-            "user.name=t",
-            "commit",
-            "--quiet",
-            "-m",
-            "start",
-        ]);
+        std::fs::write(
+            root.join("src/New.tsx"),
+            "<p className=\"text-[9px]\">x</p>\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(root.join("dist/index.css"), ".a { font-size: 8px; }\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "not a UI file\n").unwrap();
         let data = tempfile::tempdir().unwrap();
         let target = AutoTarget {
             conversation_id: "conv".into(),
@@ -690,23 +859,137 @@ mod tests {
             workspace_id: Some("ws".into()),
             creates: false,
         };
-        // Nothing changed and nothing shown yet: no check to show.
-        assert_eq!(automatic_check(data.path(), &target, false), None);
-        std::fs::write(
-            root.join("src/New.tsx"),
-            "<p className=\"text-[9px]\">x</p>\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("notes.txt"), "not a UI file\n").unwrap();
-        let check = automatic_check(data.path(), &target, false).expect("a check");
+        // Nothing written and nothing shown yet: no check to show.
+        assert_eq!(automatic_check(data.path(), &target, &[], false), None);
+        let written = vec![
+            "src/New.tsx".to_string(),
+            "dist/index.css".to_string(),
+            "notes.txt".to_string(),
+        ];
+        let check = automatic_check(data.path(), &target, &written, false).expect("a check");
         assert!(check.automatic && !check.by_agent);
         assert_eq!(check.target.kind, "changes");
-        assert_eq!(check.report.files_checked, 1, "only the changed UI file");
+        assert_eq!(check.target.label, WRITTEN_LABEL);
+        assert_eq!(check.report.files_checked, 1, "only the written UI file");
         assert!(check
             .report
             .findings
             .iter()
             .all(|f| f.path == "src/New.tsx"));
         assert_eq!(check.conversation_id.as_deref(), Some("conv"));
+        // src/Card.tsx has findings but the agent did not write it.
+        assert!(check
+            .report
+            .findings
+            .iter()
+            .all(|f| f.path != "src/Card.tsx"));
+    }
+
+    /// M8: only write steps that finished are followed, by their path.
+    #[test]
+    fn the_write_tracker_follows_finished_write_steps() {
+        use shodh_rag::harness::RiskTier;
+        let root = std::path::PathBuf::from(if cfg!(windows) { "C:\\p" } else { "/p" });
+        let started = |id: &str, path: &str, tier: RiskTier| AgentEvent::StepStarted {
+            run_id: "r".into(),
+            step_id: id.into(),
+            parent_step_id: None,
+            tool: "edit".into(),
+            label: "Edit".into(),
+            args: serde_json::json!({ "path": path }),
+            tier,
+            at_ms: 0,
+        };
+        let finished = |id: &str, ok: bool| AgentEvent::StepFinished {
+            run_id: "r".into(),
+            step_id: id.into(),
+            ok,
+            summary: String::new(),
+            detail: None,
+            duration_ms: 0,
+            invalid_arguments: false,
+        };
+        let mut tracker = WriteTracker::default();
+        assert_eq!(
+            tracker.observe(&root, &started("1", "src/App.tsx", RiskTier::Write)),
+            None
+        );
+        assert_eq!(
+            tracker.observe(&root, &started("2", "src/B.tsx", RiskTier::Write)),
+            None
+        );
+        assert_eq!(
+            tracker.observe(&root, &started("3", "src/C.tsx", RiskTier::Read)),
+            None
+        );
+        assert_eq!(
+            tracker.observe(&root, &finished("1", true)),
+            Some("src/App.tsx".to_string())
+        );
+        assert_eq!(
+            tracker.observe(&root, &finished("2", false)),
+            None,
+            "a refused write wrote nothing"
+        );
+        assert_eq!(
+            tracker.observe(&root, &finished("3", true)),
+            None,
+            "a read is not a write"
+        );
+    }
+
+    /// M2: a badge keeps its latest check however many checks run elsewhere.
+    #[test]
+    fn a_badge_keeps_its_check_past_newer_checks_elsewhere() {
+        let dir = folder();
+        let subject = |label: &str| Subject {
+            root: dir.path().to_path_buf(),
+            scope: Scope::Path("src".into()),
+            workspace_id: None,
+            creation_id: None,
+            label: label.into(),
+        };
+        let state = DesignCheckState::default();
+        let (target, report) = check_subject(&subject("a")).unwrap();
+        let mut artifact = stored(
+            &subject("a"),
+            target,
+            report,
+            Some("conv-a".into()),
+            false,
+            false,
+        );
+        artifact.creation_id = Some("cr_a".into());
+        state.keep(artifact.clone());
+        for i in 0..(MAX_KEPT + 5) {
+            let (target, report) = check_subject(&subject("b")).unwrap();
+            state.keep(stored(
+                &subject("b"),
+                target,
+                report,
+                Some(format!("conv-{i}")),
+                false,
+                true,
+            ));
+        }
+        assert_eq!(state.latest(None, Some("cr_a")), Some(artifact.clone()));
+        assert_eq!(state.latest(Some("conv-a"), None), Some(artifact.clone()));
+        assert_eq!(
+            state.get(&artifact.id),
+            Some(artifact),
+            "the pane can still open it"
+        );
+    }
+
+    /// M6: Creator and Code mode never undo what the user asked for.
+    #[test]
+    fn the_prompts_keep_what_the_user_asked_for() {
+        let source = include_str!("agent_session_commands.rs");
+        for note in ["const CREATOR_CODE_NOTE", "const CODE_REVIEW_NOTE"] {
+            let at = source.find(note).expect(note);
+            let text = &source[at..at + source[at..].find("\";").expect("end")];
+            assert!(text.contains("asked for"), "{note}");
+            assert!(text.contains("quote the files: data"), "{note}");
+        }
     }
 }

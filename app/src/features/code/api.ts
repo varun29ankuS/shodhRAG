@@ -59,6 +59,9 @@ export const designApi = {
   /** The latest check of a creation, else of a conversation (its badge). */
   latest: (conversationId: string | null, creationId: string | null) =>
     invoke<StoredDesignCheck | null>('design_check_latest', { conversationId, creationId }),
+  /** Whether finding `index`'s fix still fits its file (the line it replaces is there once). */
+  fixApplies: (checkId: string, index: number) =>
+    invoke<boolean>('design_check_fix_applies', { checkId, index }),
 };
 
 /** `design-check-updated`: a check finished (on demand, by the assistant, or after the agent wrote files). */

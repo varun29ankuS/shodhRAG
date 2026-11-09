@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  DESIGN_SEVERITY_LABEL,
   SEVERITY_OF,
   asReviewFinding,
   badgeDetail,
@@ -82,12 +83,14 @@ test('the badge counts every finding, also those counted but not listed', () => 
 test('a design finding becomes the review pane’s card with its file:line and exact fix', () => {
   const card = asReviewFinding(finding());
   assert.equal(card.severity, 'medium');
-  assert.equal(card.title, 'Tiny body text (tiny-text)');
+  assert.equal(card.title, 'Tiny body text', 'plain words: the rule id is only a hover hint');
   assert.deepEqual(card.citation, { path: 'src/Card.tsx', line: 4, endLine: 4, side: 'new' });
   assert.match(card.scenario, /Found: text-\[10px\]/);
   assert.deepEqual(card.replace, finding().replace);
   assert.equal(card.verify, null, 'a deterministic finding proposes no check to run');
   assert.deepEqual(SEVERITY_OF, { error: 'high', warning: 'medium', advisory: 'low' });
+  // The cards say what the badge says.
+  assert.deepEqual(DESIGN_SEVERITY_LABEL, { error: 'Error', warning: 'Warning', advisory: 'To consider' });
 });
 
 test('a fix goes only to the conversation of the files, never in Plan mode or mid-answer', () => {
@@ -111,10 +114,17 @@ test('a fix goes only to the conversation of the files, never in Plan mode or mi
 
 test('the pane sends a design fix only as a review action, after the user saw it', () => {
   const pane = readFileSync(new URL('../src/features/code/ReviewPane.tsx', import.meta.url), 'utf8');
-  // The design cards ask through the same confirmation as the review's.
+  // The design cards ask through the same confirmation as the review's, after the
+  // file is read again: a fix whose line is gone or doubled is never offered.
   const design = pane.slice(pane.indexOf("aria-label=\"Design check\""));
-  assert.ok(design.includes('onAsk={setPending}'), 'design fixes wait for the user’s yes');
+  assert.ok(design.includes('onAsk={ask => void askDesignFix(design, index, ask)}'), 'design fixes are re-checked first');
+  const at = pane.indexOf('const askDesignFix');
+  const ask = pane.slice(at, at + 800);
+  assert.ok(ask.indexOf('designApi.fixApplies(') > 0, 'the file is read again');
+  assert.ok(ask.indexOf('designApi.fixApplies(') < ask.indexOf('setPending(ask)'), 'before the yes is asked');
   assert.ok(design.includes('onClick={confirm}'), 'the yes is the pane’s confirm');
+  // A newer check of the same files marks this one's fixes stale.
+  assert.ok(pane.includes('designStale ? STALE_CHECK'));
   // That confirm is the one place a message is sent, and it is marked as the review's.
   const sends = pane.match(/session\.send\(/g) ?? [];
   assert.equal(sends.length, 1);

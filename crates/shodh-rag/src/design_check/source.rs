@@ -47,6 +47,28 @@ impl UiKind {
     fn line_comments(self) -> bool {
         matches!(self, Self::Scss | Self::Jsx | Self::Vue | Self::Svelte)
     }
+
+    /// Files with JavaScript: template literals and regular expressions.
+    fn scripts(self) -> bool {
+        matches!(self, Self::Jsx | Self::Vue | Self::Svelte)
+    }
+}
+
+/// Test, story and fixture files: UI files that are not the product's
+/// interface, left out of folder and automatic checks (a file asked for by
+/// name is still checked).
+pub fn is_test_or_fixture(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    [".test.", ".spec.", ".stories.", ".story."]
+        .iter()
+        .any(|part| name.contains(part))
+        || lower.split('/').any(|part| {
+            matches!(
+                part,
+                "fixtures" | "__fixtures__" | "__tests__" | "__mocks__" | "test" | "tests"
+            )
+        })
 }
 
 /// A markup tag: `<name ...>` or `</name>`.
@@ -90,6 +112,20 @@ pub struct Token {
 pub struct TextRun {
     pub start: usize,
     pub text: String,
+    /// Where each piece of `text` that is contiguous in the file starts:
+    /// `(byte in text, byte in file)`, in order.
+    pub map: Vec<(usize, usize)>,
+}
+
+impl TextRun {
+    /// The file offset of byte `at` of the run's text.
+    pub fn file_offset(&self, at: usize) -> usize {
+        let i = self.map.partition_point(|(t, _)| *t <= at);
+        match i.checked_sub(1).and_then(|i| self.map.get(i)) {
+            Some((t, f)) => f + (at - t),
+            None => self.start,
+        }
+    }
 }
 
 /// A prepared file.
@@ -107,8 +143,13 @@ pub struct Source<'a> {
 }
 
 /// CSS properties the rules read (others are skipped when declarations are collected).
-const KNOWN_PROPS: [&str; 24] = [
+const KNOWN_PROPS: [&str; 29] = [
+    "font",
     "font-size",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-right-radius",
+    "border-bottom-left-radius",
     "font-family",
     "font-weight",
     "line-height",
@@ -173,11 +214,95 @@ fn kebab(prop: &str) -> String {
     out
 }
 
-/// `raw` with `/* */`, `<!-- -->` and (for `line` kinds) `//` comments blanked.
+/// The last character before `i` on the same line that is not a space or a
+/// tab (`None` at the start of a line).
+fn prev_on_line(bytes: &[u8], i: usize) -> Option<u8> {
+    bytes[..i]
+        .iter()
+        .rev()
+        .take_while(|b| **b != b'\n')
+        .find(|b| !matches!(**b, b' ' | b'\t' | b'\r'))
+        .copied()
+}
+
+/// Whether a quote at `i` opens a string: an attribute value inside a tag
+/// (after `=`), or a string in code or CSS (after an operator, a bracket, a
+/// comma or a colon). A quote after a letter (`Don't`) is prose. JavaScript's
+/// backtick always opens a template literal.
+fn opens_string(bytes: &[u8], i: usize, in_tag: bool, scripts: bool) -> bool {
+    let quote = bytes[i];
+    if quote == b'`' {
+        return scripts;
+    }
+    match prev_on_line(bytes, i) {
+        None => !in_tag,
+        Some(b'=') => true,
+        Some(b) => matches!(
+            b,
+            b'(' | b',' | b'[' | b'{' | b':' | b'?' | b'+' | b'!' | b'&' | b'|' | b';'
+        ),
+    }
+}
+
+/// Just past the string opened at `i`: its closing quote (backslash escapes
+/// skipped), or the end of the line for an unclosed `'` or `"`. A template
+/// literal may span lines.
+fn string_end(bytes: &[u8], i: usize) -> usize {
+    let quote = bytes[i];
+    let mut j = i + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\\' => j += 2,
+            b'\n' if quote != b'`' => return j,
+            b if b == quote => return j + 1,
+            _ => j += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// Just past a regular expression literal at `i` (`/…/flags` on one line),
+/// when the `/` there starts one: after an operator, a bracket or a comma,
+/// never `//`, `/*` or the `/` of a closing tag.
+fn regex_end(bytes: &[u8], i: usize) -> Option<usize> {
+    if matches!(bytes.get(i + 1), Some(b'/' | b'*') | None) {
+        return None;
+    }
+    if !matches!(
+        prev_on_line(bytes, i),
+        Some(b'(' | b',' | b'=' | b':' | b'[' | b'!' | b'&' | b'|' | b'?' | b';')
+    ) {
+        return None;
+    }
+    let mut class = false;
+    let mut j = i + 1;
+    while j < bytes.len() {
+        match bytes[j] {
+            b'\n' => return None,
+            b'\\' => j += 1,
+            b'[' => class = true,
+            b']' => class = false,
+            b'/' if !class => return Some(j + 1),
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// `raw` with `/* */`, `<!-- -->` and (for `line` kinds) `//` comments
+/// blanked. Strings, attribute values, template literals and regular
+/// expressions are copied as they are: `accept="image/*"`, `'./*.svg'` or
+/// `fetch('/api/*')` never start a comment. A `//` is a comment at the start of
+/// a line or after code punctuation, never in element text (`<code> // x`)
+/// or a URL.
 fn blank_comments(raw: &str, kind: UiKind) -> String {
     let bytes = raw.as_bytes();
     let mut out = String::with_capacity(raw.len());
     let mut i = 0;
+    let markup = kind.has_markup();
+    let scripts = kind.scripts();
+    let mut in_tag = false;
     let blank = |out: &mut String, s: &str| {
         for c in s.chars() {
             if c == '\n' {
@@ -191,13 +316,42 @@ fn blank_comments(raw: &str, kind: UiKind) -> String {
     };
     while i < bytes.len() {
         let rest = &raw[i..];
+        let b = bytes[i];
+        if matches!(b, b'"' | b'\'' | b'`') && opens_string(bytes, i, in_tag, scripts) {
+            let end = string_end(bytes, i);
+            out.push_str(&raw[i..end]);
+            i = end;
+            continue;
+        }
+        if b == b'/' && scripts {
+            if let Some(end) = regex_end(bytes, i) {
+                out.push_str(&raw[i..end]);
+                i = end;
+                continue;
+            }
+        }
+        if markup {
+            match b {
+                b'<' if bytes
+                    .get(i + 1)
+                    .is_some_and(|n| n.is_ascii_alphabetic() || *n == b'/') =>
+                {
+                    in_tag = true
+                }
+                b'>' => in_tag = false,
+                _ => {}
+            }
+        }
         let (open, close) = if rest.starts_with("/*") {
             ("/*", "*/")
-        } else if kind.has_markup() && rest.starts_with("<!--") {
+        } else if markup && !in_tag && rest.starts_with("<!--") {
             ("<!--", "-->")
         } else if kind.line_comments()
             && rest.starts_with("//")
-            && (i == 0 || matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b';' | b'{' | b'}'))
+            && matches!(
+                prev_on_line(bytes, i),
+                None | Some(b';' | b'{' | b'}' | b')' | b',' | b']')
+            )
         {
             ("//", "\n")
         } else {
@@ -292,18 +446,34 @@ fn value_len(rest: &str, jsx: bool) -> usize {
 }
 
 /// `text` with every balanced `{…}` removed (an unclosed one to the end).
-fn without_expressions(text: &str) -> String {
+/// Also returns where each kept piece starts: `(byte in the result, byte in
+/// `text`)`.
+fn without_expressions(text: &str) -> (String, Vec<(usize, usize)>) {
     let mut out = String::with_capacity(text.len());
+    let mut map = Vec::new();
     let mut depth = 0usize;
-    for c in text.chars() {
-        match c {
-            '{' => depth += 1,
-            '}' if depth > 0 => depth -= 1,
-            _ if depth == 0 => out.push(c),
-            _ => {}
+    let mut kept_last = false;
+    for (i, c) in text.char_indices() {
+        let keep = match c {
+            '{' => {
+                depth += 1;
+                false
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                false
+            }
+            _ => depth == 0,
+        };
+        if keep {
+            if !kept_last {
+                map.push((out.len(), i));
+            }
+            out.push(c);
         }
+        kept_last = keep;
     }
-    out
+    (out, map)
 }
 
 /// Whether a run between JSX tags is code rather than element text.
@@ -403,18 +573,24 @@ impl<'a> Source<'a> {
                 continue;
             }
             let between = &self.text[a.end..b.start];
-            let text = if matches!(self.kind, UiKind::Html) {
-                between.to_string()
+            let (text, map) = if matches!(self.kind, UiKind::Html) {
+                (between.to_string(), vec![(0, a.end)])
             } else {
                 if looks_like_code(between) {
                     continue;
                 }
-                without_expressions(between)
+                let (text, pieces) = without_expressions(between);
+                let map = pieces.into_iter().map(|(t, f)| (t, a.end + f)).collect();
+                (text, map)
             };
             if text.trim().is_empty() {
                 continue;
             }
-            runs.push(TextRun { start: a.end, text });
+            runs.push(TextRun {
+                start: a.end,
+                text,
+                map,
+            });
         }
         runs
     }

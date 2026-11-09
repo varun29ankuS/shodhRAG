@@ -90,6 +90,7 @@
           "delete_folder_source",
           "delete_subtask",
           "delete_task",
+          "design_check_fix_applies",
           "design_check_get",
           "design_check_latest",
           "design_check_run",

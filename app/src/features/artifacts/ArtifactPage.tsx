@@ -955,7 +955,11 @@ function ArtifactDesignCheck({ creationId, conversationId }: { creationId: strin
         title="Check this artifact's HTML, CSS and components with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
         className={QUIET_BUTTON}
       >
-        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
+        {busy
+          ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+          : check
+            ? <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+            : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
         {check ? 'Check again' : 'Design check'}
       </button>
     </>

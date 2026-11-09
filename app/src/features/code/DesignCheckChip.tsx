@@ -5,7 +5,7 @@ import { notify } from '../../lib/notify';
 import { creationsApi } from '../artifacts/api';
 import { designApi, onDesignCheckUpdated } from './api';
 import { useCodeReview } from './CodeReviewContext';
-import { badgeDetail, badgeText, totalIssues } from './designModel';
+import { badgeDetail, badgeText } from './designModel';
 import type { DesignCheckRequest } from './api';
 import type { StoredDesignCheck } from './designModel';
 
@@ -98,15 +98,19 @@ export function DesignCheckChip({ conversationId, workspaceId, creates, answerRu
   };
 
   if (!creates && !workspaceId) return null;
-  const issues = check ? totalIssues(check.report) : 0;
   const errors = check?.report.counts.error ?? 0;
+  const errorWords = errors > 0 ? `, ${errors} ${errors === 1 ? 'error' : 'errors'}` : '';
   return (
     <button
       type="button"
       onClick={() => (check ? pane?.openDesign(check) : void runFirst())}
       disabled={busy}
-      title={check ? `${badgeDetail(check)} Click to see the findings.` : 'Check the UI files this conversation changed with Shodh’s design rules (no model).'}
-      aria-label={check ? `${badgeText(check)}. Show the findings` : 'Run a design check'}
+      title={check
+        ? `${badgeDetail(check)} Click to see the findings.`
+        : creates
+          ? 'Check this conversation’s creation with Shodh’s design rules. No model is used.'
+          : 'Check the UI files this conversation’s agent changed (before it has written any, the project’s changes since its branch started) with Shodh’s design rules. No model is used.'}
+      aria-label={check ? `${badgeText(check)}${errorWords}. Show the findings` : 'Run a design check'}
       className={cn(
         'inline-flex items-center gap-1 h-[26px] px-2 rounded-full text-caption font-medium border shrink-0 whitespace-nowrap tabular-nums transition-colors duration-micro',
         errors > 0
@@ -117,7 +121,6 @@ export function DesignCheckChip({ conversationId, workspaceId, creates, answerRu
     >
       {busy ? <Loader2 className="w-3 h-3 shrink-0 animate-spin" aria-hidden="true" /> : <Palette className="w-3 h-3 shrink-0" aria-hidden="true" />}
       <span>{check ? badgeText(check) : 'Design check'}</span>
-      {check && issues > 0 && <span className="sr-only">{`, ${errors} ${errors === 1 ? 'error' : 'errors'}`}</span>}
     </button>
   );
 }

@@ -91,7 +91,14 @@ export function badgeDetail(check: StoredDesignCheck): string {
   return `${check.automatic ? 'Checked after the last change' : 'Checked'}: ${files} of ${check.target.label}, ${found}. No model is used.`;
 }
 
-/** How a design severity shows on the review pane's cards. */
+/** A design severity in the words the badge uses: Error, Warning, To consider. */
+export const DESIGN_SEVERITY_LABEL: Record<DesignSeverity, string> = {
+  error: 'Error',
+  warning: 'Warning',
+  advisory: 'To consider',
+};
+
+/** How a design severity shows on the review pane's cards (their icon and colour). */
 export const SEVERITY_OF: Record<DesignSeverity, Severity> = {
   error: 'high',
   warning: 'medium',
@@ -102,7 +109,7 @@ export const SEVERITY_OF: Record<DesignSeverity, Severity> = {
 export function asReviewFinding(finding: DesignFinding): Finding {
   return {
     severity: SEVERITY_OF[finding.severity],
-    title: `${finding.title} (${finding.rule})`,
+    title: finding.title,
     citation: { path: finding.path, line: finding.line, endLine: Math.max(finding.line, finding.endLine), side: 'new' },
     scenario: finding.evidence ? `${finding.explanation} Found: ${finding.evidence}` : finding.explanation,
     fix: finding.fix,

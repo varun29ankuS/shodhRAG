@@ -59,12 +59,18 @@ Copyright 2025 Paul Bakaus
   the rules of impeccable's source-text detector
   (crates/detect/src/regex_matchers.rs and the rule registry,
   crates/foundation/src/registry.rs): the rule ids, names and descriptions
-  are impeccable's, word for word, and the detectors follow its tokens,
-  thresholds and exemptions. Changed: a new Rust implementation over source
-  text only (no rendered-page or browser checks), some rules narrowed to what
-  source text can show, a suggested fix added to every rule, and Shodh's own
-  accessibility and consistency rules added beside them. No impeccable code
-  or script is run or bundled.
+  are impeccable's, word for word, and the detectors follow its tokens and
+  thresholds, including side-tab's gate (a stripe is reported only on a box
+  rounded away from it). Changed: a new Rust implementation over source text
+  only (no rendered-page or browser checks); some rules narrowed to what
+  source text can show (side-tab reads the radius of the element's own
+  classes or CSS block, not of other rules for the same element, and its
+  Tailwind form also skips blockquote, nav, pre, code, a, input and span,
+  which impeccable exempts only in CSS); gradient-text, ai-color-palette and
+  overused-font lowered to advisory, since a user may ask for exactly that;
+  a suggested fix added to every rule; and Shodh's own accessibility and
+  consistency rules added beside them. No impeccable code or script is run
+  or bundled.
 - crates/shodh-rag/skills/design-polish/SKILL.md is adapted from the
   commands polish and audit (skill/reference/polish.md and audit.md).
   Changed: condensed into one order of work around Shodh's design_check

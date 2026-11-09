@@ -32,10 +32,10 @@ import { MermaidBlock } from '../ask/visual/MermaidBlock';
 import { CodeDiff, CodeFileView } from './CodeDiff';
 import { SymbolJump } from './SymbolJump';
 import { useCodeReview } from './CodeReviewContext';
-import { codeApi, designApi } from './api';
+import { codeApi, designApi, onDesignCheckUpdated } from './api';
 import type { DesignCheckRequest, ReviewTarget } from './api';
 import { creationsApi } from '../artifacts/api';
-import { asReviewFinding, badgeDetail, badgeText, designFixProblem, isUiFile } from './designModel';
+import { DESIGN_SEVERITY_LABEL, asReviewFinding, badgeDetail, badgeText, designFixProblem, isUiFile } from './designModel';
 import type { StoredDesignCheck } from './designModel';
 import { languageOf, selectedRun, textAsChange } from './diffModel';
 import {
@@ -52,6 +52,9 @@ import {
   verification,
 } from './reviewModel';
 import type { Finding, RequestHelpers, ReviewCheck, Severity, TargetConversation } from './reviewModel';
+
+/** Why a fix of a check that a newer check replaced is not sent. */
+const STALE_CHECK = 'A newer design check of these files exists. Check again before sending a fix.';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -98,7 +101,15 @@ interface Pending {
 /** Where a finding came from: the fresh-eyes review, or the design check (its fix's problem worked out by the caller). */
 type FindingSource =
   | { kind: 'review'; id: string; workspaceId: string | null; conversationId: string | null }
-  | { kind: 'design'; id: string; fixProblem: string | null };
+  | {
+      kind: 'design';
+      id: string;
+      fixProblem: string | null;
+      /** The badge's word for its severity ("Error", "Warning", "To consider"). */
+      severityLabel: string;
+      /** The rule's id, shown on hover. */
+      rule: string;
+    };
 
 function FindingCard({
   finding,
@@ -148,9 +159,12 @@ function FindingCard({
   return (
     <li className="rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2.5 flex flex-col gap-1.5">
       <div className="flex items-start gap-2">
-        <span className={cn('inline-flex items-center gap-1 shrink-0 h-6 px-1.5 rounded-md border text-caption font-semibold', SEVERITY_TONE[finding.severity])}>
+        <span
+          title={source.kind === 'design' ? `Rule: ${source.rule}` : undefined}
+          className={cn('inline-flex items-center gap-1 shrink-0 h-6 px-1.5 rounded-md border text-caption font-semibold', SEVERITY_TONE[finding.severity])}
+        >
           <Icon className="w-3.5 h-3.5" aria-hidden="true" />
-          {SEVERITY_LABEL[finding.severity]}
+          {source.kind === 'design' ? source.severityLabel : SEVERITY_LABEL[finding.severity]}
         </span>
         <p className="m-0 min-w-0 text-small font-semibold text-shodh-text break-words">{revealHidden(finding.title)}</p>
       </div>
@@ -269,6 +283,8 @@ export function ReviewPane() {
   const review = pane?.review ?? null;
   const design = pane?.design ?? null;
   const [designBusy, setDesignBusy] = useState(false);
+  // A newer check of the same files exists: this one's fixes may no longer fit.
+  const [designStale, setDesignStale] = useState(false);
   const conversation = session.activeConversation;
   const conversationMode = conversation?.mode ?? 'research';
   const agentMode = conversation ? resolveAgentMode(conversation.agentMode, conversation.messages.length > 0, defaultMode) : null;
@@ -369,8 +385,46 @@ export function ReviewPane() {
 
   // A design check opened (from a badge, a button or the assistant): the pane takes the focus.
   useEffect(() => {
+    setDesignStale(false);
     if (design) closeRef.current?.focus({ preventScroll: true });
   }, [design?.id]);
+
+  // A newer check of the same conversation or artifact marks this one stale.
+  useEffect(() => {
+    if (!design) return;
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    onDesignCheckUpdated(update => {
+      const same = (design.creationId !== null && update.creationId === design.creationId)
+        || (design.creationId === null && design.conversationId !== null && update.conversationId === design.conversationId);
+      if (same && update.id !== design.id) setDesignStale(true);
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(e => console.error('Failed to listen for design-check-updated:', e));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [design?.id]);
+
+  /**
+   * Before a design fix is offered to send, Shodh reads the file again: the line it
+   * replaces must still be there, exactly once. A stale fix is never sent.
+   */
+  const askDesignFix = useCallback(async (check: StoredDesignCheck, index: number, ask: Pending) => {
+    try {
+      if (await designApi.fixApplies(check.id, index)) {
+        setPending(ask);
+      } else {
+        notify.error('This fix no longer fits the file', { description: 'The file changed since the check. Check again for a fix that fits.' });
+      }
+    } catch (e) {
+      notify.error('The fix could not be checked', { description: String(e) });
+    }
+  }, []);
 
   /** Run the design check on `request`, keeping `keep` (the code shown) beside the findings. */
   const runDesign = useCallback(
@@ -530,10 +584,16 @@ export function ReviewPane() {
                     key={`${design.id}-${index}`}
                     finding={asReviewFinding(finding)}
                     index={index}
-                    source={{ kind: 'design', id: design.id, fixProblem: designFixProblem(target, design, finding) }}
+                    source={{
+                      kind: 'design',
+                      id: design.id,
+                      fixProblem: designStale ? STALE_CHECK : designFixProblem(target, design, finding),
+                      severityLabel: DESIGN_SEVERITY_LABEL[finding.severity],
+                      rule: finding.rule,
+                    }}
                     target={target}
                     onCite={onCiteDesign}
-                    onAsk={setPending}
+                    onAsk={ask => void askDesignFix(design, index, ask)}
                   />
                 ))}
               </ol>

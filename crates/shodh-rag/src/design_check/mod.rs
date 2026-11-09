@@ -163,6 +163,19 @@ pub fn check_source(path: &str, text: &str) -> (Vec<DesignFinding>, SeverityCoun
             .then(a.end.cmp(&b.end))
     });
     hits.dedup_by(|a, b| a.rule == b.rule && a.start == b.start);
+    // Every mechanical fix on a line goes into one replacement of that line, so
+    // applying one finding's fix applies them all (two edits of one line could
+    // not both land).
+    let mut line_spans: std::collections::BTreeMap<usize, Vec<(usize, usize, String)>> =
+        std::collections::BTreeMap::new();
+    for hit in &hits {
+        if let Some((start, end, new)) = &hit.fix {
+            line_spans
+                .entry(source.line_of(*start))
+                .or_default()
+                .push((*start, *end, new.clone()));
+        }
+    }
     let mut per_rule: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut findings = Vec::new();
     let mut left_out = SeverityCounts::default();
@@ -181,7 +194,8 @@ pub fn check_source(path: &str, text: &str) -> (Vec<DesignFinding>, SeverityCoun
         let replace = hit
             .fix
             .as_ref()
-            .and_then(|(start, end, new)| line_fix(&source, path, *start, *end, new));
+            .and_then(|(start, _, _)| line_spans.get(&source.line_of(*start)))
+            .and_then(|spans| line_fix(&source, path, spans));
         findings.push(DesignFinding {
             rule: rule.id,
             severity: rule.severity,
@@ -199,20 +213,17 @@ pub fn check_source(path: &str, text: &str) -> (Vec<DesignFinding>, SeverityCoun
     (findings, left_out)
 }
 
-/// `start..end` of the file replaced with `new`, as a whole-line edit: only
-/// when the span is on one line, the line is not minified, and the line is
-/// found exactly once in the file (so the edit lands where it is meant to).
+/// The spans of one line replaced (`(start, end, new)` in file offsets), as
+/// one whole-line edit: only when every span is on that line, the line is not
+/// minified, and the line is found exactly once in the file (so the edit
+/// lands where it is meant to). A span overlapping an earlier one is dropped.
 fn line_fix(
     source: &source::Source,
     path: &str,
-    start: usize,
-    end: usize,
-    new: &str,
+    spans: &[(usize, usize, String)],
 ) -> Option<DesignReplacement> {
-    let line = source.line_of(start);
-    if source.line_of(end.saturating_sub(1).max(start)) != line {
-        return None;
-    }
+    let (first, _, _) = spans.first()?;
+    let line = source.line_of(*first);
     let old = source.line_text(line);
     if old.trim().is_empty() || old.chars().count() > MAX_FIX_LINE_CHARS {
         return None;
@@ -221,16 +232,53 @@ fn line_fix(
         return None;
     }
     let line_start = source.line_start(line);
-    let (from, to) = (start.checked_sub(line_start)?, end.checked_sub(line_start)?);
-    if to > old.len() || !old.is_char_boundary(from) || !old.is_char_boundary(to) {
-        return None;
+    let mut ordered: Vec<&(usize, usize, String)> = spans.iter().collect();
+    ordered.sort_by_key(|(start, end, _)| (*start, *end));
+    let mut replaced = String::with_capacity(old.len() + 32);
+    let mut at = 0;
+    for (start, end, new) in ordered {
+        if source.line_of(end.saturating_sub(1).max(*start)) != line {
+            return None;
+        }
+        let (from, to) = (start.checked_sub(line_start)?, end.checked_sub(line_start)?);
+        if from < at {
+            continue;
+        }
+        if to > old.len() || !old.is_char_boundary(from) || !old.is_char_boundary(to) {
+            return None;
+        }
+        replaced.push_str(&old[at..from]);
+        replaced.push_str(new);
+        at = to;
     }
-    let replaced = format!("{}{}{}", &old[..from], new, &old[to..]);
+    replaced.push_str(&old[at..]);
     (replaced != old).then(|| DesignReplacement {
         path: path.to_string(),
         old: old.to_string(),
         new: replaced,
     })
+}
+
+/// Whether a proposed fix still applies: `path` (inside `root`, not a link)
+/// holds `old` exactly once. A file changed since the check (the line gone or
+/// now there twice) gives `false`, and the fix is not sent. Blocking.
+pub fn fix_applies(root: &Path, path: &str, old: &str) -> Result<bool, String> {
+    let relative = Path::new(path);
+    if path.is_empty()
+        || relative.is_absolute()
+        || path.split(['/', '\\']).any(|part| part == "..")
+        || secret_path(path).is_some()
+        || old.is_empty()
+    {
+        return Err(format!("{path} is not a file Shodh checks."));
+    }
+    let full = root.join(relative);
+    match std::fs::symlink_metadata(&full) {
+        Ok(meta) if meta.is_file() && meta.len() <= MAX_FILE_BYTES => {}
+        _ => return Ok(false),
+    }
+    let text = std::fs::read_to_string(&full).map_err(|e| format!("{path}: {e}"))?;
+    Ok(text.matches(old).count() == 1)
 }
 
 /// Sort worst first, then by path, line and rule: the report's one order.
@@ -263,7 +311,7 @@ pub fn check_files(root: &Path, paths: &[String]) -> DesignReport {
     paths.dedup();
     let mut total: u64 = 0;
     for path in paths {
-        if report.files_checked >= MAX_FILES || total >= MAX_TOTAL_BYTES {
+        if report.files_checked >= MAX_FILES {
             report.partial = true;
             break;
         }
@@ -286,6 +334,11 @@ pub fn check_files(root: &Path, paths: &[String]) -> DesignReport {
                 reason: "larger than 512 KB".to_string(),
             });
             continue;
+        }
+        // The byte budget holds for the file about to be read, not after it.
+        if total + meta.len() > MAX_TOTAL_BYTES {
+            report.partial = true;
+            break;
         }
         let text = match std::fs::read(&full).map(String::from_utf8) {
             Ok(Ok(text)) => text,
@@ -336,13 +389,7 @@ pub fn ui_files(root: &Path, within: &str) -> Vec<String> {
             Vec::new()
         };
     }
-    let keep = |relative: &str| {
-        is_ui_file(relative)
-            && secret_path(relative).is_none()
-            && !relative
-                .split('/')
-                .any(|part| SKIPPED_DIRS.contains(&part) || part == "..")
-    };
+    let keep = |relative: &str| kept_in_folder(relative);
     let mut files: Vec<String> = match crate::harness::code_mode::listed_files(root, within) {
         Some(listed) => listed.into_iter().filter(|p| keep(p)).collect(),
         None => {
@@ -388,16 +435,59 @@ pub fn ui_files(root: &Path, within: &str) -> Vec<String> {
     files
 }
 
+/// Whether a file found in a folder (not asked for by name) is checked: a UI
+/// file, not one that may hold secrets, not in a dependency, build or output
+/// folder (`node_modules`, `dist`, `build`, `out`, `.next`, `coverage`, ...),
+/// and not a test, story or fixture.
+pub fn kept_in_folder(relative: &str) -> bool {
+    is_ui_file(relative)
+        && secret_path(relative).is_none()
+        && !source::is_test_or_fixture(relative)
+        && !relative
+            .split('/')
+            .any(|part| SKIPPED_DIRS.contains(&part) || part == "..")
+}
+
 /// The UI files of `root` changed against `base` (the last commit when
-/// `None`) or not tracked yet: what Code mode's edits wrote. `None` outside a
-/// repository. Blocking.
+/// `None`) or not tracked yet, as [`kept_in_folder`] keeps them. `None`
+/// outside a repository. Blocking.
 pub fn changed_ui_files(root: &Path, base: Option<&str>) -> Option<Vec<String>> {
     let changed = crate::harness::code_mode::changed_paths(root, base, 20_000)?;
     Some(
         changed
             .into_iter()
-            .filter(|p| is_ui_file(p) && secret_path(p).is_none())
+            .filter(|p| kept_in_folder(p))
             .take(MAX_FILES + 1)
             .collect(),
     )
+}
+
+/// Of the files an agent wrote (`paths`, relative to `root` or absolute
+/// inside it), the UI files that still exist, as [`kept_in_folder`] keeps
+/// them; sorted. Blocking.
+pub fn written_ui_files(root: &Path, paths: &[String]) -> Vec<String> {
+    let mut files: Vec<String> = paths
+        .iter()
+        .filter_map(|p| relative_inside(root, p))
+        .filter(|p| kept_in_folder(p))
+        .filter(|p| std::fs::symlink_metadata(root.join(p)).is_ok_and(|m| m.is_file()))
+        .collect();
+    files.sort();
+    files.dedup();
+    files.truncate(MAX_FILES + 1);
+    files
+}
+
+/// `path` as a `/`-separated path relative to `root`, when it is inside it:
+/// a relative path as it is (`./` dropped), an absolute one under `root`.
+pub fn relative_inside(root: &Path, path: &str) -> Option<String> {
+    let given = Path::new(path.trim());
+    let relative = if given.is_absolute() {
+        given.strip_prefix(root).ok()?.to_path_buf()
+    } else {
+        given.to_path_buf()
+    };
+    let shown = relative.to_string_lossy().replace('\\', "/");
+    let shown = shown.trim_start_matches("./").to_string();
+    (!shown.is_empty() && !shown.split('/').any(|part| part == "..")).then_some(shown)
 }

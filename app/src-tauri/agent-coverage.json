@@ -143,6 +143,7 @@
     "code_skills_list": { "tool": "code_skills" },
     "code_skills_set_enabled": { "excluded": "Which bundled Code skills are on decides the instructions the agent may load; only the user changes it, as with installed skills." },
     "design_check_run": { "tool": "design_check" },
+    "design_check_fix_applies": { "excluded": "Re-reads a file before the code pane offers to send one finding's fix, so a fix made stale by later edits is never sent; the assistant edits with its own edit tool, whose approval shows the exact diff." },
     "design_check_get": { "excluded": "Shows the user a design check the code pane keeps, by its id; the assistant gets the findings of a check it runs straight from design_check and has no use for reopening one by id." },
     "design_check_latest": { "excluded": "Reads the latest design check of a conversation or an artifact for its badge in the Code status line and on the Artifacts page; the assistant runs a fresh check with design_check, which returns every finding." },
     "creation_get": { "tools": ["list_artifacts", "open_artifact"] },

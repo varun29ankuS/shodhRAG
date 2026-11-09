@@ -8,7 +8,13 @@
 //! there), kept word for word. Changed by Shodh: the detection is a new Rust
 //! implementation over source text only (impeccable's rendered-page checks need
 //! a browser and are not ported), several rules are narrowed to what source text
-//! can show (noted on each rule's `scope`), and every rule gains a suggested fix.
+//! can show, and every rule gains a suggested fix. Where Shodh departs from
+//! impeccable on purpose: the taste rules (gradient-text, ai-color-palette,
+//! overused-font) are advisory here, never warnings, because a user may ask
+//! for exactly that font, colour or gradient; side-tab's Tailwind form also
+//! skips the elements impeccable exempts only in CSS (blockquote, nav, pre,
+//! code, a, input, span); and side-tab reads the radius of the element's own
+//! classes or block, not of other rules for the same element.
 //! Rules marked [`RuleOrigin::Shodh`] are Shodh's own (accessibility and
 //! consistency checks the user asked for; impeccable covers them only on a
 //! rendered page).
@@ -136,8 +142,8 @@ pub const RULES: [Rule; 34] = [
         "non-semantic-button",
         "Clickable div or span",
         "accessibility",
-        Error,
-        "A div or span reacts to clicks but has no role and no tabindex, so keyboard users cannot reach it and screen readers do not announce it as a control.",
+        Warning,
+        "A div or span reacts to clicks but has no role and no tabindex, so keyboard users cannot reach it and screen readers do not announce it as a control. (Backdrops, presentational and hidden elements, and handlers that only stop the event are not reported.)",
         "Use a <button type=\"button\"> (or an <a> for navigation); it gets focus, Enter and Space for free.",
     ),
     own(
@@ -185,7 +191,7 @@ pub const RULES: [Rule; 34] = [
         "Placeholder text left in",
         "quality",
         Warning,
-        "Lorem ipsum or filler copy (\"Your text here\", \"Sample text\") is still on the page. It reads as unfinished and hides how the layout behaves with real words.",
+        "Lorem ipsum or filler copy (\"Your text here\", \"Insert content here\") is still on the page. It reads as unfinished and hides how the layout behaves with real words.",
         "Replace it with the real words, or with short honest copy that says what goes there.",
     ),
     own(
@@ -193,7 +199,7 @@ pub const RULES: [Rule; 34] = [
         "Emoji used as an icon",
         "quality",
         Warning,
-        "An emoji stands in for an icon at the start of a label or as an element's only content. Emoji render differently on every system, cannot be coloured with the theme, and are read aloud by name.",
+        "An emoji is the label of a button, link or label element: alone, or before a label of one to three words. Emoji render differently on every system, cannot be coloured with the theme, and are read aloud by name. Emoji in sentences, headings and tables are content and are not reported; typographic glyphs used as icons (✕ ★ ☰ ❯ arrows) are not emoji.",
         "Use an icon from the project's icon set (aria-hidden, left of the label), or drop it.",
     ),
     imp(
@@ -264,7 +270,7 @@ pub const RULES: [Rule; 34] = [
         "gradient-text",
         "Gradient text",
         "slop",
-        Warning,
+        Advisory,
         "Gradient text is decorative rather than meaningful — a common AI tell, especially on headings and metrics. Use solid colors for text.",
         "Use one solid text colour from the palette.",
     ),
@@ -272,7 +278,7 @@ pub const RULES: [Rule; 34] = [
         "ai-color-palette",
         "AI color palette",
         "slop",
-        Warning,
+        Advisory,
         "Purple/violet gradients and cyan-on-dark are the most recognizable tells of AI-generated UIs. A gradient in one of those hues is the tell on its own; flat neon ink on a dark ground is charged once a second tell hue joins it. Choose a distinctive, intentional palette.",
         "Pick a palette for this product (one accent colour, used sparingly) instead of the purple-to-blue default.",
     ),
@@ -280,7 +286,7 @@ pub const RULES: [Rule; 34] = [
         "overused-font",
         "Overused font",
         "slop",
-        Warning,
+        Advisory,
         "Inter, Roboto, Fraunces, Geist, Plus Jakarta Sans, and Space Grotesk are used on so many sites they no longer feel distinctive. Each new wave of AI-generated UIs converges on the same handful of faces. Choose a face that gives your interface personality.",
         "Choose a face that suits the product, or the project's own font stack.",
     ),

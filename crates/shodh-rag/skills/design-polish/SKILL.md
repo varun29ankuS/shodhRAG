@@ -14,9 +14,10 @@ keyboard, or look like every other generated page. Polish is refinement, not
 a hidden redesign: keep the project's look, words and behaviour, and fix what
 is wrong.
 
-Sixth of Shodh's building skills, for UI work (plan-before-building →
-test-first → debug-systematically → verify-before-done → fresh-eyes-review →
-**design-polish**). Run it before verify-before-done reports UI work as done.
+Fourth of Shodh's six building skills, for UI work (plan-before-building →
+test-first → debug-systematically → **design-polish** → verify-before-done →
+fresh-eyes-review). It comes before verify-before-done, so the design fixes are
+built, tested and reviewed like any other change.
 
 ## The check
 
@@ -62,6 +63,9 @@ Fix in this order, and do not perfect one corner while the rest stays broken:
   style. Keyboard order follows the reading order.
 - Show the shortcut a control has (from the app's shortcut list) next to it,
   never a made-up one.
+- Never undo what the user explicitly asked for (a font, a colour, a gradient,
+  an emoji they chose), even when a rule flags it. Keep it, and say which
+  findings you left for that reason.
 - Ask before changing claims, product copy or anything outside the request.
 
 ## Finish

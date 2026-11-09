@@ -272,13 +272,56 @@ fn placeholder_text() {
 
 #[test]
 fn emoji_icon() {
+    // An emoji as the label of a button, link or label element.
     fires(
         "emoji-icon",
         "a.html",
-        "<ul><li>🚀 Fast builds</li></ul>",
-        "<ul><li>Fast builds</li><li>✓ Done</li></ul>",
+        "<button>🗑️ Delete</button>",
+        "<button>Delete</button>",
     );
-    assert!(!ids("a.html", "<p>We shipped it 🎉</p>").contains(&"emoji-icon"));
+    fires(
+        "emoji-icon",
+        "a.tsx",
+        "<a href=\"/new\">🆕</a>",
+        "<a href=\"/new\">New</a>",
+    );
+    fires(
+        "emoji-icon",
+        "a.html",
+        "<button>⭐ Star</button>",
+        "<button>★ Star</button>",
+    );
+    fires(
+        "emoji-icon",
+        "a.html",
+        "<label>⏰ Remind me</label>",
+        "<label>Remind me</label>",
+    );
+    fires(
+        "emoji-icon",
+        "a.html",
+        "<button>▶️ Play</button>",
+        "<button>▶ Play</button>",
+    );
+    // Typographic glyphs used as icons are not emoji.
+    for glyph in ["✕", "✖", "★", "☆", "☰", "❯", "➜", "♥", "✓"] {
+        let found = ids(
+            "a.html",
+            &format!("<button aria-label=\"x\">{glyph}</button>"),
+        );
+        assert!(!found.contains(&"emoji-icon"), "{glyph}: {found:?}");
+    }
+    // Emoji as content: a sentence, a heading, a status cell, a country list.
+    for content in [
+        "<p>🎉 You're in! Your account is ready.</p>",
+        "<h1>🪔 Happy Diwali</h1>",
+        "<table><tr><td>✅</td></tr></table>",
+        "<select><option>🇮🇳 India</option></select>",
+        "<p>We shipped it 🎉</p>",
+        "<button>🎉 Thanks for joining us all the way</button>",
+    ] {
+        assert!(!ids("a.html", content).contains(&"emoji-icon"), "{content}");
+    }
 }
 
 #[test]
@@ -387,23 +430,58 @@ fn all_caps_body() {
 
 #[test]
 fn side_tab() {
+    // impeccable's gate: a stripe on a card rounded away from it.
     fires(
         "side-tab",
         "a.tsx",
+        r#"<div className="rounded-lg border-l-4 border-blue-500 p-4">Note</div>"#,
         r#"<div className="border-l-4 border-blue-500 p-4">Note</div>"#,
-        r#"<div className="border-l-2 p-4">Note</div>"#,
     );
     assert!(ids(
         "a.tsx",
         r#"<div className="rounded-lg border-l-2 p-4">Note</div>"#
     )
     .contains(&"side-tab"));
+    // Rounded only on the stripe's own side: square away from it.
+    assert!(!ids(
+        "a.tsx",
+        r#"<div className="rounded-l-lg border-l-4 border-blue-500">x</div>"#
+    )
+    .contains(&"side-tab"));
+    // A quote or an active nav item keeps its convention.
+    for safe in [
+        r#"<blockquote className="rounded-lg border-l-4 border-gray-300 pl-4 italic">Quote</blockquote>"#,
+        r#"<nav><a className="rounded-md border-l-4 border-blue-600" href="/">Home</a></nav>"#,
+    ] {
+        assert!(!ids("a.tsx", safe).contains(&"side-tab"), "{safe}");
+    }
+    // Classes built at run time: the radius is unknown, so it stays reported.
+    assert!(ids(
+        "a.tsx",
+        r#"<div className={cn("border-l-4 border-blue-500", r)}>x</div>"#
+    )
+    .contains(&"side-tab"));
     fires(
         "side-tab",
         "a.css",
+        ".card { border-left: 4px solid #3b82f6; border-radius: 12px; }",
         ".card { border-left: 4px solid #3b82f6; }",
-        "blockquote { border-left: 4px solid #cccccc; }",
     );
+    assert!(!ids(
+        "a.css",
+        ".c { border-left: 4px solid #3b82f6; border-radius: 12px 0 0 12px; }"
+    )
+    .contains(&"side-tab"));
+    assert!(!ids(
+        "a.css",
+        "blockquote { border-left: 4px solid #cccccc; border-radius: 8px; }"
+    )
+    .contains(&"side-tab"));
+    assert!(ids(
+        "a.css",
+        ".c { border-left: 4px solid #3b82f6; border-radius: var(--r); }"
+    )
+    .contains(&"side-tab"));
 }
 
 #[test]
@@ -608,11 +686,23 @@ fn repeating_stripes_gradient() {
 fn centered_everything() {
     let p = |class: &str| format!("<p class=\"{class}\">A short line of copy.</p>\n");
     let all: String = (0..6).map(|_| p("text-center")).collect();
-    let mixed: String = (0..5)
-        .map(|_| p("text-center"))
-        .chain([p("text-left")])
+    // Six centred stat tiles beside paragraphs left at the default alignment.
+    let tiles: String = (0..6)
+        .map(|_| "<div class=\"text-center\"><h3>42</h3><span>Users</span></div>\n".to_string())
+        .chain((0..8).map(|_| "<p>Body copy that reads left aligned.</p>\n".to_string()))
         .collect();
-    fires("centered-everything", "a.html", &all, &mixed);
+    fires("centered-everything", "a.html", &all, &tiles);
+    // Centring inherited from a wrapper counts; one centred paragraph among many does not.
+    let wrapped = format!(
+        "<main class=\"text-center\">{}</main>",
+        (0..5).map(|_| p("")).collect::<String>()
+    );
+    assert!(ids("a.html", &wrapped).contains(&"centered-everything"));
+    let one: String = [p("text-center")]
+        .into_iter()
+        .chain((0..5).map(|_| p("")))
+        .collect();
+    assert!(!ids("a.html", &one).contains(&"centered-everything"));
 }
 
 #[test]
@@ -754,4 +844,355 @@ fn ported_rules_keep_impeccables_words() {
         .count();
     assert!(ported >= 25, "{ported} rules ported");
     assert_eq!(rules::IMPECCABLE_COMMIT.len(), 40);
+}
+
+// ─── Fix round on #159 ───────────────────────────────────────────────────────
+
+/// H1: a `/*` or `//` inside a string, an attribute, a template literal, a
+/// regular expression or a URL never starts a comment, so the rules after it
+/// still fire.
+#[test]
+fn comment_markers_inside_strings_do_not_silence_the_file() {
+    let tsx = r#"const icons = import.meta.glob('./icons/*.svg');
+const api = () => fetch('/api/*');
+const marker = '<!--';
+const glob = `src/**/*.tsx`;
+const re = /a\/*b/;
+export const Upload = () => (
+  <div>
+    <input type="file" accept="image/*" onChange={pick} />
+    <img src={preview} />
+    <p className="text-[10px]">Lorem ipsum</p>
+    <a href="https://example.com/*">docs</a>
+  </div>
+);
+"#;
+    let found = ids("upload.tsx", tsx);
+    for rule in [
+        "control-missing-label",
+        "img-missing-alt",
+        "tiny-text",
+        "placeholder-text",
+    ] {
+        assert!(found.contains(&rule), "{rule} went silent: {found:?}");
+    }
+    // Inside a `<script>` of a page, and in a CSS string.
+    let html = r#"<script>const g = "/*";</script><img src="a.png">"#;
+    assert!(ids("a.html", html).contains(&"img-missing-alt"));
+    let css = ".a::before { content: \"/*\"; }\n.b { font-size: 9px; }";
+    assert!(ids("a.css", css).contains(&"tiny-text"));
+    // Real comments are still blanked.
+    assert!(!ids("a.tsx", "const a = 1; /* <img src=\"x.png\" /> */").contains(&"img-missing-alt"));
+    assert!(!ids("a.tsx", "{/* <img src=\"x.png\" /> */}").contains(&"img-missing-alt"));
+}
+
+/// L12: `//` in element text is text, not a comment.
+#[test]
+fn double_slash_in_element_text_is_not_a_comment() {
+    let found = ids("a.tsx", "<p><code> // note</code><img src=\"a.png\" /></p>");
+    assert!(found.contains(&"img-missing-alt"), "{found:?}");
+    assert!(!ids("a.tsx", "  // <img src=\"a.png\" />\n").contains(&"img-missing-alt"));
+}
+
+/// H2: every way a small size is written.
+#[test]
+fn tiny_text_reads_every_way_a_size_is_written() {
+    let css = |value: &str| format!(".a {{ font-size: {value}; }}");
+    for small in [
+        "0.7em",
+        "70%",
+        "10px !important",
+        "x-small",
+        "xx-small",
+        "clamp(9px, 1vw, 11px)",
+        "min(10px, 2vw)",
+        "max(10px, 11px)",
+        "0.6rem",
+    ] {
+        assert!(ids("a.css", &css(small)).contains(&"tiny-text"), "{small}");
+    }
+    for fine in [
+        "0.75em",
+        "75%",
+        "12px !important",
+        "small",
+        "clamp(12px, 2vw, 16px)",
+        "max(10px, 2vw)",
+        "calc(0.5rem + 2px)",
+        "var(--size)",
+        "smaller",
+    ] {
+        assert!(!ids("a.css", &css(fine)).contains(&"tiny-text"), "{fine}");
+    }
+    fires(
+        "tiny-text",
+        "a.css",
+        "body { font: 600 10px/1.2 system-ui; }",
+        "body { font: 600 14px/1.4 system-ui; }",
+    );
+    for (bad, good) in [
+        ("text-[10px]/4", "text-[12px]/4"),
+        ("text-[11px]/[14px]", "text-sm/[14px]"),
+        ("text-[0.65em]", "text-[0.8em]"),
+        ("text-[length:10px]", "text-[length:12px]"),
+        ("text-[10px]!", "text-xs!"),
+    ] {
+        fires(
+            "tiny-text",
+            "a.tsx",
+            &format!(r#"<span className="{bad}">x</span>"#),
+            &format!(r#"<span className="{good}">x</span>"#),
+        );
+    }
+    fires(
+        "tiny-text",
+        "a.tsx",
+        "<p style={{ fontSize: '0.7em' }}>x</p>",
+        "<p style={{ fontSize: '1em' }}>x</p>",
+    );
+    // The fixes keep the rest of the value or class.
+    assert_eq!(
+        fix_of("tiny-text", "a.css", ".a { font-size: 10px !important; }").new,
+        ".a { font-size: 12px !important; }"
+    );
+    assert_eq!(
+        fix_of("tiny-text", "a.css", ".a { font-size: 0.7em; }").new,
+        ".a { font-size: 0.75em; }"
+    );
+    assert_eq!(
+        fix_of("tiny-text", "a.css", "b { font: 600 10px/1.2 system-ui; }").new,
+        "b { font: 600 12px/1.2 system-ui; }"
+    );
+    assert_eq!(
+        fix_of(
+            "tiny-text",
+            "a.tsx",
+            "<i className=\"text-[10px]/4\">x</i>\n"
+        )
+        .new,
+        "<i className=\"text-xs/4\">x</i>"
+    );
+}
+
+/// H3: the sup/sub exemption is the element, never a class that starts so.
+#[test]
+fn only_the_sup_and_sub_elements_are_small_print() {
+    for selector in [
+        ".card-subtitle",
+        ".subtle-note",
+        ".support-link",
+        "#subscribe small",
+        ".submenu a",
+    ] {
+        let css = format!("{selector} {{ font-size: 10px; }}");
+        assert!(ids("a.css", &css).contains(&"tiny-text"), "{selector}");
+    }
+    for selector in ["sup", "sub", ".note sub", "p > sup.ref"] {
+        let css = format!("{selector} {{ font-size: 10px; }}");
+        assert!(!ids("a.css", &css).contains(&"tiny-text"), "{selector}");
+    }
+}
+
+/// M9: backdrops, handlers that only stop the event, hidden and
+/// presentational elements are not clickable controls; the rule is a warning.
+#[test]
+fn non_semantic_button_skips_what_is_not_a_control() {
+    for fine in [
+        r#"<div className="panel" onClick={e => e.stopPropagation()}>Form</div>"#,
+        r#"<div className="panel" onClick={(e: React.MouseEvent) => { e.stopPropagation(); }}>Form</div>"#,
+        r#"<div className="fixed inset-0 bg-black/40" onClick={close} />"#,
+        r#"<div aria-hidden="true" onClick={close}>x</div>"#,
+        r#"<span role="presentation" onClick={close}>x</span>"#,
+    ] {
+        assert!(
+            !ids("a.tsx", fine).contains(&"non-semantic-button"),
+            "{fine}"
+        );
+    }
+    assert_eq!(
+        rule("non-semantic-button").unwrap().severity,
+        DesignSeverity::Warning
+    );
+}
+
+/// M6: the taste rules never outrank a user's request: advisory.
+#[test]
+fn taste_rules_are_advisory() {
+    for id in ["gradient-text", "ai-color-palette", "overused-font"] {
+        assert_eq!(rule(id).unwrap().severity, DesignSeverity::Advisory, "{id}");
+    }
+}
+
+/// L1: findings in JSX text sit on their own line, past `{…}` expressions.
+#[test]
+fn text_findings_keep_their_lines_past_expressions() {
+    let tsx = "<p>\n  {user.name}\n  {' '}Your text goes here\n</p>\n";
+    let (found, _) = check_source("a.tsx", tsx);
+    let filler = found
+        .iter()
+        .find(|f| f.rule == "placeholder-text")
+        .expect("filler");
+    assert_eq!(filler.line, 3);
+    let html = "<p>one &mdash; two</p>\n<p>Supercharge your team</p>\n";
+    let (found, _) = check_source("a.html", html);
+    let buzz = found
+        .iter()
+        .find(|f| f.rule == "marketing-buzzword")
+        .expect("buzzword");
+    assert_eq!(buzz.line, 2);
+}
+
+/// L2: two fixes on one line become one edit of that line.
+#[test]
+fn fixes_on_one_line_are_merged() {
+    let line = "<button className=\"outline-none text-[10px]\">Go</button>\n";
+    let (found, _) = check_source("a.tsx", line);
+    let fixes: Vec<&DesignReplacement> = found.iter().filter_map(|f| f.replace.as_ref()).collect();
+    assert_eq!(fixes.len(), 2);
+    let merged = "<button className=\"outline-none focus-visible:ring-2 focus-visible:ring-offset-2 text-xs\">Go</button>";
+    assert!(fixes.iter().all(|f| f.new == merged), "{fixes:?}");
+}
+
+/// L2: a fix applies only while its line is in the file exactly once.
+#[test]
+fn a_fix_applies_only_to_the_file_as_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.css");
+    std::fs::write(&file, ".a {\n  font-size: 10px;\n}\n").unwrap();
+    assert!(fix_applies(dir.path(), "a.css", "  font-size: 10px;").unwrap());
+    std::fs::write(
+        &file,
+        ".a {\n  font-size: 10px;\n}\n.b {\n  font-size: 10px;\n}\n",
+    )
+    .unwrap();
+    assert!(
+        !fix_applies(dir.path(), "a.css", "  font-size: 10px;").unwrap(),
+        "now twice"
+    );
+    std::fs::write(&file, ".a { font-size: 12px; }\n").unwrap();
+    assert!(
+        !fix_applies(dir.path(), "a.css", "  font-size: 10px;").unwrap(),
+        "gone"
+    );
+    assert!(fix_applies(dir.path(), "../a.css", "x").is_err());
+    assert!(fix_applies(dir.path(), ".env", "x").is_err());
+}
+
+/// L4: the byte budget is never passed, even by one file.
+#[test]
+fn the_byte_budget_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let chunk = ".a{}\n".repeat(100_000); // 500 KB
+    let mut paths = Vec::new();
+    for i in 0..17 {
+        let name = format!("f{i:02}.css");
+        std::fs::write(dir.path().join(&name), &chunk).unwrap();
+        paths.push(name);
+    }
+    let report = check_files(dir.path(), &paths);
+    assert!(report.partial);
+    assert!(report.files_checked as u64 * chunk.len() as u64 <= MAX_TOTAL_BYTES);
+    assert_eq!(report.files_checked, 16);
+    // Under the budget: every file, not partial.
+    let report = check_files(dir.path(), &paths[..3]);
+    assert!(!report.partial);
+    assert_eq!(report.files_checked, 3);
+}
+
+/// L8: lucide's `<Image>` icon has no source and is not an image.
+#[test]
+fn an_icon_component_named_image_is_not_an_image() {
+    fires(
+        "img-missing-alt",
+        "a.tsx",
+        r#"<Image src="/hero.png" width={800} height={400} />"#,
+        r#"<Image className="w-4 h-4" />"#,
+    );
+}
+
+/// L9: tests, stories and fixtures are not the product's interface.
+#[test]
+fn tests_stories_and_fixtures_are_left_out_of_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for path in [
+        "src/Card.tsx",
+        "src/Card.test.tsx",
+        "src/Card.spec.tsx",
+        "src/Card.stories.tsx",
+        "src/fixtures/page.html",
+        "src/__tests__/x.tsx",
+    ] {
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), "<p>Lorem ipsum</p>").unwrap();
+    }
+    assert_eq!(ui_files(root, "."), vec!["src/Card.tsx".to_string()]);
+    // Asked for by name, it is still checked.
+    assert_eq!(
+        ui_files(root, "src/Card.test.tsx"),
+        vec!["src/Card.test.tsx".to_string()]
+    );
+}
+
+/// L10: real UI copy that names a placeholder is not filler.
+#[test]
+fn copy_that_names_a_placeholder_is_not_filler() {
+    for copy in ["<label>Placeholder text</label>", "<p>Sample text size</p>"] {
+        assert!(!ids("a.html", copy).contains(&"placeholder-text"), "{copy}");
+    }
+    assert!(ids("a.html", "<p>Insert content here</p>").contains(&"placeholder-text"));
+}
+
+/// L11: near-white gray on a coloured fill is the recommended fix, not a flaw.
+#[test]
+fn near_white_gray_on_colour_is_fine() {
+    for shade in [50, 100, 200] {
+        let tag = format!(r#"<p className="text-gray-{shade} bg-blue-600">Hi</p>"#);
+        assert!(!ids("a.tsx", &tag).contains(&"gray-on-color"), "{shade}");
+    }
+    assert!(ids(
+        "a.tsx",
+        r#"<p className="text-gray-400 bg-blue-600">Hi</p>"#
+    )
+    .contains(&"gray-on-color"));
+}
+
+/// M8: of the files an agent wrote, only UI files outside build, dependency
+/// and test folders, that still exist.
+#[test]
+fn written_files_skip_build_output_and_tests() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for path in [
+        "src/App.tsx",
+        "dist/assets/index-abc.css",
+        "build/a.html",
+        "out/b.html",
+        "coverage/c.html",
+        "src/App.test.tsx",
+        "src/lib.rs",
+    ] {
+        std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        std::fs::write(root.join(path), "x").unwrap();
+    }
+    let absolute = root.join("src/App.tsx").display().to_string();
+    let written: Vec<String> = [
+        absolute.as_str(),
+        "./src/App.tsx",
+        "dist/assets/index-abc.css",
+        "build/a.html",
+        "out/b.html",
+        "coverage/c.html",
+        "src/App.test.tsx",
+        "src/lib.rs",
+        "src/Gone.tsx",
+        "../outside.tsx",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(
+        written_ui_files(root, &written),
+        vec!["src/App.tsx".to_string()]
+    );
 }

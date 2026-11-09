@@ -170,6 +170,15 @@ pub const BUNDLED: [BundledSkill; 6] = [
         skill_md: include_str!("../../skills/debug-systematically/SKILL.md"),
     },
     BundledSkill {
+        name: "design-polish",
+        title: "Design polish",
+        summary: "For user interface work: runs Shodh's design check, fixes what people cannot \
+                  use or read first, keeps the project's own look, and finishes with a clean \
+                  check.",
+        sources: &[impeccable(&["polish", "audit"])],
+        skill_md: include_str!("../../skills/design-polish/SKILL.md"),
+    },
+    BundledSkill {
         name: "verify-before-done",
         title: "Verify before done",
         summary: "Runs the build, the checks and the tests before saying work is done, and \
@@ -190,15 +199,6 @@ pub const BUNDLED: [BundledSkill; 6] = [
             egm(&["egm-review", "egm-resolve"]),
         ],
         skill_md: include_str!("../../skills/fresh-eyes-review/SKILL.md"),
-    },
-    BundledSkill {
-        name: "design-polish",
-        title: "Design polish",
-        summary: "For user interface work: runs Shodh's design check, fixes what people cannot \
-                  use or read first, keeps the project's own look, and finishes with a clean \
-                  check.",
-        sources: &[impeccable(&["polish", "audit"])],
-        skill_md: include_str!("../../skills/design-polish/SKILL.md"),
     },
 ];
 

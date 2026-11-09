@@ -431,21 +431,28 @@ impl Catalog {
         tx.commit()
     }
 
-    /// Marks a file failed (`reason` in plain words) or excluded, forgetting what was
-    /// recorded of its index.
+    /// Sets a file's state (found again, or excluded), forgetting what was recorded of its
+    /// index: the caller removed its chunks.
     pub fn set_state(&self, file_id: i64, state: FileState, reason: Option<&str>) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
-        if state != FileState::Failed {
-            clear_children(&tx, file_id)?;
-            tx.execute(
-                "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL WHERE id = ?1",
-                [file_id],
-            )?;
-        }
+        clear_children(&tx, file_id)?;
         tx.execute(
-            "UPDATE files SET state = ?2, failure = ?3 WHERE id = ?1",
+            "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL, state = ?2, failure = ?3 WHERE id = ?1",
             params![file_id, state.id(), reason],
+        )?;
+        tx.commit()
+    }
+
+    /// Marks a file failed at the size and time it had (`reason` in plain words): it is
+    /// tried again once it changes. The caller removed its chunks.
+    pub fn record_failure(&self, file_id: i64, size: u64, mtime: i64, reason: &str) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        clear_children(&tx, file_id)?;
+        tx.execute(
+            "UPDATE files SET parts = 0, turns = 0, indexed_at = NULL, fingerprint = NULL, state = 'failed', failure = ?2, size = ?3, mtime = ?4 WHERE id = ?1",
+            params![file_id, reason, size as i64, mtime],
         )?;
         tx.commit()
     }

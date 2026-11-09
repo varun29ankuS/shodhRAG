@@ -303,7 +303,19 @@ impl RecallIndex {
                 Err(e) if is_model_refusal(&e) => return Err(e),
                 Err(e) => {
                     tracing::warn!(target: "shodh::recall", file = record.id, error = %format!("{e:#}"), "a session could not be indexed");
-                    catalog.set_state(record.id, FileState::Failed, Some(&plain_failure(&e)))?;
+                    // Whatever it had in the index goes: the catalog no longer maps it.
+                    let stored_parts = known.get(&record.path).map_or(0, |s| s.parts);
+                    self.delete_parts(&FileRecord {
+                        parts: stored_parts.max(record.parts),
+                        ..record.clone()
+                    })
+                    .await?;
+                    catalog.record_failure(
+                        record.id,
+                        record.size,
+                        record.mtime,
+                        &plain_failure(&e),
+                    )?;
                     report.failed += 1;
                 }
             }
@@ -356,39 +368,53 @@ impl RecallIndex {
         let previous_count = record.parts.max(previous.len() as u32);
 
         let mut embedded = 0usize;
+        let mut changed_index = false;
+        let mut stopped = None;
+        let mut failure = None;
         for part in &parts {
             if previous.get(&part.number) == Some(&part.hash) && record.state == FileState::Indexed
             {
                 continue;
             }
             if (control.cancelled)() {
-                return Ok(FileOutcome::Stopped(Stopped::Cancelled));
+                stopped = Some(Stopped::Cancelled);
+                break;
             }
             if (control.paused)() {
-                return Ok(FileOutcome::Stopped(Stopped::Paused));
+                stopped = Some(Stopped::Paused);
+                break;
             }
-            let source = source_id(tool, record.id, part.number);
-            if part.chunks.is_empty() {
-                self.engine.write().await.delete_by_source(&source).await?;
-                continue;
+            match self.embed_part(record, &transcript, &label, part).await {
+                Ok(true) => {
+                    embedded += 1;
+                    changed_index = true;
+                }
+                Ok(false) => changed_index = true,
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
             }
-            let preparer = self.engine.read().await.file_preparer()?;
-            let metadata = part_metadata(record, &transcript, part.number);
-            let citation = Citation {
-                title: label.title.clone(),
-                source: source.clone(),
-                ..Citation::default()
+        }
+        if stopped.is_some() || failure.is_some() {
+            // Some parts are new and the catalog still maps the old ones: a receipt could
+            // open the wrong turn. The file leaves the index whole and is indexed again
+            // from the start next time.
+            if changed_index {
+                let count = previous_count.max(parts.len() as u32);
+                let mut engine = self.engine.write().await;
+                for number in 0..count {
+                    engine
+                        .delete_by_source(&source_id(tool, record.id, number))
+                        .await?;
+                }
+                drop(engine);
+                self.catalog.set_state(record.id, FileState::Found, None)?;
+            }
+            return match failure {
+                Some(e) => Err(e),
+                None => Ok(FileOutcome::Stopped(stopped.unwrap_or(Stopped::Cancelled))),
             };
-            let given: Vec<_> = part.chunks.iter().map(|c| c.chunk.clone()).collect();
-            let title = label.title.clone();
-            let source_for_prep = source.clone();
-            let prepared = tokio::task::spawn_blocking(move || {
-                preparer.prepare_given_chunks(&source_for_prep, &title, given, metadata, &citation)
-            })
-            .await
-            .context("embedding a session")??;
-            self.engine.write().await.commit_file(prepared).await?;
-            embedded += 1;
         }
         // Parts the transcript no longer has (it was rewritten shorter).
         if previous_count > parts.len() as u32 {
@@ -403,6 +429,38 @@ impl RecallIndex {
         let indexed = indexed_file(record, &transcript, &parts, redactor);
         self.catalog.record_indexed(record.id, &indexed, now)?;
         Ok(FileOutcome::Indexed { parts: embedded })
+    }
+
+    /// Embeds and stores one part of a transcript, replacing what it had; a part with
+    /// nothing to index is removed. Returns whether anything was embedded.
+    async fn embed_part(
+        &self,
+        record: &FileRecord,
+        transcript: &Transcript,
+        label: &SessionLabel,
+        part: &chunks::Part,
+    ) -> Result<bool> {
+        let source = source_id(record.tool, record.id, part.number);
+        if part.chunks.is_empty() {
+            self.engine.write().await.delete_by_source(&source).await?;
+            return Ok(false);
+        }
+        let preparer = self.engine.read().await.file_preparer()?;
+        let metadata = part_metadata(record, transcript, part.number);
+        let citation = Citation {
+            title: label.title.clone(),
+            source: source.clone(),
+            ..Citation::default()
+        };
+        let given: Vec<_> = part.chunks.iter().map(|c| c.chunk.clone()).collect();
+        let title = label.title.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            preparer.prepare_given_chunks(&source, &title, given, metadata, &citation)
+        })
+        .await
+        .context("embedding a session")??;
+        self.engine.write().await.commit_file(prepared).await?;
+        Ok(true)
     }
 
     /// Removes a session (every file of it) from the index; it is never indexed again.

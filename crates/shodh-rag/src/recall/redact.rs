@@ -189,13 +189,14 @@ impl Redactor {
     /// [`Self::redact`], and how many secrets were replaced.
     pub fn redact_counted(&self, text: &str) -> (String, usize) {
         let (out, count) = self.redact_core(text);
-        // Text with JSON escapes is also read with them undone: `\nAKIA…` is a key at the
-        // start of a line. That reading is kept only when it finds more secrets, so a
-        // Windows path (`C:\Users\runner`) is not turned into a line break needlessly.
-        if has_json_escapes(text) {
-            let (unescaped, more) = self.redact_core(&unescape_json(text));
-            if more > count {
-                return (unescaped, more);
+        // What is left is read again with its JSON escapes undone: `\nAKIA…` is a key at
+        // the start of a line. Both readings apply (the markers of the first survive the
+        // second); the second is kept only when it finds something, so a Windows path
+        // (`C:\Users\runner`) is not turned into a line break needlessly.
+        if has_json_escapes(&out) {
+            let (again, more) = self.redact_core(&unescape_json(&out));
+            if more > 0 {
+                return (again, count + more);
             }
         }
         (out, count)

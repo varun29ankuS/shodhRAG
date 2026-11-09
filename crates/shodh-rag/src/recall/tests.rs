@@ -2028,3 +2028,17 @@ fn redacting_again_changes_nothing() {
         assert_eq!(r.redact(&once), once, "{text}");
     }
 }
+
+#[test]
+fn both_readings_of_escaped_text_apply() {
+    // Read as written, the whole value `abc\ndefghij` is the password; read with the
+    // escape undone, only `abc` is, but only that reading finds the key after `\n`.
+    let akia = format!("AKIA{}", random(80, 16, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"));
+    let text = format!("{{\"env\":\"PASSWD=abc\ndefghij\",\"note\":\"key:\n{akia}\"}}");
+    let out = Redactor::default().redact(&text);
+    assert!(!out.contains("defghij"), "{out}");
+    assert!(!out.contains(&akia), "{out}");
+    // A Windows path with no secret in it is left as written.
+    let path = r#"{"path":"C:\Users\runner\notes.txt"}"#;
+    assert_eq!(Redactor::default().redact(path), path);
+}

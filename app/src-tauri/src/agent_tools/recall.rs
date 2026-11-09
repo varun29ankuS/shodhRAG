@@ -849,6 +849,8 @@ mod tests {
             matches!(err, ToolError::Unavailable(ref m) if m == OFF),
             "{err:?}"
         );
+        // Nothing asked while off opens the index again, which would make its folder.
+        assert!(!dir.exists(), "the folder came back");
     }
 
     #[tokio::test]

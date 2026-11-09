@@ -668,6 +668,10 @@ pub async fn recall_remove_session(
 ) -> Result<RecallStatus, String> {
     let tool =
         Tool::from_id(&tool).ok_or_else(|| format!("{tool} is not a coding tool Recall reads"))?;
+    // Off, nothing is opened: opening the index would make its folder again.
+    if !state.enabled() {
+        return Err(OFF.to_string());
+    }
     let index = state.index().await?;
     let _one = state.0.sync_lock.lock().await;
     index

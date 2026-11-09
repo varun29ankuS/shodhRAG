@@ -95,6 +95,10 @@ pub struct SearchAnswer {
     /// Sessions searched (those the filters allowed).
     pub searched: usize,
     pub took_ms: u64,
+    /// Of it, the hybrid search itself (vectors, keywords, rerank).
+    pub search_ms: u64,
+    /// Queries the search ran: 1, or the parts of a question it split.
+    pub sub_queries: usize,
 }
 
 /// A session listed by `scope`.
@@ -257,6 +261,8 @@ pub async fn search(
             sessions: Vec::new(),
             searched: sessions_searched.len(),
             took_ms: started.elapsed().as_millis() as u64,
+            search_ms: 0,
+            sub_queries: 0,
         });
     }
 
@@ -293,12 +299,14 @@ pub async fn search(
     // Several chunks per session wanted, so a session's best turns reach the grouping;
     // the source decay spreads them over sessions.
     let chunks_wanted = (limit * 4).max(20);
-    let results = index
+    let searching = std::time::Instant::now();
+    let (results, trace) = index
         .engine()
         .read()
         .await
-        .search_comprehensive(&query.text, chunks_wanted, Some(filter))
+        .search_traced(&query.text, chunks_wanted, Some(filter))
         .await?;
+    let search_ms = searching.elapsed().as_millis() as u64;
 
     // Ids the query names exactly.
     let mut exact: HashMap<SessionKey, Vec<String>> = HashMap::new();
@@ -450,6 +458,8 @@ pub async fn search(
         sessions,
         searched: sessions_searched.len(),
         took_ms: started.elapsed().as_millis() as u64,
+        search_ms,
+        sub_queries: trace.sub_queries,
     })
 }
 

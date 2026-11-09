@@ -812,6 +812,12 @@ pub struct QuestionResult {
     /// 1-based rank of the right session, when it came back.
     pub rank: Option<usize>,
     pub ms: f64,
+    /// Of it, the hybrid search itself.
+    pub search_ms: f64,
+    /// Queries the search ran (a question it split runs several).
+    pub sub_queries: usize,
+    /// The same search with the reranker off (a diagnosis, not gated).
+    pub ms_without_rerank: f64,
     /// What came back, by story key.
     pub returned: Vec<String>,
 }
@@ -828,6 +834,13 @@ pub struct Scorecard {
     pub p50_ms: f64,
     pub p95_ms: f64,
     pub max_ms: f64,
+    /// Where the time goes (not gated): the hybrid search alone, the whole search with
+    /// the reranker off, and how many questions were split into several queries.
+    pub p50_search_ms: f64,
+    pub p95_search_ms: f64,
+    pub p50_ms_without_rerank: f64,
+    pub p95_ms_without_rerank: f64,
+    pub split_questions: usize,
     pub index_seconds: f64,
     pub target_hit_at_5: f64,
     pub target_p95_ms: f64,
@@ -945,9 +958,39 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
             story: q.story.clone(),
             rank,
             ms,
+            search_ms: answer.search_ms as f64,
+            sub_queries: answer.sub_queries,
+            ms_without_rerank: 0.0,
             returned,
         });
     }
+    // The diagnosis: the same questions with the reranker off.
+    {
+        let mut engine = index.engine().write().await;
+        let search = engine.config().search.clone();
+        engine.set_search_config(search, false)?;
+    }
+    for r in &mut results {
+        let started = Instant::now();
+        query::search(
+            &index,
+            &settings,
+            &RecallQuery {
+                text: r.question.clone(),
+                limit: 5,
+                ..RecallQuery::default()
+            },
+        )
+        .await?;
+        r.ms_without_rerank = started.elapsed().as_secs_f64() * 1000.0;
+    }
+    let sorted = |values: Vec<f64>| {
+        let mut values = values;
+        values.sort_by(f64::total_cmp);
+        values
+    };
+    let search_times = sorted(results.iter().map(|r| r.search_ms).collect());
+    let plain_times = sorted(results.iter().map(|r| r.ms_without_rerank).collect());
     let n = results.len().max(1) as f64;
     let hit = |k: usize| {
         results
@@ -975,6 +1018,11 @@ pub async fn run(models: &Path, work: &Path) -> Result<Scorecard> {
         p50_ms: percentile(&times, 0.50),
         p95_ms: p95,
         max_ms: times.last().copied().unwrap_or(0.0),
+        p50_search_ms: percentile(&search_times, 0.50),
+        p95_search_ms: percentile(&search_times, 0.95),
+        p50_ms_without_rerank: percentile(&plain_times, 0.50),
+        p95_ms_without_rerank: percentile(&plain_times, 0.95),
+        split_questions: results.iter().filter(|r| r.sub_queries > 1).count(),
         index_seconds,
         target_hit_at_5: TARGET_HIT_AT_5,
         target_p95_ms: TARGET_P95_MS,
@@ -1020,6 +1068,17 @@ impl Scorecard {
         } else {
             "**Below target.**\n\n"
         });
+        out.push_str(&format!(
+            "Where the time goes (not gated): the hybrid search alone {:.0} ms median, {:.0} ms p95; \
+             the whole search with the reranker off {:.0} ms median, {:.0} ms p95; \
+             {} of {} questions split into several queries.\n\n",
+            self.p50_search_ms,
+            self.p95_search_ms,
+            self.p50_ms_without_rerank,
+            self.p95_ms_without_rerank,
+            self.split_questions,
+            self.questions
+        ));
         let misses: Vec<&QuestionResult> = self
             .results
             .iter()

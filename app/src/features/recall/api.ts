@@ -101,6 +101,10 @@ export interface RecallSearchAnswer {
   sessions: RecallSessionHit[];
   searched: number;
   tookMs: number;
+  /** Of it, the hybrid search itself. */
+  searchMs: number;
+  /** Queries the search ran (a question it split runs several). */
+  subQueries: number;
 }
 
 export interface RecallSessionSummary {

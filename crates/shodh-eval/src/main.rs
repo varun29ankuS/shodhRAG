@@ -33,6 +33,9 @@ USAGE:
                        [--timeout-secs <n>] [--runtime <dir>] [--out <dir>]
   shodh-eval generate  --corpus <dir> --models <dir> [--n <n>] [--seed <n>] [--out <dir>] [--force]
   shodh-eval compare   --baseline <file> [--baseline-int8 <file>] --report <file>
+  shodh-eval recall    --models <dir> [--out <dir>]
+                       Recall's scorecard on synthetic coding sessions: the right session in
+                       the top 5 (target 90%) and the 95th percentile search time (under 2 s)
   shodh-eval int8-kernels   prints exact where the opt-in int8 search model runs exactly
 
 Outputs default to .eval-local/runs/<corpus>-<hash>/ (git-ignored). `answers` and
@@ -398,6 +401,34 @@ async fn run(command: &str, rest: &[String]) -> Result<ExitCode> {
                 shodh_rag::embeddings::e5::int8_kernels().label()
             }
         ),
+        "recall" => {
+            let args = Args::parse(rest, &["models", "out"], &[])?;
+            let models = args.required_path("models")?;
+            let out = args
+                .path("out")
+                .unwrap_or_else(|| PathBuf::from(LOCAL_DIR).join("recall"));
+            prepare_output_dir(&out)?;
+            let work = tempfile::tempdir().context("a working folder for the recall corpus")?;
+            let card = shodh_eval::recall::run(&models, work.path()).await?;
+            let json = out.join("recall-report.json");
+            let md = out.join("recall-summary.md");
+            std::fs::write(&json, serde_json::to_vec_pretty(&card)?)
+                .with_context(|| format!("writing {}", json.display()))?;
+            let summary = card.markdown();
+            std::fs::write(&md, &summary).with_context(|| format!("writing {}", md.display()))?;
+            println!("{summary}");
+            eprintln!("Wrote {} and {}", json.display(), md.display());
+            if !card.passed {
+                eprintln!(
+                    "Recall is below its target: {:.1}% in the top 5 (target {:.0}%), p95 {:.0} ms (target under {:.0} ms)",
+                    card.hit_at_5 * 100.0,
+                    card.target_hit_at_5 * 100.0,
+                    card.p95_ms,
+                    card.target_p95_ms
+                );
+                return Ok(ExitCode::FAILURE);
+            }
+        }
         "help" | "--help" | "-h" => println!("{USAGE}"),
         other => bail!("unknown command '{other}'\n\n{USAGE}"),
     }

@@ -474,6 +474,25 @@ jobs:
           --nocapture
           --test-threads=1
 
+      # Recall's scorecard: synthetic coding sessions (crates/shodh-eval/src/recall.rs),
+      # indexed with the real models, asked the frozen questions in
+      # crates/shodh-eval/data/recall/questions.json. Fails below the target: the right
+      # session in the top 5 for at least 90% of them, and the 95th percentile of search
+      # time under 2 s.
+      - name: Recall scorecard
+        run: >
+          cargo run --package shodh-eval -- recall
+          --models "${{ runner.temp }}/shodh-models"
+          --out eval-out-recall
+
+      - name: Recall scorecard in the job summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path eval-out-recall/recall-summary.md) {
+            Get-Content eval-out-recall/recall-summary.md | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          }
+
       - name: Retrieval eval
         run: >
           cargo run --package shodh-eval -- retrieval
@@ -562,6 +581,8 @@ jobs:
             eval-out-papers/retrieval-summary.md
             eval-out-int8-*/retrieval-report.json
             eval-out-int8-*/retrieval-summary.md
+            eval-out-recall/recall-report.json
+            eval-out-recall/recall-summary.md
           if-no-files-found: ignore
 
   # The opt-in faster model (int8) on Apple silicon, the one ARM class the app

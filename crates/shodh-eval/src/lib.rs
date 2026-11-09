@@ -24,6 +24,7 @@ pub mod papers_gen;
 pub mod papers_text;
 pub mod pdf;
 pub mod provider;
+pub mod recall;
 pub mod report;
 pub mod retrieval;
 pub mod scan;

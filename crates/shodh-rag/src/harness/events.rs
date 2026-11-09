@@ -334,6 +334,8 @@ pub enum NavigationTarget {
     /// Open a code review in the code pane, its code shown with the reviewed
     /// lines selected.
     Review { review_id: String },
+    /// Open a design check's findings in the code pane.
+    DesignCheck { check_id: String },
     /// Show a Settings section, with one item highlighted when given: a setting
     /// (its key, e.g. `theme`) or, in `memory`, a memory (its id).
     Setting {
@@ -363,7 +365,7 @@ impl NavigationTarget {
     /// Every target kind, as serialised in `kind`. [`Self::kind`] is an
     /// exhaustive match, so a new variant cannot compile until it has a kind,
     /// and the coverage test checks this list against the frontend.
-    pub const KINDS: [&'static str; 13] = [
+    pub const KINDS: [&'static str; 14] = [
         "document",
         "calendar",
         "conversation",
@@ -374,6 +376,7 @@ impl NavigationTarget {
         "artifact",
         "code",
         "review",
+        "design_check",
         "setting",
         "library",
         "status",
@@ -392,6 +395,7 @@ impl NavigationTarget {
             Self::Artifact { .. } => "artifact",
             Self::Code { .. } => "code",
             Self::Review { .. } => "review",
+            Self::DesignCheck { .. } => "design_check",
             Self::Setting { .. } => "setting",
             Self::Library { .. } => "library",
             Self::Status { .. } => "status",
@@ -1129,6 +1133,13 @@ mod tests {
                 },
                 "review",
                 vec!["reviewId"],
+            ),
+            (
+                NavigationTarget::DesignCheck {
+                    check_id: "dc_1".into(),
+                },
+                "design_check",
+                vec!["checkId"],
             ),
             (
                 NavigationTarget::Setting {

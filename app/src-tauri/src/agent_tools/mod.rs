@@ -15,6 +15,7 @@ mod calendar;
 mod code_intel;
 mod code_map;
 mod code_review;
+mod design_check;
 pub(crate) mod export;
 mod figures;
 pub(crate) mod files;
@@ -210,6 +211,9 @@ pub trait HostEffects: Send + Sync {
     ) -> Result<crate::code_review_commands::StoredReview, String>;
     /// The model a code review would be sent to now, if known.
     fn review_target(&self) -> Option<ReviewTarget>;
+    /// A design check the assistant ran: keep it for the code pane and refresh its
+    /// badges ([`crate::design_check_commands::keep_and_announce`]).
+    fn design_check_done(&self, check: &crate::design_check_commands::StoredDesignCheck);
 }
 
 /// Everything an app tool can reach.
@@ -361,10 +365,18 @@ pub(crate) mod testing {
         pub reviews: Mutex<Vec<shodh_rag::code_review::ReviewRequest>>,
         /// The model a review would be sent to (none: unknown).
         pub review_target: Mutex<Option<ReviewTarget>>,
+        /// The ids of the design checks the assistant ran, as the pane keeps them.
+        pub design_checks: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
     impl HostEffects for Recorder {
+        fn design_check_done(&self, check: &crate::design_check_commands::StoredDesignCheck) {
+            self.design_checks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(check.id.clone());
+        }
         fn review_target(&self) -> Option<ReviewTarget> {
             self.review_target
                 .lock()
@@ -532,6 +544,7 @@ pub(crate) mod testing {
             removed_sources: Mutex::default(),
             reviews: Mutex::default(),
             review_target: Mutex::default(),
+            design_checks: Mutex::default(),
         });
         std::fs::create_dir_all(&effects.documents).unwrap();
         let roots = Arc::new(FixedRoots::default());

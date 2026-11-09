@@ -779,6 +779,7 @@ mod tests {
                 "debug-systematically true",
                 "verify-before-done true",
                 "fresh-eyes-review true",
+                "design-polish true",
                 "pdf-tools false",
             ]
         );

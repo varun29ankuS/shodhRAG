@@ -8,7 +8,9 @@ import {
   Copy,
   Info,
   Loader2,
+  Palette,
   Play,
+  RefreshCw,
   ScanEye,
   Send,
   ShieldAlert,
@@ -30,8 +32,11 @@ import { MermaidBlock } from '../ask/visual/MermaidBlock';
 import { CodeDiff, CodeFileView } from './CodeDiff';
 import { SymbolJump } from './SymbolJump';
 import { useCodeReview } from './CodeReviewContext';
-import { codeApi } from './api';
-import type { ReviewTarget } from './api';
+import { codeApi, designApi } from './api';
+import type { DesignCheckRequest, ReviewTarget } from './api';
+import { creationsApi } from '../artifacts/api';
+import { asReviewFinding, badgeDetail, badgeText, designFixProblem, isUiFile } from './designModel';
+import type { StoredDesignCheck } from './designModel';
 import { languageOf, selectedRun, textAsChange } from './diffModel';
 import {
   REVIEW_CHECKS,
@@ -46,7 +51,7 @@ import {
   reviewedWords,
   verification,
 } from './reviewModel';
-import type { Finding, RequestHelpers, ReviewCheck, Severity, StoredReview, TargetConversation } from './reviewModel';
+import type { Finding, RequestHelpers, ReviewCheck, Severity, TargetConversation } from './reviewModel';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -90,23 +95,28 @@ interface Pending {
   sent: () => void;
 }
 
+/** Where a finding came from: the fresh-eyes review, or the design check (its fix's problem worked out by the caller). */
+type FindingSource =
+  | { kind: 'review'; id: string; workspaceId: string | null; conversationId: string | null }
+  | { kind: 'design'; id: string; fixProblem: string | null };
+
 function FindingCard({
   finding,
   index,
-  review,
+  source,
   target,
   onCite,
   onAsk,
 }: {
   finding: Finding;
   index: number;
-  review: StoredReview;
+  source: FindingSource;
   target: TargetConversation | null;
   onCite: (finding: Finding) => void;
   onAsk: (pending: Pending) => void;
 }) {
   const pane = useCodeReview();
-  const key = `${review.id}:${index}`;
+  const key = `${source.id}:${index}`;
   const run = pane?.runs[key] ?? null;
   const status = verification(finding.verify, run);
   const Icon = SEVERITY_ICON[finding.severity];
@@ -116,9 +126,11 @@ function FindingCard({
         : status.status === 'inconclusive' ? CircleHelp
           : status.status === 'pending' ? Loader2
             : BookOpen;
-  const reviewPlace = { workspaceId: review.workspaceId, conversationId: review.conversationId };
+  const reviewPlace = source.kind === 'review' ? { workspaceId: source.workspaceId, conversationId: source.conversationId } : null;
   const checkProblem = conversationProblem(target, reviewPlace, 'check');
-  const fixProblem = finding.replace ? conversationProblem(target, reviewPlace, 'fix', finding.replace.path) : null;
+  const fixProblem = source.kind === 'design'
+    ? source.fixProblem
+    : finding.replace ? conversationProblem(target, reviewPlace, 'fix', finding.replace.path) : null;
   const replace = finding.replace;
   const verify = finding.verify;
   const fixChange = useMemo(
@@ -188,6 +200,12 @@ function FindingCard({
         </button>
       </div>
       {fixProblem && replace && <p className="m-0 text-caption text-shodh-text-muted">{fixProblem}</p>}
+      {source.kind === 'design' ? (
+        <p className="m-0 inline-flex items-start gap-1.5 rounded-md bg-shodh-raised px-2 py-1.5 text-caption text-shodh-text-muted">
+          <Palette className="w-3.5 h-3.5 mt-px shrink-0" aria-hidden="true" />
+          <span>Found by a design check rule. The same file always gives the same findings; no model is used.</span>
+        </p>
+      ) : (
       <div className="flex flex-col gap-1 rounded-md bg-shodh-raised px-2 py-1.5">
         <p className={cn('m-0 inline-flex items-start gap-1.5 text-caption', status.status === 'confirmed' ? 'text-shodh-success' : status.status === 'not_confirmed' ? 'text-shodh-text' : 'text-shodh-text-muted')}>
           <StatusIcon className={cn('w-3.5 h-3.5 mt-px shrink-0', status.status === 'pending' && 'animate-spin')} aria-hidden="true" />
@@ -219,6 +237,7 @@ function FindingCard({
           </>
         )}
       </div>
+      )}
     </li>
   );
 }
@@ -248,6 +267,8 @@ export function ReviewPane() {
 
   const subject = pane?.subject ?? null;
   const review = pane?.review ?? null;
+  const design = pane?.design ?? null;
+  const [designBusy, setDesignBusy] = useState(false);
   const conversation = session.activeConversation;
   const conversationMode = conversation?.mode ?? 'research';
   const agentMode = conversation ? resolveAgentMode(conversation.agentMode, conversation.messages.length > 0, defaultMode) : null;
@@ -346,7 +367,191 @@ export function ReviewPane() {
 
   const changes = useMemo(() => (subject?.kind === 'diff' ? subject.changes : null), [subject]);
 
-  if (!pane || !subject) return null;
+  // A design check opened (from a badge, a button or the assistant): the pane takes the focus.
+  useEffect(() => {
+    if (design) closeRef.current?.focus({ preventScroll: true });
+  }, [design?.id]);
+
+  /** Run the design check on `request`, keeping `keep` (the code shown) beside the findings. */
+  const runDesign = useCallback(
+    async (request: DesignCheckRequest, keep: typeof subject) => {
+      if (!pane || designBusy) return;
+      setDesignBusy(true);
+      setError(null);
+      try {
+        const found = await designApi.run(request);
+        pane.openDesign(found, keep);
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setDesignBusy(false);
+      }
+    },
+    [pane, designBusy],
+  );
+
+  /** A design finding's file:line: shown beside the findings, its lines selected. */
+  const onCiteDesign = useCallback(
+    (finding: Finding) => {
+      if (!pane || !design || !finding.citation) return;
+      const selection = citationSelection(finding.citation);
+      if (subject?.kind === 'file' && subject.path === selection.path) {
+        pane.setSelection(selection);
+        return;
+      }
+      const check: StoredDesignCheck = design;
+      const read = check.creationId
+        ? creationsApi.file(check.creationId, null, selection.path).then(file => file.text ?? '')
+        : check.workspaceId
+          ? codeApi.file(check.workspaceId, selection.path).then(file => file.text)
+          : Promise.reject(new Error('This check is not about a project folder or an artifact.'));
+      read
+        .then(text =>
+          pane.openDesign(check, {
+            kind: 'file',
+            title: selection.path,
+            path: selection.path,
+            text,
+            language: languageOf(selection.path),
+            firstLine: 1,
+            workspaceId: check.workspaceId,
+            selection,
+          }),
+        )
+        .catch(e => notify.error('The file could not be opened', { description: String(e) }));
+    },
+    [pane, design, subject],
+  );
+
+  if (!pane || (!subject && !design)) return null;
+  if (design) {
+    const findings = design.report.findings;
+    const again: DesignCheckRequest = {
+      workspaceId: design.workspaceId,
+      creationId: design.creationId,
+      conversationId: design.conversationId,
+      path: design.target.path,
+      changes: design.target.kind === 'changes',
+    };
+    const notes = [
+      design.report.skipped.length > 0 ? `${design.report.skipped.length} not read (${design.report.skipped.map(s => `${s.path}: ${s.reason}`).join('; ')}).` : '',
+      design.report.leftOut > 0 ? `${design.report.leftOut} more ${design.report.leftOut === 1 ? 'finding is' : 'findings are'} counted but not listed.` : '',
+      design.report.partial ? 'The check stopped at its file limit: check a smaller folder for the rest.' : '',
+    ].filter(Boolean);
+    return (
+      <aside
+        ref={pane.paneRef}
+        aria-label="Design check"
+        onKeyDown={e => {
+          if (e.key === 'Escape') {
+            e.stopPropagation();
+            if (pending) setPending(null);
+            else pane.close();
+          }
+        }}
+        className="fixed top-0 right-0 bottom-0 z-40 flex flex-col w-[min(680px,100vw)] border-l border-shodh-border bg-shodh-ground shadow-2xl"
+      >
+        <header className="flex items-center gap-2 px-4 h-12 shrink-0 border-b border-shodh-border-subtle">
+          <Palette className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
+          <h2 className="m-0 text-small font-semibold text-shodh-text">Design check</h2>
+          <p className="m-0 min-w-0 truncate font-mono text-caption text-shodh-text-muted">{revealHidden(design.target.label)}</p>
+          <button
+            type="button"
+            onClick={() => void runDesign(again, subject)}
+            disabled={designBusy}
+            className={cn('ml-auto', QUIET_BUTTON)}
+          >
+            {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />}
+            Check again
+          </button>
+          <button ref={closeRef} type="button" onClick={pane.close} className={QUIET_BUTTON}>
+            <X className="w-3.5 h-3.5" aria-hidden="true" />
+            Close
+          </button>
+        </header>
+        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin px-4 py-3 flex flex-col gap-3">
+          {subject?.kind === 'file' && (
+            <CodeFileView
+              path={subject.path}
+              text={subject.text}
+              language={subject.language}
+              firstLine={subject.firstLine}
+              label={subject.title}
+              selection={subject.selection}
+              onSelect={pane.setSelection}
+              maxHeight={300}
+            />
+          )}
+          {pending && (
+            <section
+              role="alertdialog"
+              aria-label="Send this fix to the conversation?"
+              className="flex flex-col gap-2 rounded-lg border border-shodh-warning/60 bg-shodh-surface px-3 py-2.5"
+            >
+              <p className="m-0 text-small font-semibold text-shodh-text">Send this fix to the conversation?</p>
+              <p className="m-0 text-caption text-shodh-text-muted">This exact message goes to the conversation. Its edit asks you before it is written, in every mode.</p>
+              <pre className="m-0 px-2 py-1.5 max-h-64 overflow-auto scrollbar-thin rounded bg-shodh-raised font-mono text-caption text-shodh-text whitespace-pre-wrap break-words">{revealHidden(pending.text)}</pre>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={confirm}
+                  className={cn('inline-flex items-center gap-2 h-8 px-3 rounded-lg text-small font-semibold bg-shodh-accent text-shodh-on-accent hover:bg-shodh-accent-hover', FOCUS_RING)}
+                >
+                  <Send className="w-4 h-4" aria-hidden="true" />
+                  Send to the conversation
+                </button>
+                <button type="button" onClick={() => setPending(null)} className={QUIET_BUTTON}>
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  Cancel
+                </button>
+              </div>
+            </section>
+          )}
+          {error && (
+            <p role="alert" className="m-0 text-small text-shodh-error">
+              {error}
+            </p>
+          )}
+          <section aria-label="Design check findings" className="flex flex-col gap-2">
+            <h3 className="m-0 text-small font-semibold text-shodh-text">{badgeText(design)}</h3>
+            <p className="m-0 text-caption text-shodh-text-muted">
+              {`${design.byAgent ? 'Asked for by the assistant. ' : ''}${badgeDetail(design)}`}
+              {notes.length > 0 ? ` ${notes.join(' ')}` : ''}
+            </p>
+            {findings.length === 0 ? (
+              <p className="m-0 inline-flex items-center gap-1.5 text-small text-shodh-success">
+                <CheckCircle2 className="w-4 h-4" aria-hidden="true" />
+                No issues found by the design check rules.
+              </p>
+            ) : (
+              <ol className="m-0 p-0 list-none flex flex-col gap-2">
+                {findings.map((finding, index) => (
+                  <FindingCard
+                    key={`${design.id}-${index}`}
+                    finding={asReviewFinding(finding)}
+                    index={index}
+                    source={{ kind: 'design', id: design.id, fixProblem: designFixProblem(target, design, finding) }}
+                    target={target}
+                    onCite={onCiteDesign}
+                    onAsk={setPending}
+                  />
+                ))}
+              </ol>
+            )}
+          </section>
+        </div>
+      </aside>
+    );
+  }
+  if (!subject) return null;
+  // The design check of what the pane shows: a UI file, a folder, or a project's changes.
+  const designRequest: DesignCheckRequest | null = subject.workspaceId
+    ? subject.kind === 'folder'
+      ? { workspaceId: subject.workspaceId, path: subject.folder }
+      : subject.kind === 'file'
+        ? isUiFile(subject.path) ? { workspaceId: subject.workspaceId, path: subject.path } : null
+        : { workspaceId: subject.workspaceId, conversationId: conversation?.mode === 'code' ? conversation.id : null, changes: true }
+    : null;
   const selection = subject.kind === 'folder' ? null : subject.selection;
   const built = requestFor(subject, check, { question, flows, context, folder }, canVerify, HELPERS);
   const ready = typeof built === 'string' ? null : built;
@@ -382,7 +587,19 @@ export function ReviewPane() {
         <ScanEye className="w-4 h-4 text-shodh-text-secondary" aria-hidden="true" />
         <h2 className="m-0 text-small font-semibold text-shodh-text">Code review</h2>
         <p className="m-0 min-w-0 truncate font-mono text-caption text-shodh-text-muted">{revealHidden(subject.title)}</p>
-        <button ref={closeRef} type="button" onClick={pane.close} className={cn('ml-auto', QUIET_BUTTON)}>
+        {designRequest && (
+          <button
+            type="button"
+            onClick={() => void runDesign(designRequest, subject)}
+            disabled={designBusy}
+            title="Checks the UI files here with Shodh's design rules (no model): contrast, text size, labels, alt text, focus, generated-UI tells."
+            className={cn('ml-auto', QUIET_BUTTON)}
+          >
+            {designBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <Palette className="w-3.5 h-3.5" aria-hidden="true" />}
+            Design check
+          </button>
+        )}
+        <button ref={closeRef} type="button" onClick={pane.close} className={cn(!designRequest && 'ml-auto', QUIET_BUTTON)}>
           <X className="w-3.5 h-3.5" aria-hidden="true" />
           Close
         </button>
@@ -554,7 +771,7 @@ export function ReviewPane() {
                   key={`${review.id}-${index}`}
                   finding={finding}
                   index={index}
-                  review={review}
+                  source={{ kind: 'review', id: review.id, workspaceId: review.workspaceId, conversationId: review.conversationId }}
                   target={target}
                   onCite={onCite}
                   onAsk={setPending}

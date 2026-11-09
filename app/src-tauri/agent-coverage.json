@@ -142,6 +142,9 @@
     "code_savings_set_default": { "excluded": "Sets whether new Code conversations shorten command output for the agent; only the user decides how the agent's own inputs are shaped." },
     "code_skills_list": { "tool": "code_skills" },
     "code_skills_set_enabled": { "excluded": "Which bundled Code skills are on decides the instructions the agent may load; only the user changes it, as with installed skills." },
+    "design_check_run": { "tool": "design_check" },
+    "design_check_get": { "excluded": "Shows the user a design check the code pane keeps, by its id; the assistant gets the findings of a check it runs straight from design_check and has no use for reopening one by id." },
+    "design_check_latest": { "excluded": "Reads the latest design check of a conversation or an artifact for its badge in the Code status line and on the Artifacts page; the assistant runs a fresh check with design_check, which returns every finding." },
     "creation_get": { "tools": ["list_artifacts", "open_artifact"] },
     "creation_for_conversation": { "tool": "list_artifacts" },
     "creation_files": { "tool": "open_artifact" },
@@ -349,6 +352,7 @@
       "artifact": ["open_artifact"],
       "code": ["open_code"],
       "review": ["review_code"],
+      "design_check": ["design_check"],
       "setting": ["show_setting", "update_setting"],
       "library": ["show_paper", "show_snippet", "create_snippet"],
       "status": ["system_status", "pause_indexing", "resume_indexing", "cancel_indexing"]

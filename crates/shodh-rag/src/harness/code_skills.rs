@@ -1,5 +1,6 @@
 //! Shodh's bundled building skills for Code mode: plan first, test first,
-//! debug systematically, verify before done, and a fresh-eyes review.
+//! debug systematically, verify before done, a fresh-eyes review, and design
+//! polish for user interface work.
 //!
 //! How they load: omp runs with `--no-skills` and omp's own skill settings
 //! off ([`super::sidecar`]), so omp never reads a skill folder by itself.
@@ -13,8 +14,9 @@
 //! other skill; the user turns each on or off in Settings → Code.
 //!
 //! The set is one merged framework, not several side by side: each skill
-//! was rewritten from obra/superpowers (MIT), affaan-m/ECC (MIT) and
-//! google/elephant-goldfish-model (Apache-2.0) with their conflicts resolved
+//! was rewritten from obra/superpowers (MIT), affaan-m/ECC (MIT),
+//! google/elephant-goldfish-model (Apache-2.0) and pbakaus/impeccable
+//! (Apache-2.0, design-polish) with their conflicts resolved
 //! (written in each skill's "Sources and credit"), and every skill names the
 //! others in one order. Their licence texts travel with each skill. No skill
 //! changes Shodh's mode or approvals or tells the agent to get around them
@@ -66,6 +68,7 @@ const SUPERPOWERS_LICENSE: &str = include_str!("../../skills/licenses/superpower
 const ECC_LICENSE: &str = include_str!("../../skills/licenses/ECC-MIT.txt");
 const EGM_LICENSE: &str =
     include_str!("../../skills/licenses/elephant-goldfish-model-Apache-2.0.txt");
+const IMPECCABLE_LICENSE: &str = include_str!("../../skills/licenses/impeccable-Apache-2.0.txt");
 
 const SUPERPOWERS: &str = "obra/superpowers";
 const SUPERPOWERS_URL: &str = "https://github.com/obra/superpowers";
@@ -79,6 +82,11 @@ const EGM: &str = "google/elephant-goldfish-model";
 const EGM_URL: &str = "https://github.com/google/elephant-goldfish-model";
 const EGM_COMMIT: &str = "e9e1f06aa4e26e95cd4ed37210a0632202c429e9";
 const EGM_FILE: &str = "LICENSE-elephant-goldfish-model.txt";
+const IMPECCABLE: &str = "pbakaus/impeccable";
+const IMPECCABLE_URL: &str = "https://github.com/pbakaus/impeccable";
+/// The same commit the design check's rules were ported from.
+const IMPECCABLE_COMMIT: &str = crate::design_check::rules::IMPECCABLE_COMMIT;
+const IMPECCABLE_FILE: &str = "LICENSE-impeccable.txt";
 
 const fn superpowers(skills: &'static [&'static str]) -> Source {
     Source {
@@ -116,8 +124,20 @@ const fn egm(skills: &'static [&'static str]) -> Source {
     }
 }
 
+const fn impeccable(skills: &'static [&'static str]) -> Source {
+    Source {
+        project: IMPECCABLE,
+        url: IMPECCABLE_URL,
+        commit: IMPECCABLE_COMMIT,
+        license: "Apache-2.0",
+        skills,
+        license_file: IMPECCABLE_FILE,
+        license_text: IMPECCABLE_LICENSE,
+    }
+}
+
 /// The bundled skills, in the order they are used.
-pub const BUNDLED: [BundledSkill; 5] = [
+pub const BUNDLED: [BundledSkill; 6] = [
     BundledSkill {
         name: "plan-before-building",
         title: "Plan before building",
@@ -170,6 +190,15 @@ pub const BUNDLED: [BundledSkill; 5] = [
             egm(&["egm-review", "egm-resolve"]),
         ],
         skill_md: include_str!("../../skills/fresh-eyes-review/SKILL.md"),
+    },
+    BundledSkill {
+        name: "design-polish",
+        title: "Design polish",
+        summary: "For user interface work: runs Shodh's design check, fixes what people cannot \
+                  use or read first, keeps the project's own look, and finishes with a clean \
+                  check.",
+        sources: &[impeccable(&["polish", "audit"])],
+        skill_md: include_str!("../../skills/design-polish/SKILL.md"),
     },
 ];
 

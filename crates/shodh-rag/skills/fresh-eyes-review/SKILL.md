@@ -13,8 +13,9 @@ The one who wrote the code is the worst placed to see what is missing: they
 read what they meant, not what is there. A reviewer that has never seen the
 conversation reads only what is there.
 
-Last of Shodh's five building skills (plan-before-building → test-first →
-debug-systematically → verify-before-done → **fresh-eyes-review**).
+Fifth of Shodh's six building skills (plan-before-building → test-first →
+debug-systematically → verify-before-done → **fresh-eyes-review** →
+design-polish, for user interface work).
 
 ## The reviewer
 

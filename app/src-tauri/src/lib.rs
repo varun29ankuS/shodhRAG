@@ -60,6 +60,7 @@ mod code_intel_commands;
 mod code_map_commands;
 mod code_review_commands;
 mod conversation_commands;
+mod design_check_commands;
 mod event_emitter;
 
 use tauri::Manager;
@@ -223,6 +224,7 @@ pub fn run() {
         )
         .manage(shutdown::ShutdownState::default())
         .manage(code_review_commands::CodeReviewState::default())
+        .manage(design_check_commands::DesignCheckState::default())
         .setup(|app| {
             // Installed builds have no console: from here on the log is also kept in
             // `<app data>/logs/shodh.log`. A folder that can't be written keeps stderr only.
@@ -944,6 +946,9 @@ pub fn run() {
             code_review_commands::code_review_target,
             code_review_commands::code_file_read,
             code_review_commands::code_diff,
+            design_check_commands::design_check_run,
+            design_check_commands::design_check_get,
+            design_check_commands::design_check_latest,
             creation_commands::creation_preview,
             creation_commands::creation_preview_status,
             creation_commands::creation_preview_focus,

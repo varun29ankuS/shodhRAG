@@ -12,8 +12,9 @@ metadata:
 "It should work" is not evidence. Claim only what a command you ran just now
 shows.
 
-Fourth of Shodh's five building skills (plan-before-building → test-first →
-debug-systematically → **verify-before-done** → fresh-eyes-review).
+Fourth of Shodh's six building skills (plan-before-building → test-first →
+debug-systematically → **verify-before-done** → fresh-eyes-review →
+design-polish).
 
 **No claim of success without fresh evidence from this conversation.**
 

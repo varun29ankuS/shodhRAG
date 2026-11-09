@@ -34,6 +34,7 @@ use shodh_rag::harness::tools::{
 };
 use shodh_rag::harness::RiskTier;
 
+use super::design_check::{DesignCheckTool, Place};
 use super::{invalid, str_arg, AgentHost, HostEffects};
 use crate::agent_session_commands::{inside_code_folder, workspace_code_folder};
 use crate::workspace_commands::WorkspaceState;
@@ -68,8 +69,9 @@ pub(super) fn register(
     Ok(())
 }
 
-/// A Code session's code tools, on its workspace: `open_code` and `review_code`,
-/// whose reviewer may propose checks the session's mode then decides.
+/// A Code session's code tools, on its workspace: `open_code`, `review_code`,
+/// whose reviewer may propose checks the session's mode then decides, and
+/// `design_check` on the project's UI files.
 pub fn code_review_tools(
     effects: Arc<dyn HostEffects>,
     workspaces: WorkspaceState,
@@ -87,12 +89,26 @@ pub fn code_review_tools(
         Arc::new(OpenCodeTool {
             shared: shared.clone(),
         }),
-        Arc::new(ReviewCodeTool { shared }),
+        Arc::new(ReviewCodeTool {
+            shared: shared.clone(),
+        }),
+        Arc::new(DesignCheckTool {
+            effects: shared.effects.clone(),
+            data_dir: shared.data_dir.clone(),
+            place: Place::Code {
+                workspaces: shared.workspaces.clone(),
+                workspace_id: shared.workspace_id.clone(),
+            },
+        }),
     ]
 }
 
 /// The tools' names, which no MCP server or skill may take in a Code session.
-pub const CODE_REVIEW_TOOL_NAMES: [&str; 2] = [app_tools::OPEN_CODE, app_tools::REVIEW_CODE];
+pub const CODE_REVIEW_TOOL_NAMES: [&str; 3] = [
+    app_tools::OPEN_CODE,
+    app_tools::REVIEW_CODE,
+    app_tools::DESIGN_CHECK,
+];
 
 struct Shared {
     effects: Arc<dyn HostEffects>,

@@ -12,8 +12,9 @@ metadata:
 Guessing at fixes is slower than finding the cause. A fix that removes the
 symptom and leaves the cause comes back, usually somewhere worse.
 
-Third of Shodh's five building skills (plan-before-building → test-first →
-**debug-systematically** → verify-before-done → fresh-eyes-review). Use it
+Third of Shodh's six building skills (plan-before-building → test-first →
+**debug-systematically** → verify-before-done → fresh-eyes-review →
+design-polish). Use it
 whenever something fails, including the tests test-first just ran.
 
 **No fix before the root cause is found.**

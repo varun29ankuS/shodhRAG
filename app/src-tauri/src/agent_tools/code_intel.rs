@@ -271,7 +271,8 @@ impl HostTool for CodeSkillsTool {
     fn description(&self) -> &str {
         if self.code_session {
             "List Shodh's bundled Code skills (plan before building, test first, debug \
-             systematically, verify before done, fresh-eyes review): whether each is on, what it \
+             systematically, verify before done, fresh-eyes review, design polish): whether \
+             each is on, what it \
              does and the projects it was written from. With name, describe one; its \
              instructions are returned only when the user has it on. A skill that is off must \
              not be followed. This changes nothing; only the user turns skills on or off, in \

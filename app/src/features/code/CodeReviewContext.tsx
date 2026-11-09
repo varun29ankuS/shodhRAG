@@ -4,11 +4,12 @@ import { useAgentSession } from '../agent/useAgentSession';
 import type { AgentEventEnvelope } from '../agent/events';
 import { matchesShortcut } from '../../lib/shortcuts';
 import { notify } from '../../lib/notify';
-import { codeApi } from './api';
+import { codeApi, designApi } from './api';
 import { languageOf } from './diffModel';
 import type { LineSelection } from './diffModel';
 import { linesAtOffsets, piecesAsChanges, reviewedSelection, withOutput } from './reviewModel';
 import type { CheckRun, ReviewSubject, StoredReview } from './reviewModel';
+import type { StoredDesignCheck } from './designModel';
 
 export type { ReviewSubject } from './reviewModel';
 
@@ -26,6 +27,10 @@ interface CodeReviewValue {
   subject: ReviewSubject | null;
   review: StoredReview | null;
   setReview: (review: StoredReview | null) => void;
+  /** A design check whose findings the pane shows (with or without code beside them). */
+  design: StoredDesignCheck | null;
+  /** Show a design check's findings; the subject (a file it cites) stays if given. */
+  openDesign: (check: StoredDesignCheck, subject?: ReviewSubject | null) => void;
   setSelection: (selection: LineSelection | null) => void;
   /** Checks run in the conversation, by `reviewId:findingIndex`. */
   runs: Record<string, CheckRun>;
@@ -81,6 +86,7 @@ export function isTextEntry(element: Element | null): boolean {
 export function CodeReviewProvider({ children }: { children: React.ReactNode }) {
   const [subject, setSubject] = useState<ReviewSubject | null>(null);
   const [review, setReview] = useState<StoredReview | null>(null);
+  const [design, setDesign] = useState<StoredDesignCheck | null>(null);
   const [runs, setRuns] = useState<Record<string, CheckRun>>({});
   const [runRequest, setRunRequest] = useState(0);
   const sources = useRef(new Set<ReviewSource>());
@@ -93,10 +99,17 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
   const open = useCallback((next: ReviewSubject) => {
     setSubject(next);
     setReview(null);
+    setDesign(null);
   }, []);
   const close = useCallback(() => {
     setSubject(null);
     setReview(null);
+    setDesign(null);
+  }, []);
+  const openDesign = useCallback((check: StoredDesignCheck, next?: ReviewSubject | null) => {
+    setSubject(next ?? null);
+    setReview(null);
+    setDesign(check);
   }, []);
   const setSelection = useCallback((selection: LineSelection | null) => {
     setSubject(current => (current && current.kind !== 'folder' ? { ...current, selection } : current));
@@ -132,6 +145,14 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
         setReview(found);
       })
       .catch(e => notify.error('The review could not be opened', { description: String(e) }));
+  });
+
+  // A design check the assistant ran (`design_check`): the pane opens on its findings.
+  useNavigationTarget('design_check', target => {
+    designApi
+      .get(target.checkId)
+      .then(found => openDesign(found))
+      .catch(e => notify.error('The design check could not be opened', { description: String(e) }));
   });
 
   // The assistant pointed at code (`open_code`): a file at lines, or the conversation's changes.
@@ -209,8 +230,8 @@ export function CodeReviewProvider({ children }: { children: React.ReactNode }) 
   }, [subject, open]);
 
   const value = useMemo<CodeReviewValue>(
-    () => ({ open, close, subject, review, setReview, setSelection, runs, awaitCheck, register, runRequest, paneRef }),
-    [open, close, subject, review, setSelection, runs, awaitCheck, register, runRequest],
+    () => ({ open, close, subject, review, setReview, design, openDesign, setSelection, runs, awaitCheck, register, runRequest, paneRef }),
+    [open, close, subject, review, design, openDesign, setSelection, runs, awaitCheck, register, runRequest],
   );
   return <CodeReviewContext.Provider value={value}>{children}</CodeReviewContext.Provider>;
 }

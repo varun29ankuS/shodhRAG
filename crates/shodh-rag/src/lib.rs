@@ -10,6 +10,7 @@ pub mod code_review;
 pub mod compute;
 pub mod config;
 pub mod connectors;
+pub mod design_check;
 pub mod embeddings;
 pub mod folder_sync;
 pub mod harness;

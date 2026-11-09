@@ -105,6 +105,10 @@ impl HostEffects for TauriEffects {
         crate::indexing_control::status_json(&self.app).await
     }
 
+    fn design_check_done(&self, check: &crate::design_check_commands::StoredDesignCheck) {
+        crate::design_check_commands::keep_and_announce(&self.app, check);
+    }
+
     fn review_target(&self) -> Option<super::ReviewTarget> {
         crate::code_review_commands::review_target(&self.app)
     }

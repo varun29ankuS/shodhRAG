@@ -68,12 +68,15 @@ pub mod app_tools {
     pub const CODE_TOKENS_SAVED: &str = "code_tokens_saved";
     /// Shodh's bundled Code skills: which are on, what each does, where it came from.
     pub const CODE_SKILLS: &str = "code_skills";
+    /// Shodh's deterministic design check of UI files: an artifact in any chat, the
+    /// project's files in a Code session, the creation in a Creator session.
+    pub const DESIGN_CHECK: &str = "design_check";
     /// A Code session's own tool (with its workspace), not in [`ALL`]: a Research chat
     /// has no code folder to send to a reviewer.
     pub const REVIEW_CODE: &str = "review_code";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 57] = [
+    pub const ALL: [&str; 58] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -131,6 +134,7 @@ pub mod app_tools {
         SHOW_SNIPPET,
         CODE_TOKENS_SAVED,
         CODE_SKILLS,
+        DESIGN_CHECK,
     ];
 }
 

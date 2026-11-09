@@ -29,11 +29,12 @@ pub const INDEX_VERSION: u32 = 2;
 pub const INDEX_DIR: &str = "index";
 /// The catalog, in Recall's folder.
 pub const CATALOG_FILE: &str = "recall.db";
-/// Candidates the reranker reads per chunk a search asks for.
+/// Fused candidates (vectors and keywords) per chunk a search asks for.
 pub const SEARCH_CANDIDATE_MULTIPLIER: usize = 3;
-/// Candidates the reranker reads at most (one batch of the cross-encoder): on a CI
-/// runner's CPU each whole-turn candidate costs about a tenth of a second.
-pub const RERANK_CANDIDATES: usize = 16;
+/// Candidates the reranker reads at most. On a CI runner's CPU each turn costs about
+/// a tenth of a second: 16 put the scorecard's 95th percentile at 2.02 s, over the
+/// 2 s target; 10 leave room for a slower computer.
+pub const RERANK_CANDIDATES: usize = 10;
 /// `source_type` of every chunk Recall stores.
 pub const SOURCE_TYPE: &str = "recall";
 

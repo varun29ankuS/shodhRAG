@@ -460,7 +460,7 @@ mod tests {
         skill_settings::set_code_skill(dir.path(), "test-first", false).unwrap();
         let tools = code_intel_tools(dir.path().to_path_buf(), "conv-1");
         let list = tools[1].execute(json!({}), &ctx()).await.unwrap();
-        assert_eq!(list.summary_for_ui, "4 of 5 Code skills on");
+        assert_eq!(list.summary_for_ui, "5 of 6 Code skills on");
         assert!(list
             .text_for_model
             .contains("- test-first (off): Test first"));

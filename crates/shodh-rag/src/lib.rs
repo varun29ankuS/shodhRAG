@@ -21,6 +21,7 @@ pub mod log_safe;
 pub mod path_case;
 pub mod processing;
 pub mod rag_engine;
+pub mod recall;
 pub mod reranking;
 pub mod research;
 pub mod search;

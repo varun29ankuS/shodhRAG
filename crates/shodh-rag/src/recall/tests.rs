@@ -2012,3 +2012,19 @@ async fn hard_secrets_planted_in_a_session_never_leave_it() {
         }
     }
 }
+
+#[test]
+fn redacting_again_changes_nothing() {
+    let r = Redactor::default();
+    for text in [
+        "token: abcdefghijklmnopqrstuvwx",
+        "SMTP_PASS=abcdefghijklmnop",
+        "\"password\": \"admin:admin\"",
+        "mail ada.lovelace@example.org",
+        "curl -u admin:S3cr3tPass https://es.internal",
+    ] {
+        let once = r.redact(text);
+        assert_ne!(once, text);
+        assert_eq!(r.redact(&once), once, "{text}");
+    }
+}

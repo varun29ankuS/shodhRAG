@@ -312,14 +312,19 @@ fn is_placeholder(value: &str) -> bool {
         .unwrap_or_else(|e| panic!("{e}"))
     });
     let v = value.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+    // A word of code ends a statement or an item (`token: string;`, `key: null,`).
+    let word = v.trim_end_matches([';', ',']);
     v.is_empty()
         || REFERENCE.is_match(v)
+        // A marker an earlier rule wrote, cut at its `]` by the inline value class.
+        || v == "[EMAIL"
+        || v == "[REDACTED"
         // The first word of `<your key here>` once a value stops at a space.
         || (v.starts_with('<') && !v.chars().any(|c| c.is_ascii_digit()))
         || ["null", "none", "nil", "true", "false", "undefined", "required", "optional"]
             .iter()
-            .any(|w| v.eq_ignore_ascii_case(w))
-        || TYPE_WORDS.iter().any(|w| v.eq_ignore_ascii_case(w))
+            .any(|w| word.eq_ignore_ascii_case(w))
+        || TYPE_WORDS.iter().any(|w| word.eq_ignore_ascii_case(w))
         || v.chars().all(|c| c == '*' || c == 'x' || c == 'X' || c == '.' || c == '•')
 }
 

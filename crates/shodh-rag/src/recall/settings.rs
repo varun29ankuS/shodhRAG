@@ -94,7 +94,8 @@ impl RecallSettings {
 
     /// Whether a session of `tool` is read: its tool is chosen, the folder it started in
     /// (`chains[0]`) is included, and no folder it worked in (any of `chains`) is
-    /// excluded. A project excluded excludes its subfolders and worktrees inside it.
+    /// excluded. A project excluded excludes every folder inside it; a worktree elsewhere
+    /// is a project of its own.
     pub fn wants(&self, tool: Tool, chains: &[Vec<String>]) -> bool {
         self.enabled
             && self.tools.contains(&tool)

@@ -290,7 +290,9 @@ pub async fn search(
             ..MetadataFilter::default()
         }
     };
-    let chunks_wanted = (limit * 8).max(40);
+    // Several chunks per session wanted, so a session's best turns reach the grouping;
+    // the source decay spreads them over sessions.
+    let chunks_wanted = (limit * 4).max(20);
     let results = index
         .engine()
         .read()

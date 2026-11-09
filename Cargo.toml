@@ -74,6 +74,13 @@ opt-level = 3
 [profile.dev.package.tree-sitter-go]
 opt-level = 3
 
+# Every search and every chunk indexed is tokenized (the E5 model, and the reranker
+# fitting each candidate to its window, several times per candidate); unoptimized it
+# is many times slower, so the search time CI measures (Recall's scorecard) would not
+# be a user's.
+[profile.dev.package.tokenizers]
+opt-level = 3
+
 # llama-cpp-sys-2's build script links `msvcrtd` (the debug CRT) whenever the build
 # script itself was compiled with debug assertions, even though it builds llama.cpp
 # as Release /MD. In dev/test builds that pulled the debug CRT into every binary

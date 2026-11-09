@@ -29,6 +29,8 @@ pub const INDEX_VERSION: u32 = 1;
 pub const INDEX_DIR: &str = "index";
 /// The catalog, in Recall's folder.
 pub const CATALOG_FILE: &str = "recall.db";
+/// Candidates the reranker reads per chunk a search asks for.
+pub const SEARCH_CANDIDATE_MULTIPLIER: usize = 3;
 /// `source_type` of every chunk Recall stores.
 pub const SOURCE_TYPE: &str = "recall";
 
@@ -73,6 +75,10 @@ impl RecallIndex {
             .map(|c| c.dimension)
             .unwrap_or(crate::embeddings::e5::E5_DIMENSION);
         config.embedding.compute = compute;
+        // The reranker reads `k * candidate_multiplier` candidates, each a whole turn:
+        // three per chunk asked for keeps a search of five sessions under the 2 s target
+        // on a CPU (the scorecard, crates/shodh-eval/src/recall.rs, measures it).
+        config.search.candidate_multiplier = SEARCH_CANDIDATE_MULTIPLIER;
         let engine = RAGEngine::new(config)
             .await
             .context("Recall's index could not be opened")?;

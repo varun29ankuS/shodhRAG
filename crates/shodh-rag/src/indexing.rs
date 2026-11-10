@@ -1109,6 +1109,15 @@ pub(crate) async fn index_folder_observed(
 
     let ((), stopped) = futures::join!(reader, batches);
 
+    // Detached: merging files and indexing vectors takes seconds to minutes on
+    // a large library, and the run is over for the user.
+    let maintenance = rag.read().await.store_maintenance();
+    tokio::spawn(async move {
+        if let Err(e) = maintenance.run_if_changed().await {
+            tracing::warn!(error = %format!("{e:#}"), "chunk store maintenance failed");
+        }
+    });
+
     emit_progress(
         emitter,
         space_id,

@@ -5029,12 +5029,15 @@ impl RAGEngine {
         Ok(())
     }
 
-    /// Trigger index creation if needed (after large ingestion)
+    /// Merges the chunk store's files, prunes old versions and updates the
+    /// vector index now.
     pub async fn optimize(&self) -> Result<()> {
-        // Compact LanceDB to remove tombstoned rows from previous deletions
-        self.store.compact().await?;
-        // Create vector index if enough rows exist
-        self.store.create_index_if_needed().await
+        self.store.compact().await
+    }
+
+    /// The chunk store's maintenance handle, usable without the engine lock.
+    pub fn store_maintenance(&self) -> crate::storage::StoreMaintenance {
+        self.store.maintenance()
     }
 
     /// Rebuild the Tantivy full-text index from LanceDB.

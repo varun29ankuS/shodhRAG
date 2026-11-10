@@ -125,6 +125,12 @@ pub struct SearchConfig {
     /// question about that file needs) are never displaced.
     #[serde(default = "default_pool_open_share")]
     pub pool_open_share: f32,
+    /// Candidates the cross-encoder reads at most, the best by fused score; the rest
+    /// are left out of the results. 0 = every candidate, the default (the library's
+    /// evals are measured so). Recall, whose candidates are whole turns, reads fewer to
+    /// keep a search under two seconds on a CPU.
+    #[serde(default)]
+    pub rerank_candidates: usize,
 }
 
 fn default_pool_open_share() -> f32 {
@@ -233,6 +239,7 @@ impl Default for RAGConfig {
                 source_decay: default_source_decay(),
                 pool_source_cap: default_pool_source_cap(),
                 pool_open_share: default_pool_open_share(),
+                rerank_candidates: 0,
             },
             features: FeatureFlags {
                 enable_reranking: true,

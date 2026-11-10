@@ -343,7 +343,8 @@ pub enum NavigationTarget {
         item: Option<String>,
     },
     /// Show a part of the Library: `snippets` (a snippet highlighted by its id),
-    /// `graph` (the paper graph) or `paper` (a paper's page, by its id).
+    /// `graph` (the paper graph), `paper` (a paper's page, by its id) or `recall` (a
+    /// coding session opened at a receipt, `<file>:<turn>`).
     Library {
         section: String,
         item: Option<String>,

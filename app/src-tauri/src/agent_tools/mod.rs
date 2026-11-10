@@ -24,6 +24,7 @@ mod history;
 mod indexing;
 mod memory;
 mod papers;
+mod recall;
 mod research;
 mod settings;
 mod sources;
@@ -238,6 +239,8 @@ pub struct AgentHost {
     pub workspaces: WorkspaceState,
     /// The GitHub connector: its sign-in and the user's list, read afresh for each call.
     pub github: Arc<dyn shodh_rag::connectors::github::tools::GitHubHost>,
+    /// Recall: the user's AI coding sessions (off until they turn it on).
+    pub recall: crate::recall_commands::RecallState,
 }
 
 /// Build the registry with every agent tool. Fails if two tools share a
@@ -285,13 +288,14 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
     artifacts::register(&mut registry, &host)?;
     code_review::register(&mut registry, &host)?;
     code_intel::register(&mut registry, &host)?;
+    recall::register(&mut registry, &host)?;
     shodh_rag::connectors::github::tools::register(&mut registry, host.github.clone())?;
     Ok(registry)
 }
 
 /// The parts of the Library a navigation opens (`LIBRARY_SECTIONS` in the frontend's
 /// navigation; the coverage test checks the two agree).
-pub(crate) const LIBRARY_SECTIONS: [&str; 3] = ["snippets", "graph", "paper"];
+pub(crate) const LIBRARY_SECTIONS: [&str; 4] = ["snippets", "graph", "paper", "recall"];
 
 /// Show a part of the Library ([`LIBRARY_SECTIONS`]) with `item` (a snippet or paper
 /// id) highlighted or opened.
@@ -567,6 +571,15 @@ pub(crate) mod testing {
             pdf: printer.clone(),
             workspaces: WorkspaceState::at(Some((dir.path().join("shodh.db"), None))),
             github: Arc::new(NoGitHub),
+            recall: crate::recall_commands::RecallState::new(
+                dir.path().join("recall"),
+                dir.path().join("no-models"),
+                shodh_rag::compute::provider::ComputePreference::Cpu,
+                shodh_rag::recall::discover::Roots {
+                    claude_code: None,
+                    codex: None,
+                },
+            ),
         });
         TestHost {
             dir,
@@ -663,6 +676,7 @@ pub(crate) mod testing {
             pdf: t.host.pdf.clone(),
             workspaces: t.host.workspaces.clone(),
             github: t.host.github.clone(),
+            recall: t.host.recall.clone(),
         });
         TestHost { host, ..t }
     }
@@ -682,6 +696,7 @@ pub(crate) mod testing {
             pdf: t.host.pdf.clone(),
             workspaces: t.host.workspaces.clone(),
             github: t.host.github.clone(),
+            recall: t.host.recall.clone(),
         })
     }
 
@@ -703,6 +718,7 @@ pub(crate) mod testing {
             pdf,
             workspaces: t.host.workspaces.clone(),
             github: t.host.github.clone(),
+            recall: t.host.recall.clone(),
         })
     }
 

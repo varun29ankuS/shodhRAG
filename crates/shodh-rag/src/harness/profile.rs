@@ -71,12 +71,18 @@ pub mod app_tools {
     /// Shodh's deterministic design check of UI files: an artifact in any chat, the
     /// project's files in a Code session, the creation in a Creator session.
     pub const DESIGN_CHECK: &str = "design_check";
+    /// Recall: the user's own AI coding sessions, searched as pointers with receipts.
+    pub const RECALL_SEARCH: &str = "recall_search";
+    /// Recall: every coding session in a period.
+    pub const RECALL_SCOPE: &str = "recall_scope";
+    /// Recall: the exact turn a receipt points at.
+    pub const RECALL_OPEN: &str = "recall_open";
     /// A Code session's own tool (with its workspace), not in [`ALL`]: a Research chat
     /// has no code folder to send to a reviewer.
     pub const REVIEW_CODE: &str = "review_code";
 
     /// Every app-layer tool, in registration order.
-    pub const ALL: [&str; 58] = [
+    pub const ALL: [&str; 61] = [
         CREATE_TASK,
         CREATE_EVENT,
         LIST_TASKS,
@@ -135,6 +141,9 @@ pub mod app_tools {
         CODE_TOKENS_SAVED,
         CODE_SKILLS,
         DESIGN_CHECK,
+        RECALL_SEARCH,
+        RECALL_SCOPE,
+        RECALL_OPEN,
     ];
 }
 

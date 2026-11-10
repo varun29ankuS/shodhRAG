@@ -49,6 +49,7 @@ function status(extra: Partial<SystemStatus> = {}): SystemStatus {
     indexingPaused: false,
     running: [],
     codeMaps: [],
+    recall: null,
     modelSwitch: readModelSwitch(null),
     ...extra,
   };

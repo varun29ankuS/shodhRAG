@@ -55,8 +55,8 @@ const WORKSPACE_TABS: readonly string[] = ['overview', 'sources', 'chats', 'task
 /** Sections of Settings a target may open (`SettingsView`; the Rust coverage test checks both agree). */
 export const SETTINGS_SECTIONS: readonly string[] = ['models', 'search', 'tools', 'code', 'tables', 'general', 'appearance', 'notifications', 'privacy', 'memory', 'data'];
 
-/** Parts of the Library a target may open: the snippet shelf, the paper graph, a paper's page. */
-export const LIBRARY_SECTIONS: readonly string[] = ['snippets', 'graph', 'paper'];
+/** Parts of the Library a target may open: the snippet shelf, the paper graph, a paper's page, a coding session (at a receipt). */
+export const LIBRARY_SECTIONS: readonly string[] = ['snippets', 'graph', 'paper', 'recall'];
 
 /** Panes of an artifact a target may open (`open_artifact`). */
 export const ARTIFACT_PANES: readonly string[] = ['preview', 'files', 'versions'];

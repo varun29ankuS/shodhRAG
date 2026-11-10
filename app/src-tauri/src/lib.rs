@@ -32,6 +32,7 @@ mod notifications;
 mod pdf_export;
 mod profile;
 mod rag_commands;
+mod recall_commands;
 mod reminders;
 mod research_commands;
 mod scan_reader;
@@ -619,6 +620,9 @@ pub fn run() {
                 code_map_commands::CodeMapState::new(app_data_dir.clone(), Some(pause.clone()));
             code_maps.attach(app.handle().clone());
             app.manage(code_maps);
+            // Recall (Library → AI coding sessions): off until the user turns it on;
+            // nothing is opened or read before that.
+            recall_commands::manage(app, &app_data_dir, &model_dir, indexing_prefs.use_gpu);
             // Re-indexing for faster search: one that Shodh closed in the middle of
             // goes on (and waits while indexing is paused).
             app.manage(search_model_switch::SearchModelSwitchState::default());
@@ -807,6 +811,14 @@ pub fn run() {
             code_map_commands::code_map_cancel,
             code_map_commands::code_map_outline,
             code_map_commands::code_map_find,
+            // Recall: the Library's AI coding sessions
+            recall_commands::recall_status,
+            recall_commands::recall_save_settings,
+            recall_commands::recall_sync_now,
+            recall_commands::recall_remove_session,
+            recall_commands::recall_search,
+            recall_commands::recall_scope,
+            recall_commands::recall_open,
             mcp_commands::tools_for_chat,
             // Document Upload commands
             document_upload_commands::upload_document_file,

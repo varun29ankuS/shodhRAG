@@ -32,6 +32,7 @@ export const REQUIRED_CHECKS = [
   'macOS build + OCR tests (shodh-rag)',
   'Retrieval eval',
   'Retrieval eval (int8, Apple silicon)',
+  'Recall scorecard',
   'Frontend Typecheck + Tests',
   'Footprint budget',
   'CI gate',

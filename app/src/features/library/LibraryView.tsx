@@ -36,6 +36,9 @@ import type { LibrarySource } from './sources';
 import { NOT_ADDED_REASON } from './reconcile';
 import type { Reconciliation } from './reconcile';
 import { countOf } from '../../lib/plural';
+import { RecallSection } from '../recall/RecallSection';
+import { RecallViewer } from '../recall/RecallViewer';
+import { isReceipt } from '../recall/recallModel';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-shodh-ground';
@@ -106,6 +109,8 @@ export function LibraryView({
   const graphPage = graphPages[graphPages.length - 1] ?? null;
   const pushPage = useCallback((page: GraphPage) => setGraphPages(stack => [...stack, page]), []);
   const popPage = useCallback(() => setGraphPages(stack => stack.slice(0, -1)), []);
+  /** A coding session opened at a receipt (Recall's viewer). */
+  const [recallReceipt, setRecallReceipt] = useState<string | null>(null);
 
   const reportCount = useCallback((count: number) => {
     if (browsingId) onFileCount(browsingId, count);
@@ -122,12 +127,14 @@ export function LibraryView({
   useNavigationTarget('source', () => {
     setBrowsingId(null);
     setGraphPages([]);
+    setRecallReceipt(null);
   }, { consume: false });
 
   // The assistant opened a part of the Library: the paper graph, a paper's page, or the
   // snippet shelf with the snippet it saved or named highlighted.
   useNavigationTarget('library', target => {
     setBrowsingId(null);
+    setRecallReceipt(null);
     if (target.section === 'paper' && target.item) {
       setGraphPages([{ kind: 'graph' }, { kind: 'paper', id: target.item }]);
     } else if (target.section === 'graph') {
@@ -137,6 +144,11 @@ export function LibraryView({
       revealAgentItem(target.item ? agentItemKey('snippet', target.item) : agentItemKey('library-section', 'snippets'), {
         missed: 'Shodh pointed at a snippet that the shelf does not show now.',
       });
+    } else if (target.section === 'recall') {
+      setGraphPages([]);
+      // A receipt opens the session at that turn; without one, the section is shown.
+      if (isReceipt(target.item)) setRecallReceipt(target.item);
+      else revealAgentItem(agentItemKey('library-section', 'recall'), { missed: 'Shodh pointed at the coding sessions, which the Library does not show now.' });
     }
   });
 
@@ -144,6 +156,16 @@ export function LibraryView({
     return (
       <div key={browsing.id} className="shell-view-enter h-full">
         <FileBrowser source={browsing} onExit={() => setBrowsingId(null)} onAskAboutFile={onAskAboutFile} onFileCount={reportCount} />
+      </div>
+    );
+  }
+
+  if (recallReceipt) {
+    return (
+      <div className="h-full overflow-y-auto scrollbar-thin">
+        <div className="max-w-5xl mx-auto px-8 py-7 flex flex-col gap-4">
+          <RecallViewer receipt={recallReceipt} onBack={() => setRecallReceipt(null)} />
+        </div>
       </div>
     );
   }
@@ -244,6 +266,8 @@ export function LibraryView({
             </section>
           ))
         )}
+
+        <RecallSection onOpenReceipt={setRecallReceipt} />
 
         {hasLibrary && (
           <section aria-labelledby="library-snippets" className="flex flex-col gap-3">

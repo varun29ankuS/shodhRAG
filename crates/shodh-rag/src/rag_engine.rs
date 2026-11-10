@@ -489,6 +489,76 @@ impl FilePreparer {
             embed_ms: embed_started.elapsed().as_millis(),
         })
     }
+
+    /// Embeds a document that is no file whose chunks the caller made (blocking): each
+    /// [`GivenChunk`] is stored as one chunk, in order, with its own heading and the
+    /// context it is embedded and keyword-indexed with. Used where the unit of a chunk
+    /// is the caller's (a turn of a coding session), not the window chunker's. `source`
+    /// is kept exactly as given; [`RAGEngine::commit_file`] stores it, replacing whatever
+    /// chunks `source` had.
+    pub fn prepare_given_chunks(
+        &self,
+        source: &str,
+        title: &str,
+        chunks: Vec<GivenChunk>,
+        metadata: HashMap<String, String>,
+        citation: &Citation,
+    ) -> Result<PreparedFile> {
+        let mut metadata = metadata;
+        metadata.insert("file_path".to_string(), source.to_string());
+        metadata.insert("title".to_string(), title.to_string());
+        let embed_started = std::time::Instant::now();
+        let chunks: Vec<ContextualChunkResult> = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                let length = chunk.text.len();
+                ContextualChunkResult {
+                    id: Uuid::new_v4(),
+                    text: chunk.text,
+                    context: chunk.context,
+                    index,
+                    heading: Some(chunk.heading),
+                    start_offset: 0,
+                    end_offset: length,
+                    page: None,
+                    page_end: None,
+                    layout: None,
+                }
+            })
+            .collect();
+        let document = prepare_chunks(
+            self.embeddings.as_ref(),
+            chunks,
+            title.to_string(),
+            source.to_string(),
+            &metadata,
+            citation,
+        )?;
+        Ok(PreparedFile {
+            path: std::path::PathBuf::from(source),
+            source: source.to_string(),
+            document,
+            refine: false,
+            scan_reader_missing: false,
+            notice: None,
+            parse_ms: 0,
+            chunk_ms: 0,
+            embed_ms: embed_started.elapsed().as_millis(),
+        })
+    }
+}
+
+/// One chunk a caller made itself ([`FilePreparer::prepare_given_chunks`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GivenChunk {
+    /// What is shown and cited.
+    pub text: String,
+    /// What precedes the text where it is embedded, keyword-indexed and reranked
+    /// (never shown); ends with a line break.
+    pub context: String,
+    /// The chunk's place in its document, in a few words.
+    pub heading: String,
 }
 
 /// The chunks of one document, each with its context ([`DocumentContext`]).
@@ -3619,6 +3689,14 @@ impl RAGEngine {
             None
         };
         if let Some(reranker) = &reranker {
+            let cap = self.config.search.rerank_candidates;
+            if cap > 0 && results.len() > cap {
+                // Only the best fused candidates are read; the rest would rank below
+                // them on a scale the cross-encoder's scores do not share.
+                results.sort_by(|a, b| b.score.total_cmp(&a.score));
+                results.truncate(cap);
+                trace.record_results(sub_query, "rerank_capped", &results);
+            }
             if results.len() > 1 {
                 // The cross-encoder reads each passage with the context it was
                 // embedded with: which document, its opening, which section.

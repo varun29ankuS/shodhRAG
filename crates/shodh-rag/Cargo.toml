@@ -66,10 +66,11 @@ docling-core = "=1.91.0"
 # Page images: PNG for rendered pages; JPEG, TIFF and BMP for image files read
 # by OCR (docling-pdf already builds `image` with its default formats).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
-pdf-extract = "0.7"
-lopdf = "0.32"
-zip = "2"
-calamine = { version = "0.24", features = ["dates"] }
+pdf-extract = "0.12"
+# Kept on pdf-extract's lopdf line so documents are parsed by one lopdf.
+lopdf = "0.42"
+zip = "9"
+calamine = { version = "0.38", features = ["dates"] }
 csv = "1"
 encoding_rs = "0.8"
 chardetng = "0.1"

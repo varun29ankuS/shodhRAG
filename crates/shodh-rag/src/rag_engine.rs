@@ -353,12 +353,13 @@ impl FilePreparer {
                     &parsed.structured_sections,
                     context,
                     label,
+                    &count,
                 ));
             }
             if chunks.is_empty() {
                 chunks = self
                     .chunker
-                    .chunk_with_context(&parsed.content, context, label);
+                    .chunk_with_context(&parsed.content, context, label, &count);
             }
             chunks
         };
@@ -514,7 +515,7 @@ impl FilePreparer {
         };
         let chunks = chunk_in_context(&title, true, &count, &|context| {
             self.chunker
-                .chunk_with_context(text, context, source_label(source))
+                .chunk_with_context(text, context, source_label(source), &count)
         });
         if chunks.is_empty() && !text.trim().is_empty() {
             // Stored as it is, the document would replace its previous chunks with none.
@@ -676,11 +677,14 @@ pub const INDEX_FORMAT_KEY: &str = "index_format";
 /// one-word units; a page too short for a chunk joins its neighbour; no
 /// redundant tail chunks; HTML is read on byte offsets with comments, CDATA
 /// and C1 references handled; `.htm` files are indexed.
+/// 3: window chunks ([`TextChunker`]) are within the token budget of their
+/// text under their context, so code and data are no longer cut off where
+/// they are embedded.
 ///
 /// Redaction ([`redact_chunks`]) is not a chunker version: chunks redacted under
 /// other rules are redacted again in place ([`RAGEngine::redact_stored_chunks`],
 /// [`REDACTOR_KEY`]), without reading their files again.
-pub const CHUNKER_VERSION: u32 = 2;
+pub const CHUNKER_VERSION: u32 = 3;
 
 /// Chunk metadata key: the fingerprint of the redactor a chunk was redacted with
 /// ([`document_redactor_fingerprint`]). A chunk without it, or with another, is
@@ -2123,7 +2127,8 @@ impl RAGEngine {
             config.chunking.chunk_size,
             config.chunking.chunk_overlap,
             config.chunking.min_chunk_size,
-        );
+        )
+        .with_max_tokens(config.chunking.max_tokens);
 
         let structure_chunker = StructureChunker::new(config.chunking.max_tokens);
         let ocr = crate::processing::ocr::shared_ocr_model();
@@ -2433,7 +2438,7 @@ impl RAGEngine {
         };
         let chunks = chunk_in_context(&title, true, &count, &|context| {
             self.chunker
-                .chunk_with_context(content, context, source_label(&source))
+                .chunk_with_context(content, context, source_label(&source), &count)
         });
         let prepared = prepare_chunks(embedder, chunks, title, source, &metadata, &citation)?;
         self.store_prepared(prepared).await

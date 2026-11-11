@@ -240,8 +240,8 @@ export function explainFailure(reason: string | null | undefined, file?: string 
   if (!rule) return { ...OTHER, detail };
   // The indexer's own size limits say what the limit is: "(limit 50 MB for text files)".
   const limit = rule.kind === 'too_large' ? /too large to index \(limit ([^)]+)\)/i.exec(text) : null;
-  const reason = limit ? `${rule.reason} (limit ${limit[1]})` : rule.reason;
-  return { kind: rule.kind, reason, advice: rule.advice, detail };
+  const plain = limit ? `${rule.reason} (limit ${limit[1]})` : rule.reason;
+  return { kind: rule.kind, reason: plain, advice: rule.advice, detail };
 }
 
 /** Advice for one failure reason. */

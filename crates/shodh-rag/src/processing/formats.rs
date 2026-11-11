@@ -72,7 +72,8 @@ pub enum RtfError {
 
 /// The Windows-1252 character of byte `b` (RTF's `\'hh` escapes and 8-bit text).
 fn cp1252(b: u8) -> char {
-    let (text, _, _) = encoding_rs::WINDOWS_1252.decode(&[b]);
+    let byte = [b];
+    let (text, _, _) = encoding_rs::WINDOWS_1252.decode(&byte);
     text.chars().next().unwrap_or('\u{FFFD}')
 }
 

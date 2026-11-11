@@ -83,9 +83,10 @@ pub struct RedactOptions {
 pub struct Redactor {
     user: Vec<Regex>,
     options: RedactOptions,
-    /// Long random-looking strings are redacted as keys without a known prefix
-    /// (transcripts); documents keep them ([`Redactor::for_documents`]).
-    random_strings: bool,
+    /// The text is a document's prose ([`Redactor::for_documents`]), not a transcript:
+    /// long random-looking strings without a secret's label are kept, and rules made
+    /// for command lines read their prose form.
+    documents: bool,
     fingerprint: String,
 }
 
@@ -94,7 +95,7 @@ impl Default for Redactor {
         Self {
             user: Vec::new(),
             options: RedactOptions::default(),
-            random_strings: true,
+            documents: false,
             fingerprint: fingerprint(&[], &RedactOptions::default()),
         }
     }
@@ -176,7 +177,7 @@ impl Redactor {
             user: check_patterns(patterns)?,
             fingerprint: fingerprint(patterns, &options),
             options,
-            random_strings: true,
+            documents: false,
         })
     }
 
@@ -193,7 +194,7 @@ impl Redactor {
             user: Vec::new(),
             fingerprint: fingerprint(&[], &options),
             options,
-            random_strings: false,
+            documents: true,
         }
     }
 
@@ -231,6 +232,12 @@ impl Redactor {
             out = Cow::Owned(split);
         }
         for rule in RULES.iter() {
+            // Documents are prose: a rule written for command lines reads its
+            // prose form there ("512-token chunks" is not `-token <value>`).
+            let rule = match (&rule.prose, self.documents) {
+                (Some(prose), true) => prose.as_ref(),
+                _ => rule,
+            };
             out = apply(out, rule, &mut count);
         }
         if !self.options.keep_emails {
@@ -239,12 +246,10 @@ impl Redactor {
         if let Some(wrapped) = redact_wrapped_tokens(&out, &mut count) {
             out = Cow::Owned(wrapped);
         }
-        if let Some(random) = self
-            .random_strings
-            .then(|| redact_random_strings(&out, &mut count))
-            .flatten()
-        {
-            out = Cow::Owned(random);
+        if !self.documents {
+            if let Some(random) = redact_random_strings(&out, &mut count) {
+                out = Cow::Owned(random);
+            }
         }
         for regex in &self.user {
             if regex.is_match(&out) {
@@ -282,6 +287,9 @@ fn has_json_escapes(text: &str) -> bool {
 struct Rule {
     regex: Regex,
     replace: fn(&Captures) -> String,
+    /// The form read in documents, for a rule made for command lines that prose
+    /// would set off ([`Redactor::for_documents`]).
+    prose: Option<Box<Rule>>,
 }
 
 fn whole(_: &Captures) -> String {
@@ -291,6 +299,12 @@ fn whole(_: &Captures) -> String {
 /// Keeps the first capture group (a name, a scheme), replaces the rest.
 fn keep_first(caps: &Captures) -> String {
     format!("{}{REDACTED}", &caps[1])
+}
+
+/// Keeps the first two capture groups (what comes before a flag, the flag),
+/// replaces the rest.
+fn keep_first_two(caps: &Captures) -> String {
+    format!("{}{}{REDACTED}", &caps[1], &caps[2])
 }
 
 /// A name written like an environment variable (`DB_PASSWORD`): no lower-case letter.
@@ -519,6 +533,14 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         regex: Regex::new(pattern)
             .unwrap_or_else(|e| panic!("recall redaction rule {pattern}: {e}")),
         replace,
+        prose: None,
+    };
+    // A command-line rule with its prose form: in documents the flag must start a
+    // word (the text, a space or an opening bracket or quote before its dash), so
+    // "512-token chunks" or "a two-pass filter" is not a flag and its value.
+    let command_line = |pattern: &str, prose: &str, replace: fn(&Captures) -> String| Rule {
+        prose: Some(Box::new(rule(prose, keep_first_two))),
+        ..rule(pattern, replace)
     };
     vec![
         // Private key blocks, to their end or to the end of the text (an output cut short).
@@ -624,8 +646,9 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             keep_first,
         ),
         // Secrets on a command line: --password x, --token=x, --body for gh secrets.
-        rule(
+        command_line(
             r#"(?i)(--?(?:password|passwd|pass|pw|token|api-key|apikey|secret|auth-token|access-token|client-secret|secret-access-key)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)"#,
+            r#"(?im)(^|[\s(\[{"'`])(--?(?:password|passwd|pass|pw|token|api-key|apikey|secret|auth-token|access-token|client-secret|secret-access-key)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)"#,
             keep_first,
         ),
         rule(
@@ -669,6 +692,7 @@ static EMAIL_RULE: LazyLock<Rule> = LazyLock::new(|| Rule {
     regex: Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
         .unwrap_or_else(|e| panic!("{e}")),
     replace: |_| EMAIL.to_string(),
+    prose: None,
 });
 
 fn apply<'a>(text: Cow<'a, str>, rule: &Rule, count: &mut usize) -> Cow<'a, str> {

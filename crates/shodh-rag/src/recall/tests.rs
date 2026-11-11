@@ -1810,8 +1810,14 @@ async fn a_session_that_touched_an_excluded_folder_is_not_indexed() {
     );
     assert_eq!(
         project_key("/c/Users/Ada/app"),
-        project_key("C:/Users/Ada/app")
+        project_key("c:/Users/Ada/app")
     );
+    if cfg!(windows) {
+        assert_eq!(
+            project_key("/c/Users/Ada/app"),
+            project_key("C:/Users/Ada/app")
+        );
+    }
 }
 
 #[tokio::test]

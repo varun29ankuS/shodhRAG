@@ -121,8 +121,8 @@ export function RecallSection({ onOpenReceipt }: RecallSectionProps) {
           AI coding sessions
         </h2>
         <p className="text-small text-shodh-text-muted">
-          What you did in Claude Code and Codex, searchable here and by the assistant. Read where the transcripts are, on this
-          computer.
+          What you did in Claude Code and Codex, searchable here and by the assistant. Shodh reads the transcripts where
+          they are, on this computer.
         </p>
       </div>
       <div className="rounded-xl border border-shodh-border bg-shodh-surface p-4 flex flex-col gap-4">

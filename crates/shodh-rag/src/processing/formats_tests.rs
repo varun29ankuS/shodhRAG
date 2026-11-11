@@ -95,7 +95,7 @@ fn rtf_text_keeps_the_words_and_drops_the_markup() {
         "\n",
         r"\pard\b Notice period\b0\par",
         "\n",
-        r"The lease ends after ninety days\'92 notice.\tab Rent: 荤?120.\par",
+        r"The lease ends after ninety days\'92 notice.\tab Rent: \u8364?120.\par",
         "\n",
         r#"{\*\bkmkstart one}{\field{\*\fldinst HYPERLINK "http://x"}{\fldrslt Read the terms}}\par"#,
         "\n",

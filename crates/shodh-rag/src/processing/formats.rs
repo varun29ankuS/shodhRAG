@@ -210,6 +210,14 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
                             if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
                                 i += 2;
                                 push(&mut out, cp1252(byte), &state, &mut pending_fallback);
+                            } else {
+                                // A cut-short escape: its hex digits are not text.
+                                let mut skipped = 0;
+                                while skipped < 2 && bytes.get(i).is_some_and(u8::is_ascii_hexdigit)
+                                {
+                                    i += 1;
+                                    skipped += 1;
+                                }
                             }
                         }
                         b'*' => ignorable = true,

@@ -653,7 +653,9 @@ pub const INDEX_FORMAT_KEY: &str = "index_format";
 /// one-word units; a page too short for a chunk joins its neighbour; no
 /// redundant tail chunks; HTML is read on byte offsets with comments, CDATA
 /// and C1 references handled; `.htm` files are indexed.
-pub const CHUNKER_VERSION: u32 = 2;
+/// 3: keys, tokens and passwords in the text are redacted ([`redact_chunks`]), so
+/// a file indexed before is read again and its secrets leave the index.
+pub const CHUNKER_VERSION: u32 = 3;
 
 /// Chunk metadata key: the [`CHUNKER_VERSION`] a chunk was made with, or,
 /// for a chunk kept on purpose ([`CHUNKS_KEPT_FROM_KEY`]), the version it was

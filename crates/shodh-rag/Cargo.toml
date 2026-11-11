@@ -54,9 +54,10 @@ bytes = "1"
 # Document parsing. pdf_oxide supplies positioned text runs and table
 # detection for the layout parser (docs/adr/0002-document-parser.md).
 pdf_oxide = "=0.3.78"
-# pdf_oxide 0.3.78 does not compile against office_oxide >= 0.1.11 (a field
-# was added to a struct it constructs); pin the last compatible release.
-office_oxide = { version = "=0.1.10", default-features = false }
+# Pinned with pdf_oxide: some office_oxide releases after 0.1.10 change a
+# struct pdf_oxide constructs, so check pdf_oxide compiles before moving this.
+# 0.1.17 is the first that compiles and is on zip 9 (RUSTSEC-2026-0367..0369, 0429).
+office_oxide = { version = "=0.1.17", default-features = false }
 # Table structure on table-candidate pages (docs/adr/0002-document-parser.md,
 # "Table model"): docling.rs's layout model finds table regions and its
 # TableFormer port recovers rows, columns and spans. Models are optional and

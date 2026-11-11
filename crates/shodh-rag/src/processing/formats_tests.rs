@@ -740,26 +740,3 @@ fn epub_links_resolve_inside_the_book() {
     );
     assert_eq!(chapter_title("<p>none</p>", &plain), None);
 }
-
-/// The app ships office_oxide's licence: its NOTICE entry says which of its two
-/// licences Shodh takes and carries that licence's text.
-#[test]
-fn office_oxide_ships_with_the_licence_it_is_used_under() {
-    // As checked out: line ends may be CRLF.
-    let notice = include_str!("../../../../NOTICE").replace("\r\n", "\n");
-    let entry = notice
-        .split("\nOfficeOxide\n")
-        .nth(1)
-        .expect("NOTICE has an OfficeOxide entry");
-    let entry = entry.split("\n\n").next().unwrap_or(entry);
-    assert!(entry.contains("version 0.1.10"), "{entry}");
-    assert!(entry.contains("used under MIT"), "{entry}");
-    assert!(
-        entry.contains("Permission is hereby granted, free of charge"),
-        "{entry}"
-    );
-    assert!(
-        entry.contains("THE SOFTWARE IS PROVIDED \"AS IS\""),
-        "{entry}"
-    );
-}

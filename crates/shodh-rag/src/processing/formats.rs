@@ -70,17 +70,117 @@ pub enum RtfError {
     TooDeep,
 }
 
-/// The Windows-1252 character of byte `b` (RTF's `\'hh` escapes and 8-bit text).
-fn cp1252(b: u8) -> char {
-    let byte = [b];
-    let (text, _, _) = encoding_rs::WINDOWS_1252.decode(&byte);
-    text.chars().next().unwrap_or('\u{FFFD}')
+/// The encoding of RTF's 8-bit text and `\'hh` escapes for the code page an
+/// `\ansicpgN` names; Windows-1252 (RTF's default) for one this does not know.
+fn rtf_code_page(page: i64) -> &'static encoding_rs::Encoding {
+    let label = match page {
+        874 => "windows-874".to_string(),
+        932 => "shift_jis".to_string(),
+        936 => "gbk".to_string(),
+        949 => "euc-kr".to_string(),
+        950 => "big5".to_string(),
+        1250..=1258 => format!("windows-{page}"),
+        10000 => "macintosh".to_string(),
+        20866 => "koi8-r".to_string(),
+        21866 => "koi8-u".to_string(),
+        28592..=28599 | 28603..=28606 => format!("iso-8859-{}", page - 28590),
+        65001 => "utf-8".to_string(),
+        _ => "windows-1252".to_string(),
+    };
+    encoding_rs::Encoding::for_label(label.as_bytes()).unwrap_or(encoding_rs::WINDOWS_1252)
+}
+
+/// The state an RTF group starts with and restores when it ends.
+#[derive(Clone, Copy)]
+struct RtfGroup {
+    skip: bool,
+    /// Hidden text (`\v`): formatting, not a destination, so `\v0` and `\plain`
+    /// end it within the group.
+    hidden: bool,
+    /// Fallback characters after a `\uN` (`\ucN`).
+    uc: usize,
+}
+
+impl RtfGroup {
+    fn shows_text(&self) -> bool {
+        !self.skip && !self.hidden
+    }
+}
+
+/// An RTF file's text as it is read. 8-bit text is decoded in the document's
+/// code page: a multibyte character (Shift-JIS `\'82\'a0`) is two escapes, so
+/// bytes are gathered and decoded together when anything else comes.
+struct RtfText {
+    out: String,
+    bytes: Vec<u8>,
+    encoding: &'static encoding_rs::Encoding,
+    /// A `\uN` high surrogate waiting for its low half.
+    high: Option<u32>,
+}
+
+impl RtfText {
+    fn flush(&mut self) {
+        if !self.bytes.is_empty() {
+            let (text, _) = self.encoding.decode_without_bom_handling(&self.bytes);
+            self.out.push_str(&text);
+            self.bytes.clear();
+        }
+        if self.high.take().is_some() {
+            self.out.push('\u{FFFD}');
+        }
+    }
+
+    fn push(&mut self, c: char, state: &RtfGroup, pending: &mut usize) {
+        if *pending > 0 {
+            *pending -= 1;
+        } else if state.shows_text() {
+            self.flush();
+            self.out.push(c);
+        }
+    }
+
+    fn push_byte(&mut self, b: u8, state: &RtfGroup, pending: &mut usize) {
+        if *pending > 0 {
+            *pending -= 1;
+        } else if state.shows_text() {
+            if self.high.take().is_some() {
+                self.out.push('\u{FFFD}');
+            }
+            self.bytes.push(b);
+        }
+    }
+
+    /// A `\uN` code unit: a surrogate pair's halves make one character.
+    fn push_unit(&mut self, unit: u32, state: &RtfGroup) {
+        if !state.shows_text() {
+            return;
+        }
+        if (0xD800..=0xDBFF).contains(&unit) {
+            self.flush();
+            self.high = Some(unit);
+            return;
+        }
+        if (0xDC00..=0xDFFF).contains(&unit) {
+            let pair = self
+                .high
+                .take()
+                .map(|high| 0x10000 + ((high - 0xD800) << 10) + (unit - 0xDC00));
+            self.flush();
+            self.out
+                .push(pair.and_then(char::from_u32).unwrap_or('\u{FFFD}'));
+            return;
+        }
+        self.flush();
+        self.out.push(char::from_u32(unit).unwrap_or('\u{FFFD}'));
+    }
 }
 
 /// The text of an RTF file: paragraphs as lines, `\tab` as a tab, Unicode
-/// (`\uN`) and 8-bit (`\'hh`) characters decoded, and the content of every
-/// destination that is not text (fonts, styles, pictures, objects, properties,
-/// headers and footers, ignorable `\*` destinations) left out.
+/// (`\uN`, surrogate pairs joined) and 8-bit (`\'hh`, in the code page
+/// `\ansicpgN` names: Cyrillic, Greek, Shift-JIS) characters decoded, and the
+/// content of every destination that is not text (fonts, styles, pictures,
+/// objects, properties, headers and footers, ignorable `\*` destinations) and
+/// hidden text (`\v`) left out.
 pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
     let start = bytes
         .iter()
@@ -90,17 +190,18 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
         return Err(RtfError::NotRtf);
     }
 
-    /// The state a group starts with and restores when it ends.
-    #[derive(Clone, Copy)]
-    struct Group {
-        skip: bool,
-        /// Fallback characters after a `\uN` (`\ucN`).
-        uc: usize,
-    }
-
-    let mut out = String::new();
-    let mut stack: Vec<Group> = Vec::new();
-    let mut state = Group { skip: false, uc: 1 };
+    let mut text = RtfText {
+        out: String::new(),
+        bytes: Vec::new(),
+        encoding: encoding_rs::WINDOWS_1252,
+        high: None,
+    };
+    let mut stack: Vec<RtfGroup> = Vec::new();
+    let mut state = RtfGroup {
+        skip: false,
+        hidden: false,
+        uc: 1,
+    };
     // Fallback characters still to drop after a `\uN`.
     let mut pending_fallback = 0usize;
     // The next control word opens an ignorable destination (`{\*\name`).
@@ -108,13 +209,6 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
     // At the start of a group: its first control word may name a destination.
     let mut group_start = false;
     let mut i = start;
-    let push = |out: &mut String, c: char, state: &Group, pending: &mut usize| {
-        if *pending > 0 {
-            *pending -= 1;
-        } else if !state.skip {
-            out.push(c);
-        }
-    };
     while i < bytes.len() {
         let b = bytes[i];
         match b {
@@ -122,12 +216,14 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
                 if stack.len() >= MAX_RTF_DEPTH {
                     return Err(RtfError::TooDeep);
                 }
+                text.flush();
                 stack.push(state);
                 group_start = true;
                 ignorable = false;
                 i += 1;
             }
             b'}' => {
+                text.flush();
                 state = stack.pop().unwrap_or(state);
                 pending_fallback = 0;
                 group_start = false;
@@ -160,6 +256,11 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
                         j += 1;
                     }
                     i = j;
+                    // A `\u` is text; any other control word ends gathered bytes
+                    // before it can change what is shown.
+                    if word != "u" {
+                        text.flush();
+                    }
                     let opens = group_start;
                     group_start = false;
                     if (opens && RTF_SKIPPED.contains(&word))
@@ -168,28 +269,32 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
                         state.skip = true;
                     }
                     ignorable = false;
+                    let mut none = 0;
                     match word {
                         "par" | "line" | "sect" | "page" | "row" => {
-                            push(&mut out, '\n', &state, &mut 0)
+                            text.push('\n', &state, &mut none)
                         }
-                        "tab" | "cell" => push(&mut out, '\t', &state, &mut 0),
-                        "emdash" => push(&mut out, '—', &state, &mut 0),
-                        "endash" => push(&mut out, '–', &state, &mut 0),
-                        "lquote" => push(&mut out, '‘', &state, &mut 0),
-                        "rquote" => push(&mut out, '’', &state, &mut 0),
-                        "ldblquote" => push(&mut out, '“', &state, &mut 0),
-                        "rdblquote" => push(&mut out, '”', &state, &mut 0),
-                        "bullet" => push(&mut out, '•', &state, &mut 0),
+                        "tab" | "cell" => text.push('\t', &state, &mut none),
+                        "emdash" => text.push('—', &state, &mut none),
+                        "endash" => text.push('–', &state, &mut none),
+                        "lquote" => text.push('‘', &state, &mut none),
+                        "rquote" => text.push('’', &state, &mut none),
+                        "ldblquote" => text.push('“', &state, &mut none),
+                        "rdblquote" => text.push('”', &state, &mut none),
+                        "bullet" => text.push('•', &state, &mut none),
                         "uc" => state.uc = param.unwrap_or(1).clamp(0, 16) as usize,
+                        "ansicpg" => {
+                            if let Some(page) = param {
+                                text.encoding = rtf_code_page(page);
+                            }
+                        }
+                        "v" => state.hidden = param != Some(0),
+                        "plain" => state.hidden = false,
                         "u" => {
                             if let Some(n) = param {
                                 // A signed 16-bit value: negatives are code units above 32767.
                                 let unit = if n < 0 { n + 65_536 } else { n };
-                                let c = u32::try_from(unit)
-                                    .ok()
-                                    .and_then(char::from_u32)
-                                    .unwrap_or('\u{FFFD}');
-                                push(&mut out, c, &state, &mut 0);
+                                text.push_unit(u32::try_from(unit).unwrap_or(0xFFFD), &state);
                                 pending_fallback = state.uc;
                             }
                         }
@@ -209,7 +314,7 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
                                 .and_then(|h| std::str::from_utf8(h).ok());
                             if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
                                 i += 2;
-                                push(&mut out, cp1252(byte), &state, &mut pending_fallback);
+                                text.push_byte(byte, &state, &mut pending_fallback);
                             } else {
                                 // A cut-short escape: its hex digits are not text.
                                 let mut skipped = 0;
@@ -221,13 +326,13 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
                             }
                         }
                         b'*' => ignorable = true,
-                        b'~' => push(&mut out, '\u{a0}', &state, &mut pending_fallback),
-                        b'_' => push(&mut out, '-', &state, &mut pending_fallback),
+                        b'~' => text.push('\u{a0}', &state, &mut pending_fallback),
+                        b'_' => text.push('-', &state, &mut pending_fallback),
                         b'-' => {}
                         b'\\' | b'{' | b'}' => {
-                            push(&mut out, char::from(next), &state, &mut pending_fallback)
+                            text.push(char::from(next), &state, &mut pending_fallback)
                         }
-                        b'\n' | b'\r' => push(&mut out, '\n', &state, &mut 0),
+                        b'\n' | b'\r' => text.push('\n', &state, &mut 0),
                         _ => {}
                     }
                     group_start = false;
@@ -236,17 +341,17 @@ pub fn rtf_text(bytes: &[u8]) -> Result<String, RtfError> {
             b'\r' | b'\n' => i += 1,
             _ => {
                 group_start = false;
-                let c = if b.is_ascii() {
-                    char::from(b)
+                if b.is_ascii() {
+                    text.push(char::from(b), &state, &mut pending_fallback);
                 } else {
-                    cp1252(b)
-                };
-                push(&mut out, c, &state, &mut pending_fallback);
+                    text.push_byte(b, &state, &mut pending_fallback);
+                }
                 i += 1;
             }
         }
     }
-    Ok(tidy_lines(&out))
+    text.flush();
+    Ok(tidy_lines(&text.out))
 }
 
 /// Whether a control word after `\*` opens a destination to skip: every ignorable
@@ -487,6 +592,17 @@ struct MimeParts {
     parts: usize,
 }
 
+/// The largest index at most `max` that is a character boundary of `text`.
+fn floor_char_boundary(text: &str, max: usize) -> usize {
+    if max >= text.len() {
+        return text.len();
+    }
+    (0..=max)
+        .rev()
+        .find(|i| text.is_char_boundary(*i))
+        .unwrap_or(0)
+}
+
 fn walk_mime(headers: &[(String, String)], body: &str, depth: usize, out: &mut MimeParts) {
     out.parts += 1;
     if out.parts > MAX_MIME_PARTS || depth > MAX_MIME_DEPTH {
@@ -503,8 +619,22 @@ fn walk_mime(headers: &[(String, String)], body: &str, depth: usize, out: &mut M
     let name = header_param(disposition, "filename")
         .or_else(|| header_param(content_type, "name"))
         .map(|n| decode_words(&n));
+    // An attachment is decided first, for every part (a forwarded message and a
+    // group of parts too): one marked `attachment`, or one with a file name, is
+    // listed by name and never read. Only the message's body is indexed.
+    let attachment = disposition
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("attachment")
+        || name.as_deref().is_some_and(|n| !n.trim().is_empty());
+    if attachment {
+        out.attachments
+            .push(name.unwrap_or_else(|| format!("an attachment ({mime})")));
+        return;
+    }
     if mime.starts_with("multipart/") {
-        let Some(boundary) = header_param(content_type, "boundary") else {
+        let Some(boundary) = header_param(content_type, "boundary").filter(|b| !b.is_empty())
+        else {
             return;
         };
         let delimiter = format!("--{boundary}");
@@ -526,26 +656,21 @@ fn walk_mime(headers: &[(String, String)], body: &str, depth: usize, out: &mut M
         walk_mime(&inner_headers, inner_body, depth + 1, out);
         return;
     }
-    let attachment = disposition
-        .trim()
-        .to_ascii_lowercase()
-        .starts_with("attachment")
-        || (name.is_some() && !mime.starts_with("text/"));
-    if attachment {
-        out.attachments
-            .push(name.unwrap_or_else(|| format!("an attachment ({mime})")));
+    // The body: unnamed plain text and HTML. Anything else (a calendar invite, a
+    // CSV, an image sent inline) is a file, listed and not read.
+    if !matches!(mime.as_str(), "text/plain" | "text/html" | "") {
+        out.attachments.push(format!("an attachment ({mime})"));
         return;
     }
+    // A body larger than a text file may be is cut there.
+    let body = &body[..floor_char_boundary(body, super::limits::MAX_TEXT_BYTES as usize)];
     let charset = header_param(content_type, "charset");
     let bytes = transfer_decode(body, header(headers, "content-transfer-encoding"));
     let text = decode_charset(&bytes, charset.as_deref());
-    match mime.as_str() {
-        "text/plain" | "" => out.plain.push(text),
-        "text/html" => out.html.push(text),
-        other if other.starts_with("text/") => out.plain.push(text),
-        _ => out
-            .attachments
-            .push(name.unwrap_or_else(|| format!("an attachment ({mime})"))),
+    if mime == "text/html" {
+        out.html.push(text);
+    } else {
+        out.plain.push(text);
     }
 }
 
@@ -614,15 +739,117 @@ pub enum NotebookError {
     NoCells,
 }
 
-/// A cell's `source` (a string, or lines).
-fn notebook_source(value: Option<&serde_json::Value>) -> String {
-    match value {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Array(lines)) => lines
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<String>(),
-        _ => String::new(),
+/// A notebook as read: only what is indexed is held. Everything else (metadata,
+/// images and HTML in outputs, attachments) is skipped while it is parsed,
+/// without being built in memory and without a nesting limit.
+#[derive(serde::Deserialize)]
+struct Notebook {
+    cells: Option<Vec<NotebookCell>>,
+}
+
+#[derive(serde::Deserialize)]
+struct NotebookCell {
+    #[serde(default)]
+    cell_type: Option<String>,
+    #[serde(default)]
+    source: NotebookSource,
+    #[serde(default)]
+    outputs: Vec<NotebookOutput>,
+}
+
+#[derive(serde::Deserialize)]
+struct NotebookOutput {
+    #[serde(default)]
+    output_type: Option<String>,
+    #[serde(default)]
+    text: NotebookSource,
+    #[serde(default)]
+    data: NotebookData,
+    #[serde(default)]
+    ename: Option<String>,
+    #[serde(default)]
+    evalue: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct NotebookData {
+    #[serde(default, rename = "text/plain")]
+    plain: NotebookSource,
+}
+
+/// A cell's `source` or an output's text: a string, or lines. Anything else
+/// (a number, an object, null) is no text.
+#[derive(Default)]
+struct NotebookSource(String);
+
+/// Reads a [`NotebookSource`] (`lines`: a list of strings is read) or one of its
+/// lines (a list or an object there is no line, skipped whole).
+struct SourceVisitor {
+    lines: bool,
+}
+
+impl<'de> serde::de::Visitor<'de> for SourceVisitor {
+    type Value = String;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a string or a list of strings")
+    }
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<String, E> {
+        Ok(v.to_string())
+    }
+    fn visit_string<E: serde::de::Error>(self, v: String) -> Result<String, E> {
+        Ok(v)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<String, A::Error> {
+        let mut out = String::new();
+        if self.lines {
+            while let Some(line) = seq.next_element::<SourceLine>()? {
+                out.push_str(&line.0);
+            }
+        } else {
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+        }
+        Ok(out)
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<String, A::Error> {
+        while map
+            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+            .is_some()
+        {}
+        Ok(String::new())
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> Result<String, E> {
+        Ok(String::new())
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<String, E> {
+        Ok(String::new())
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<String, E> {
+        Ok(String::new())
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<String, E> {
+        Ok(String::new())
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<String, E> {
+        Ok(String::new())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NotebookSource {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer
+            .deserialize_any(SourceVisitor { lines: true })
+            .map(NotebookSource)
+    }
+}
+
+/// One line of a `source` list.
+struct SourceLine(String);
+
+impl<'de> serde::Deserialize<'de> for SourceLine {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer
+            .deserialize_any(SourceVisitor { lines: false })
+            .map(SourceLine)
     }
 }
 
@@ -631,45 +858,22 @@ fn notebook_source(value: Option<&serde_json::Value>) -> String {
 /// text, `text/plain` results and error names) after it, at most
 /// [`MAX_NOTEBOOK_OUTPUT_CHARS`] a cell. Images and HTML outputs are left out.
 pub fn notebook_text(json: &str) -> Result<String, NotebookError> {
-    let notebook: serde_json::Value = serde_json::from_str(json)?;
-    let cells = notebook
-        .get("cells")
-        .and_then(serde_json::Value::as_array)
-        .ok_or(NotebookError::NoCells)?;
+    let notebook: Notebook = serde_json::from_str(json)?;
+    let cells = notebook.cells.ok_or(NotebookError::NoCells)?;
     let mut out = Vec::new();
-    for (index, cell) in cells.iter().enumerate() {
-        let kind = cell
-            .get("cell_type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("raw");
-        let source = notebook_source(cell.get("source"));
-        let mut text = source.trim_end().to_string();
+    for (index, cell) in cells.into_iter().enumerate() {
+        let kind = cell.cell_type.as_deref().unwrap_or("raw").to_string();
+        let mut text = cell.source.0.trim_end().to_string();
         if kind == "code" {
             let mut outputs = String::new();
-            for output in cell
-                .get("outputs")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let piece = match output
-                    .get("output_type")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    Some("stream") => notebook_source(output.get("text")),
-                    Some("execute_result") | Some("display_data") => {
-                        notebook_source(output.get("data").and_then(|d| d.get("text/plain")))
-                    }
+            for output in cell.outputs {
+                let piece = match output.output_type.as_deref() {
+                    Some("stream") => output.text.0,
+                    Some("execute_result") | Some("display_data") => output.data.plain.0,
                     Some("error") => format!(
                         "{}: {}",
-                        output
-                            .get("ename")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("Error"),
-                        output
-                            .get("evalue")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
+                        output.ename.as_deref().unwrap_or("Error"),
+                        output.evalue.as_deref().unwrap_or("")
                     ),
                     _ => String::new(),
                 };
@@ -705,52 +909,348 @@ pub enum LegacyOfficeError {
     Encrypted(&'static str),
     #[error("this {0} file is damaged or incomplete ({1})")]
     Damaged(&'static str, String),
-    #[error(
-        "this {0} file is from before {0} 97, a format that is not supported; save it again as {1}"
-    )]
+    #[error("this {0} file was saved in {0} 95 or older; save it again as {1}")]
     TooOld(&'static str, &'static str),
     #[error("this {0} file contains no extractable text")]
     NoText(&'static str),
+    #[error(
+        "this {0} file links more than 512 parts in one chain, a layout that is not supported"
+    )]
+    TooComplex(&'static str),
+    #[error("this {0} file took too long to read, so it may be damaged or incomplete")]
+    TimedOut(&'static str),
+    #[error("reading this {0} file stopped the reader (it ran out of memory or crashed), so the file may be damaged or incomplete")]
+    TooMuchMemory(&'static str),
+    /// What the reader process said was wrong, in its words.
+    #[error("{0}")]
+    Reported(String),
 }
 
-/// Whether the directory of the compound file in `bytes` is a tree office_oxide
-/// can search: no entry reached twice (a loop would recurse until the stack runs
-/// out) and no path deeper than [`MAX_CFB_TREE_DEPTH`]. `Err` names what is wrong.
-fn check_cfb_tree(bytes: &[u8]) -> Result<Vec<String>, String> {
-    use office_oxide::cfb::CfbReader;
-    /// No sibling or child ([MS-CFB] 2.6.1 NOSTREAM).
-    const NO_ENTRY: u32 = 0xFFFF_FFFF;
-    let reader = CfbReader::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let entries = reader.entries();
-    let Some(root) = entries.first() else {
-        return Err("it has no directory".into());
+/// What [`validate_compound_file`] found wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CfbIssue {
+    /// Broken or crafted: a chain that loops, a sector past the end, a size the
+    /// file cannot hold.
+    Damaged(String),
+    /// Well formed but linked deeper than office_oxide's recursive search can
+    /// safely follow.
+    TooDeep,
+}
+
+/// [MS-CFB] sector markers.
+const MAX_REG_SECT: u32 = 0xFFFF_FFFA;
+const NO_STREAM: u32 = 0xFFFF_FFFF;
+/// The mini-stream cutoff every compound file uses ([MS-CFB] 2.2).
+const MINI_STREAM_CUTOFF: u64 = 4096;
+
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    bytes
+        .get(at..at + 4)
+        .map_or(NO_STREAM, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// One directory entry, as office_oxide reads it.
+struct CfbEntry {
+    name: String,
+    kind: u8,
+    left: u32,
+    right: u32,
+    child: u32,
+    start: u32,
+    size: u64,
+}
+
+/// Validates the compound file (OLE2) in `bytes` before office_oxide reads it, in
+/// time and memory linear in the file's size, and returns its entries' names.
+///
+/// office_oxide 0.1.10 follows the DIFAT with no cycle check and bounds a chain
+/// only by the FAT's length, which the file decides: a few kilobytes can make it
+/// loop for ever or read gigabytes. So every chain it will follow is walked here
+/// first, each sector at most once: the DIFAT, the FAT sectors it lists (each
+/// once, inside the file), the directory, the mini FAT, the mini stream and every
+/// stream, each no longer than its size needs. The directory tree must not loop
+/// or nest deeper than [`MAX_CFB_TREE_DEPTH`] (office_oxide searches it
+/// recursively).
+pub fn validate_compound_file(bytes: &[u8]) -> Result<Vec<String>, CfbIssue> {
+    let damaged = |what: &str| CfbIssue::Damaged(what.to_string());
+    const SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    if bytes.len() < 512 || bytes[..8] != SIGNATURE {
+        return Err(damaged("it is not a compound file"));
+    }
+    let major = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
+    let shift = u16::from_le_bytes([bytes[0x1E], bytes[0x1F]]);
+    let mini_shift = u16::from_le_bytes([bytes[0x20], bytes[0x21]]);
+    let sector_size: usize = match (major, shift) {
+        (3, 9) => 512,
+        (4, 12) => 4096,
+        _ => return Err(damaged("its header names an unknown sector size")),
     };
-    let mut seen = vec![false; entries.len()];
+    if mini_shift != 6 || u64::from(u32_at(bytes, 0x38)) != MINI_STREAM_CUTOFF {
+        return Err(damaged("its header names an unknown mini sector size"));
+    }
+    // Whole sectors after the header (sector i starts at (i + 1) × size).
+    let sectors = (bytes.len() / sector_size).saturating_sub(1);
+    let sector = |id: u32| -> Result<&[u8], CfbIssue> {
+        let index = id as usize;
+        if index >= sectors {
+            return Err(damaged("a sector it names is past its end"));
+        }
+        let at = (index + 1) * sector_size;
+        Ok(&bytes[at..at + sector_size])
+    };
+
+    // Each sector belongs to one structure: the DIFAT, the FAT or one chain. A
+    // sector reached twice is a loop or two structures sharing it.
+    let mut owned = vec![false; sectors];
+    let header_difat: Vec<u32> = (0..109).map(|i| u32_at(bytes, 0x4C + i * 4)).collect();
+    let per_sector = sector_size / 4;
+    let words = |id: u32| -> Option<Vec<u32>> {
+        let data = sector(id).ok()?;
+        Some((0..per_sector).map(|i| u32_at(data, i * 4)).collect())
+    };
+    let fat_ids = fat_sector_ids(
+        &header_difat,
+        u32_at(bytes, 0x44),
+        &words,
+        sectors,
+        &mut owned,
+    )?;
+    // The FAT: its sectors' entries, so it is no longer than the file has sectors.
+    let mut fat: Vec<u32> = Vec::new();
+    for id in &fat_ids {
+        fat.extend(words(*id).ok_or_else(|| damaged("a sector it names is past its end"))?);
+    }
+    drop(fat_ids);
+
+    // The directory.
+    let mut entries = Vec::new();
+    for id in walk_chain(&fat, u32_at(bytes, 0x30), sectors, sectors, &mut owned)? {
+        let data = sector(id)?;
+        for raw in data.chunks_exact(128) {
+            let len = (u16::from_le_bytes([raw[0x40], raw[0x41]]) as usize).min(64);
+            let units: Vec<u16> = raw[..len]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .take_while(|u| *u != 0)
+                .collect();
+            let low = u64::from(u32_at(raw, 0x78));
+            let size = if major == 4 {
+                (u64::from(u32_at(raw, 0x7C)) << 32) | low
+            } else {
+                low
+            };
+            entries.push(CfbEntry {
+                name: String::from_utf16_lossy(&units),
+                kind: raw[0x42],
+                left: u32_at(raw, 0x44),
+                right: u32_at(raw, 0x48),
+                child: u32_at(raw, 0x4C),
+                start: u32_at(raw, 0x74),
+                size,
+            });
+        }
+    }
+    let Some(root) = entries.first() else {
+        return Err(damaged("it has no directory"));
+    };
+
+    // The directory tree: no entry twice, no path deeper than office_oxide can follow.
+    let links: Vec<(u32, u32, u32)> = entries.iter().map(|e| (e.left, e.right, e.child)).collect();
+    let names: Vec<String> = walk_directory_tree(&links)?
+        .into_iter()
+        .map(|i| entries[i].name.clone())
+        .collect();
+
+    // The mini stream (the root's chain) and the mini FAT.
+    let mini_stream = if root.kind == 5 && root.start <= MAX_REG_SECT {
+        check_stream_size(root.size, sectors, sector_size)?;
+        walk_chain(
+            &fat,
+            root.start,
+            sectors,
+            sectors_for(root.size, sector_size),
+            &mut owned,
+        )?
+        .len()
+            * sector_size
+    } else {
+        0
+    };
+    let mut mini_fat: Vec<u32> = Vec::new();
+    let first_mini_fat = u32_at(bytes, 0x3C);
+    if first_mini_fat <= MAX_REG_SECT {
+        for id in walk_chain(&fat, first_mini_fat, sectors, sectors, &mut owned)? {
+            mini_fat.extend(words(id).ok_or_else(|| damaged("a sector it names is past its end"))?);
+        }
+    }
+    let mini_sectors = mini_stream / 64;
+    let mut mini_owned = vec![false; mini_sectors];
+
+    // Every stream, as office_oxide reads it: from the mini stream when it is
+    // smaller than the cutoff and there is a mini stream, else from the FAT.
+    for entry in entries.iter().filter(|e| e.kind == 2 && e.size > 0) {
+        check_stream_size(entry.size, sectors, sector_size)?;
+        if entry.size < MINI_STREAM_CUTOFF && mini_stream > 0 {
+            walk_chain(
+                &mini_fat,
+                entry.start,
+                mini_sectors,
+                sectors_for(entry.size, 64),
+                &mut mini_owned,
+            )?;
+        } else {
+            walk_chain(
+                &fat,
+                entry.start,
+                sectors,
+                sectors_for(entry.size, sector_size),
+                &mut owned,
+            )?;
+        }
+    }
+    Ok(names)
+}
+
+/// The most sectors a stream of `size` bytes can span in `unit`-byte sectors.
+pub(crate) fn sectors_for(size: u64, unit: usize) -> usize {
+    usize::try_from(size.div_ceil(unit as u64)).unwrap_or(usize::MAX)
+}
+
+/// Refuses a stated stream size larger than the file's `sectors` of `sector_size`
+/// bytes can hold.
+pub(crate) fn check_stream_size(
+    size: u64,
+    sectors: usize,
+    sector_size: usize,
+) -> Result<(), CfbIssue> {
+    if size > (sectors as u64).saturating_mul(sector_size as u64) {
+        return Err(CfbIssue::Damaged("a stream is larger than the file".into()));
+    }
+    Ok(())
+}
+
+/// The sectors of the chain from `start` in `table` (a FAT or mini FAT), ended by
+/// any marker above [`MAX_REG_SECT`]. Each sector must be one of `sectors`, owned by
+/// no other structure (`owned`, which the walk marks), and the chain no longer
+/// than `limit` sectors.
+pub(crate) fn walk_chain(
+    table: &[u32],
+    start: u32,
+    sectors: usize,
+    limit: usize,
+    owned: &mut [bool],
+) -> Result<Vec<u32>, CfbIssue> {
+    let mut out = Vec::new();
+    let mut at = start;
+    while at <= MAX_REG_SECT {
+        let index = at as usize;
+        if index >= sectors || index >= table.len() || index >= owned.len() {
+            return Err(CfbIssue::Damaged("a sector chain runs past its end".into()));
+        }
+        if std::mem::replace(&mut owned[index], true) {
+            return Err(CfbIssue::Damaged("a sector chain loops".into()));
+        }
+        out.push(at);
+        if out.len() > limit {
+            return Err(CfbIssue::Damaged(
+                "a stream is longer than its size says".into(),
+            ));
+        }
+        at = table[index];
+    }
+    Ok(out)
+}
+
+/// The FAT's sectors: the header's DIFAT entries, then those of each DIFAT sector
+/// from `first_difat` (`words` gives a sector's entries, its last the next DIFAT
+/// sector; `None` past the file's end). DIFAT and FAT sectors must each be one of
+/// `sectors` and appear once (`owned` is marked), so the walk ends and the FAT is
+/// no longer than the file.
+pub(crate) fn fat_sector_ids(
+    header_difat: &[u32],
+    first_difat: u32,
+    words: &dyn Fn(u32) -> Option<Vec<u32>>,
+    sectors: usize,
+    owned: &mut [bool],
+) -> Result<Vec<u32>, CfbIssue> {
+    let damaged = |what: &str| CfbIssue::Damaged(what.to_string());
+    let mut ids: Vec<u32> = header_difat
+        .iter()
+        .copied()
+        .filter(|s| *s <= MAX_REG_SECT)
+        .collect();
+    let mut difat = first_difat;
+    while difat <= MAX_REG_SECT {
+        let index = difat as usize;
+        if index >= sectors || index >= owned.len() {
+            return Err(damaged("its sector list (DIFAT) runs past its end"));
+        }
+        if std::mem::replace(&mut owned[index], true) {
+            return Err(damaged("its sector list (DIFAT) loops"));
+        }
+        let entries =
+            words(difat).ok_or_else(|| damaged("its sector list (DIFAT) runs past its end"))?;
+        let Some((next, listed)) = entries.split_last() else {
+            return Err(damaged("its sector list (DIFAT) is empty"));
+        };
+        ids.extend(listed.iter().copied().filter(|s| *s <= MAX_REG_SECT));
+        difat = *next;
+    }
+    for id in &ids {
+        let index = *id as usize;
+        if index >= sectors || index >= owned.len() {
+            return Err(damaged(
+                "its sector table (FAT) names a sector past its end",
+            ));
+        }
+        if std::mem::replace(&mut owned[index], true) {
+            return Err(damaged("its sector table (FAT) lists a sector twice"));
+        }
+    }
+    Ok(ids)
+}
+
+/// The entries reached from the root's child through `links` (left, right and
+/// child of each entry), in the order found; refused when one is reached twice
+/// (office_oxide's recursive search would never end), when a link names no entry,
+/// or when a path is deeper than [`MAX_CFB_TREE_DEPTH`].
+pub(crate) fn walk_directory_tree(links: &[(u32, u32, u32)]) -> Result<Vec<usize>, CfbIssue> {
+    let Some(&(_, _, root_child)) = links.first() else {
+        return Err(CfbIssue::Damaged("it has no directory".into()));
+    };
+    let mut seen = vec![false; links.len()];
     seen[0] = true;
-    let mut names = Vec::new();
-    let mut stack = vec![(root.child, 1usize)];
+    let mut reached = Vec::new();
+    let mut stack = vec![(root_child, 1usize)];
     while let Some((id, depth)) = stack.pop() {
-        if id == NO_ENTRY {
+        if id == NO_STREAM {
             continue;
         }
         let index = id as usize;
-        let Some(entry) = entries.get(index) else {
-            return Err(format!(
-                "its directory names an entry ({id}) that is not there"
+        let Some(&(left, right, child)) = links.get(index) else {
+            return Err(CfbIssue::Damaged(
+                "its directory names an entry that is not there".into(),
             ));
         };
         if std::mem::replace(&mut seen[index], true) {
-            return Err("its directory loops".into());
+            return Err(CfbIssue::Damaged("its directory loops".into()));
         }
         if depth > MAX_CFB_TREE_DEPTH {
-            return Err("its directory nests too deep".into());
+            return Err(CfbIssue::TooDeep);
         }
-        names.push(entry.name.clone());
-        stack.push((entry.left_sibling, depth + 1));
-        stack.push((entry.right_sibling, depth + 1));
-        stack.push((entry.child, depth + 1));
+        reached.push(index);
+        stack.push((left, depth + 1));
+        stack.push((right, depth + 1));
+        stack.push((child, depth + 1));
     }
-    Ok(names)
+    Ok(reached)
+}
+
+fn cfb_error(kind: &'static str, issue: CfbIssue) -> LegacyOfficeError {
+    match issue {
+        CfbIssue::Damaged(what) => LegacyOfficeError::Damaged(kind, what),
+        CfbIssue::TooDeep => LegacyOfficeError::TooComplex(kind),
+    }
 }
 
 /// `read` run so that a panic in it is a damaged file, not a crash.
@@ -774,7 +1274,7 @@ fn guarded<T>(
 pub fn doc_text(bytes: &[u8]) -> Result<String, LegacyOfficeError> {
     use office_oxide::doc::{DocDocument, DocError, SubDocumentKind};
     const KIND: &str = "Word";
-    check_cfb_tree(bytes).map_err(|e| LegacyOfficeError::Damaged(KIND, e))?;
+    validate_compound_file(bytes).map_err(|e| cfb_error(KIND, e))?;
     let doc = guarded(KIND, || {
         DocDocument::from_reader(Cursor::new(bytes)).map_err(|e| match e {
             DocError::Encrypted => LegacyOfficeError::Encrypted(KIND),
@@ -807,7 +1307,7 @@ pub fn doc_text(bytes: &[u8]) -> Result<String, LegacyOfficeError> {
 pub fn ppt_slides(bytes: &[u8]) -> Result<Vec<String>, LegacyOfficeError> {
     use office_oxide::ppt::{PptDocument, PptError, TextType};
     const KIND: &str = "PowerPoint";
-    let names = check_cfb_tree(bytes).map_err(|e| LegacyOfficeError::Damaged(KIND, e))?;
+    let names = validate_compound_file(bytes).map_err(|e| cfb_error(KIND, e))?;
     // An encrypted presentation keeps its properties in "EncryptedSummary"
     // ([MS-PPT] 2.3.7); its slides are unreadable.
     if names

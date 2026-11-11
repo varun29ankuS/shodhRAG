@@ -8,10 +8,15 @@ export interface SkippedFile {
   reason: string;
 }
 
-/** Every skipped entry counted, the first ones listed (`folder_sync::SkippedFiles`). */
+/** Every skipped entry counted, by kind, the first ones listed (`folder_sync::SkippedFiles`). */
 export interface SkippedFiles {
   total: number;
+  counts?: { secret: number; unsupported: number; hidden: number; temporary: number };
   files: SkippedFile[];
+  /** Files tried and failed, as the folder's manifest records them (not among `total`). */
+  failed?: number;
+  /** The walk stopped early in a very large folder: the counts are of its first part. */
+  partial?: boolean;
 }
 
 const NONE: SkippedFiles = { total: 0, files: [] };

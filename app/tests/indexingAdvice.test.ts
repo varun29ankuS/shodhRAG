@@ -144,3 +144,40 @@ test('files over different size limits are listed under each limit', () => {
     'Too large to index (limit 50 MB for text files)',
   ]);
 });
+
+test('damaged, old, password-protected and DRM files each say which they are', () => {
+  const cases: [string, string, string][] = [
+    // A zip without the part its format needs is damaged, not moved or deleted
+    // (the zip library's "file not found in archive" is not the file itself).
+    ['Failed to process file: this ODT is damaged or incomplete (it has no content.xml): C:\Docs\notes.odt: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    ['Failed to process file: this EPUB is damaged or incomplete (it has no META-INF/container.xml): C:\Books\a.epub: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    // As reasons recorded before were worded.
+    ['Failed to process file: EPUB missing META-INF/container.xml: C:\Books\a.epub: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    ['Failed to process file: ODP missing content.xml: C:\Docs\talk.odp: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    ['Failed to process file: this Word file was saved in Word 95 or older; save it again as .docx', 'too_old', 'Saved in an old format (95 or older)'],
+    ['Failed to process file: this PowerPoint file was saved in PowerPoint 95 or older; save it again as .pptx', 'too_old', 'Saved in an old format (95 or older)'],
+    ['Failed to process file: this ODT file is protected with a password, so its text cannot be read: C:\Docs\locked.odt', 'encrypted', 'Protected with a password'],
+    ['Failed to process file: this EPUB is protected with DRM (encrypted), so its text cannot be read: C:\Books\bought.epub', 'encrypted', 'Protected with DRM'],
+  ];
+  for (const [reason, kind, plain] of cases) {
+    const explained = explainFailure(reason);
+    assert.equal(explained.kind, kind, reason);
+    assert.equal(explained.reason, plain, reason);
+  }
+  // A DRM book has no password to remove: nothing in the app helps.
+  assert.equal(explainFailure(cases[7][0]).advice.action, 'none');
+  assert.equal(
+    explainFailure(cases[4][0]).advice.hint,
+    'Open it in Word or PowerPoint (or LibreOffice) and save it as .docx or .pptx, then index again.',
+  );
+});
+
+test('a hidden file is never advised to be renamed, and a credentials folder is kept back', () => {
+  const hidden = explainFailure('Hidden folder: nothing in it is indexed');
+  assert.equal(hidden.kind, 'hidden');
+  assert.ok(!/rename/i.test(hidden.advice.hint), hidden.advice.hint);
+  // `.git`, `.ssh`: recorded as kept back by folder_sync::skipped_files.
+  const git = explainFailure('Kept back: it is in a folder that holds credentials or the repository\'s own settings. Shodh does not index files that may hold secrets.');
+  assert.equal(git.kind, 'secret');
+  assert.equal(git.advice.action, 'none');
+});

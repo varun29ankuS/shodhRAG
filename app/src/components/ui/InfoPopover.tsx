@@ -4,6 +4,7 @@ import { Info, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { usePopover } from '../../hooks/usePopover';
 import { IS_MAC_PLATFORM, withShortcut } from '../../lib/shortcuts';
+import { POPOVER_FOCUSABLE, popoverTab } from '../../lib/popoverTab';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-surface';
@@ -31,6 +32,7 @@ export function InfoPopover({
   const { open, setOpen, close, pos, triggerRef, popRef } = usePopover();
   const titleId = useId();
   const dialogId = useId();
+  const bodyId = useId();
 
   useEffect(() => {
     if (open) popRef.current?.focus();
@@ -66,6 +68,7 @@ export function InfoPopover({
             id={dialogId}
             role="dialog"
             aria-labelledby={titleId}
+            aria-describedby={bodyId}
             tabIndex={-1}
             data-esc-local=""
             onClick={e => e.stopPropagation()}
@@ -75,10 +78,12 @@ export function InfoPopover({
                 e.stopPropagation();
                 close(true);
               } else if (e.key === 'Tab') {
-                // Tab reaches the close button; past it (or back from the pop-up) it closes,
-                // since the pop-up lives in a body-level portal outside the page order.
-                const onPopup = document.activeElement === popRef.current;
-                if (onPopup && !e.shiftKey) return;
+                // Tab moves through the close button and any link in the text; past the
+                // last (or back from the first) it closes, since the pop-up lives in a
+                // body-level portal outside the page order.
+                const controls = Array.from(popRef.current?.querySelectorAll<HTMLElement>(POPOVER_FOCUSABLE) ?? []);
+                const at = controls.indexOf(document.activeElement as HTMLElement);
+                if (popoverTab(at, controls.length, e.shiftKey) === 'move') return;
                 e.preventDefault();
                 close(true);
               }
@@ -103,7 +108,7 @@ export function InfoPopover({
                 <X className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
             </div>
-            <div className="mt-1.5 flex flex-col gap-2 text-small leading-[1.55] text-shodh-text-secondary">{children}</div>
+            <div id={bodyId} className="mt-1.5 flex flex-col gap-2 text-small leading-[1.55] text-shodh-text-secondary">{children}</div>
           </div>,
           document.body,
         )}

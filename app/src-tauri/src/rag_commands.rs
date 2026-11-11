@@ -492,19 +492,21 @@ pub async fn get_source_files(
 }
 
 /// The files of a linked folder that are there but not indexed, with why
-/// (`folder_sync::skipped_files`): the Library's "N files not indexed" list, with the
-/// files that were tried and failed. Read-only; scanned off the async workers.
+/// (`folder_sync::ManifestStore::skipped_of_folder`): the Library's "N files not
+/// indexed" list, with the files that were tried and failed. Only for a folder a
+/// Library source links: a list of a folder's files is not given for any other
+/// path. Read-only; scanned off the async workers, and kept until the folder syncs.
 #[tauri::command]
 pub async fn library_skipped_files(
     folder_path: String,
+    folder_sync: tauri::State<'_, crate::file_watcher::FolderSyncState>,
 ) -> Result<shodh_rag::folder_sync::SkippedFiles, String> {
     let folder = PathBuf::from(&folder_path);
-    if !folder.is_dir() {
-        return Err(format!("{folder_path} is not a folder"));
-    }
-    tokio::task::spawn_blocking(move || shodh_rag::folder_sync::skipped_files(&folder))
+    let store = folder_sync.store().clone();
+    tokio::task::spawn_blocking(move || store.skipped_of_folder(&folder))
         .await
-        .map_err(|e| format!("Scanning {folder_path} failed: {e}"))
+        .map_err(|e| format!("Scanning {folder_path} failed: {e}"))?
+        .ok_or_else(|| format!("{folder_path} is not a folder the Library lists"))
 }
 
 /// Whether the index holds `path` ("Ask about this file" checks its file before the

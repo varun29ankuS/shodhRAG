@@ -41,6 +41,8 @@ export type FailureKind =
   | 'scan_reader_missing'
   | 'search_models_missing'
   | 'encrypted'
+  /** A Word or PowerPoint file saved in the 95 format or older (`formats::LegacyOfficeError::TooOld`). */
+  | 'too_old'
   | 'disk_full'
   /** A PDF over the page limit (`limits::check_pdf_pages`). */
   | 'too_many_pages'
@@ -100,7 +102,7 @@ const RULES: readonly Rule[] = [
     test: /^hidden\b/i,
     reason: 'Hidden file or folder',
     advice: {
-      hint: 'Names that start with a dot are hidden (app settings, version history), and are not indexed. Rename one to include it.',
+      hint: 'Names that start with a dot are hidden; apps keep their settings and caches in them. They are not indexed. Nothing to do.',
       action: 'none',
       actionLabel: null,
     },
@@ -129,8 +131,23 @@ const RULES: readonly Rule[] = [
     advice: { hint: 'Search is not set up yet: install the search models, then index again.', action: 'install_search_models', actionLabel: 'Set up search' },
   },
   {
+    // Before the password rule: a book locked by its seller has no password to enter.
     kind: 'encrypted',
-    test: /password|encrypted|\bdrm\b/i,
+    test: /protected with drm|\bdrm\b/i,
+    reason: 'Protected with DRM',
+    advice: { hint: 'The book is locked with DRM by the shop it came from, so Shodh cannot read it. A DRM-free copy can be indexed.', action: 'none', actionLabel: null },
+  },
+  {
+    // "this Word file was saved in Word 95 or older; save it again as .docx"
+    // (formats::LegacyOfficeError::TooOld).
+    kind: 'too_old',
+    test: /saved in (word|powerpoint) 95 or older/i,
+    reason: 'Saved in an old format (95 or older)',
+    advice: { hint: 'Open it in Word or PowerPoint (or LibreOffice) and save it as .docx or .pptx, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
+  },
+  {
+    kind: 'encrypted',
+    test: /password|encrypted/i,
     reason: 'Protected with a password',
     advice: { hint: 'The file is password-protected. Save an unlocked copy into the folder, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
   },
@@ -173,7 +190,7 @@ const RULES: readonly Rule[] = [
   },
   {
     kind: 'damaged',
-    test: /damaged|incomplete|corrupt|as zip|zip archive|invalid zip|failed to open spreadsheet|malformed|unexpected end of (file|stream)|not valid xml|nests more than \d+ elements deep|cannot open pdf|missing word\/document\.xml|invalid (file )?header/i,
+    test: /damaged|incomplete|corrupt|as zip|zip archive|invalid zip|failed to open spreadsheet|malformed|unexpected end of (file|stream)|not valid xml|nests more than \d+ elements deep|cannot open pdf|\bmissing [\w./-]+\.(?:xml|opf)\b|has no [\w./-]+\.(?:xml|opf)\b|invalid (file )?header/i,
     reason: 'Damaged or incomplete',
     advice: { hint: 'The file is damaged or was not fully saved or downloaded. Open it in its app to check, save a fresh copy into the folder, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
   },

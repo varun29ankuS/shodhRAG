@@ -316,15 +316,20 @@ export function DueMenu({
         aria-controls={open ? dialogId : undefined}
         aria-label={`Due: ${label}${overdue ? ', overdue' : ''}. Change due date of ${taskTitle}`}
         onClick={e => { e.stopPropagation(); setOpen(!open); }}
+        title={`${label}${overdue ? ' · overdue' : ''}`}
         className={cn(
-          'h-6 px-1.5 rounded-md inline-flex items-center gap-1 text-caption hover:bg-shodh-raised-2 transition-colors duration-micro',
+          // Never wider than its column: a long date is cut with an ellipsis and
+          // shown whole on hover.
+          'h-6 px-1.5 max-w-full min-w-0 rounded-md inline-flex items-center gap-1 text-caption hover:bg-shodh-raised-2 transition-colors duration-micro',
           overdue ? 'text-shodh-error' : dueDate ? 'text-shodh-text-muted' : 'text-shodh-text-faint',
           FOCUS_RING,
         )}
       >
-        <Clock className="w-3 h-3" aria-hidden="true" />
-        {label}
-        {overdue && <span> · overdue</span>}
+        <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">
+          {label}
+          {overdue && ' · overdue'}
+        </span>
       </button>
       {open && createPortal(
         <div

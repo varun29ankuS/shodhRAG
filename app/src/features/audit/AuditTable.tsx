@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { prettyJson } from '../agent/format';
+import { scrubSecrets } from './scrub';
 import { formatTimestamp } from './summary';
 import { describeEvent, sentenceText } from './sentence';
 import type { EventIcon, EventSentence } from './sentence';
@@ -93,10 +94,11 @@ function Sentence({ sentence, wrap = false }: { sentence: EventSentence; wrap?: 
 /** The raw entry behind a disclosure, with a Copy button. */
 function RawEvent({ row }: { row: AuditRow }) {
   const [copied, setCopied] = useState(false);
-  const json = useMemo(() => prettyJson(row.payload, 20_000), [row.payload]);
+  // A field named for a secret is never shown or copied (no event writes one today).
+  const json = useMemo(() => prettyJson(scrubSecrets(row.payload), 20_000), [row.payload]);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify(row, null, 2));
+      await navigator.clipboard.writeText(JSON.stringify(scrubSecrets(row), null, 2));
       setCopied(true);
     } catch (error) {
       notify.error('Could not copy the entry', { description: error instanceof Error ? error.message : String(error) });

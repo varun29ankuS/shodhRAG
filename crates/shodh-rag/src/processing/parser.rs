@@ -198,6 +198,9 @@ pub struct DocumentParser {
     /// When set, OCR runs in the child process instead of this one (the
     /// in-process model is then not used).
     ocr_worker: Option<Arc<OcrWorker>>,
+    /// When set, legacy Word and PowerPoint files are read in this child process,
+    /// with a time budget and a memory cap ([`OcrWorker::read_legacy_office`]).
+    office_worker: Option<Arc<OcrWorker>>,
     /// What OCR read from scans, reused while a file is unchanged.
     ocr_cache: Option<Arc<OcrCache>>,
     ocr: OcrConfig,
@@ -230,6 +233,33 @@ impl DocumentParser {
     pub fn with_ocr_worker(mut self, worker: Arc<OcrWorker>) -> Self {
         self.ocr_worker = Some(worker);
         self
+    }
+
+    /// This parser reading legacy Word and PowerPoint files in the child process
+    /// `worker` (its own process, with a memory cap): a file that makes the
+    /// reader hang or exhaust memory stops only the child.
+    pub fn with_office_worker(mut self, worker: Arc<OcrWorker>) -> Self {
+        self.office_worker = Some(worker);
+        self
+    }
+
+    /// The pages of a legacy Office file: in the office child when there is one,
+    /// else here (the compound file is validated before it is read either way).
+    fn read_legacy_office(
+        &self,
+        kind: super::ocr::worker::OfficeKind,
+        path: &Path,
+        bytes: &[u8],
+    ) -> Result<Vec<String>> {
+        use super::ocr::worker::OfficeKind;
+        let read = match &self.office_worker {
+            Some(worker) => worker.read_legacy_office(kind, path),
+            None => match kind {
+                OfficeKind::Doc => super::formats::doc_text(bytes).map(|text| vec![text]),
+                OfficeKind::Ppt => super::formats::ppt_slides(bytes),
+            },
+        };
+        read.map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))
     }
 
     /// This parser keeping what OCR reads in `cache` and reading scans from
@@ -878,9 +908,12 @@ impl DocumentParser {
             .with_context(|| format!("Failed to read DOCX as ZIP: {}", path.display()))?;
 
         let xml_content = {
-            let mut document_xml = archive
-                .by_name("word/document.xml")
-                .with_context(|| format!("DOCX missing word/document.xml: {}", path.display()))?;
+            let mut document_xml = archive.by_name("word/document.xml").with_context(|| {
+                format!(
+                    "this DOCX is damaged or incomplete (it has no word/document.xml): {}",
+                    path.display()
+                )
+            })?;
             let declared = document_xml.size();
             let mut read = 0;
             read_office_part(&mut document_xml, "word/document.xml", declared, &mut read)
@@ -1022,6 +1055,7 @@ impl DocumentParser {
     /// An OpenDocument text (`.odt`): its `content.xml` read like a Word body,
     /// with tables of two rows or more as tables.
     fn parse_odt(&self, path: &Path) -> Result<(String, Vec<DocumentSection>)> {
+        refuse_password_protected_odf(path, "ODT")?;
         let xml = read_zip_part(path, "ODT", "content.xml")?;
         let blocks = office_xml::odt_blocks(&xml)
             .with_context(|| format!("ODT content.xml could not be read: {}", path.display()))?;
@@ -1035,6 +1069,7 @@ impl DocumentParser {
     /// An OpenDocument presentation (`.odp`): each slide's text under its number,
     /// as for PowerPoint.
     fn parse_odp(&self, path: &Path) -> Result<String> {
+        refuse_password_protected_odf(path, "ODP")?;
         let xml = read_zip_part(path, "ODP", "content.xml")?;
         let slides = office_xml::odp_slides(&xml)
             .with_context(|| format!("ODP content.xml could not be read: {}", path.display()))?;
@@ -1051,8 +1086,9 @@ impl DocumentParser {
         if bytes.trim_ascii_start().starts_with(b"{\\rtf") {
             return Ok((rtf_or_no_text(&bytes, path)?, Vec::new()));
         }
-        let text = super::formats::doc_text(&bytes)
-            .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))?;
+        let text = self
+            .read_legacy_office(super::ocr::worker::OfficeKind::Doc, path, &bytes)?
+            .join("\n\n");
         Ok((text, Vec::new()))
     }
 
@@ -1063,8 +1099,7 @@ impl DocumentParser {
         if bytes.starts_with(b"PK") {
             return self.parse_pptx(path);
         }
-        let slides = super::formats::ppt_slides(&bytes)
-            .map_err(|e| anyhow::Error::new(e).context(path.display().to_string()))?;
+        let slides = self.read_legacy_office(super::ocr::worker::OfficeKind::Ppt, path, &bytes)?;
         slides_text(slides, "PPT", path)
     }
 
@@ -1079,9 +1114,12 @@ impl DocumentParser {
         let mut read = 0u64;
         let mut part =
             |archive: &mut zip::ZipArchive<std::fs::File>, name: &str| -> Result<String> {
-                let mut entry = archive
-                    .by_name(name)
-                    .with_context(|| format!("EPUB missing {name}: {}", path.display()))?;
+                let mut entry = archive.by_name(name).with_context(|| {
+                    format!(
+                        "this EPUB is damaged or incomplete (it has no {name}): {}",
+                        path.display()
+                    )
+                })?;
                 let declared = entry.size();
                 read_office_part(&mut entry, name, declared, &mut read)
                     .with_context(|| format!("Failed to read {name} from EPUB: {}", path.display()))
@@ -1123,6 +1161,9 @@ impl DocumentParser {
                 ))
             })
             .collect();
+        // Each chapter once: a reading order that names one chapter thousands of
+        // times is not read (or indexed) thousands of times.
+        let mut listed = std::collections::HashSet::new();
         let spine: Vec<String> = doc
             .descendants()
             .filter(|n| n.tag_name().name() == "itemref")
@@ -1130,6 +1171,7 @@ impl DocumentParser {
             .filter_map(|id| manifest.get(id))
             .filter(|(_, media)| media.contains("html") || media.is_empty())
             .filter_map(|(href, _)| super::formats::resolve_href(&opf_path, href))
+            .filter(|href| listed.insert(href.clone()))
             .take(super::formats::MAX_EPUB_CHAPTERS)
             .collect();
         if spine.is_empty() {
@@ -1598,6 +1640,24 @@ fn rtf_or_no_text(bytes: &[u8], path: &Path) -> Result<String> {
     Ok(text)
 }
 
+/// Refuses an OpenDocument file saved with a password: its manifest lists
+/// `manifest:encryption-data` for the parts it encrypted, and its `content.xml`
+/// is then encrypted bytes, which would read as damaged XML.
+fn refuse_password_protected_odf(path: &Path, kind: &str) -> Result<()> {
+    // A file without a manifest is read as it is; one whose manifest cannot be
+    // read says so when its content is read.
+    let Ok(manifest) = read_zip_part(path, kind, "META-INF/manifest.xml") else {
+        return Ok(());
+    };
+    if manifest.contains("encryption-data") {
+        anyhow::bail!(
+            "this {kind} file is protected with a password, so its text cannot be read: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// The XML part `name` of the zip archive at `path` (a `kind` file: "ODT"),
 /// within the Office limits.
 fn read_zip_part(path: &Path, kind: &str, name: &str) -> Result<String> {
@@ -1605,9 +1665,12 @@ fn read_zip_part(path: &Path, kind: &str, name: &str) -> Result<String> {
         .with_context(|| format!("Failed to open {kind}: {}", path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("Failed to read {kind} as ZIP: {}", path.display()))?;
-    let mut entry = archive
-        .by_name(name)
-        .with_context(|| format!("{kind} missing {name}: {}", path.display()))?;
+    let mut entry = archive.by_name(name).with_context(|| {
+        format!(
+            "this {kind} is damaged or incomplete (it has no {name}): {}",
+            path.display()
+        )
+    })?;
     let declared = entry.size();
     let mut read = 0;
     read_office_part(&mut entry, name, declared, &mut read)
@@ -2607,6 +2670,32 @@ pub(crate) mod tests {
         );
         assert!(err.contains("protected with DRM"), "{err}");
 
+        // A reading order that names one chapter 5,000 times reads it once, and an
+        // href that climbs out of the book (`../../..`) names no chapter.
+        let repeated = format!(
+            "<package xmlns=\"http://www.idpf.org/2007/opf\"><manifest>\
+             <item id=\"c1\" href=\"text/one.xhtml\" media-type=\"application/xhtml+xml\"/>\
+             <item id=\"out\" href=\"../../../../outside.xhtml\" media-type=\"application/xhtml+xml\"/>\
+             </manifest><spine><itemref idref=\"out\"/>{}</spine></package>",
+            "<itemref idref=\"c1\"/>".repeat(5_000)
+        );
+        let parsed = parser
+            .parse_file(&write(
+                "repeated.epub",
+                &fixtures::zip(&[
+                    ("META-INF/container.xml", container),
+                    ("OEBPS/content.opf", repeated.as_str()),
+                    ("OEBPS/text/one.xhtml", one),
+                ]),
+            ))
+            .unwrap();
+        assert_eq!(
+            parsed.content.matches("monsoon").count(),
+            1,
+            "{}",
+            parsed.content
+        );
+
         // Email: titled by its subject.
         let parsed = parser
             .parse_file(&write(
@@ -2696,15 +2785,62 @@ pub(crate) mod tests {
             .set_len(limits::MAX_OFFICE_BYTES + 1)
             .unwrap();
         assert!(reason(&huge)
-            .contains("too large to index (limit 100 MB for office documents, books and email)"));
+            .contains("too large to index (limit 100 MB for office documents and books)"));
 
         let odt = write("broken.odt", b"PK not really a zip");
         assert!(reason(&odt).contains("as ZIP"));
+        // Saved with a password: its manifest says which parts are encrypted.
+        let manifest = "<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\">\
+                        <manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\">\
+                        <manifest:encryption-data manifest:checksum-type=\"SHA1/1K\" manifest:checksum=\"x\"/>\
+                        </manifest:file-entry></manifest:manifest>";
+        for (name, kind) in [("locked.odt", "ODT"), ("locked.odp", "ODP")] {
+            let locked = write(
+                name,
+                &fixtures::zip(&[
+                    ("META-INF/manifest.xml", manifest),
+                    ("content.xml", "\u{1}\u{2}encrypted bytes"),
+                ]),
+            );
+            assert!(
+                reason(&locked).contains(&format!(
+                    "this {kind} file is protected with a password, so its text cannot be read"
+                )),
+                "{}",
+                reason(&locked)
+            );
+        }
+        // A zip without its content part is damaged, not missing.
+        let empty = write(
+            "empty.odt",
+            &fixtures::zip(&[("mimetype", "application/vnd.oasis.opendocument.text")]),
+        );
+        assert!(
+            reason(&empty).contains("this ODT is damaged or incomplete (it has no content.xml)")
+        );
+        // XML nested past what any Office file holds is refused, not parsed.
+        let deep = format!(
+            "<office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" \
+             xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\"><office:body><office:text><text:p>{}x{}</text:p>\
+             </office:text></office:body></office:document-content>",
+            "<text:span>".repeat(office_xml::MAX_DEPTH + 10),
+            "</text:span>".repeat(office_xml::MAX_DEPTH + 10)
+        );
+        let deep = write(
+            "deep.odt",
+            &fixtures::zip(&[("content.xml", deep.as_str())]),
+        );
+        assert!(
+            reason(&deep).contains("nests more than"),
+            "{}",
+            reason(&deep)
+        );
         let epub = write(
             "broken.epub",
             &fixtures::zip(&[("mimetype", "application/epub+zip")]),
         );
-        assert!(reason(&epub).contains("EPUB missing META-INF/container.xml"));
+        assert!(reason(&epub)
+            .contains("this EPUB is damaged or incomplete (it has no META-INF/container.xml)"));
         let rtf = write("broken.rtf", b"plain words");
         assert!(reason(&rtf).contains("not an RTF file"));
         let notebook = write("broken.ipynb", b"{\"cells\": [");

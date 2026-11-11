@@ -525,6 +525,20 @@ pub async fn index_single_file_in(
         .to_lowercase();
 
     if let Some(reason) = secret_file_reason(&path) {
+        // Indexed before such files were kept out: what the index holds of it goes.
+        let mut engine = rag.write().await;
+        let source = crate::rag_engine::normalize_source_path(&path);
+        match engine.delete_by_source(&source).await {
+            Ok(0) => {}
+            Ok(_) => {
+                if let Err(e) = engine.purge_deleted_text().await {
+                    tracing::warn!(error = %format!("{e:#}"), "removed secret file's text not purged from disk yet");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "chunks of a secret file not removed")
+            }
+        }
         return Err(SecretFileKeptBack { reason }.to_string());
     }
     if !is_supported_file_type(&extension) {

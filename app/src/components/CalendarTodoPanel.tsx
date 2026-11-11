@@ -13,6 +13,7 @@ import {
   matchesWorkspaceFilter,
   parseWorkspaceFilter,
   sameWorkspaceFilter,
+  showsWorkspaceColumn,
   serializeWorkspaceFilter,
   workspaceChoices,
   workspaceFilterChoices,
@@ -730,7 +731,7 @@ export default function CalendarTodoPanel() {
                 <span>Task</span>
                 <span>Due date</span>
                 <span>Priority</span>
-                <span>Workspace</span>
+                <span>{showsWorkspaceColumn(allWorkspaces, filteredTasks) ? 'Workspace' : null}</span>
                 <span />
               </div>
               <ul ref={listRef} aria-label="Tasks" className="flex flex-col gap-0.5">

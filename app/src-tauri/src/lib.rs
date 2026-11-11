@@ -713,6 +713,7 @@ pub fn run() {
             rag_commands::delete_folder_source,
             rag_commands::get_source_files,
             rag_commands::indexed_file_exists,
+            rag_commands::library_skipped_files,
             // First-run search model setup
             search_models_commands::search_models_status,
             search_models_commands::install_search_models,

@@ -216,6 +216,136 @@ pub fn scan_folder_checked(folder: &Path) -> FolderScan {
     scan
 }
 
+/// Why a file of a linked folder is there but not indexed (files that were tried
+/// and failed are the sync's `failures`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipKind {
+    /// It may hold secrets ([`secret_file_reason`]).
+    Secret,
+    /// Shodh does not read its type.
+    Unsupported,
+    /// A hidden file, or a hidden folder (listed once, for everything in it).
+    Hidden,
+    /// An Office lock file or a partial download ([`is_temporary_file`]).
+    Temporary,
+}
+
+/// A file (or hidden folder) of a linked folder that is not indexed, and why, in
+/// the words the Library shows (`app/src/features/library/indexingAdvice.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedFile {
+    pub file: String,
+    pub kind: SkipKind,
+    pub reason: String,
+}
+
+/// What [`skipped_files`] found: every skipped entry counted, the first
+/// [`MAX_SKIPPED_LISTED`] listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedFiles {
+    pub total: usize,
+    pub files: Vec<SkippedFile>,
+}
+
+impl SkippedFiles {
+    /// How many entries of `kind` were counted among those listed.
+    pub fn listed_of(&self, kind: SkipKind) -> usize {
+        self.files.iter().filter(|f| f.kind == kind).count()
+    }
+}
+
+/// The most skipped entries [`skipped_files`] lists (all are counted).
+pub const MAX_SKIPPED_LISTED: usize = 2_000;
+
+/// Why the file at `path` is not indexed although it is in the folder, or `None`
+/// when it is one a folder source indexes ([`is_indexable`]).
+pub fn skip_reason(path: &Path) -> Option<(SkipKind, String)> {
+    if let Some(reason) = secret_file_reason(path) {
+        return Some((
+            SkipKind::Secret,
+            crate::indexing::SecretFileKeptBack { reason }.to_string(),
+        ));
+    }
+    if is_temporary_file(path) {
+        return Some((
+            SkipKind::Temporary,
+            "Temporary or lock file: apps write these while a file is open or downloading".into(),
+        ));
+    }
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase);
+    match extension {
+        Some(ext) if is_supported_file_type(&ext) => None,
+        Some(ext) => Some((
+            SkipKind::Unsupported,
+            format!("Not supported: Shodh does not read .{ext} files"),
+        )),
+        None => Some((
+            SkipKind::Unsupported,
+            "Not supported: the file has no type (no extension)".into(),
+        )),
+    }
+}
+
+/// Every file of `folder` that is there but not indexed, with why: types Shodh does
+/// not read, files that may hold secrets, temporary files, and hidden files and
+/// folders (a hidden folder once, not each file in it). Nothing a folder holds is
+/// left out without a reason. Folders that cannot be read are the scan's
+/// ([`scan_folder_checked`]).
+pub fn skipped_files(folder: &Path) -> SkippedFiles {
+    use std::cell::RefCell;
+    let found = RefCell::new(SkippedFiles::default());
+    let record = |path: &Path, kind: SkipKind, reason: String| {
+        let mut found = found.borrow_mut();
+        found.total += 1;
+        if found.files.len() < MAX_SKIPPED_LISTED {
+            found.files.push(SkippedFile {
+                file: canonical_path(path).display().to_string(),
+                kind,
+                reason,
+            });
+        }
+    };
+    let walker = WalkDir::new(folder).into_iter().filter_entry(|entry| {
+        if !is_hidden(entry) {
+            return true;
+        }
+        let path = entry.path();
+        if entry.file_type().is_dir() {
+            record(
+                path,
+                SkipKind::Hidden,
+                "Hidden folder: nothing in it is indexed".into(),
+            );
+        } else if let Some(reason) = secret_file_reason(path) {
+            record(
+                path,
+                SkipKind::Secret,
+                crate::indexing::SecretFileKeptBack { reason }.to_string(),
+            );
+        } else {
+            record(
+                path,
+                SkipKind::Hidden,
+                "Hidden file: names that start with a dot are not indexed".into(),
+            );
+        }
+        false
+    });
+    for entry in walker.filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Some((kind, reason)) = skip_reason(entry.path()) {
+            record(entry.path(), kind, reason);
+        }
+    }
+    found.into_inner()
+}
+
 /// The indexable files under `folder` that could be read, keyed by index
 /// identity ([`normalize_source_path`]); see [`scan_folder_checked`].
 pub fn scan_folder(folder: &Path) -> BTreeMap<String, (PathBuf, FileStamp)> {
@@ -1654,6 +1784,65 @@ mod tests {
             assert!(is_indexable(Path::new(name)), "{name}");
         }
         assert!(!is_indexable(Path::new("binary.exe")));
+    }
+
+    /// Every file a folder holds and does not index is listed with why; a hidden
+    /// folder once, for everything in it.
+    #[test]
+    fn skipped_files_say_why_each_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/objects/a1"), "x").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "x").unwrap();
+        for (name, body) in [
+            ("notes.md", "# Notes"),
+            ("photo.heic", "x"),
+            ("Makefile", "all:"),
+            ("prod.env", "KEY=1"),
+            (".env", "KEY=1"),
+            ("server.pem", "x"),
+            ("~$report.docx", "x"),
+            (".gitignore", "target"),
+        ] {
+            std::fs::write(root.join(name), body).unwrap();
+        }
+        let skipped = skipped_files(root);
+        let by_name: BTreeMap<String, (SkipKind, String)> = skipped
+            .files
+            .iter()
+            .map(|f| {
+                let name = Path::new(&f.file)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                (name, (f.kind, f.reason.clone()))
+            })
+            .collect();
+        assert_eq!(skipped.total, 8, "{by_name:#?}");
+        assert_eq!(skipped.total, skipped.files.len());
+        assert!(!by_name.contains_key("notes.md"));
+        let kind = |name: &str| by_name[name].0;
+        assert_eq!(kind("photo.heic"), SkipKind::Unsupported);
+        assert_eq!(
+            by_name["photo.heic"].1,
+            "Not supported: Shodh does not read .heic files"
+        );
+        assert_eq!(kind("Makefile"), SkipKind::Unsupported);
+        assert_eq!(kind("prod.env"), SkipKind::Secret);
+        assert_eq!(kind(".env"), SkipKind::Secret);
+        assert_eq!(kind("server.pem"), SkipKind::Secret);
+        assert!(by_name["server.pem"].1.starts_with("Kept back: "));
+        assert_eq!(kind("~$report.docx"), SkipKind::Temporary);
+        assert_eq!(kind(".gitignore"), SkipKind::Hidden);
+        // The hidden folder once, not its files.
+        assert_eq!(kind(".git"), SkipKind::Hidden);
+        assert!(!by_name.contains_key("HEAD") && !by_name.contains_key("a1"));
+        // Nothing is both indexed and skipped.
+        for file in &skipped.files {
+            assert!(!is_indexable(Path::new(&file.file)), "{}", file.file);
+        }
     }
 
     /// Environment files, keys and credential files planted in a linked folder are not

@@ -617,7 +617,8 @@ impl HostTool for ListSourcesTool {
          calendar and notes as searchable text, with file and chunk counts. It does not list the \
          user's tasks or events: list_tasks and list_events do. Source ids can be passed to \
          search_documents to restrict a search. With source_id (an id this tool listed), list the \
-         indexed files of that source instead; leave it out to list every source."
+         indexed files of that source instead, and how many files of its folder are not indexed \
+         and why; leave it out to list every source."
     }
     fn schema(&self) -> Value {
         json!({
@@ -670,9 +671,23 @@ impl HostTool for ListSourcesTool {
             } else {
                 String::new()
             };
+            // What the folder holds and does not index, by why (the Library lists each).
+            let folder = summaries
+                .iter()
+                .find(|s| s.source_id == source_id)
+                .and_then(|s| s.folder.clone());
+            let skipped = match folder {
+                Some(folder) => tokio::task::spawn_blocking(move || {
+                    crate::folder_sync::skipped_files(std::path::Path::new(&folder))
+                })
+                .await
+                .ok(),
+                None => None,
+            };
+            let not_indexed = skipped.as_ref().map(skipped_text).unwrap_or_default();
             return Ok(ToolOutput {
                 text_for_model: format!(
-                    "{total} indexed files in source {source_id}.{more}\n{body}"
+                    "{total} indexed files in source {source_id}.{more}{not_indexed}\n{body}"
                 ),
                 summary_for_ui: format!("{total} {}", if total == 1 { "file" } else { "files" }),
                 detail: Some(json!({ "sourceId": source_id, "total": total, "files": shown })),
@@ -721,9 +736,66 @@ impl HostTool for ListSourcesTool {
     }
 }
 
+/// " 12 files or folders in its folder are not indexed: 9 of a type Shodh does not
+/// read, 2 kept back because they may hold secrets, 1 hidden. The Library lists each
+/// with why." (or nothing when every file is indexed). Counts by kind are of the
+/// entries listed.
+fn skipped_text(skipped: &crate::folder_sync::SkippedFiles) -> String {
+    use crate::folder_sync::SkipKind;
+    if skipped.total == 0 {
+        return String::new();
+    }
+    let parts: Vec<String> = [
+        (SkipKind::Unsupported, "of a type Shodh does not read"),
+        (SkipKind::Secret, "kept back because they may hold secrets"),
+        (SkipKind::Hidden, "hidden"),
+        (SkipKind::Temporary, "temporary or lock files"),
+    ]
+    .iter()
+    .filter_map(|(kind, words)| match skipped.listed_of(*kind) {
+        0 => None,
+        n => Some(format!("{n} {words}")),
+    })
+    .collect();
+    let noun = if skipped.total == 1 {
+        "file or folder in its folder is"
+    } else {
+        "files or folders in its folder are"
+    };
+    format!(
+        " {} {noun} not indexed: {}. The Library lists each with why.",
+        skipped.total,
+        parts.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_files_are_counted_by_why() {
+        use crate::folder_sync::{SkipKind, SkippedFile, SkippedFiles};
+        let file = |kind| SkippedFile {
+            file: "c:/docs/x".into(),
+            kind,
+            reason: String::new(),
+        };
+        assert_eq!(skipped_text(&SkippedFiles::default()), "");
+        let skipped = SkippedFiles {
+            total: 3,
+            files: vec![
+                file(SkipKind::Unsupported),
+                file(SkipKind::Unsupported),
+                file(SkipKind::Secret),
+            ],
+        };
+        assert_eq!(
+            skipped_text(&skipped),
+            " 3 files or folders in its folder are not indexed: 2 of a type Shodh does not read, \
+             1 kept back because they may hold secrets. The Library lists each with why."
+        );
+    }
 
     fn row(doc: &str, source: &str, space: &str, chunks: usize) -> DocumentSourceRow {
         DocumentSourceRow {

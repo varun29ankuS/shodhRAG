@@ -344,12 +344,14 @@ function MessageContent({
             aria-pressed={isActive}
             title={isWeb && hit.url ? `${sourceLabel(hit)} — ${webHost(hit.url)} (opens in your browser)` : sourceLabel(hit)}
             className={cn(
-              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
+              // Every badge has a 1px border (transparent where none shows), so a web
+              // source's outline never resizes the badge as it is opened.
+              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 ml-[3px] rounded-[5px] border align-[3px] text-caption font-bold leading-none tabular-nums transition-colors duration-micro',
               isActive
-                ? 'bg-shodh-accent text-shodh-on-accent'
+                ? 'border-shodh-accent bg-shodh-accent text-shodh-on-accent'
                 : isWeb
-                  ? 'border border-dashed border-shodh-info text-shodh-info hover:bg-shodh-raised-2'
-                  : 'bg-shodh-pressed text-shodh-text-secondary hover:bg-shodh-border-strong hover:text-shodh-text',
+                  ? 'border-dashed border-shodh-info text-shodh-info hover:bg-shodh-raised-2'
+                  : 'border-transparent bg-shodh-pressed text-shodh-text-secondary hover:bg-shodh-border-strong hover:text-shodh-text',
               FOCUS_RING,
             )}
           >

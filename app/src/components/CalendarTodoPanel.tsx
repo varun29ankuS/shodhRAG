@@ -51,6 +51,9 @@ function storeWorkspaceFilter(filter: WorkspaceFilter) {
 /** A click on a title waits this long for a second click (double-click edits the title). */
 const TITLE_CLICK_DELAY_MS = 220;
 
+/** The task list's columns: done, task, due date, priority, workspace, delete. */
+const TASK_GRID = 'grid grid-cols-[16px_minmax(0,1fr)_8.5rem_6.5rem_9rem_28px] gap-x-3';
+
 const ICON_BUTTON = cn(
   'w-7 h-7 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
   FOCUS_RING,
@@ -240,7 +243,8 @@ function TaskRow({
         onKeyDown={onKeyDown}
         onClick={() => { if (!editing) openTask(task.id); }}
         className={cn(
-          'group relative flex items-start gap-2.5 px-3 py-2.5 rounded-xl cursor-pointer transition-colors duration-micro',
+          TASK_GRID,
+          'group relative items-start px-3 py-2.5 rounded-xl cursor-pointer transition-colors duration-micro',
           'hover:bg-shodh-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
           overdue && 'shadow-[inset_3px_0_0_0_var(--c-error)]',
         )}
@@ -253,7 +257,7 @@ function TaskRow({
           tabIndex={inner}
           onClick={e => { e.stopPropagation(); toggle(); }}
           className={cn(
-            'mt-0.5 w-4 h-4 shrink-0 rounded-full border-2 inline-flex items-center justify-center transition-colors duration-micro',
+            'mt-1 w-4 h-4 shrink-0 rounded-full border-2 inline-flex items-center justify-center transition-colors duration-micro',
             done ? 'bg-shodh-success border-shodh-success text-shodh-ground' : 'border-shodh-border-strong hover:border-shodh-text-muted',
             FOCUS_RING,
           )}
@@ -261,8 +265,8 @@ function TaskRow({
           {done && <Check className="w-2.5 h-2.5" strokeWidth={3} aria-hidden="true" />}
         </button>
 
-        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5 min-w-0">
+        <div className="min-w-0 flex flex-col gap-0.5">
+          <div className="min-h-6 flex items-center gap-1.5 min-w-0">
             {editing ? (
               <input
                 autoFocus
@@ -305,32 +309,9 @@ function TaskRow({
             )}
           </div>
 
+          {(task.reminder || task.snoozedUntil || task.project || task.subtasks.length > 0 || task.tags.length > 0) && (
           <div className="flex items-center gap-1 flex-wrap -ml-1.5">
-            <DueMenu
-              dueDate={task.dueDate}
-              done={done}
-              taskTitle={task.title}
-              tabIndex={inner}
-              onChange={dueDate => void updateTask(task.id, { dueDate })}
-            />
             <ReminderBadge task={task} />
-            <PriorityMenu
-              priority={task.priority}
-              taskTitle={task.title}
-              tabIndex={inner}
-              onChange={priority => void updateTask(task.id, { priority })}
-            />
-            {(workspaceOptions.length > 0 || task.workspaceId) && (
-              <WorkspaceMenu
-                workspaceId={task.workspaceId}
-                workspaces={workspaceOptions}
-                taskTitle={task.title}
-                tabIndex={inner}
-                // An unfiled task offers the menu on hover or focus only, to keep rows quiet.
-                className={task.workspaceId ? undefined : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100'}
-                onChange={workspaceId => void updateTask(task.id, { workspaceId })}
-              />
-            )}
             {task.project && (
               <span className="h-6 px-1.5 inline-flex items-center gap-1 rounded-md text-caption text-shodh-text-muted">
                 <FolderOpen className="w-3 h-3" aria-hidden="true" />
@@ -350,9 +331,42 @@ function TaskRow({
             ))}
             {task.tags.length > 3 && <span className="text-caption text-shodh-text-faint">+{task.tags.length - 3}</span>}
           </div>
+          )}
 
           {task.description && (
             <p className="text-caption text-shodh-text-muted line-clamp-2 whitespace-pre-line">{task.description}</p>
+          )}
+        </div>
+
+        {/* Due date, priority and workspace line up under the list's headings. */}
+        <div className="min-w-0 -ml-1.5">
+          <DueMenu
+            dueDate={task.dueDate}
+            done={done}
+            taskTitle={task.title}
+            tabIndex={inner}
+            onChange={dueDate => void updateTask(task.id, { dueDate })}
+          />
+        </div>
+        <div className="min-w-0 -ml-1.5">
+          <PriorityMenu
+            priority={task.priority}
+            taskTitle={task.title}
+            tabIndex={inner}
+            onChange={priority => void updateTask(task.id, { priority })}
+          />
+        </div>
+        <div className="min-w-0 -ml-1.5">
+          {(workspaceOptions.length > 0 || task.workspaceId) && (
+            <WorkspaceMenu
+              workspaceId={task.workspaceId}
+              workspaces={workspaceOptions}
+              taskTitle={task.title}
+              tabIndex={inner}
+              // An unfiled task offers the menu on hover or focus only, to keep rows quiet.
+              className={cn('max-w-full', !task.workspaceId && 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100')}
+              onChange={workspaceId => void updateTask(task.id, { workspaceId })}
+            />
           )}
         </div>
 
@@ -702,6 +716,19 @@ export default function CalendarTodoPanel() {
                 </p>
               </div>
             ) : (
+              <>
+              {/* Headings for sighted users; each control already names its column to a screen reader. */}
+              <div
+                aria-hidden="true"
+                className={cn(TASK_GRID, 'sticky top-0 z-10 px-3 py-1.5 border-b border-shodh-border-subtle bg-shodh-ground text-caption font-semibold text-shodh-text-muted')}
+              >
+                <span />
+                <span>Task</span>
+                <span>Due date</span>
+                <span>Priority</span>
+                <span>Workspace</span>
+                <span />
+              </div>
               <ul ref={listRef} aria-label="Tasks" className="flex flex-col gap-0.5">
                 {filteredTasks.map(task => (
                   <TaskRow
@@ -717,6 +744,7 @@ export default function CalendarTodoPanel() {
                   />
                 ))}
               </ul>
+              </>
             )}
           </div>
         </section>

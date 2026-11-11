@@ -1715,7 +1715,7 @@ function AppSplitView() {
                                       }}
                                       aria-label="Edit instruction"
                                       autoFocus
-                                      className="flex-1 text-caption bg-transparent border-b outline-none py-0.5"
+                                      className="flex-1 text-caption leading-snug bg-transparent border-b outline-none py-0.5"
                                       style={{ color: colors.text, borderColor: colors.primary }}
                                     />
                                     <button
@@ -1739,7 +1739,7 @@ function AppSplitView() {
                                   </div>
                                 ) : (
                                   <>
-                                    <span className="flex-1 text-caption leading-snug" style={{ color: colors.textSecondary }}>
+                                    <span className="flex-1 text-caption leading-snug py-0.5 border-b border-transparent" style={{ color: colors.textSecondary }}>
                                       {instruction}
                                     </span>
                                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">

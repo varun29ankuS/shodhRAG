@@ -158,11 +158,12 @@ function Card({
           </span>
         )}
         <span
-          className={cn('h-6 px-1 inline-flex items-center', PRIORITY_TEXT[task.priority] ?? 'text-shodh-text-muted')}
+          className={cn('h-6 px-1 inline-flex items-center gap-1 text-caption', PRIORITY_TEXT[task.priority] ?? 'text-shodh-text-muted')}
           title={`${PRIORITY_LABELS[task.priority] ?? task.priority} priority`}
         >
           <Flag className="w-3 h-3" aria-hidden="true" />
-          <span className="sr-only">{PRIORITY_LABELS[task.priority] ?? task.priority} priority</span>
+          {PRIORITY_LABELS[task.priority] ?? task.priority}
+          <span className="sr-only"> priority</span>
         </span>
         {task.subtasks.length > 0 && (
           <span className="h-6 px-1.5 inline-flex items-center gap-1 text-caption text-shodh-text-muted tabular-nums" aria-label={`${subDone} of ${task.subtasks.length} subtasks done`}>

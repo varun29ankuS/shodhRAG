@@ -303,7 +303,7 @@ export function DueMenu({
     if (next) onChange(next);
   };
 
-  const label = dueDate ? dueLabel(dueDate) : 'No date';
+  const label = dueDate ? dueLabel(dueDate) : 'No due date';
 
   return (
     <>
@@ -368,7 +368,7 @@ export function DueMenu({
                 onChange(null);
               }}
             >
-              No date
+              No due date
             </button>
           )}
           <form

@@ -38,13 +38,13 @@ anyhow = "1"
 thiserror = "1"
 parking_lot = "0.12"
 tracing = "0.1"
-lru = "0.12"
+lru = "0.19"
 futures = "0.3"
 
 # LLM providers (llama.cpp GGUF, external APIs) and the search model downloader
 llama-cpp-2 = "0.1"
 async-trait = "0.1"
-reqwest = { version = "0.11", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 # Agent web tools: URL parsing, HTML to text, arXiv Atom feeds.
 url = "2"
 html2text = "0.14"
@@ -94,7 +94,7 @@ semver = "1"
 # Audit log: SQLite store. Plain bundled SQLite by default; the `sqlcipher`
 # feature switches to SQLCipher with a vendored OpenSSL (needs a Windows-native
 # Perl such as Strawberry Perl to build on Windows).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 # Audit log: database key generation (OS CSPRNG)
 rand = "0.8"
 

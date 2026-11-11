@@ -693,12 +693,14 @@ mod tests {
         let holder = shared(&path);
         let queued: Vec<SharedConnection> = (0..2).map(|_| shared(&path)).collect();
         holder
-            .read()
+            .conn
+            .lock()
             .unwrap()
             .busy_handler(Some(hold_until_released))
             .unwrap();
         for conn in &queued {
-            conn.read()
+            conn.conn
+                .lock()
                 .unwrap()
                 .busy_handler(Some(count_queued_wait))
                 .unwrap();

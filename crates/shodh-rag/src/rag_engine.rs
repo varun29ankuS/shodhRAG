@@ -7882,7 +7882,9 @@ mod secret_tests {
         let doc = dir.path().join("setup.md");
         std::fs::write(
             &doc,
-            "# Setup\n\nAsk asha@example.org for access to the staging cluster.\n\n\
+            "# Setup\n\nAsk asha@example.org for access to the staging cluster. Bill it to \
+             GSTIN 29AAKFB4821M1Z3, invoice INV-2025-0117, commit \
+             9f2c4e1a7b3d5f6e8a0b2c4d6e8f0a1b3c5d7e9f.\n\n\
              Then set the keys:\n\n\
              ANTHROPIC_API_KEY=sk-ant-api03-Zq8vT2mW9xLp4RkN7sYb3HcJd6Ff1Gg5\n\
              github token: ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\n\
@@ -7913,6 +7915,14 @@ mod secret_tests {
         assert!(text.contains(crate::recall::redact::REDACTED), "{text}");
         assert!(text.contains("staging cluster"), "{text}");
         assert!(text.contains("asha@example.org"), "{text}");
+        // Ids a document is about are kept: a search for one must find it.
+        for id in [
+            "29AAKFB4821M1Z3",
+            "INV-2025-0117",
+            "9f2c4e1a7b3d5f6e8a0b2c4d6e8f0a1b3c5d7e9f",
+        ] {
+            assert!(text.contains(id), "{id} was redacted:\n{text}");
+        }
     }
 
     /// A file that may hold secrets is refused before it is read, whatever brought it.

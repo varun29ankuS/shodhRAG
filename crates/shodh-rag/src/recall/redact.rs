@@ -83,6 +83,9 @@ pub struct RedactOptions {
 pub struct Redactor {
     user: Vec<Regex>,
     options: RedactOptions,
+    /// Long random-looking strings are redacted as keys without a known prefix
+    /// (transcripts); documents keep them ([`Redactor::for_documents`]).
+    random_strings: bool,
     fingerprint: String,
 }
 
@@ -91,6 +94,7 @@ impl Default for Redactor {
         Self {
             user: Vec::new(),
             options: RedactOptions::default(),
+            random_strings: true,
             fingerprint: fingerprint(&[], &RedactOptions::default()),
         }
     }
@@ -172,18 +176,24 @@ impl Redactor {
             user: check_patterns(patterns)?,
             fingerprint: fingerprint(patterns, &options),
             options,
+            random_strings: true,
         })
     }
 
-    /// The built-in rules for the Library's documents: keys, tokens, passwords and
-    /// private keys are redacted, email addresses kept (in papers, contracts and mail
-    /// they are what the document is about, not a credential).
+    /// The built-in rules for the Library's documents: private keys, tokens with a
+    /// provider's prefix and credentials in headers, URLs, command lines and
+    /// assignments (`API_KEY=…`, `password: …`) are redacted. Email addresses are
+    /// kept, and so are long random-looking strings without such a label: in
+    /// invoices, contracts and papers they are what the document is about (tax ids
+    /// such as a GSTIN, account and invoice numbers, hashes, DOIs), and a search
+    /// for one must find it.
     pub fn for_documents() -> Self {
         let options = RedactOptions { keep_emails: true };
         Self {
             user: Vec::new(),
             fingerprint: fingerprint(&[], &options),
             options,
+            random_strings: false,
         }
     }
 
@@ -229,7 +239,11 @@ impl Redactor {
         if let Some(wrapped) = redact_wrapped_tokens(&out, &mut count) {
             out = Cow::Owned(wrapped);
         }
-        if let Some(random) = redact_random_strings(&out, &mut count) {
+        if let Some(random) = self
+            .random_strings
+            .then(|| redact_random_strings(&out, &mut count))
+            .flatten()
+        {
             out = Cow::Owned(random);
         }
         for regex in &self.user {

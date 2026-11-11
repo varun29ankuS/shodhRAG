@@ -14,7 +14,7 @@ export function errorText(error: unknown): string {
     return (error as { message: string }).message;
   }
   if (typeof error === 'string') return error;
-  return error instanceof Error ? error.message : 'Something went wrong.';
+  return error instanceof Error ? error.message : 'It failed, and no reason was given.';
 }
 
 export const creationsApi = {

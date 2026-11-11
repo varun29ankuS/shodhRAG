@@ -65,7 +65,7 @@ docling-pdf = { version = "=1.91.0", default-features = false, features = ["ml"]
 docling-core = "=1.91.0"
 # Page images: PNG for rendered pages; JPEG, TIFF and BMP for image files read
 # by OCR (docling-pdf already builds `image` with its default formats).
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "gif", "webp"] }
 pdf-extract = "0.7"
 lopdf = "0.32"
 zip = "2"
@@ -157,6 +157,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# Writes legacy Word and PowerPoint (compound file) fixtures for the .doc and .ppt
+# reader tests (MIT; already in the dependency tree).
+cfb = "0.7"
 # Paused time for the Slack connection tests (backoff, idle pings) without real waits.
 tokio = { version = "1", features = ["test-util"] }
 # Per-file timing logs in the corpus benchmark example.

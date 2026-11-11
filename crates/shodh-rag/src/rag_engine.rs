@@ -103,6 +103,46 @@ pub struct FilePreparer {
     embeddings: Arc<dyn EmbeddingModel>,
 }
 
+/// The redactor of the Library's documents (Recall's rules, emails kept).
+static DOCUMENT_REDACTOR: LazyLock<crate::recall::redact::Redactor> =
+    LazyLock::new(crate::recall::redact::Redactor::for_documents);
+
+/// Redacts secrets (keys, tokens, passwords, private key blocks) from what each chunk
+/// stores, embeds, keyword-indexes and shows: its text, its context and its heading.
+/// A chunk without one is left exactly as it was. Every way into the index goes
+/// through it ([`prepare_chunks`], and [`FilePreparer::embed_all`]'s joint embedding):
+/// files, chat uploads, Slack threads, calendar items, notes.
+pub(crate) fn redact_chunks(chunks: &mut [ContextualChunkResult]) {
+    for chunk in chunks.iter_mut() {
+        let (text, found) = DOCUMENT_REDACTOR.redact_counted(&chunk.text);
+        if found > 0 {
+            chunk.text = text;
+        }
+        let (context, found) = DOCUMENT_REDACTOR.redact_counted(&chunk.context);
+        if found > 0 {
+            chunk.context = context;
+        }
+        if let Some(heading) = &chunk.heading {
+            let (redacted, found) = DOCUMENT_REDACTOR.redact_counted(heading);
+            if found > 0 {
+                chunk.heading = Some(redacted);
+            }
+        }
+    }
+}
+
+/// `text` as a document's chunk would be stored ([`redact_chunks`]): for what is read
+/// from a file to a model outside the index (the open-document tool).
+pub fn redact_document_text(text: &str) -> String {
+    DOCUMENT_REDACTOR.redact(text)
+}
+
+/// The fingerprint of the documents' redactor: stored with every chunk
+/// ([`REDACTOR_KEY`]), so chunks redacted under other rules are redacted again.
+pub fn document_redactor_fingerprint() -> &'static str {
+    DOCUMENT_REDACTOR.fingerprint()
+}
+
 /// Directory (under the data directory) of the OCR cache.
 pub const OCR_CACHE_DIR: &str = "ocr_cache";
 
@@ -208,6 +248,11 @@ impl FilePreparer {
         metadata: HashMap<String, String>,
         progress: OcrProgress<'_>,
     ) -> Result<ChunkedFile> {
+        // Every way a file reaches the index (a folder, a single file, an upload, a
+        // sync) comes through here: a file that may hold secrets is never read.
+        if let Some(reason) = crate::indexing::secret_file_reason(path) {
+            return Err(crate::indexing::SecretFileKeptBack { reason }.into());
+        }
         let parse_started = std::time::Instant::now();
         let parsed = self.parser.parse_file_with_progress(path, progress)?;
         let parse_ms = parse_started.elapsed().as_millis();
@@ -222,6 +267,9 @@ impl FilePreparer {
         metadata: HashMap<String, String>,
         parse_ms: u128,
     ) -> Result<PreparedFile> {
+        if let Some(reason) = crate::indexing::secret_file_reason(path) {
+            return Err(crate::indexing::SecretFileKeptBack { reason }.into());
+        }
         self.embed(self.chunk_parsed(path, parsed, metadata, parse_ms)?)
     }
 
@@ -377,6 +425,11 @@ impl FilePreparer {
     pub fn embed_all(&self, files: Vec<ChunkedFile>) -> Vec<Result<PreparedFile>> {
         if files.len() < 2 {
             return files.into_iter().map(|file| self.embed(file)).collect();
+        }
+        // Embedded together, not through prepare_chunks: redacted here.
+        let mut files = files;
+        for file in &mut files {
+            redact_chunks(&mut file.chunks);
         }
         let embed_started = std::time::Instant::now();
         let contextualized: Vec<Vec<String>> = files
@@ -623,7 +676,16 @@ pub const INDEX_FORMAT_KEY: &str = "index_format";
 /// one-word units; a page too short for a chunk joins its neighbour; no
 /// redundant tail chunks; HTML is read on byte offsets with comments, CDATA
 /// and C1 references handled; `.htm` files are indexed.
+///
+/// Redaction ([`redact_chunks`]) is not a chunker version: chunks redacted under
+/// other rules are redacted again in place ([`RAGEngine::redact_stored_chunks`],
+/// [`REDACTOR_KEY`]), without reading their files again.
 pub const CHUNKER_VERSION: u32 = 2;
+
+/// Chunk metadata key: the fingerprint of the redactor a chunk was redacted with
+/// ([`document_redactor_fingerprint`]). A chunk without it, or with another, is
+/// redacted again in place.
+pub const REDACTOR_KEY: &str = "redactor";
 
 /// Chunk metadata key: the [`CHUNKER_VERSION`] a chunk was made with, or,
 /// for a chunk kept on purpose ([`CHUNKS_KEPT_FROM_KEY`]), the version it was
@@ -843,6 +905,10 @@ fn prepare_chunks(
     metadata: &HashMap<String, String>,
     citation: &Citation,
 ) -> Result<PreparedDocument> {
+    // Every way into the index passes here: what is stored, embedded and
+    // keyword-indexed is redacted first.
+    let mut chunks = chunks;
+    redact_chunks(&mut chunks);
     // Embed the contextualized text (with document context prefix) for better
     // vector representation
     let contextualized: Vec<String> = chunks.iter().map(|c| c.contextualized_text()).collect();
@@ -914,6 +980,10 @@ fn document_from_vectors(
         per_chunk_meta.insert(INDEX_FORMAT_KEY.to_string(), INDEX_FORMAT.to_string());
         per_chunk_meta.insert(CHUNKER_VERSION_KEY.to_string(), CHUNKER_VERSION.to_string());
         per_chunk_meta.insert(CHUNK_CONTEXT_KEY.to_string(), chunk.context.clone());
+        per_chunk_meta.insert(
+            REDACTOR_KEY.to_string(),
+            document_redactor_fingerprint().to_string(),
+        );
         if let Some(heading) = &chunk.heading {
             per_chunk_meta.insert("chunk_type".to_string(), heading.clone());
             per_chunk_meta.insert("heading".to_string(), heading.clone());
@@ -1933,6 +2003,8 @@ pub struct RAGEngine {
     /// The OCR child process, when scans are read out of process
     /// ([`Self::use_ocr_worker`]); it reads with the model in `ocr`'s place.
     ocr_worker: Option<Arc<crate::processing::ocr::worker::OcrWorker>>,
+    /// The child reading legacy Office files ([`Self::office_worker`]).
+    office_worker: Option<Arc<crate::processing::ocr::worker::OcrWorker>>,
     /// What OCR read from indexed scans (see [`crate::processing::ocr::cache`]),
     /// emptied of files as they leave the index.
     ocr_cache: Arc<crate::processing::ocr::cache::OcrCache>,
@@ -2076,6 +2148,7 @@ impl RAGEngine {
             reranker: Arc::new(LazyModel::new("reranker")),
             ocr,
             ocr_worker: None,
+            office_worker: None,
             ocr_cache,
             refinement_queue: None,
             scan_reader_queue: None,
@@ -2166,13 +2239,31 @@ impl RAGEngine {
         &mut self,
         command: crate::processing::ocr::worker::WorkerCommand,
     ) -> Arc<crate::processing::ocr::worker::OcrWorker> {
-        let worker = Arc::new(crate::processing::ocr::worker::OcrWorker::new(command));
+        let worker = Arc::new(crate::processing::ocr::worker::OcrWorker::new(
+            command.clone(),
+        ));
         if self.ocr.available() {
             worker.set_model_dir(SearchModels::locate_ocr(&self.config));
         }
-        self.parser = std::mem::take(&mut self.parser).with_ocr_worker(worker.clone());
+        // Legacy Word and PowerPoint files are read in a child of their own, with
+        // a memory cap, so one that makes the reader hang or exhaust memory stops
+        // only that child.
+        let office = Arc::new(
+            crate::processing::ocr::worker::OcrWorker::new(command)
+                .with_memory_limit(crate::processing::ocr::worker::OFFICE_MEMORY_LIMIT),
+        );
+        self.parser = std::mem::take(&mut self.parser)
+            .with_ocr_worker(worker.clone())
+            .with_office_worker(office.clone());
         self.ocr_worker = Some(worker.clone());
+        self.office_worker = Some(office);
         worker
+    }
+
+    /// The child reading legacy Word and PowerPoint files, when
+    /// [`Self::use_ocr_worker`] set one up (for idle stopping).
+    pub fn office_worker(&self) -> Option<Arc<crate::processing::ocr::worker::OcrWorker>> {
+        self.office_worker.clone()
     }
 
     /// The slot holding the E5 model once it is loaded (for idle unloading and
@@ -3831,6 +3922,39 @@ impl RAGEngine {
         outcome
     }
 
+    /// Removes every indexed file that may hold secrets
+    /// ([`crate::indexing::secret_file_reason`]), whatever source it belongs to (a
+    /// folder, a single file, a chat upload), and then its text from disk
+    /// ([`Self::purge_deleted_text`]). For an index built before such files were
+    /// kept out. Returns the chunks removed.
+    pub async fn purge_secret_files(&mut self) -> Result<usize> {
+        let rows = self.store.document_sources().await?;
+        let mut sources: Vec<String> = rows
+            .into_iter()
+            .map(|row| row.source)
+            .filter(|source| is_file_source(source))
+            .filter(|source| crate::indexing::secret_file_reason(Path::new(source)).is_some())
+            .collect();
+        sources.sort();
+        sources.dedup();
+        let mut removed = 0;
+        for source in &sources {
+            removed += self.delete_by_source(source).await?;
+        }
+        if !sources.is_empty() {
+            self.purge_deleted_text().await?;
+        }
+        Ok(removed)
+    }
+
+    /// Removes the text of deleted and replaced chunks from disk now: LanceDB's
+    /// older versions (kept for a week otherwise) and Tantivy's deleted documents
+    /// (kept until a merge otherwise).
+    pub async fn purge_deleted_text(&mut self) -> Result<()> {
+        self.store.purge_history().await?;
+        self.text_search.expunge_deletes()
+    }
+
     /// Delete all documents from a specific source/folder.
     /// The source path is normalized the same way as during indexing so that
     /// Windows backslash / mixed-case paths always match.
@@ -4596,6 +4720,171 @@ impl RAGEngine {
             "chunks brought to the current index format in place"
         );
         Ok(true)
+    }
+
+    /// The sources with a chunk not redacted by the current documents' redactor
+    /// ([`REDACTOR_KEY`]): indexed before redaction, or under other rules.
+    pub async fn sources_to_redact(&self) -> Result<Vec<String>> {
+        let marker = format!(
+            "%\"{REDACTOR_KEY}\":\"{}\"%",
+            document_redactor_fingerprint()
+        );
+        let predicate = format!("metadata_json NOT LIKE '{}'", marker.replace('\'', "''"));
+        let mut sources: Vec<String> = self
+            .store
+            .ids_and_sources_where(&predicate)
+            .await?
+            .into_iter()
+            .map(|(_, source)| source)
+            .collect();
+        sources.sort();
+        sources.dedup();
+        Ok(sources)
+    }
+
+    /// Redacts the stored chunks of `source` with the current documents' redactor,
+    /// in place, without reading its file: a scan is not read by OCR again. When a
+    /// chunk's text, heading or context changes, the source's chunks are embedded
+    /// and keyword-indexed again from the redacted text and replace the old ones;
+    /// when none changes, only their [`REDACTOR_KEY`] is set. Returns whether any
+    /// text changed (its old text is then to be purged from disk:
+    /// [`Self::purge_deleted_text`]).
+    pub async fn redact_stored_source(&mut self, source: &str) -> Result<bool> {
+        let fingerprint = document_redactor_fingerprint().to_string();
+        let hits = self
+            .store
+            .list_chunks(Some(&source_predicate(source)), 1_000_000)
+            .await?;
+        let mut changed = false;
+        let mut rewritten = Vec::with_capacity(hits.len());
+        let mut old_marks: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for hit in hits {
+            let mut meta: HashMap<String, String> = serde_json::from_str(&hit.metadata_json)
+                .with_context(|| format!("chunk {} has unreadable metadata", hit.id))?;
+            if let Some(old) = meta.get(REDACTOR_KEY).filter(|f| **f != fingerprint) {
+                old_marks.insert(old.clone());
+            }
+            let (text, in_text) = DOCUMENT_REDACTOR.redact_counted(&hit.text);
+            let (heading, in_heading) = DOCUMENT_REDACTOR.redact_counted(&hit.heading);
+            let context = meta.get(CHUNK_CONTEXT_KEY).cloned().unwrap_or_default();
+            let (context, in_context) = DOCUMENT_REDACTOR.redact_counted(&context);
+            changed |= in_text + in_heading + in_context > 0;
+            meta.insert(CHUNK_CONTEXT_KEY.to_string(), context.clone());
+            meta.insert(REDACTOR_KEY.to_string(), fingerprint.clone());
+            rewritten.push((hit, text, heading, context, meta));
+        }
+        if rewritten.is_empty() {
+            return Ok(false);
+        }
+        if !changed {
+            // Only the mark: in one update for chunks without one, one for each
+            // older fingerprint.
+            let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+            let of_source = source_predicate(source);
+            let entry = format!("\"{REDACTOR_KEY}\":\"{fingerprint}\"");
+            self.store
+                .update_metadata_where(
+                    &format!(
+                        "{of_source} AND metadata_json NOT LIKE {} AND metadata_json LIKE {}",
+                        quote(&format!("%\"{REDACTOR_KEY}\":\"%")),
+                        quote("{\"%"),
+                    ),
+                    &format!(
+                        "concat({}, substr(metadata_json, 2))",
+                        quote(&format!("{{{entry},"))
+                    ),
+                )
+                .await?;
+            for old in old_marks {
+                let old_entry = format!("\"{REDACTOR_KEY}\":\"{old}\"");
+                self.store
+                    .update_metadata_where(
+                        &format!(
+                            "{of_source} AND metadata_json LIKE {}",
+                            quote(&format!("%{old_entry}%"))
+                        ),
+                        &format!(
+                            "replace(metadata_json, {}, {})",
+                            quote(&old_entry),
+                            quote(&entry)
+                        ),
+                    )
+                    .await?;
+            }
+            return Ok(false);
+        }
+        let embedder = self
+            .embeddings
+            .clone()
+            .ok_or_else(|| anyhow::Error::from(SearchModelsMissing))?;
+        let contextualized: Vec<String> = rewritten
+            .iter()
+            .map(|(_, text, _, context, _)| format!("{context}{text}"))
+            .collect();
+        let texts: Vec<&str> = contextualized.iter().map(String::as_str).collect();
+        let vectors = embedder.embed_documents(&texts)?;
+        let now = chrono::Utc::now().timestamp();
+        let mut records = Vec::with_capacity(rewritten.len());
+        let mut fts_batch = Vec::with_capacity(rewritten.len());
+        let mut chunk_ids = Vec::with_capacity(rewritten.len());
+        for ((hit, text, heading, _, meta), (vector, contextual)) in rewritten
+            .into_iter()
+            .zip(vectors.into_iter().zip(contextualized))
+        {
+            chunk_ids.push(Uuid::parse_str(&hit.id).unwrap_or_else(|_| Uuid::new_v4()));
+            fts_batch.push((
+                hit.id.clone(),
+                contextual,
+                hit.title.clone(),
+                hit.source.clone(),
+            ));
+            records.push(ChunkRecord {
+                id: hit.id,
+                doc_id: hit.doc_id,
+                chunk_index: hit.chunk_index,
+                text,
+                title: hit.title,
+                source: hit.source,
+                heading,
+                vector,
+                space_id: hit.space_id,
+                metadata_json: serde_json::to_string(&meta)?,
+                citation_json: hit.citation_json,
+                created_at: now,
+            });
+        }
+        let title = records[0].title.clone();
+        let space_id = records[0].space_id.clone();
+        self.remove_source_chunks(source).await?;
+        self.store_prepared(PreparedDocument {
+            title,
+            space_id,
+            records,
+            fts_batch,
+            chunk_ids,
+        })
+        .await?;
+        tracing::info!(
+            source = %crate::log_safe::file(source),
+            "secrets in stored chunks redacted in place"
+        );
+        Ok(true)
+    }
+
+    /// [`Self::redact_stored_source`] for every source [`Self::sources_to_redact`]
+    /// lists, then the old text purged from disk when any changed. Returns the
+    /// sources whose text changed.
+    pub async fn redact_stored_chunks(&mut self) -> Result<usize> {
+        let mut changed = 0;
+        for source in self.sources_to_redact().await? {
+            if self.redact_stored_source(&source).await? {
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.purge_deleted_text().await?;
+        }
+        Ok(changed)
     }
 
     /// One row per indexed document with its source path, space and chunk count.
@@ -7819,5 +8108,407 @@ mod neighbor_expansion_tests {
         );
         assert_eq!(page_range_from_metadata(&meta(&[("page", "x")])), None);
         assert_eq!(page_range_from_metadata(&HashMap::new()), None);
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    async fn engine(dir: &Path) -> RAGEngine {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::HashEmbedder,
+            )))
+            .unwrap();
+        engine
+    }
+
+    /// Everything the index holds of `source`: each stored chunk's text, heading and
+    /// metadata (its keyword-indexed context among them).
+    async fn stored_text(engine: &RAGEngine, source: &str) -> String {
+        let chunks = engine.chunks_of_source(source).await.unwrap();
+        assert!(!chunks.is_empty(), "nothing stored for {source}");
+        chunks
+            .iter()
+            .map(|c| format!("{}\n{}\n{}", c.heading, c.text, c.metadata_json))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // The fake keys are made at run time (`fake_secrets`): no file holds a
+    // key-shaped string, so secret scanners have nothing to flag.
+    const PLANTED_TEXT: &str = "Deploy notes. ANTHROPIC_API_KEY={anthropic} \
+                           and the bot token {slack} \
+                           then password: hunter2-plant.";
+
+    /// An Anthropic key of the real shape, made at run time.
+    fn anthropic_key() -> String {
+        ["sk", "ant", "api03", "Zq8vT2mW9xLp4RkN7sYb3HcJd6Ff1Gg5"].join("-")
+    }
+
+    /// A Slack bot token of the real shape, made at run time.
+    fn slack_token() -> String {
+        [
+            "xoxb",
+            "123456789012",
+            "1234567890123",
+            "AbCdEfGhIjKlMnOpQrStUvWx",
+        ]
+        .join("-")
+    }
+
+    /// A GitHub token of the real shape, made at run time.
+    fn github_token() -> String {
+        ["ghp", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("_")
+    }
+
+    /// `text` with `{anthropic}`, `{slack}` and `{github}` replaced by fake keys.
+    fn fake_secrets(text: &str) -> String {
+        text.replace("{anthropic}", &anthropic_key())
+            .replace("{slack}", &slack_token())
+            .replace("{github}", &github_token())
+    }
+
+    /// Deploy notes with a key, a token and a password planted in them.
+    fn planted() -> String {
+        fake_secrets(PLANTED_TEXT)
+    }
+
+    fn assert_redacted(text: &str) {
+        for secret in [
+            anthropic_key().as_str(),
+            slack_token().as_str(),
+            "hunter2-plant",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "{secret} reached the index:\n{text}"
+            );
+        }
+        assert!(text.contains("Deploy notes"), "{text}");
+    }
+
+    /// A Slack thread (or any text that is no file) is redacted before it is stored.
+    #[tokio::test]
+    async fn text_that_is_no_file_is_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare_text(
+                "slack:T1:C1:1700000000.0001",
+                &planted(),
+                HashMap::from([("space_id".to_string(), "slack".to_string())]),
+                &Citation::default(),
+            )
+            .unwrap();
+        engine.commit_file(prepared).await.unwrap();
+        assert_redacted(&stored_text(&engine, "slack:T1:C1:1700000000.0001").await);
+    }
+
+    /// A calendar item or note added as a document is redacted before it is stored.
+    #[tokio::test]
+    async fn a_document_added_as_text_is_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        engine
+            .add_document(
+                &planted(),
+                DocumentFormat::TXT,
+                HashMap::from([
+                    ("file_path".to_string(), "calendar://task/7".to_string()),
+                    ("title".to_string(), "Deploy".to_string()),
+                ]),
+                Citation::default(),
+            )
+            .await
+            .unwrap();
+        assert_redacted(&stored_text(&engine, "calendar://task/7").await);
+    }
+
+    /// Chunks given ready-made (Recall's) are redacted too, heading included.
+    #[tokio::test]
+    async fn given_chunks_are_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare_given_chunks(
+                "recall://session/1",
+                "Session",
+                vec![GivenChunk {
+                    text: planted(),
+                    context: "Session notes\n".to_string(),
+                    heading: "password: hunter2-plant".to_string(),
+                }],
+                HashMap::new(),
+                &Citation::default(),
+            )
+            .unwrap();
+        engine.commit_file(prepared).await.unwrap();
+        assert_redacted(&stored_text(&engine, "recall://session/1").await);
+    }
+
+    /// Files embedded together are redacted as files embedded alone are.
+    #[tokio::test]
+    async fn files_embedded_together_are_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        let preparer = engine.file_preparer().unwrap();
+        let mut chunked = Vec::new();
+        for name in ["a.md", "b.md"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("# {name}\n\n{}\n", planted())).unwrap();
+            chunked.push(
+                preparer
+                    .chunk_with_progress(&path, HashMap::new(), &|_, _| {})
+                    .unwrap(),
+            );
+        }
+        for prepared in preparer.embed_all(chunked) {
+            engine.commit_file(prepared.unwrap()).await.unwrap();
+        }
+        for name in ["a.md", "b.md"] {
+            let source = normalize_source_path(&dir.path().join(name));
+            assert_redacted(&stored_text(&engine, &source).await);
+        }
+    }
+
+    /// A key, a token and a password inside an ordinary Markdown file are redacted
+    /// in every chunk; the rest of its text, and an email address, are kept.
+    #[tokio::test]
+    async fn secrets_inside_a_document_are_redacted_before_they_are_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path()).await;
+        let doc = dir.path().join("setup.md");
+        std::fs::write(
+            &doc,
+            &fake_secrets(
+                "# Setup\n\nAsk asha@example.org for access to the staging cluster. Bill it to \
+             GSTIN 29AAKFB4821M1Z3, invoice INV-2025-0117, commit \
+             9f2c4e1a7b3d5f6e8a0b2c4d6e8f0a1b3c5d7e9f. 512-token chunks with a two-pass \
+             filter gave the best recall.\n\n\
+             Log in with `deploy --password Hunter2-staging-pass` first.\n\n\
+             Then set the keys:\n\n\
+             ANTHROPIC_API_KEY={anthropic}\n\
+             github token: {github}\n\
+             password = \"correct-horse-battery-staple\"\n",
+            ),
+        )
+        .unwrap();
+        let mut engine = engine;
+        engine
+            .add_document_from_file(&doc, HashMap::new())
+            .await
+            .unwrap();
+        let text = stored_text(&engine, &normalize_source_path(&doc)).await;
+        for secret in [
+            anthropic_key().as_str(),
+            github_token().as_str(),
+            "correct-horse-battery-staple",
+            "Hunter2-staging-pass",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "{secret} reached the index:\n{text}"
+            );
+        }
+        assert!(text.contains(crate::recall::redact::REDACTED), "{text}");
+        assert!(text.contains("staging cluster"), "{text}");
+        assert!(text.contains("asha@example.org"), "{text}");
+        // Ids a document is about are kept: a search for one must find it.
+        for id in [
+            "29AAKFB4821M1Z3",
+            "INV-2025-0117",
+            "9f2c4e1a7b3d5f6e8a0b2c4d6e8f0a1b3c5d7e9f",
+            // Prose is not a command line: "-token chunks" is no flag and its value.
+            "512-token chunks with a two-pass filter",
+        ] {
+            assert!(text.contains(id), "{id} was redacted:\n{text}");
+        }
+    }
+
+    /// Whether any file under `dir` holds `marker`'s bytes.
+    fn on_disk(dir: &Path, marker: &str) -> bool {
+        walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file())
+            .any(|e| {
+                std::fs::read(e.path())
+                    .is_ok_and(|bytes| bytes.windows(marker.len()).any(|w| w == marker.as_bytes()))
+            })
+    }
+
+    /// Secret files indexed before they were kept out (a single file, a chat
+    /// upload) leave the index, and their text leaves the disk: LanceDB's old
+    /// versions and Tantivy's deleted documents included.
+    #[tokio::test]
+    async fn secret_files_indexed_before_are_purged_from_the_index_and_the_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        const MARKER: &str = "zebra-quartz-marker-7731";
+        let kept = dir.path().join("notes.md");
+        let sources = [
+            (dir.path().join("prod.env"), "library-file"),
+            (dir.path().join("credentials.json"), "chat-uploads:main"),
+        ];
+        for (path, space) in &sources {
+            engine
+                .add_document(
+                    &format!("Deploy settings {MARKER} for the staging cluster."),
+                    DocumentFormat::TXT,
+                    HashMap::from([
+                        ("file_path".to_string(), normalize_source_path(path)),
+                        ("space_id".to_string(), space.to_string()),
+                    ]),
+                    Citation::default(),
+                )
+                .await
+                .unwrap();
+        }
+        engine
+            .add_document(
+                "Meeting notes about the heron survey.",
+                DocumentFormat::TXT,
+                HashMap::from([("file_path".to_string(), normalize_source_path(&kept))]),
+                Citation::default(),
+            )
+            .await
+            .unwrap();
+        let data = dir.path().join("data");
+        assert!(
+            on_disk(&data, MARKER),
+            "the marker is found on disk before the purge"
+        );
+
+        let removed = engine.purge_secret_files().await.unwrap();
+        assert!(removed >= 2, "{removed}");
+        for (path, _) in &sources {
+            let source = normalize_source_path(path);
+            assert!(
+                engine.chunks_of_source(&source).await.unwrap().is_empty(),
+                "{source}"
+            );
+        }
+        assert!(!engine
+            .chunks_of_source(&normalize_source_path(&kept))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(
+            !on_disk(&data, MARKER),
+            "a purged secret file's text is still on disk"
+        );
+        // Nothing left to purge.
+        assert_eq!(engine.purge_secret_files().await.unwrap(), 0);
+    }
+
+    /// A chunk stored before redaction (no redactor mark) is redacted in place, its
+    /// old text leaves the disk, and a clean source only gains the mark.
+    #[tokio::test]
+    async fn chunks_stored_before_redaction_are_redacted_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        let secret_key = anthropic_key();
+        let secret = secret_key.as_str();
+        // As an older build stored it: unredacted, with no redactor mark.
+        let old = |id: &str, source: &str, text: &str| ChunkRecord {
+            id: id.to_string(),
+            doc_id: format!("doc-{id}"),
+            chunk_index: 0,
+            text: text.to_string(),
+            title: "Setup".to_string(),
+            source: source.to_string(),
+            heading: String::new(),
+            vector: vec![0.1; crate::statements::testing::DIM],
+            space_id: "space-a".to_string(),
+            metadata_json: format!(
+                "{{\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\",\"file_path\":\"{source}\"}}"
+            ),
+            citation_json: "{}".to_string(),
+            created_at: 0,
+        };
+        let leaked = format!("Deploy with ANTHROPIC_API_KEY={secret} first.");
+        for (id, source, text) in [
+            (
+                "00000000-0000-0000-0000-000000000001",
+                "c:/docs/setup.md",
+                leaked.as_str(),
+            ),
+            (
+                "00000000-0000-0000-0000-000000000002",
+                "c:/docs/notes.md",
+                "The heron survey notes.",
+            ),
+        ] {
+            engine
+                .store_prepared(PreparedDocument {
+                    title: "Setup".to_string(),
+                    space_id: "space-a".to_string(),
+                    records: vec![old(id, source, text)],
+                    fts_batch: vec![(
+                        id.to_string(),
+                        text.to_string(),
+                        "Setup".to_string(),
+                        source.to_string(),
+                    )],
+                    chunk_ids: vec![Uuid::parse_str(id).unwrap()],
+                })
+                .await
+                .unwrap();
+        }
+        let data = dir.path().join("data");
+        assert!(
+            on_disk(&data, secret),
+            "the old chunk is on disk before the pass"
+        );
+        assert_eq!(engine.sources_to_redact().await.unwrap().len(), 2);
+
+        assert_eq!(engine.redact_stored_chunks().await.unwrap(), 1);
+        let setup = stored_text(&engine, "c:/docs/setup.md").await;
+        assert!(!setup.contains(secret), "{setup}");
+        assert!(setup.contains("Deploy with"), "{setup}");
+        let notes = engine.chunks_of_source("c:/docs/notes.md").await.unwrap();
+        assert_eq!(notes[0].text, "The heron survey notes.");
+        assert!(notes[0]
+            .metadata_json
+            .contains(document_redactor_fingerprint()));
+        assert!(engine.sources_to_redact().await.unwrap().is_empty());
+        assert!(
+            !on_disk(&data, secret),
+            "the unredacted text is still on disk"
+        );
+        // Nothing left to do.
+        assert_eq!(engine.redact_stored_chunks().await.unwrap(), 0);
+    }
+
+    /// A file that may hold secrets is refused before it is read, whatever brought it.
+    #[tokio::test]
+    async fn secret_files_are_refused_before_they_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path()).await;
+        let preparer = engine.file_preparer().unwrap();
+        for name in ["credentials.json", "secrets.yaml", "prod.env", ".env"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "{\"token\": \"planted\"}").unwrap();
+            let error = preparer
+                .chunk_with_progress(&path, HashMap::new(), &|_, _| {})
+                .err()
+                .unwrap_or_else(|| panic!("{name} was read"));
+            assert!(
+                error.is::<crate::indexing::SecretFileKeptBack>(),
+                "{name}: {error:#}"
+            );
+        }
     }
 }

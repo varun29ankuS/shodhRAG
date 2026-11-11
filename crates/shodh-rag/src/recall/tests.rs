@@ -2044,3 +2044,79 @@ fn both_readings_of_escaped_text_apply() {
     let path = r#"{"path":"C:\\Users\\runner\\notes.txt"}"#;
     assert_eq!(Redactor::default().redact(path), path);
 }
+
+/// In a document, an ordinary line whose label ends in a secret-sounding word is
+/// text, not a secret: a recipe's salt, a slide's key point, a pass mark, a
+/// signature, a token in a board game. A key-shaped value under such a label, and
+/// any value under a strong name, is still redacted.
+#[test]
+fn ordinary_labelled_lines_in_documents_are_kept() {
+    let documents = Redactor::for_documents();
+    for line in [
+        "Salt: 1 tsp",
+        "Key: the main idea of the chapter",
+        "Signature: J. Smith, Director",
+        "Pass: 34",
+        "Token: one per player",
+        "Auth: Asha Rao",
+    ] {
+        assert_eq!(documents.redact(line), line, "{line}");
+    }
+    for (line, secret) in [
+        ("Token: 9f8e7d6c5b4a3210ab", "9f8e7d6c5b4a3210ab"),
+        ("Key: Zx81Qw72Er63Ty54", "Zx81Qw72Er63Ty54"),
+        ("SMTP_PASS=hunter2", "hunter2"),
+        ("Password: tulip-river-42", "tulip-river-42"),
+        ("api_key = \"Pl4inValue\"", "Pl4inValue"),
+    ] {
+        let out = documents.redact(line);
+        assert!(!out.contains(secret), "{line} -> {out}");
+        assert!(out.contains(REDACTED), "{line} -> {out}");
+    }
+    // A transcript is not prose: its labels stay strong.
+    assert!(Redactor::default().redact("Salt: 1 tsp").contains(REDACTED));
+}
+
+/// A document's unlabelled random string is redacted only when it is unmistakably
+/// a key: 32 characters or more of base64 with a `+` or `/`, or with upper and
+/// lower case and digits, not hex and not part of a dotted name. Ids a document
+/// is about are kept.
+#[test]
+fn unmistakable_keys_without_a_label_are_redacted_in_documents() {
+    let documents = Redactor::for_documents();
+    for key in [
+        "Xk9mQ2vR7pL4wN8sT1bY6hJ3cF5dG0aZ+eU/iO",
+        "Qm7Tz2Rk9Wv4Lp8Xn3Bs6Hd1Jf5Gc0Ya7Ue2Io4Mr",
+    ] {
+        let out = documents.redact(&format!("Paste {key} into the console."));
+        assert!(!out.contains(key), "{key} -> {out}");
+        assert!(out.contains(REDACTED), "{out}");
+    }
+    for kept in [
+        // A GSTIN, a commit hash, an invoice number.
+        "29AAKFB4821M1Z3",
+        "9f2c4e1a7b3d5f6e8a0b2c4d6e8f0a1b3c5d7e9f",
+        "INV-2025-0117",
+        // A long identifier: no digits, no `+` or `/`.
+        "getUserAccountPreferencesFromRemoteCache",
+        // Part of a dotted name.
+        "build.Xk9mQ2vR7pL4wN8sT1bY6hJ3cF5dG0aZeUiO.tar",
+    ] {
+        let text = format!("See {kept} in the appendix.");
+        assert_eq!(documents.redact(&text), text, "{kept}");
+    }
+}
+
+/// A document's backslashes are text: LaTeX and Windows paths come back as
+/// written, never with their escapes undone.
+#[test]
+fn documents_are_never_read_with_json_escapes_undone() {
+    let documents = Redactor::for_documents();
+    // The escaped JSON at its end is what the transcript pass reads unescaped, and
+    // on finding something there it returned the whole text so (`\t`extbf).
+    let text = r#"Use \textbf{Results} and \nabla f in C:\new\tables. Sent {\"note\": \"tulip-river-42\", \"password\": \"tulip-river-42\"}"#;
+    let out = documents.redact(text);
+    assert!(out.contains(r"\textbf{Results}"), "{out}");
+    assert!(out.contains(r"C:\new\tables"), "{out}");
+    assert!(!out.contains('\t'), "{out:?}");
+}

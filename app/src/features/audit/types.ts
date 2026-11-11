@@ -17,6 +17,7 @@ export type AuditEventType =
   | 'memory_write'
   | 'memory_forget'
   | 'memory_use'
+  | 'model_change'
   | 'code_change'
   | 'citation_corrected'
   | 'scope_change';
@@ -32,6 +33,7 @@ export const EVENT_TYPES: readonly { id: AuditEventType; label: string }[] = [
   { id: 'memory_write', label: 'Memory saved' },
   { id: 'memory_forget', label: 'Memory forgotten' },
   { id: 'memory_use', label: 'Memory used' },
+  { id: 'model_change', label: 'Model changes' },
   { id: 'code_change', label: 'Code branches' },
   { id: 'citation_corrected', label: 'Citations corrected' },
   { id: 'scope_change', label: 'Made global' },
@@ -65,6 +67,8 @@ export function eventLabel(type: string): string {
       return 'Memory forgotten';
     case 'memory_use':
       return 'Memory used';
+    case 'model_change':
+      return 'Model change';
     case 'code_change':
       return 'Code branch';
     case 'citation_corrected':

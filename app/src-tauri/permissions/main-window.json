@@ -130,6 +130,7 @@
           "install_update",
           "jump_to_source",
           "library_profile",
+          "library_skipped_files",
           "link_folder_enhanced",
           "list_indexed_sources",
           "list_missed_reminders",

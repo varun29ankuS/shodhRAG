@@ -263,7 +263,9 @@ pub fn build_registry(host: Arc<AgentHost>) -> Result<ToolRegistry, RegistryErro
         SearchDocumentsTool::new(rag.clone()).with_default_k(default_k),
     ))?;
     registry.register(Arc::new(OpenDocumentTool::new(rag.clone())))?;
-    registry.register(Arc::new(ListSourcesTool::new(rag.clone())))?;
+    registry.register(Arc::new(ListSourcesTool::new(rag.clone()).with_manifests(
+        shodh_rag::folder_sync::ManifestStore::in_dir(host.data_dir.join("folder_sync")),
+    )))?;
     registry.register(Arc::new(UpdatePlanTool))?;
     registry.register(Arc::new(SuggestModeTool))?;
     registry.register(Arc::new(OpenViewTool))?;

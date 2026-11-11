@@ -524,6 +524,23 @@ pub async fn index_single_file_in(
         .unwrap_or("unknown")
         .to_lowercase();
 
+    if let Some(reason) = secret_file_reason(&path) {
+        // Indexed before such files were kept out: what the index holds of it goes.
+        let mut engine = rag.write().await;
+        let source = crate::rag_engine::normalize_source_path(&path);
+        match engine.delete_by_source(&source).await {
+            Ok(0) => {}
+            Ok(_) => {
+                if let Err(e) = engine.purge_deleted_text().await {
+                    tracing::warn!(error = %format!("{e:#}"), "removed secret file's text not purged from disk yet");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "chunks of a secret file not removed")
+            }
+        }
+        return Err(SecretFileKeptBack { reason }.to_string());
+    }
     if !is_supported_file_type(&extension) {
         return Err(format!("Unsupported file type: {}", extension));
     }
@@ -841,6 +858,7 @@ pub(crate) async fn index_folder_observed(
 
         if is_selected_file_type(options, &extension)
             && !crate::folder_sync::is_temporary_file(file_path)
+            && secret_file_reason(file_path).is_none()
         {
             files_to_process.push(file_path.to_path_buf());
         }
@@ -1220,15 +1238,48 @@ fn rate_since(started: Instant, files: usize) -> f32 {
 /// index. Shared with the app so allow-lists are never duplicated.
 pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
     // Documents
-    "txt", "md", "pdf", "html", "htm", "json", "docx", "pptx", "rst", "tex", // Tabular
+    "txt", "md", "pdf", "html", "htm", "json", "docx", "pptx", "rst", "tex",
+    // Legacy Office, OpenDocument, RTF, books, email, notebooks, logs
+    // (processing::formats, processing::office_xml).
+    "doc", "ppt", "odt", "odp", "rtf", "epub", "eml", "ipynb", "log", // Tabular
     "csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "ods", // Code
     "rs", "py", "js", "ts", "jsx", "tsx", "java", "cpp", "c", "h", "hpp", "cs", "go", "rb", "php",
     "swift", "kt", "scala", "r", "sh", "bash", "zsh", "ps1", "bat", "cmd", // Web
     "css", "scss", "sass", "less", "vue", "svelte", // Config / data
-    "toml", "yaml", "yml", "ini", "conf", "config", "env", "xml", "sql", "graphql", "proto",
+    // No `env`: environment files hold keys and passwords ([`secret_file_reason`]).
+    "toml", "yaml", "yml", "ini", "conf", "config", "xml", "sql", "graphql", "proto",
     // Images (OCR)
-    "png", "jpg", "jpeg", "bmp", "tiff", "tif",
+    "png", "jpg", "jpeg", "bmp", "tiff", "tif", "gif", "webp",
 ];
+
+/// Why the file at `path` is never indexed into the Library because it may hold
+/// secrets, or `None` when it may be: environment files (`.env`, `.env.local`,
+/// `prod.env`), private keys and certificates (`*.pem`, `*.key`, `id_rsa`…),
+/// credential files (`.pgpass`, `.npmrc`, `.netrc`, `auth.json`, `credentials.*`,
+/// `secrets.*`) and anything in a credentials folder (`.ssh`, `.aws`, `.git`…). The
+/// same names Code mode never reads ([`crate::code_review::secrets::secret_path`]) and
+/// Recall keeps back.
+pub fn secret_file_reason(path: &Path) -> Option<&'static str> {
+    crate::code_review::secrets::secret_path(&path.to_string_lossy())
+}
+
+/// A file refused because it may hold secrets ([`secret_file_reason`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretFileKeptBack {
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for SecretFileKeptBack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Kept back: {}. Shodh does not index files that may hold secrets.",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SecretFileKeptBack {}
 
 /// Whether `extension` (lowercase, without the dot) can be indexed.
 pub fn is_supported_file_type(extension: &str) -> bool {

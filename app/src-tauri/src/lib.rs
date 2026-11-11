@@ -485,8 +485,13 @@ pub fn run() {
             match shodh_rag::processing::ocr::worker::WorkerCommand::current_exe() {
                 Ok(command) => {
                     let worker = default_rag.use_ocr_worker(command);
+                    // The legacy Office reader's child is stopped when idle too.
+                    let mut children = vec![worker as Arc<dyn shodh_rag::lazy_model::IdleUnload>];
+                    if let Some(office) = default_rag.office_worker() {
+                        children.push(office as Arc<dyn shodh_rag::lazy_model::IdleUnload>);
+                    }
                     tauri::async_runtime::spawn(shodh_rag::lazy_model::unload_idle_models(
-                        vec![worker as Arc<dyn shodh_rag::lazy_model::IdleUnload>],
+                        children,
                         shodh_rag::processing::ocr::worker::IDLE,
                     ));
                 }
@@ -713,6 +718,7 @@ pub fn run() {
             rag_commands::delete_folder_source,
             rag_commands::get_source_files,
             rag_commands::indexed_file_exists,
+            rag_commands::library_skipped_files,
             // First-run search model setup
             search_models_commands::search_models_status,
             search_models_commands::install_search_models,

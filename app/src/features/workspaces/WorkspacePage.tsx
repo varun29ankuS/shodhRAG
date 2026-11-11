@@ -338,8 +338,8 @@ export function WorkspacePage({
             onClick={() => onTab(t)}
             onKeyDown={e => moveTab(e, t)}
             className={cn(
-              '-mb-px h-9 px-3 text-small border-b-2 transition-colors duration-micro',
-              tab === t ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
+              '-mb-px h-9 px-3 text-small font-medium border-b-2 transition-colors duration-micro',
+              tab === t ? 'border-shodh-accent text-shodh-text' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
               FOCUS_RING,
             )}
           >

@@ -52,7 +52,7 @@ function storeWorkspaceFilter(filter: WorkspaceFilter) {
 const TITLE_CLICK_DELAY_MS = 220;
 
 /** The task list's columns: done, task, due date, priority, workspace, delete. */
-const TASK_GRID = 'grid grid-cols-[16px_minmax(0,1fr)_8.5rem_6.5rem_9rem_28px] gap-x-3';
+const TASK_GRID = 'grid grid-cols-[16px_minmax(0,1fr)_28px] xl:grid-cols-[16px_minmax(0,1fr)_8.5rem_6.5rem_9rem_28px] gap-x-3 gap-y-1';
 
 const ICON_BUTTON = cn(
   'w-7 h-7 rounded-lg inline-flex items-center justify-center text-shodh-text-muted hover:bg-shodh-raised hover:text-shodh-text transition-colors duration-micro',
@@ -257,7 +257,7 @@ function TaskRow({
           tabIndex={inner}
           onClick={e => { e.stopPropagation(); toggle(); }}
           className={cn(
-            'mt-1 w-4 h-4 shrink-0 rounded-full border-2 inline-flex items-center justify-center transition-colors duration-micro',
+            'col-start-1 row-start-1 mt-1 w-4 h-4 shrink-0 rounded-full border-2 inline-flex items-center justify-center transition-colors duration-micro',
             done ? 'bg-shodh-success border-shodh-success text-shodh-ground' : 'border-shodh-border-strong hover:border-shodh-text-muted',
             FOCUS_RING,
           )}
@@ -265,7 +265,7 @@ function TaskRow({
           {done && <Check className="w-2.5 h-2.5" strokeWidth={3} aria-hidden="true" />}
         </button>
 
-        <div className="min-w-0 flex flex-col gap-0.5">
+        <div className="col-start-2 row-start-1 min-w-0 flex flex-col gap-0.5">
           <div className="min-h-6 flex items-center gap-1.5 min-w-0">
             {editing ? (
               <input
@@ -338,8 +338,11 @@ function TaskRow({
           )}
         </div>
 
-        {/* Due date, priority and workspace line up under the list's headings. */}
-        <div className="min-w-0 -ml-1.5">
+        {/* Due date, priority and workspace: on a wide window each in its column under the
+            list's headings (the wrapper is `display: contents`), on a narrow one a line
+            under the title. */}
+        <div className="col-start-2 row-start-2 flex flex-wrap items-center gap-1 -ml-1.5 min-w-0 xl:contents">
+        <div className="min-w-0 xl:-ml-1.5">
           <DueMenu
             dueDate={task.dueDate}
             done={done}
@@ -348,7 +351,7 @@ function TaskRow({
             onChange={dueDate => void updateTask(task.id, { dueDate })}
           />
         </div>
-        <div className="min-w-0 -ml-1.5">
+        <div className="min-w-0 xl:-ml-1.5">
           <PriorityMenu
             priority={task.priority}
             taskTitle={task.title}
@@ -356,7 +359,7 @@ function TaskRow({
             onChange={priority => void updateTask(task.id, { priority })}
           />
         </div>
-        <div className="min-w-0 -ml-1.5">
+        <div className="min-w-0 xl:-ml-1.5">
           {(workspaceOptions.length > 0 || task.workspaceId) && (
             <WorkspaceMenu
               workspaceId={task.workspaceId}
@@ -369,6 +372,7 @@ function TaskRow({
             />
           )}
         </div>
+        </div>
 
         <button
           type="button"
@@ -376,7 +380,7 @@ function TaskRow({
           aria-label={`Delete ${task.title}`}
           title="Delete (you can undo)"
           onClick={e => { e.stopPropagation(); onRequestDelete(); }}
-          className={cn(ICON_BUTTON, 'shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-shodh-error')}
+          className={cn(ICON_BUTTON, 'col-start-3 row-start-1 xl:col-start-6 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:text-shodh-error')}
         >
           <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
         </button>
@@ -720,7 +724,7 @@ export default function CalendarTodoPanel() {
               {/* Headings for sighted users; each control already names its column to a screen reader. */}
               <div
                 aria-hidden="true"
-                className={cn(TASK_GRID, 'sticky top-0 z-10 px-3 py-1.5 border-b border-shodh-border-subtle bg-shodh-ground text-caption font-semibold text-shodh-text-muted')}
+                className={cn(TASK_GRID, 'hidden xl:grid sticky top-0 z-10 px-3 py-1.5 border-b border-shodh-border-subtle bg-shodh-ground text-caption font-semibold text-shodh-text-muted')}
               >
                 <span />
                 <span>Task</span>

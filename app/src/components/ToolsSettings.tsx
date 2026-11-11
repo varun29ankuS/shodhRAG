@@ -4,6 +4,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { ChevronDown, ChevronRight, FileJson, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
+import { InfoPopover } from './ui/InfoPopover';
 import { removeWithUndo } from '../lib/undoToast';
 import { useWorkspaces } from '../features/workspaces/WorkspaceContext';
 import { errorText, toolsApi } from '../features/tools/api';
@@ -442,11 +443,17 @@ function SkillsSection({ overview, workspaceId, onChanged }: { overview: ToolsOv
   return (
     <section aria-labelledby={`${sourceId}-heading`} className="flex flex-col gap-3">
       <div>
-        <h3 id={`${sourceId}-heading`} className={SECTION_HEADING}>Skills</h3>
-        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
-          Instructions the assistant loads when a task fits (the Agent Skills format: a folder with a SKILL.md). Only
-          each skill's name and description are in every answer; files a skill ships are read, never run.
-        </p>
+        <div className="flex items-center gap-1">
+          <h3 id={`${sourceId}-heading`} className={SECTION_HEADING}>Skills</h3>
+          <InfoPopover label="About skills" title="Skills">
+            <p className="m-0">A skill is a folder with a SKILL.md file, in the Agent Skills format.</p>
+            <p className="m-0">
+              Only each skill&apos;s name and description go with every answer; the rest is read when a task fits. Files a
+              skill ships are read, never run.
+            </p>
+          </InfoPopover>
+        </div>
+        <p className="m-0 mt-0.5 text-small text-shodh-text-muted">Instructions the assistant loads when a task fits.</p>
       </div>
       {skills.length > 0 && (
         <ul className="m-0 p-0 list-none flex flex-col gap-2">

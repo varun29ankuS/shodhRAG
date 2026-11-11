@@ -71,9 +71,10 @@ export const TABLIST = 'flex gap-1 overflow-x-auto overflow-y-hidden scrollbar-t
 /** One tab of {@link TABLIST}. */
 export function tabClass(selected: boolean): string {
   return cn(
-    'shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-small border-b-2 transition-colors duration-micro',
+    'shrink-0 h-9 px-3 inline-flex items-center gap-1.5 text-small font-medium border-b-2 transition-colors duration-micro',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-    selected ? 'border-shodh-accent text-shodh-text font-semibold' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
+    // The same weight in both states: a bolder selected tab would push its neighbours along.
+    selected ? 'border-shodh-accent text-shodh-text' : 'border-transparent text-shodh-text-muted hover:text-shodh-text',
   );
 }
 

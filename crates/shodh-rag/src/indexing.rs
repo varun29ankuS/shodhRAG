@@ -1224,7 +1224,10 @@ fn rate_since(started: Instant, files: usize) -> f32 {
 /// index. Shared with the app so allow-lists are never duplicated.
 pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
     // Documents
-    "txt", "md", "pdf", "html", "htm", "json", "docx", "pptx", "rst", "tex", // Tabular
+    "txt", "md", "pdf", "html", "htm", "json", "docx", "pptx", "rst", "tex",
+    // Legacy Office, OpenDocument, RTF, books, email, notebooks, logs
+    // (processing::formats, processing::office_xml).
+    "doc", "ppt", "odt", "odp", "rtf", "epub", "eml", "ipynb", "log", // Tabular
     "csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "ods", // Code
     "rs", "py", "js", "ts", "jsx", "tsx", "java", "cpp", "c", "h", "hpp", "cs", "go", "rb", "php",
     "swift", "kt", "scala", "r", "sh", "bash", "zsh", "ps1", "bat", "cmd", // Web
@@ -1232,7 +1235,7 @@ pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
     // No `env`: environment files hold keys and passwords ([`secret_file_reason`]).
     "toml", "yaml", "yml", "ini", "conf", "config", "xml", "sql", "graphql", "proto",
     // Images (OCR)
-    "png", "jpg", "jpeg", "bmp", "tiff", "tif",
+    "png", "jpg", "jpeg", "bmp", "tiff", "tif", "gif", "webp",
 ];
 
 /// Why the file at `path` is never indexed into the Library because it may hold

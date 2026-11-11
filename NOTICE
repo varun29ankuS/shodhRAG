@@ -206,3 +206,11 @@ that run on Windows), not under Apache-2.0. Its terms (section 2(a)) say it
 may collect information about you and your use of the software and send it
 to Microsoft, and that not all of this can be turned off. Shodh uses it only
 while "Use the graphics card for search" is on.
+
+OfficeOxide
+https://github.com/yfedoseev/office_oxide, version 0.1.10
+Copyright (c) 2026 Yury Fedoseev and the OfficeOxide project contributors.
+Licensed under the MIT license or the Apache License, Version 2.0, at your
+option. Shodh uses its legacy Word (.doc) and PowerPoint (.ppt) readers
+(crates/shodh-rag/src/processing/formats.rs). "OfficeOxide" and
+"office_oxide" are trademarks of Yury Fedoseev.

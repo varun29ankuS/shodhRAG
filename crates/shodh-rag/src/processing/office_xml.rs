@@ -397,6 +397,181 @@ fn pptx_inline(node: Node<'_, '_>, lines: &mut Lines, depth: usize) -> Walk {
     Ok(())
 }
 
+// ── OpenDocument (`content.xml` of .odt and .odp) ─────────────────────────
+
+/// OpenDocument text.
+const TEXT_NS: &[&str] = &["urn:oasis:names:tc:opendocument:xmlns:text:1.0"];
+/// OpenDocument tables.
+const TABLE_NS: &[&str] = &["urn:oasis:names:tc:opendocument:xmlns:table:1.0"];
+/// OpenDocument drawings (frames, text boxes, slides).
+const DRAW_NS: &[&str] = &["urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"];
+/// OpenDocument office (the body, comments).
+const OFFICE_NS: &[&str] = &["urn:oasis:names:tc:opendocument:xmlns:office:1.0"];
+/// OpenDocument presentations (speaker notes).
+const PRESENTATION_NS: &[&str] = &["urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"];
+
+/// Text elements whose content is not text of the document: tracked deletions,
+/// generated indexes (they repeat the headings), declarations, and a footnote's
+/// number.
+const TEXT_SKIPPED: &[&str] = &[
+    "tracked-changes",
+    "table-of-content",
+    "alphabetical-index",
+    "illustration-index",
+    "table-index",
+    "object-index",
+    "user-index",
+    "bibliography",
+    "sequence-decls",
+    "variable-decls",
+    "user-field-decls",
+    "note-citation",
+];
+
+/// Whether the content of `node` is never text of the document.
+fn odf_skipped(node: Node<'_, '_>) -> bool {
+    is_one_of(node, TEXT_NS, TEXT_SKIPPED)
+        || is(node, PRESENTATION_NS, "notes")
+        || is(node, OFFICE_NS, "annotation")
+}
+
+/// The text of one OpenDocument paragraph or heading (`text:p`, `text:h`) and of
+/// what it holds: spans, links, spaces (`text:s` with its count), tabs, line
+/// breaks and footnote bodies. Frames anchored in it are read as their own
+/// paragraphs.
+fn odf_inline(node: Node<'_, '_>, lines: &mut Lines, depth: usize) -> Walk {
+    let depth = descend(depth)?;
+    for child in node.children() {
+        if child.is_text() {
+            if let Some(text) = child.text() {
+                lines.current.push_str(text);
+            }
+            continue;
+        }
+        if !child.is_element() || odf_skipped(child) {
+            continue;
+        }
+        if is(child, TEXT_NS, "s") {
+            let count = child
+                .attributes()
+                .find(|a| a.name() == "c")
+                .and_then(|a| a.value().parse::<usize>().ok())
+                .unwrap_or(1)
+                .min(64);
+            lines.current.push_str(&" ".repeat(count));
+        } else if is(child, TEXT_NS, "tab") {
+            lines.current.push('\t');
+        } else if is(child, TEXT_NS, "line-break") {
+            lines.current.push('\n');
+        } else if is(child, DRAW_NS, "frame") {
+            lines.flush();
+            let mut blocks = Vec::new();
+            odf_blocks(child, &mut blocks, depth)?;
+            for line in docx_text(&blocks).lines() {
+                lines.current = line.to_string();
+                lines.flush();
+            }
+        } else {
+            odf_inline(child, lines, depth)?;
+        }
+    }
+    Ok(())
+}
+
+/// Paragraphs and tables under `parent` (at `depth`), in reading order, through
+/// lists, sections and frames.
+fn odf_blocks(parent: Node<'_, '_>, out: &mut Vec<DocxBlock>, depth: usize) -> Walk {
+    let depth = descend(depth)?;
+    for child in parent.children().filter(Node::is_element) {
+        if odf_skipped(child) {
+            continue;
+        }
+        if is(child, TEXT_NS, "p") || is(child, TEXT_NS, "h") {
+            let mut lines = Lines::default();
+            odf_inline(child, &mut lines, depth)?;
+            out.extend(lines.finish().into_iter().map(DocxBlock::Paragraph));
+        } else if is(child, TABLE_NS, "table") {
+            let mut rows = Vec::new();
+            odf_rows(child, &mut rows, depth)?;
+            if !rows.is_empty() {
+                out.push(DocxBlock::Table(rows));
+            }
+        } else {
+            odf_blocks(child, out, depth)?;
+        }
+    }
+    Ok(())
+}
+
+/// The rows of an OpenDocument table, each the text of its cells (a cell's lines
+/// joined by spaces). Rows without text are left out.
+fn odf_rows(node: Node<'_, '_>, rows: &mut Vec<Vec<String>>, depth: usize) -> Walk {
+    let depth = descend(depth)?;
+    for child in node.children().filter(Node::is_element) {
+        if is(child, TABLE_NS, "table-row") {
+            let mut cells = Vec::new();
+            for cell in child.children().filter(|c| is(*c, TABLE_NS, "table-cell")) {
+                let mut blocks = Vec::new();
+                odf_blocks(cell, &mut blocks, depth)?;
+                cells.push(
+                    docx_text(&blocks)
+                        .replace(['\n', '\t'], " ")
+                        .trim()
+                        .to_string(),
+                );
+            }
+            // Trailing empty cells (repeated to the sheet's width) are not columns.
+            while cells.last().is_some_and(String::is_empty) {
+                cells.pop();
+            }
+            if cells.iter().any(|c| !c.is_empty()) {
+                rows.push(cells);
+            }
+        } else if !is(child, TABLE_NS, "table-column") && !is(child, TABLE_NS, "table-columns") {
+            // Header rows and row groups hold rows.
+            odf_rows(child, rows, depth)?;
+        }
+    }
+    Ok(())
+}
+
+/// The body of an OpenDocument text's `content.xml` in reading order, as the
+/// paragraphs and tables of a Word body ([`DocxBlock`]).
+pub fn odt_blocks(xml: &str) -> Result<Vec<DocxBlock>, OfficeXmlError> {
+    let doc = parse(xml)?;
+    let mut out = Vec::new();
+    if let Some(body) = doc.descendants().find(|n| is(*n, OFFICE_NS, "text")) {
+        odf_blocks(body, &mut out, 1)?;
+    }
+    Ok(out)
+}
+
+/// The text of each slide (`draw:page`) of an OpenDocument presentation's
+/// `content.xml`, in order, without its speaker notes (as for PowerPoint). A
+/// slide without text is an empty string, so slides keep their numbers.
+pub fn odp_slides(xml: &str) -> Result<Vec<String>, OfficeXmlError> {
+    let doc = parse(xml)?;
+    let Some(presentation) = doc
+        .descendants()
+        .find(|n| is(*n, OFFICE_NS, "presentation"))
+    else {
+        return Ok(Vec::new());
+    };
+    let mut slides = Vec::new();
+    for page in presentation.children().filter(|c| is(*c, DRAW_NS, "page")) {
+        let mut blocks = Vec::new();
+        odf_blocks(page, &mut blocks, 1)?;
+        slides.push(docx_text(&blocks));
+    }
+    Ok(slides)
+}
+
+/// The XML of an EPUB package or container part parsed with the same limits as an
+/// Office part ([`parse`]), for the EPUB reader.
+pub(crate) fn parse_package(xml: &str) -> Result<Document<'_>, OfficeXmlError> {
+    parse(xml)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

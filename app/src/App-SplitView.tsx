@@ -108,7 +108,7 @@ import { fileQuestionDraft } from './features/ask/fileQuestion';
 import type { AskDraftRequest } from './features/ask/fileQuestion';
 import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
 import type { IndexingProgressPayload } from './features/library/indexingProgress';
-import { isIndexableDocument, isIndexableFile, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
+import { isIndexableDocument, isIndexableFile, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
 import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
@@ -802,12 +802,9 @@ function AppSplitView() {
 
     const file = files[0];
 
-    // The documents the indexer reads (features/library/dropFiles); old
-    // .doc/.ppt files are named with what to do.
+    // The documents the indexer reads (features/library/dropFiles).
     if (isIndexableDocument(file.name)) {
       await handleDocumentUpload(file);
-    } else if (legacyOfficeTarget(file.name)) {
-      notify.error('Old Office files are not indexed', { description: legacyOfficeNotice([file.name]) });
     }
     // If it's an image, Tauri event listener will handle it
   };
@@ -974,9 +971,8 @@ function AppSplitView() {
             const conversationId = activeConversationIdRef.current;
 
             try {
-              // Images are read (OCR); old .doc/.ppt files are named with what
-              // to do; documents, folders and other files go to the Library
-              // (features/library/dropFiles).
+              // Images are read (OCR); documents, folders and other files go to
+              // the Library (features/library/dropFiles).
               const dropped = sortDroppedPaths(files);
 
               for (const imageFile of dropped.images) {
@@ -984,10 +980,6 @@ function AppSplitView() {
                   filePath: imageFile
                 });
                 showImageText(conversationId, 'dropped', result);
-              }
-
-              if (dropped.legacy.length > 0) {
-                notify.error('Old Office files are not indexed', { description: legacyOfficeNotice(dropped.legacy) });
               }
 
               if (dropped.library.length > 0) {

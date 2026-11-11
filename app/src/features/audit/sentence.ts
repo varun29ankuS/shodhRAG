@@ -84,7 +84,7 @@ function plural(n: number, one: string, many: string): string {
   return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }
 
-/** An identifier in words: `search_documents` → "Search documents", `learnModel` → "Learn model". */
+/** An identifier in words: `tool_call` → "Tool call", `learnModel` → "Learn model". */
 export function humanize(id: string): string {
   const words = id
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -584,7 +584,8 @@ function retrieval(p: Record<string, unknown>): EventSentence {
         'search',
         'Documents searched',
         join([[strong(plural(passages, 'passage', 'passages'))], query ? [text(`for “${clip(query, 80)}”`)] : []]),
-        tool === null || tool === 'search_documents',
+        // A document search (the only other retrieval) carries its passages.
+        tool === null || Array.isArray(p.passages),
       );
     }
   }

@@ -174,7 +174,10 @@ impl TextSearch {
         // Without this, source-filtered queries return fewer results than vector search,
         // causing asymmetric fusion.
         let fetch_limit = if source_filter.is_some() { k * 3 } else { k };
-        let top_docs = searcher.search(&parsed_query, &TopDocs::with_limit(fetch_limit).order_by_score())?;
+        let top_docs = searcher.search(
+            &parsed_query,
+            &TopDocs::with_limit(fetch_limit).order_by_score(),
+        )?;
 
         let mut results = Vec::with_capacity(k);
         for (score, doc_address) in top_docs {
@@ -219,6 +222,42 @@ impl TextSearch {
             }
         }
         Ok(None)
+    }
+
+    /// Removes deleted documents' text from disk now: commits, merges every
+    /// segment (a merge leaves deleted documents out) and deletes the files no
+    /// longer used. A delete alone only marks a document; its stored text stays in
+    /// its segment until a merge.
+    pub fn expunge_deletes(&self) -> Result<()> {
+        let mut writer = self.writer.lock();
+        writer
+            .commit()
+            .context("Tantivy commit before merge failed")?;
+        let segments = self.index.searchable_segment_ids()?;
+        if segments.len() > 1 || self.has_deletes()? {
+            writer
+                .merge(&segments)
+                .wait()
+                .context("Tantivy merge failed")?;
+        }
+        writer
+            .garbage_collect_files()
+            .wait()
+            .context("Tantivy garbage collection failed")?;
+        drop(writer);
+        self.reader.reload()?;
+        Ok(())
+    }
+
+    /// Whether any segment holds deleted documents.
+    fn has_deletes(&self) -> Result<bool> {
+        self.reader.reload()?;
+        Ok(self
+            .reader
+            .searcher()
+            .segment_readers()
+            .iter()
+            .any(|s| s.num_deleted_docs() > 0))
     }
 
     pub fn delete_by_id(&self, id: &str) -> Result<()> {

@@ -1,4 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { captureError, addBreadcrumb } from '../lib/errorReporting';
 import './ErrorBoundary.css';
 
@@ -180,14 +181,14 @@ class ErrorBoundary extends Component<Props, State> {
       if (errorCount >= this.MAX_ERROR_COUNT) {
         return (
           <div className={`error-boundary-fallback error-level-${level} error-critical`}>
-            <div className="error-icon">⚠️</div>
-            <h2>Critical Error</h2>
-            <p>This component has encountered multiple errors and cannot recover automatically.</p>
+            <div className="error-icon"><AlertTriangle className="w-[1em] h-[1em]" aria-hidden="true" /></div>
+            <h2>This part of Shodh keeps failing</h2>
+            <p>It failed several times in a row. Reload the window to start it again.</p>
             <button 
               className="error-refresh-btn"
               onClick={() => window.location.reload()}
             >
-              Refresh Page
+              Reload window
             </button>
           </div>
         );
@@ -196,10 +197,10 @@ class ErrorBoundary extends Component<Props, State> {
       // Default error UI
       return (
         <div className={`error-boundary-fallback error-level-${level}`}>
-          <div className="error-icon">😕</div>
-          <h2>Something went wrong</h2>
+          <div className="error-icon"><AlertTriangle className="w-[1em] h-[1em]" aria-hidden="true" /></div>
+          <h2>This part of Shodh stopped working</h2>
           <p className="error-message">
-            {error?.message || 'An unexpected error occurred'}
+            {error?.message || 'No error message was given.'}
           </p>
           
           {process.env.NODE_ENV === 'development' && (
@@ -215,7 +216,7 @@ class ErrorBoundary extends Component<Props, State> {
               className="error-retry-btn"
               onClick={this.resetErrorBoundary}
             >
-              Try Again
+              Try again
             </button>
             
             {!isolate && (
@@ -223,7 +224,7 @@ class ErrorBoundary extends Component<Props, State> {
                 className="error-refresh-btn"
                 onClick={() => window.location.reload()}
               >
-                Refresh Page
+                Reload window
               </button>
             )}
           </div>

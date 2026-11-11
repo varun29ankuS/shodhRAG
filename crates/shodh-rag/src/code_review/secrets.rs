@@ -90,10 +90,22 @@ pub fn secret_path(path: &str) -> Option<&'static str> {
     {
         return Some("its name is one credentials are kept under");
     }
+    if cloud_key_file(&lower) {
+        return Some("it is a cloud account's key file");
+    }
     if SECRET_ENDINGS.iter().any(|ending| lower.ends_with(ending)) {
         return Some("it is a key or certificate file");
     }
     None
+}
+
+/// A cloud account's key file as its console names it on download: AWS's
+/// `*accessKeys*.csv` and `rootkey.csv`, Google's `client_secret*.json` (OAuth)
+/// and `*service-account*.json`. `lower` is the file name in lower case.
+fn cloud_key_file(lower: &str) -> bool {
+    (lower.ends_with(".csv") && (lower.contains("accesskeys") || lower == "rootkey.csv"))
+        || (lower.ends_with(".json")
+            && (lower.starts_with("client_secret") || lower.contains("service-account")))
 }
 
 #[cfg(test)]
@@ -131,6 +143,31 @@ mod tests {
             "docs/environment.md",
             "src/keyboard.rs",
             "README.md",
+        ] {
+            assert_eq!(secret_path(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn cloud_key_files_are_never_read() {
+        for path in [
+            "Downloads/alice_accessKeys.csv",
+            "Downloads/accessKeys (1).csv",
+            "rootkey.csv",
+            "Downloads/client_secret_8812-abc.apps.googleusercontent.com.json",
+            "keys/my-project-service-account-4f2a.json",
+        ] {
+            assert_eq!(
+                secret_path(path),
+                Some("it is a cloud account's key file"),
+                "{path}"
+            );
+        }
+        for path in [
+            "data/access_logs.csv",
+            "notes/service-account-setup.md",
+            "client_secrets_explained.pdf",
+            "budget.csv",
         ] {
             assert_eq!(secret_path(path), None, "{path}");
         }

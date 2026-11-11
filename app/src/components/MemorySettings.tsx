@@ -6,6 +6,7 @@ import { notify } from '../lib/notify';
 import { getAppSettings, onAppSettingsChanged, setMemoryPreferences } from '../lib/appSettings';
 import type { MemoryPrefs } from '../lib/appSettings';
 import { SwitchRow } from './PrivacySettings';
+import { InfoPopover } from './ui/InfoPopover';
 import SuggestedMemories from './SuggestedMemories';
 import {
   contentFromEdit,
@@ -628,9 +629,21 @@ function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: Cor
   const headingId = useId();
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
-      <h3 id={headingId} className="m-0 text-small font-bold text-shodh-text-secondary">
-        {coreHeading(injecting ? (core?.length ?? 0) : 0)}
-      </h3>
+      <div className="flex items-center gap-1">
+        <h3 id={headingId} className="m-0 text-small font-bold text-shodh-text-secondary">
+          {coreHeading(injecting ? (core?.length ?? 0) : 0)}
+        </h3>
+        <InfoPopover label="About the memories sent with every question" title="Sent with every question">
+          <p className="m-0">
+            These go with every question, marked as possibly outdated: who you are, your projects, your preferences and
+            the notes you ask Shodh to keep.
+          </p>
+          <p className="m-0">
+            Only your strongest notes stay here. Ones you do not use fade and can drop out, so pin a note to keep it.
+            “Not relevant” under an answer makes a note weigh less.
+          </p>
+        </InfoPopover>
+      </div>
       {!injecting ? (
         <p className="m-0 text-small text-shodh-text-muted">
           Nothing is sent while “Use memories in answers” is off.
@@ -642,17 +655,9 @@ function CoreMemories({ core, error, injecting, workspaceName, onOutdated }: Cor
       ) : core === null ? (
         <p className="m-0 text-small text-shodh-text-muted">Loading…</p>
       ) : core.length === 0 ? (
-        <p className="m-0 text-small text-shodh-text-muted">
-          None yet. Who you are, your projects, your preferences and the notes you ask Shodh to keep go with every
-          question.
-        </p>
+        <p className="m-0 text-small text-shodh-text-muted">None yet.</p>
       ) : (
         <>
-          <p className="m-0 text-small text-shodh-text-muted">
-            Sent with every question, marked as possibly outdated. The core holds your strongest standing notes: ones
-            you do not use fade and can leave it, so pin a note to keep it here. “Not relevant” under an answer makes one
-            weigh less.
-          </p>
           <ul className="m-0 p-0 list-none flex flex-col divide-y divide-shodh-border-subtle">
             {core.map(memory => (
               <li key={memory.id} className="py-1.5 flex items-start gap-2 text-small">

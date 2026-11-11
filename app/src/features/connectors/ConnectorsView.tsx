@@ -92,10 +92,10 @@ function ConnectorTile({
             <span
               aria-hidden="true"
               className={cn(
-                'shrink-0 h-8 px-3 inline-flex items-center rounded-lg text-small font-semibold transition-colors duration-micro',
+                'shrink-0 h-8 px-3 inline-flex items-center rounded-lg border text-small font-semibold transition-colors duration-micro',
                 action === 'Connect'
-                  ? 'bg-shodh-accent text-shodh-on-accent group-hover:bg-shodh-accent-hover'
-                  : 'border border-shodh-border text-shodh-text-secondary group-hover:text-shodh-text',
+                  ? 'border-transparent bg-shodh-accent text-shodh-on-accent group-hover:bg-shodh-accent-hover'
+                  : 'border-shodh-border text-shodh-text-secondary group-hover:text-shodh-text',
               )}
             >
               {action}

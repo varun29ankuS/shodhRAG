@@ -118,8 +118,8 @@ export function ConnectorConversationView({
                 </span>
                 <div
                   className={cn(
-                    'max-w-[520px] min-w-0 px-4 py-[10px] rounded-[18px] text-body-lg leading-[1.55] whitespace-pre-wrap break-words',
-                    author.owner ? 'bg-shodh-raised-2 text-shodh-text' : 'bg-shodh-surface border border-shodh-border text-shodh-text',
+                    'max-w-[520px] min-w-0 px-4 py-[10px] rounded-[18px] border text-body-lg leading-[1.55] whitespace-pre-wrap break-words',
+                    author.owner ? 'border-transparent bg-shodh-raised-2 text-shodh-text' : 'border-shodh-border bg-shodh-surface text-shodh-text',
                   )}
                 >
                   {message.content}

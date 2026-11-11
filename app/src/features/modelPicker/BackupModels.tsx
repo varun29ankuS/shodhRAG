@@ -4,6 +4,7 @@ import { notify } from '../../lib/notify';
 import type { ModelPickerHandle } from './modelApi';
 import { modelApi } from './modelApi';
 import { FOCUS_RING, INPUT } from './ConnectPanel';
+import { InfoPopover } from '../../components/ui/InfoPopover';
 import type { ChainCandidate, ChainPlan, FallbackChain, HealthTone } from './fallbackChain';
 import { LatestOnly, healthWords, modelOptionValue, originLabel, privacyLabel, readModelOption } from './fallbackChain';
 import type { ModelRef } from './modelTypes';
@@ -99,22 +100,35 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
   return (
     <section className="p-5 rounded-[14px] bg-shodh-surface border border-shodh-border flex flex-col gap-4" aria-labelledby={headingId}>
       <div className="flex flex-col gap-1">
-        <h3 id={headingId} className="m-0 text-body-lg font-semibold text-shodh-text">
-          Backup models
-        </h3>
-        <p className="m-0 text-small text-shodh-text-muted max-w-[65ch]">
-          When a model can&apos;t answer (it is down, overloaded or out of free requests), Shodh tries the next one in this list. A model that just failed is skipped for a few minutes.
-        </p>
+        <div className="flex items-center gap-1">
+          <h3 id={headingId} className="m-0 text-body-lg font-semibold text-shodh-text">
+            Backup models
+          </h3>
+          <InfoPopover label="About backup models" title="Backup models">
+            <p className="m-0">
+              When a model can&apos;t answer (it is down, overloaded or out of free requests), Shodh tries the next one in this list. A model that just failed is skipped for a few minutes.
+            </p>
+            <p className="m-0">
+              Slack, Telegram, memory learning and other background work always switch to a backup on their own, since nobody is there to ask. Their conversations in Shodh say which model answered.
+            </p>
+          </InfoPopover>
+        </div>
+        <p className="m-0 text-small text-shodh-text-muted max-w-[65ch]">Tried in this order when your model can&apos;t answer.</p>
       </div>
 
       <ChainList chain={chain?.plan ?? null} nowMs={chain?.nowMs ?? Date.now()} localOnly={chain?.localOnly ?? view.localOnly} />
 
       {chain?.direct && chain.plan && !samePlan(chain.direct, chain.plan) && (
         <div className="flex flex-col gap-2">
-          <p className="m-0 text-small font-medium text-shodh-text-secondary">For Slack, Telegram and background work</p>
-          <p className="m-0 -mt-1 text-caption text-shodh-text-muted max-w-[65ch]">
-            These answer without the assistant, so a subscription (Claude Pro, ChatGPT Plus…) can&apos;t answer them. They also never switch to a model less private than yours, not even your own backup.
-          </p>
+          <div className="flex items-center gap-1">
+            <p className="m-0 text-small font-medium text-shodh-text-secondary">For Slack, Telegram and background work</p>
+            <InfoPopover label="Why Slack, Telegram and background work have their own list" title="Slack, Telegram and background work">
+              <p className="m-0">
+                These answer without the assistant, so a subscription (Claude Pro, ChatGPT Plus…) can&apos;t answer them.
+              </p>
+              <p className="m-0">They also never switch to a model less private than yours, not even your own backup.</p>
+            </InfoPopover>
+          </div>
           <ChainList chain={chain.direct} nowMs={chain.nowMs} localOnly={chain.localOnly} />
         </div>
       )}
@@ -172,14 +186,10 @@ export function BackupModels({ picker }: { picker: ModelPickerHandle }) {
         <label htmlFor={paidId} className="flex flex-col gap-0.5">
           <span className="text-small text-shodh-text">Allow paid backups</span>
           <span className="text-caption text-shodh-text-muted">
-            Off: a free model only falls back to other free or local models, and when today&apos;s free quota is used up Shodh says so and when it resets. On: it may use a paid model or an API key, which bills that provider per request, typically a fraction of a cent to a few cents an answer.
+            Off: a free model falls back only to other free or local models; when today&apos;s free requests run out, Shodh says so and when they reset. On: a paid model or an API key may answer, and that provider bills each request, usually a fraction of a cent to a few cents an answer.
           </span>
         </label>
       </div>
-
-      <p className="m-0 text-small text-shodh-text-secondary max-w-[65ch]" role="note">
-        Slack, Telegram, memory learning and other background tasks always switch to a backup on their own, since nobody is there to ask. Their conversations in Shodh say which model answered.
-      </p>
     </section>
   );
 }

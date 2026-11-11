@@ -11,7 +11,7 @@ import { Badge } from "./components/ui/badge";
 import { Input } from "./components/ui/input";
 import { Progress } from "./components/ui/progress";
 import {
-  MessageSquare, Settings, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
+  MessageSquare, Bot, FolderOpen, FileText, Code, Terminal, Plus, Check, X, Loader2, Pencil, ChevronDown, ChevronUp, Database, FileCode, BookOpen, FileSpreadsheet, Presentation, Trash2, Braces, Coffee,
   FolderPlus, PanelLeftOpen, PanelLeftClose, Sun, Moon, Bug, Search, Sparkles, AlertTriangle, RotateCcw, Layers, MessageCircle, Bell, ListTodo, CalendarDays
 } from 'lucide-react';
 
@@ -108,7 +108,7 @@ import { fileQuestionDraft } from './features/ask/fileQuestion';
 import type { AskDraftRequest } from './features/ask/fileQuestion';
 import { endsRun, withIndexingProgress } from './features/library/indexingProgress';
 import type { IndexingProgressPayload } from './features/library/indexingProgress';
-import { isIndexableDocument, isIndexableFile, legacyOfficeNotice, legacyOfficeTarget, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
+import { isIndexableDocument, isIndexableFile, sortDroppedPaths, unsupportedFilesNotice } from './features/library/dropFiles';
 import type { PastedImage } from './features/agent/AgentComposer';
 import { ChatActionsMenu } from './features/ask/ChatActionsMenu';
 import { useCommandPalette } from './hooks/useCommandPalette';
@@ -139,6 +139,7 @@ import { migrateLegacyApiKeys } from './lib/apiKeyMigration';
 import { InboxButton, OPEN_INBOX_EVENT } from './features/inbox/InboxButton';
 import { useNavigationTarget } from './features/agent/useNavigationTarget';
 import { countOf } from './lib/plural';
+import { InfoPopover } from './components/ui/InfoPopover';
 import { IS_MAC_PLATFORM, shortcutText, withShortcut } from './lib/shortcuts';
 
 // Debug logging — set to true during development, false for demo/production
@@ -787,7 +788,7 @@ function AppSplitView() {
   const indexFailureNotice = (fileName: string, error: string): string => {
     const failure = explainFailure(error, fileName);
     const detail = failure.detail ? `\n\nDetails: \`${failure.detail.replace(/`/g, "'")}\`` : '';
-    return `❌ Could not index **${fileName}**: ${failure.reason}.\n\n${failure.advice.hint}${detail}`;
+    return `Could not index **${fileName}**: ${failure.reason}.\n\n${failure.advice.hint}${detail}`;
   };
 
   // Enhanced file drop handler - supports images AND documents
@@ -801,12 +802,9 @@ function AppSplitView() {
 
     const file = files[0];
 
-    // The documents the indexer reads (features/library/dropFiles); old
-    // .doc/.ppt files are named with what to do.
+    // The documents the indexer reads (features/library/dropFiles).
     if (isIndexableDocument(file.name)) {
       await handleDocumentUpload(file);
-    } else if (legacyOfficeTarget(file.name)) {
-      notify.error('Old Office files are not indexed', { description: legacyOfficeNotice([file.name]) });
     }
     // If it's an image, Tauri event listener will handle it
   };
@@ -819,7 +817,7 @@ function AppSplitView() {
     appendMessage({
       id: messageId,
       role: 'system',
-      content: `📄 Uploading **${file.name}** (${(file.size / 1048576).toFixed(2)} MB)...\n⏳ Parsing → Chunking → Indexing...`,
+      content: `Adding **${file.name}** (${(file.size / 1048576).toFixed(2)} MB): reading it, splitting it into passages and indexing them…`,
       timestamp: new Date().toISOString()
     });
 
@@ -858,11 +856,10 @@ function AppSplitView() {
 
       // Update message with result
       if (result.success) {
-        updateMessage(messageId, { content: `✅ **${result.fileName}** indexed successfully!\n\n` +
-                   `📊 **${countOf(result.chunksCreated, 'chunk')}** created in ${result.processingTimeMs}ms\n` +
-                   `💾 Size: ${result.fileSizeMb.toFixed(2)} MB\n\n` +
-                   (result.notice ? `⚠️ ${result.notice[0].toUpperCase()}${result.notice.slice(1)}; answers cannot use them.\n\n` : '') +
-                   `*Ask me anything about this document!*` });
+        updateMessage(messageId, { content: `**${result.fileName}** is indexed: ${countOf(result.chunksCreated, 'passage')} ` +
+                   `from ${result.fileSizeMb.toFixed(2)} MB, in ${(result.processingTimeMs / 1000).toFixed(1)} s.\n\n` +
+                   (result.notice ? `Note: ${result.notice}; answers cannot use them.\n\n` : '') +
+                   `You can ask about it now.` });
       } else {
         discardSaved();
         updateMessage(messageId, { content: indexFailureNotice(result.fileName, result.error ?? '') });
@@ -974,9 +971,8 @@ function AppSplitView() {
             const conversationId = activeConversationIdRef.current;
 
             try {
-              // Images are read (OCR); old .doc/.ppt files are named with what
-              // to do; documents, folders and other files go to the Library
-              // (features/library/dropFiles).
+              // Images are read (OCR); documents, folders and other files go to
+              // the Library (features/library/dropFiles).
               const dropped = sortDroppedPaths(files);
 
               for (const imageFile of dropped.images) {
@@ -984,10 +980,6 @@ function AppSplitView() {
                   filePath: imageFile
                 });
                 showImageText(conversationId, 'dropped', result);
-              }
-
-              if (dropped.legacy.length > 0) {
-                notify.error('Old Office files are not indexed', { description: legacyOfficeNotice(dropped.legacy) });
               }
 
               if (dropped.library.length > 0) {
@@ -1648,9 +1640,8 @@ function AppSplitView() {
                     backgroundColor: instructionsList.length > 0 ? `${colors.primary}14` : colors.bgTertiary,
                     color: instructionsList.length > 0 ? colors.primary : colors.textMuted,
                   }}
-                  title={instructionsList.length > 0 ? `${instructionsList.length} instruction(s) active` : 'Set custom instructions for this chat'}
+                  title={instructionsList.length > 0 ? `${countOf(instructionsList.length, 'instruction')} for this chat` : 'Add instructions for this chat'}
                 >
-                  <Settings className="w-3 h-3 inline mr-0.5" />
                   {instructionsList.length > 0 ? `Instructions (${instructionsList.length})` : 'Instructions'}
                 </button>
                 {showSystemPromptEditor && (
@@ -1659,16 +1650,17 @@ function AppSplitView() {
                     <div
                       ref={instructionsPopoverRef}
                       role="dialog"
-                      aria-label="Custom instructions"
+                      aria-label="Instructions for this chat"
                       className="absolute right-0 top-8 z-50 w-96 rounded-lg border shadow-xl"
                       style={{ backgroundColor: colors.bgSecondary, borderColor: colors.border }}
                     >
-                      <div className="px-3 py-2 border-b flex items-center justify-between" style={{ borderColor: colors.border }}>
-                        <div>
-                          <span className="text-xs font-semibold" style={{ color: colors.text }}>Custom Instructions</span>
-                          <p className="text-caption mt-0.5" style={{ color: colors.textMuted }}>
-                            Applied to every AI response in this chat
-                          </p>
+                      <div className="px-3 py-2 border-b flex items-center justify-between gap-2" style={{ borderColor: colors.border }}>
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span className="text-small font-semibold" style={{ color: colors.text }}>Instructions for this chat</span>
+                          <InfoPopover label="About instructions" title="Instructions">
+                            <p className="m-0">Shodh follows these in every answer in this chat. Other chats are not affected.</p>
+                            <p className="m-0">Write one per line, for example “Answer in short bullet points” or “Cite the page for every figure”.</p>
+                          </InfoPopover>
                         </div>
                         <button
                           type="button"
@@ -1687,7 +1679,7 @@ function AppSplitView() {
                         {instructionsList.length === 0 ? (
                           <div className="px-3 py-4 text-center">
                             <p className="text-caption" style={{ color: colors.textMuted }}>No instructions yet</p>
-                            <p className="text-caption mt-0.5" style={{ color: colors.textTertiary }}>Add instructions below to guide AI responses</p>
+                            <p className="text-caption mt-0.5" style={{ color: colors.textTertiary }}>Add one below to change how Shodh answers in this chat.</p>
                           </div>
                         ) : (
                           <div className="py-1">
@@ -1715,7 +1707,7 @@ function AppSplitView() {
                                       }}
                                       aria-label="Edit instruction"
                                       autoFocus
-                                      className="flex-1 text-caption bg-transparent border-b outline-none py-0.5"
+                                      className="flex-1 text-caption leading-snug bg-transparent border-b outline-none py-0.5"
                                       style={{ color: colors.text, borderColor: colors.primary }}
                                     />
                                     <button
@@ -1739,7 +1731,7 @@ function AppSplitView() {
                                   </div>
                                 ) : (
                                   <>
-                                    <span className="flex-1 text-caption leading-snug" style={{ color: colors.textSecondary }}>
+                                    <span className="flex-1 text-caption leading-snug py-0.5 border-b border-transparent" style={{ color: colors.textSecondary }}>
                                       {instruction}
                                     </span>
                                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity shrink-0">
@@ -1781,7 +1773,7 @@ function AppSplitView() {
                             value={newInstructionText}
                             onChange={e => setNewInstructionText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') addInstruction(); }}
-                            placeholder="Add an instruction..."
+                            placeholder="Add an instruction…"
                             aria-label="New instruction"
                             // Focus starts here as the popover opens, and comes back here
                             // after Save, Cancel, Remove or Clear all (focusNewInstruction).

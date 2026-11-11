@@ -3,6 +3,7 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { Check, Pencil, RotateCcw, ShieldAlert, Square, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
+import { InfoPopover } from './ui/InfoPopover';
 import { removeWithUndo } from '../lib/undoToast';
 import type { LearnMode, MemoryPrefs } from '../lib/appSettings';
 import {
@@ -136,11 +137,18 @@ function LearningControls({ prefs, saving, onChange, status, onStopped }: Learni
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <p id={groupId} className="m-0 text-body font-semibold text-shodh-text">Learn from conversations</p>
+        <div className="flex items-center gap-1">
+          <p id={groupId} className="m-0 text-body font-semibold text-shodh-text">Learn from conversations</p>
+          <InfoPopover label="About learning from conversations" title="Learn from conversations">
+            <p className="m-0">
+              After each answer, a model reads only what you wrote, never your documents, web pages or tool results, and
+              suggests memories in Shodh’s types.
+            </p>
+            <p className="m-0">Health, financial identifiers, passwords and facts about other people always ask first.</p>
+          </InfoPopover>
+        </div>
         <p className="m-0 mt-0.5 text-small text-shodh-text-muted">
-          After each answer, a model reads only what you wrote — never your documents, web pages or tool results — and
-          suggests memories in Shodh’s types. Health, financial identifiers, passwords and facts about other people always
-          ask first.
+          After each answer, a model reads only what you wrote and suggests memories. Sensitive ones always ask first.
         </p>
       </div>
       <div role="radiogroup" aria-labelledby={groupId} className="flex flex-wrap gap-2">

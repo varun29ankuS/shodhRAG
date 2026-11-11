@@ -38,6 +38,12 @@ interface SignInProgress {
   message: string | null;
 }
 
+/** A sign-in that failed: which provider, and why. */
+interface SignInFailure {
+  provider: ProviderId;
+  message: string;
+}
+
 function statusText(s: SubscriptionStatus): string | null {
   switch (s.state) {
     case 'connected':
@@ -69,7 +75,8 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
   const { view, reload } = picker;
   const [signIn, setSignIn] = useState<SignInProgress | null>(null);
   const [starting, setStarting] = useState<ProviderId | null>(null);
-  const [signInError, setSignInError] = useState<string | null>(null);
+  // The failed sign-in's message, shown under the provider that failed.
+  const [signInError, setSignInError] = useState<SignInFailure | null>(null);
   // "Fix key" elsewhere (the top bar, an answer's error card) asked for one provider's row.
   // Read, not taken, during render: the first render may run again before it shows.
   const [fixFor, setFixFor] = useState<ProviderId | null>(() => peekFixKeyRequest());
@@ -121,7 +128,7 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
         notify.success(`${PROVIDER_LABELS[e.provider]} is connected`);
         void reload(false);
       } else if (e.phase === 'failed') {
-        setSignInError(e.message ?? 'The sign-in did not finish.');
+        setSignInError({ provider: e.provider, message: e.message ?? 'The sign-in did not finish. Try again.' });
       }
     })
       .then(fn => {
@@ -150,7 +157,7 @@ export function ConnectPanel({ picker }: { picker: ModelPickerHandle }) {
       }
       setSignIn({ provider, page: null, code: null, message: 'Opening the sign-in page in your browser.' });
     } catch (error) {
-      setSignInError(toConnectError(error).message);
+      setSignInError({ provider, message: toConnectError(error).message });
     } finally {
       setStarting(null);
     }
@@ -213,7 +220,7 @@ function SubscriptionsRow({
   subscriptions: SubscriptionStatus[];
   signIn: SignInProgress | null;
   starting: ProviderId | null;
-  error: string | null;
+  error: SignInFailure | null;
   localOnly: boolean;
   onSignIn: (provider: ProviderId) => void;
   onCancel: () => void;
@@ -252,6 +259,11 @@ function SubscriptionsRow({
                 )}
               </div>
               {s.note && <p className="m-0 text-caption text-shodh-text-muted max-w-[65ch]">{s.note}</p>}
+              {error?.provider === s.provider && (
+                <p role="alert" className="m-0 text-small text-shodh-error max-w-[65ch]">
+                  {error.message}
+                </p>
+              )}
             </li>
           );
         })}
@@ -292,9 +304,10 @@ function SubscriptionsRow({
           </div>
         </div>
       )}
-      {error && (
+      {/* A provider no longer listed (the list changed while it failed) keeps its message here. */}
+      {error && !subscriptions.some(s => s.provider === error.provider) && (
         <p role="alert" className="m-0 pl-7 text-small text-shodh-error">
-          {error}
+          {`${PROVIDER_LABELS[error.provider]}: ${error.message}`}
         </p>
       )}
     </section>

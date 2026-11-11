@@ -29,6 +29,7 @@ import { FileBrowser } from './FileBrowser';
 import { showInFolder } from './fileActions';
 import { explainFailure, groupFailures } from './indexingAdvice';
 import { FailureDetails } from './FailureDetails';
+import { useSkippedFiles } from './useSkippedFiles';
 import type { IndexingAction, IndexingAdvice } from './indexingAdvice';
 import { useSearchModels } from '../setup/SearchModelsContext';
 import { groupSourcesByKind, progressPercent, syncProgressLine } from './sources';
@@ -442,7 +443,16 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
   const [showFailures, setShowFailures] = useState(false);
   const failuresId = useId();
   const nameId = useId();
-  const failures = source.failures ?? [];
+  const tried = source.failures ?? [];
+  // Files that failed and files the folder holds but never indexes, in one list:
+  // nothing is left out without a reason.
+  const skipped = useSkippedFiles(source.path, source.status === 'ready', source.indexedAt);
+  const failures = useMemo(
+    () => [...tried, ...skipped.files.map(f => ({ file: f.file, reason: f.reason }))],
+    [tried, skipped],
+  );
+  // Every skipped entry counts, also beyond those listed.
+  const notIndexed = tried.length + skipped.total;
   const percent = progressPercent(source);
   const { install } = useSearchModels();
   const act = (action: IndexingAction) => {
@@ -571,10 +581,14 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
             onClick={() => setShowFailures(v => !v)}
             aria-expanded={showFailures}
             aria-controls={failuresId}
-            className={cn('self-start inline-flex items-center gap-1 text-caption text-shodh-error hover:underline rounded', FOCUS_RING)}
+            className={cn(
+              'self-start inline-flex items-center gap-1 text-caption hover:underline rounded',
+              tried.length > 0 ? 'text-shodh-error' : 'text-shodh-text-secondary',
+              FOCUS_RING,
+            )}
           >
             {showFailures ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" /> : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
-            {`${failures.length.toLocaleString()} file${failures.length === 1 ? '' : 's'} could not be indexed`}
+            {`${notIndexed.toLocaleString()} file${notIndexed === 1 ? '' : 's'} not indexed`}
           </button>
           {!showFailures && (
             <p className="m-0 text-caption text-shodh-text-secondary break-words">
@@ -584,8 +598,13 @@ function FolderCard({ source, focused, browseDisabled, onBrowse, onReindex, onTo
           {!showFailures && failureGroups.length === 1 && <AdviceLine advice={failureGroups[0].advice} onAction={act} />}
           {showFailures && (
             <div id={failuresId} className="max-h-72 overflow-y-auto scrollbar-thin flex flex-col gap-3 rounded-lg bg-shodh-raised p-2">
+              {notIndexed > failures.length && (
+                <p className="m-0 text-caption text-shodh-text-secondary">
+                  {`The first ${failures.length.toLocaleString()} are listed.`}
+                </p>
+              )}
               {failureGroups.map(group => (
-                <section key={group.kind} className="flex flex-col gap-1.5">
+                <section key={`${group.kind}-${group.reason}`} className="flex flex-col gap-1.5">
                   <h4 className="m-0 text-caption font-semibold text-shodh-text">
                     {`${group.reason} · ${group.files.length.toLocaleString()} file${group.files.length === 1 ? '' : 's'}`}
                   </h4>

@@ -21,8 +21,8 @@ type Load<T> = { status: 'loading' } | { status: 'ready'; value: T } | { status:
 const FOLDED = 12;
 
 const TAB = cn(
-  'h-8 px-3 -mb-px border-b-2 border-transparent text-small text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro',
-  'data-[state=active]:border-shodh-accent data-[state=active]:text-shodh-text data-[state=active]:font-semibold',
+  'h-8 px-3 -mb-px border-b-2 border-transparent text-small font-medium text-shodh-text-secondary hover:text-shodh-text transition-colors duration-micro',
+  'data-[state=active]:border-shodh-accent data-[state=active]:text-shodh-text',
   FOCUS_RING,
 );
 

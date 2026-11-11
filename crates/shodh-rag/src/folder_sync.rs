@@ -43,7 +43,7 @@ use tokio::sync::RwLock;
 use walkdir::WalkDir;
 
 use crate::embeddings::SearchModelsMissing;
-use crate::indexing::{is_supported_file_type, FileFailure};
+use crate::indexing::{is_supported_file_type, secret_file_reason, FileFailure};
 use crate::rag_engine::{canonical_path, normalize_source_path, RAGEngine, CHUNKER_VERSION};
 
 /// What a file looked like when it was last indexed.
@@ -126,9 +126,12 @@ pub fn is_hidden(entry: &walkdir::DirEntry) -> bool {
     entry.depth() > 0 && entry.file_name().to_string_lossy().starts_with('.')
 }
 
-/// Whether a file at `path` is one a folder source indexes.
+/// Whether a file at `path` is one a folder source indexes. A file that may hold
+/// secrets never is ([`secret_file_reason`]): one indexed before that rule is not in
+/// the scan, so the next sync removes it from the index.
 pub fn is_indexable(path: &Path) -> bool {
     !is_temporary_file(path)
+        && secret_file_reason(path).is_none()
         && path
             .extension()
             .and_then(|e| e.to_str())
@@ -211,6 +214,195 @@ pub fn scan_folder_checked(folder: &Path) -> FolderScan {
         }
     }
     scan
+}
+
+/// Why a file of a linked folder is there but not indexed (files that were tried
+/// and failed are the sync's `failures`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipKind {
+    /// It may hold secrets ([`secret_file_reason`]).
+    Secret,
+    /// Shodh does not read its type.
+    Unsupported,
+    /// A hidden file, or a hidden folder (listed once, for everything in it).
+    Hidden,
+    /// An Office lock file or a partial download ([`is_temporary_file`]).
+    Temporary,
+}
+
+/// A file (or hidden folder) of a linked folder that is not indexed, and why, in
+/// the words the Library shows (`app/src/features/library/indexingAdvice.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedFile {
+    pub file: String,
+    pub kind: SkipKind,
+    pub reason: String,
+}
+
+/// What [`skipped_files`] found: every skipped entry counted, by kind, the first
+/// [`MAX_SKIPPED_LISTED`] listed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkippedFiles {
+    pub total: usize,
+    /// Every skipped entry counted by kind (not only those listed).
+    #[serde(default)]
+    pub counts: SkipCounts,
+    pub files: Vec<SkippedFile>,
+    /// Files that were tried and failed to index, as the folder's manifest records
+    /// them ([`ManifestStore::skipped_of_source`]); not among `total`.
+    #[serde(default)]
+    pub failed: usize,
+    /// The walk stopped after [`MAX_SKIPPED_WALKED`] entries: the counts are of
+    /// those.
+    #[serde(default)]
+    pub partial: bool,
+}
+
+/// Skipped entries counted by [`SkipKind`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkipCounts {
+    pub secret: usize,
+    pub unsupported: usize,
+    pub hidden: usize,
+    pub temporary: usize,
+}
+
+impl SkipCounts {
+    fn add(&mut self, kind: SkipKind) {
+        *self.of_mut(kind) += 1;
+    }
+
+    fn of_mut(&mut self, kind: SkipKind) -> &mut usize {
+        match kind {
+            SkipKind::Secret => &mut self.secret,
+            SkipKind::Unsupported => &mut self.unsupported,
+            SkipKind::Hidden => &mut self.hidden,
+            SkipKind::Temporary => &mut self.temporary,
+        }
+    }
+
+    /// How many entries of `kind` were counted.
+    pub fn of(&self, kind: SkipKind) -> usize {
+        match kind {
+            SkipKind::Secret => self.secret,
+            SkipKind::Unsupported => self.unsupported,
+            SkipKind::Hidden => self.hidden,
+            SkipKind::Temporary => self.temporary,
+        }
+    }
+}
+
+/// The most skipped entries [`skipped_files`] lists (all are counted).
+pub const MAX_SKIPPED_LISTED: usize = 2_000;
+
+/// The most entries (files and folders) [`skipped_files`] walks: a linked home or
+/// code folder of millions of files is counted up to here, and said to be
+/// partial ([`SkippedFiles::partial`]).
+pub const MAX_SKIPPED_WALKED: usize = 200_000;
+
+/// [`ManifestStore::skipped_of_source`]'s results, by manifest file, with the time
+/// and size the manifest was saved with when each was walked.
+static SKIPPED_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<PathBuf, ((std::time::SystemTime, u64), SkippedFiles)>,
+    >,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Why the file at `path` is not indexed although it is in the folder, or `None`
+/// when it is one a folder source indexes ([`is_indexable`]).
+pub fn skip_reason(path: &Path) -> Option<(SkipKind, String)> {
+    if let Some(reason) = secret_file_reason(path) {
+        return Some((
+            SkipKind::Secret,
+            crate::indexing::SecretFileKeptBack { reason }.to_string(),
+        ));
+    }
+    if is_temporary_file(path) {
+        return Some((
+            SkipKind::Temporary,
+            "Temporary or lock file: apps write these while a file is open or downloading".into(),
+        ));
+    }
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase);
+    match extension {
+        Some(ext) if is_supported_file_type(&ext) => None,
+        Some(ext) => Some((
+            SkipKind::Unsupported,
+            format!("Not supported: Shodh does not read .{ext} files"),
+        )),
+        None => Some((
+            SkipKind::Unsupported,
+            "Not supported: the file has no type (no extension)".into(),
+        )),
+    }
+}
+
+/// Every file of `folder` that is there but not indexed, with why: types Shodh does
+/// not read, files that may hold secrets (and folders that hold credentials or a
+/// repository's settings, such as `.git` or `.ssh`), temporary files, and hidden
+/// files and folders (a hidden folder once, not each file in it). Nothing a folder
+/// holds is left out without a reason. Folders that cannot be read are the scan's
+/// ([`scan_folder_checked`]). At most [`MAX_SKIPPED_WALKED`] entries are walked.
+pub fn skipped_files(folder: &Path) -> SkippedFiles {
+    use std::cell::RefCell;
+    let found = RefCell::new(SkippedFiles::default());
+    let record = |path: &Path, kind: SkipKind, reason: String| {
+        let mut found = found.borrow_mut();
+        found.total += 1;
+        found.counts.add(kind);
+        if found.files.len() < MAX_SKIPPED_LISTED {
+            found.files.push(SkippedFile {
+                file: canonical_path(path).display().to_string(),
+                kind,
+                reason,
+            });
+        }
+    };
+    let walker = WalkDir::new(folder).into_iter().filter_entry(|entry| {
+        if !is_hidden(entry) {
+            return true;
+        }
+        let path = entry.path();
+        if let Some(reason) = secret_file_reason(path) {
+            // `.git`, `.ssh`, `.aws`: kept out because of what they hold, not only
+            // because they are hidden; renaming one would not be right.
+            record(
+                path,
+                SkipKind::Secret,
+                crate::indexing::SecretFileKeptBack { reason }.to_string(),
+            );
+        } else if entry.file_type().is_dir() {
+            record(
+                path,
+                SkipKind::Hidden,
+                "Hidden folder: nothing in it is indexed".into(),
+            );
+        } else {
+            record(
+                path,
+                SkipKind::Hidden,
+                "Hidden file: names that start with a dot are not indexed".into(),
+            );
+        }
+        false
+    });
+    for (walked, entry) in walker.filter_map(Result::ok).enumerate() {
+        if walked >= MAX_SKIPPED_WALKED {
+            found.borrow_mut().partial = true;
+            break;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if let Some((kind, reason)) = skip_reason(entry.path()) {
+            record(entry.path(), kind, reason);
+        }
+    }
+    found.into_inner()
 }
 
 /// The indexable files under `folder` that could be read, keyed by index
@@ -444,6 +636,54 @@ impl ManifestStore {
                 Vec::new()
             }
         }
+    }
+
+    /// The folder `source_id` links and how many of its files failed to index, as
+    /// its manifest records them; `None` without a manifest.
+    pub fn folder_record(&self, source_id: &str) -> Option<(String, usize)> {
+        let manifest = self.load(source_id)?;
+        (!manifest.folder.is_empty()).then(|| (manifest.folder, manifest.failures.len()))
+    }
+
+    /// What the folder `source_id` links holds and does not index
+    /// ([`skipped_files`], over the folder its manifest records, so the whole linked
+    /// folder), with the files that failed to index counted
+    /// ([`SkippedFiles::failed`]); `None` without a manifest. Kept until the
+    /// manifest changes (each sync saves it), so a Library card and the agent's
+    /// tool do not walk the folder again each time they ask.
+    pub fn skipped_of_source(&self, source_id: &str) -> Option<SkippedFiles> {
+        let path = self.path(source_id);
+        let meta = std::fs::metadata(&path).ok()?;
+        // When and how large it was saved: a save in the same clock tick still
+        // changes its length when its failures or files change.
+        let saved = (meta.modified().ok()?, meta.len());
+        {
+            let cache = SKIPPED_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((at, skipped)) = cache.get(&path) {
+                if *at == saved {
+                    return Some(skipped.clone());
+                }
+            }
+        }
+        let (folder, failed) = self.folder_record(source_id)?;
+        let mut skipped = skipped_files(Path::new(&folder));
+        skipped.failed = failed;
+        let mut cache = SKIPPED_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(path, (saved, skipped.clone()));
+        Some(skipped)
+    }
+
+    /// [`Self::skipped_of_source`] for the source whose linked folder is `folder`;
+    /// `None` when no source the Library lists links it.
+    pub fn skipped_of_folder(&self, folder: &Path) -> Option<SkippedFiles> {
+        let wanted = normalize_source_path(folder);
+        let manifests = self.load_all().ok()?;
+        let id = manifests.into_iter().find_map(|(id, manifest)| {
+            (!manifest.folder.is_empty()
+                && normalize_source_path(Path::new(&manifest.folder)) == wanted)
+                .then_some(id)
+        })?;
+        self.skipped_of_source(&id)
     }
 
     /// Whether `source_id` has a manifest.
@@ -1651,6 +1891,190 @@ mod tests {
             assert!(is_indexable(Path::new(name)), "{name}");
         }
         assert!(!is_indexable(Path::new("binary.exe")));
+    }
+
+    /// Every file a folder holds and does not index is listed with why; a hidden
+    /// folder once, for everything in it.
+    #[test]
+    fn skipped_files_say_why_each_is_not_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/objects/a1"), "x").unwrap();
+        std::fs::write(root.join(".git/HEAD"), "x").unwrap();
+        std::fs::create_dir_all(root.join(".cache")).unwrap();
+        std::fs::write(root.join(".cache/blob"), "x").unwrap();
+        for (name, body) in [
+            ("notes.md", "# Notes"),
+            ("photo.heic", "x"),
+            ("Makefile", "all:"),
+            ("prod.env", "KEY=1"),
+            (".env", "KEY=1"),
+            ("server.pem", "x"),
+            ("~$report.docx", "x"),
+            (".gitignore", "target"),
+        ] {
+            std::fs::write(root.join(name), body).unwrap();
+        }
+        let skipped = skipped_files(root);
+        let by_name: BTreeMap<String, (SkipKind, String)> = skipped
+            .files
+            .iter()
+            .map(|f| {
+                let name = Path::new(&f.file)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                (name, (f.kind, f.reason.clone()))
+            })
+            .collect();
+        assert_eq!(skipped.total, 9, "{by_name:#?}");
+        assert_eq!(skipped.total, skipped.files.len());
+        assert!(!by_name.contains_key("notes.md"));
+        let kind = |name: &str| by_name[name].0;
+        assert_eq!(kind("photo.heic"), SkipKind::Unsupported);
+        assert_eq!(
+            by_name["photo.heic"].1,
+            "Not supported: Shodh does not read .heic files"
+        );
+        assert_eq!(kind("Makefile"), SkipKind::Unsupported);
+        assert_eq!(kind("prod.env"), SkipKind::Secret);
+        assert_eq!(kind(".env"), SkipKind::Secret);
+        assert_eq!(kind("server.pem"), SkipKind::Secret);
+        assert!(by_name["server.pem"].1.starts_with("Kept back: "));
+        assert_eq!(kind("~$report.docx"), SkipKind::Temporary);
+        assert_eq!(kind(".gitignore"), SkipKind::Hidden);
+        // A folder that holds a repository's settings is kept back (renaming it is
+        // not the advice), once, not its files; an ordinary hidden folder is hidden.
+        assert_eq!(kind(".git"), SkipKind::Secret);
+        assert!(by_name[".git"].1.starts_with("Kept back: "));
+        assert_eq!(kind(".cache"), SkipKind::Hidden);
+        assert!(!by_name.contains_key("HEAD") && !by_name.contains_key("a1"));
+        // Counted by kind.
+        assert_eq!(
+            skipped.counts,
+            SkipCounts {
+                secret: 4,
+                unsupported: 2,
+                hidden: 2,
+                temporary: 1
+            }
+        );
+        assert!(!skipped.partial);
+        // Nothing is both indexed and skipped.
+        for file in &skipped.files {
+            assert!(!is_indexable(Path::new(&file.file)), "{}", file.file);
+        }
+    }
+
+    /// A linked folder's skipped files are read over the whole folder its manifest
+    /// records, with its failures counted, and kept until the manifest is saved
+    /// again; a folder no source links is not listed at all.
+    #[test]
+    fn a_sources_skipped_files_are_its_linked_folders_and_kept_until_it_syncs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("linked");
+        std::fs::create_dir_all(root.join("deep/er")).unwrap();
+        std::fs::write(root.join("deep/er/photo.heic"), "x").unwrap();
+        std::fs::write(root.join("notes.md"), "# Notes").unwrap();
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let failures = BTreeMap::from([(
+            "c:/linked/broken.pdf".to_string(),
+            FileFailure {
+                file: "broken.pdf".into(),
+                reason: "damaged".into(),
+            },
+        )]);
+        let save = |failures: &BTreeMap<String, FileFailure>| {
+            store
+                .save(
+                    "src-1",
+                    &ManifestRef {
+                        folder: &root.display().to_string(),
+                        files: &BTreeMap::new(),
+                        failures,
+                        chunker_versions: &BTreeMap::new(),
+                    },
+                )
+                .unwrap();
+        };
+        save(&failures);
+        let first = store.skipped_of_source("src-1").unwrap();
+        assert_eq!(first.total, 1);
+        assert_eq!(first.counts.unsupported, 1);
+        assert_eq!(first.failed, 1);
+        assert_eq!(store.skipped_of_folder(&root), Some(first.clone()));
+        // Not walked again until the manifest is saved again.
+        std::fs::write(root.join("song.flac"), "x").unwrap();
+        assert_eq!(store.skipped_of_source("src-1"), Some(first));
+        save(&BTreeMap::new());
+        let after = store.skipped_of_source("src-1").unwrap();
+        assert_eq!((after.total, after.failed), (2, 0));
+        // Only the folders the Library lists.
+        assert_eq!(store.skipped_of_folder(dir.path()), None);
+        assert_eq!(store.skipped_of_source("no-such-source"), None);
+    }
+
+    /// Environment files, keys and credential files planted in a linked folder are not
+    /// in its scan, so they are never indexed; one indexed before this rule (in the
+    /// folder's manifest) is removed by the next sync.
+    #[test]
+    fn secret_files_are_never_indexed_and_ones_indexed_before_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("deploy")).unwrap();
+        let planted = [
+            "config.env",
+            "prod.env",
+            "secrets.yaml",
+            "credentials.json",
+            "auth.json",
+            "deploy/server.pem",
+            "deploy/id_rsa",
+            "deploy/kubeconfig",
+        ];
+        for name in planted {
+            std::fs::write(root.join(name), "API_KEY=sk-ant-api03-planted\n").unwrap();
+        }
+        // Hidden ones are skipped with everything hidden.
+        for name in [".env", ".env.local", ".npmrc", ".pgpass"] {
+            std::fs::write(root.join(name), "TOKEN=planted\n").unwrap();
+        }
+        std::fs::write(root.join("notes.md"), "# Notes\n").unwrap();
+        std::fs::write(root.join("settings.yaml"), "theme: dark\n").unwrap();
+
+        let scan = scan_folder_checked(root);
+        let names: BTreeSet<String> = scan
+            .files
+            .values()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["notes.md".to_string(), "settings.yaml".to_string()])
+        );
+        for name in planted {
+            assert!(!is_indexable(&root.join(name)), "{name}");
+        }
+
+        // A `.env`-style file and a credential file the index already holds.
+        let key = |name: &str| normalize_source_path(&canonical_path(&root.join(name)));
+        let known = BTreeMap::from([
+            (key("notes.md"), scan.files[&key("notes.md")].1),
+            (key("prod.env"), stamp(1, 30)),
+            (key("credentials.json"), stamp(1, 30)),
+        ]);
+        let planned = plan_for_scan(&known, &scan, &BTreeSet::new());
+        let mut removed = planned.remove.clone();
+        removed.sort();
+        let mut expected = vec![key("credentials.json"), key("prod.env")];
+        expected.sort();
+        assert_eq!(removed, expected);
+        assert!(planned
+            .index
+            .iter()
+            .all(|p| p.file_name().unwrap() == "settings.yaml"));
     }
 
     #[test]

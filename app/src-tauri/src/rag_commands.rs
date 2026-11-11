@@ -349,9 +349,14 @@ pub async fn get_statistics(state: State<'_, RagState>) -> Result<HashMap<String
 /// What removing the source at `path` deleted, for the Library.
 fn removal_message(deleted: usize, path: &str) -> String {
     if deleted == 0 {
-        format!("No documents found for folder: {path}")
+        format!("Nothing from {path} was indexed")
     } else {
-        format!("Successfully deleted {deleted} documents from folder: {path}")
+        let noun = if deleted == 1 {
+            "document"
+        } else {
+            "documents"
+        };
+        format!("Removed {deleted} {noun} from {path}")
     }
 }
 

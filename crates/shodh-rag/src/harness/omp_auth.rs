@@ -261,6 +261,33 @@ pub fn failure_message(stderr: &str) -> String {
     line.chars().take(300).collect()
 }
 
+/// What the UI says when a sign-in was cancelled or ran out of time, in the
+/// browser or here.
+pub const SIGN_IN_CANCELLED: &str = "Sign-in was cancelled or timed out. Try again.";
+
+/// A failed login's message for the UI. omp reports a closed or abandoned
+/// browser page as an error name ("LoginCancelledError: OAuth callback
+/// cancelled: TimeoutError"), which reads as [`SIGN_IN_CANCELLED`]; anything
+/// else is [`failure_message`].
+pub fn login_failure_message(stderr: &str) -> String {
+    let message = failure_message(stderr);
+    let lower = message.to_ascii_lowercase();
+    let cancelled = [
+        "cancelled",
+        "canceled",
+        "timeouterror",
+        "timed out",
+        "aborterror",
+    ]
+    .iter()
+    .any(|word| lower.contains(word));
+    if cancelled {
+        SIGN_IN_CANCELLED.to_string()
+    } else {
+        message
+    }
+}
+
 fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -598,6 +625,24 @@ mod tests {
         );
         assert_eq!(failure_message(""), "The sign-in did not finish.");
         assert_eq!(failure_message(&"x".repeat(1000)).len(), 300);
+    }
+
+    #[test]
+    fn a_cancelled_or_timed_out_login_reads_in_plain_words() {
+        for stderr in [
+            "\u{1b}[31mLoginCancelledError: OAuth callback cancelled: TimeoutError\u{1b}[39m\n    at login (auth.js:10)\n",
+            "Login failed: OAuth callback cancelled\n",
+            "Error: TimeoutError: The operation timed out.\n",
+            "AbortError: The user aborted a request.\n",
+        ] {
+            assert_eq!(login_failure_message(stderr), SIGN_IN_CANCELLED, "{stderr}");
+        }
+        // Other failures keep their own short message.
+        assert_eq!(
+            login_failure_message("Login failed: OAuth callback port 1455 is in use.\n"),
+            "OAuth callback port 1455 is in use."
+        );
+        assert_eq!(login_failure_message(""), "The sign-in did not finish.");
     }
 
     #[test]

@@ -175,6 +175,18 @@ impl Redactor {
         })
     }
 
+    /// The built-in rules for the Library's documents: keys, tokens, passwords and
+    /// private keys are redacted, email addresses kept (in papers, contracts and mail
+    /// they are what the document is about, not a credential).
+    pub fn for_documents() -> Self {
+        let options = RedactOptions { keep_emails: true };
+        Self {
+            user: Vec::new(),
+            fingerprint: fingerprint(&[], &options),
+            options,
+        }
+    }
+
     /// Identifies the rules, patterns and options: text indexed under another fingerprint
     /// is indexed again, and not served before it is.
     pub fn fingerprint(&self) -> &str {

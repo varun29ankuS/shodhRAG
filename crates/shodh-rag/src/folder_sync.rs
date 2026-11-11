@@ -43,7 +43,7 @@ use tokio::sync::RwLock;
 use walkdir::WalkDir;
 
 use crate::embeddings::SearchModelsMissing;
-use crate::indexing::{is_supported_file_type, FileFailure};
+use crate::indexing::{is_supported_file_type, secret_file_reason, FileFailure};
 use crate::rag_engine::{canonical_path, normalize_source_path, RAGEngine, CHUNKER_VERSION};
 
 /// What a file looked like when it was last indexed.
@@ -126,9 +126,12 @@ pub fn is_hidden(entry: &walkdir::DirEntry) -> bool {
     entry.depth() > 0 && entry.file_name().to_string_lossy().starts_with('.')
 }
 
-/// Whether a file at `path` is one a folder source indexes.
+/// Whether a file at `path` is one a folder source indexes. A file that may hold
+/// secrets never is ([`secret_file_reason`]): one indexed before that rule is not in
+/// the scan, so the next sync removes it from the index.
 pub fn is_indexable(path: &Path) -> bool {
     !is_temporary_file(path)
+        && secret_file_reason(path).is_none()
         && path
             .extension()
             .and_then(|e| e.to_str())
@@ -1651,6 +1654,67 @@ mod tests {
             assert!(is_indexable(Path::new(name)), "{name}");
         }
         assert!(!is_indexable(Path::new("binary.exe")));
+    }
+
+    /// Environment files, keys and credential files planted in a linked folder are not
+    /// in its scan, so they are never indexed; one indexed before this rule (in the
+    /// folder's manifest) is removed by the next sync.
+    #[test]
+    fn secret_files_are_never_indexed_and_ones_indexed_before_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("deploy")).unwrap();
+        let planted = [
+            "config.env",
+            "prod.env",
+            "secrets.yaml",
+            "credentials.json",
+            "auth.json",
+            "deploy/server.pem",
+            "deploy/id_rsa",
+            "deploy/kubeconfig",
+        ];
+        for name in planted {
+            std::fs::write(root.join(name), "API_KEY=sk-ant-api03-planted\n").unwrap();
+        }
+        // Hidden ones are skipped with everything hidden.
+        for name in [".env", ".env.local", ".npmrc", ".pgpass"] {
+            std::fs::write(root.join(name), "TOKEN=planted\n").unwrap();
+        }
+        std::fs::write(root.join("notes.md"), "# Notes\n").unwrap();
+        std::fs::write(root.join("settings.yaml"), "theme: dark\n").unwrap();
+
+        let scan = scan_folder_checked(root);
+        let names: BTreeSet<String> = scan
+            .files
+            .values()
+            .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            BTreeSet::from(["notes.md".to_string(), "settings.yaml".to_string()])
+        );
+        for name in planted {
+            assert!(!is_indexable(&root.join(name)), "{name}");
+        }
+
+        // A `.env`-style file and a credential file the index already holds.
+        let key = |name: &str| normalize_source_path(&canonical_path(&root.join(name)));
+        let known = BTreeMap::from([
+            (key("notes.md"), scan.files[&key("notes.md")].1),
+            (key("prod.env"), stamp(1, 30)),
+            (key("credentials.json"), stamp(1, 30)),
+        ]);
+        let planned = plan_for_scan(&known, &scan, &BTreeSet::new());
+        let mut removed = planned.remove.clone();
+        removed.sort();
+        let mut expected = vec![key("credentials.json"), key("prod.env")];
+        expected.sort();
+        assert_eq!(removed, expected);
+        assert!(planned
+            .index
+            .iter()
+            .all(|p| p.file_name().unwrap() == "settings.yaml"));
     }
 
     #[test]

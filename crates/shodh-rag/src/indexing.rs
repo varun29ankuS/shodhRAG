@@ -524,6 +524,9 @@ pub async fn index_single_file_in(
         .unwrap_or("unknown")
         .to_lowercase();
 
+    if let Some(reason) = secret_file_reason(&path) {
+        return Err(SecretFileKeptBack { reason }.to_string());
+    }
     if !is_supported_file_type(&extension) {
         return Err(format!("Unsupported file type: {}", extension));
     }
@@ -841,6 +844,7 @@ pub(crate) async fn index_folder_observed(
 
         if is_selected_file_type(options, &extension)
             && !crate::folder_sync::is_temporary_file(file_path)
+            && secret_file_reason(file_path).is_none()
         {
             files_to_process.push(file_path.to_path_buf());
         }
@@ -1225,10 +1229,40 @@ pub const SUPPORTED_FILE_EXTENSIONS: &[&str] = &[
     "rs", "py", "js", "ts", "jsx", "tsx", "java", "cpp", "c", "h", "hpp", "cs", "go", "rb", "php",
     "swift", "kt", "scala", "r", "sh", "bash", "zsh", "ps1", "bat", "cmd", // Web
     "css", "scss", "sass", "less", "vue", "svelte", // Config / data
-    "toml", "yaml", "yml", "ini", "conf", "config", "env", "xml", "sql", "graphql", "proto",
+    // No `env`: environment files hold keys and passwords ([`secret_file_reason`]).
+    "toml", "yaml", "yml", "ini", "conf", "config", "xml", "sql", "graphql", "proto",
     // Images (OCR)
     "png", "jpg", "jpeg", "bmp", "tiff", "tif",
 ];
+
+/// Why the file at `path` is never indexed into the Library because it may hold
+/// secrets, or `None` when it may be: environment files (`.env`, `.env.local`,
+/// `prod.env`), private keys and certificates (`*.pem`, `*.key`, `id_rsa`…),
+/// credential files (`.pgpass`, `.npmrc`, `.netrc`, `auth.json`, `credentials.*`,
+/// `secrets.*`) and anything in a credentials folder (`.ssh`, `.aws`, `.git`…). The
+/// same names Code mode never reads ([`crate::code_review::secrets::secret_path`]) and
+/// Recall keeps back.
+pub fn secret_file_reason(path: &Path) -> Option<&'static str> {
+    crate::code_review::secrets::secret_path(&path.to_string_lossy())
+}
+
+/// A file refused because it may hold secrets ([`secret_file_reason`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretFileKeptBack {
+    pub reason: &'static str,
+}
+
+impl std::fmt::Display for SecretFileKeptBack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Kept back: {}. Shodh does not index files that may hold secrets.",
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SecretFileKeptBack {}
 
 /// Whether `extension` (lowercase, without the dot) can be indexed.
 pub fn is_supported_file_type(extension: &str) -> bool {

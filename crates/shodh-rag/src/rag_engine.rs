@@ -103,6 +103,25 @@ pub struct FilePreparer {
     embeddings: Arc<dyn EmbeddingModel>,
 }
 
+/// The redactor of the Library's documents (Recall's rules, emails kept).
+static DOCUMENT_REDACTOR: LazyLock<crate::recall::redact::Redactor> =
+    LazyLock::new(crate::recall::redact::Redactor::for_documents);
+
+/// Redacts secrets (keys, tokens, passwords, private key blocks) from what each chunk
+/// stores, embeds and shows. A chunk without one is left exactly as it was.
+pub(crate) fn redact_chunks(chunks: &mut [ContextualChunkResult]) {
+    for chunk in chunks.iter_mut() {
+        let (text, found) = DOCUMENT_REDACTOR.redact_counted(&chunk.text);
+        if found > 0 {
+            chunk.text = text;
+        }
+        let (context, found) = DOCUMENT_REDACTOR.redact_counted(&chunk.context);
+        if found > 0 {
+            chunk.context = context;
+        }
+    }
+}
+
 /// Directory (under the data directory) of the OCR cache.
 pub const OCR_CACHE_DIR: &str = "ocr_cache";
 
@@ -208,6 +227,11 @@ impl FilePreparer {
         metadata: HashMap<String, String>,
         progress: OcrProgress<'_>,
     ) -> Result<ChunkedFile> {
+        // Every way a file reaches the index (a folder, a single file, an upload, a
+        // sync) comes through here: a file that may hold secrets is never read.
+        if let Some(reason) = crate::indexing::secret_file_reason(path) {
+            return Err(crate::indexing::SecretFileKeptBack { reason }.into());
+        }
         let parse_started = std::time::Instant::now();
         let parsed = self.parser.parse_file_with_progress(path, progress)?;
         let parse_ms = parse_started.elapsed().as_millis();
@@ -222,6 +246,9 @@ impl FilePreparer {
         metadata: HashMap<String, String>,
         parse_ms: u128,
     ) -> Result<PreparedFile> {
+        if let Some(reason) = crate::indexing::secret_file_reason(path) {
+            return Err(crate::indexing::SecretFileKeptBack { reason }.into());
+        }
         self.embed(self.chunk_parsed(path, parsed, metadata, parse_ms)?)
     }
 
@@ -328,6 +355,9 @@ impl FilePreparer {
         for (index, chunk) in chunks.iter_mut().enumerate() {
             chunk.index = index;
         }
+        // A key, token or password inside an ordinary file never reaches the index or
+        // a model: each chunk is stored, embedded and shown redacted.
+        redact_chunks(&mut chunks);
         let chunk_ms = chunk_started.elapsed().as_millis();
 
         Ok(ChunkedFile {
@@ -7819,5 +7849,87 @@ mod neighbor_expansion_tests {
         );
         assert_eq!(page_range_from_metadata(&meta(&[("page", "x")])), None);
         assert_eq!(page_range_from_metadata(&HashMap::new()), None);
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    async fn engine(dir: &Path) -> RAGEngine {
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.join("data");
+        config.embedding.model_dir = dir.join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::HashEmbedder,
+            )))
+            .unwrap();
+        engine
+    }
+
+    /// A key, a token and a password inside an ordinary Markdown file are redacted
+    /// in every chunk; the rest of its text, and an email address, are kept.
+    #[tokio::test]
+    async fn secrets_inside_a_document_are_redacted_before_they_are_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path()).await;
+        let doc = dir.path().join("setup.md");
+        std::fs::write(
+            &doc,
+            "# Setup\n\nAsk asha@example.org for access to the staging cluster.\n\n\
+             Then set the keys:\n\n\
+             ANTHROPIC_API_KEY=sk-ant-api03-Zq8vT2mW9xLp4RkN7sYb3HcJd6Ff1Gg5\n\
+             github token: ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8\n\
+             password = \"correct-horse-battery-staple\"\n",
+        )
+        .unwrap();
+        let chunked = engine
+            .file_preparer()
+            .unwrap()
+            .chunk_with_progress(&doc, HashMap::new(), &|_, _| {})
+            .unwrap();
+        let text: String = chunked
+            .chunks
+            .iter()
+            .map(|c| c.contextualized_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for secret in [
+            "sk-ant-api03-Zq8vT2mW9xLp4RkN7sYb3HcJd6Ff1Gg5",
+            "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+            "correct-horse-battery-staple",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "{secret} reached the index:\n{text}"
+            );
+        }
+        assert!(text.contains(crate::recall::redact::REDACTED), "{text}");
+        assert!(text.contains("staging cluster"), "{text}");
+        assert!(text.contains("asha@example.org"), "{text}");
+    }
+
+    /// A file that may hold secrets is refused before it is read, whatever brought it.
+    #[tokio::test]
+    async fn secret_files_are_refused_before_they_are_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path()).await;
+        let preparer = engine.file_preparer().unwrap();
+        for name in ["credentials.json", "secrets.yaml", "prod.env", ".env"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "{\"token\": \"planted\"}").unwrap();
+            let error = preparer
+                .chunk_with_progress(&path, HashMap::new(), &|_, _| {})
+                .err()
+                .unwrap_or_else(|| panic!("{name} was read"));
+            assert!(
+                error.is::<crate::indexing::SecretFileKeptBack>(),
+                "{name}: {error:#}"
+            );
+        }
     }
 }

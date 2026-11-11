@@ -17,7 +17,7 @@ export const INDEXABLE_EXTENSIONS: readonly string[] = [
   'rs', 'py', 'js', 'ts', 'jsx', 'tsx', 'java', 'cpp', 'c', 'h', 'hpp', 'cs', 'go', 'rb', 'php',
   'swift', 'kt', 'scala', 'r', 'sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd',
   'css', 'scss', 'sass', 'less', 'vue', 'svelte',
-  'toml', 'yaml', 'yml', 'ini', 'conf', 'config', 'env', 'xml', 'sql', 'graphql', 'proto',
+  'toml', 'yaml', 'yml', 'ini', 'conf', 'config', 'xml', 'sql', 'graphql', 'proto',
   'png', 'jpg', 'jpeg', 'bmp', 'tiff', 'tif',
 ];
 

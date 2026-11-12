@@ -1000,6 +1000,9 @@ jobs:
           for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
             if [ -d "$d" ]; then find "$d" -type f -iname '*shodh*' -exec cp {} "$evidence/" \;; fi
           done
+          # What Gatekeeper decided about launches in this job: syspolicyd logs
+          # a refusal, which the runner shows nowhere else.
+          log show --last 15m --style compact --predicate 'process == "syspolicyd" OR subsystem == "com.apple.syspolicy.exec"' > "$evidence/gatekeeper.log" 2>&1 || true
           for f in "$evidence"/*; do
             [ -f "$f" ] || continue
             echo "::group::$(basename "$f")"

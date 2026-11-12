@@ -20,9 +20,10 @@ name: Release
 #                   build has no write token.
 #   launch-macos    the dmg installed as a tester installs it (quarantined, copied
 #                   out of the mounted image), its signature, architectures,
-#                   minimum macOS and libraries checked, then started on a
-#                   macOS runner until the main window reports ready, kept up
-#                   and quit. Publishing waits for it.
+#                   minimum macOS and libraries checked, Gatekeeper's refusal
+#                   recorded, then (quarantine removed, as README.md says)
+#                   started on a macOS runner until the main window reports
+#                   ready, kept up and quit. Publishing waits for it.
 #   publish         (environment `release`, one at a time across releases)
 #                   checks the artifacts' signatures with the release key,
 #                   stages the six release files with latest.json, uploads them
@@ -645,13 +646,15 @@ jobs:
   # The macOS app installed and started the way a tester gets it: the dmg the
   # build uploaded (the file users download), quarantined as a browser marks a
   # download, copied out of the mounted image into an Applications folder,
-  # checked for what makes macOS refuse an app or crash it at launch, then
-  # started through Launch Services with an empty home folder of its own (a
-  # first run that cannot touch the runner's data), held until the main window
-  # reports its first load (startup_ready, app/src-tauri/src/startup.rs), kept
-  # running a while, and quit with the system's Quit command. Gatekeeper's
-  # verdict is recorded in the job summary, not gated: an app without a
-  # Developer ID signature and notarization is refused until it has both.
+  # checked for what makes macOS refuse an app or crash it at launch, and
+  # opened: Gatekeeper refuses it (an app without a Developer ID signature
+  # and notarization is refused until it has both; the refusal is recorded
+  # in the job summary). Then, as README.md tells testers, the quarantine is
+  # removed and the app started through Launch Services with an empty home
+  # folder of its own (a first run that cannot touch the runner's data),
+  # held until the main window reports its first load (startup_ready,
+  # app/src-tauri/src/startup.rs), kept running a while, and quit with the
+  # system's Quit command.
   launch-macos:
     name: Launch test (macOS)
     needs: [plan, build]
@@ -809,26 +812,86 @@ jobs:
           done
           exit "$failed"
 
-      # Recorded, not gated: without a Developer ID signature and
-      # notarization Gatekeeper refuses the app, and testers open it with
-      # Open Anyway (.github/release-notes.md, README.md).
-      - name: Gatekeeper's verdict (recorded)
+      # What a tester sees first: without a Developer ID signature and
+      # notarization Gatekeeper refuses the downloaded app. The verdict is
+      # recorded, and the refused launch is tried as a tester's double-click
+      # (open), with a home folder of its own in case it is let through.
+      # Expected: syspolicyd logs "rejecting" and holds the process at the
+      # refusal (it never runs the app's code), and the held process is
+      # stopped. Matched by name: a quarantined app opened outside
+      # /Applications runs from a translocated copy at a random path.
+      # Accepted (the app starts and writes its log) is reported as a notice:
+      # notarization may be in place and this step needs updating. Neither
+      # within 30 s fails (Gatekeeper decided 2 s after open on macOS 26).
+      - name: Gatekeeper refuses the download (recorded)
         run: |
           set -euo pipefail
+          now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+          name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")
+          echo "APP_NAME=$name" >> "$GITHUB_ENV"
           status=$(spctl --status 2>&1) || true
-          if verdict=$(spctl --assess --type execute -vv "$APP" 2>&1); then result=accepted; else result=rejected; fi
-          printf '%s\n%s: %s\n' "$status" "$result" "$verdict"
+          if verdict=$(spctl --assess --type execute -vv "$APP" 2>&1); then assessed=accepted; else assessed=rejected; fi
+          printf '%s\n%s: %s\n' "$status" "$assessed" "$verdict"
+          if pgrep -x "$name" >/dev/null; then echo "::error::$name is already running"; exit 1; fi
+
+          refused_home="$RUNNER_TEMP/refused-home"
+          mkdir -p "$refused_home"
+          since=$(date '+%Y-%m-%d %H:%M:%S')
+          start=$(now_ms)
+          open -n --env "HOME=$refused_home" "$APP"
+          deadline=$((start + 30000))
+          outcome=""
+          while [ -z "$outcome" ]; do
+            rejection=$(log show --style compact --start "$since" --predicate 'process == "syspolicyd" AND eventMessage CONTAINS "rejecting"' 2>/dev/null | grep 'rejecting' || true)
+            if [ -n "$rejection" ]; then outcome=refused
+            elif [ -f "$refused_home/Library/Application Support/$id/logs/shodh.log" ]; then outcome=accepted
+            elif [ "$(now_ms)" -gt "$deadline" ]; then
+              echo "::error::Within 30 s of open Gatekeeper neither refused $name nor let it start"
+              pgrep -lx "$name" || true
+              exit 1
+            else
+              perl -e 'select(undef, undef, undef, 0.5)'
+            fi
+          done
+          decided_ms=$(( $(now_ms) - start ))
+          held=$(pgrep -x "$name" || true)
+          echo "Gatekeeper: $outcome after ${decided_ms} ms; $name processes: ${held:-none}"
+          echo "$rejection"
+          # The held process never ran the app's code (no log was written), so
+          # it is killed rather than asked to quit: it cannot answer.
+          if [ -n "$held" ]; then
+            # shellcheck disable=SC2086
+            kill -KILL $held
+            end=$(( $(now_ms) + 10000 ))
+            while pgrep -x "$name" >/dev/null; do
+              if [ "$(now_ms)" -gt "$end" ]; then echo "::error::The held $name process did not end"; exit 1; fi
+              perl -e 'select(undef, undef, undef, 0.25)'
+            done
+          fi
           {
-            echo '### Gatekeeper (recorded, not gated until the app is notarized)'
+            echo '### Gatekeeper (the downloaded app, quarantined)'
             echo
             echo "- \`spctl --status\`: ${status}"
-            echo "- \`spctl --assess --type execute\`: **${result}**"
+            echo "- \`spctl --assess --type execute\`: **${assessed}** (\`${verdict}\`)"
             echo "- quarantine: ${QUARANTINE_FROM}"
-            echo
-            echo '```'
-            echo "$verdict"
-            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$outcome" = refused ]; then
+            echo "- launch with \`open\`: **refused** ${decided_ms} ms after open, as expected until notarization (\`$(sed -n 's/.*\(rejecting.*\)/\1/p' <<< "$rejection" | head -n 1)\`); held process stopped" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::Gatekeeper accepted the app: notarization may now be working; update this step"
+            echo "- launch with \`open\`: **accepted** (notarization may now be working; update this step)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # README.md's fix for "can't be opened" / "is damaged": remove the
+      # download quarantine. The app then opens in place (no translocation).
+      - name: Remove the quarantine as the README says
+        run: |
+          set -euo pipefail
+          xattr -dr com.apple.quarantine "$APP"
+          left=$(xattr -rl "$APP" | grep -c 'com.apple.quarantine' || true)
+          if [ "$left" -ne 0 ]; then echo "::error::$left files still carry the quarantine"; exit 1; fi
+          echo "- quarantine removed: \`xattr -dr com.apple.quarantine\` (README.md)" >> "$GITHUB_STEP_SUMMARY"
 
       # Ready is the log line the main window's first-load handshake writes
       # (startup.rs): the frontend has mounted the shell and loaded the index,
@@ -860,7 +923,7 @@ jobs:
             echo "EVIDENCE=$evidence"
             echo "APP_LOG=$log"
           } >> "$GITHUB_ENV"
-          if pgrep -f "$exe" >/dev/null; then echo "::error::Shodh is already running"; exit 1; fi
+          if pgrep -x "$APP_NAME" >/dev/null; then echo "::error::$APP_NAME is already running"; exit 1; fi
 
           # open --help exits non-zero after printing its usage.
           open_help=$(open --help 2>&1 || true)
@@ -872,14 +935,14 @@ jobs:
 
           # 120 s: the slowest first start a tester would wait through without
           # calling the app hung (a fresh image's first launch includes the
-          # system's first assessment of the app, WebKit's first start and
-          # creating the index). Slower fails.
+          # first launch of the app, WebKit's first start and creating the
+          # index). Slower fails.
           deadline=$((start + 120000))
           pid=""; process_ms=""; ready_ms=""
           while :; do
             now=$(now_ms)
             if [ -z "$pid" ]; then
-              pid=$(pgrep -n -f "$exe" || true)
+              pid=$(pgrep -n -x "$APP_NAME" || true)
               if [ -n "$pid" ]; then
                 process_ms=$((now - start))
                 echo "Process $pid after ${process_ms} ms"
@@ -914,7 +977,7 @@ jobs:
             exit 1
           fi
           {
-            echo '### Launch (first run of the quarantined copy from the dmg)'
+            echo '### Launch (first run, quarantine removed, through Launch Services)'
             echo
             echo "- process started: ${process_ms} ms after \`open\`"
             echo "- main window ready: ${ready_ms} ms after \`open\`"

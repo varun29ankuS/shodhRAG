@@ -1158,7 +1158,7 @@ mod tests {
                 invoke.resolver.resolve(REACHED);
                 true
             })
-            .build(tauri::generate_context!())
+            .build(crate::compiled_context())
             .expect("the app builds with its compiled ACL");
         let main = window(&app, MAIN_WINDOW);
         let print = window(

@@ -78,10 +78,13 @@ pub fn scrub(message: &str, path: impl AsRef<Path>) -> String {
     let path = path.as_ref();
     let shown = file(path).to_string();
     let whole = path.to_string_lossy().into_owned();
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // Split on both separators: `Path::file_name` on Unix takes a Windows path as one name.
+    let name = whole
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
     let once = replace_loosely(message, &whole, &shown);
     if name.chars().count() >= 3 {
         replace_loosely(&once, &name, &shown)

@@ -405,6 +405,10 @@ pub fn path_within(path: &str, folder: &str) -> bool {
     if folder.is_empty() {
         return false;
     }
+    // On Unix a `\` is not a separator, so `C:\ws\..\other` reaches here with its `..`.
+    if path.split('/').any(|part| part == "..") {
+        return false;
+    }
     path == folder
         || path
             .strip_prefix(&folder)

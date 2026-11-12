@@ -348,6 +348,8 @@ mod tests {
 
     /// The upload folder as canonicalize spells it maps to the index's spelling: a drive
     /// path without `\\?\`, a share as `\\server\share`, never a relative `UNC\…`.
+    /// Verbatim prefixes and `\` separators are Windows spellings.
+    #[cfg(windows)]
     #[test]
     fn an_upload_is_looked_up_under_the_index_spelling() {
         let name = Path::new("paper.pdf");

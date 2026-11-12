@@ -1059,7 +1059,7 @@ pub fn run() {
             // Damaged data files (backup used, settings reset)
             store_notices::store_notices,
         ])
-        .build(tauri::generate_context!());
+        .build(compiled_context());
 
     let app = match app {
         Ok(app) => app,
@@ -1085,4 +1085,11 @@ pub fn run() {
         } => background::on_reopen(app_handle, has_visible_windows),
         _ => {}
     });
+}
+
+/// The app's compiled configuration and ACL. Expanded here only: on macOS each
+/// `generate_context!` embeds Info.plist under one fixed symbol, so a second
+/// expansion (the ACL test's) fails to link.
+pub(crate) fn compiled_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
 }

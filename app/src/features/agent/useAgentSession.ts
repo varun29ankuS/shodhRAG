@@ -168,6 +168,11 @@ export interface SendExtras {
    * answer asks, in every mode (`agent_send`'s `reviewAction`).
    */
   reviewAction?: boolean;
+  /**
+   * The user went on without a mode the agent suggested earlier in this conversation
+   * (`suggestionIgnored` in agentModes): the agent suggests none again.
+   */
+  suggestionIgnored?: boolean;
 }
 
 export interface HistoryTurn {
@@ -271,6 +276,7 @@ export const agentApi = {
     attachedContext: extras.attachedContext && extras.attachedContext.length > 0 ? extras.attachedContext : null,
     priorRunIds: extras.priorRunIds && extras.priorRunIds.length > 0 ? extras.priorRunIds : null,
     reviewAction: extras.reviewAction === true ? true : null,
+    suggestionIgnored: extras.suggestionIgnored === true ? true : null,
   }),
   /**
    * Stop a running Code-mode command now (its process and everything it

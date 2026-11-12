@@ -414,6 +414,45 @@ mod tests {
         }
     }
 
+    /// The skills agree with the prompts: questions only when the user must
+    /// decide (and none in Creator sessions), the checklist kept honest, and
+    /// no second read of a file whose edit succeeded.
+    #[test]
+    fn the_skills_agree_with_the_prompts_on_questions_checklist_and_reading() {
+        let body = |name: &str| {
+            parse_skill_md(bundled(name).unwrap().skill_md)
+                .unwrap()
+                .body
+        };
+        let plan = body("plan-before-building");
+        assert!(plan.contains("do not already settle"));
+        assert!(plan.contains("take the usual choice, say which one you took"));
+        // Every skill that asks the user says what a Creator session, which asks
+        // nothing, does instead.
+        for name in ["plan-before-building", "test-first", "fresh-eyes-review"] {
+            let text = body(name);
+            let creator = text
+                .find("Creator session")
+                .unwrap_or_else(|| panic!("{name} has no Creator rule"));
+            assert!(text[creator..].contains("finish_creation"), "{name}");
+        }
+        // The checklist: steps done only when proven, blocked ones with a reason.
+        for name in [
+            "plan-before-building",
+            "verify-before-done",
+            "debug-systematically",
+        ] {
+            let text = body(name);
+            assert!(text.contains("`update_plan`"), "{name}");
+            assert!(text.contains("blocked"), "{name}");
+        }
+        assert!(plan.contains("three or more steps"));
+        let verify = body("verify-before-done");
+        assert!(verify.contains("mark a step done only after"));
+        assert!(!verify.contains("read every changed file"));
+        assert!(verify.contains("needs no second"));
+    }
+
     #[test]
     fn no_skill_changes_modes_or_approvals_or_ships_a_script() {
         for skill in &BUNDLED {

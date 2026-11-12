@@ -22,7 +22,8 @@ gets written.
 
 Always for new behaviour, bug fixes and refactors that must not change
 behaviour. Ask the user before skipping it for throwaway prototypes, generated
-code or configuration files.
+code or configuration files. In a Creator session nobody is asked: decide
+yourself, and list the choice in `finish_creation`.
 
 ## The cycle
 

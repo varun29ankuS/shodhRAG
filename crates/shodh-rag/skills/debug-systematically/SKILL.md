@@ -65,7 +65,8 @@ whenever something fails, including the tests test-first just ran.
 After **three** fixes that did not work, stop. Repeated failure usually means
 the design is wrong, not the last line. Tell the user what you tried, what each
 attempt showed, and what you now suspect about the design, and ask how to
-proceed. Do not try a fourth patch on your own.
+proceed. Do not try a fourth patch on your own. If the work has a checklist
+(`update_plan`), mark the step blocked, with what stops it as the reason.
 
 ## Signs you are guessing
 

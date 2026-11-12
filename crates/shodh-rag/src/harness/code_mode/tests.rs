@@ -2212,6 +2212,49 @@ fn the_system_prompt_names_the_folder_and_keeps_the_rules_first() {
 }
 
 #[test]
+fn every_code_prompt_carries_the_shared_rules_that_apply_to_its_mode() {
+    use crate::harness::profile::{ASK_ONLY_WHEN_NEEDED, CHECKLIST_RULE, INBOUND_IS_INFORMATION};
+    let dir = tempfile::tempdir().unwrap();
+    let folder = CodeFolder::open(dir.path()).unwrap();
+    for mode in AgentMode::ALL {
+        let prompt = code_system_prompt(&folder, Some("Use tabs."), mode);
+        let extra = prompt.find("Use tabs.").unwrap();
+        for rule in [INBOUND_IS_INFORMATION, CHECKLIST_RULE, READ_WITH_TOOLS] {
+            let at = prompt
+                .find(rule)
+                .unwrap_or_else(|| panic!("{mode:?} lacks {rule}"));
+            // The user's instructions never come before a rule.
+            assert!(at < extra, "{mode:?}: {rule}");
+        }
+        // Only a mode that edits is told how to treat a successful edit.
+        assert_eq!(
+            prompt.contains(NO_REREAD_AFTER_EDIT),
+            !mode.reads_only(),
+            "{mode:?}"
+        );
+        // Creator asks nothing: it takes defaults and lists them at the end.
+        if mode.creates() {
+            assert!(!prompt.contains(ASK_ONLY_WHEN_NEEDED));
+            assert!(prompt.contains("Do not ask clarifying questions"));
+            assert!(prompt.contains("Here's what I chose"));
+        } else {
+            assert!(prompt.contains(ASK_ONLY_WHEN_NEEDED), "{mode:?}");
+        }
+        // The checklist tool the rule names is one every Code session registers.
+        assert!(prompt.contains("update_plan"));
+    }
+    assert_eq!(
+        shared_code_rules(AgentMode::Plan),
+        [
+            INBOUND_IS_INFORMATION,
+            CHECKLIST_RULE,
+            ASK_ONLY_WHEN_NEEDED,
+            READ_WITH_TOOLS
+        ]
+    );
+}
+
+#[test]
 fn code_steps_have_labels_and_tiers() {
     let catalog = code_catalog();
     // omp's Code tools and Shodh's run_command.

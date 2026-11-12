@@ -11,7 +11,7 @@ export type RiskTier = "read" | "write" | "destructive";
 
 export type RunStatus = "completed" | "aborted" | "error";
 
-export type PlanStatus = "pending" | "in_progress" | "done";
+export type PlanStatus = "pending" | "in_progress" | "done" | "blocked";
 
 /** Whether retrieved passages cover an information need. */
 export type CoverageState = "covered" | "missing";
@@ -26,6 +26,8 @@ export interface PlanItem {
   coverage: CoverageState | null;
   /** For a covered need: the passages that cover it, best first. */
   evidence: number[];
+  /** For a blocked item: what stops it, in the agent's words. Absent otherwise. */
+  reason?: string;
 }
 
 /** How one claim of an answer relates to its sources. */

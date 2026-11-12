@@ -64,7 +64,9 @@ For each finding:
 3. **Real but out of scope:** do not fix it now. List it for the user.
 4. **Wrong:** say why, with the line that shows it. Do not change correct code
    to satisfy a reviewer.
-5. **Unclear:** ask the user rather than guess.
+5. **Still unclear after reading the code:** ask the user rather than guess
+   (in a Creator session, where nobody is asked, leave the code as it is and
+   list the finding in `finish_creation`).
 
 Fix the most severe findings first. After fixes, run the checks of
 verify-before-done again, and review the changed lines once more if the fixes

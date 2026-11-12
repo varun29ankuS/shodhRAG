@@ -172,3 +172,28 @@ export function modeSuggestion(steps: readonly StepLike[], current: AgentMode): 
   }
   return null;
 }
+
+/** The parts of an earlier answer `suggestionIgnored` reads: the mode it ran in and its steps. */
+export interface AnswerLike {
+  agentMode?: string | null;
+  steps: readonly StepLike[];
+}
+
+/**
+ * Whether the user went on without a mode the agent suggested earlier in the conversation:
+ * an answer suggested a mode, and the answer after it (`sendingIn`, the mode of the answer
+ * about to start, when that is the next one) ran in a different mode. A suggestion the user
+ * took never counts. Worked out from the saved answers, so it holds across app restarts;
+ * the backend then refuses further suggestions in the conversation.
+ */
+export function suggestionIgnored(answers: readonly AnswerLike[], sendingIn: AgentMode): boolean {
+  for (let i = 0; i < answers.length; i++) {
+    const ranIn = parseAgentMode(answers[i].agentMode);
+    if (!ranIn) continue;
+    const suggestion = modeSuggestion(answers[i].steps, ranIn);
+    if (!suggestion) continue;
+    const next = i + 1 < answers.length ? parseAgentMode(answers[i + 1].agentMode) : sendingIn;
+    if (next !== null && next !== suggestion.mode) return true;
+  }
+  return false;
+}

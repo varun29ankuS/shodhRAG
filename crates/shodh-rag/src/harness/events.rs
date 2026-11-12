@@ -37,6 +37,8 @@ pub enum PlanStatus {
     Pending,
     InProgress,
     Done,
+    /// The step cannot go on; the item's `reason` says why.
+    Blocked,
 }
 
 /// How a command a Code session ran (`run_command`) ended.
@@ -81,6 +83,10 @@ pub struct PlanItem {
     /// For a covered need: the passages that cover it, best first.
     #[serde(default)]
     pub evidence: Vec<u32>,
+    /// Why a blocked item cannot go on, in the agent's words (set only for
+    /// [`PlanStatus::Blocked`]). Absent in events from older builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl PlanItem {
@@ -93,6 +99,7 @@ impl PlanItem {
             need: false,
             coverage: None,
             evidence: Vec::new(),
+            reason: None,
         }
     }
 }
@@ -730,6 +737,7 @@ mod tests {
                         need: true,
                         coverage: Some(CoverageState::Covered),
                         evidence: vec![3],
+                        reason: None,
                     }],
                 },
                 "plan_updated",
@@ -1014,6 +1022,24 @@ mod tests {
                 items: vec![PlanItem::task("1", "Search", PlanStatus::Done)],
             }
         );
+    }
+
+    #[test]
+    fn a_blocked_item_carries_its_reason_and_others_leave_it_out() {
+        let blocked = PlanItem {
+            reason: Some("The build needs a key the user has not set".into()),
+            ..PlanItem::task("2", "Run the build", PlanStatus::Blocked)
+        };
+        let value = serde_json::to_value(&blocked).unwrap();
+        assert_eq!(value["status"], json!("blocked"));
+        assert_eq!(
+            value["reason"],
+            json!("The build needs a key the user has not set")
+        );
+        let back: PlanItem = serde_json::from_value(value).unwrap();
+        assert_eq!(back, blocked);
+        let plain = serde_json::to_value(PlanItem::task("1", "Search", PlanStatus::Done)).unwrap();
+        assert!(plain.get("reason").is_none(), "{plain}");
     }
 
     #[test]

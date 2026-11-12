@@ -31,10 +31,15 @@ already specified exactly. Say that you are skipping it and why.
 ### 1. Understand the request
 
 - Restate the goal in one or two plain sentences.
-- Ask the questions whose answers would change the design, **one at a time**,
-  and prefer questions with a few concrete options. Stop asking when the
-  answers would no longer change what you build.
+- Ask only the questions whose answers would change the design and that the
+  request, the code and the project's own conventions do not already settle,
+  **one at a time**, and prefer questions with a few concrete options. For
+  everything else, take the usual choice, say which one you took, and move on.
+  Stop asking when the answers would no longer change what you build.
 - Name what is **out of scope** as well as what is in it.
+- In a Creator session nobody is asked: take the usual choice for each open
+  question, build, and list every choice you made in `finish_creation`. Steps
+  2 to 4 still apply; step 5 does not.
 
 ### 2. Look before you write
 
@@ -77,6 +82,11 @@ Where to keep it:
 
 Ask the user to approve or change the plan. Do not start building until they
 do. If the plan changes while you build, say what changed and why.
+
+Once the plan is agreed and has three or more steps, put its steps in the
+checklist the user sees (`update_plan`) and keep it true while you build: a
+step is done only when the test that proves it passes, and a step that cannot
+go on is blocked, with one sentence on what stops it.
 
 ### 6. Have the plan checked by fresh eyes (larger changes)
 

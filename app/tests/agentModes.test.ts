@@ -20,6 +20,7 @@ import {
   nextAgentMode,
   parseAgentMode,
   resolveAgentMode,
+  suggestionIgnored,
 } from '../src/features/agent/agentModes.ts';
 import { parseAgentPrefs, parseAppSettings } from '../src/lib/appSettings.ts';
 import { matchesShortcut, shortcutText } from '../src/lib/shortcuts.ts';
@@ -131,4 +132,30 @@ test('the assistant\'s suggestion is read from its finished suggest_mode step on
   // A long reason is cut for the button's line.
   const long = step('suggest_mode', 'done', { suggestedMode: 'auto', reason: 'x'.repeat(500) });
   assert.equal(modeSuggestion([long], 'ask')?.reason.length, 160);
+});
+
+test('a mode suggestion the user went on without stops further suggestions in the conversation', () => {
+  const step = (tool: string, status: string, detail: unknown) => ({ tool, status, detail });
+  const suggestsPlan = [step('suggest_mode', 'done', { suggestedMode: 'plan', reason: 'Look first' })];
+  const plain = [step('search_documents', 'done', null)];
+  // No suggestion yet.
+  assert.equal(suggestionIgnored([{ agentMode: 'ask', steps: plain }], 'ask'), false);
+  // The suggestion was the last answer: the user now sends in Ask, so they went on without it.
+  assert.equal(suggestionIgnored([{ agentMode: 'ask', steps: suggestsPlan }], 'ask'), true);
+  // They took it: the next answer runs in Plan.
+  assert.equal(suggestionIgnored([{ agentMode: 'ask', steps: suggestsPlan }], 'plan'), false);
+  assert.equal(
+    suggestionIgnored([{ agentMode: 'ask', steps: suggestsPlan }, { agentMode: 'plan', steps: plain }], 'ask'),
+    false,
+  );
+  // Ignored once, earlier in the conversation: it still counts later on.
+  assert.equal(
+    suggestionIgnored(
+      [{ agentMode: 'ask', steps: suggestsPlan }, { agentMode: 'ask', steps: plain }, { agentMode: 'ask', steps: plain }],
+      'ask',
+    ),
+    true,
+  );
+  // Answers saved before modes carry none and are skipped.
+  assert.equal(suggestionIgnored([{ agentMode: undefined, steps: suggestsPlan }], 'ask'), false);
 });

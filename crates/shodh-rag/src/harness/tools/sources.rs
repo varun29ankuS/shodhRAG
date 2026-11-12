@@ -593,11 +593,23 @@ pub fn valid_sources_text(summaries: &[SourceSummary]) -> String {
 
 pub struct ListSourcesTool {
     rag: Arc<RwLock<RAGEngine>>,
+    /// The Library's folder manifests: a folder source's skipped files are read
+    /// over the folder it links, with its failures ([`crate::folder_sync::ManifestStore::skipped_of_source`]).
+    manifests: Option<crate::folder_sync::ManifestStore>,
 }
 
 impl ListSourcesTool {
     pub fn new(rag: Arc<RwLock<RAGEngine>>) -> Self {
-        Self { rag }
+        Self {
+            rag,
+            manifests: None,
+        }
+    }
+
+    /// Reads folder sources' skipped files through the Library's manifests.
+    pub fn with_manifests(mut self, manifests: crate::folder_sync::ManifestStore) -> Self {
+        self.manifests = Some(manifests);
+        self
     }
 }
 
@@ -617,7 +629,8 @@ impl HostTool for ListSourcesTool {
          calendar and notes as searchable text, with file and chunk counts. It does not list the \
          user's tasks or events: list_tasks and list_events do. Source ids can be passed to \
          search_documents to restrict a search. With source_id (an id this tool listed), list the \
-         indexed files of that source instead; leave it out to list every source."
+         indexed files of that source instead, and how many files of its folder are not indexed \
+         and why; leave it out to list every source."
     }
     fn schema(&self) -> Value {
         json!({
@@ -670,9 +683,31 @@ impl HostTool for ListSourcesTool {
             } else {
                 String::new()
             };
+            // What the folder holds and does not index, by why (the Library lists each).
+            let folder = summaries
+                .iter()
+                .find(|s| s.source_id == source_id)
+                .and_then(|s| s.folder.clone());
+            // Over the folder the source links (the files' deepest common folder can
+            // be narrower), with its failures, when the Library has its manifest.
+            let manifests = self.manifests.clone();
+            let id = source_id.to_string();
+            let skipped = tokio::task::spawn_blocking(move || {
+                manifests
+                    .and_then(|store| store.skipped_of_source(&id))
+                    .or_else(|| {
+                        folder.map(|folder| {
+                            crate::folder_sync::skipped_files(std::path::Path::new(&folder))
+                        })
+                    })
+            })
+            .await
+            .ok()
+            .flatten();
+            let not_indexed = skipped.as_ref().map(skipped_text).unwrap_or_default();
             return Ok(ToolOutput {
                 text_for_model: format!(
-                    "{total} indexed files in source {source_id}.{more}\n{body}"
+                    "{total} indexed files in source {source_id}.{more}{not_indexed}\n{body}"
                 ),
                 summary_for_ui: format!("{total} {}", if total == 1 { "file" } else { "files" }),
                 detail: Some(json!({ "sourceId": source_id, "total": total, "files": shown })),
@@ -721,9 +756,100 @@ impl HostTool for ListSourcesTool {
     }
 }
 
+/// " 12 files or folders in its folder are not indexed: 9 of a type Shodh does not
+/// read, 2 kept back because they may hold secrets, 1 hidden. 3 more failed to
+/// index. The Library lists each with why." (or nothing when every file is
+/// indexed). Counts by kind are of every skipped entry, not only those listed.
+fn skipped_text(skipped: &crate::folder_sync::SkippedFiles) -> String {
+    use crate::folder_sync::SkipKind;
+    let failed = match skipped.failed {
+        0 => String::new(),
+        1 => " 1 more failed to index.".to_string(),
+        n => format!(" {n} more failed to index."),
+    };
+    if skipped.total == 0 {
+        return match skipped.failed {
+            0 => String::new(),
+            1 => " 1 file in its folder failed to index. The Library lists it with why.".into(),
+            n => format!(
+                " {n} files in its folder failed to index. The Library lists each with why."
+            ),
+        };
+    }
+    let parts: Vec<String> = [
+        (SkipKind::Unsupported, "of a type Shodh does not read"),
+        (SkipKind::Secret, "kept back because they may hold secrets"),
+        (SkipKind::Hidden, "hidden"),
+        (SkipKind::Temporary, "temporary or lock files"),
+    ]
+    .iter()
+    .filter_map(|(kind, words)| match skipped.counts.of(*kind) {
+        0 => None,
+        n => Some(format!("{n} {words}")),
+    })
+    .collect();
+    let noun = if skipped.total == 1 {
+        "file or folder in its folder is"
+    } else {
+        "files or folders in its folder are"
+    };
+    let partial = if skipped.partial {
+        " (counted over the first part of a very large folder)"
+    } else {
+        ""
+    };
+    format!(
+        " {} {noun} not indexed{partial}: {}.{failed} The Library lists each with why.",
+        skipped.total,
+        parts.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_files_are_counted_by_why() {
+        use crate::folder_sync::{SkipCounts, SkipKind, SkippedFile, SkippedFiles};
+        let file = |kind| SkippedFile {
+            file: "c:/docs/x".into(),
+            kind,
+            reason: String::new(),
+        };
+        assert_eq!(skipped_text(&SkippedFiles::default()), "");
+        // 12,000 skipped, 3 listed: the parts are of every one, and they add up.
+        let skipped = SkippedFiles {
+            total: 12_000,
+            counts: SkipCounts {
+                unsupported: 10_000,
+                secret: 1_500,
+                hidden: 500,
+                temporary: 0,
+            },
+            files: vec![
+                file(SkipKind::Unsupported),
+                file(SkipKind::Unsupported),
+                file(SkipKind::Secret),
+            ],
+            failed: 4,
+            partial: false,
+        };
+        assert_eq!(
+            skipped_text(&skipped),
+            " 12000 files or folders in its folder are not indexed: 10000 of a type Shodh does \
+             not read, 1500 kept back because they may hold secrets, 500 hidden. 4 more failed \
+             to index. The Library lists each with why."
+        );
+        // Only failures.
+        assert_eq!(
+            skipped_text(&SkippedFiles {
+                failed: 1,
+                ..SkippedFiles::default()
+            }),
+            " 1 file in its folder failed to index. The Library lists it with why."
+        );
+    }
 
     fn row(doc: &str, source: &str, space: &str, chunks: usize) -> DocumentSourceRow {
         DocumentSourceRow {

@@ -32,10 +32,20 @@ export interface IndexingAdvice {
 
 /** What went wrong, in kinds a person can act on. */
 export type FailureKind =
+  /** Kept out on purpose: it may hold keys or passwords (`indexing::SecretFileKeptBack`). */
+  | 'secret'
+  /** A hidden file or folder of a linked folder (`folder_sync::SkipKind::Hidden`). */
+  | 'hidden'
+  /** An Office lock file or a partial download (`folder_sync::SkipKind::Temporary`). */
+  | 'temporary'
   | 'scan_reader_missing'
   | 'search_models_missing'
   | 'encrypted'
+  /** A Word or PowerPoint file saved in the 95 format or older (`formats::LegacyOfficeError::TooOld`). */
+  | 'too_old'
   | 'disk_full'
+  /** A PDF over the page limit (`limits::check_pdf_pages`). */
+  | 'too_many_pages'
   | 'too_large'
   | 'in_use'
   | 'permission'
@@ -77,6 +87,37 @@ const CANNOT_READ: IndexingAdvice = {
 /** In order: the first rule that matches decides. */
 const RULES: readonly Rule[] = [
   {
+    // First: the reason names keys and passwords, which the encrypted rule would take.
+    kind: 'secret',
+    test: /\bkept back:|may hold secrets/i,
+    reason: 'Kept back: may hold secrets',
+    advice: {
+      hint: 'Environment files, keys and credential files are never indexed or shown to a model. Nothing to do.',
+      action: 'none',
+      actionLabel: null,
+    },
+  },
+  {
+    kind: 'hidden',
+    test: /^hidden\b/i,
+    reason: 'Hidden file or folder',
+    advice: {
+      hint: 'Names that start with a dot are hidden; apps keep their settings and caches in them. They are not indexed. Nothing to do.',
+      action: 'none',
+      actionLabel: null,
+    },
+  },
+  {
+    kind: 'temporary',
+    test: /^temporary\b/i,
+    reason: 'Temporary or lock file',
+    advice: {
+      hint: 'Apps write these while a file is open or downloading; they are not documents. Nothing to do.',
+      action: 'none',
+      actionLabel: null,
+    },
+  },
+  {
     // Before the search-model rule: the reason also says the reader is not installed.
     kind: 'scan_reader_missing',
     test: /scan reader/i,
@@ -90,8 +131,23 @@ const RULES: readonly Rule[] = [
     advice: { hint: 'Search is not set up yet: install the search models, then index again.', action: 'install_search_models', actionLabel: 'Set up search' },
   },
   {
+    // Before the password rule: a book locked by its seller has no password to enter.
     kind: 'encrypted',
-    test: /password|encrypted|\bdrm\b/i,
+    test: /protected with drm|\bdrm\b/i,
+    reason: 'Protected with DRM',
+    advice: { hint: 'The book is locked with DRM by the shop it came from, so Shodh cannot read it. A DRM-free copy can be indexed.', action: 'none', actionLabel: null },
+  },
+  {
+    // "this Word file was saved in Word 95 or older; save it again as .docx"
+    // (formats::LegacyOfficeError::TooOld).
+    kind: 'too_old',
+    test: /saved in (word|powerpoint) 95 or older/i,
+    reason: 'Saved in an old format (95 or older)',
+    advice: { hint: 'Open it in Word or PowerPoint (or LibreOffice) and save it as .docx or .pptx, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
+  },
+  {
+    kind: 'encrypted',
+    test: /password|encrypted/i,
     reason: 'Protected with a password',
     advice: { hint: 'The file is password-protected. Save an unlocked copy into the folder, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
   },
@@ -101,6 +157,13 @@ const RULES: readonly Rule[] = [
     test: /os error (112|39|28)\b|not enough space|no space left|disk (is )?full|storage full/i,
     reason: 'The disk is full',
     advice: { hint: 'The disk is full. Free some space, then index again.', action: 'reindex', actionLabel: 'Index again' },
+  },
+  {
+    // Before the size rule: "This PDF has 2,431 pages, too large to index (limit 2,000 pages)".
+    kind: 'too_many_pages',
+    test: /has [\d,]+ pages, too large to index/i,
+    reason: 'Over 2,000 pages',
+    advice: { hint: 'Shodh indexes PDFs of up to 2,000 pages. Split this one into parts, then index again.', action: 'none', actionLabel: null },
   },
   {
     // EFBIG (27), ERROR_FILE_TOO_LARGE (223), running out of memory on one file, and
@@ -127,7 +190,7 @@ const RULES: readonly Rule[] = [
   },
   {
     kind: 'damaged',
-    test: /damaged|incomplete|corrupt|as zip|zip archive|invalid zip|failed to open spreadsheet|malformed|unexpected end of (file|stream)|not valid xml|nests more than \d+ elements deep|cannot open pdf|missing word\/document\.xml|invalid (file )?header/i,
+    test: /damaged|incomplete|corrupt|as zip|zip archive|invalid zip|failed to open spreadsheet|malformed|unexpected end of (file|stream)|not valid xml|nests more than \d+ elements deep|cannot open pdf|\bmissing [\w./-]+\.(?:xml|opf)\b|has no [\w./-]+\.(?:xml|opf)\b|invalid (file )?header/i,
     reason: 'Damaged or incomplete',
     advice: { hint: 'The file is damaged or was not fully saved or downloaded. Open it in its app to check, save a fresh copy into the folder, then index again.', action: 'show_in_folder', actionLabel: 'Show in folder' },
   },
@@ -191,7 +254,11 @@ export function explainFailure(reason: string | null | undefined, file?: string 
   if (!detail) return { ...OTHER, detail: '' };
   const text = withoutPath(detail, file);
   const rule = RULES.find(r => r.test.test(text));
-  return rule ? { kind: rule.kind, reason: rule.reason, advice: rule.advice, detail } : { ...OTHER, detail };
+  if (!rule) return { ...OTHER, detail };
+  // The indexer's own size limits say what the limit is: "(limit 50 MB for text files)".
+  const limit = rule.kind === 'too_large' ? /too large to index \(limit ([^)]+)\)/i.exec(text) : null;
+  const plain = limit ? `${rule.reason} (limit ${limit[1]})` : rule.reason;
+  return { kind: rule.kind, reason: plain, advice: rule.advice, detail };
 }
 
 /** Advice for one failure reason. */
@@ -256,13 +323,15 @@ export function groupFailures(
   failures: readonly { file: string; reason: string }[],
   root?: string | null,
 ): FailureGroup[] {
-  const groups = new Map<FailureKind, FailureGroup>();
+  // By kind and plain reason: files over different size limits are told apart.
+  const groups = new Map<string, FailureGroup>();
   for (const failure of failures) {
     const explained = explainFailure(failure.reason, failure.file);
-    let group = groups.get(explained.kind);
+    const key = `${explained.kind}\u0000${explained.reason}`;
+    let group = groups.get(key);
     if (!group) {
       group = { kind: explained.kind, reason: explained.reason, advice: explained.advice, files: [] };
-      groups.set(explained.kind, group);
+      groups.set(key, group);
     }
     group.files.push({ file: failure.file, relative: relativeToFolder(failure.file, root), detail: explained.detail });
   }

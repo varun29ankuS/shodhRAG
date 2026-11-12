@@ -129,6 +129,41 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Removes deleted and replaced rows from disk now, every older version
+    /// included: compaction rewrites the files with deletions applied, and a
+    /// prune with no retention removes the versions that still held them. For
+    /// text that must leave the disk (secrets purged or redacted), unlike
+    /// [`Self::compact`], whose prune keeps a week of versions.
+    pub async fn purge_history(&self) -> Result<()> {
+        use lancedb::table::{CompactionOptions, Duration as LanceDuration};
+        let table = self
+            .db
+            .open_table(&self.table_name)
+            .execute()
+            .await
+            .context("Failed to open table to purge its history")?;
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    materialize_deletions: true,
+                    materialize_deletions_threshold: 0.0,
+                    ..CompactionOptions::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .context("Compacting the documents table failed")?;
+        table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(LanceDuration::zero()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: Some(false),
+            })
+            .await
+            .context("Pruning the documents table's old versions failed")?;
+        Ok(())
+    }
+
     /// Compact and prune tombstoned rows so deleted data is physically removed.
     /// Best-effort: failures are logged but don't propagate to the caller.
     async fn compact_table(&self, table: &lancedb::Table) {

@@ -14,6 +14,7 @@ import {
   parseWorkspaceFilter,
   sameWorkspaceFilter,
   serializeWorkspaceFilter,
+  showsWorkspaceColumn,
   workspaceChoices,
   workspaceFilterChoices,
   workspaceName,
@@ -159,4 +160,12 @@ test('a remembered workspace that was deleted falls back to all, but only once t
   const kept: WorkspaceFilter = { kind: 'workspace', id: 'ws-1' };
   assert.deepEqual(effectiveWorkspaceFilter(kept, listed, true), kept);
   assert.deepEqual(effectiveWorkspaceFilter({ kind: 'none' }, [], true), { kind: 'none' });
+});
+
+test('the Workspace heading shows only when a row can show a workspace', () => {
+  assert.equal(showsWorkspaceColumn([], [{ workspaceId: null }, {}]), false);
+  assert.equal(showsWorkspaceColumn([{ archived: true }], [{ workspaceId: null }]), false);
+  assert.equal(showsWorkspaceColumn([{ archived: false }], []), true);
+  // A task still in an archived workspace shows its workspace.
+  assert.equal(showsWorkspaceColumn([{ archived: true }], [{ workspaceId: 'ws-1' }]), true);
 });

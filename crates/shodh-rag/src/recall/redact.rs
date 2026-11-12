@@ -45,6 +45,12 @@ pub const EMAIL: &str = "[EMAIL]";
 /// under the old ones is not served meanwhile.
 pub const RULES_VERSION: u32 = 2;
 
+/// Version of the rules read only in documents ([`Redactor::for_documents`]): their
+/// assignment labels, random-string fallback and skipped JSON pass. Raised whenever
+/// one changes, so stored chunks are redacted again in place
+/// (`RAGEngine::redact_stored_chunks`); sessions are not indexed again for it.
+pub const DOCUMENT_RULES_VERSION: u32 = 2;
+
 /// Longest user pattern accepted (characters).
 pub const MAX_PATTERN_CHARS: usize = 300;
 /// Most user patterns accepted.
@@ -83,6 +89,10 @@ pub struct RedactOptions {
 pub struct Redactor {
     user: Vec<Regex>,
     options: RedactOptions,
+    /// The text is a document's prose ([`Redactor::for_documents`]), not a transcript:
+    /// long random-looking strings without a secret's label are kept, and rules made
+    /// for command lines read their prose form.
+    documents: bool,
     fingerprint: String,
 }
 
@@ -91,15 +101,20 @@ impl Default for Redactor {
         Self {
             user: Vec::new(),
             options: RedactOptions::default(),
-            fingerprint: fingerprint(&[], &RedactOptions::default()),
+            documents: false,
+            fingerprint: fingerprint(&[], &RedactOptions::default(), false),
         }
     }
 }
 
-fn fingerprint(patterns: &[String], options: &RedactOptions) -> String {
+fn fingerprint(patterns: &[String], options: &RedactOptions, documents: bool) -> String {
     let mut hash = Sha256::new();
     hash.update(RULES_VERSION.to_le_bytes());
     hash.update([u8::from(options.keep_emails)]);
+    if documents {
+        hash.update(b"documents");
+        hash.update(DOCUMENT_RULES_VERSION.to_le_bytes());
+    }
     for pattern in patterns {
         hash.update((pattern.len() as u64).to_le_bytes());
         hash.update(pattern.as_bytes());
@@ -170,9 +185,30 @@ impl Redactor {
     pub fn with_options(patterns: &[String], options: RedactOptions) -> Result<Self, PatternError> {
         Ok(Self {
             user: check_patterns(patterns)?,
-            fingerprint: fingerprint(patterns, &options),
+            fingerprint: fingerprint(patterns, &options, false),
             options,
+            documents: false,
         })
+    }
+
+    /// The built-in rules for the Library's documents: private keys, tokens with a
+    /// provider's prefix and credentials in headers, URLs, command lines and
+    /// assignments (`API_KEY=…`, `password: …`) are redacted. Email addresses are
+    /// kept. A label secret only by its last word ("Salt: 1 tsp", "Key: …") needs a
+    /// key-shaped value, and a random string without a label is redacted only when
+    /// it is unmistakably a key ([`is_document_random_secret`]): in invoices,
+    /// contracts and papers ids are what the document is about (tax ids such as a
+    /// GSTIN, account and invoice numbers, hashes, DOIs), and a search for one must
+    /// find it. Backslashes are text (LaTeX, Windows paths): no JSON escapes are
+    /// undone.
+    pub fn for_documents() -> Self {
+        let options = RedactOptions { keep_emails: true };
+        Self {
+            user: Vec::new(),
+            fingerprint: fingerprint(&[], &options, true),
+            options,
+            documents: true,
+        }
     }
 
     /// Identifies the rules, patterns and options: text indexed under another fingerprint
@@ -193,7 +229,9 @@ impl Redactor {
         // the start of a line. Both readings apply (the markers of the first survive the
         // second); the second is kept only when it finds something, so a Windows path
         // (`C:\Users\runner`) is not turned into a line break needlessly.
-        if has_json_escapes(&out) {
+        // Not for documents: their backslashes (LaTeX `\textbf`, Windows paths, code)
+        // are text, and a second reading would return the whole text unescaped.
+        if !self.documents && has_json_escapes(&out) {
             let (again, more) = self.redact_core(&unescape_json(&out));
             if more > 0 {
                 return (again, count + more);
@@ -209,6 +247,12 @@ impl Redactor {
             out = Cow::Owned(split);
         }
         for rule in RULES.iter() {
+            // Documents are prose: a rule written for command lines reads its
+            // prose form there ("512-token chunks" is not `-token <value>`).
+            let rule = match (&rule.prose, self.documents) {
+                (Some(prose), true) => prose.as_ref(),
+                _ => rule,
+            };
             out = apply(out, rule, &mut count);
         }
         if !self.options.keep_emails {
@@ -217,7 +261,12 @@ impl Redactor {
         if let Some(wrapped) = redact_wrapped_tokens(&out, &mut count) {
             out = Cow::Owned(wrapped);
         }
-        if let Some(random) = redact_random_strings(&out, &mut count) {
+        let random = if self.documents {
+            redact_document_random_strings(&out, &mut count)
+        } else {
+            redact_random_strings(&out, &mut count)
+        };
+        if let Some(random) = random {
             out = Cow::Owned(random);
         }
         for regex in &self.user {
@@ -256,6 +305,9 @@ fn has_json_escapes(text: &str) -> bool {
 struct Rule {
     regex: Regex,
     replace: fn(&Captures) -> String,
+    /// The form read in documents ([`Redactor::for_documents`]): for a command-line
+    /// rule that prose would set off, or an assignment whose label reads as prose.
+    prose: Option<Box<Rule>>,
 }
 
 fn whole(_: &Captures) -> String {
@@ -265,6 +317,12 @@ fn whole(_: &Captures) -> String {
 /// Keeps the first capture group (a name, a scheme), replaces the rest.
 fn keep_first(caps: &Captures) -> String {
     format!("{}{REDACTED}", &caps[1])
+}
+
+/// Keeps the first two capture groups (what comes before a flag, the flag),
+/// replaces the rest.
+fn keep_first_two(caps: &Captures) -> String {
+    format!("{}{}{REDACTED}", &caps[1], &caps[2])
 }
 
 /// A name written like an environment variable (`DB_PASSWORD`): no lower-case letter.
@@ -410,18 +468,30 @@ const SECRET_PAIRS: [(&str, &str); 12] = [
     ("webhook", "url"),
 ];
 
-fn secrecy(name: &str) -> Secrecy {
-    let words = name_words(name.trim_matches(|c| c == '"' || c == '\''));
+/// How secret a value assigned to `name` is. `documents`: the line is from a
+/// document's prose ([`Redactor::for_documents`]).
+fn secrecy(name: &str, documents: bool) -> Secrecy {
+    let bare = name.trim_matches(|c| c == '"' || c == '\'');
+    let words = name_words(bare);
     if words.is_empty() {
         return Secrecy::None;
     }
     let last = words.last().map(String::as_str).unwrap_or("");
-    let strong = words.iter().any(|w| SECRET_ANYWHERE.contains(&w.as_str()))
-        || SECRET_LAST.contains(&last)
+    let by_word_or_pair = words.iter().any(|w| SECRET_ANYWHERE.contains(&w.as_str()))
         || words
             .windows(2)
             .any(|p| SECRET_PAIRS.contains(&(p[0].as_str(), p[1].as_str())));
-    if strong {
+    if by_word_or_pair {
+        return Secrecy::Strong;
+    }
+    if SECRET_LAST.contains(&last) {
+        // In a document, a label secret only by its last word ("Salt: 1 tsp",
+        // "Key: the main idea", "Pass: 34", "Signature: J. Smith") is an ordinary
+        // line: only a key-shaped value is a secret. An env-style name of two or
+        // more words (`SMTP_PASS`, `GITHUB_TOKEN`) is not prose and stays strong.
+        if documents && !(words.len() >= 2 && env_style_name(bare)) {
+            return Secrecy::Weak;
+        }
         return Secrecy::Strong;
     }
     if words
@@ -441,11 +511,11 @@ fn key_shaped(value: &str) -> bool {
 
 /// Whether the value of an assignment to `name` is a secret. `quoted`: the value was
 /// written in quotes (a literal, never code).
-fn secret_value(name: &str, value: &str, quoted: bool) -> bool {
+fn secret_value(name: &str, value: &str, quoted: bool, documents: bool) -> bool {
     if is_placeholder(value) {
         return false;
     }
-    match secrecy(name) {
+    match secrecy(name, documents) {
         Secrecy::None => false,
         Secrecy::Strong => quoted || env_style_name(name) || !looks_like_code(value),
         Secrecy::Weak => key_shaped(value) && !looks_like_code(value),
@@ -455,12 +525,21 @@ fn secret_value(name: &str, value: &str, quoted: bool) -> bool {
 /// `NAME=value` at the start of a line (`.env`, shell exports, YAML `tls.key: …`, a
 /// diff's `+NAME=value`): the rest of the line is the value.
 fn line_assignment(c: &Captures) -> String {
+    line_assignment_in(c, false)
+}
+
+/// [`line_assignment`] in a document's prose.
+fn line_assignment_in_document(c: &Captures) -> String {
+    line_assignment_in(c, true)
+}
+
+fn line_assignment_in(c: &Captures, documents: bool) -> String {
     let (prefix, name, sep, value) = (&c[1], &c[2], &c[3], &c[4]);
     let trimmed = value.trim();
     let quoted = trimmed.len() >= 2
         && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
             || (trimmed.starts_with('\'') && trimmed.ends_with('\'')));
-    if !secret_value(name, trimmed, quoted) {
+    if !secret_value(name, trimmed, quoted, documents) {
         return c[0].to_string();
     }
     format!("{prefix}{name}{sep}{REDACTED}")
@@ -468,6 +547,15 @@ fn line_assignment(c: &Captures) -> String {
 
 /// `name = value` or `"name": "value"` anywhere in a line.
 fn inline_assignment(c: &Captures) -> String {
+    inline_assignment_in(c, false)
+}
+
+/// [`inline_assignment`] in a document's prose.
+fn inline_assignment_in_document(c: &Captures) -> String {
+    inline_assignment_in(c, true)
+}
+
+fn inline_assignment_in(c: &Captures, documents: bool) -> String {
     let name = &c[2];
     let value = &c[5];
     let quoted = value.starts_with('"') || value.starts_with('\'');
@@ -476,7 +564,7 @@ fn inline_assignment(c: &Captures) -> String {
     } else {
         value
     };
-    if !secret_value(name, inner, quoted) {
+    if !secret_value(name, inner, quoted, documents) {
         return c[0].to_string();
     }
     let replaced = if quoted {
@@ -493,6 +581,22 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         regex: Regex::new(pattern)
             .unwrap_or_else(|e| panic!("recall redaction rule {pattern}: {e}")),
         replace,
+        prose: None,
+    };
+    // A command-line rule with its prose form: in documents the flag must start a
+    // word (the text, a space or an opening bracket or quote before its dash), so
+    // "512-token chunks" or "a two-pass filter" is not a flag and its value.
+    let command_line = |pattern: &str, prose: &str, replace: fn(&Captures) -> String| Rule {
+        prose: Some(Box::new(rule(prose, keep_first_two))),
+        ..rule(pattern, replace)
+    };
+    // An assignment rule: the same pattern in documents, whose labels are read as
+    // prose ([`secrecy`]).
+    let assignment = |pattern: &str,
+                      replace: fn(&Captures) -> String,
+                      in_document: fn(&Captures) -> String| Rule {
+        prose: Some(Box::new(rule(pattern, in_document))),
+        ..rule(pattern, replace)
     };
     vec![
         // Private key blocks, to their end or to the end of the text (an output cut short).
@@ -598,8 +702,9 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             keep_first,
         ),
         // Secrets on a command line: --password x, --token=x, --body for gh secrets.
-        rule(
+        command_line(
             r#"(?i)(--?(?:password|passwd|pass|pw|token|api-key|apikey|secret|auth-token|access-token|client-secret|secret-access-key)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)"#,
+            r#"(?im)(^|[\s(\[{"'`])(--?(?:password|passwd|pass|pw|token|api-key|apikey|secret|auth-token|access-token|client-secret|secret-access-key)(?:=|\s+))("[^"]*"|'[^']*'|[^\s"']+)"#,
             keep_first,
         ),
         rule(
@@ -627,14 +732,16 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             keep_first,
         ),
         // Assignments at the start of a line: .env, shell exports, YAML, diff lines.
-        rule(
+        assignment(
             r#"(?m)^(\s*[+-]?\s*(?:export\s+|set\s+|setx\s+|\$env:|-\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*[:=]\s*)(\S.*?)\s*$"#,
             line_assignment,
+            line_assignment_in_document,
         ),
         // Assignments anywhere: "api_key": "value", password='value', DB_PASS=x.
-        rule(
+        assignment(
             r#"(^|[^A-Za-z0-9_.-])(["']?[A-Za-z_][A-Za-z0-9_.-]*)(["']?)(\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;)\]]+)"#,
             inline_assignment,
+            inline_assignment_in_document,
         ),
     ]
 });
@@ -643,6 +750,7 @@ static EMAIL_RULE: LazyLock<Rule> = LazyLock::new(|| Rule {
     regex: Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
         .unwrap_or_else(|e| panic!("{e}")),
     replace: |_| EMAIL.to_string(),
+    prose: None,
 });
 
 fn apply<'a>(text: Cow<'a, str>, rule: &Rule, count: &mut usize) -> Cow<'a, str> {
@@ -869,6 +977,46 @@ fn redact_random_strings(text: &str, count: &mut usize) -> Option<String> {
             REDACTED.to_string()
         } else {
             token.to_string()
+        }
+    });
+    changed.then(|| replaced.into_owned())
+}
+
+/// Whether `token` (at `start..end` in `text`) is a key without a known prefix in a
+/// document's prose. Stricter than [`is_random_secret`], which reads transcripts: at
+/// least 32 characters; a `+` or `/` in it, or upper and lower case and digits all
+/// three; not hex; and not part of a dotted name (a domain, a file name, a version).
+/// A GSTIN, an ISBN, a hash or a long identifier in a paper is left.
+fn is_document_random_secret(text: &str, start: usize, end: usize) -> bool {
+    let token = &text[start..end];
+    let core = token.trim_matches(|c| c == '=' || c == '-' || c == '_');
+    if core.chars().count() < 32 {
+        return false;
+    }
+    if text[..start].ends_with('.') || text[end..].starts_with('.') {
+        return false;
+    }
+    if core.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let symbol = core.contains('+') || core.contains('/');
+    let classes = core.chars().any(|c| c.is_ascii_uppercase())
+        && core.chars().any(|c| c.is_ascii_lowercase())
+        && core.chars().any(|c| c.is_ascii_digit());
+    (symbol || classes) && is_random_secret(token)
+}
+
+fn redact_document_random_strings(text: &str, count: &mut usize) -> Option<String> {
+    let mut changed = false;
+    let replaced = RANDOM_CANDIDATE.replace_all(text, |caps: &Captures| {
+        let found = caps.get(0).map(|m| (m.start(), m.end()));
+        match found {
+            Some((start, end)) if is_document_random_secret(text, start, end) => {
+                *count += 1;
+                changed = true;
+                REDACTED.to_string()
+            }
+            _ => caps[0].to_string(),
         }
     });
     changed.then(|| replaced.into_owned())

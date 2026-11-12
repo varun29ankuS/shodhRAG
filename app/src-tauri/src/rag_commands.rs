@@ -349,9 +349,14 @@ pub async fn get_statistics(state: State<'_, RagState>) -> Result<HashMap<String
 /// What removing the source at `path` deleted, for the Library.
 fn removal_message(deleted: usize, path: &str) -> String {
     if deleted == 0 {
-        format!("No documents found for folder: {path}")
+        format!("Nothing from {path} was indexed")
     } else {
-        format!("Successfully deleted {deleted} documents from folder: {path}")
+        let noun = if deleted == 1 {
+            "document"
+        } else {
+            "documents"
+        };
+        format!("Removed {deleted} {noun} from {path}")
     }
 }
 
@@ -484,6 +489,24 @@ pub async fn get_source_files(
         source_id
     );
     Ok(files)
+}
+
+/// The files of a linked folder that are there but not indexed, with why
+/// (`folder_sync::ManifestStore::skipped_of_folder`): the Library's "N files not
+/// indexed" list, with the files that were tried and failed. Only for a folder a
+/// Library source links: a list of a folder's files is not given for any other
+/// path. Read-only; scanned off the async workers, and kept until the folder syncs.
+#[tauri::command]
+pub async fn library_skipped_files(
+    folder_path: String,
+    folder_sync: tauri::State<'_, crate::file_watcher::FolderSyncState>,
+) -> Result<shodh_rag::folder_sync::SkippedFiles, String> {
+    let folder = PathBuf::from(&folder_path);
+    let store = folder_sync.store().clone();
+    tokio::task::spawn_blocking(move || store.skipped_of_folder(&folder))
+        .await
+        .map_err(|e| format!("Scanning {folder_path} failed: {e}"))?
+        .ok_or_else(|| format!("{folder_path} is not a folder the Library lists"))
 }
 
 /// Whether the index holds `path` ("Ask about this file" checks its file before the

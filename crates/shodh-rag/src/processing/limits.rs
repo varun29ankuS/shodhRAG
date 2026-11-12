@@ -9,13 +9,15 @@
 /// One mebibyte, the unit the app shows file sizes in ("MB").
 pub const MIB: u64 = 1024 * 1024;
 
-/// Plain text, Markdown, LaTeX, HTML, JSON, code and configuration files.
+/// Plain text, Markdown, LaTeX, HTML, JSON, code and configuration files, logs,
+/// RTF, email (.eml) and Jupyter notebooks.
 pub const MAX_TEXT_BYTES: u64 = 50 * MIB;
 
 /// Spreadsheets and delimited files (CSV, TSV, XLSX, ODS, ...).
 pub const MAX_TABLE_BYTES: u64 = 100 * MIB;
 
-/// Word and PowerPoint files (compressed, as stored).
+/// Word and PowerPoint files (also legacy .doc and .ppt), OpenDocument text and
+/// presentations and EPUB books, as stored.
 pub const MAX_OFFICE_BYTES: u64 = 100 * MIB;
 
 /// The XML text read from one Word or PowerPoint file, all its parts
@@ -67,8 +69,10 @@ impl FileKind {
         }
         match extension {
             "pdf" => Self::Pdf,
-            "docx" | "pptx" => Self::Office,
-            "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" => Self::Image,
+            "docx" | "pptx" | "doc" | "ppt" | "odt" | "odp" | "epub" => Self::Office,
+            "png" | "jpg" | "jpeg" | "bmp" | "tiff" | "tif" | "gif" | "webp" => Self::Image,
+            // RTF, email (.eml), notebooks (.ipynb) and logs are text: read whole
+            // into memory and decoded there, with no compression bounding them.
             _ => Self::Text,
         }
     }
@@ -77,7 +81,7 @@ impl FileKind {
         match self {
             Self::Text => (MAX_TEXT_BYTES, "text files"),
             Self::Table => (MAX_TABLE_BYTES, "spreadsheets"),
-            Self::Office => (MAX_OFFICE_BYTES, "Word and PowerPoint files"),
+            Self::Office => (MAX_OFFICE_BYTES, "office documents and books"),
             Self::Image => (MAX_IMAGE_BYTES, "images"),
             Self::Pdf => (MAX_PDF_BYTES, "PDFs"),
         }
@@ -170,6 +174,14 @@ mod tests {
             ("md", MAX_TEXT_BYTES),
             ("rs", MAX_TEXT_BYTES),
             ("html", MAX_TEXT_BYTES),
+            // Read whole and decoded in memory: the text limit.
+            ("rtf", MAX_TEXT_BYTES),
+            ("eml", MAX_TEXT_BYTES),
+            ("EML", MAX_TEXT_BYTES),
+            ("log", MAX_TEXT_BYTES),
+            ("ipynb", MAX_TEXT_BYTES),
+            ("epub", MAX_OFFICE_BYTES),
+            ("doc", MAX_OFFICE_BYTES),
             ("csv", MAX_TABLE_BYTES),
             ("XLSX", MAX_TABLE_BYTES),
             ("ods", MAX_TABLE_BYTES),

@@ -728,6 +728,14 @@ impl HostTool for OpenDocumentTool {
             }
         }
 
+        // A file that may hold secrets is never read to the model, even when an
+        // index from before that rule still names it.
+        if let Some(reason) = crate::indexing::secret_file_reason(Path::new(&source)) {
+            return Err(ToolError::Forbidden(format!(
+                "{} is not opened: {reason}.",
+                file_name(&source)
+            )));
+        }
         let path = source.clone();
         let wants_page = selection.wants_page();
         // The indexer's parser: a scan is read with the OCR it was indexed with.
@@ -749,13 +757,29 @@ impl HostTool for OpenDocumentTool {
                 file_name(&source)
             ))
         })?;
-        let read = render(&parsed, &pages, selection)?;
+        let mut read = render(&parsed, &pages, selection)?;
+        // The file is read again from disk: what the model reads is redacted as
+        // its indexed chunks are (keys, tokens and passwords never reach it).
+        redact_read(&mut read);
         // Claims citing any passage of this file (a search hit too) are
         // also checked against what the model read here.
         for segment in &read.segments {
             ctx.record_opened(&source, &segment.text);
         }
         Ok(cite_read(&read, &source, display.as_deref(), ctx))
+    }
+}
+
+/// `read` with its title, headings and text redacted by the documents' redactor
+/// ([`crate::rag_engine::redact_document_text`]).
+fn redact_read(read: &mut Read) {
+    use crate::rag_engine::redact_document_text as redact;
+    read.title = redact(&read.title);
+    for segment in &mut read.segments {
+        segment.text = redact(&segment.text);
+        if let Some(section) = &segment.section {
+            segment.section = Some(redact(section));
+        }
     }
 }
 
@@ -769,6 +793,22 @@ fn may_open(scope: &super::RunScope, source: &str, owners: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An Anthropic key of the real shape, made at run time: no file holds a
+    /// key-shaped string, so secret scanners have nothing to flag.
+    fn anthropic_key() -> String {
+        ["sk", "ant", "api03", "Zq8vT2mW9xLp4RkN7sYb3HcJd6Ff1Gg5"].join("-")
+    }
+
+    /// A GitHub token of the real shape, made at run time.
+    fn github_token() -> String {
+        ["ghp", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"].join("_")
+    }
+
+    /// An OpenAI project key of the real shape, made at run time.
+    fn openai_key() -> String {
+        ["sk", "proj", "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"].join("-")
+    }
     use std::collections::HashMap;
 
     fn doc(content: &str, pages: &[(usize, &str)]) -> ParsedDocument {
@@ -949,6 +989,83 @@ mod tests {
                 assert!(message.contains("notes.md"), "{message}");
             }
             other => panic!("expected Forbidden, got {other:?}"),
+        }
+    }
+
+    /// The file is read again from disk to the model: its secrets are redacted as
+    /// in its indexed chunks, and a file that may hold secrets is not opened.
+    #[tokio::test]
+    async fn open_document_never_reads_a_secret_to_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        let mut engine = RAGEngine::new(config).await.unwrap();
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(Arc::new(
+                crate::statements::testing::HashEmbedder,
+            )))
+            .unwrap();
+        let file = dir.path().join("setup.md");
+        std::fs::write(
+            &file,
+            format!(
+                "# Setup\n\nThe staging cluster needs the key below.\n\n\
+             ANTHROPIC_API_KEY={}\n",
+                anthropic_key()
+            ),
+        )
+        .unwrap();
+        engine
+            .add_document_from_file(
+                &file,
+                std::collections::HashMap::from([("space_id".to_string(), "space-a".to_string())]),
+            )
+            .await
+            .unwrap();
+        let tool = OpenDocumentTool::new(Arc::new(RwLock::new(engine)));
+        // An answer not limited to any workspace.
+        let ctx = ctx();
+        let out = tool
+            .execute(json!({ "path": file.display().to_string() }), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            out.text_for_model.contains("staging cluster"),
+            "{}",
+            out.text_for_model
+        );
+        assert!(
+            !out.text_for_model.contains(anthropic_key().as_str()),
+            "{}",
+            out.text_for_model
+        );
+        assert!(out.text_for_model.contains(crate::recall::redact::REDACTED));
+    }
+
+    #[test]
+    fn a_read_is_redacted_in_title_headings_and_text() {
+        let mut read = Read {
+            title: format!("token: {}", github_token()),
+            location: "page 1".to_string(),
+            segments: vec![Segment {
+                page: Some("1".to_string()),
+                section: Some("password: hunter2-plant".to_string()),
+                regions: Vec::new(),
+                text: format!("export OPENAI_API_KEY={}", openai_key()).to_string(),
+            }],
+            hint: None,
+        };
+        redact_read(&mut read);
+        let all = format!("{} {:?}", read.title, read.segments);
+        for secret in [
+            github_token().as_str(),
+            "hunter2-plant",
+            openai_key().as_str(),
+        ] {
+            assert!(!all.contains(secret), "{secret} in {all}");
         }
     }
 

@@ -67,6 +67,56 @@ pub struct Request {
     pub dpi: u32,
     /// Resolution PDF pages are rendered at for Windows OCR (`None`: 96 dpi).
     pub system_dpi: Option<u32>,
+    /// A legacy Office file to read as text instead of a scan
+    /// ([`OcrWorker::read_legacy_office`]); the engine fields are unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub office: Option<OfficeKind>,
+}
+
+/// A legacy Office file the child reads (`processing::formats`): office_oxide's
+/// binary readers run there, so a file that makes them hang or exhaust memory
+/// stops only the child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OfficeKind {
+    /// Word 97 and later (`.doc`): one page, its text.
+    Doc,
+    /// PowerPoint 97 and later (`.ppt`): a page per slide.
+    Ppt,
+}
+
+impl OfficeKind {
+    /// The application's name, as its errors say it.
+    pub fn name(self) -> &'static str {
+        match self {
+            OfficeKind::Doc => "Word",
+            OfficeKind::Ppt => "PowerPoint",
+        }
+    }
+}
+
+/// The child reading legacy Office files has at most this much memory (a Windows
+/// job limit, or `RLIMIT_AS`/`RLIMIT_DATA` on Unix): a document of the largest size
+/// read (100 MB) needs a few times that, never gigabytes.
+pub const OFFICE_MEMORY_LIMIT: usize = 1024 * 1024 * 1024;
+
+/// Set in the environment of a child started with a memory limit, which the child
+/// applies to itself before it serves (Unix; on Windows its job holds the limit).
+pub const MEMORY_LIMIT_ENV: &str = "SHODH_WORKER_MEMORY_LIMIT";
+
+/// How long a legacy Office file of `bytes` may take in the child: 10 s, and a
+/// second per 10 MB more. Reading one takes well under a second a megabyte.
+pub fn office_time_budget(bytes: u64) -> Duration {
+    Duration::from_secs(10 + bytes / (10 * 1024 * 1024))
+}
+
+/// Why the child stopped without answering.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerStopped {
+    #[error("the OCR process did not answer for {0} s and was stopped")]
+    TimedOut(u64),
+    #[error("the OCR process ended while reading")]
+    Ended,
 }
 
 /// One reply line.
@@ -104,6 +154,13 @@ pub enum Reply {
 /// kept while the child runs.
 pub fn serve(input: impl BufRead, mut output: impl Write) -> Result<()> {
     let _below_normal = BelowNormal::new();
+    #[cfg(unix)]
+    if let Some(limit) = std::env::var(MEMORY_LIMIT_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        limit_own_memory(limit);
+    }
     let mut model: Option<(PathBuf, PpOcr)> = None;
     for line in input.lines() {
         let line = line.context("reading a request")?;
@@ -208,6 +265,9 @@ fn read(
     model: &mut Option<(PathBuf, PpOcr)>,
     on_page: &dyn Fn(usize, usize),
 ) -> Result<OcrPages> {
+    if let Some(office) = request.office {
+        return read_legacy_office(office, &request.path);
+    }
     match request.engine {
         WorkerEngine::PpOcr => {
             let dir = request
@@ -232,6 +292,39 @@ fn read(
             }
         }
         WorkerEngine::System => read_system(request, on_page),
+    }
+}
+
+/// The text of a legacy Office file, read in this (child) process: one page for a
+/// `.doc`, a page per slide for a `.ppt`.
+pub fn read_legacy_office(kind: OfficeKind, path: &Path) -> Result<OcrPages> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let texts = match kind {
+        OfficeKind::Doc => vec![crate::processing::formats::doc_text(&bytes)?],
+        OfficeKind::Ppt => crate::processing::formats::ppt_slides(&bytes)?,
+    };
+    Ok(OcrPages {
+        texts,
+        ..OcrPages::default()
+    })
+}
+
+/// Caps this process's memory at `bytes`: an allocation past it fails, which ends
+/// the process (the parent then reports the file).
+#[cfg(unix)]
+fn limit_own_memory(bytes: u64) {
+    let rlimit = |bytes: u64| libc::rlimit {
+        rlim_cur: bytes as libc::rlim_t,
+        rlim_max: bytes as libc::rlim_t,
+    };
+    // SAFETY: setrlimit reads the struct passed; lowering a limit cannot fail
+    // in a way that harms the process.
+    unsafe {
+        // Address space also counts what is only reserved (thread stacks, the
+        // executable's mappings): twice the heap limit.
+        #[cfg(not(target_os = "macos"))]
+        libc::setrlimit(libc::RLIMIT_AS, &rlimit(bytes.saturating_mul(2)));
+        libc::setrlimit(libc::RLIMIT_DATA, &rlimit(bytes));
     }
 }
 
@@ -286,13 +379,17 @@ struct Running {
 }
 
 impl Running {
-    fn start(command: &WorkerCommand) -> Result<Self> {
+    fn start(command: &WorkerCommand, memory_limit: Option<usize>) -> Result<Self> {
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args)
             .envs(command.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        // A Unix child caps its own memory; on Windows its job does.
+        if let Some(limit) = memory_limit {
+            cmd.env(MEMORY_LIMIT_ENV, limit.to_string());
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -304,7 +401,9 @@ impl Running {
             .spawn()
             .with_context(|| format!("starting the OCR process {}", command.program.display()))?;
         #[cfg(windows)]
-        let job = match job::KillOnClose::new().and_then(|job| job.assign(&child).map(|()| job)) {
+        let job = match job::KillOnClose::with_memory_limit(memory_limit)
+            .and_then(|job| job.assign(&child).map(|()| job))
+        {
             Ok(job) => job,
             Err(e) => {
                 let _ = child.kill();
@@ -388,6 +487,8 @@ pub struct OcrWorker {
     model_dir: Mutex<Option<PathBuf>>,
     state: Mutex<State>,
     page_timeout: Duration,
+    /// The child's memory cap ([`Self::with_memory_limit`]).
+    memory_limit: Option<usize>,
 }
 
 impl std::fmt::Debug for OcrWorker {
@@ -413,6 +514,90 @@ impl OcrWorker {
                 next_id: 1,
             }),
             page_timeout,
+            memory_limit: None,
+        }
+    }
+
+    /// This worker's child with at most `bytes` of memory: an allocation past it
+    /// ends the child, not this process.
+    pub fn with_memory_limit(mut self, bytes: usize) -> Self {
+        self.memory_limit = Some(bytes);
+        self
+    }
+
+    /// How the child is started.
+    pub fn command(&self) -> &WorkerCommand {
+        &self.command
+    }
+
+    /// Reads the legacy Office file at `path` in the child, within
+    /// [`office_time_budget`]: the text of each page (one for a `.doc`, a slide
+    /// each for a `.ppt`). A child that takes longer is killed, and one that ends
+    /// (out of memory, a crash) is reported; either way only the child stops.
+    pub fn read_legacy_office(
+        &self,
+        kind: OfficeKind,
+        path: &Path,
+    ) -> std::result::Result<Vec<String>, crate::processing::formats::LegacyOfficeError> {
+        use crate::processing::formats::LegacyOfficeError;
+        let name = kind.name();
+        let budget = office_time_budget(std::fs::metadata(path).map_or(0, |m| m.len()));
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.last_used = Instant::now();
+        let id = state.next_id;
+        state.next_id += 1;
+        let request = Request {
+            id,
+            kind: FileKind::Pdf,
+            path: path.to_path_buf(),
+            engine: WorkerEngine::System,
+            model_dir: None,
+            dpi: 0,
+            system_dpi: None,
+            office: Some(kind),
+        };
+        // A child that ended since its last file is started again once; one that
+        // will not take the request then has ended, like one ending while reading.
+        let mut sent = false;
+        for _ in 0..2 {
+            if state.running.is_none() {
+                match Running::start(&self.command, self.memory_limit) {
+                    Ok(running) => state.running = Some(running),
+                    Err(e) => {
+                        return Err(LegacyOfficeError::Damaged(
+                            name,
+                            format!("the reader process could not start: {e:#}"),
+                        ))
+                    }
+                }
+            }
+            if let Some(running) = state.running.as_mut() {
+                if running.send(&request).is_ok() {
+                    sent = true;
+                    break;
+                }
+            }
+            if let Some(running) = state.running.take() {
+                running.kill();
+            }
+        }
+        let result = if sent {
+            self.await_reply(&mut state, id, &|_, _| {}, budget)
+        } else {
+            if let Some(running) = state.running.take() {
+                running.kill();
+            }
+            Err(WorkerStopped::Ended.into())
+        };
+        state.last_used = Instant::now();
+        match result {
+            Ok(pages) => Ok(pages.texts),
+            Err(e) => Err(match e.downcast_ref::<WorkerStopped>() {
+                Some(WorkerStopped::TimedOut(_)) => LegacyOfficeError::TimedOut(name),
+                Some(WorkerStopped::Ended) => LegacyOfficeError::TooMuchMemory(name),
+                // The child's own error, which already says what is wrong.
+                None => LegacyOfficeError::Reported(format!("{e:#}")),
+            }),
         }
     }
 
@@ -483,12 +668,13 @@ impl OcrWorker {
             model_dir,
             dpi,
             system_dpi,
+            office: None,
         };
         // A child that exited (or whose input broke) is started again once.
         let mut sent = false;
         for _ in 0..2 {
             if state.running.is_none() {
-                state.running = Some(Running::start(&self.command)?);
+                state.running = Some(Running::start(&self.command, self.memory_limit)?);
             }
             let running = state
                 .running
@@ -510,7 +696,7 @@ impl OcrWorker {
         if !sent {
             bail!("the OCR process could not be started");
         }
-        let result = self.await_reply(&mut state, id, on_page);
+        let result = self.await_reply(&mut state, id, on_page, self.page_timeout);
         state.last_used = Instant::now();
         result
     }
@@ -520,13 +706,14 @@ impl OcrWorker {
         state: &mut State,
         id: u64,
         on_page: &dyn Fn(usize, usize),
+        timeout: Duration,
     ) -> Result<OcrPages> {
         loop {
             let running = state
                 .running
                 .as_mut()
                 .context("the OCR process is not running")?;
-            let line = match running.replies.recv_timeout(self.page_timeout) {
+            let line = match running.replies.recv_timeout(timeout) {
                 Ok(Ok(line)) => line,
                 Ok(Err(e)) => {
                     if let Some(running) = state.running.take() {
@@ -538,16 +725,13 @@ impl OcrWorker {
                     if let Some(running) = state.running.take() {
                         running.kill();
                     }
-                    bail!(
-                        "the OCR process did not answer for {} s and was stopped",
-                        self.page_timeout.as_secs()
-                    );
+                    return Err(WorkerStopped::TimedOut(timeout.as_secs()).into());
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     if let Some(running) = state.running.take() {
                         running.kill();
                     }
-                    bail!("the OCR process ended while reading");
+                    return Err(WorkerStopped::Ended.into());
                 }
             };
             match serde_json::from_str::<Reply>(&line) {
@@ -703,7 +887,10 @@ mod job {
     unsafe impl Send for KillOnClose {}
 
     impl KillOnClose {
-        pub fn new() -> Result<Self> {
+        /// A job that kills its processes when closed and, with `memory_limit`,
+        /// ends a process that commits more memory than that.
+        pub fn with_memory_limit(memory_limit: Option<usize>) -> Result<Self> {
+            const JOB_OBJECT_LIMIT_PROCESS_MEMORY: u32 = 0x0100;
             // SAFETY: no security attributes and no name: an anonymous job.
             let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
             if handle == 0 {
@@ -715,9 +902,15 @@ mod job {
             let job = Self(handle);
             let info = ExtendedLimitInformation {
                 basic: BasicLimitInformation {
-                    limit_flags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    limit_flags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                        | if memory_limit.is_some() {
+                            JOB_OBJECT_LIMIT_PROCESS_MEMORY
+                        } else {
+                            0
+                        },
                     ..Default::default()
                 },
+                process_memory_limit: memory_limit.unwrap_or(0),
                 ..Default::default()
             };
             // SAFETY: `info` is a JOBOBJECT_EXTENDED_LIMIT_INFORMATION of the
@@ -787,6 +980,7 @@ mod tests {
             model_dir: Some(PathBuf::from("C:/models/pp-ocrv6")),
             dpi: 300,
             system_dpi: None,
+            office: None,
         };
         let line = serde_json::to_string(&request).unwrap();
         assert!(!line.contains('\n'));
@@ -831,6 +1025,7 @@ mod tests {
             model_dir: None,
             dpi: 300,
             system_dpi: None,
+            office: None,
         };
         let input = format!("{}\nnot json\n\n", serde_json::to_string(&missing).unwrap());
         let mut output = Vec::new();
@@ -958,6 +1153,85 @@ mod tests {
         assert!(
             pages[1].contains("Total amount due: INR 4,63,740.00"),
             "{pages:?}"
+        );
+    }
+
+    /// Legacy Word and PowerPoint files are read in the child, with its memory
+    /// capped; what the reader says about a file comes back in its words.
+    #[test]
+    fn legacy_office_files_are_read_in_a_capped_child() {
+        use crate::processing::formats::LegacyOfficeError;
+        use crate::processing::formats_tests::fixtures;
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("lease.doc");
+        std::fs::write(
+            &doc,
+            fixtures::word_doc("The notice period is ninety days.\r", false),
+        )
+        .unwrap();
+        let ppt = dir.path().join("talk.ppt");
+        std::fs::write(
+            &ppt,
+            fixtures::power_point(&["Rainfall study", "Results"], false),
+        )
+        .unwrap();
+        let locked = dir.path().join("locked.doc");
+        std::fs::write(&locked, fixtures::word_doc("Secret.\r", true)).unwrap();
+
+        let worker = test_child().with_memory_limit(OFFICE_MEMORY_LIMIT);
+        assert_eq!(
+            worker.read_legacy_office(OfficeKind::Doc, &doc).unwrap(),
+            vec!["The notice period is ninety days.".to_string()]
+        );
+        assert!(worker.is_running(), "the child stays for the next file");
+        assert_eq!(
+            worker.read_legacy_office(OfficeKind::Ppt, &ppt).unwrap(),
+            vec!["Rainfall study".to_string(), "Results".to_string()]
+        );
+        let err = worker
+            .read_legacy_office(OfficeKind::Doc, &locked)
+            .unwrap_err();
+        assert!(matches!(err, LegacyOfficeError::Reported(_)), "{err}");
+        assert!(
+            err.to_string().contains("protected with a password"),
+            "{err}"
+        );
+        worker.stop();
+    }
+
+    /// A child that does not answer within the file's time budget is killed, and
+    /// the file reported as taking too long; one that ends is reported too.
+    #[test]
+    fn a_legacy_office_child_that_stops_answering_is_killed() {
+        use crate::processing::formats::LegacyOfficeError;
+        // A child that reads its request and never answers: the test binary
+        // running a test that does not exist prints its summary and exits, which
+        // is an ended child; one that sleeps is a stuck one.
+        let ended = OcrWorker::with_page_timeout(
+            WorkerCommand {
+                program: std::env::current_exe().unwrap(),
+                args: ["--exact", "no::such::test"]
+                    .iter()
+                    .map(OsString::from)
+                    .collect(),
+                env: Vec::new(),
+            },
+            Duration::from_secs(60),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("x.doc");
+        std::fs::write(&doc, b"x").unwrap();
+        let err = ended.read_legacy_office(OfficeKind::Doc, &doc).unwrap_err();
+        assert!(
+            matches!(err, LegacyOfficeError::TooMuchMemory("Word")),
+            "{err}"
+        );
+        assert!(!ended.is_running());
+        // Budgets grow with the file.
+        assert_eq!(office_time_budget(0), Duration::from_secs(10));
+        assert_eq!(
+            office_time_budget(100 * 1024 * 1024),
+            Duration::from_secs(20)
         );
     }
 

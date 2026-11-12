@@ -4,6 +4,7 @@ import { cn } from '../lib/utils';
 import { notify } from '../lib/notify';
 import { getAppSettings, onAppSettingsChanged, setNotificationPreferences } from '../lib/appSettings';
 import { SwitchRow } from './PrivacySettings';
+import { InfoPopover } from './ui/InfoPopover';
 import {
   TEST_HELP,
   TEST_PENDING,
@@ -87,11 +88,16 @@ export default function NotificationSettings() {
 
   return (
     <div className="flex flex-col gap-5">
-      <p className="m-0 text-small text-shodh-text-muted">
-        Shodh shows a desktop notification only while its window is minimised, in the tray or behind another window;
-        while you look at it, the Inbox and the messages in the window say the same. Notifications name a task, a folder,
-        a paper or a conversation, never what your documents or answers say.
-      </p>
+      <div className="flex items-center gap-1">
+        <p className="m-0 text-small text-shodh-text-muted">Shown only while Shodh&apos;s window is out of sight.</p>
+        <InfoPopover label="About notifications" title="When notifications show">
+          <p className="m-0">
+            Shodh shows a desktop notification only while its window is minimised, in the tray or behind another window.
+            While you look at it, the Inbox and the messages in the window say the same.
+          </p>
+          <p className="m-0">Notifications name a task, a folder, a paper or a conversation, never what your documents or answers say.</p>
+        </InfoPopover>
+      </div>
       {notificationRows(prefs, saving).map(row => (
         <div key={row.key} className={cn(row.nested && 'pl-6')}>
           <SwitchRow

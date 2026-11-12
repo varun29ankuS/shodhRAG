@@ -1,11 +1,40 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import {
+  Archive,
+  Bookmark,
+  Check,
+  ChevronRight,
+  CircleDot,
+  Copy,
+  Cpu,
+  Download,
+  Eraser,
+  FileText,
+  FolderOpen,
+  GitBranch,
+  Globe,
+  History,
+  KeyRound,
+  Layers,
+  MessageCircle,
+  MessageSquareText,
+  Plug,
+  Quote,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Wrench,
+} from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { prettyJson } from '../agent/format';
-import { formatTimestamp, summarise } from './summary';
+import { scrubSecrets } from './scrub';
+import { formatTimestamp } from './summary';
+import { describeEvent, sentenceText } from './sentence';
+import type { EventIcon, EventSentence } from './sentence';
 import { eventLabel } from './types';
 import type { AuditRow } from './types';
 import { countOf } from '../../lib/plural';
+import { notify } from '../../lib/notify';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 import { announce } from '../../lib/announcer';
 
@@ -17,7 +46,94 @@ const LOAD_AHEAD = 30;
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-shodh-ground';
 
-const GRID = 'grid grid-cols-[28px_132px_96px_minmax(0,1fr)_120px] items-center gap-2';
+const GRID = 'grid grid-cols-[28px_132px_minmax(0,1fr)_120px] items-center gap-2';
+
+const ICONS: Record<EventIcon, typeof Archive> = {
+  question: MessageCircle,
+  answer: MessageSquareText,
+  tool: Wrench,
+  search: Search,
+  document: FileText,
+  web: Globe,
+  approval: ShieldCheck,
+  source: FolderOpen,
+  settings: SlidersHorizontal,
+  model: Cpu,
+  key: KeyRound,
+  runtime: Download,
+  retention: Archive,
+  memory: Bookmark,
+  forget: Eraser,
+  recall: History,
+  code: GitBranch,
+  citation: Quote,
+  scope: Layers,
+  connector: Plug,
+  other: CircleDot,
+};
+
+/** An entry's sentence: its icon, title and details, the new value in bold. */
+function Sentence({ sentence, wrap = false }: { sentence: EventSentence; wrap?: boolean }) {
+  const Icon = ICONS[sentence.icon];
+  return (
+    <span className={cn('flex items-center gap-2 min-w-0', wrap && 'items-start')}>
+      <Icon className={cn('w-3.5 h-3.5 shrink-0 text-shodh-text-muted', wrap && 'mt-0.5')} aria-hidden="true" />
+      <span className={cn('min-w-0', wrap ? 'break-words' : 'truncate')}>
+        <span className="font-medium text-shodh-text">{sentence.title}</span>
+        {sentence.details.length > 0 && <span className="text-shodh-text-faint"> · </span>}
+        {sentence.details.map((segment, i) => (
+          <span key={i} className={segment.strong ? 'font-semibold text-shodh-text' : 'text-shodh-text-secondary'}>
+            {segment.text}
+          </span>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/** The raw entry behind a disclosure, with a Copy button. */
+function RawEvent({ row }: { row: AuditRow }) {
+  const [copied, setCopied] = useState(false);
+  // A field named for a secret is never shown or copied (no event writes one today).
+  const json = useMemo(() => prettyJson(scrubSecrets(row.payload), 20_000), [row.payload]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(scrubSecrets(row), null, 2));
+      setCopied(true);
+    } catch (error) {
+      notify.error('Could not copy the entry', { description: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  return (
+    <details className="group/raw">
+      <summary
+        className={cn(
+          'list-none [&::-webkit-details-marker]:hidden inline-flex items-center gap-1 h-7 px-1.5 -ml-1.5 rounded-md cursor-pointer text-caption text-shodh-text-muted hover:text-shodh-text hover:bg-shodh-raised',
+          FOCUS_RING,
+        )}
+      >
+        <ChevronRight aria-hidden="true" className="w-3.5 h-3.5 transition-transform duration-micro group-open/raw:rotate-90" />
+        Raw entry (JSON)
+      </summary>
+      <div className="mt-1 flex flex-col gap-1.5">
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className={cn(
+            'self-start h-7 px-2 inline-flex items-center gap-1.5 rounded-md border border-shodh-border text-caption text-shodh-text-secondary hover:bg-shodh-raised hover:text-shodh-text',
+            FOCUS_RING,
+          )}
+        >
+          {copied ? <Check className="w-3.5 h-3.5" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+        <pre className="m-0 max-h-[320px] overflow-auto scrollbar-thin rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary whitespace-pre-wrap break-words">
+          {json}
+        </pre>
+      </div>
+    </details>
+  );
+}
 
 function shortId(id: string | null): string {
   if (!id) return '';
@@ -159,8 +275,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
             Details
           </span>
           <span role="columnheader">Time</span>
-          <span role="columnheader">Type</span>
-          <span role="columnheader">Event</span>
+          <span role="columnheader">What happened</span>
           <span role="columnheader">Conversation</span>
         </div>
       </div>
@@ -180,6 +295,9 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
               const row = rows[index];
               const expanded = row.id === expandedId;
               const detailId = `audit-detail-${row.id}`;
+              const sentence = describeEvent(row);
+              const line = sentenceText(sentence);
+              const toggle = () => setExpandedId(expanded ? null : row.id);
               return (
                 <div
                   key={row.id}
@@ -189,10 +307,12 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                   className="absolute left-0 right-0"
                   style={{ top: offsetOf(index) }}
                 >
+                  {/* The whole row opens the entry; the chevron is its keyboard control. */}
                   <div
+                    onClick={toggle}
                     className={cn(
                       GRID,
-                      'px-3 text-small border-b border-shodh-border-subtle',
+                      'px-3 text-small border-b border-shodh-border-subtle cursor-pointer',
                       expanded ? 'bg-shodh-raised' : 'hover:bg-shodh-raised',
                     )}
                     style={{ height: ROW_HEIGHT }}
@@ -203,7 +323,10 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                         aria-expanded={expanded}
                         aria-controls={expanded ? detailId : undefined}
                         aria-label={`${expanded ? 'Hide' : 'Show'} details of event ${row.id}`}
-                        onClick={() => setExpandedId(expanded ? null : row.id)}
+                        onClick={e => {
+                          e.stopPropagation();
+                          toggle();
+                        }}
                         className={cn(
                           'w-6 h-6 grid place-items-center rounded-md text-shodh-text-faint hover:text-shodh-text hover:bg-shodh-raised-2',
                           FOCUS_RING,
@@ -220,17 +343,17 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                         {formatTimestamp(row.ts)}
                       </time>
                     </span>
-                    <span role="cell" className="truncate text-shodh-text-muted">
-                      {eventLabel(row.eventType)}
-                    </span>
-                    <span role="cell" className="truncate text-shodh-text" title={summarise(row)}>
-                      {summarise(row)}
+                    <span role="cell" className="min-w-0" title={line}>
+                      <Sentence sentence={sentence} />
                     </span>
                     <span role="cell" className="truncate">
                       {row.conversationId ? (
                         <button
                           type="button"
-                          onClick={() => row.conversationId && onSelectConversation(row.conversationId)}
+                          onClick={e => {
+                            e.stopPropagation();
+                            if (row.conversationId) onSelectConversation(row.conversationId);
+                          }}
                           title={`Show only conversation ${row.conversationId}`}
                           className={cn(
                             'font-mono text-caption text-shodh-text-faint hover:text-shodh-accent-text rounded',
@@ -247,12 +370,15 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                       ref={detailRef}
                       id={detailId}
                       role="cell"
-                      className="px-3 py-2 border-b border-shodh-border-subtle bg-shodh-ground"
+                      className="px-3 py-2 border-b border-shodh-border-subtle bg-shodh-ground flex flex-col gap-2"
                     >
-                      <dl className="m-0 mb-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-caption">
-                        <dt className="text-shodh-text-faint">Event</dt>
-                        <dd className="m-0 font-mono text-shodh-text-secondary">
-                          #{row.id} · {row.eventType} · {row.principal}
+                      <div className="text-small">
+                        <Sentence sentence={sentence} wrap />
+                      </div>
+                      <dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-caption">
+                        <dt className="text-shodh-text-faint">Entry</dt>
+                        <dd className="m-0 text-shodh-text-secondary">
+                          <span className="font-mono">#{row.id}</span> · {eventLabel(row.eventType)} · {row.principal}
                         </dd>
                         {row.runId && (
                           <>
@@ -271,9 +397,7 @@ export function AuditTable({ rows, total, loading, onLoadMore, onSelectConversat
                           {row.hash}
                         </dd>
                       </dl>
-                      <pre className="m-0 max-h-[320px] overflow-auto scrollbar-thin rounded-lg border border-shodh-border-subtle bg-shodh-surface px-3 py-2 font-mono text-caption leading-[1.55] text-shodh-text-secondary whitespace-pre-wrap break-words">
-                        {prettyJson(row.payload, 20_000)}
-                      </pre>
+                      <RawEvent row={row} />
                     </div>
                   )}
                 </div>

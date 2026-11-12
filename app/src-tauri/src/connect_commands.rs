@@ -469,7 +469,7 @@ async fn drive_login(
         let read = tokio::select! {
             _ = &mut cancel => return LoginOutcome::Cancelled,
             _ = &mut deadline => {
-                return LoginOutcome::Failed("The sign-in timed out. Try again.".into());
+                return LoginOutcome::Failed(omp_auth::SIGN_IN_CANCELLED.into());
             }
             read = stdout.read(&mut buf) => read,
         };
@@ -522,7 +522,7 @@ async fn drive_login(
         Ok(status) if status.success() => {
             LoginOutcome::Failed("The sign-in ended without saving an account.".into())
         }
-        Ok(_) => LoginOutcome::Failed(omp_auth::failure_message(&stderr)),
+        Ok(_) => LoginOutcome::Failed(omp_auth::login_failure_message(&stderr)),
         Err(e) => LoginOutcome::Failed(format!("The sign-in did not finish: {e}")),
     }
 }

@@ -61,8 +61,8 @@ test('common indexer errors read as plain reasons, with the raw reason kept as d
     ['Failed to process file: failed to open spreadsheet C:\\Docs\\a.xlsx: Zip error', 'damaged', 'Damaged or incomplete'],
     ['Unsupported file type: xyz', 'unsupported', 'This file type is not supported'],
     ['Failed to process file: memory allocation of 4294967296 bytes failed', 'too_large', 'Too large to index'],
-    ['Failed to process file: C:\\Docs\\log.txt: This file is 63.2 MB, too large to index (limit 50 MB for text files)', 'too_large', 'Too large to index'],
-    ['Failed to process file: C:\\Docs\\scan.pdf: This PDF has 2,431 pages, too large to index (limit 2,000 pages)', 'too_large', 'Too large to index'],
+    ['Failed to process file: C:\\Docs\\log.txt: This file is 63.2 MB, too large to index (limit 50 MB for text files)', 'too_large', 'Too large to index (limit 50 MB for text files)'],
+    ['Failed to process file: C:\\Docs\\scan.pdf: This PDF has 2,431 pages, too large to index (limit 2,000 pages)', 'too_many_pages', 'Over 2,000 pages'],
     ['Failed to process file: DOCX word/document.xml could not be read: C:\\Docs\\report.docx: not valid XML: unexpected end of stream', 'damaged', 'Damaged or incomplete'],
     ['Failed to process file: PPTX ppt/slides/slide3.xml could not be read: C:\\Docs\\talk.pptx: its XML nests more than 256 elements deep, which no Office file does', 'damaged', 'Damaged or incomplete'],
     [SCAN, 'scan_reader_missing', 'A scan, and the scan reader is not installed'],
@@ -111,4 +111,73 @@ test('paths are shown below their folder', () => {
   assert.equal(relativeToFolder('/home/me/docs2/b.pdf', '/home/me/docs'), '/home/me/docs2/b.pdf');
   assert.equal(relativeToFolder('C:\\Elsewhere\\b.pdf', 'C:\\Docs'), 'C:/Elsewhere/b.pdf');
   assert.equal(relativeToFolder('C:\\Docs\\b.pdf', null), 'C:/Docs/b.pdf');
+});
+test('files a folder holds but never indexes say why (folder_sync::skipped_files)', () => {
+  const cases: [string, string, string][] = [
+    ['Kept back: it is an environment file, which holds keys and passwords. Shodh does not index files that may hold secrets.', 'secret', 'Kept back: may hold secrets'],
+    // Through an indexing run, as a failure.
+    ['Failed to index file: Kept back: it is a key or certificate file. Shodh does not index files that may hold secrets.', 'secret', 'Kept back: may hold secrets'],
+    ['Not supported: Shodh does not read .heic files', 'unsupported', 'This file type is not supported'],
+    ['Not supported: the file has no type (no extension)', 'unsupported', 'This file type is not supported'],
+    ['Hidden folder: nothing in it is indexed', 'hidden', 'Hidden file or folder'],
+    ['Hidden file: names that start with a dot are not indexed', 'hidden', 'Hidden file or folder'],
+    ['Temporary or lock file: apps write these while a file is open or downloading', 'temporary', 'Temporary or lock file'],
+  ];
+  for (const [reason, kind, plain] of cases) {
+    const explained = explainFailure(reason);
+    assert.equal(explained.kind, kind, reason);
+    assert.equal(explained.reason, plain, reason);
+  }
+  // A secret is never taken for a password-protected file, which has an action.
+  assert.equal(explainFailure(cases[0][0]).advice.action, 'none');
+});
+
+test('files over different size limits are listed under each limit', () => {
+  const groups = groupFailures([
+    { file: 'C:\Docs\a.txt', reason: 'Failed to process file: C:\Docs\a.txt: This file is 63.2 MB, too large to index (limit 50 MB for text files)' },
+    { file: 'C:\Docs\b.xlsx', reason: 'Failed to process file: C:\Docs\b.xlsx: This file is 120 MB, too large to index (limit 100 MB for spreadsheets)' },
+    { file: 'C:\Docs\c.pdf', reason: 'Failed to process file: C:\Docs\c.pdf: This PDF has 2,431 pages, too large to index (limit 2,000 pages)' },
+  ], 'C:\Docs');
+  assert.deepEqual(groups.map(g => g.reason).sort(), [
+    'Over 2,000 pages',
+    'Too large to index (limit 100 MB for spreadsheets)',
+    'Too large to index (limit 50 MB for text files)',
+  ]);
+});
+
+test('damaged, old, password-protected and DRM files each say which they are', () => {
+  const cases: [string, string, string][] = [
+    // A zip without the part its format needs is damaged, not moved or deleted
+    // (the zip library's "file not found in archive" is not the file itself).
+    ['Failed to process file: this ODT is damaged or incomplete (it has no content.xml): C:\Docs\notes.odt: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    ['Failed to process file: this EPUB is damaged or incomplete (it has no META-INF/container.xml): C:\Books\a.epub: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    // As reasons recorded before were worded.
+    ['Failed to process file: EPUB missing META-INF/container.xml: C:\Books\a.epub: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    ['Failed to process file: ODP missing content.xml: C:\Docs\talk.odp: specified file not found in archive', 'damaged', 'Damaged or incomplete'],
+    ['Failed to process file: this Word file was saved in Word 95 or older; save it again as .docx', 'too_old', 'Saved in an old format (95 or older)'],
+    ['Failed to process file: this PowerPoint file was saved in PowerPoint 95 or older; save it again as .pptx', 'too_old', 'Saved in an old format (95 or older)'],
+    ['Failed to process file: this ODT file is protected with a password, so its text cannot be read: C:\Docs\locked.odt', 'encrypted', 'Protected with a password'],
+    ['Failed to process file: this EPUB is protected with DRM (encrypted), so its text cannot be read: C:\Books\bought.epub', 'encrypted', 'Protected with DRM'],
+  ];
+  for (const [reason, kind, plain] of cases) {
+    const explained = explainFailure(reason);
+    assert.equal(explained.kind, kind, reason);
+    assert.equal(explained.reason, plain, reason);
+  }
+  // A DRM book has no password to remove: nothing in the app helps.
+  assert.equal(explainFailure(cases[7][0]).advice.action, 'none');
+  assert.equal(
+    explainFailure(cases[4][0]).advice.hint,
+    'Open it in Word or PowerPoint (or LibreOffice) and save it as .docx or .pptx, then index again.',
+  );
+});
+
+test('a hidden file is never advised to be renamed, and a credentials folder is kept back', () => {
+  const hidden = explainFailure('Hidden folder: nothing in it is indexed');
+  assert.equal(hidden.kind, 'hidden');
+  assert.ok(!/rename/i.test(hidden.advice.hint), hidden.advice.hint);
+  // `.git`, `.ssh`: recorded as kept back by folder_sync::skipped_files.
+  const git = explainFailure('Kept back: it is in a folder that holds credentials or the repository\'s own settings. Shodh does not index files that may hold secrets.');
+  assert.equal(git.kind, 'secret');
+  assert.equal(git.advice.action, 'none');
 });

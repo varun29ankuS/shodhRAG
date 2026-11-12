@@ -78,6 +78,18 @@ export function workspaceChoices<W extends { id: string; archived: boolean }>(
   return workspaces.filter(w => !w.archived || w.id === currentId);
 }
 
+/**
+ * Whether the Tasks list shows its Workspace column (heading included): some
+ * task row can show a workspace menu, which it does when there is a workspace
+ * to move it to or the task is in one ([`workspaceChoices`]).
+ */
+export function showsWorkspaceColumn(
+  workspaces: readonly { archived: boolean }[],
+  tasks: readonly { workspaceId?: string | null }[],
+): boolean {
+  return workspaces.some(w => !w.archived) || tasks.some(t => !!t.workspaceId);
+}
+
 // ── Workspace filter of the Tasks list ─────────────────────────────────────
 
 /** Which tasks the Tasks list shows by workspace: all, those in none, or one workspace's. */

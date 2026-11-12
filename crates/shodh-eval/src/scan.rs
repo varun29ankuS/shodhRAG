@@ -21,6 +21,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use skrifa::instance::{LocationRef, Size};
+use skrifa::outline::{DrawSettings, OutlinePen};
+use skrifa::{FontRef, MetadataProvider};
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 
 use crate::dataset::{Dataset, EvalCase};
@@ -152,15 +155,15 @@ struct Gray {
 }
 
 struct Fonts<'a> {
-    regular: ttf_parser::Face<'a>,
-    bold: ttf_parser::Face<'a>,
+    regular: FontRef<'a>,
+    bold: FontRef<'a>,
 }
 
 impl Fonts<'static> {
     fn load() -> Result<Self> {
         Ok(Self {
-            regular: ttf_parser::Face::parse(REGULAR, 0).context("parsing Liberation Sans")?,
-            bold: ttf_parser::Face::parse(BOLD, 0).context("parsing Liberation Sans Bold")?,
+            regular: FontRef::new(REGULAR).context("parsing Liberation Sans")?,
+            bold: FontRef::new(BOLD).context("parsing Liberation Sans Bold")?,
         })
     }
 }
@@ -168,7 +171,7 @@ impl Fonts<'static> {
 /// Glyph outlines into a tiny-skia path.
 struct Outline(PathBuilder);
 
-impl ttf_parser::OutlineBuilder for Outline {
+impl OutlinePen for Outline {
     fn move_to(&mut self, x: f32, y: f32) {
         self.0.move_to(x, y);
     }
@@ -236,14 +239,26 @@ fn draw(page: &PdfPage, scan: &Scan, fonts: &Fonts, seed: u64) -> Result<Gray> {
         } else {
             &fonts.regular
         };
-        let em = run.size / face.units_per_em() as f32;
+        let unscaled = Size::unscaled();
+        let em = run.size / face.metrics(unscaled, LocationRef::default()).units_per_em as f32;
+        let charmap = face.charmap();
+        let outlines = face.outline_glyphs();
+        let advances = face.glyph_metrics(unscaled, LocationRef::default());
         let mut pen = run.x;
         for c in run.text.chars() {
-            let Some(glyph) = face.glyph_index(c) else {
+            let Some(glyph) = charmap.map(c) else {
                 bail!("Liberation Sans has no glyph for {c:?}");
             };
             let mut outline = Outline(PathBuilder::new());
-            if face.outline_glyph(glyph, &mut outline).is_some() {
+            let drawn = outlines.get(glyph).is_some_and(|glyph| {
+                glyph
+                    .draw(
+                        DrawSettings::unhinted(unscaled, LocationRef::default()),
+                        &mut outline,
+                    )
+                    .is_ok()
+            });
+            if drawn {
                 if let Some(path) = outline.0.finish() {
                     // Glyph units (y up) to page points at the pen position.
                     let glyph_to_page = Transform::from_row(em, 0.0, 0.0, em, pen, run.y);
@@ -256,7 +271,7 @@ fn draw(page: &PdfPage, scan: &Scan, fonts: &Fonts, seed: u64) -> Result<Gray> {
                     );
                 }
             }
-            pen += face.glyph_hor_advance(glyph).unwrap_or(0) as f32 * em;
+            pen += advances.advance_width(glyph).unwrap_or(0.0) * em;
         }
     }
     // Opaque black on white: every channel holds the grey level.

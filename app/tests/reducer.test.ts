@@ -20,6 +20,7 @@ import {
   initialTranscript,
   pendingApproval,
   planProgress,
+  planSummary,
   reduceAll,
   reduceTranscript,
   supersededBlocks,
@@ -161,6 +162,28 @@ test('plans replace each other and report progress', () => {
   assert.deepEqual(planProgress(state.plan ?? []), { done: 1, total: 2 });
   const cleared = reduceTranscript(state, { type: 'plan_updated', runId: RUN, items: [] });
   assert.equal(cleared.plan, null);
+});
+
+test('a blocked plan item keeps its reason, is counted, and survives a restore', () => {
+  const blocked = {
+    type: 'plan_updated',
+    runId: RUN,
+    items: [
+      { id: '1', text: 'Read the failing test', status: 'done' },
+      { id: '2', text: 'Run the build', status: 'blocked', reason: ' The build needs a signing key ' },
+      { id: '3', text: 'Fix the parser', status: 'pending', reason: 'not blocked, so dropped' },
+      { id: '4', text: 'From a newer build', status: 'paused' },
+    ],
+  } as unknown as AgentEvent;
+  const state = reduceAll(initialTranscript(RUN, 0), [spikeRun()[0], blocked]);
+  assert.equal(state.plan?.[1].status, 'blocked');
+  assert.equal(state.plan?.[1].reason, 'The build needs a signing key');
+  assert.equal('reason' in (state.plan?.[2] ?? {}), false);
+  assert.equal(state.plan?.[3].status, 'pending', 'an unknown status reads as to do');
+  assert.equal(planSummary(state.plan ?? []), '1 of 4 steps done, 1 blocked');
+  assert.equal(planSummary([{ id: '1', text: 'a', status: 'done', need: false, coverage: null, evidence: [] }]), '1 of 1 step done');
+  const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(state))));
+  assert.deepEqual(restored?.plan, state.plan, 'the checklist is kept with the conversation');
 });
 
 test('a transcript persisted mid-run is restored as interrupted', () => {

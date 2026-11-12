@@ -33,6 +33,7 @@ use shodh_rag::harness::profile::{app_tools, is_valid_slug};
 use shodh_rag::harness::run_command::{self, ContainedExecutor};
 use shodh_rag::harness::tools::creation::FINISH_CREATION;
 use shodh_rag::harness::tools::mode::{SuggestModeTool, SUGGEST_MODE};
+use shodh_rag::harness::tools::plan::{UpdatePlanTool, UPDATE_PLAN};
 use shodh_rag::harness::tools::{
     carried_passages_block, CitedPassage, HostTool, RunScope, ToolRegistry,
 };
@@ -2076,6 +2077,8 @@ async fn start_attempt(
             0..0,
             crate::agent_tools::code_intel_tools(app_data_dir.clone(), &conversation_id),
         );
+        // The checklist above the answer, in Code and Creator sessions as in Ask.
+        extra_tools.insert(0, Arc::new(UpdatePlanTool));
     }
     let extra_names: Vec<String> = extra_tools.iter().map(|t| t.name().to_string()).collect();
     let (registry, profile) =
@@ -2124,6 +2127,7 @@ async fn start_attempt(
                 .filter(|n| {
                     !shodh_rag::connectors::github::tools::all_names().contains(&n.as_str())
                         && n.as_str() != SUGGEST_MODE
+                        && n.as_str() != UPDATE_PLAN
                         && !crate::agent_tools::CREATOR_TOOL_NAMES.contains(&n.as_str())
                         && !crate::agent_tools::CODE_REVIEW_TOOL_NAMES.contains(&n.as_str())
                         && !crate::agent_tools::CODE_INTEL_TOOL_NAMES.contains(&n.as_str())
@@ -2589,6 +2593,10 @@ pub fn start_idle_reaper(app: AppHandle) {
 /// `attached_context` is text the user attached to the question (read from an image):
 /// it is appended to the message to the model only (see [`with_attached_context`]),
 /// never learned from, matched as a memory request or recorded as the question.
+///
+/// `suggestion_ignored`: the user went on without a mode the agent suggested earlier in
+/// this conversation (worked out by the app from the conversation's answers), so the
+/// agent suggests none again ([`RunScope::suggestion_ignored`]).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_send(
@@ -2603,6 +2611,7 @@ pub async fn agent_send(
     typed_text: Option<String>,
     prior_run_ids: Option<Vec<String>>,
     review_action: Option<bool>,
+    suggestion_ignored: Option<bool>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
@@ -2744,6 +2753,7 @@ pub async fn agent_send(
     // while the session has seen nothing private (memories, instructions, carried
     // passages, the replayed conversation, a side thread's composed message).
     scope.own_words = own_words.map(str::to_string);
+    scope.suggestion_ignored = suggestion_ignored == Some(true);
     scope.private_context = private_context(
         memories.as_ref(),
         workspace_block.is_some()
@@ -3495,20 +3505,23 @@ async fn chat_tools_with(
                 .into_iter()
                 .chain(shodh_rag::connectors::github::tools::all_names())
                 .chain(std::iter::once(SUGGEST_MODE))
+                .chain(std::iter::once(UPDATE_PLAN))
                 .chain(crate::agent_tools::CREATOR_TOOL_NAMES)
                 .chain(crate::agent_tools::CODE_REVIEW_TOOL_NAMES)
                 .chain(crate::agent_tools::CODE_INTEL_TOOL_NAMES)
                 .chain(crate::agent_tools::CODE_MAP_TOOL_NAMES)
                 .collect(),
-            // The tools this kind of session has: a Creator session its
-            // finish card and Artifacts tools; a Code session GitHub, the mode
-            // suggestion, the code pane, review and the code map.
+            // The tools this kind of session has: both the checklist; a Creator
+            // session its finish card and Artifacts tools; a Code session GitHub,
+            // the mode suggestion, the code pane, review and the code map.
             if creates {
                 CODE_BUILTIN_TOOLS
+                    + 1
                     + crate::agent_tools::CREATOR_TOOL_NAMES.len()
                     + crate::agent_tools::CODE_INTEL_TOOL_NAMES.len()
             } else {
                 CODE_BUILTIN_TOOLS
+                    + 1
                     + shodh_rag::connectors::github::tools::all_names().len()
                     + 1
                     + crate::agent_tools::CODE_REVIEW_TOOL_NAMES.len()

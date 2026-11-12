@@ -8,7 +8,7 @@
  * request failed before the run started, or an interrupt timed out.
  */
 
-import type { AgentEvent, GroundingReport, PlanItem, RevisionReason, RiskTier } from './events';
+import type { AgentEvent, GroundingReport, PlanItem, PlanStatus, RevisionReason, RiskTier } from './events';
 import type { PdfRegion } from '../ask/types';
 import { parseRegions } from '../ask/viewer/regionGeometry.ts';
 import { readProviderError } from '../modelPicker/modelTypes.ts';
@@ -421,15 +421,23 @@ export function passagesFromDetail(detail: unknown): Passage[] {
   return out;
 }
 
-/** A plan item from an event; items from older builds lack the need fields. */
+const PLAN_STATUSES: readonly PlanStatus[] = ['pending', 'in_progress', 'done', 'blocked'];
+
+/**
+ * A plan item from an event; items from older builds lack the need fields, and a status
+ * this version does not know reads as to do. Only a blocked item keeps a reason.
+ */
 function planItem(item: PlanItem): PlanItem {
+  const status: PlanStatus = PLAN_STATUSES.includes(item.status) ? item.status : 'pending';
+  const reason = status === 'blocked' && typeof item.reason === 'string' && item.reason.trim() !== '' ? item.reason.trim() : null;
   return {
     id: item.id,
     text: item.text,
-    status: item.status,
+    status,
     need: item.need === true,
     coverage: item.coverage === 'covered' || item.coverage === 'missing' ? item.coverage : null,
     evidence: Array.isArray(item.evidence) ? item.evidence.filter(n => Number.isInteger(n)) : [],
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -977,4 +985,12 @@ export function fromPersisted(value: unknown): TranscriptState | null {
 /** Plan progress, e.g. { done: 3, total: 5 }. */
 export function planProgress(plan: readonly PlanItem[]): { done: number; total: number } {
   return { done: plan.filter(i => i.status === 'done').length, total: plan.length };
+}
+
+/** Where a plan stands, in words: "3 of 5 steps done", with ", 1 blocked" when any is. */
+export function planSummary(plan: readonly PlanItem[]): string {
+  const { done, total } = planProgress(plan);
+  const blocked = plan.filter(i => i.status === 'blocked').length;
+  const base = `${done} of ${total} ${total === 1 ? 'step' : 'steps'} done`;
+  return blocked > 0 ? `${base}, ${blocked} blocked` : base;
 }

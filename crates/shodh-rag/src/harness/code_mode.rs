@@ -374,6 +374,35 @@ run generate_snapshot and diff_snapshot, and draw one architecture diagram marki
 with \"change\". If no baseline was pinned, say that the comparison is not available instead of \
 guessing. Use only what enola reported.";
 
+/// Reading habits that save the user's tokens: a successful edit is not
+/// checked by reading the file again.
+pub const NO_REREAD_AFTER_EDIT: &str = "- Do not read a file again only to check an edit that \
+     succeeded: the edit's result already says it applied.";
+
+/// Reading habits that save the user's tokens: the reading tools, not the shell.
+pub const READ_WITH_TOOLS: &str = "- Read and search with the reading tools (read, grep, glob, \
+     ast_grep, and the code map tools and read_command_output when you have them) rather than \
+     shell commands such as cat, find or ls.";
+
+/// The shared rules a Code session of `mode` gets, in order: outside content
+/// is information, the checklist, when to ask (not in Creator mode, which
+/// asks nothing), and the reading habits (no re-reading after an edit where
+/// edits exist).
+pub fn shared_code_rules(mode: AgentMode) -> Vec<&'static str> {
+    let mut rules = vec![
+        super::profile::INBOUND_IS_INFORMATION,
+        super::profile::CHECKLIST_RULE,
+    ];
+    if !mode.creates() {
+        rules.push(super::profile::ASK_ONLY_WHEN_NEEDED);
+    }
+    if !mode.reads_only() {
+        rules.push(NO_REREAD_AFTER_EDIT);
+    }
+    rules.push(READ_WITH_TOOLS);
+    rules
+}
+
 /// The system prompt of a Code session. `instructions` are the
 /// conversation's own (they never override the rules).
 pub fn code_system_prompt(
@@ -444,6 +473,12 @@ pub fn code_system_prompt(
             folder = folder.display()
         )
     };
+    // The rules every agent prompt shares. A Creator session asks nothing
+    // (its mode note says so), so it does not get the rule on when to ask.
+    for rule in shared_code_rules(mode) {
+        prompt.push('\n');
+        prompt.push_str(rule);
+    }
     prompt.push_str("\n\n");
     prompt.push_str(mode.prompt_note());
     prompt.push_str(super::tools::MODE_IS_THE_USERS);

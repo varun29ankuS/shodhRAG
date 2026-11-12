@@ -47,9 +47,11 @@ pub const MODE_IS_THE_USERS: &str =
     " Only the user changes the mode, in the composer; never claim to have changed it.";
 
 /// Added when the session offers [`mode::SUGGEST_MODE`].
-pub const MODE_SUGGESTION: &str = " When another mode would suit the task better (Plan to look \
-     first, Accept edits or Auto to stop asking for every step), call suggest_mode once with the \
-     mode and one short reason: the user sees a button and decides.";
+pub const MODE_SUGGESTION: &str = " When another mode would clearly suit the task better (Plan to \
+     look first, Accept edits or Auto to stop asking for every step), call suggest_mode once with \
+     the mode and one short reason: the user sees a button and decides. Suggest a mode or a skill \
+     only when it clearly helps, and not again in this conversation once the user went on without \
+     an earlier suggestion (suggest_mode then refuses).";
 
 /// How long an approval prompt waits before it counts as declined.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -397,6 +399,11 @@ pub struct RunScope {
     /// a summary). The web tools send text away without asking only when it
     /// is in these words.
     pub own_words: Option<String>,
+    /// The user went on without a mode the agent suggested earlier in this
+    /// conversation (the app works it out from the conversation's answers, so
+    /// it holds across agent sessions): `suggest_mode` refuses for the rest
+    /// of the conversation.
+    pub suggestion_ignored: bool,
     /// The sent message carries private content besides the user's words
     /// (recalled memories, workspace instructions, carried passages, the
     /// conversation replayed): the session counts as having seen private

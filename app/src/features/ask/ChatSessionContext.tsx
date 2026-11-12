@@ -55,7 +55,7 @@ import { creationsApi, errorText } from '../artifacts/api';
 import { startsBuilding } from '../artifacts/model';
 import type { ModelOverride } from '../modelPicker/modelTypes';
 import type { ChatMessage, SendOptions } from './types';
-import { creatorConfirmed, resolveAgentMode } from '../agent/agentModes';
+import { creatorConfirmed, resolveAgentMode, suggestionIgnored } from '../agent/agentModes';
 import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { onApprovalAnswered } from '../inbox/approvalBus';
 import {
@@ -703,11 +703,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       live.sessionId = sessionId;
       setRuntimeInstalled(true);
       const workspaceId = conversation?.workspaceId ?? null;
+      // A mode suggestion the user went on without is not made again in this conversation.
+      const answers = history.flatMap(m => (m.transcript ? [{ agentMode: m.transcript.agentMode, steps: Object.values(m.transcript.steps) }] : []));
       await api.send(sessionId, prompt, runId, historyOf(history), {
         scope: scopeOf(options, workspaceId),
         ...wireOrigin(origin),
         attachedContext,
         priorRunIds,
+        suggestionIgnored: suggestionIgnored(answers, agentMode),
       });
     } catch (error) {
       const failure = toAgentError(error);

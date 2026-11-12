@@ -1461,7 +1461,9 @@ export function AskView({ sources, searched, llmStatus, onNavigate, onPickImage,
         activeFile={isPreviewed ? preview.hit.sourceFile : null}
         canRetry={canRetry}
         latest={index === messages.length - 1}
-        inlinePlan={!wide}
+        // Wide screens dock the newest answer's plan beside the chat; every earlier
+        // answer keeps its own, folded to its final counts, above its text.
+        inlinePlan={!wide || message.transcript !== latest}
         onOpenSource={openSource}
         onOpenArtifact={setOpenArtifactId}
         onRetry={handleRetry}

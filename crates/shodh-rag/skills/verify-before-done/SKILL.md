@@ -45,11 +45,18 @@ configuration. In order, stopping to fix whatever fails:
 | Types and lint | `cargo clippy`, `npx tsc --noEmit`, `ruff check .` |
 | Tests | `cargo test`, `npm test`, `pytest`, `go test ./...` |
 | The change itself | The command or case the user reported, run again |
-| The diff | `git diff --stat`, then read every changed file |
+| The diff | `git diff --stat`, then the diff of every changed file |
 
 Reading the diff, check for: changes you did not mean to make, debugging prints
 left behind, secrets or keys, missing error handling, and edge cases the tests
-do not cover.
+do not cover. The diff is enough: a file whose edit succeeded needs no second
+full read.
+
+## Keep the checklist true
+
+When the work has a checklist (`update_plan`), mark a step done only after the
+command that proves it passed just now. A step whose check fails and that you
+cannot fix is blocked: give the failure as its reason, and say so in the report.
 
 ## Never make a check pass by weakening it
 

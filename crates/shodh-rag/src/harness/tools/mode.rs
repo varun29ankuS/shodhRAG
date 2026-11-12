@@ -17,6 +17,11 @@ pub const SUGGEST_MODE: &str = "suggest_mode";
 /// Longest reason shown on the button's line.
 const MAX_REASON_CHARS: usize = 160;
 
+/// What the model is told when the user already passed on a suggestion.
+pub const SUGGESTION_IGNORED: &str = "The user went on without the mode you suggested earlier in \
+     this conversation, so no more suggestions are shown in it. Carry on in the current mode and \
+     do not suggest a mode again.";
+
 pub struct SuggestModeTool;
 
 #[async_trait]
@@ -56,7 +61,12 @@ impl HostTool for SuggestModeTool {
         ToolLoadMode::Essential
     }
 
-    async fn execute(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+        // Once the user went on without an earlier suggestion, the conversation
+        // gets no more: asking again is noise, not help.
+        if ctx.scope().suggestion_ignored {
+            return Err(ToolError::Forbidden(SUGGESTION_IGNORED.to_string()));
+        }
         let name = req_str(&args, "mode", SUGGEST_MODE)?;
         let mode = AgentMode::parse(name)
             .filter(|mode| AgentMode::SUGGESTABLE.contains(mode))
@@ -132,6 +142,47 @@ mod tests {
             // The profile, and so the session's mode, is untouched.
             assert_eq!(profile.mode, mode);
         }
+    }
+
+    #[tokio::test]
+    async fn no_suggestion_once_the_user_went_on_without_one() {
+        use crate::harness::tools::RunScope;
+        let profile = AgentProfile {
+            allowed_tools: vec![SUGGEST_MODE.into()],
+            ..AgentProfile::assistant()
+        };
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(std::sync::Arc::new(SuggestModeTool))
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let ctx =
+            ToolContext::new("run-2", "step-1", tx).with_scope(std::sync::Arc::new(RunScope {
+                suggestion_ignored: true,
+                ..RunScope::default()
+            }));
+        let outcome = registry
+            .dispatch(
+                ToolCall {
+                    tool: SUGGEST_MODE.into(),
+                    args: json!({"mode": "plan", "reason": "Look first"}),
+                    call_index: 1,
+                },
+                &profile,
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(!outcome.ok);
+        assert!(
+            outcome
+                .text_for_model
+                .contains("do not suggest a mode again"),
+            "{}",
+            outcome.text_for_model
+        );
+        // No button reaches the answer.
+        assert!(outcome.detail.is_none());
     }
 
     #[tokio::test]

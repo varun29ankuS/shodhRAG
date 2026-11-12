@@ -30,12 +30,15 @@
 //!   `shodh/…` branches, no workflow changes, merge only when GitHub says ready).
 //! - [`git`]: fetch and push done by Shodh, in a mirror it owns, with the sign-in given
 //!   to that one git process only.
+//! - [`mentions`]: @mentions in what Shodh posts are shown as code unless the user
+//!   wrote them, so a post notifies nobody they did not name.
 //! - [`tools`]: the agent's GitHub tools.
 
 pub mod api;
 pub mod device;
 pub mod git;
 pub mod limits;
+pub mod mentions;
 pub mod remote;
 pub mod token;
 pub mod tools;

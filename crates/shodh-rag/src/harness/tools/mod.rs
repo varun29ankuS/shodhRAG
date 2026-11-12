@@ -21,7 +21,7 @@ pub mod search;
 pub mod sources;
 pub mod web;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -119,6 +119,45 @@ pub struct RunPassages {
     /// since the model's conversation keeps it ([`RunPassages::private_seen`]).
     /// Web passages are public and do not count.
     private: AtomicBool,
+    /// The web addresses the session has met, kept across runs: what tells
+    /// `fetch_url` an address came from the user or a tool, not the model.
+    seen: Mutex<SeenUrls>,
+}
+
+/// Most addresses kept per kind; past it new ones are not kept, so a fetch
+/// of one of them asks (the safe side).
+pub const MAX_SEEN_URLS: usize = 5_000;
+
+/// Web addresses a session has met, by where they appeared, each as
+/// [`web::url_key`] writes it.
+#[derive(Debug, Default)]
+struct SeenUrls {
+    /// In the user's own words, in any run.
+    user: BTreeSet<String>,
+    /// Of the session's web passages (search results, pages read).
+    web: BTreeSet<String>,
+    /// In any tool result the model was shown.
+    tools: BTreeSet<String>,
+}
+
+fn keep_urls(set: &mut BTreeSet<String>, text: &str) {
+    for url in web::urls_in(text) {
+        if set.len() >= MAX_SEEN_URLS {
+            break;
+        }
+        set.insert(url);
+    }
+}
+
+/// Where a web address appeared in this session (see [`ToolContext::url_known`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KnownUrl {
+    /// The user wrote it, in this message or an earlier one.
+    pub from_user: bool,
+    /// It is one of the session's web results or pages read.
+    pub from_web: bool,
+    /// A tool result the model was shown held it.
+    pub from_tools: bool,
 }
 
 impl RunPassages {
@@ -137,6 +176,40 @@ impl RunPassages {
     /// Note that the session holds private content ([`Self::private_seen`]).
     pub fn mark_private(&self) {
         self.private.store(true, Ordering::SeqCst);
+    }
+
+    fn lock_seen(&self) -> std::sync::MutexGuard<'_, SeenUrls> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Keep the web addresses in the user's own words (`text`).
+    pub fn note_user_urls(&self, text: &str) {
+        keep_urls(&mut self.lock_seen().user, text);
+    }
+
+    /// Keep the web addresses in a tool result the model was shown.
+    pub fn note_tool_urls(&self, text: &str) {
+        keep_urls(&mut self.lock_seen().tools, text);
+    }
+
+    /// Where `url` appeared in this session so far.
+    pub fn url_known(&self, url: &str) -> KnownUrl {
+        let key = web::url_key(url);
+        let seen = self.lock_seen();
+        KnownUrl {
+            from_user: seen.user.contains(key),
+            from_web: seen.web.contains(key),
+            from_tools: seen.tools.contains(key),
+        }
+    }
+
+    fn note_web_passage(&self, passage: &CitedPassage) {
+        if passage.web {
+            let mut seen = self.lock_seen();
+            if seen.web.len() < MAX_SEEN_URLS {
+                seen.web.insert(web::url_key(&passage.path).to_string());
+            }
+        }
     }
 
     /// Whether this session has had private content in any run so far:
@@ -236,6 +309,7 @@ impl RunPassages {
         if !passage.web {
             self.mark_private();
         }
+        self.note_web_passage(&passage);
         self.lock().insert(passage.n, passage);
     }
 
@@ -247,6 +321,7 @@ impl RunPassages {
         if !passage.web {
             self.mark_private();
         }
+        self.note_web_passage(&passage);
         let mut cited = self.lock();
         if let Some(existing) = cited
             .values()
@@ -766,6 +841,27 @@ impl ToolContext {
     /// app knows them.
     pub fn user_words(&self) -> Option<&str> {
         self.scope.own_words.as_deref()
+    }
+
+    /// Where `url` appeared in this session: in the user's words (this
+    /// message or an earlier one), among its web results and pages read
+    /// (this run's included), or in a tool result.
+    pub fn url_known(&self, url: &str) -> KnownUrl {
+        let key = web::url_key(url);
+        let mut known = self.passages.url_known(url);
+        known.from_user |= self
+            .user_words()
+            .is_some_and(|words| !key.is_empty() && words.contains(key));
+        known.from_web |= self
+            .web_sources()
+            .iter()
+            .any(|source| web::url_key(source) == key);
+        known
+    }
+
+    /// Keep the web addresses of a tool result this call showed the model.
+    pub fn note_tool_urls(&self, text: &str) {
+        self.passages.note_tool_urls(text);
     }
 
     fn audit_principal(&self) -> &str {
@@ -1365,7 +1461,12 @@ impl ToolRegistry {
         let outcome = match result {
             Ok(output) => DispatchOutcome {
                 ok: true,
-                text_for_model: cap_for_model(&output.text_for_model),
+                text_for_model: {
+                    let shown = cap_for_model(&output.text_for_model);
+                    // Addresses the model was shown are not ones it made up.
+                    ctx.note_tool_urls(&shown);
+                    shown
+                },
                 summary: truncate_chars(&output.summary_for_ui, 160),
                 detail: output.detail,
                 invalid_arguments: false,
@@ -2882,7 +2983,7 @@ mod tests {
         assert!(web::fetch_needs_confirmation(
             "https://x.example/?q=error",
             ctx.private_content(),
-            &ctx.web_sources(),
+            ctx.url_known("https://x.example/?q=error"),
             None
         ));
     }
@@ -2922,7 +3023,34 @@ mod tests {
         assert!(web::fetch_needs_confirmation(
             "https://x.example/?q=history",
             ctx.private_content(),
-            &ctx.web_sources(),
+            ctx.url_known("https://x.example/?q=history"),
+            None
+        ));
+    }
+
+    #[tokio::test]
+    async fn addresses_in_tool_results_are_kept_for_the_session() {
+        let (reg, _) = registry(RiskTier::Read);
+        let (ctx, _rx) = ctx();
+        let url = "https://site.example/page";
+        assert_eq!(ctx.url_known(url), KnownUrl::default());
+        let out = reg
+            .dispatch(
+                call("probe", json!({ "target": url })),
+                &profile(&["probe"]),
+                &ApprovalGate::default(),
+                &ctx,
+            )
+            .await;
+        assert!(out.ok);
+        assert!(ctx.url_known(url).from_tools);
+        assert!(!ctx.url_known("https://site.example/other").from_tools);
+        // The probe's result is private, so it does not vouch for a fetch.
+        assert!(ctx.private_content());
+        assert!(web::fetch_needs_confirmation(
+            url,
+            ctx.private_content(),
+            ctx.url_known(url),
             None
         ));
     }

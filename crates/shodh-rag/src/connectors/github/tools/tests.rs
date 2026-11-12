@@ -16,7 +16,7 @@ use super::*;
 use crate::harness::events::AgentEvent;
 use crate::harness::modes::AgentMode;
 use crate::harness::profile::AgentProfile;
-use crate::harness::tools::{ApprovalGate, DispatchOutcome, ToolCall};
+use crate::harness::tools::{ApprovalGate, DispatchOutcome, RunScope, ToolCall};
 
 struct FakeHost {
     session: Option<Session>,
@@ -132,10 +132,35 @@ async fn run_in_mode(
     args: Value,
     decide: Option<bool>,
     mode: AgentMode,
+    on_ask: impl FnMut(),
+) -> (DispatchOutcome, Vec<(String, Value)>) {
+    run_scoped(
+        registry,
+        run_id,
+        tool,
+        args,
+        decide,
+        mode,
+        RunScope::default(),
+        on_ask,
+    )
+    .await
+}
+
+/// [`run_in_mode`] for a message whose scope is `scope` (the user's own words, say).
+#[allow(clippy::too_many_arguments)]
+async fn run_scoped(
+    registry: &Arc<ToolRegistry>,
+    run_id: &str,
+    tool: &str,
+    args: Value,
+    decide: Option<bool>,
+    mode: AgentMode,
+    scope: RunScope,
     mut on_ask: impl FnMut(),
 ) -> (DispatchOutcome, Vec<(String, Value)>) {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let ctx = ToolContext::new(run_id, "step-1", tx);
+    let ctx = ToolContext::new(run_id, "step-1", tx).with_scope(Arc::new(scope));
     let gate = Arc::new(ApprovalGate::default());
     let profile = AgentProfile {
         allowed_tools: all_names().iter().map(|s| s.to_string()).collect(),
@@ -694,6 +719,65 @@ async fn a_comment_posts_exactly_the_approved_text_and_always_asks() {
     let seen = log.lock().unwrap();
     let body: Value = serde_json::from_str(&seen[1].body).unwrap();
     assert_eq!(body, json!({ "body": text }));
+}
+
+#[tokio::test]
+async fn a_comment_notifies_only_the_mentions_the_user_wrote_and_says_so() {
+    let cases = [
+        // Nobody named by the user: every mention is posted as code.
+        (
+            None,
+            "Fixed, thanks @alice. cc @octo-org/maintainers",
+            "Fixed, thanks `@alice`. cc `@octo-org/maintainers`",
+            None,
+        ),
+        // The user asked to thank @alice: only that mention notifies, and the card says so.
+        (
+            Some("comment on #12 and thank @alice"),
+            "Fixed, thanks @alice. cc @octo-org/maintainers",
+            "Fixed, thanks @alice. cc `@octo-org/maintainers`",
+            Some("This will notify @alice."),
+        ),
+    ];
+    for (words, asked_body, posted, notifies) in cases {
+        let data = tempfile::tempdir().unwrap();
+        let (base, log) = serve(vec![
+            Reply::json(200, issue_json(12, "Login fails")),
+            Reply::json(
+                201,
+                json!({"html_url": "https://github.com/octo-org/hello/issues/12#issuecomment-2"}),
+            ),
+        ])
+        .await;
+        let fake = host(Some(session(
+            &base,
+            data.path(),
+            "file:///n/",
+            vec![grant("octo-org", "hello", true, false)],
+        )));
+        let (outcome, asked) = run_scoped(
+            &ask_registry(fake),
+            "run-1",
+            GITHUB_COMMENT,
+            json!({"repo": "octo-org/hello", "number": 12, "body": asked_body}),
+            Some(true),
+            AgentMode::Ask,
+            RunScope {
+                own_words: words.map(str::to_string),
+                ..RunScope::default()
+            },
+            || {},
+        )
+        .await;
+        assert!(outcome.ok, "{}", outcome.text_for_model);
+        assert_eq!(asked.len(), 1);
+        // The card shows the text as it is posted, and who it notifies.
+        assert_eq!(asked[0].1["comment"], posted);
+        assert_eq!(asked[0].1.get("notifies").and_then(Value::as_str), notifies);
+        let seen = log.lock().unwrap();
+        let body: Value = serde_json::from_str(&seen[1].body).unwrap();
+        assert_eq!(body, json!({ "body": posted }));
+    }
 }
 
 #[tokio::test]

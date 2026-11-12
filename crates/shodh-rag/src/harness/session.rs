@@ -1908,6 +1908,11 @@ impl Inner {
             if scope.private_context || scope.own_words.is_none() {
                 self.passages_in_run.mark_private();
             }
+            // Addresses the user wrote stay theirs for the rest of the session:
+            // `fetch_url` opens them without asking.
+            if let Some(words) = scope.own_words.as_deref() {
+                self.passages_in_run.note_user_urls(words);
+            }
             self.plan_in_run.reset();
             let question = scope
                 .question

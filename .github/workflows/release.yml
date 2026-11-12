@@ -679,7 +679,9 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           quarantine_value() { printf '0083;%x;Safari;%s' "$(date +%s)" "$(uuidgen)"; }
-          dmgs=("$RUNNER_TEMP"/dist/*.dmg)
+          # The artifact keeps the bundle folder layout (dmg/, macos/).
+          dmgs=()
+          while IFS= read -r -d '' f; do dmgs+=("$f"); done < <(find "$RUNNER_TEMP/dist" -name '*.dmg' -type f -print0)
           if [ "${#dmgs[@]}" -ne 1 ]; then echo "::error::Expected one dmg in the artifact, found ${#dmgs[@]}"; exit 1; fi
           dmg="${dmgs[0]}"
           xattr -w com.apple.quarantine "$(quarantine_value)" "$dmg"

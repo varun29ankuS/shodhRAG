@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator,
-    StringArray, UInt32Array,
+    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -103,9 +102,8 @@ impl LanceStore {
             )
             .context("Failed to create seed RecordBatch")?;
 
-            let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
             self.db
-                .create_table(&self.table_name, Box::new(batches))
+                .create_table(&self.table_name, batch)
                 .execute()
                 .await
                 .context("Failed to create documents table")?;
@@ -240,9 +238,8 @@ impl LanceStore {
         )
         .context("Failed to create RecordBatch")?;
 
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
         table
-            .add(Box::new(reader))
+            .add(batch)
             .execute()
             .await
             .context("Failed to insert chunks")?;

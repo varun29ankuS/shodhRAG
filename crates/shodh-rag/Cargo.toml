@@ -7,9 +7,9 @@ authors = ["Roshera Team"]
 
 [dependencies]
 # Vector storage + ANN
-lancedb = "0.26"
-arrow-array = "57"
-arrow-schema = "57"
+lancedb = "0.41"
+arrow-array = "58"
+arrow-schema = "58"
 
 # Full-text search
 tantivy = "0.27"

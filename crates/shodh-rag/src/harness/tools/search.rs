@@ -1834,13 +1834,14 @@ mod tests {
             stored("C:/docs/other/outside.txt"),
         ];
 
-        // A folder path as the model writes it (another case, backslashes,
-        // a trailing separator), and the folder's name: its source.
-        for folder in [
-            json!([r"C:\Docs\Other\"]),
-            json!(["c:/docs/other"]),
-            json!(["other"]),
-        ] {
+        // A folder path as the model writes it (a trailing separator; on
+        // Windows another case and backslashes), and the folder's name: its source.
+        let mut folders = vec![json!(["C:/docs/other/"]), json!(["other"])];
+        if cfg!(windows) {
+            folders.push(json!([r"C:\Docs\Other\"]));
+            folders.push(json!(["c:/docs/other"]));
+        }
+        for folder in folders {
             let (paths, text) =
                 search_paths(&tool, RunScope::default(), search(folder.clone())).await;
             assert_eq!(paths, other, "{folder}");

@@ -788,7 +788,7 @@ jobs:
                 @executable_path/*) path="$(dirname "$exe")/${dep#@executable_path/}" ;;
                 @loader_path/*) path="$dir/${dep#@loader_path/}" ;;
                 @rpath/*)
-                  for r in "${rpaths[@]}"; do
+                  for r in ${rpaths[@]+"${rpaths[@]}"}; do
                     r=${r/#@executable_path/$(dirname "$exe")}
                     r=${r/#@loader_path/$dir}
                     if [ -e "$r/${dep#@rpath/}" ]; then path="$r/${dep#@rpath/}"; break; fi
@@ -862,7 +862,7 @@ jobs:
 
           open --help 2>&1 | grep -q -- '--env' || { echo "::error::open on this runner has no --env"; exit 1; }
           start=$(now_ms)
-          open -n -W --env "HOME=$tester_home" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" &
+          open -n -W --env "HOME=$tester_home" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" >"$evidence/open.txt" 2>&1 &
           open_pid=$!
           echo "OPEN_PID=$open_pid" >> "$GITHUB_ENV"
 

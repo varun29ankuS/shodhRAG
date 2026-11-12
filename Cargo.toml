@@ -96,3 +96,9 @@ debug-assertions = false
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# docx-rs 0.4.22 is the latest release and requires zip 8.6 (RUSTSEC-2026-0367,
+# -0368, -0369, -0429). The move to zip 9 is merged upstream but unreleased;
+# drop this once a release carries it.
+[patch.crates-io]
+docx-rs = { git = "https://github.com/bokuweb/docx-rs", rev = "ad7fede6a7f3b61a097c28d0c39dd04626e44701" }

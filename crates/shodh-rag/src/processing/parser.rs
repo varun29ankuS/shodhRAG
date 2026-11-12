@@ -1011,7 +1011,10 @@ impl DocumentParser {
                 Err(_) => continue,
             };
 
-            let name = entry.name().to_string();
+            let name = match entry.name() {
+                Ok(name) => name.into_owned(),
+                Err(_) => continue,
+            };
             // Slide XML files: ppt/slides/slide1.xml, slide2.xml, ...
             if !name.starts_with("ppt/slides/slide") || !name.ends_with(".xml") {
                 continue;

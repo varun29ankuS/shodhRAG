@@ -19,7 +19,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@sentry/react": "^10.17.0",
     "@tanstack/react-virtual": "^3.14.15",
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.0",
     "@tauri-apps/plugin-dialog": "2.4.2",
     "@tauri-apps/plugin-fs": "^2.4.1",
@@ -29,11 +29,11 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "d3-force": "3.0.0",
-    "dompurify": "^3.3.0",
+    "dompurify": "^3.4.17",
     "framer-motion": "^12.23.22",
-    "katex": "0.16.25",
+    "katex": "0.18.2",
     "lucide-react": "^0.544.0",
-    "mermaid": "^11.12.0",
+    "mermaid": "^11.17.2",
     "pdfjs-dist": "^6.3.289",
     "postcss": "^8.5.6",
     "react": "^19.1.0",
@@ -51,7 +51,7 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/d3-force": "3.0.10",
     "@types/node": "^24.7.0",
     "@types/react": "^19.1.8",
@@ -59,5 +59,8 @@
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
     "vite": "^6.0.0"
+  },
+  "overrides": {
+    "katex": "$katex"
   }
 }

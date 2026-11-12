@@ -1,0 +1,31 @@
+# Advisories cargo audit reports that have no fix this workspace can take.
+# Each entry says where the crate comes from and why it stays. Remove an
+# entry when the crate leaves Cargo.lock or a patched release can be used.
+
+[advisories]
+ignore = [
+    # glib 0.18 VariantStrIter is unsound; fixed in glib 0.20. Linux only:
+    # gtk 0.18 and webkit2gtk 2.0 under tauri/wry pin glib 0.18, and nothing
+    # here calls VariantStrIter.
+    "RUSTSEC-2024-0429",
+    # proc-macro-error is unmaintained. Linux only, via glib-macros 0.18.
+    "RUSTSEC-2024-0370",
+    # zvariant, zbus_names and zvariant_derive are unmaintained since their
+    # merge into zbus 6. The 5.x copies build on Linux only, via zbus 5 under
+    # notify-rust, ashpd, tauri-plugin-opener and tauri-plugin-single-instance.
+    # The 4.x copies sit in the lock for keyring's async-secret-service
+    # feature, which is off, so they never build.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+    # ttf-parser is unmaintained. shodh-eval moved to skrifa; docling-pdf,
+    # lopdf (via pdf-extract) and pdf_oxide still depend on it.
+    "RUSTSEC-2026-0192",
+    # paste is unmaintained. Compile-time macro only, via lance-bitpacking,
+    # tokenizers, simba, rav1e and macro_rules_attribute.
+    "RUSTSEC-2024-0436",
+    # unsafe-libyaml is unmaintained. lance-tokenizer -> lindera ->
+    # serde_yaml_ng. lindera only loads YAML for lindera/* FTS tokenizers;
+    # shodh-rag builds its FTS indexes with the default simple tokenizer.
+    "RUSTSEC-2024-0449",
+]

@@ -18,6 +18,11 @@ name: Release
 #                   (tauri bundle), the only step that sees the key. In the
 #                   `release` environment. Uploaded as workflow artifacts; the
 #                   build has no write token.
+#   launch-macos    the dmg installed as a tester installs it (quarantined, copied
+#                   out of the mounted image), its signature, architectures,
+#                   minimum macOS and libraries checked, then started on a
+#                   macOS runner until the main window reports ready, kept up
+#                   and quit. Publishing waits for it.
 #   publish         (environment `release`, one at a time across releases)
 #                   checks the artifacts' signatures with the release key,
 #                   stages the six release files with latest.json, uploads them
@@ -43,10 +48,10 @@ name: Release
 #
 # Build-only runs (called by ci.yml without a tag: on pull requests whose
 # changed files can affect the installers, on every master push and in the
-# nightly run): plan, build, then verify checks the installers the builds
-# uploaded, with update bundles signed by a throwaway key made for that run
-# (pr-key): pull requests never see the release key. verify also stages them
-# as a release and runs the publish-time checks on the result.
+# nightly run): plan, build and launch-macos, then verify checks the installers
+# the builds uploaded, with update bundles signed by a throwaway key made for
+# that run (pr-key): pull requests never see the release key. verify also
+# stages them as a release and runs the publish-time checks on the result.
 # published-release runs the publish and smoke checks, read-only, against the
 # latest published release. No release is created or changed. ci.yml's
 # Changes job decides when a pull request needs this (a deny-list: only
@@ -637,6 +642,375 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # The macOS app installed and started the way a tester gets it: the dmg the
+  # build uploaded (the file users download), quarantined as a browser marks a
+  # download, copied out of the mounted image into an Applications folder,
+  # checked for what makes macOS refuse an app or crash it at launch, then
+  # started through Launch Services with an empty home folder of its own (a
+  # first run that cannot touch the runner's data), held until the main window
+  # reports its first load (startup_ready, app/src-tauri/src/startup.rs), kept
+  # running a while, and quit with the system's Quit command. Gatekeeper's
+  # verdict is recorded in the job summary, not gated: an app without a
+  # Developer ID signature and notarization is refused until it has both.
+  launch-macos:
+    name: Launch test (macOS)
+    needs: [plan, build]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && needs.build.result == 'success' }}
+    # The build's image. Install, checks, launch and quit take a few minutes;
+    # 20 bounds a hung step instead of the default 6 hours.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      BUILD_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: shodh-macos-aarch64
+          path: ${{ runner.temp }}/dist
+
+      # What a browser writes on a download (Safari's agent name), on the dmg:
+      # mounting a quarantined image quarantines what is copied out of it.
+      - name: Install it like a tester
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          quarantine_value() { printf '0083;%x;Safari;%s' "$(date +%s)" "$(uuidgen)"; }
+          dmgs=("$RUNNER_TEMP"/dist/*.dmg)
+          if [ "${#dmgs[@]}" -ne 1 ]; then echo "::error::Expected one dmg in the artifact, found ${#dmgs[@]}"; exit 1; fi
+          dmg="${dmgs[0]}"
+          xattr -w com.apple.quarantine "$(quarantine_value)" "$dmg"
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
+          apps=("$mount"/*.app)
+          if [ "${#apps[@]}" -ne 1 ]; then echo "::error::Expected one app in $(basename "$dmg"), found ${#apps[@]}"; exit 1; fi
+          install_dir="$RUNNER_TEMP/Applications"
+          mkdir -p "$install_dir"
+          app="$install_dir/$(basename "${apps[0]}")"
+          ditto "${apps[0]}" "$app"
+          hdiutil detach "$mount" >/dev/null
+          if quarantine=$(xattr -p com.apple.quarantine "$app" 2>/dev/null); then
+            echo "Quarantined through the image, as a downloaded app is: $quarantine"
+            echo "QUARANTINE_FROM=the image" >> "$GITHUB_ENV"
+          else
+            # A browser download of the app itself carries it on the app.
+            xattr -w com.apple.quarantine "$(quarantine_value)" "$app"
+            echo "The image did not pass the quarantine on; set on the app: $(xattr -p com.apple.quarantine "$app")"
+            echo "QUARANTINE_FROM=set on the app (the image did not pass it on)" >> "$GITHUB_ENV"
+          fi
+          echo "Installed $(basename "$dmg") as $app"
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      # The usual causes of "can't be opened" and of a crash at launch, each
+      # checked on the installed copy: its signature, the architecture and
+      # minimum macOS of every Mach-O file in it, and where every library it
+      # loads comes from.
+      - name: What can be checked before it starts
+        run: |
+          set -euo pipefail
+          plist="$APP/Contents/Info.plist"
+          plutil -lint "$plist"
+          exe="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+          [ -x "$exe" ] || { echo "::error::$exe is not an executable file"; exit 1; }
+          failed=0
+          fail() { echo "::error::$*"; failed=1; }
+
+          # Signature: ad hoc (no certificate, no team) over the whole bundle,
+          # with its resources sealed and Info.plist bound. An executable with
+          # only the linker's signature, or a broken seal, is "damaged".
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          sig=$(codesign -dvvv "$APP" 2>&1)
+          echo "$sig"
+          grep -qxF "Identifier=$id" <<< "$sig" || fail "The signature's identifier is not $id"
+          grep -qxF 'Signature=adhoc' <<< "$sig" || fail 'The app is not signed ad hoc'
+          grep -qxF 'TeamIdentifier=not set' <<< "$sig" || fail 'The signature names a team'
+          if grep -q '^Authority=' <<< "$sig"; then fail 'The signature has a certificate chain; expected ad hoc'; fi
+          grep -Eq '^CodeDirectory .* flags=0x[0-9a-f]+\(([a-z-]+,)*adhoc(,[a-z-]+)*\)' <<< "$sig" || fail 'The code directory is not marked adhoc'
+          if grep -q 'linker-signed' <<< "$sig"; then fail 'The app carries only the linker signature'; fi
+          grep -q '^Sealed Resources version=2 ' <<< "$sig" || fail 'The resources are not sealed'
+          grep -q '^Info.plist entries=' <<< "$sig" || fail 'Info.plist is not bound to the signature'
+
+          # Minimum macOS: the runner must be able to run it, and no binary
+          # may need a newer macOS than Info.plist promises (an older Mac
+          # would start it and crash).
+          ver_le() {
+            local IFS=. i x y
+            local -a a b
+            read -r -a a <<< "$1"
+            read -r -a b <<< "$2"
+            for i in 0 1 2; do
+              x=${a[i]:-0}; y=${b[i]:-0}
+              if [ "$x" -lt "$y" ]; then return 0; fi
+              if [ "$x" -gt "$y" ]; then return 1; fi
+            done
+            return 0
+          }
+          min=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")
+          os=$(sw_vers -productVersion)
+          echo "LSMinimumSystemVersion $min; this runner runs macOS $os"
+          ver_le "$min" "$os" || fail "LSMinimumSystemVersion $min is newer than the runner's macOS $os"
+
+          # Every Mach-O file: built for this target only, needing no newer
+          # macOS than the minimum, and loading only macOS's libraries or the
+          # app's own (never a build machine's or Homebrew's).
+          case "$BUILD_TARGET" in aarch64-*) want=arm64 ;; *) want=x86_64 ;; esac
+          root=$(cd "$APP" && pwd -P)
+          inside() { case "$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")" in "$root"/*) return 0 ;; *) return 1 ;; esac; }
+          machos=()
+          while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q '^Mach-O'; then machos+=("$f"); fi
+          done < <(find "$APP/Contents" -type f -print0)
+          echo "Mach-O files in the app: ${#machos[@]}"
+          for f in "${machos[@]}"; do
+            rel=${f#"$APP"/}
+            archs=$(lipo -archs "$f")
+            minos=$(otool -l "$f" | awk '/cmd LC_BUILD_VERSION/ {b=1} b && $1 == "minos" {print $2; exit} /cmd LC_VERSION_MIN_MACOSX/ {v=1} v && $1 == "version" {print $2; exit}')
+            echo "$rel: $archs, minimum macOS ${minos:-unknown}"
+            [ "$archs" = "$want" ] || fail "$rel is built for '$archs', not $want"
+            if [ -z "$minos" ]; then
+              fail "$rel names no minimum macOS"
+            elif ! ver_le "$minos" "$min"; then
+              fail "$rel needs macOS $minos, newer than LSMinimumSystemVersion $min"
+            fi
+            dir=$(dirname "$f")
+            self=$(otool -D "$f" | tail -n +2)
+            rpaths=()
+            while IFS= read -r r; do rpaths+=("$r"); done < <(otool -l "$f" "$exe" | awk '/cmd LC_RPATH/ {r=1} r && $1 == "path" {print $2; r=0}' | sort -u)
+            while IFS= read -r dep; do
+              if [ -z "$dep" ] || [ "$dep" = "$self" ]; then continue; fi
+              path=""
+              case "$dep" in
+                /usr/lib/* | /System/Library/*) continue ;;
+                @executable_path/*) path="$(dirname "$exe")/${dep#@executable_path/}" ;;
+                @loader_path/*) path="$dir/${dep#@loader_path/}" ;;
+                @rpath/*)
+                  for r in "${rpaths[@]}"; do
+                    r=${r/#@executable_path/$(dirname "$exe")}
+                    r=${r/#@loader_path/$dir}
+                    if [ -e "$r/${dep#@rpath/}" ]; then path="$r/${dep#@rpath/}"; break; fi
+                  done
+                  ;;
+                *) fail "$rel loads $dep, which is neither part of macOS nor in the app (a build machine or Homebrew path)"; continue ;;
+              esac
+              if [ -z "$path" ] || [ ! -e "$path" ]; then
+                fail "$rel loads $dep, which is not in the app"
+              elif ! inside "$path"; then
+                fail "$rel loads $dep from $path, outside the app"
+              else
+                echo "  $dep -> ${path#"$APP"/}"
+              fi
+            done < <(otool -L "$f" | tail -n +2 | awk '{print $1}')
+          done
+          exit "$failed"
+
+      # Recorded, not gated: without a Developer ID signature and
+      # notarization Gatekeeper refuses the app, and testers open it with
+      # Open Anyway (.github/release-notes.md, README.md).
+      - name: Gatekeeper's verdict (recorded)
+        run: |
+          set -euo pipefail
+          status=$(spctl --status 2>&1) || true
+          if verdict=$(spctl --assess --type execute -vv "$APP" 2>&1); then result=accepted; else result=rejected; fi
+          printf '%s\n%s: %s\n' "$status" "$result" "$verdict"
+          {
+            echo '### Gatekeeper (recorded, not gated until the app is notarized)'
+            echo
+            echo "- \`spctl --status\`: ${status}"
+            echo "- \`spctl --assess --type execute\`: **${result}**"
+            echo "- quarantine: ${QUARANTINE_FROM}"
+            echo
+            echo '```'
+            echo "$verdict"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Ready is the log line the main window's first-load handshake writes
+      # (startup.rs): the frontend has mounted the shell and loaded the index,
+      # the model status, the statistics and the saved conversations, which
+      # it can only do once the backend's setup has finished. The app runs
+      # with HOME set to an empty folder: its data, WebKit storage and
+      # preferences are a first run's, and nothing of the runner's is read.
+      - name: Launch it and wait until it is ready
+        run: |
+          set -euo pipefail
+          now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+          plist="$APP/Contents/Info.plist"
+          exe="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+          tester_home="$RUNNER_TEMP/tester-home"
+          evidence="$RUNNER_TEMP/launch-evidence"
+          mkdir -p "$tester_home" "$evidence"
+          data_dir="$tester_home/Library/Application Support/$id"
+          log="$data_dir/logs/shodh.log"
+          # Crash reports go to the logged-in user's folders whatever HOME the
+          # app had: these are the ones from before the launch.
+          for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [ -d "$d" ]; then find "$d" -type f; fi
+          done | sort > "$evidence/crash-reports-before.txt"
+          {
+            echo "EXE=$exe"
+            echo "BUNDLE_ID=$id"
+            echo "TESTER_HOME=$tester_home"
+            echo "EVIDENCE=$evidence"
+            echo "APP_LOG=$log"
+          } >> "$GITHUB_ENV"
+          if pgrep -f "$exe" >/dev/null; then echo "::error::Shodh is already running"; exit 1; fi
+
+          open --help 2>&1 | grep -q -- '--env' || { echo "::error::open on this runner has no --env"; exit 1; }
+          start=$(now_ms)
+          open -n -W --env "HOME=$tester_home" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" &
+          open_pid=$!
+          echo "OPEN_PID=$open_pid" >> "$GITHUB_ENV"
+
+          # 120 s: the slowest first start a tester would wait through without
+          # calling the app hung (a fresh image's first launch includes the
+          # system's first assessment of the app, WebKit's first start and
+          # creating the index). Slower fails.
+          deadline=$((start + 120000))
+          pid=""; process_ms=""; ready_ms=""
+          while :; do
+            now=$(now_ms)
+            if [ -z "$pid" ]; then
+              pid=$(pgrep -n -f "$exe" || true)
+              if [ -n "$pid" ]; then
+                process_ms=$((now - start))
+                echo "Process $pid after ${process_ms} ms"
+              elif ! kill -0 "$open_pid" 2>/dev/null; then
+                status=0; wait "$open_pid" || status=$?
+                echo "::error::open returned (status $status) and Shodh is not running: macOS refused to start it"
+                exit 1
+              fi
+            elif ! kill -0 "$pid" 2>/dev/null; then
+              echo "::error::Shodh exited before its main window was ready"
+              exit 1
+            fi
+            if [ -f "$log" ] && grep -q 'Main window ready' "$log"; then
+              ready_ms=$((now - start))
+              break
+            fi
+            if [ "$now" -gt "$deadline" ]; then
+              if [ -z "$pid" ]; then echo "::error::Shodh did not start within 120 s"
+              else echo "::error::Shodh started but its main window did not report ready within 120 s"; fi
+              exit 1
+            fi
+            perl -e 'select(undef, undef, undef, 0.25)'
+          done
+          echo "APP_PID=$pid" >> "$GITHUB_ENV"
+          ready_line=$(grep -o 'Main window ready.*' "$log" | head -n 1)
+          echo "$ready_line"
+          # The isolation held: the app's data folder is the tester home's.
+          if ! grep -qF "App data directory: \"$data_dir\"" "$log"; then
+            echo "::error::The app did not use $data_dir as its data folder"
+            grep 'App data directory' "$log" || true
+            exit 1
+          fi
+          {
+            echo '### Launch (first run of the quarantined copy from the dmg)'
+            echo
+            echo "- process started: ${process_ms} ms after \`open\`"
+            echo "- main window ready: ${ready_ms} ms after \`open\`"
+            echo "- ${ready_line}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 15 s after ready covers the delayed startup work: the background
+      # loads started during setup and the calendar re-index 3 s after it
+      # (lib.rs). The first update check (5 minutes) is outside it.
+      - name: It stays up after ready
+        run: |
+          set -euo pipefail
+          end=$(( $(date +%s) + 15 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            if ! kill -0 "$APP_PID" 2>/dev/null; then echo "::error::Shodh exited within 15 s of being ready"; exit 1; fi
+            perl -e 'select(undef, undef, undef, 0.5)'
+          done
+          for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [ -d "$d" ]; then find "$d" -type f; fi
+          done | sort > "$EVIDENCE/crash-reports-after.txt"
+          new=$(comm -13 "$EVIDENCE/crash-reports-before.txt" "$EVIDENCE/crash-reports-after.txt" | grep -i 'shodh' || true)
+          if [ -n "$new" ]; then echo "::error::A crash report for Shodh appeared: $new"; exit 1; fi
+          echo "Still running 15 s after ready, no crash report"
+          echo "- still running 15 s after ready, no crash report" >> "$GITHUB_STEP_SUMMARY"
+
+      # The system's Quit command (what Cmd-Q and logging out send): the app
+      # asks the window to write its saves, waits at most 3 s for it
+      # (shutdown.rs SAVE_WAIT) and stops its connectors and agent runtimes,
+      # each with a bounded wait; 20 s covers all of them. The log's last line
+      # then says it quit, which a crash or a kill never writes.
+      - name: Quit it cleanly
+        run: |
+          set -euo pipefail
+          now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+          start=$(now_ms)
+          osascript -e "tell application id \"$BUNDLE_ID\" to quit" &
+          quit_pid=$!
+          deadline=$((start + 20000))
+          sent=""
+          while kill -0 "$APP_PID" 2>/dev/null || kill -0 "$OPEN_PID" 2>/dev/null; do
+            if [ -z "$sent" ] && ! kill -0 "$quit_pid" 2>/dev/null; then
+              status=0; wait "$quit_pid" || status=$?
+              if [ "$status" -ne 0 ]; then echo "::error::osascript could not send the Quit command (status $status)"; exit 1; fi
+              sent=yes
+            fi
+            if [ "$(now_ms)" -gt "$deadline" ]; then
+              echo "::error::Shodh did not exit within 20 s of the Quit command"
+              kill "$quit_pid" 2>/dev/null || true
+              exit 1
+            fi
+            perl -e 'select(undef, undef, undef, 0.25)'
+          done
+          exited_ms=$(( $(now_ms) - start ))
+          if [ -z "$sent" ]; then
+            status=0; wait "$quit_pid" || status=$?
+            if [ "$status" -ne 0 ]; then echo "::error::osascript could not send the Quit command (status $status)"; exit 1; fi
+          fi
+          tail -n 5 "$APP_LOG"
+          last=$(tail -n 1 "$APP_LOG")
+          if ! grep -qF 'Shodh quit: connectors and agent sessions stopped' <<< "$last"; then
+            echo "::error::The log does not end with the quit line: $last"
+            exit 1
+          fi
+          for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [ -d "$d" ]; then find "$d" -type f; fi
+          done | sort > "$EVIDENCE/crash-reports-after.txt"
+          new=$(comm -13 "$EVIDENCE/crash-reports-before.txt" "$EVIDENCE/crash-reports-after.txt" | grep -i 'shodh' || true)
+          if [ -n "$new" ]; then echo "::error::A crash report for Shodh appeared: $new"; exit 1; fi
+          echo "Quit in ${exited_ms} ms"
+          echo "- quit: exited ${exited_ms} ms after the Quit command; the log ends with the quit line" >> "$GITHUB_STEP_SUMMARY"
+
+      # On failure: the app's log, what it printed, and any crash report for
+      # it, printed here and uploaded.
+      - name: The app's log and crash reports
+        if: failure()
+        run: |
+          set -uo pipefail
+          evidence="${EVIDENCE:-$RUNNER_TEMP/launch-evidence}"
+          mkdir -p "$evidence"
+          if [ -n "${TESTER_HOME:-}" ] && [ -d "$TESTER_HOME/Library" ]; then
+            find "$TESTER_HOME/Library" -path '*/logs/shodh.log*' -type f -exec cp {} "$evidence/" \;
+          fi
+          for d in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [ -d "$d" ]; then find "$d" -type f -iname '*shodh*' -exec cp {} "$evidence/" \;; fi
+          done
+          for f in "$evidence"/*; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Upload the app's log and crash reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: macos-launch-evidence
+          path: ${{ runner.temp }}/launch-evidence
+          retention-days: 14
+          if-no-files-found: warn
+
   verify:
     name: Verify the installers
     needs: [plan, build]
@@ -734,7 +1108,7 @@ jobs:
 
   publish:
     name: Verify and publish
-    needs: [plan, create-release, build]
+    needs: [plan, create-release, build, launch-macos]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30

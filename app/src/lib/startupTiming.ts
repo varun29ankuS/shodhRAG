@@ -2,8 +2,13 @@
  * Startup timing: named `performance` marks for the milestones between the
  * WebView starting and the app being usable, reported once to the console
  * (and visible in the DevTools Performance panel as `shodh:*` marks and
- * measures).
+ * measures). When every milestone is reached, the times also go to the
+ * backend (`startup_ready`), whose log line says the main window is ready:
+ * the first-load handshake (app/src-tauri/src/startup.rs). A start that stops
+ * short of a milestone is reported to the console only, after the deadline.
  */
+
+import { invoke } from '@tauri-apps/api/core';
 
 export type StartupMilestone =
   /** Every module of the main bundle has been evaluated. */
@@ -63,6 +68,21 @@ function report() {
     rows[name] = `${Math.round(at)} ms`;
   }
   console.info('[shodh] startup (ms since the WebView started loading)', rows);
+  if (ALL.every(m => markTime(m) !== null)) sendReady();
+}
+
+/** The times, rounded to whole milliseconds, as `startup_ready` takes them. */
+function sendReady() {
+  const at = (name: StartupMilestone) => Math.max(0, Math.round(markTime(name) ?? 0));
+  const timings = {
+    modulesEvaluated: at('modules-evaluated'),
+    shellMounted: at('shell-mounted'),
+    indexReady: at('index-ready'),
+    modelChecked: at('model-checked'),
+    statsLoaded: at('stats-loaded'),
+    conversationsLoaded: at('conversations-loaded'),
+  };
+  invoke('startup_ready', { timings }).catch(err => console.warn('[shodh] startup report not delivered:', err));
 }
 
 /** Record a startup milestone (first occurrence only). */

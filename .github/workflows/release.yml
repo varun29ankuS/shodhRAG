@@ -862,7 +862,9 @@ jobs:
           } >> "$GITHUB_ENV"
           if pgrep -f "$exe" >/dev/null; then echo "::error::Shodh is already running"; exit 1; fi
 
-          open --help 2>&1 | grep -q -- '--env' || { echo "::error::open on this runner has no --env"; exit 1; }
+          # open --help exits non-zero after printing its usage.
+          open_help=$(open --help 2>&1 || true)
+          grep -q -- '--env' <<< "$open_help" || { echo "::error::open on this runner has no --env"; echo "$open_help"; exit 1; }
           start=$(now_ms)
           open -n -W --env "HOME=$tester_home" --stdout "$evidence/stdout.txt" --stderr "$evidence/stderr.txt" "$APP" >"$evidence/open.txt" 2>&1 &
           open_pid=$!
@@ -884,6 +886,7 @@ jobs:
               elif ! kill -0 "$open_pid" 2>/dev/null; then
                 status=0; wait "$open_pid" || status=$?
                 echo "::error::open returned (status $status) and Shodh is not running: macOS refused to start it"
+                cat "$evidence/open.txt"
                 exit 1
               fi
             elif ! kill -0 "$pid" 2>/dev/null; then

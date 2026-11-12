@@ -839,7 +839,10 @@ jobs:
           mkdir -p "$refused_home"
           since=$(date '+%Y-%m-%d %H:%M:%S')
           start=$(now_ms)
-          open -n --env "HOME=$refused_home" "$APP"
+          # In the background: open itself waits while Gatekeeper holds the
+          # launch at its refusal.
+          open -n --env "HOME=$refused_home" "$APP" >"$RUNNER_TEMP/refused-open.txt" 2>&1 &
+          refused_open=$!
           deadline=$((start + 30000))
           outcome=""
           while [ -z "$outcome" ]; do
@@ -869,6 +872,11 @@ jobs:
               perl -e 'select(undef, undef, undef, 0.25)'
             done
           fi
+          # open waited on the launch that is now gone; it is ended with it so
+          # it never holds the next launch.
+          kill "$refused_open" 2>/dev/null || true
+          wait "$refused_open" 2>/dev/null || true
+          if [ -s "$RUNNER_TEMP/refused-open.txt" ]; then echo "open said:"; cat "$RUNNER_TEMP/refused-open.txt"; fi
           {
             echo '### Gatekeeper (the downloaded app, quarantined)'
             echo

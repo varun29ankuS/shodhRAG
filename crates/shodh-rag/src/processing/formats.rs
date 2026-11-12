@@ -949,6 +949,14 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
         .map_or(NO_STREAM, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
+/// A compound file that passed [`validate_compound_file`].
+pub struct CompoundFile {
+    /// Its entries' names, in the order the directory tree reaches them.
+    pub names: Vec<String>,
+    /// The WordDocument stream's version mark (`wIdent`), when it has one.
+    pub word_ident: Option<u16>,
+}
+
 /// One directory entry, as office_oxide reads it.
 struct CfbEntry {
     name: String,
@@ -971,7 +979,7 @@ struct CfbEntry {
 /// stream, each no longer than its size needs. The directory tree must not loop
 /// or nest deeper than [`MAX_CFB_TREE_DEPTH`] (office_oxide searches it
 /// recursively).
-pub fn validate_compound_file(bytes: &[u8]) -> Result<Vec<String>, CfbIssue> {
+pub fn validate_compound_file(bytes: &[u8]) -> Result<CompoundFile, CfbIssue> {
     let damaged = |what: &str| CfbIssue::Damaged(what.to_string());
     const SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
     if bytes.len() < 512 || bytes[..8] != SIGNATURE {
@@ -1062,7 +1070,7 @@ pub fn validate_compound_file(bytes: &[u8]) -> Result<Vec<String>, CfbIssue> {
         .collect();
 
     // The mini stream (the root's chain) and the mini FAT.
-    let mini_stream = if root.kind == 5 && root.start <= MAX_REG_SECT {
+    let root_chain = if root.kind == 5 && root.start <= MAX_REG_SECT {
         check_stream_size(root.size, sectors, sector_size)?;
         walk_chain(
             &fat,
@@ -1071,11 +1079,10 @@ pub fn validate_compound_file(bytes: &[u8]) -> Result<Vec<String>, CfbIssue> {
             sectors_for(root.size, sector_size),
             &mut owned,
         )?
-        .len()
-            * sector_size
     } else {
-        0
+        Vec::new()
     };
+    let mini_stream = root_chain.len() * sector_size;
     let mut mini_fat: Vec<u32> = Vec::new();
     let first_mini_fat = u32_at(bytes, 0x3C);
     if first_mini_fat <= MAX_REG_SECT {
@@ -1088,9 +1095,12 @@ pub fn validate_compound_file(bytes: &[u8]) -> Result<Vec<String>, CfbIssue> {
 
     // Every stream, as office_oxide reads it: from the mini stream when it is
     // smaller than the cutoff and there is a mini stream, else from the FAT.
+    // The first two bytes of the WordDocument stream (its version mark) are kept.
+    let mut word_ident = None;
     for entry in entries.iter().filter(|e| e.kind == 2 && e.size > 0) {
         check_stream_size(entry.size, sectors, sector_size)?;
-        if entry.size < MINI_STREAM_CUTOFF && mini_stream > 0 {
+        let in_mini = entry.size < MINI_STREAM_CUTOFF && mini_stream > 0;
+        if in_mini {
             walk_chain(
                 &mini_fat,
                 entry.start,
@@ -1107,8 +1117,20 @@ pub fn validate_compound_file(bytes: &[u8]) -> Result<Vec<String>, CfbIssue> {
                 &mut owned,
             )?;
         }
+        if entry.name == "WordDocument" && entry.size >= 2 {
+            let (id, offset) = if in_mini {
+                let at = entry.start as usize * 64;
+                (root_chain.get(at / sector_size).copied(), at % sector_size)
+            } else {
+                (Some(entry.start), 0)
+            };
+            word_ident = id
+                .and_then(|id| sector(id).ok())
+                .and_then(|data| data.get(offset..offset + 2))
+                .map(|h| u16::from_le_bytes([h[0], h[1]]));
+        }
     }
-    Ok(names)
+    Ok(CompoundFile { names, word_ident })
 }
 
 /// The most sectors a stream of `size` bytes can span in `unit`-byte sectors.
@@ -1274,7 +1296,17 @@ fn guarded<T>(
 pub fn doc_text(bytes: &[u8]) -> Result<String, LegacyOfficeError> {
     use office_oxide::doc::{DocDocument, DocError, SubDocumentKind};
     const KIND: &str = "Word";
-    validate_compound_file(bytes).map_err(|e| cfb_error(KIND, e))?;
+    // Word 1.x/2.0 wrote flat files, its version mark first.
+    if matches!(bytes.get(..2), Some([0x9B | 0xDB, 0xA5])) {
+        return Err(LegacyOfficeError::TooOld(KIND, ".docx"));
+    }
+    let file = validate_compound_file(bytes).map_err(|e| cfb_error(KIND, e))?;
+    // Word 6.0/95 (0xA5DC, and 0xA697–0xA699 on the Macintosh). Refused here, not
+    // by office_oxide, so the message does not change with its version: 0.1.17
+    // added a Word 6.0/95 reader that has not been tried on real files here.
+    if matches!(file.word_ident, Some(0xA5DC | 0xA697..=0xA699)) {
+        return Err(LegacyOfficeError::TooOld(KIND, ".docx"));
+    }
     let doc = guarded(KIND, || {
         DocDocument::from_reader(Cursor::new(bytes)).map_err(|e| match e {
             DocError::Encrypted => LegacyOfficeError::Encrypted(KIND),
@@ -1307,7 +1339,9 @@ pub fn doc_text(bytes: &[u8]) -> Result<String, LegacyOfficeError> {
 pub fn ppt_slides(bytes: &[u8]) -> Result<Vec<String>, LegacyOfficeError> {
     use office_oxide::ppt::{PptDocument, PptError, TextType};
     const KIND: &str = "PowerPoint";
-    let names = validate_compound_file(bytes).map_err(|e| cfb_error(KIND, e))?;
+    let names = validate_compound_file(bytes)
+        .map_err(|e| cfb_error(KIND, e))?
+        .names;
     // An encrypted presentation keeps its properties in "EncryptedSummary"
     // ([MS-PPT] 2.3.7); its slides are unreadable.
     if names

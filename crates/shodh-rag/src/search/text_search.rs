@@ -174,7 +174,10 @@ impl TextSearch {
         // Without this, source-filtered queries return fewer results than vector search,
         // causing asymmetric fusion.
         let fetch_limit = if source_filter.is_some() { k * 3 } else { k };
-        let top_docs = searcher.search(&parsed_query, &TopDocs::with_limit(fetch_limit))?;
+        let top_docs = searcher.search(
+            &parsed_query,
+            &TopDocs::with_limit(fetch_limit).order_by_score(),
+        )?;
 
         let mut results = Vec::with_capacity(k);
         for (score, doc_address) in top_docs {
@@ -210,7 +213,7 @@ impl TextSearch {
         let term = tantivy::Term::from_field_text(self.id_field, id);
         let term_query =
             tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
-        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1))?;
+        let top_docs = searcher.search(&term_query, &TopDocs::with_limit(1).order_by_score())?;
         if let Some((_score, addr)) = top_docs.first() {
             if let Ok(doc) = searcher.doc::<TantivyDocument>(*addr) {
                 if let Some(text_val) = doc.get_first(self.text_field) {

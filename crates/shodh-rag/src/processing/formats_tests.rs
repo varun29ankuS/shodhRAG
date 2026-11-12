@@ -484,6 +484,14 @@ fn broken_and_protected_word_files_say_why() {
         err.to_string().contains("saved in Word 95 or older"),
         "{err}"
     );
+
+    // Word 1.x/2.0: a flat file, its version mark first.
+    for mark in [0xA59Bu16, 0xA5DB] {
+        let mut flat = vec![0u8; 1024];
+        flat[..2].copy_from_slice(&mark.to_le_bytes());
+        let err = doc_text(&flat).unwrap_err();
+        assert!(matches!(err, LegacyOfficeError::TooOld(..)), "{err}");
+    }
 }
 
 // ── The compound-file guard, on in-memory tables ──────────────────────────

@@ -399,7 +399,7 @@ fn an_export_is_a_zip_of_a_version_and_never_overwrites() {
     assert_ne!(first, second);
     let mut zip = zip::ZipArchive::new(fs::File::open(&first).unwrap()).unwrap();
     let mut names: Vec<String> = (0..zip.len())
-        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned())
         .collect();
     names.sort();
     assert_eq!(names, ["index.html", "js/app.js"]);

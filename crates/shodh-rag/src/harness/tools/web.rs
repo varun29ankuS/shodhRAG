@@ -582,7 +582,7 @@ impl HostTool for FetchUrlTool {
         Some(SessionGrant {
             key: format!("origin:{origin}"),
             note: format!(
-                "Later pages from {origin} in this conversation may carry text from your documents in their address; they are fetched without asking."
+                "Later pages from {origin} in this conversation open without asking, even when their address carries text from your documents."
             ),
             label: format!("Allow {origin} for this conversation"),
         })

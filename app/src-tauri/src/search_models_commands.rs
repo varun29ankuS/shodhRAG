@@ -53,12 +53,8 @@ impl SearchModelsState {
     /// The files setup installs for this engine: the E5 export its index was
     /// built with, or, for a new library, the export chosen for new libraries
     /// (fp16 unless the user opted in to int8; `index_model::setup_variants`).
-    /// Core ML's export comes with a first setup only.
     async fn store(&self, rag_state: &RagState) -> ModelStore {
-        let (config, searches) = {
-            let engine = rag_state.rag.read().await;
-            (engine.config().clone(), engine.has_search_models())
-        };
+        let config = rag_state.rag.read().await.config().clone();
         let index = SearchModels::index_variant(&config);
         // The int8 check loads ONNX Runtime, so it runs only when int8 was
         // chosen for a new library.
@@ -66,15 +62,7 @@ impl SearchModelsState {
         let int8_exact = new_library == shodh_rag::embeddings::e5::E5Variant::Int8
             && shodh_rag::embeddings::e5::int8_exact();
         let variants = index_model::setup_variants(index, new_library, int8_exact);
-        let store = ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants);
-        // The inbox installs the scan reader through this store on an engine
-        // that already searches: that must stay a 31 MB download, and the
-        // engine keeps the CPU export it runs.
-        if searches {
-            store
-        } else {
-            store.with_accelerator_for(&variants)
-        }
+        ModelStore::search_and_ocr_models_for(self.model_dir.clone(), &variants)
     }
 }
 

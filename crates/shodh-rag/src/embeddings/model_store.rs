@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use super::e5::{core_ml_platform, E5Variant, CORE_ML_FILE};
+use super::e5::E5Variant;
 
 /// Directory (under the model root) holding the E5 embedding model.
 pub const E5_DIR: &str = "multilingual-e5-base";
@@ -89,29 +89,6 @@ pub fn e5_model_artifact(variant: E5Variant) -> ModelArtifact {
             278_686_411,
             "multilingual-e5-base/model_qint8_avx512_vnni.onnx",
         ),
-    }
-}
-
-/// The fp16 export Core ML runs on Apple silicon ([`CORE_ML_FILE`]): the
-/// same weights in standard ONNX operators, 555 MB, pinned to Xenova's
-/// revision. The hash is SHA-256 of the file at that revision.
-pub fn core_ml_model_artifact() -> ModelArtifact {
-    ModelArtifact::new(
-        "Search model for Apple graphics",
-        "https://huggingface.co/Xenova/multilingual-e5-base/resolve/1ec9243030a27d1a115d5c340572074c125b58b2/onnx/model_fp16.onnx",
-        "5d760477f691b665da2b94e1528eb6938b795f76064d9392e6af7118b8a3f54a",
-        555_234_024,
-        "multilingual-e5-base/model_fp16.onnx",
-    )
-}
-
-/// The E5 files setup installs beside the exports `variants` on this
-/// platform: Core ML's export where Core ML may run fp16.
-pub fn accelerator_artifacts_for(variants: &[E5Variant]) -> Vec<ModelArtifact> {
-    if core_ml_platform() && variants.contains(&E5Variant::Fp16) {
-        vec![core_ml_model_artifact()]
-    } else {
-        Vec::new()
     }
 }
 
@@ -557,11 +534,9 @@ impl ModelStore {
     }
 
     /// The search models (both E5 exports) and the OCR model under `root`:
-    /// what the evals install. They measure the CPU, so no Core ML export.
+    /// what the evals install.
     pub fn search_and_ocr_models(root: impl Into<PathBuf>) -> Self {
-        let mut artifacts = search_model_artifacts();
-        artifacts.extend(ocr_model_artifacts());
-        Self::with_artifacts(root, artifacts)
+        Self::search_and_ocr_models_for(root, &E5Variant::ALL)
     }
 
     /// The search models with the E5 exports `variants`, and the OCR model,
@@ -570,13 +545,6 @@ impl ModelStore {
         let mut artifacts = search_model_artifacts_for(variants);
         artifacts.extend(ocr_model_artifacts());
         Self::with_artifacts(root, artifacts)
-    }
-
-    /// These files and the export this platform's graphics run `variants`
-    /// from ([`accelerator_artifacts_for`]).
-    pub fn with_accelerator_for(mut self, variants: &[E5Variant]) -> Self {
-        self.artifacts.extend(accelerator_artifacts_for(variants));
-        self
     }
 
     /// The pinned table model under `root`.
@@ -847,6 +815,12 @@ impl ModelStore {
             .map_err(|e| ModelStoreError::io(path, e))?;
         Ok(())
     }
+}
+
+/// Whether the file at `path` is `artifact`: by its stamp, or else by hashing
+/// it (and stamping it when it matches).
+pub fn is_installed(path: &Path, artifact: &ModelArtifact) -> bool {
+    matches!(check_file(path, artifact, true), Ok(FileCheck::Verified))
 }
 
 enum FileCheck {
@@ -1140,38 +1114,7 @@ mod tests {
             ModelStore::search_and_ocr_models_for("x", &[E5Variant::Int8]).total_bytes(),
             341_997_083 + 31_191_354
         );
-        let core_ml = core_ml_model_artifact();
-        assert_eq!(
-            core_ml.relative_path,
-            format!("{}/{}", super::super::e5::E5_DIR, CORE_ML_FILE),
-            "installed where the loader looks"
-        );
-        let fp16_setup = ModelStore::search_and_ocr_models_for("x", &[E5Variant::Fp16])
-            .with_accelerator_for(&[E5Variant::Fp16]);
-        assert!(
-            !ModelStore::search_and_ocr_models_for("x", &[E5Variant::Fp16])
-                .artifacts()
-                .contains(&core_ml)
-        );
-        assert_eq!(
-            fp16_setup.artifacts().contains(&core_ml),
-            core_ml_platform(),
-            "Core ML's export is set up where Core ML runs fp16"
-        );
-        assert_eq!(
-            fp16_setup.total_bytes(),
-            618_258_790 + 31_191_354 + if core_ml_platform() { core_ml.size } else { 0 }
-        );
-        assert!(accelerator_artifacts_for(&[E5Variant::Int8]).is_empty());
-        assert!(!ModelStore::search_and_ocr_models("x")
-            .artifacts()
-            .contains(&core_ml));
-        for a in artifacts
-            .iter()
-            .chain(&answer_check)
-            .chain(&ocr)
-            .chain(std::iter::once(&core_ml))
-        {
+        for a in artifacts.iter().chain(&answer_check).chain(&ocr) {
             assert_eq!(a.sha256.len(), 64, "{}", a.name);
             assert!(a
                 .sha256

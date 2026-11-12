@@ -13,7 +13,7 @@ use super::tokenizer::SentencePieceTokenizer;
 use super::{EmbeddingModel, SearchModelsMissing};
 use crate::compute::calibration::{CalibrationKey, Calibrations};
 use crate::compute::choose::{self, Candidate, Learned};
-use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, Device};
+use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, Device, GpuProbe};
 use crate::compute::speed;
 use crate::compute::status::{ComputeStatus, EmbedderReport};
 
@@ -22,11 +22,18 @@ pub const E5_DIR: &str = "multilingual-e5-base";
 /// The dimension of multilingual-e5-base's vectors (either export).
 pub const E5_DIMENSION: usize = 768;
 
-/// The fp16 export Core ML runs (Xenova's, standard ONNX operators): Core ML
-/// cannot run `model_O4.onnx`'s fused com.microsoft operators. Its vectors
-/// match model_O4's on the CPU to a cosine of 0.9999, so they are fp16
-/// vectors ([`E5Variant::Fp16`]) and share an index with them.
-pub const CORE_ML_FILE: &str = "model_fp16.onnx";
+/// The graph Core ML runs, written beside `model_O4.onnx`: Core ML cannot run
+/// O4's fused com.microsoft operators, so this is O4's graph in standard
+/// ONNX operators (opset 17), its weights external data read in place from
+/// the pinned `model_O4.onnx` (no copy, 56 KB). Its vectors match O4's on
+/// the CPU to a cosine of 0.99997, so they are fp16 vectors
+/// ([`E5Variant::Fp16`]) and share an index with them.
+pub const CORE_ML_FILE: &str = "model_O4.coreml.onnx";
+
+/// [`CORE_ML_FILE`]'s bytes, made by `scripts/coreml-graph`. The weights'
+/// offsets hold for the pinned O4 only, so the graph is written only beside
+/// a verified one.
+const CORE_ML_GRAPH: &[u8] = include_bytes!("model_O4.coreml.onnx");
 
 /// Whether this platform's GPU provider is Core ML (Apple silicon), which
 /// runs [`CORE_ML_FILE`].
@@ -669,6 +676,28 @@ fn core_ml_cache(model_path: &Path) -> PathBuf {
     root.join(stamp)
 }
 
+/// [`CORE_ML_FILE`] in `model_dir`, written there when missing or stale,
+/// beside a verified `model_O4.onnx`.
+fn core_ml_graph(model_dir: &Path) -> std::result::Result<PathBuf, String> {
+    let o4 = model_dir.join(E5Variant::Fp16.file_name());
+    let pin = super::model_store::e5_model_artifact(E5Variant::Fp16);
+    if !super::model_store::is_installed(&o4, &pin) {
+        return Err(format!(
+            "{} is not the pinned search model",
+            E5Variant::Fp16.file_name()
+        ));
+    }
+    let path = model_dir.join(CORE_ML_FILE);
+    if std::fs::read(&path).is_ok_and(|bytes| bytes == CORE_ML_GRAPH) {
+        return Ok(path);
+    }
+    let part = model_dir.join(format!("{CORE_ML_FILE}.part"));
+    std::fs::write(&part, CORE_ML_GRAPH)
+        .and_then(|()| std::fs::rename(&part, &path))
+        .map_err(|e| format!("writing {CORE_ML_FILE}: {e}"))?;
+    Ok(path)
+}
+
 /// Token ids of the calibration passages, numbered so none repeats.
 fn calibration_batch(tokenizer: &SentencePieceTokenizer) -> Result<Vec<Vec<u32>>> {
     (0..CALIBRATION_PASSAGES)
@@ -730,7 +759,7 @@ struct Built {
 struct E5Candidate<'a> {
     config: &'a E5Config,
     plan: Plan,
-    /// [`CORE_ML_FILE`] when it is installed and Core ML may run it.
+    /// [`CORE_ML_FILE`] when it is written and Core ML may run it.
     core_ml_model: Option<&'a Path>,
     core_ml_cache: Option<&'a Path>,
     threads: usize,
@@ -754,7 +783,7 @@ impl Candidate for E5Candidate<'_> {
                 (E5Variant::Fp16, Some(path)) => path.to_path_buf(),
                 _ => {
                     return Err(format!(
-                        "the search model for Core ML ({CORE_ML_FILE}) is not installed"
+                        "the search model for Core ML ({CORE_ML_FILE}) is not written"
                     ))
                 }
             },
@@ -961,18 +990,21 @@ impl E5Embeddings {
         // The calibration holds for the files the targets run: one export,
         // or (no index yet) the graphics card's and the CPU's together, since
         // a card's verdict is a comparison with the CPU's export. Core ML's
-        // own file is part of it once installed: a verdict on Core ML running
-        // model_O4 says nothing about it running that file.
+        // own graph is part of it: a new graph is measured again.
         let mut files: Vec<&str> = match plan.gpu {
             Some(gpu) if gpu != plan.cpu => vec![gpu.file_name(), plan.cpu.file_name()],
             _ => vec![plan.cpu.file_name()],
         };
-        let core_ml_model = (plan.gpu == Some(E5Variant::Fp16) && core_ml_platform())
-            .then(|| config.model_dir.join(CORE_ML_FILE))
-            .filter(|path| path.exists());
-        if core_ml_model.is_some() {
-            files.push(CORE_ML_FILE);
-        }
+        let core_ml_model = match (plan.gpu == Some(E5Variant::Fp16) && core_ml_platform())
+            .then(|| core_ml_graph(&config.model_dir))
+        {
+            Some(Ok(path)) => {
+                files.push(CORE_ML_FILE);
+                Ok(Some(path))
+            }
+            Some(Err(error)) => Err(error),
+            None => Ok(None),
+        };
         let mut model_size = 0;
         for file in &files {
             model_size += std::fs::metadata(config.model_dir.join(file))
@@ -991,11 +1023,12 @@ impl E5Embeddings {
             .unwrap_or_default();
         let now = chrono::Utc::now();
         let passages = calibration_batch(&tokenizer)?;
-        let core_ml_cache = core_ml_model.as_deref().map(core_ml_cache);
+        let core_ml_path = core_ml_model.as_ref().ok().cloned().flatten();
+        let core_ml_cache = core_ml_path.as_deref().map(core_ml_cache);
         let mut candidate = E5Candidate {
             config: &config,
             plan,
-            core_ml_model: core_ml_model.as_deref(),
+            core_ml_model: core_ml_path.as_deref(),
             core_ml_cache: core_ml_cache.as_deref(),
             threads,
             pad_id: tokenizer.pad_id(),
@@ -1013,7 +1046,12 @@ impl E5Embeddings {
         let mut chosen = choose::choose(
             &mut candidate,
             preference,
-            provider::probe_gpus,
+            // Without its graph Core ML is not tried, so no failure is kept
+            // for it and the next load tries again.
+            || match core_ml_model {
+                Err(error) => GpuProbe::Failed(error),
+                Ok(_) => provider::probe_gpus(),
+            },
             &|device: Option<&Device>| saved.known(&key, device, now),
         )
         .map_err(|e| anyhow!("Failed to load model: {e}"))?;
@@ -1806,19 +1844,29 @@ mod tests {
         }
     }
 
-    /// Core ML runs its own export at 8 x 512: a run of more rows than one
-    /// batch (a full batch on Core ML and a remainder of two on the CPU)
-    /// comes back in input order with vectors matching the CPU's model_O4,
-    /// and queries match too. Needs Apple silicon and `model_fp16.onnx`
-    /// beside model_O4 under SHODH_TEST_MODELS; its first load compiles for
-    /// about two minutes. Removes the Core ML cache it makes.
+    /// The Core ML graph is written only beside the pinned model_O4: its
+    /// weights are read at that file's offsets.
+    #[test]
+    fn the_core_ml_graph_needs_the_pinned_o4() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(E5Variant::Fp16.file_name()), b"not O4").unwrap();
+        assert!(core_ml_graph(dir.path()).is_err());
+        assert!(!dir.path().join(CORE_ML_FILE).exists());
+    }
+
+    /// Core ML runs O4's weights through its own graph at 8 x 512: a run of
+    /// more rows than one batch (a full batch on Core ML and a remainder of
+    /// two on the CPU) comes back in input order with vectors matching the
+    /// CPU's model_O4, and queries match too. Needs Apple silicon and the
+    /// pinned model_O4 under SHODH_TEST_MODELS; its first load compiles for
+    /// about four minutes. Removes the Core ML cache and graph it makes.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
-    #[ignore = "needs Apple silicon and model_fp16.onnx; compiles a Core ML model"]
-    fn core_ml_embeds_its_export_like_the_cpu() {
+    #[ignore = "needs Apple silicon and model_O4; compiles a Core ML model"]
+    fn core_ml_embeds_o4_like_the_cpu() {
         let config = variant_config(E5Variant::Fp16);
-        let core_ml_model = config.model_dir.join(CORE_ML_FILE);
-        assert!(core_ml_model.exists(), "{CORE_ML_FILE} is not installed");
+        let graph = config.model_dir.join(CORE_ML_FILE);
+        let had_graph = graph.exists();
         let cache_root = config.model_dir.join("coreml-cache");
         let had_cache = cache_root.exists();
         let cpu = E5Embeddings::new(config.clone()).expect("load E5 on the CPU");
@@ -1864,6 +1912,9 @@ mod tests {
         drop(gpu);
         if !had_cache {
             let _ = std::fs::remove_dir_all(&cache_root);
+        }
+        if !had_graph {
+            let _ = std::fs::remove_file(&graph);
         }
     }
 }

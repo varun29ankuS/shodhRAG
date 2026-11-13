@@ -1310,6 +1310,13 @@ jobs:
               *) echo "::error::$ANDROID_PACKAGE has no launcher activity: $component"; exit 1 ;;
             esac
 
+            # What the screen shows, for people to look at (not a gate): a
+            # recording of the launch and screenshots in both themes.
+            screens="$RUNNER_TEMP/android-screens"
+            mkdir -p "$screens"
+            adb shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
+            recorder=$!
+
             start=$(now_ms)
             adb shell am start -W -n "$component" | tr -d '\r' | tee "$evidence/am-start.txt"
             # 120 s: the slowest first start a tester would wait through
@@ -1365,6 +1372,17 @@ jobs:
               exit 1
             fi
             echo "Still running 15 s after ready, no crash"
+
+            # Pictures for review. The night-mode switch re-renders the
+            # WebView; the 3 s pauses only let a picture settle and decide no
+            # result.
+            adb exec-out screencap -p > "$screens/pair-light.png" || true
+            adb shell cmd uimode night yes || true
+            sleep 3
+            adb exec-out screencap -p > "$screens/pair-dark.png" || true
+            adb shell cmd uimode night no || true
+            wait "$recorder" || true
+            adb pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
             {
               echo
               echo "Launch on the emulator (API 34, x86_64, first run):"
@@ -1382,6 +1400,15 @@ jobs:
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
           script: bash -euo pipefail -c "$LAUNCH_TEST"
+
+      - name: Upload the screenshots and launch recording
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-screens
+          path: ${{ runner.temp }}/android-screens
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Upload the emulator's log
         if: failure()

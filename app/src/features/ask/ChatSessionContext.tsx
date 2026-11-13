@@ -33,7 +33,6 @@ import {
   scopeOf,
   startedAnswer,
   toStored,
-  toStoredCheckpoint,
 } from './messageStore';
 import type { SideSummaryRef } from '../focus/summary';
 import { connectorFocus, requestConnectorPage } from '../connectors/navigation';
@@ -61,12 +60,12 @@ import { onApprovalAnswered } from '../inbox/approvalBus';
 import {
   appliesAtOnce,
   changeMessages,
+  changedSince,
   emptyView,
   loadConversation,
   publishMessage,
   saveStep,
-  startsCheck,
-  upsertById,
+  withLiveRun,
 } from './chatPersistence';
 import type { PersistMode, PersistView } from './chatPersistence';
 import { originOf, wireOrigin } from './messageOrigin';
@@ -76,12 +75,24 @@ import type { MessageOrigin } from './messageOrigin';
  * The answer being produced. Events are queued and folded into the
  * transcript once per animation frame, so streaming never re-renders (and
  * re-parses markdown) per token.
+ *
+ * Its question and answer are saved by the agent session from the moment `agent_send`
+ * takes them with their turn (`savedByBackend`): the window only shows them, and reloads
+ * the conversation when the backend says it changed. A request that ends before that
+ * (the session did not start, the creation folder could not be made, the user stopped
+ * it first) is saved by the window, as before: the question and the failed answer.
  */
 interface LiveRun {
   runId: string;
   conversationId: string;
   sessionId: string | null;
   message: ChatMessage;
+  /** The question it answers (null for a retry of the latest answer, which asks the one before). */
+  question: ChatMessage | null;
+  /** The answer a retry replaces. */
+  replaces: string | null;
+  /** `agent_send` was called with the turn: the agent session saves it. */
+  savedByBackend: boolean;
   queue: TranscriptAction[];
   frame: number | null;
   settled: boolean;
@@ -291,7 +302,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const {
     activeConversationId,
     activeConversation,
-    updateConversationMessages,
+    saveMessages,
   } = conv;
 
   const [view, setView] = useState<ViewState>(() => emptyView<ChatMessage, ConversationMessage>());
@@ -315,24 +326,43 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   activeConversationRef.current = activeConversation;
   // The latest `persist.seq` written; views at or below it need no save.
   const lastSavedSeqRef = useRef(0);
+  // Messages changed while their answer was still running (a side thread opened on it):
+  // written once it has settled.
+  const deferredRef = useRef<Set<string>>(new Set());
   const loadedConvIdRef = useRef<string | null>(null);
   const navSeqRef = useRef(0);
   const switchConversationRef = useRef(conv.switchConversation);
   switchConversationRef.current = conv.switchConversation;
 
   /**
-   * Save a view's unsaved changes to its conversation. The data and the
-   * "needs saving" mark come from the same view, so a view from an older
-   * render writes only its own changes and leaves newer ones due.
+   * Save a view's unsaved changes to its conversation: only the messages this window
+   * changed (a notice, an edit, a side thread), never its whole list, which would write
+   * this window's copy over turns the agent session saved. The data and the "needs
+   * saving" mark come from the same view, so a view from an older render writes only its
+   * own changes and leaves newer ones due.
    */
   const saveView = useCallback((v: ViewState) => {
     const step = saveStep(v, lastSavedSeqRef.current, isPersistable, toStored);
     if (!step) return;
+    const changed = changedSince(v.changed, lastSavedSeqRef.current);
+    for (const id of deferredRef.current) changed.add(id);
     lastSavedSeqRef.current = step.seq;
     if (step.conversationId === null) return;
-    const stored = step.messages;
-    updateConversationMessages(step.conversationId, () => stored, { immediate: step.immediate });
-  }, [updateConversationMessages]);
+    const stored = step.messages.filter(m => changed.has(m.id));
+    // A changed message still running is written once it has settled.
+    const written = new Set(stored.map(m => m.id));
+    deferredRef.current = new Set([...changed].filter(id => !written.has(id) && v.messages.some(m => m.id === id)));
+    saveMessages(step.conversationId, stored, [], { immediate: step.immediate });
+  }, [saveMessages]);
+
+  /** What to show for `conversation` as stored: with the answer running in it, if any. */
+  const shownMessages = useCallback((conversationId: string, stored: readonly ConversationMessage[]): ChatMessage[] => {
+    const live = liveRef.current;
+    const running = live && !live.settled && live.conversationId === conversationId ? live : null;
+    return withLiveRun(stored.map(fromStored), running
+      ? { message: running.message, question: running.question, replaces: running.replaces }
+      : null);
+  }, []);
 
   // Load messages when the active conversation changes. A running answer for
   // that conversation is re-attached so it stays visible.
@@ -343,20 +373,23 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // Changes not yet saved belong to the conversation being left.
     saveView(viewRef.current);
     loadedConvIdRef.current = activeConversationId;
-    const loaded = activeConversation.messages.map(fromStored);
-    const checkpoints: Record<string, ConversationMessage> = {};
-    const live = liveRef.current;
-    if (live && !live.settled && live.conversationId === activeConversationId) {
-      // A checkpoint stored for it is the same message: show it live, and
-      // keep saving the checkpoint until the run ends.
-      const stored = activeConversation.messages.find(m => m.id === live.message.id);
-      if (stored) checkpoints[live.message.id] = stored;
-      const at = loaded.findIndex(m => m.id === live.message.id);
-      if (at >= 0) loaded[at] = live.message;
-      else loaded.push(live.message);
-    }
-    setView(v => loadConversation(v, activeConversationId, loaded, checkpoints));
-  }, [activeConversationId, activeConversation, saveView]);
+    const loaded = shownMessages(activeConversationId, activeConversation.messages);
+    setView(v => loadConversation(v, activeConversationId, loaded, {}));
+  }, [activeConversationId, activeConversation, saveView, shownMessages]);
+
+  // The visible conversation changed in the store (an answer the agent session saved, a
+  // question from another device, an edit in another window): show it as stored, with
+  // the answer still running in it and this window's changes not yet written.
+  const reloaded = conv.reloaded;
+  useEffect(() => {
+    if (!reloaded || reloaded.id !== viewRef.current.conversationId) return;
+    // Changes not yet saved are handed to the store first, so they stay shown.
+    saveView(viewRef.current);
+    const conversation = conv.getConversation(reloaded.id);
+    if (!conversation) return;
+    const loaded = shownMessages(reloaded.id, conversation.messages);
+    setView(v => (v.conversationId === reloaded.id ? loadConversation(v, reloaded.id, loaded, {}) : v));
+  }, [reloaded, conv.getConversation, saveView, shownMessages]);
 
   // Persist after real mutations only (never on load), so switching
   // conversations does not bump `updatedAt` and reorder the sidebar.
@@ -379,22 +412,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     return true;
   }, []);
 
-  /** Write a finished message to its conversation, visible or not, without delay. */
-  const commit = useCallback((conversationId: string, message: ChatMessage) => {
-    if (publish(conversationId, message, 'immediate')) return;
-    const stored = toStored(message);
-    updateConversationMessages(conversationId, prev => upsertById(prev, stored), { immediate: true });
-  }, [publish, updateConversationMessages]);
-
   /**
-   * The answer's text is complete and its check has started: show it and
-   * save it now, so it survives the app closing during the check.
+   * The run ended. One the agent session took is saved by it (shown here; a side thread
+   * opened on it while it ran is written now). One that ended before (it never started,
+   * or was stopped first) is written by the window, visible or not, without delay: its
+   * question, the failed answer, and without the answer a retry replaced.
    */
-  const checkpoint = useCallback((conversationId: string, message: ChatMessage) => {
-    const stored = toStoredCheckpoint(message);
-    if (publish(conversationId, message, 'immediate', stored)) return;
-    updateConversationMessages(conversationId, prev => upsertById(prev, stored), { immediate: true });
-  }, [publish, updateConversationMessages]);
+  const settleRun = useCallback((live: LiveRun, message: ChatMessage) => {
+    const { conversationId } = live;
+    if (live.savedByBackend) {
+      publish(conversationId, message, deferredRef.current.has(message.id) ? 'immediate' : 'none');
+      return;
+    }
+    const shown = live.question ? [live.question, message] : [message];
+    for (const m of shown) publish(conversationId, m, 'none');
+    saveMessages(conversationId, shown.map(toStored), live.replaces ? [live.replaces] : [], { immediate: true });
+  }, [publish, saveMessages]);
 
   /** Fold queued events into the live transcript; settle when the run ends. */
   const flush = useCallback((live: LiveRun) => {
@@ -411,13 +444,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const message: ChatMessage = { ...live.message, content: answerText(transcript), transcript };
     live.message = message;
     if (isLive(transcript)) {
-      // Each check round (the first answer, then any revision) starts once
-      // the text it checks is complete.
-      if (startsCheck(actions, message.content)) {
-        checkpoint(live.conversationId, message);
-      } else {
-        publish(live.conversationId, message, 'none');
-      }
+      // Display only: the agent session saves the answer as it is checked (each check
+      // round starts once the text it checks is complete) and when it ends.
+      publish(live.conversationId, message, 'none');
       setLiveRun({ conversationId: live.conversationId, messageId: message.id, transcript });
       return;
     }
@@ -431,12 +460,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
     if (liveRef.current === live) liveRef.current = null;
     setLiveRun(null);
-    commit(live.conversationId, message);
+    settleRun(live, message);
     // Its diagrams, charts, sketches, plots, simulations, equations and tables join the gallery.
     if (transcript.status === 'completed') {
       recordAnswerVisuals({ conversationId: live.conversationId, messageId: message.id, threadId: null, turnId: null }, message.content);
     }
-  }, [checkpoint, commit, publish]);
+  }, [publish, settleRun]);
 
   const enqueue = useCallback((live: LiveRun, action: TranscriptAction, immediate = false) => {
     if (live.settled) return;
@@ -639,10 +668,12 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     fallback: FallbackRun | null = null,
     attachedContext: AttachedContext[] = [],
     priorRunIds: string[] = [],
+    question: ChatMessage | null = null,
+    replaces: string | null = null,
   ) => {
     const runId = newId('run');
-    // Saved from its start (`startedAnswer`): an app closed before the answer ends
-    // shows it as interrupted, with Retry.
+    // Saved from its start (`startedAnswer`) by the agent session when it takes the
+    // question: an app closed before the answer ends shows it as interrupted, with Retry.
     const started = startedAnswer(
       newId('msg'),
       runId,
@@ -667,18 +698,23 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const agentMode = resolveAgentMode(conversationNow?.agentMode, history.length > 0, defaultAgentModeRef.current, creatorConfirmed(conversationId)) ?? 'ask';
     transcript.agentMode = agentMode;
     if (conversationNow && !conversationNow.agentMode) conv.updateConversationMeta(conversationId, { agentMode });
+    // The answer as the agent session saves it when it takes the question (with its mode).
+    const startedStored = toStored(message);
     const live: LiveRun = {
       runId,
       conversationId,
       sessionId: null,
       message,
+      question,
+      replaces,
+      savedByBackend: false,
       queue: [],
       frame: null,
       settled: false,
       abortTimer: null,
     };
     liveRef.current = live;
-    publish(conversationId, message, 'debounced', started.checkpoint);
+    publish(conversationId, message, 'none');
     setLiveRun({ conversationId, messageId: message.id, transcript });
 
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
@@ -705,12 +741,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const workspaceId = conversation?.workspaceId ?? null;
       // A mode suggestion the user went on without is not made again in this conversation.
       const answers = history.flatMap(m => (m.transcript ? [{ agentMode: m.transcript.agentMode, steps: Object.values(m.transcript.steps) }] : []));
+      // From here the agent session saves the question and the answer, also when the
+      // send fails: this window only shows them.
+      live.savedByBackend = true;
       await api.send(sessionId, prompt, runId, historyOf(history), {
         scope: scopeOf(options, workspaceId),
         ...wireOrigin(origin),
         attachedContext,
         priorRunIds,
         suggestionIgnored: suggestionIgnored(answers, agentMode),
+        turn: {
+          conversationId,
+          question: question ? toStored(question) : null,
+          answer: startedStored,
+          replaces,
+        },
       });
     } catch (error) {
       const failure = toAgentError(error);
@@ -756,12 +801,15 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       fromReview: extra?.fromReview === true,
     });
     const prompt = sideSummary ? summaryPrompt(sideSummary, content) : content;
-    publish(conversationId, userMessage, 'debounced');
+    // Shown now; saved with its answer by the agent session when it takes it (or by this
+    // window if the request fails before that).
+    publish(conversationId, userMessage, 'none');
+    conv.previewTitle(conversationId, content);
 
     // runAgent reports its own failures in the answer; acceptance is decided above.
-    void runAgent(conversationId, prompt, history, options, originOf({ sideSummary, fromReview: extra?.fromReview }), extra?.fallback ?? null, attachedContext);
+    void runAgent(conversationId, prompt, history, options, originOf({ sideSummary, fromReview: extra?.fromReview }), extra?.fallback ?? null, attachedContext, [], userMessage);
     return true;
-  }, [publish, runAgent]);
+  }, [publish, runAgent, conv.previewTitle]);
 
   const retry = useCallback((assistantMessageId: string, options: SendOptions, fallback: FallbackRun | null = null) => {
     const { conversationId, messages } = viewRef.current;
@@ -782,8 +830,9 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // which the retry finds kept) is still shown under the question.
       const replaced = messages[index].transcript;
       const priorRunIds = replaced ? [...(replaced.priorRunIds ?? []), replaced.runId] : [];
-      setView(v => changeMessages(v, conversationId, ms => ms.filter(m => m.id !== assistantMessageId), 'debounced'));
-      void runAgent(conversationId, prompt, messages.slice(0, userIndex), askedOptions, originOf(asked), fallback, asked.attachedContext ?? [], priorRunIds);
+      // Hidden now; removed from the store when the new try is saved.
+      setView(v => changeMessages(v, conversationId, ms => ms.filter(m => m.id !== assistantMessageId), 'none'));
+      void runAgent(conversationId, prompt, messages.slice(0, userIndex), askedOptions, originOf(asked), fallback, asked.attachedContext ?? [], priorRunIds, null, assistantMessageId);
     } else {
       send(asked.content, askedOptions, {
         ...(asked.sideSummary ? { sideSummary: asked.sideSummary } : {}),
@@ -799,24 +848,33 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const live = liveRef.current;
     if (!message || !live || live.settled || live.sessionId === null) return;
     const sessionId = live.sessionId;
-    enqueue(live, { type: 'local_steer', id: newId('steer'), text: message }, true);
-    api.steer(sessionId, message)
+    const steerId = newId('steer');
+    // The ids of the turn the steer becomes if the answer ended before it arrived; the
+    // agent session saves that turn under them.
+    const questionId = newId('msg');
+    const answerId = newId('msg');
+    enqueue(live, { type: 'local_steer', id: steerId, text: message }, true);
+    api.steer(sessionId, message, steerId, { questionId, answerId })
       .then(runId => {
         if (runId === live.runId) return;
         // The answer finished before the steer arrived; the backend started
         // a new run for it. Show it as a new turn.
         const conversationId = live.conversationId;
+        const question: ChatMessage = { id: questionId, role: 'user', content: message, timestamp: new Date().toISOString() };
         const adopted: LiveRun = {
           runId,
           conversationId,
           sessionId,
           message: {
-            id: newId('msg'),
+            id: answerId,
             role: 'assistant',
             content: '',
             timestamp: new Date().toISOString(),
             transcript: { ...initialTranscript(runId, Date.now()), status: 'running', sessionId },
           },
+          question,
+          replaces: null,
+          savedByBackend: true,
           queue: [],
           frame: null,
           settled: false,
@@ -824,8 +882,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         };
         if (liveRef.current && !liveRef.current.settled) return;
         liveRef.current = adopted;
-        publish(conversationId, { id: newId('msg'), role: 'user', content: message, timestamp: new Date().toISOString() }, 'debounced');
-        publish(conversationId, adopted.message, 'debounced', toStored(adopted.message));
+        publish(conversationId, question, 'none');
+        publish(conversationId, adopted.message, 'none');
       })
       .catch(error => notify.error('Could not steer the answer', { description: toAgentError(error).message }));
   }, [api, enqueue, publish]);
@@ -873,9 +931,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
 
   const appendMessageTo = useCallback((conversationId: string, message: ChatMessage) => {
     if (publish(conversationId, message, 'debounced')) return;
-    const stored = toStored(message);
-    updateConversationMessages(conversationId, prev => upsertById(prev, stored), { immediate: true });
-  }, [publish, updateConversationMessages]);
+    saveMessages(conversationId, [toStored(message)], [], { immediate: true });
+  }, [publish, saveMessages]);
 
   const updateMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
     setView(v => (v.conversationId === null
@@ -911,10 +968,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       return;
     }
     // Background conversation: edit the stored message, keeping its other metadata.
-    updateConversationMessages(conversationId, prev => prev.map(m => (m.id !== messageId
-      ? m
-      : { ...m, metadata: metadataWithThreads(m.metadata, apply(threadsFromMetadata(m.metadata)) ?? []) })));
-  }, [updateConversationMessages]);
+    const stored = conv.getConversation(conversationId)?.messages.find(m => m.id === messageId);
+    if (!stored) return;
+    saveMessages(conversationId, [{
+      ...stored,
+      metadata: metadataWithThreads(stored.metadata, apply(threadsFromMetadata(stored.metadata)) ?? []),
+    }]);
+  }, [conv.getConversation, saveMessages]);
 
   const streamingConversationId = liveRun?.conversationId ?? null;
 

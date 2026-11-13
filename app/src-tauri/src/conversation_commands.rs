@@ -243,7 +243,204 @@ impl ConversationStore {
     }
 }
 
-fn store(app: &AppHandle) -> Result<ConversationStore, String> {
+/// Emitted with [`ConversationChanged`] after the messages of a conversation were written
+/// ([`ConversationStore::write_turns`]): by the agent session (a question it accepted, an
+/// answer as it is checked and when it ends) or by a window's message edit. Every open
+/// view of the conversation reloads it from the store (`load_conversation`).
+pub const CONVERSATION_CHANGED_EVENT: &str = "conversation_changed";
+
+/// The payload of [`CONVERSATION_CHANGED_EVENT`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationChanged {
+    pub id: String,
+}
+
+/// The title of a conversation nobody named yet.
+pub const NEW_CHAT_TITLE: &str = "New Chat";
+
+/// The title of a conversation from its first question: its first six words, with `...`
+/// when there are more (as `autoTitle` in `hooks/useConversations.ts` named it).
+pub fn auto_title(first_message: &str) -> String {
+    let words: Vec<&str> = first_message.split_whitespace().collect();
+    let mut title = words.iter().take(6).copied().collect::<Vec<_>>().join(" ");
+    if words.len() > 6 {
+        title.push_str("...");
+    }
+    if title.is_empty() {
+        NEW_CHAT_TITLE.to_string()
+    } else {
+        title
+    }
+}
+
+/// Now, as the window writes times (`new Date().toISOString()`).
+fn now_text() -> String {
+    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// How one message is written into a conversation ([`ConversationStore::write_turns`]).
+#[derive(Debug, Clone)]
+pub enum TurnWrite {
+    /// Added at the end unless the conversation has a message with its id already (a
+    /// question, or an answer as it starts): what is there is never set back.
+    Insert(ConversationMessage),
+    /// The answer of an agent run: its text and transcript replace those of the message
+    /// with its id, keeping whatever else was added to it since (side threads, edited
+    /// artifacts); added at the end when there is none.
+    Answer(ConversationMessage),
+    /// A message as a window wrote it (a notice, a moved citation, an edited artifact, a
+    /// side thread, an answer that failed before the session took it): it replaces the
+    /// message with its id, or is added at the end.
+    Whole(ConversationMessage),
+}
+
+impl TurnWrite {
+    fn message(&self) -> &ConversationMessage {
+        match self {
+            TurnWrite::Insert(m) | TurnWrite::Answer(m) | TurnWrite::Whole(m) => m,
+        }
+    }
+
+    fn into_message(self) -> ConversationMessage {
+        match self {
+            TurnWrite::Insert(m) | TurnWrite::Answer(m) | TurnWrite::Whole(m) => m,
+        }
+    }
+}
+
+/// Applies `writes`, then `removed`, to the messages of `record`, and names it from its
+/// first question while it is still unnamed.
+fn apply_turns(record: &mut ConversationRecord, writes: Vec<TurnWrite>, removed: &[String]) {
+    for write in writes {
+        let at = record
+            .messages
+            .iter()
+            .position(|m| m.id == write.message().id);
+        match (write, at) {
+            (TurnWrite::Insert(_), Some(_)) => {}
+            (TurnWrite::Answer(answer), Some(index)) => {
+                let existing = &mut record.messages[index];
+                existing.content = answer.content;
+                existing.transcript = answer.transcript;
+            }
+            (TurnWrite::Whole(message), Some(index)) => record.messages[index] = message,
+            (write, None) => record.messages.push(write.into_message()),
+        }
+    }
+    if !removed.is_empty() {
+        record.messages.retain(|m| !removed.contains(&m.id));
+    }
+    if record.title == NEW_CHAT_TITLE {
+        if let Some(first) = record.messages.iter().find(|m| m.role == "user") {
+            record.title = auto_title(&first.content);
+        }
+    }
+    record.updated_at = now_text();
+}
+
+/// A conversation created by its first message (the window's own save of the new chat
+/// may not have reached the store yet).
+fn new_record(id: &str) -> ConversationRecord {
+    let now = now_text();
+    ConversationRecord {
+        id: id.to_string(),
+        title: NEW_CHAT_TITLE.to_string(),
+        messages: Vec::new(),
+        created_at: now.clone(),
+        updated_at: now,
+        pinned: false,
+        space_id: None,
+        space_name: None,
+        workspace_id: None,
+        system_prompt: None,
+        mode: None,
+        focus_threads: None,
+        source: None,
+        seed: None,
+        about_file: None,
+        agent_mode: None,
+    }
+}
+
+/// Why a turn is not written into a connector conversation.
+const CONNECTOR_KEEPS_IT: &str = "This conversation happened in a connector (Slack or Telegram): \
+     only the connector adds to it.";
+
+impl ConversationStore {
+    /// Writes messages of one conversation in a single read-modify-write under the
+    /// conversations lock, so writers in different tasks (the agent session, a window,
+    /// another device) never lose each other's turns: `writes` in order, then `removed`.
+    /// A conversation not saved yet is created with `create` (a question, which may
+    /// reach the store before the window's save of the new chat); without it nothing is
+    /// written and `None` returned (a late answer of a conversation deleted meanwhile). A
+    /// connector conversation is refused (its connector keeps it). Returns the
+    /// conversation as it is now.
+    pub fn write_turns(
+        &self,
+        conversation_id: &str,
+        writes: Vec<TurnWrite>,
+        removed: &[String],
+        create: bool,
+    ) -> Result<Option<ConversationRecord>, String> {
+        if crate::connectors::conversations::is_connector_id(conversation_id) {
+            return Err(CONNECTOR_KEEPS_IT.to_string());
+        }
+        let _guard = CONVERSATIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Loaded {
+            value: mut conversations,
+            origin,
+        } = self.read_unlocked()?;
+        let index = match conversations.iter().position(|c| c.id == conversation_id) {
+            Some(index) => index,
+            // Deleted meanwhile: a late answer does not bring it back (nothing is written).
+            None if !create => return Ok(None),
+            None => {
+                conversations.push(new_record(conversation_id));
+                conversations.len() - 1
+            }
+        };
+        let record = &mut conversations[index];
+        if record.source.is_some() {
+            return Err(CONNECTOR_KEEPS_IT.to_string());
+        }
+        apply_turns(record, writes, removed);
+        let written = record.clone();
+        self.write_unlocked(conversations, &origin)?;
+        Ok(Some(written))
+    }
+
+    /// Adds one message to a conversation atomically, or replaces the one with its id
+    /// (an answer saved again as it progresses keeps its place): [`Self::write_turns`]
+    /// with one whole message, as the tests' concurrent senders write.
+    #[cfg(test)]
+    pub fn append_turn(
+        &self,
+        conversation_id: &str,
+        message: ConversationMessage,
+    ) -> Result<ConversationRecord, String> {
+        self.write_turns(conversation_id, vec![TurnWrite::Whole(message)], &[], true)?
+            .ok_or_else(|| format!("The conversation {conversation_id} was not saved."))
+    }
+
+    /// The saved conversation with `id`, if there is one.
+    pub fn get(&self, id: &str) -> Result<Option<ConversationRecord>, String> {
+        Ok(self.load()?.into_iter().find(|c| c.id == id))
+    }
+}
+
+/// Tells every open view that the messages of conversation `id` changed.
+pub fn emit_changed(app: &AppHandle, id: &str) {
+    use tauri::Emitter;
+    if let Err(e) = app.emit(
+        CONVERSATION_CHANGED_EVENT,
+        ConversationChanged { id: id.to_string() },
+    ) {
+        tracing::warn!(error = %e, "emitting conversation_changed failed");
+    }
+}
+
+pub(crate) fn store(app: &AppHandle) -> Result<ConversationStore, String> {
     let dir = crate::profile::app_data_dir(app)
         .map_err(|e| format!("Failed to get app data directory: {e}"))?;
     Ok(ConversationStore::in_dir(&dir))
@@ -290,11 +487,20 @@ pub async fn load_conversations(
     Ok(conversations)
 }
 
-/// Stores `conversation` as the UI sent it, in place of the saved one with its id. A
-/// connector conversation is the connector's: the UI keeps an older copy in memory and
-/// saves whole records, so only what the UI owns (its title, pin and side threads) is
-/// taken from it, and a connector conversation that is no longer saved (forgotten) is
-/// never brought back by a late save.
+/// Stores what the UI owns of `conversation` in the saved one with its id; a new one is
+/// stored as sent.
+///
+/// - **An Ask chat's messages are never taken from a whole record.** They are written
+///   message by message ([`ConversationStore::write_turns`]): the agent session saves its
+///   turns itself, and a window or another device holding an older copy must never
+///   overwrite turns it has not seen. Its title and pin have their own commands
+///   (`rename_conversation`, `pin_conversation`, the agent's `organize_conversation`) and
+///   the first question names it, so a copy still called "New Chat" never undoes a name.
+///   Only the chat's settings are taken: its workspace, mode, instructions, side threads,
+///   carried seed, the file it is about, and when it last changed.
+/// - **A connector conversation is the connector's**: only its title, pin and side
+///   threads are taken, and one that is no longer saved (forgotten) is never brought
+///   back by a late save.
 pub fn save_record(conversations: &mut Vec<ConversationRecord>, conversation: ConversationRecord) {
     match conversations.iter_mut().find(|c| c.id == conversation.id) {
         Some(existing) if existing.source.is_some() => {
@@ -303,11 +509,20 @@ pub fn save_record(conversations: &mut Vec<ConversationRecord>, conversation: Co
             existing.focus_threads = conversation.focus_threads;
         }
         Some(existing) => {
-            // An Ask chat never becomes a connector conversation through the UI.
-            *existing = ConversationRecord {
-                source: None,
-                ..conversation
-            };
+            // An Ask chat never becomes a connector conversation through the UI (its
+            // `source` is not taken either).
+            existing.space_id = conversation.space_id;
+            existing.space_name = conversation.space_name;
+            existing.workspace_id = conversation.workspace_id;
+            existing.system_prompt = conversation.system_prompt;
+            existing.mode = conversation.mode;
+            existing.focus_threads = conversation.focus_threads;
+            existing.seed = conversation.seed;
+            existing.about_file = conversation.about_file;
+            existing.agent_mode = conversation.agent_mode;
+            if conversation.updated_at > existing.updated_at {
+                existing.updated_at = conversation.updated_at;
+            }
         }
         None if crate::connectors::conversations::is_connector_id(&conversation.id)
             || conversation.source.is_some() =>
@@ -332,6 +547,47 @@ pub async fn save_conversation(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// One saved conversation, as it is stored now (`None` when there is none): what a view
+/// reloads on [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn load_conversation(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<Option<ConversationRecord>, String> {
+    let store = store(&app)?;
+    tokio::task::spawn_blocking(move || store.get(&conversation_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Writes messages a window changed, each in place of the one with its id (or at the
+/// end), and removes `removed`: a notice, an edited artifact or citation, a side thread,
+/// a question and answer that failed before the agent session took them. Never the
+/// whole list: turns written meanwhile by the agent session or another device stay.
+#[tauri::command]
+pub async fn save_conversation_messages(
+    app: AppHandle,
+    conversation_id: String,
+    messages: Vec<ConversationMessage>,
+    removed: Option<Vec<String>>,
+) -> Result<(), String> {
+    let store = store(&app)?;
+    let id = conversation_id.clone();
+    let removed = removed.unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        store.write_turns(
+            &id,
+            messages.into_iter().map(TurnWrite::Whole).collect(),
+            &removed,
+            true,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    emit_changed(&app, &conversation_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -561,5 +817,123 @@ mod tests {
             r#"{"conversations": [{"id": "c1", "#
         );
         assert!(!durable_file::backup_path(&path).exists());
+        // Turns are refused too: nothing overwrites the file the history is still in.
+        assert!(store
+            .append_turn("c1", message("q1", "user", "Hello"))
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"conversations": [{"id": "c1", "#
+        );
+    }
+
+    fn message(id: &str, role: &str, content: &str) -> ConversationMessage {
+        ConversationMessage {
+            id: id.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            timestamp: "2026-11-13T10:00:00.000Z".to_string(),
+            artifacts: None,
+            search_results: None,
+            metadata: None,
+            run: None,
+            transcript: None,
+        }
+    }
+
+    #[test]
+    fn a_whole_record_save_keeps_the_stored_messages_and_name() {
+        let mut all = vec![record("c1")];
+        all[0].messages = vec![
+            message("q1", "user", "Notice period?"),
+            message("a1", "assistant", "60 days"),
+        ];
+        all[0].title = "Notice period?".to_string();
+        // A window's older copy: no answer yet, still unnamed, with a new workspace.
+        let mut stale = record("c1");
+        stale.title = NEW_CHAT_TITLE.to_string();
+        stale.messages = vec![message("q1", "user", "Notice period?")];
+        stale.workspace_id = Some("w1".to_string());
+        stale.mode = Some(ConversationMode::Code);
+        stale.updated_at = "2026-11-13T11:00:00.000Z".to_string();
+        save_record(&mut all, stale);
+        assert_eq!(ids(&all), ["c1"]);
+        let kept: Vec<&str> = all[0].messages.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(kept, ["q1", "a1"], "no turn is lost to a whole-record save");
+        assert_eq!(all[0].title, "Notice period?");
+        assert_eq!(
+            all[0].workspace_id.as_deref(),
+            Some("w1"),
+            "settings are taken"
+        );
+        assert_eq!(all[0].mode, Some(ConversationMode::Code));
+        assert_eq!(all[0].updated_at, "2026-11-13T11:00:00.000Z");
+        // A new conversation is stored as sent.
+        save_record(&mut all, record("c2"));
+        assert_eq!(ids(&all), ["c1", "c2"]);
+    }
+
+    #[test]
+    fn turns_are_written_by_id_and_name_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConversationStore::in_dir(dir.path());
+        // The first question reaches the store before the window's save of the new chat.
+        let written = store
+            .write_turns(
+                "c1",
+                vec![
+                    TurnWrite::Insert(message("q1", "user", "one two three four five six seven")),
+                    TurnWrite::Insert(message("a1", "assistant", "")),
+                ],
+                &[],
+                true,
+            )
+            .unwrap()
+            .expect("created");
+        assert_eq!(written.title, "one two three four five six...");
+        // An insert never sets back what is there; an answer keeps what was added to it.
+        let mut edited = message("a1", "assistant", "draft");
+        edited.metadata = Some(serde_json::json!({ "focusThreads": [] }));
+        store.append_turn("c1", edited).unwrap();
+        let mut answer = message("a1", "assistant", "Final.");
+        answer.transcript = Some(serde_json::json!({ "status": "completed" }));
+        store
+            .write_turns(
+                "c1",
+                vec![
+                    TurnWrite::Insert(message("q1", "user", "changed?")),
+                    TurnWrite::Answer(answer),
+                ],
+                &[],
+                false,
+            )
+            .unwrap();
+        let saved = store.get("c1").unwrap().unwrap();
+        assert_eq!(
+            saved.messages[0].content,
+            "one two three four five six seven"
+        );
+        assert_eq!(saved.messages[1].content, "Final.");
+        assert!(saved.messages[1].metadata.is_some());
+        assert!(saved.messages[1].transcript.is_some());
+        // Removed by id; a conversation that is gone is not brought back.
+        store
+            .write_turns("c1", vec![], &["a1".to_string()], false)
+            .unwrap();
+        assert_eq!(store.get("c1").unwrap().unwrap().messages.len(), 1);
+        assert!(store
+            .write_turns(
+                "gone",
+                vec![TurnWrite::Answer(message("a9", "assistant", "x"))],
+                &[],
+                false
+            )
+            .unwrap()
+            .is_none());
+        assert!(store.get("gone").unwrap().is_none());
+        // A connector's conversation is its connector's.
+        assert!(store
+            .append_turn("connector-slack-T1", message("q", "user", "x"))
+            .is_err());
     }
 }

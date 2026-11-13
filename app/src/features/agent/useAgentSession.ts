@@ -13,7 +13,7 @@ import type { SessionCounts } from './sessionCounts';
 import type { ModelOverride, ProviderError } from '../modelPicker/modelTypes';
 import { readProviderError } from '../modelPicker/modelTypes';
 import type { AgentMode } from './agentModes';
-import type { ConversationMode } from '../../hooks/useConversations';
+import type { ConversationMessage, ConversationMode } from '../../hooks/useConversations';
 import type { CarriedPassageWire } from '../focus/carriedPassages';
 import type { AttachedContext } from '../ask/imageAttachments';
 
@@ -173,6 +173,31 @@ export interface SendExtras {
    * (`suggestionIgnored` in agentModes): the agent suggests none again.
    */
   suggestionIgnored?: boolean;
+  /**
+   * The turn the backend saves (`agent_send`'s `turn`): with it the conversation is
+   * saved by the app, not the window, from the moment the question is sent.
+   */
+  turn?: SendTurn | null;
+}
+
+/**
+ * A question and its answer as the window stores them, saved by the backend once
+ * `agent_send` takes the question (and its answer as it is checked and when it ends).
+ */
+export interface SendTurn {
+  conversationId: string;
+  /** The question as stored (`toStored`); absent for a retry of the latest answer. */
+  question: ConversationMessage | null;
+  /** The answer as it starts (`startedAnswer`), with its starting transcript. */
+  answer: ConversationMessage;
+  /** The answer a retry replaces, removed when this one is saved. */
+  replaces: string | null;
+}
+
+/** The ids of the turn a steer becomes when the answer ended before it arrived. */
+export interface SteerTurn {
+  questionId: string;
+  answerId: string;
 }
 
 export interface HistoryTurn {
@@ -277,6 +302,7 @@ export const agentApi = {
     priorRunIds: extras.priorRunIds && extras.priorRunIds.length > 0 ? extras.priorRunIds : null,
     reviewAction: extras.reviewAction === true ? true : null,
     suggestionIgnored: extras.suggestionIgnored === true ? true : null,
+    turn: extras.turn ?? null,
   }),
   /**
    * Stop a running Code-mode command now (its process and everything it
@@ -284,7 +310,12 @@ export const agentApi = {
    * arrives as a `command_finished` event.
    */
   stopCommand: (commandId: string) => call<boolean>('run_command_stop', { commandId }),
-  steer: (sessionId: string, text: string) => call<string>('agent_steer', { sessionId, text }),
+  /**
+   * Redirect the running answer. `steerId` names it in the saved answer; `turn` gives the
+   * ids of the new question and answer it becomes if the answer already ended.
+   */
+  steer: (sessionId: string, text: string, steerId: string | null = null, turn: SteerTurn | null = null) =>
+    call<string>('agent_steer', { sessionId, text, steerId, turn }),
   abort: (sessionId: string) => call<void>('agent_abort', { sessionId }),
   /**
    * `forConversation`: also allow what the prompt offered for the rest of the session.

@@ -54,6 +54,7 @@ use crate::api_key_store;
 use crate::app_settings::SettingsStore;
 use crate::audit_commands::AuditState;
 use crate::conversation_commands::ConversationMode;
+use crate::conversation_turns::{SendTurn, SteerTurn, StoreSink, TurnRecorder, TurnSink};
 use crate::inbox_commands;
 use crate::llm_commands::LLMState;
 use crate::memory_commands::{recall_for_run, with_memories, MemoryState, RunMemories};
@@ -380,6 +381,9 @@ pub struct AgentSessions {
     starting: AtomicUsize,
     /// Side-thread sessions being launched right now (counted against the side cap).
     starting_side: AtomicUsize,
+    /// The answers being saved by the backend, one per accepted question (shared with
+    /// every session's event forwarder).
+    turns: Arc<TurnRecorder>,
 }
 
 /// Counts a launch in progress for as long as it is alive.
@@ -2248,6 +2252,11 @@ async fn start_attempt(
     // A finished answer of the conversation itself is announced when the window is not
     // in front; a side thread's work (summaries, follow-ups) is not.
     let forward_announces = parent_conversation_id.is_none();
+    // The conversation's own answers are saved by the backend as they run; a side
+    // thread's live in the side thread, which the window saves.
+    let forward_turns = parent_conversation_id
+        .is_none()
+        .then(|| sessions.turns.clone());
     // A Creator conversation's folder is saved as a version when each answer
     // ends, and its finish card's choices are kept with it.
     let forward_creates = agent_mode.creates() && parent_conversation_id.is_none();
@@ -2330,6 +2339,18 @@ async fn start_attempt(
             if let Err(e) = forward_app.emit(AGENT_EVENT, &envelope) {
                 tracing::warn!(target: "shodh::harness", error = %e, "emitting agent_event failed");
             }
+            // The answer is saved whether or not a window is there to see the event.
+            if let Some(turns) = &forward_turns {
+                save_turn(&forward_app, |sink| {
+                    turns.observe(sink, &forward_id, &envelope.event)
+                });
+            }
+        }
+        // A run still open never finishes now: its answer is saved as interrupted.
+        if let Some(turns) = &forward_turns {
+            save_turn(&forward_app, |sink| {
+                turns.session_ended(sink, &forward_id, now_ms())
+            });
         }
         // The session ended: its approvals can no longer be answered.
         inbox_commands::resolve_session_approvals(&forward_app, &forward_id).await;
@@ -2597,6 +2618,12 @@ pub fn start_idle_reaper(app: AppHandle) {
 /// `suggestion_ignored`: the user went on without a mode the agent suggested earlier in
 /// this conversation (worked out by the app from the conversation's answers), so the
 /// agent suggests none again ([`RunScope::suggestion_ignored`]).
+///
+/// `turn` is the question as the window stores it and the answer as it starts
+/// ([`SendTurn`]): with it the conversation is saved by the backend, not the window. The
+/// question and the starting answer are written now, the answer as it is checked and when
+/// it ends ([`TurnRecorder`]), and a send that fails from here on is written as a failed
+/// answer, as the window showed it. Side threads send none.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_send(
@@ -2612,6 +2639,7 @@ pub async fn agent_send(
     prior_run_ids: Option<Vec<String>>,
     review_action: Option<bool>,
     suggestion_ignored: Option<bool>,
+    turn: Option<SendTurn>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
     memory: State<'_, MemoryState>,
@@ -2620,6 +2648,122 @@ pub async fn agent_send(
     research: State<'_, ResearchState>,
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
+    let recorded = match turn {
+        Some(turn) => record_question(&app, &sessions, &session_id, &request_id, turn)?,
+        None => false,
+    };
+    let sent = send_question(
+        &app,
+        &session_id,
+        &text,
+        &request_id,
+        attached_context,
+        history,
+        scope,
+        text_origin,
+        typed_text,
+        prior_run_ids,
+        review_action,
+        suggestion_ignored,
+        &sessions,
+        &audit,
+        &memory,
+        &learn,
+        &workspaces,
+        &research,
+    )
+    .await;
+    if recorded {
+        if let Err(error) = &sent {
+            save_turn(&app, |sink| {
+                sessions
+                    .turns
+                    .fail(sink, &request_id, &error.message, error.code, now_ms())
+            });
+        }
+    }
+    sent
+}
+
+/// Writes the question of `turn` and its starting answer, and records run `request_id`'s
+/// answer from here on. Refused for a connector's conversation, a side thread, and a
+/// session of another conversation. Returns whether the turn is recorded (not when the
+/// conversations cannot be saved now: the question is still answered).
+fn record_question(
+    app: &AppHandle,
+    sessions: &AgentSessions,
+    session_id: &str,
+    request_id: &str,
+    turn: SendTurn,
+) -> CommandResult<bool> {
+    check_id("conversation id", &turn.conversation_id)?;
+    refuse_connector_conversation(&turn.conversation_id)?;
+    if let Ok(entry) = sessions.entry(session_id) {
+        if entry.is_side() {
+            return Err(AgentCommandError::invalid(
+                "A side thread's questions are saved with the side thread.",
+            ));
+        }
+        if entry.conversation_id != turn.conversation_id {
+            return Err(AgentCommandError::invalid(
+                "This session answers another conversation.",
+            ));
+        }
+    }
+    let begun = save_turn(app, |sink| {
+        sessions.turns.begin(sink, session_id, request_id, turn)
+    });
+    match begun {
+        Some(Ok(())) => Ok(true),
+        Some(Err(e)) => {
+            tracing::warn!(target: "shodh::conversations", error = %e, "the question was not saved; it is answered anyway");
+            Ok(false)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Runs `record` with the sink that writes turns into this profile's conversations and
+/// tells every open view; `None` when the data folder is unknown (nothing is saved).
+fn save_turn<R>(app: &AppHandle, record: impl FnOnce(&dyn TurnSink) -> R) -> Option<R> {
+    match crate::conversation_commands::store(app) {
+        Ok(store) => {
+            let app = app.clone();
+            let sink = StoreSink {
+                store,
+                changed: move |id: &str| crate::conversation_commands::emit_changed(&app, id),
+            };
+            Some(record(&sink))
+        }
+        Err(e) => {
+            tracing::warn!(target: "shodh::conversations", error = %e, "turns cannot be saved");
+            None
+        }
+    }
+}
+
+/// [`agent_send`] once its turn is recorded.
+#[allow(clippy::too_many_arguments)]
+async fn send_question(
+    app: &AppHandle,
+    session_id: &str,
+    text: &str,
+    request_id: &str,
+    attached_context: Option<Vec<AttachedContext>>,
+    history: Option<Vec<HistoryTurn>>,
+    scope: Option<SendScope>,
+    text_origin: Option<TextOrigin>,
+    typed_text: Option<String>,
+    prior_run_ids: Option<Vec<String>>,
+    review_action: Option<bool>,
+    suggestion_ignored: Option<bool>,
+    sessions: &AgentSessions,
+    audit: &AuditState,
+    memory: &MemoryState,
+    learn: &LearnState,
+    workspaces: &WorkspaceState,
+    research: &ResearchState,
+) -> CommandResult<String> {
     let search_all = scope.as_ref().is_some_and(|s| s.search_all);
     let scope = scope
         .map(SendScope::validated)
@@ -2687,7 +2831,7 @@ pub async fn agent_send(
             // The chat shows which memories the answer was given ("Used 2 memories"), by
             // id; the run id is `request_id`. Sent before the prompt so it reaches the chat
             // before the run's own events; a prompt that fails clears it there.
-            emit_memories_used(&app, &session_id, &request_id, &recalled.ids);
+            emit_memories_used(app, &sessions.turns, session_id, request_id, &recalled.ids);
         }
         recalled
     } else {
@@ -2782,7 +2926,7 @@ pub async fn agent_send(
     }
     let run_id = match entry
         .session
-        .prompt_scoped(&message, Some(request_id.clone()), scope.clone())
+        .prompt_scoped(&message, Some(request_id.to_string()), scope.clone())
         .await
     {
         Ok(run_id) => run_id,
@@ -2844,8 +2988,15 @@ fn private_context(memories: Option<&RunMemories>, other_private: bool) -> bool 
 }
 
 /// Tells the chat which memories were put in front of run `run_id`'s question
-/// ([`AgentEvent::MemoriesUsed`], ids only), on the run's event stream.
-fn emit_memories_used(app: &AppHandle, session_id: &str, run_id: &str, ids: &[String]) {
+/// ([`AgentEvent::MemoriesUsed`], ids only), on the run's event stream; the answer the
+/// backend saves keeps them too.
+fn emit_memories_used(
+    app: &AppHandle,
+    turns: &TurnRecorder,
+    session_id: &str,
+    run_id: &str,
+    ids: &[String],
+) {
     let envelope = AgentEventEnvelope {
         session_id: session_id.to_string(),
         event: AgentEvent::MemoriesUsed {
@@ -2855,6 +3006,9 @@ fn emit_memories_used(app: &AppHandle, session_id: &str, run_id: &str, ids: &[St
     };
     if let Err(e) = app.emit(AGENT_EVENT, &envelope) {
         tracing::warn!(target: "shodh::harness", error = %e, "emitting the memories of an answer failed");
+    }
+    if turns.records(run_id) {
+        save_turn(app, |sink| turns.observe(sink, session_id, &envelope.event));
     }
 }
 
@@ -2926,11 +3080,18 @@ fn question_record(
 }
 
 /// Redirect the running answer (starts a new run when idle). Returns the run id.
+///
+/// `steer_id` names the steer in the saved answer, as the window shows it. `turn` gives
+/// the ids of the question and answer a steer becomes when the answer ended before it
+/// arrived and it starts a new run; that turn is saved by the backend too.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_steer(
     app: AppHandle,
     session_id: String,
     text: String,
+    steer_id: Option<String>,
+    turn: Option<SteerTurn>,
     sessions: State<'_, AgentSessions>,
     audit: State<'_, AuditState>,
 ) -> CommandResult<String> {
@@ -2938,7 +3099,38 @@ pub async fn agent_steer(
     refuse_connector_conversation(entry.audit_conversation())?;
     refuse_code_when_off(&app, entry.code_folder.is_some())?;
     entry.touch();
-    let run_id = entry.session.steer(&text).await?;
+    let recorded = !entry.is_side();
+    if recorded {
+        let message = text.trim();
+        if let (Some(run_id), Some(id)) = (sessions.turns.active_run(&session_id), &steer_id) {
+            check_id("steer id", id)?;
+            sessions.turns.local(
+                &run_id,
+                json!({ "type": "local_steer", "id": id, "text": message }),
+            );
+        }
+        if let Some(turn) = turn {
+            check_id("question id", &turn.question_id)?;
+            check_id("answer id", &turn.answer_id)?;
+            sessions.turns.expect_steer(
+                &session_id,
+                &entry.conversation_id,
+                turn,
+                message,
+                now_ms(),
+            );
+        }
+    }
+    let run_id = match entry.session.steer(&text).await {
+        Ok(run_id) => run_id,
+        Err(e) => {
+            sessions.turns.steer_failed(&session_id);
+            return Err(e.into());
+        }
+    };
+    if recorded {
+        sessions.turns.steered(&session_id, &run_id);
+    }
     audit.record(question_record(&entry, &run_id, &text, true, false));
     Ok(run_id)
 }
@@ -2972,8 +3164,18 @@ pub async fn agent_approve(
     // A Code session's approval is never granted while Code mode is off: it is refused,
     // so the command or edit waiting for it does not run.
     let is_code = sessions.entry(&session_id)?.code_folder.is_some();
+    // The saved answer shows the decision where it was made, before the step goes on.
+    let record_decision = |approved: bool| {
+        if let Some(run_id) = sessions.turns.active_run(&session_id) {
+            sessions.turns.local(
+                &run_id,
+                json!({ "type": "local_approval", "stepId": step_id, "approved": approved }),
+            );
+        }
+    };
     if approved && refuse_code_when_off(&app, is_code).is_err() {
         let session = sessions.get(&session_id)?;
+        record_decision(false);
         session.approve(&step_id, false)?;
         inbox_commands::resolve(&app, inbox_commands::approval_id(&session_id, &step_id)).await;
         return Err(AgentCommandError::invalid(
@@ -2984,6 +3186,7 @@ pub async fn agent_approve(
     // A review token comes only from the prompt that showed every file it
     // marks reviewed; the Inbox sends none, so its yes clears nothing.
     let review_token = review_token.filter(|token| !token.trim().is_empty());
+    record_decision(approved);
     match (approved, for_conversation == Some(true), review_token) {
         (true, true, _) => {
             session.approve_for_conversation(&step_id)?;

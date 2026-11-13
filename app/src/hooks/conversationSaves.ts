@@ -44,6 +44,11 @@ export interface SaveDeps<C extends { id: string }> {
   /** A write succeeded. */
   onWritten?: (conv: C) => void;
   delayMs: number;
+  /**
+   * Fold a save into the one still waiting for the same conversation (both are
+   * written, as one); without it the newer save replaces the waiting one.
+   */
+  merge?: (waiting: C, next: C) => C;
 }
 
 interface Pending<C> {
@@ -83,8 +88,22 @@ export class ConversationSaves<C extends { id: string }> {
    * still waiting; with `immediate`, write it now instead. `onSaved` runs
    * only if this save is the one written and it succeeds.
    */
-  save(conv: C, onSaved?: () => void, immediate = false): void {
+  save(next: C, onSavedNext?: () => void, immediate = false): void {
     if (this.stopped) return;
+    const waiting = this.pending.get(next.id);
+    const merge = this.deps.merge;
+    let conv = next;
+    let onSaved = onSavedNext;
+    if (waiting && merge) {
+      conv = merge(waiting.conv, next);
+      const earlier = waiting.onSaved;
+      onSaved = earlier || onSavedNext
+        ? () => {
+            earlier?.();
+            onSavedNext?.();
+          }
+        : undefined;
+    }
     this.drop(conv.id);
     if (immediate) {
       void this.write(conv, onSaved);
@@ -95,6 +114,11 @@ export class ConversationSaves<C extends { id: string }> {
       void this.write(conv, onSaved);
     }, this.deps.delayMs);
     this.pending.set(conv.id, { conv, onSaved, cancel });
+  }
+
+  /** The save of conversation `id` still waiting for its delay, if any. */
+  waiting(id: string): C | undefined {
+    return this.pending.get(id)?.conv;
   }
 
   /** Write every waiting save now (page hidden or closing, provider unmounting). */

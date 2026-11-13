@@ -40,6 +40,13 @@ export interface PersistView<M extends { id: string }, S> {
    * place of the live message until it settles.
    */
   checkpoints: Readonly<Record<string, S>>;
+  /**
+   * The messages changed by changes that must be saved, by id, with the `persist.seq` of
+   * their latest such change. Only these are written ({@link changedSince}): the store
+   * keeps every other message as it has it, so turns the agent session saved, or another
+   * device added, are never overwritten by this view's copy.
+   */
+  changed: Readonly<Record<string, number>>;
 }
 
 /** A save the view needs: up to `seq`, now or after the store's delay. */
@@ -76,7 +83,28 @@ export function startsCheck(actions: readonly { type: string }[], answerText: st
 }
 
 export function emptyView<M extends { id: string }, S>(): PersistView<M, S> {
-  return { conversationId: null, messages: [], persist: NO_CHANGES, checkpoints: {} };
+  return { conversationId: null, messages: [], persist: NO_CHANGES, checkpoints: {}, changed: {} };
+}
+
+/** `changed` with `ids` marked as changed at `seq` (nothing for a display-only change). */
+function markIds(
+  changed: Readonly<Record<string, number>>,
+  ids: readonly string[],
+  mark: PersistMark,
+  mode: PersistMode,
+): Readonly<Record<string, number>> {
+  if (mode === 'none' || ids.length === 0) return changed;
+  const next = { ...changed };
+  for (const id of ids) next[id] = mark.seq;
+  return next;
+}
+
+/**
+ * The ids of the messages changed since `lastSavedSeq`: what a save of the view writes
+ * (the rest of its list is never written over the store's copy).
+ */
+export function changedSince(changed: Readonly<Record<string, number>>, lastSavedSeq: number): Set<string> {
+  return new Set(Object.entries(changed).filter(([, seq]) => seq > lastSavedSeq).map(([id]) => id));
 }
 
 /** Count one change made with `mode`. */
@@ -135,15 +163,20 @@ export function publishMessage<M extends { id: string }, S>(
   checkpoint: S | null = null,
 ): PersistView<M, S> {
   if (view.conversationId !== conversationId) return view;
+  const persist = markChange(view.persist, mode);
   return {
     ...view,
     messages: upsertById(view.messages, message),
-    persist: markChange(view.persist, mode),
+    persist,
     checkpoints: checkpoint === null ? view.checkpoints : { ...view.checkpoints, [message.id]: checkpoint },
+    changed: markIds(view.changed, [message.id], persist, mode),
   };
 }
 
-/** Change the view's messages if it holds `conversationId`. */
+/**
+ * Change the view's messages if it holds `conversationId`. The messages `update` added or
+ * replaced (a new object for its id) are the ones changed; one it returns as it was is not.
+ */
 export function changeMessages<M extends { id: string }, S>(
   view: PersistView<M, S>,
   conversationId: string,
@@ -151,7 +184,11 @@ export function changeMessages<M extends { id: string }, S>(
   mode: PersistMode,
 ): PersistView<M, S> {
   if (view.conversationId !== conversationId) return view;
-  return { ...view, messages: update(view.messages), persist: markChange(view.persist, mode) };
+  const before = new Map(view.messages.map(m => [m.id, m]));
+  const messages = update(view.messages);
+  const persist = markChange(view.persist, mode);
+  const ids = messages.filter(m => before.get(m.id) !== m).map(m => m.id);
+  return { ...view, messages, persist, changed: markIds(view.changed, ids, persist, mode) };
 }
 
 /**
@@ -165,7 +202,7 @@ export function loadConversation<M extends { id: string }, S>(
   messages: M[],
   checkpoints: Readonly<Record<string, S>>,
 ): PersistView<M, S> {
-  return { conversationId, messages, persist: view.persist, checkpoints };
+  return { conversationId, messages, persist: view.persist, checkpoints, changed: view.changed };
 }
 
 /**
@@ -188,4 +225,33 @@ export function messagesToSave<M extends { id: string }, S>(
     if (checkpoint !== undefined) out.push(checkpoint);
   }
   return out;
+}
+
+/** The answer running in a conversation, as its view shows it (`withLiveRun`). */
+export interface ShownRun<M> {
+  /** The answer as it streams. */
+  message: M;
+  /** The question it answers, shown before the agent session has saved it. */
+  question: M | null;
+  /** The answer a retry replaces, hidden while this one runs. */
+  replaces: string | null;
+}
+
+/**
+ * The messages to show for a conversation from its stored ones while an answer runs in
+ * it: the answer as it streams (in place of its stored copy, or at the end), its question
+ * before it when the store does not have it yet, and without the answer it replaces.
+ */
+export function withLiveRun<M extends { id: string }>(stored: readonly M[], run: ShownRun<M> | null): M[] {
+  if (!run) return stored.slice();
+  const shown = stored.filter(m => m.id !== run.replaces);
+  if (run.question && !shown.some(m => m.id === run.question?.id)) {
+    const at = shown.findIndex(m => m.id === run.message.id);
+    if (at >= 0) shown.splice(at, 0, run.question);
+    else shown.push(run.question);
+  }
+  const at = shown.findIndex(m => m.id === run.message.id);
+  if (at >= 0) shown[at] = run.message;
+  else shown.push(run.message);
+  return shown;
 }

@@ -1334,7 +1334,9 @@ jobs:
               echo "::error::Reading logcat failed (status $status) while waiting for ready"
               exit 1
             fi
-            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | head -n 1)
+            # logcat prints a "--------- beginning of main" header before the
+            # first line it matches; the ready line is the first Shodh line.
+            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | grep -E 'Shodh (not )?ready' | head -n 1 || true)
             echo "$ready_line"
             if ! grep -q 'Shodh ready: the pair screen is shown' <<< "$ready_line"; then
               echo "::error::Shodh did not reach its pair screen: $ready_line"

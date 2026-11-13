@@ -752,7 +752,12 @@ async fn a_phone_keeps_its_desktop_and_reconnects_with_its_kept_key() {
         .subscribe(vec![session.as_str().unwrap().to_string()])
         .await
         .unwrap();
-    let reader = tokio::spawn(async move { events.recv().await });
+    // The reader hands the stream back: a dropped stream would end the
+    // connection, as an app that stopped reading does.
+    let reader = tokio::spawn(async move {
+        let first = events.recv().await;
+        (first, events)
+    });
     within(
         "agent_send",
         client.invoke(
@@ -762,10 +767,8 @@ async fn a_phone_keeps_its_desktop_and_reconnects_with_its_kept_key() {
     )
     .await
     .unwrap();
-    let first = within("the first event", reader)
-        .await
-        .unwrap()
-        .expect("an event");
+    let (first, _events) = within("the first event", reader).await.unwrap();
+    let first = first.expect("an event");
     assert_eq!(first.payload["event"]["type"], "run_started");
     assert!(client.next_event().await.is_none(), "the stream was taken");
 

@@ -32,7 +32,7 @@ pub const MAX_DEVICES: usize = 5;
 pub const MAX_DEVICE_NAME_CHARS: usize = 40;
 
 /// What the QR code carries.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PairingOffer {
     pub node_id: EndpointId,
     /// The desktop's home relay, so the phone reaches it before address
@@ -41,6 +41,18 @@ pub struct PairingOffer {
     pub secret: [u8; SECRET_BYTES],
     /// Unix time in milliseconds.
     pub expires_at: u64,
+}
+
+/// Never the secret: an offer printed in a log must not pair anyone.
+impl std::fmt::Debug for PairingOffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairingOffer")
+            .field("node_id", &self.node_id)
+            .field("relay_url", &self.relay_url)
+            .field("secret", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// Why a QR string is not a Shodh pairing code.
@@ -139,11 +151,21 @@ pub enum PairingRefusal {
     Unknown,
 }
 
-#[derive(Debug)]
 struct Pending {
     secret: [u8; SECRET_BYTES],
     expires_at: u64,
     used: bool,
+}
+
+/// Never the secret.
+impl std::fmt::Debug for Pending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pending")
+            .field("secret", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("used", &self.used)
+            .finish()
+    }
 }
 
 /// Equal in constant time: how long the comparison takes says nothing about

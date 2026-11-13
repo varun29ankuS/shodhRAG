@@ -86,7 +86,8 @@ impl LinkHost for Desktop {
         let result = match command {
             "agent_start" => Ok(json!(SESSION)),
             "agent_send" => {
-                let turn: SendTurn = serde_json::from_value(args["turn"].clone()).map_err(invalid);
+                let turn: Result<SendTurn, Value> =
+                    serde_json::from_value(args["turn"].clone()).map_err(invalid);
                 match turn {
                     Err(e) => Err(e),
                     Ok(turn) => match self.turns.begin(&self.sink, SESSION, RUN, turn) {

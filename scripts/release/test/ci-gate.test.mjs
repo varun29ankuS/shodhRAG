@@ -179,12 +179,20 @@ const skippable = (path, skip, keep) => (skip.test(path) || skip.test(`${path}/x
 test('no file the evals build or read is in their skip set', () => {
   const { eval_skip, eval_keep } = skipSets();
   const refs = pathsReadBy(['crates/shodh-rag', 'crates/shodh-eval', 'crates/shodh-ontology']);
-  // Not vacuous: the one app file shodh-rag's tests include, and the eval
-  // corpus files its tests read, are found.
+  // Not vacuous: the app file shodh-rag's tests include, the recorded
+  // transcript fixtures they compare with, and the eval corpus files its
+  // tests read, are found.
   assert.ok(
     refs.some((r) => r.path === 'app/src/features/agent/events.ts'),
     'the events.ts include is found',
   );
+  assert.ok(
+    refs.some((r) => r.kind === 'manifest' && r.path === 'app/tests/fixtures/transcripts'),
+    'the recorded transcript fixtures are found',
+  );
+  // A recorded fixture changed runs the evals; a hand-built one does not.
+  assert.ok(!skippable('app/tests/fixtures/transcripts/recorded-01-repaired-answer.json', eval_skip, eval_keep));
+  assert.ok(skippable('app/tests/fixtures/transcripts/01-cited-answer.json', eval_skip, eval_keep));
   assert.ok(
     refs.some((r) => r.kind === 'manifest' && r.path.startsWith('crates/shodh-eval/data/')),
     'the corpus reads are found',

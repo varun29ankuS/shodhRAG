@@ -1,0 +1,175 @@
+{
+  "name": "A recorded session: a cited answer checked against its source, flagged for a number the source does not have, repaired and checked again",
+  "seed": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-1",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1763000600000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "ask"
+  },
+  "actions": 
+  [
+    {
+      "type": "run_started",
+      "runId": "run-1",
+      "sessionId": "s",
+      "model": "test/model",
+      "atMs": 1763000600100,
+      "warning": null
+    },
+    {
+      "type": "text_delta",
+      "runId": "run-1",
+      "messageId": "m1",
+      "delta": "Either party may terminate the agreement with 90 days written notice [1]."
+    },
+    {
+      "type": "grounding_started",
+      "runId": "run-1",
+      "round": 0
+    },
+    {
+      "type": "grounding",
+      "runId": "run-1",
+      "report": {
+        "round": 0,
+        "isFinal": false,
+        "method": "lexical",
+        "summary": {
+          "checked": 1,
+          "supported": 0,
+          "weak": 0,
+          "unsupported": 1,
+          "uncited": 0,
+          "invalid": 0,
+          "unchecked": 0,
+          "score": 0.0
+        },
+        "claims": [
+          {
+            "messageId": "m1",
+            "text": "Either party may terminate the agreement with 90 days written notice.",
+            "anchor": "Either party may terminate the agreement with 90 days written notice [1].",
+            "kind": "sentence",
+            "outcome": "unsupported",
+            "cited": [
+              1
+            ],
+            "invalid": [],
+            "support": 0.8888889,
+            "contradiction": null,
+            "missingNumbers": [
+              "90"
+            ],
+            "closest": null,
+            "closestScore": null,
+            "suggested": null,
+            "suggestedScore": null,
+            "suggestedContradiction": null
+          }
+        ],
+        "needs": [],
+        "messageIds": [
+          "m1"
+        ],
+        "supersededMessageIds": []
+      }
+    },
+    {
+      "type": "revision_started",
+      "runId": "run-1",
+      "round": 1,
+      "reason": "repair",
+      "flagged": 1,
+      "missingNeeds": []
+    },
+    {
+      "type": "text_delta",
+      "runId": "run-1",
+      "messageId": "m2",
+      "delta": "Either party may terminate the agreement with 60 days written notice [1]."
+    },
+    {
+      "type": "grounding_started",
+      "runId": "run-1",
+      "round": 1
+    },
+    {
+      "type": "grounding",
+      "runId": "run-1",
+      "report": {
+        "round": 1,
+        "isFinal": true,
+        "method": "lexical",
+        "summary": {
+          "checked": 1,
+          "supported": 1,
+          "weak": 0,
+          "unsupported": 0,
+          "uncited": 0,
+          "invalid": 0,
+          "unchecked": 0,
+          "score": 1.0
+        },
+        "claims": [
+          {
+            "messageId": "m2",
+            "text": "Either party may terminate the agreement with 60 days written notice.",
+            "anchor": "Either party may terminate the agreement with 60 days written notice [1].",
+            "kind": "sentence",
+            "outcome": "supported",
+            "cited": [
+              1
+            ],
+            "invalid": [],
+            "support": 0.8888889,
+            "contradiction": null,
+            "missingNumbers": [],
+            "closest": null,
+            "closestScore": null,
+            "suggested": null,
+            "suggestedScore": null,
+            "suggestedContradiction": null
+          }
+        ],
+        "needs": [],
+        "messageIds": [
+          "m2"
+        ],
+        "supersededMessageIds": [
+          "m1"
+        ]
+      }
+    },
+    {
+      "type": "run_finished",
+      "runId": "run-1",
+      "status": "completed",
+      "durationMs": 250,
+      "error": null,
+      "providerError": null
+    }
+  ]
+  ,
+  "checkpointAfter": 3,
+  "expectedCheckpoint": {"providerError":null,"fallback":null,"runId":"run-1","sessionId":"s","model":"test/model","warning":null,"status":"running","startedAtMs":1763000600000,"durationMs":null,"error":null,"errorCode":null,"blocks":[{"kind":"text","id":"m1","text":"Either party may terminate the agreement with 90 days written notice [1]."}],"steps":{},"plan":null,"usage":null,"passages":[],"groundings":[],"interimIds":[],"checking":false,"thinking":"","interrupting":false,"agentMode":"ask","savedWhileChecking":true},
+  "expectedText": "Either party may terminate the agreement with 60 days written notice [1].",
+  "expected": {"providerError":null,"fallback":null,"runId":"run-1","sessionId":"s","model":"test/model","warning":null,"status":"completed","startedAtMs":1763000600000,"durationMs":250,"error":null,"errorCode":null,"blocks":[{"kind":"text","id":"m1","text":"Either party may terminate the agreement with 90 days written notice [1]."},{"kind":"revision","id":"revision-1","round":1,"reason":"repair","flagged":1,"missingNeeds":[]},{"kind":"text","id":"m2","text":"Either party may terminate the agreement with 60 days written notice [1]."}],"steps":{},"plan":null,"usage":null,"passages":[],"groundings":[{"round":0,"isFinal":false,"method":"lexical","summary":{"checked":1,"supported":0,"weak":0,"unsupported":1,"uncited":0,"invalid":0,"unchecked":0,"score":0},"claims":[{"messageId":"m1","text":"Either party may terminate the agreement with 90 days written notice.","anchor":"Either party may terminate the agreement with 90 days written notice [1].","kind":"sentence","outcome":"unsupported","cited":[1],"invalid":[],"support":0.8888889,"contradiction":null,"missingNumbers":["90"],"closest":null,"closestScore":null,"suggested":null,"suggestedScore":null,"suggestedContradiction":null}],"needs":[],"messageIds":["m1"],"supersededMessageIds":[]},{"round":1,"isFinal":true,"method":"lexical","summary":{"checked":1,"supported":1,"weak":0,"unsupported":0,"uncited":0,"invalid":0,"unchecked":0,"score":1},"claims":[{"messageId":"m2","text":"Either party may terminate the agreement with 60 days written notice.","anchor":"Either party may terminate the agreement with 60 days written notice [1].","kind":"sentence","outcome":"supported","cited":[1],"invalid":[],"support":0.8888889,"contradiction":null,"missingNumbers":[],"closest":null,"closestScore":null,"suggested":null,"suggestedScore":null,"suggestedContradiction":null}],"needs":[],"messageIds":["m2"],"supersededMessageIds":["m1"]}],"interimIds":[],"checking":false,"thinking":"","interrupting":false,"agentMode":"ask"}
+}

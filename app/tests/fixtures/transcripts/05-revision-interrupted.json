@@ -1,0 +1,119 @@
+{
+  "name": "A revised answer: a draft checked and flagged, a revision with reasoning, a working note turned back into the answer, the draft superseded, then the interrupt timing out locally",
+  "seed": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-5",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1763000400000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "ask"
+  },
+  "actions": [
+    { "type": "run_started", "runId": "run-5", "sessionId": "sess-5", "model": "openrouter/test-model", "atMs": 1763000400010, "warning": null },
+    { "type": "text_delta", "runId": "run-5", "messageId": "m1", "delta": "Draft answer [1]." },
+    { "type": "text_delta", "runId": "other-run", "messageId": "m9", "delta": "Not this run." },
+    { "type": "grounding_started", "runId": "run-5", "round": 0 },
+    {
+      "type": "grounding",
+      "runId": "run-5",
+      "report": {
+        "round": 0,
+        "isFinal": false,
+        "method": "entailment",
+        "summary": { "checked": 1, "supported": 0, "weak": 0, "unsupported": 1, "uncited": 0, "invalid": 0, "unchecked": 0, "score": 0 },
+        "claims": [],
+        "needs": [],
+        "messageIds": ["m1"],
+        "supersededMessageIds": []
+      }
+    },
+    { "type": "revision_started", "runId": "run-5", "round": 1, "reason": "repair", "flagged": 1, "missingNeeds": [] },
+    { "type": "thinking", "runId": "run-5", "messageId": "m2", "delta": "Fixing the claim." },
+    { "type": "text_delta", "runId": "run-5", "messageId": "m2", "delta": "Revised answer [1]." },
+    { "type": "text_interim", "runId": "run-5", "messageId": "m2", "interim": true },
+    { "type": "text_interim", "runId": "run-5", "messageId": "m2", "interim": false },
+    {
+      "type": "grounding",
+      "runId": "run-5",
+      "report": {
+        "round": 1,
+        "isFinal": true,
+        "method": "entailment",
+        "summary": { "checked": 1, "supported": 1, "weak": 0, "unsupported": 0, "uncited": 0, "invalid": 0, "unchecked": 0, "score": 1 },
+        "claims": [],
+        "needs": [],
+        "messageIds": ["m2"],
+        "supersededMessageIds": ["m1"]
+      }
+    },
+    { "type": "local_interrupt_requested" },
+    { "type": "local_interrupted", "atMs": 1763000401500 }
+  ],
+  "expectedText": "Revised answer [1].",
+  "expected": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-5",
+    "sessionId": "sess-5",
+    "model": "openrouter/test-model",
+    "warning": null,
+    "status": "aborted",
+    "startedAtMs": 1763000400000,
+    "durationMs": 1500,
+    "error": null,
+    "errorCode": null,
+    "blocks": [
+      { "kind": "text", "id": "m1", "text": "Draft answer [1]." },
+      { "kind": "revision", "id": "revision-1", "round": 1, "reason": "repair", "flagged": 1, "missingNeeds": [] },
+      { "kind": "text", "id": "m2", "text": "Revised answer [1]." }
+    ],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [
+      {
+        "round": 0,
+        "isFinal": false,
+        "method": "entailment",
+        "summary": { "checked": 1, "supported": 0, "weak": 0, "unsupported": 1, "uncited": 0, "invalid": 0, "unchecked": 0, "score": 0 },
+        "claims": [],
+        "needs": [],
+        "messageIds": ["m1"],
+        "supersededMessageIds": []
+      },
+      {
+        "round": 1,
+        "isFinal": true,
+        "method": "entailment",
+        "summary": { "checked": 1, "supported": 1, "weak": 0, "unsupported": 0, "uncited": 0, "invalid": 0, "unchecked": 0, "score": 1 },
+        "claims": [],
+        "needs": [],
+        "messageIds": ["m2"],
+        "supersededMessageIds": ["m1"]
+      }
+    ],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "ask",
+    "reasoning": { "segments": [{ "at": 2, "text": "Fixing the claim." }], "truncated": false }
+  }
+}

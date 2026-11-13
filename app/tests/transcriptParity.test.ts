@@ -49,12 +49,26 @@ function seedOf(fixture: Fixture): TranscriptState {
 
 test('fixtures_reduce_to_the_saved_transcript', () => {
   const all = fixtures();
-  assert.ok(all.length >= 5, 'every fixture is read');
+  assert.ok(all.length >= 7, 'every fixture is read');
+  // Two are sessions recorded from the harness (`recorded_sessions_match_their_fixtures`
+  // in crates/shodh-rag/src/harness/session.rs), not built by hand.
+  assert.ok(all.filter(([name]) => name.startsWith('recorded-')).length >= 2, 'the recorded sessions are read');
+  // Every fixture is checked and every difference reported, not only the first.
+  const differences: string[] = [];
   for (const [name, fixture] of all) {
     const state = reduceAll(seedOf(fixture), fixture.actions);
-    assert.deepEqual(stored(toPersisted(state)), fixture.expected, `${name}: the transcript differs`);
-    assert.equal(answerText(state), fixture.expectedText, `${name}: the answer text differs`);
+    const actual = stored(toPersisted(state));
+    try {
+      assert.deepEqual(actual, fixture.expected);
+    } catch {
+      differences.push(`${name}: the transcript differs\nactual:   ${JSON.stringify(actual)}`);
+    }
+    const text = answerText(state);
+    if (text !== fixture.expectedText) {
+      differences.push(`${name}: the answer text differs\nactual:   ${JSON.stringify(text)}`);
+    }
   }
+  assert.deepEqual(differences, []);
 });
 
 test('a checkpoint is the transcript at the start of the check', () => {

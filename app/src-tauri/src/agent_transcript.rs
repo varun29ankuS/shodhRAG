@@ -1234,7 +1234,19 @@ mod tests {
             .filter(|p| p.extension().is_some_and(|x| x == "json"))
             .collect();
         names.sort();
-        assert!(names.len() >= 5, "every fixture is read: {names:?}");
+        assert!(names.len() >= 7, "every fixture is read: {names:?}");
+        assert!(
+            names
+                .iter()
+                .filter(|p| p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("recorded-")))
+                .count()
+                >= 2,
+            "the sessions recorded from the harness are read: {names:?}"
+        );
+        // Every fixture is checked and every difference reported, not only the first.
+        let mut differences: Vec<String> = Vec::new();
         for path in names {
             let name = path.display().to_string();
             let text = std::fs::read_to_string(&path).expect("a readable fixture");
@@ -1250,42 +1262,50 @@ mod tests {
                 transcript.apply(action);
             }
             let actual = transcript.persisted();
-            assert!(
-                js_equal(&actual, &fixture["expected"]),
-                "{name}: the transcript differs\nactual:   {}\nexpected: {}",
-                serde_json::to_string(&actual).unwrap_or_default(),
-                serde_json::to_string(&fixture["expected"]).unwrap_or_default(),
-            );
-            assert_eq!(
-                transcript.answer_text(),
-                fixture["expectedText"].as_str().expect("expectedText"),
-                "{name}: the answer text differs"
-            );
-            assert!(
-                js_equal(&reduce_transcript(&fixture["seed"], &actions), &actual),
-                "{name}: reduce_transcript is the same fold"
-            );
+            if !js_equal(&actual, &fixture["expected"]) {
+                differences.push(format!(
+                    "{name}: the transcript differs\nactual:   {}\nexpected: {}",
+                    serde_json::to_string(&actual).unwrap_or_default(),
+                    serde_json::to_string(&fixture["expected"]).unwrap_or_default(),
+                ));
+            }
+            let text = transcript.answer_text();
+            if fixture["expectedText"].as_str() != Some(text.as_str()) {
+                differences.push(format!(
+                    "{name}: the answer text differs\nactual:   {}\nexpected: {}",
+                    serde_json::to_string(&text).unwrap_or_default(),
+                    fixture["expectedText"],
+                ));
+            }
+            if !js_equal(&reduce_transcript(&fixture["seed"], &actions), &actual) {
+                differences.push(format!("{name}: reduce_transcript is not the same fold"));
+            }
             if let Some(expected) = fixture.get("expectedCheckpoint") {
                 // The checkpoint is taken where the fixture's check started.
                 let at = fixture["checkpointAfter"]
                     .as_u64()
                     .expect("checkpointAfter") as usize;
+                assert!(
+                    (1..=actions.len()).contains(&at),
+                    "{name}: checkpointAfter is within the actions"
+                );
                 let mut partial = Transcript::new(&fixture["seed"]);
                 for action in &actions[..at] {
                     partial.apply(action);
                 }
-                assert!(
-                    partial.starts_check(&actions[at - 1]),
-                    "{name}: the check starts there"
-                );
+                if !partial.starts_check(&actions[at - 1]) {
+                    differences.push(format!("{name}: the check does not start there"));
+                }
                 let checkpoint = partial.checkpoint();
-                assert!(
-                    js_equal(&checkpoint, expected),
-                    "{name}: the checkpoint differs\nactual:   {}",
-                    serde_json::to_string(&checkpoint).unwrap_or_default(),
-                );
+                if !js_equal(&checkpoint, expected) {
+                    differences.push(format!(
+                        "{name}: the checkpoint differs\nactual:   {}",
+                        serde_json::to_string(&checkpoint).unwrap_or_default(),
+                    ));
+                }
             }
         }
+        assert!(differences.is_empty(), "{}", differences.join("\n\n"));
     }
 
     #[test]

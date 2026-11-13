@@ -90,6 +90,32 @@ export class ConversationSaves<C extends { id: string }> {
    */
   save(next: C, onSavedNext?: () => void, immediate = false): void {
     if (this.stopped) return;
+    const { conv, onSaved } = this.take(next, onSavedNext);
+    if (immediate) {
+      void this.write(conv, onSaved);
+      return;
+    }
+    const cancel = this.deps.schedule(() => {
+      this.pending.delete(conv.id);
+      void this.write(conv, onSaved);
+    }, this.deps.delayMs);
+    this.pending.set(conv.id, { conv, onSaved, cancel });
+  }
+
+  /**
+   * Write `next` now, with a save of the same conversation still waiting, and resolve
+   * once it has been written or has failed (reported through `onError`): a write that
+   * must reach the store before the next step (a question saved before its agent session
+   * starts). Never rejects; resolves at once, writing nothing, when saving is paused.
+   */
+  saveNow(next: C): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const { conv, onSaved } = this.take(next);
+    return this.write(conv, onSaved);
+  }
+
+  /** `next`, with the save of its conversation still waiting folded in (and cancelled). */
+  private take(next: C, onSavedNext?: () => void): { conv: C; onSaved?: () => void } {
     const waiting = this.pending.get(next.id);
     const merge = this.deps.merge;
     let conv = next;
@@ -105,15 +131,7 @@ export class ConversationSaves<C extends { id: string }> {
         : undefined;
     }
     this.drop(conv.id);
-    if (immediate) {
-      void this.write(conv, onSaved);
-      return;
-    }
-    const cancel = this.deps.schedule(() => {
-      this.pending.delete(conv.id);
-      void this.write(conv, onSaved);
-    }, this.deps.delayMs);
-    this.pending.set(conv.id, { conv, onSaved, cancel });
+    return { conv, onSaved };
   }
 
   /** The save of conversation `id` still waiting for its delay, if any. */

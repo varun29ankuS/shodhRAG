@@ -22,7 +22,8 @@ import {
 import type { MessagePatch } from '../src/hooks/conversationSync.ts';
 import { ConversationSaves } from '../src/hooks/conversationSaves.ts';
 import type { Conversation, ConversationMessage } from '../src/hooks/useConversations.ts';
-
+import { backendSavesTurn, turnPresave } from '../src/features/ask/chatPersistence.ts';
+import { fromStored, questionMessage, startedAnswer, toStored } from '../src/features/ask/messageStore.ts';
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 function message(id: string, content = id, role: ConversationMessage['role'] = 'user'): ConversationMessage {
@@ -122,11 +123,91 @@ test('the window reloads on conversation_changed and never writes whole message 
   assert.match(hook, /invoke\('save_conversation_messages', \{/);
   assert.doesNotMatch(hook, /updateConversationMessages/);
   const session = read('../src/features/ask/ChatSessionContext.tsx');
-  // The question and the answer go to the agent session with their turn ...
-  assert.match(session, /live\.savedByBackend = true;\s*await api\.send\(/);
-  assert.match(session, /turn: \{\s*conversationId,\s*question: question \? toStored\(question\) : null,\s*answer: startedStored,/);
+  // The question and the answer go to the agent session with their turn (none while
+  // saving is paused), which saves them only when the backend says so ...
+  assert.match(session, /live\.savedByBackend = backendSavesTurn\(sendsTurn, null\);\s*live\.sending = true;\s*try \{\s*await api\.send\(/);
+  assert.match(session, /live\.savedByBackend = backendSavesTurn\(sendsTurn, toAgentError\(error\)\);/);
+  assert.match(session, /turn: sendsTurn\s*\?\s*\{\s*conversationId,\s*question: question \? toStored\(question\) : null,\s*answer: startedStored,/);
+  assert.match(session, /const sendsTurn = !savingPaused\(\);/);
+  // ... after the window wrote the question and the starting answer, which it starts
+  // before the session and awaits before `agent_send`.
+  const presaveAt = session.indexOf('const presaved = saveMessagesNow(conversationId, presave.messages, presave.removed);');
+  assert.ok(presaveAt > 0, 'the question is written by the window first');
+  assert.ok(presaveAt < session.indexOf('await api.start(conversationId'), 'before the session starts');
+  assert.match(session, /await presaved;[\s\S]*?await api\.send\(/);
   // ... and are only shown by the window while they run.
   assert.match(session, /publish\(conversationId, userMessage, 'none'\)/);
   assert.match(session, /publish\(conversationId, message, 'none'\);\s*setLiveRun/);
   assert.match(session, /publish\(live\.conversationId, message, 'none'\);\s*setLiveRun/);
+});
+
+test('a question saved before its session starts comes back interrupted, with Retry, when the session never takes it', () => {
+  // The window writes the question and the starting answer, then the app closes before
+  // `agent_send`: the agent session never saw them.
+  const question = questionMessage('q1', 'What is the notice period?', '2026-11-13T10:00:00.000Z', { spaceId: null, spaceName: null });
+  const { message: started } = startedAnswer('a1', 'run-1', Date.parse('2026-11-13T10:00:00.000Z'));
+  const presave = turnPresave(toStored(question), toStored(started), null);
+  const saved = withPatch(conversation([]), presave, '2026-11-13T10:00:00.010Z');
+  // Read back after the restart.
+  const restored = (JSON.parse(JSON.stringify(saved)) as Conversation).messages.map(fromStored);
+  assert.deepEqual(restored.map(m => [m.id, m.role]), [['q1', 'user'], ['a1', 'assistant']]);
+  assert.equal(restored[0].content, 'What is the notice period?');
+  assert.equal(restored[1].transcript?.status, 'aborted', 'the answer is interrupted');
+  assert.equal(restored[1].transcript?.error, 'The app closed before this answer finished.', 'and offers Retry');
+  assert.equal(saved.title, autoTitle('What is the notice period?'));
+
+  // A retry of the latest answer asks no new question and removes the try it replaces.
+  const { message: retried } = startedAnswer('a2', 'run-2', Date.parse('2026-11-13T10:01:00.000Z'), null, ['run-1']);
+  const again = turnPresave(null, toStored(retried), 'a1');
+  assert.deepEqual(again.removed, ['a1']);
+  const afterRetry = withPatch(saved, again, '2026-11-13T10:01:00.010Z').messages.map(fromStored);
+  assert.deepEqual(afterRetry.map(m => m.id), ['q1', 'a2']);
+  assert.equal(afterRetry[1].transcript?.status, 'aborted');
+  assert.deepEqual(afterRetry[1].transcript?.priorRunIds, ['run-1']);
+});
+
+test('a turn is saved by the agent session only when the backend says so', () => {
+  // Sent with its turn: the session saves it unless it says a failure was not saved.
+  assert.equal(backendSavesTurn(true, null), true, 'taken, and not failed');
+  assert.equal(backendSavesTurn(true, { turnSaved: true }), true, 'failed after it was saved, and the failure saved');
+  assert.equal(backendSavesTurn(true, {}), false, 'refused before it was saved, or its failure not saved: the window saves it');
+  assert.equal(backendSavesTurn(true, { turnSaved: false }), false);
+  // Saving is paused: no turn is sent, and nothing claims it is saved.
+  assert.equal(backendSavesTurn(false, null), false);
+  assert.equal(backendSavesTurn(false, { turnSaved: true }), false);
+  // The error the window reads keeps what the backend said.
+  const client = read('../src/features/agent/useAgentSession.ts');
+  assert.match(client, /const saved = error\.turnSaved === true \? \{ turnSaved: true \} : \{\};/);
+});
+
+test('a question written before its session starts is awaited, and paused saving writes nothing', async () => {
+  const writes: MessagePatch[] = [];
+  let release: () => void = () => {};
+  const saves = new ConversationSaves<MessagePatch>({
+    write: patch => new Promise<void>(resolve => {
+      writes.push(patch);
+      release = resolve;
+    }),
+    schedule: () => () => {},
+    onError: () => assert.fail('no write fails'),
+    delayMs: 500,
+    merge: mergePatches,
+  });
+  // A notice still waiting goes with it, in the same write.
+  saves.save({ id: 'c1', messages: [message('n1')], removed: [] });
+  let written = false;
+  const now = saves.saveNow({ id: 'c1', messages: [message('q1'), message('a1', '', 'assistant')], removed: [] }).then(() => {
+    written = true;
+  });
+  await Promise.resolve();
+  assert.deepEqual(writes.map(w => w.messages.map(m => m.id)), [['n1', 'q1', 'a1']]);
+  assert.equal(saves.waiting('c1'), undefined);
+  assert.equal(written, false, 'not before the store has it');
+  release();
+  await now;
+  assert.equal(written, true);
+
+  saves.pause();
+  await saves.saveNow({ id: 'c1', messages: [message('q2')], removed: [] });
+  assert.equal(writes.length, 1, 'nothing is written while saving is paused');
 });

@@ -459,6 +459,16 @@ export function useConversations() {
     listRef.current.find(c => c.id === id) ?? null
   ), []);
 
+  /** `messages` and `removed` applied to the conversation in the list: the patch to write, or null when there is nothing to write. */
+  const patchShown = useCallback((conversationId: string, messages: ConversationMessage[], removed: string[]): MessagePatch | null => {
+    if (messages.length === 0 && removed.length === 0) return null;
+    const patch: MessagePatch = { id: conversationId, messages, removed };
+    const { list, updated } = updateRecord(listRef.current, conversationId, conv => withPatch(conv, patch, new Date().toISOString()));
+    if (!updated) return null;
+    setList(list);
+    return patch;
+  }, [setList]);
+
   /**
    * Save messages this window changed in a conversation (visible or not): each replaces
    * the stored message with its id, or is added at the end, and `removed` go. The list is
@@ -473,15 +483,32 @@ export function useConversations() {
       removed: string[] = [],
       options: { immediate?: boolean } = {},
     ) => {
-      if (messages.length === 0 && removed.length === 0) return;
-      const patch: MessagePatch = { id: conversationId, messages, removed };
-      const { list, updated } = updateRecord(listRef.current, conversationId, conv => withPatch(conv, patch, new Date().toISOString()));
-      if (!updated) return;
-      setList(list);
-      messageSaves.save(patch, undefined, options.immediate === true);
+      const patch = patchShown(conversationId, messages, removed);
+      if (patch) messageSaves.save(patch, undefined, options.immediate === true);
     },
-    [messageSaves, setList]
+    [messageSaves, patchShown]
   );
+
+  /**
+   * {@link saveMessages} written now, resolving once the store has it (or the write
+   * failed, which is reported as any save is): a question and its starting answer must
+   * reach the store before the agent session is asked to save the rest. Resolves at once
+   * when saving is paused.
+   */
+  const saveMessagesNow = useCallback(
+    (conversationId: string, messages: ConversationMessage[], removed: string[] = []): Promise<void> => {
+      const patch = patchShown(conversationId, messages, removed);
+      return patch ? messageSaves.saveNow(patch) : Promise.resolve();
+    },
+    [messageSaves, patchShown]
+  );
+
+  /**
+   * Saving is paused for this session (the saved conversations could not be loaded):
+   * nothing is written, and a question goes to the agent session without its turn, so it
+   * is answered and not saved, as the window says.
+   */
+  const savingPaused = useCallback(() => messageSaves.paused, [messageSaves]);
 
   /**
    * Show the conversation's name from the question just asked, before the agent session
@@ -660,6 +687,8 @@ export function useConversations() {
     switchConversation,
     getConversation,
     saveMessages,
+    saveMessagesNow,
+    savingPaused,
     previewTitle,
     renameConversation,
     deleteConversation,

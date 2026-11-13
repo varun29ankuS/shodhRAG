@@ -59,12 +59,14 @@ import { useDefaultAgentMode } from '../../hooks/useDefaultAgentMode';
 import { onApprovalAnswered } from '../inbox/approvalBus';
 import {
   appliesAtOnce,
+  backendSavesTurn,
   changeMessages,
   changedSince,
   emptyView,
   loadConversation,
   publishMessage,
   saveStep,
+  turnPresave,
   upsertById,
   withLiveRun,
 } from './chatPersistence';
@@ -77,11 +79,13 @@ import type { MessageOrigin } from './messageOrigin';
  * transcript once per animation frame, so streaming never re-renders (and
  * re-parses markdown) per token.
  *
- * Its question and answer are saved by the agent session from the moment `agent_send`
- * takes them with their turn (`savedByBackend`): the window only shows them, and reloads
- * the conversation when the backend says it changed. A request that ends before that
- * (the session did not start, the creation folder could not be made, the user stopped
- * it first) is saved by the window, as before: the question and the failed answer.
+ * The window writes its question and the answer as it starts before the agent session
+ * starts (`turnPresave`), so an app closed meanwhile shows the answer as interrupted, with
+ * Retry. From the moment `agent_send` takes them with their turn the agent session saves
+ * them (`savedByBackend`): the window only shows them, and reloads the conversation when
+ * the backend says it changed. A request that ends otherwise (the session did not start,
+ * the creation folder could not be made, the user stopped it first, the backend could
+ * not save it) is saved by the window: the question and the failed answer.
  */
 interface LiveRun {
   runId: string;
@@ -92,12 +96,15 @@ interface LiveRun {
   question: ChatMessage | null;
   /** The answer a retry replaces. */
   replaces: string | null;
-  /** `agent_send` was called with the turn: the agent session saves it. */
+  /** The agent session saves it (`backendSavesTurn`): `agent_send` took the turn and did not say it failed to save it. */
   savedByBackend: boolean;
+  /** `agent_send` is in flight. */
+  sending: boolean;
+  /** The user stopped it here. */
+  stopped: boolean;
   queue: TranscriptAction[];
   frame: number | null;
   settled: boolean;
-  abortTimer: number | null;
   /** A Creator answer's creation: the Artifacts tab opens on it when building starts. */
   creationId?: string | null;
   /** The Artifacts tab was opened for this answer. */
@@ -110,8 +117,20 @@ type ViewState = PersistView<ChatMessage, ConversationMessage>;
 /** Earlier turns replayed into a fresh agent session. */
 const HISTORY_LIMIT = 10;
 
-/** How long an interrupt may take before the answer is closed locally. */
-const INTERRUPT_TIMEOUT_MS = 5_000;
+/**
+ * Longest a question waits for its session to end an answer that was stopped (shown and
+ * saved as stopped at once), so it is not refused because that answer is still ending.
+ */
+const STOP_WAIT_MS = 5_000;
+
+/** An answer stopped here whose session may still be ending it. */
+interface Stopping {
+  sessionId: string;
+  runId: string;
+  /** Resolves when the run ended, the stop failed, or {@link STOP_WAIT_MS} passed. */
+  ended: Promise<void>;
+  end: () => void;
+}
 
 type ConversationsApi = ReturnType<typeof useConversations>;
 
@@ -304,6 +323,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     activeConversationId,
     activeConversation,
     saveMessages,
+    saveMessagesNow,
+    savingPaused,
   } = conv;
 
   const [view, setView] = useState<ViewState>(() => emptyView<ChatMessage, ConversationMessage>());
@@ -319,6 +340,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [sideRun, setSideRun] = useState<SideRunInfo | null>(null);
 
   const liveRef = useRef<LiveRun | null>(null);
+  const stoppingRef = useRef<Stopping | null>(null);
   // Read synchronously by send/retry/claim so two runs can never start in one tick.
   const sideRunRef = useRef<SideRunInfo | null>(null);
   const viewRef = useRef(view);
@@ -433,7 +455,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   /**
    * The run ended. One the agent session took is saved by it (shown here; a side thread
    * opened on it while it ran is written now). One that ended before (it never started,
-   * or was stopped first) is written by the window, visible or not, without delay: its
+   * was stopped first, or the backend could not save it) is written by the window,
+   * visible or not, without delay: its
    * question, the failed answer, and without the answer a retry replaced.
    */
   const settleRun = useCallback((live: LiveRun, message: ChatMessage) => {
@@ -472,10 +495,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     // (MessageContentRenderer) and open in the focus pop-out; they are not
     // extracted into side-panel artifacts.
     live.settled = true;
-    if (live.abortTimer !== null) {
-      window.clearTimeout(live.abortTimer);
-      live.abortTimer = null;
-    }
     if (liveRef.current === live) liveRef.current = null;
     setLiveRun(null);
     settleRun(live, message);
@@ -603,9 +622,14 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [activeConversationId]);
 
   const onEnvelope = useCallback((envelope: AgentEventEnvelope) => {
+    const { event } = envelope;
+    // A stopped answer's run ended in its session: the next question goes ahead.
+    const stopping = stoppingRef.current;
+    if (stopping && event.type === 'run_finished' && event.runId === stopping.runId && envelope.sessionId === stopping.sessionId) {
+      stopping.end();
+    }
     const live = liveRef.current;
     if (!live || live.settled) return;
-    const { event } = envelope;
     if (event.runId !== live.runId) return;
     if (live.sessionId !== null && envelope.sessionId !== live.sessionId) return;
     if (event.type === 'navigated') {
@@ -638,7 +662,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   useEffect(() => () => {
     const live = liveRef.current;
     if (live && live.frame !== null) cancelAnimationFrame(live.frame);
-    if (live && live.abortTimer !== null) window.clearTimeout(live.abortTimer);
+    stoppingRef.current?.end();
   }, []);
 
   // The agent runtime is not started with the app or when a conversation
@@ -726,14 +750,21 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       question,
       replaces,
       savedByBackend: false,
+      sending: false,
+      stopped: false,
       queue: [],
       frame: null,
       settled: false,
-      abortTimer: null,
     };
     liveRef.current = live;
     publish(conversationId, message, 'none');
     setLiveRun({ conversationId, messageId: message.id, transcript });
+    // Written now, while the session starts: an app closed before `agent_send` keeps the
+    // question, and the answer comes back interrupted, with Retry. While saving is paused
+    // nothing is written, and the question is sent without its turn: answered, not saved.
+    const sendsTurn = !savingPaused();
+    const presave = turnPresave(question ? toStored(question) : null, startedStored, replaces);
+    const presaved = saveMessagesNow(conversationId, presave.messages, presave.removed);
 
     const conversation = activeConversationRef.current?.id === conversationId ? activeConversationRef.current : null;
     const conversationInstructions = conversation?.systemPrompt?.trim() || null;
@@ -759,22 +790,47 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const workspaceId = conversation?.workspaceId ?? null;
       // A mode suggestion the user went on without is not made again in this conversation.
       const answers = history.flatMap(m => (m.transcript ? [{ agentMode: m.transcript.agentMode, steps: Object.values(m.transcript.steps) }] : []));
-      // From here the agent session saves the question and the answer, also when the
-      // send fails: this window only shows them.
-      live.savedByBackend = true;
-      await api.send(sessionId, prompt, runId, historyOf(history), {
-        scope: scopeOf(options, workspaceId),
-        ...wireOrigin(origin),
-        attachedContext,
-        priorRunIds,
-        suggestionIgnored: suggestionIgnored(answers, agentMode),
-        turn: {
-          conversationId,
-          question: question ? toStored(question) : null,
-          answer: startedStored,
-          replaces,
-        },
-      });
+      // The question is in the store before the agent session writes the rest; an answer
+      // stopped just before in this session has ended there, so this one is not refused.
+      await presaved;
+      const stopping = stoppingRef.current;
+      if (stopping && stopping.sessionId === sessionId) await stopping.ended;
+      if (live.settled) return;
+      // From here the agent session saves the question and the answer: events arrive only
+      // once it has saved the question, and one it cannot save is refused. A failure it did
+      // not save says so (`turnSaved` absent), and this window saves it.
+      live.savedByBackend = backendSavesTurn(sendsTurn, null);
+      live.sending = true;
+      try {
+        await api.send(sessionId, prompt, runId, historyOf(history), {
+          scope: scopeOf(options, workspaceId),
+          ...wireOrigin(origin),
+          attachedContext,
+          priorRunIds,
+          suggestionIgnored: suggestionIgnored(answers, agentMode),
+          turn: sendsTurn
+            ? {
+                conversationId,
+                question: question ? toStored(question) : null,
+                answer: startedStored,
+                replaces,
+              }
+            : null,
+        });
+      } catch (error) {
+        live.savedByBackend = backendSavesTurn(sendsTurn, toAgentError(error));
+        // Stopped while it was being sent, and the backend did not save it: saved here, stopped.
+        if (live.settled && !live.savedByBackend) settleRun(live, live.message);
+        throw error;
+      } finally {
+        live.sending = false;
+      }
+      // Stopped while the session was taking the question: the stop may have reached it
+      // before the run started, so it is sent again now that the run is there (unless the
+      // run has ended already).
+      if (live.stopped && stoppingRef.current?.runId === runId) {
+        api.abort(sessionId).catch(error => console.error('Interrupt failed:', toAgentError(error).message));
+      }
     } catch (error) {
       const failure = toAgentError(error);
       if (failure.code === 'runtime_missing') setRuntimeInstalled(false);
@@ -788,7 +844,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         providerError: failure.cooling?.providerError ?? null,
       }, true);
     }
-  }, [api, enqueue, publish, setRuntimeInstalled, conv.updateConversationMeta]);
+  }, [api, enqueue, publish, settleRun, saveMessagesNow, savingPaused, setRuntimeInstalled, conv.updateConversationMeta]);
 
   const send = useCallback((text: string, options: SendOptions, extra?: SendExtra): boolean => {
     const content = text.trim();
@@ -893,10 +949,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           question,
           replaces: null,
           savedByBackend: true,
+          sending: false,
+          stopped: false,
           queue: [],
           frame: null,
           settled: false,
-          abortTimer: null,
         };
         if (liveRef.current && !liveRef.current.settled) return;
         liveRef.current = adopted;
@@ -906,23 +963,36 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       .catch(error => notify.error('Could not steer the answer', { description: toAgentError(error).message }));
   }, [api, enqueue, publish]);
 
+  /**
+   * Stop means stop: the answer settles as stopped at once, as the agent session saves it
+   * when the stop reaches it (`agent_abort`), and nothing the run does after reaches it.
+   * The session may take a moment to end the run: the next question waits for that
+   * (`Stopping`, at most {@link STOP_WAIT_MS}), so it is not refused as busy.
+   */
   const cancel = useCallback(() => {
     const live = liveRef.current;
     if (!live || live.settled) return;
-    if (live.sessionId === null) {
-      enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
-      return;
-    }
-    if (live.message.transcript?.interrupting) return;
-    enqueue(live, { type: 'local_interrupt_requested' }, true);
-    live.abortTimer = window.setTimeout(() => {
-      live.abortTimer = null;
-      enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
-    }, INTERRUPT_TIMEOUT_MS);
-    api.abort(live.sessionId).catch(error => {
-      const failure = toAgentError(error);
-      console.error('Interrupt failed:', failure.message);
-      enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
+    const { sessionId, runId } = live;
+    live.stopped = true;
+    enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
+    if (sessionId === null) return;
+    stoppingRef.current?.end();
+    let timer: number | null = null;
+    let end = () => {};
+    const ended = new Promise<void>(resolve => {
+      end = () => {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = null;
+        if (stoppingRef.current?.runId === runId) stoppingRef.current = null;
+        resolve();
+      };
+    });
+    const stopping: Stopping = { sessionId, runId, ended, end };
+    stoppingRef.current = stopping;
+    timer = window.setTimeout(end, STOP_WAIT_MS);
+    api.abort(sessionId).catch(error => {
+      console.error('Interrupt failed:', toAgentError(error).message);
+      stopping.end();
     });
   }, [api, enqueue]);
 

@@ -26,6 +26,11 @@ export interface AgentError {
   message: string;
   /** For `model_cooling`: the model (as runs name it) and how it failed moments ago. */
   cooling?: { model: string; providerError: ProviderError };
+  /**
+   * `agent_send` took the question with its turn and saved the failed answer itself.
+   * Absent otherwise: the window saves the question and the failed answer.
+   */
+  turnSaved?: boolean;
 }
 
 const CODES: readonly FailureCode[] = [
@@ -50,9 +55,10 @@ export function toAgentError(error: unknown): AgentError {
     const code = CODES.includes(error.code as FailureCode) ? (error.code as FailureCode) : 'runtime_error';
     const cooling = isRecord(error.cooling) && typeof error.cooling.model === 'string' ? error.cooling : null;
     const providerError = cooling ? readProviderError(cooling.providerError) : null;
+    const saved = error.turnSaved === true ? { turnSaved: true } : {};
     return cooling && providerError
-      ? { code, message: error.message, cooling: { model: cooling.model as string, providerError } }
-      : { code, message: error.message };
+      ? { code, message: error.message, cooling: { model: cooling.model as string, providerError }, ...saved }
+      : { code, message: error.message, ...saved };
   }
   if (error instanceof Error) return { code: 'runtime_error', message: error.message };
   if (typeof error === 'string') return { code: 'runtime_error', message: error };

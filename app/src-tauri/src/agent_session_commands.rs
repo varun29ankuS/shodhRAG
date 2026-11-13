@@ -136,6 +136,11 @@ pub struct AgentCommandError {
     /// so Ask shows its failure card and offers a backup without calling it again.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cooling: Option<Box<CoolingModel>>,
+    /// The agent session saved the turn this error ends (`agent_send` took its `turn`
+    /// and wrote the failed answer). When false, the window saves the question and the
+    /// failed answer itself: nothing it believes is saved is left unsaved.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub turn_saved: bool,
 }
 
 /// The configured model of a `model_cooling` refusal.
@@ -153,6 +158,7 @@ impl AgentCommandError {
             code: "invalid_request",
             message: message.into(),
             cooling: None,
+            turn_saved: false,
         }
     }
 }
@@ -186,6 +192,7 @@ impl From<HarnessError> for AgentCommandError {
             code,
             message: error.to_string(),
             cooling: None,
+            turn_saved: false,
         }
     }
 }
@@ -1419,6 +1426,7 @@ pub async fn agent_start(
         code: "model_config",
         message: key_changed_message(changed),
         cooling: None,
+        turn_saved: false,
     })
 }
 
@@ -1836,6 +1844,7 @@ async fn start_attempt(
                             resets_at_ms: None,
                         },
                     })),
+                    turn_saved: false,
                 });
             }
             None
@@ -1852,6 +1861,7 @@ async fn start_attempt(
                     code: "model_config",
                     message: e.message,
                     cooling: None,
+                    turn_saved: false,
                 })?;
             (mode, Some(record))
         }
@@ -1874,6 +1884,7 @@ async fn start_attempt(
             code: "runtime_error",
             message: format!("Settings could not be read: {e}"),
             cooling: None,
+            turn_saved: false,
         })?;
     // Stealth models: allowed by the environment opt-in or by the person's
     // confirmation in the model picker (kept per model in settings).
@@ -2623,7 +2634,10 @@ pub fn start_idle_reaper(app: AppHandle) {
 /// ([`SendTurn`]): with it the conversation is saved by the backend, not the window. The
 /// question and the starting answer are written now, the answer as it is checked and when
 /// it ends ([`TurnRecorder`]), and a send that fails from here on is written as a failed
-/// answer, as the window showed it. Side threads send none.
+/// answer, as the window showed it, with `turn_saved` on the error. A question that cannot
+/// be written is not sent: it fails plainly, and the window saves it. Side threads send
+/// none, and neither does a window whose saving is paused (its conversations could not be
+/// loaded): its questions are answered and not saved, as it says.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri injects each managed state as an argument.
 pub async fn agent_send(
@@ -2649,7 +2663,10 @@ pub async fn agent_send(
 ) -> CommandResult<String> {
     check_id("request id", &request_id)?;
     let recorded = match turn {
-        Some(turn) => record_question(&app, &sessions, &session_id, &request_id, turn)?,
+        Some(turn) => {
+            record_question(&app, &sessions, &session_id, &request_id, turn)?;
+            true
+        }
         None => false,
     };
     let sent = send_question(
@@ -2673,29 +2690,32 @@ pub async fn agent_send(
         &research,
     )
     .await;
-    if recorded {
-        if let Err(error) = &sent {
-            save_turn(&app, |sink| {
+    match sent {
+        // Taken with its turn: the failed answer is saved as the window shows it, and
+        // the error says whether it was.
+        Err(error) if recorded => {
+            let saved = save_turn(&app, |sink| {
                 sessions
                     .turns
                     .fail(sink, &request_id, &error.message, error.code, now_ms())
             });
+            Err(failure_saved(error, saved))
         }
+        sent => sent,
     }
-    sent
 }
 
 /// Writes the question of `turn` and its starting answer, and records run `request_id`'s
 /// answer from here on. Refused for a connector's conversation, a side thread, and a
-/// session of another conversation. Returns whether the turn is recorded (not when the
-/// conversations cannot be saved now: the question is still answered).
+/// session of another conversation; and, plainly, when the question cannot be written now
+/// ([`question_recorded`]): it is not sent, so nothing the window shows as saved is lost.
 fn record_question(
     app: &AppHandle,
     sessions: &AgentSessions,
     session_id: &str,
     request_id: &str,
     turn: SendTurn,
-) -> CommandResult<bool> {
+) -> CommandResult<()> {
     check_id("conversation id", &turn.conversation_id)?;
     refuse_connector_conversation(&turn.conversation_id)?;
     if let Ok(entry) = sessions.entry(session_id) {
@@ -2710,17 +2730,38 @@ fn record_question(
             ));
         }
     }
-    let begun = save_turn(app, |sink| {
+    question_recorded(save_turn(app, |sink| {
         sessions.turns.begin(sink, session_id, request_id, turn)
-    });
-    match begun {
-        Some(Ok(())) => Ok(true),
-        Some(Err(e)) => {
-            tracing::warn!(target: "shodh::conversations", error = %e, "the question was not saved; it is answered anyway");
-            Ok(false)
-        }
-        None => Ok(false),
-    }
+    }))
+}
+
+/// Why a question was not sent: it could not be saved.
+const QUESTION_NOT_SAVED: &str = "Your question was not sent because it could not be saved";
+
+/// The outcome of writing a question before it is sent ([`TurnRecorder::begin`] through
+/// [`save_turn`]; `None` when the data folder is unknown): a question that could not be
+/// written is refused with a plain error, never answered as if it were saved.
+fn question_recorded(begun: Option<Result<(), String>>) -> CommandResult<()> {
+    let reason = match begun {
+        Some(Ok(())) => return Ok(()),
+        Some(Err(e)) => e,
+        None => "the app's data folder is unavailable".to_string(),
+    };
+    tracing::warn!(target: "shodh::conversations", error = %reason, "a question was not saved, so it was not sent");
+    Err(AgentCommandError {
+        code: "runtime_error",
+        message: format!("{QUESTION_NOT_SAVED}: {reason}"),
+        cooling: None,
+        turn_saved: false,
+    })
+}
+
+/// `error` of a send whose turn was recorded, saying whether its failed answer is saved
+/// (`saved`: [`TurnRecorder::fail`] through [`save_turn`]). When it is not, the window
+/// saves the question and the failed answer itself.
+fn failure_saved(mut error: AgentCommandError, saved: Option<bool>) -> AgentCommandError {
+    error.turn_saved = saved == Some(true);
+    error
 }
 
 /// Runs `record` with the sink that writes turns into this profile's conversations and
@@ -2781,6 +2822,7 @@ async fn send_question(
                      limited: {e}"
                 ),
                 cooling: None,
+                turn_saved: false,
             })?,
         None => None,
     };
@@ -3135,13 +3177,19 @@ pub async fn agent_steer(
     Ok(run_id)
 }
 
-/// Interrupt the running answer.
+/// Interrupt the running answer. Its answer is saved as stopped first, as it is when Stop
+/// is pressed ([`TurnRecorder::stop`]), and what the run does after (a completion that
+/// was already on its way) never reaches the conversation.
 #[tauri::command]
 pub async fn agent_abort(
+    app: AppHandle,
     session_id: String,
     sessions: State<'_, AgentSessions>,
 ) -> CommandResult<()> {
     let session = sessions.get(&session_id)?;
+    save_turn(&app, |sink| {
+        sessions.turns.stop(sink, &session_id, now_ms())
+    });
     Ok(session.abort().await?)
 }
 
@@ -3307,11 +3355,13 @@ pub async fn agent_code_status(
         code: "runtime_error",
         message: format!("Checking the code folder failed: {e}"),
         cooling: None,
+        turn_saved: false,
     })?
     .map_err(|message| AgentCommandError {
         code: "runtime_error",
         message,
         cooling: None,
+        turn_saved: false,
     })?;
     Ok(CodeStatus {
         folder: Some(shown),
@@ -3608,6 +3658,7 @@ pub async fn agent_code_discard(
         code: "runtime_error",
         message: format!("Discarding the changes failed: {e}"),
         cooling: None,
+        turn_saved: false,
     })?
     .map_err(AgentCommandError::invalid)?;
     tracing::info!(target: "shodh::audit", event = "code_change", branch = %record.branch, base = %record.base, "code changes discarded");
@@ -3631,6 +3682,7 @@ fn app_data_dir(app: &AppHandle) -> CommandResult<std::path::PathBuf> {
         code: "runtime_error",
         message: format!("App data directory unavailable: {e}"),
         cooling: None,
+        turn_saved: false,
     })
 }
 
@@ -3671,6 +3723,7 @@ pub(crate) async fn base_registry(app: &AppHandle) -> CommandResult<Arc<ToolRegi
                     code: "runtime_error",
                     message: format!("Agent tools failed to load: {e}"),
                     cooling: None,
+                    turn_saved: false,
                 })
         })
         .await?;
@@ -3770,6 +3823,7 @@ pub(crate) async fn chat_extra_tools(
             code: "runtime_error",
             message: format!("Settings could not be read: {e}"),
             cooling: None,
+            turn_saved: false,
         })?;
     let code = match mode {
         Mode::Code => workspace_code_folder(&app.state::<WorkspaceState>(), workspace)
@@ -3939,6 +3993,121 @@ pub async fn agent_install_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation_commands::{ConversationMessage, ConversationStore, TurnWrite};
+
+    /// A store that refuses every write.
+    struct FailingSink;
+
+    impl TurnSink for FailingSink {
+        fn write(
+            &self,
+            _conversation_id: &str,
+            _writes: Vec<TurnWrite>,
+            _removed: &[String],
+            _create: bool,
+        ) -> Result<bool, String> {
+            Err("disk full".to_string())
+        }
+    }
+
+    fn send_turn(run_id: &str) -> SendTurn {
+        let message =
+            |id: &str, role: &str, transcript: Option<serde_json::Value>| ConversationMessage {
+                id: id.to_string(),
+                role: role.to_string(),
+                content: if role == "user" {
+                    "What is the notice period?".to_string()
+                } else {
+                    String::new()
+                },
+                timestamp: "2026-11-13T10:00:00.000Z".to_string(),
+                artifacts: None,
+                search_results: None,
+                metadata: None,
+                run: None,
+                transcript,
+            };
+        SendTurn {
+            conversation_id: "conv-1".to_string(),
+            question: Some(message("q1", "user", None)),
+            answer: message(
+                "a1",
+                "assistant",
+                Some(
+                    json!({ "runId": run_id, "startedAtMs": 1_763_000_000_000u64, "status": "starting" }),
+                ),
+            ),
+            replaces: None,
+        }
+    }
+
+    #[test]
+    fn a_question_that_cannot_be_saved_is_not_sent_and_says_why() {
+        let recorder = TurnRecorder::default();
+        let refused = question_recorded(Some(recorder.begin(
+            &FailingSink,
+            "sess-1",
+            "run-1",
+            send_turn("run-1"),
+        )))
+        .expect_err("a question that is not saved is not sent");
+        assert_eq!(refused.code, "runtime_error");
+        assert_eq!(refused.message, format!("{QUESTION_NOT_SAVED}: disk full"));
+        assert!(!refused.turn_saved, "the window saves it");
+        assert!(!recorder.records("run-1"));
+        // No data folder: refused the same way.
+        let unknown = question_recorded(None).expect_err("refused");
+        assert!(unknown.message.starts_with(QUESTION_NOT_SAVED));
+        // The window is told only when it is saved: `turnSaved` is left out otherwise.
+        let wire = serde_json::to_value(&unknown).unwrap();
+        assert!(wire.get("turnSaved").is_none(), "{wire}");
+    }
+
+    #[test]
+    fn a_send_that_fails_after_its_question_is_saved_says_whether_its_answer_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = StoreSink {
+            store: ConversationStore::in_dir(dir.path()),
+            changed: |_: &str| {},
+        };
+        let recorder = TurnRecorder::default();
+        question_recorded(Some(recorder.begin(
+            &sink,
+            "sess-1",
+            "run-1",
+            send_turn("run-1"),
+        )))
+        .expect("the question is saved");
+        let busy = AgentCommandError::from(HarnessError::RunInProgress);
+        let saved = recorder.fail(&sink, "run-1", &busy.message, busy.code, 1_763_000_000_300);
+        let error = failure_saved(busy.clone(), Some(saved));
+        assert!(error.turn_saved);
+        assert_eq!(
+            serde_json::to_value(&error).unwrap()["turnSaved"],
+            json!(true)
+        );
+        let answer = sink.store.get("conv-1").unwrap().unwrap().messages[1].clone();
+        assert_eq!(answer.transcript.unwrap()["status"], json!("error"));
+
+        // The failed answer could not be written: the window saves it.
+        question_recorded(Some(recorder.begin(
+            &sink,
+            "sess-1",
+            "run-2",
+            send_turn("run-2"),
+        )))
+        .expect("the question is saved");
+        let saved = recorder.fail(
+            &FailingSink,
+            "run-2",
+            &busy.message,
+            busy.code,
+            1_763_000_000_300,
+        );
+        assert!(!failure_saved(busy.clone(), Some(saved)).turn_saved);
+        // No data folder to save it in.
+        assert!(!failure_saved(busy, None).turn_saved);
+    }
 
     #[test]
     fn side_runs_of_a_plan_conversation_only_read_and_no_mode_asks() {

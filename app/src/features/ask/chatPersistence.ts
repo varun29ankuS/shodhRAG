@@ -255,3 +255,36 @@ export function withLiveRun<M extends { id: string }>(stored: readonly M[], run:
   else shown.push(run.message);
   return shown;
 }
+
+/** What the window writes for a question before its agent session starts ({@link turnPresave}). */
+export interface TurnPresave<S> {
+  messages: S[];
+  removed: string[];
+}
+
+/**
+ * The question and the answer as it starts, written by the window before it starts the
+ * agent session, and awaited before `agent_send`: an app closed while the session starts
+ * keeps the question, and its answer comes back interrupted, with Retry. A retry of the
+ * latest answer asks no new question and removes the try it replaces. The agent session's
+ * own first write only adds what is missing, so the two never conflict.
+ */
+export function turnPresave<S>(question: S | null, startedAnswer: S, replaces: string | null): TurnPresave<S> {
+  return {
+    messages: question ? [question, startedAnswer] : [startedAnswer],
+    removed: replaces ? [replaces] : [],
+  };
+}
+
+/**
+ * Whether the agent session saves a turn, so the window only shows it: only when
+ * `agent_send` was called with the turn (`turnSent`; never while saving is paused) and
+ * the backend says so. `failure` is what `agent_send` rejected with, null while it has not
+ * (its events arrive only once the question is saved: one that cannot be is refused
+ * first). A failure the backend saved says `turnSaved`; any other is saved by the window:
+ * the question and the failed answer.
+ */
+export function backendSavesTurn(turnSent: boolean, failure: { turnSaved?: boolean } | null): boolean {
+  if (!turnSent) return false;
+  return failure === null || failure.turnSaved === true;
+}

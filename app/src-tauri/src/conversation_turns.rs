@@ -12,6 +12,14 @@
 //!   ([`TurnRecorder::observe`]). A run that fails before it starts is written as failed
 //!   ([`TurnRecorder::fail`]); a session that ends with a run still open writes it as
 //!   interrupted ([`TurnRecorder::session_ended`]).
+//! - **Stop** writes the answer as stopped when it is pressed, and the run is recorded no
+//!   more ([`TurnRecorder::stop`]): a completion already on its way never replaces what
+//!   the person stopped.
+//! - **A question that cannot be written is not sent**: `agent_send` fails plainly, and
+//!   the window saves the question and the failed answer itself. The window also saves
+//!   the question and the starting answer before the session starts, so an app closed
+//!   meanwhile shows the answer as interrupted, with Retry; [`TurnRecorder::begin`]'s
+//!   writes only insert what is missing, so the two never conflict.
 //! - **What only the app knows**, a steer and an approval answered, joins the run's
 //!   actions where it happened ([`TurnRecorder::local`]).
 //! - **A steer that starts a new run** (the answer ended as it was sent) is adopted as a
@@ -268,12 +276,22 @@ impl TurnRecorder {
         }
     }
 
-    /// Run `run_id` failed before it started (`agent_send` failed after taking the
-    /// question): its answer is written failed with the error, as the window showed it.
-    pub fn fail(&self, sink: &dyn TurnSink, run_id: &str, error: &str, code: &str, at_ms: u64) {
+    /// Run `run_id`, recorded by [`Self::begin`], failed before it started (`agent_send`
+    /// failed after taking the question): its answer is written failed with the error, as
+    /// the window showed it. Returns whether the turn is saved: false only when that write
+    /// failed, so the window saves it itself. A run that already ended was saved when it
+    /// ended (or when it was stopped).
+    pub fn fail(
+        &self,
+        sink: &dyn TurnSink,
+        run_id: &str,
+        error: &str,
+        code: &str,
+        at_ms: u64,
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(mut run) = state.runs.remove(run_id) else {
-            return;
+            return true;
         };
         run.transcript.apply(&json!({
             "type": "local_failed",
@@ -282,10 +300,35 @@ impl TurnRecorder {
             "atMs": at_ms,
         }));
         let writes = run.writes(run.transcript.persisted());
+        match sink.write(&run.conversation_id, writes, &[], false) {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(target: "shodh::conversations", error = %e, "a failed answer was not saved");
+                false
+            }
+        }
+    }
+
+    /// Stop was pressed for `session_id` at `at_ms`: its recorded run is written as
+    /// stopped now, as the window shows it, and is no longer recorded, so nothing the run
+    /// does after (a completion that was already on its way) reaches the conversation.
+    /// Returns the run stopped, if one was recorded.
+    pub fn stop(&self, sink: &dyn TurnSink, session_id: &str, at_ms: u64) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let run_id = state
+            .runs
+            .iter()
+            .find(|(_, run)| run.session_id == session_id)
+            .map(|(id, _)| id.clone())?;
+        let mut run = state.runs.remove(&run_id)?;
+        run.transcript
+            .apply(&json!({ "type": "local_interrupted", "atMs": at_ms }));
+        let writes = run.writes(run.transcript.persisted());
         log_write(
             sink.write(&run.conversation_id, writes, &[], false),
-            "a failed answer",
+            "a stopped answer",
         );
+        Some(run_id)
     }
 
     /// `session_id` ended (its process stopped): a run still open will never finish and
@@ -650,12 +693,15 @@ mod tests {
                 turn("conv-1", "q1", "a1", "run-1"),
             )
             .unwrap();
-        recorder.fail(
-            &sink.sink,
-            "run-1",
-            "An answer is already running.",
-            "busy",
-            1_763_000_000_400,
+        assert!(
+            recorder.fail(
+                &sink.sink,
+                "run-1",
+                "An answer is already running.",
+                "busy",
+                1_763_000_000_400,
+            ),
+            "the failed answer is saved"
         );
         let failed = conversation(&sink.sink.store, "conv-1").messages[1].clone();
         let transcript = failed.transcript.unwrap();
@@ -778,6 +824,103 @@ mod tests {
         assert_eq!(ids, ["q1", "a1", "q2", "a2"]);
         assert_eq!(saved.messages[2].content, "And the fee?");
         assert_eq!(saved.messages[3].content, "None.");
+    }
+
+    /// A store that refuses every write (a full disk, a damaged file).
+    struct FailingSink;
+
+    impl TurnSink for FailingSink {
+        fn write(
+            &self,
+            _conversation_id: &str,
+            _writes: Vec<TurnWrite>,
+            _removed: &[String],
+            _create: bool,
+        ) -> Result<bool, String> {
+            Err("The conversations file could not be written.".to_string())
+        }
+    }
+
+    #[test]
+    fn a_question_that_cannot_be_saved_is_not_recorded_and_says_so() {
+        let recorder = TurnRecorder::default();
+        let refused = recorder.begin(
+            &FailingSink,
+            "sess-1",
+            "run-1",
+            turn("conv-1", "q1", "a1", "run-1"),
+        );
+        assert_eq!(
+            refused,
+            Err("The conversations file could not be written.".to_string())
+        );
+        assert!(!recorder.records("run-1"), "nothing is recorded as saved");
+        assert!(recorder.active_run("sess-1").is_none());
+
+        // Recorded, then the send failed and its failed answer could not be written: the
+        // window is told it is not saved.
+        let dir = tempfile::tempdir().unwrap();
+        let sink = sink(dir.path());
+        recorder
+            .begin(
+                &sink.sink,
+                "sess-1",
+                "run-2",
+                turn("conv-1", "q2", "a2", "run-2"),
+            )
+            .unwrap();
+        assert!(!recorder.fail(&FailingSink, "run-2", "Busy.", "busy", 1_763_000_000_400));
+        assert!(!recorder.records("run-2"));
+    }
+
+    #[test]
+    fn a_stopped_answer_stays_stopped_when_a_late_completion_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        let sink = sink(dir.path());
+        let recorder = TurnRecorder::default();
+        recorder
+            .begin(
+                &sink.sink,
+                "sess-1",
+                "run-1",
+                turn("conv-1", "q1", "a1", "run-1"),
+            )
+            .unwrap();
+        for value in [
+            json!({ "type": "run_started", "runId": "run-1", "sessionId": "sess-1", "model": "m", "atMs": 1_763_000_000_010u64, "warning": null }),
+            json!({ "type": "text_delta", "runId": "run-1", "messageId": "t1", "delta": "Sixty" }),
+        ] {
+            recorder.observe(&sink.sink, "sess-1", &event(value));
+        }
+        // Stop is pressed 700 ms in: saved as stopped at once.
+        assert_eq!(
+            recorder.stop(&sink.sink, "sess-1", 1_763_000_000_700),
+            Some("run-1".to_string())
+        );
+        let stopped = conversation(&sink.sink.store, "conv-1").messages[1].clone();
+        assert_eq!(stopped.content, "Sixty");
+        let transcript = stopped.transcript.clone().unwrap();
+        assert_eq!(transcript["status"], json!("aborted"));
+        assert_eq!(transcript["durationMs"], json!(700));
+        assert!(!recorder.records("run-1"), "the run is recorded no more");
+
+        // The run had already finished its answer: the completion arrives late.
+        for value in [
+            json!({ "type": "text_delta", "runId": "run-1", "messageId": "t1", "delta": " days [1]." }),
+            json!({ "type": "run_finished", "runId": "run-1", "status": "completed", "durationMs": 900, "error": null, "providerError": null }),
+        ] {
+            recorder.observe(&sink.sink, "sess-1", &event(value));
+        }
+        recorder.session_ended(&sink.sink, "sess-1", 1_763_000_002_000);
+        let saved = conversation(&sink.sink.store, "conv-1");
+        assert_eq!(saved.messages.len(), 2);
+        assert_eq!(
+            serde_json::to_value(&saved.messages[1]).unwrap(),
+            serde_json::to_value(&stopped).unwrap(),
+            "the saved answer is the stopped one"
+        );
+        // Nothing to stop twice.
+        assert_eq!(recorder.stop(&sink.sink, "sess-1", 1_763_000_003_000), None);
     }
 
     #[test]

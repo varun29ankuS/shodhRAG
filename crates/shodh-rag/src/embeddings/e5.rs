@@ -13,7 +13,7 @@ use super::tokenizer::SentencePieceTokenizer;
 use super::{EmbeddingModel, SearchModelsMissing};
 use crate::compute::calibration::{CalibrationKey, Calibrations};
 use crate::compute::choose::{self, Candidate, Learned};
-use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, Device};
+use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, Device, GpuProbe};
 use crate::compute::speed;
 use crate::compute::status::{ComputeStatus, EmbedderReport};
 
@@ -21,6 +21,25 @@ use crate::compute::status::{ComputeStatus, EmbedderReport};
 pub const E5_DIR: &str = "multilingual-e5-base";
 /// The dimension of multilingual-e5-base's vectors (either export).
 pub const E5_DIMENSION: usize = 768;
+
+/// The graph Core ML runs, written beside `model_O4.onnx`: Core ML cannot run
+/// O4's fused com.microsoft operators, so this is O4's graph in standard
+/// ONNX operators (opset 17), its weights external data read in place from
+/// the pinned `model_O4.onnx` (no copy, 56 KB). Its vectors match O4's on
+/// the CPU to a cosine of 0.99997, so they are fp16 vectors
+/// ([`E5Variant::Fp16`]) and share an index with them.
+pub const CORE_ML_FILE: &str = "model_O4.coreml.onnx";
+
+/// [`CORE_ML_FILE`]'s bytes, made by `scripts/coreml-graph`. The weights'
+/// offsets hold for the pinned O4 only, so the graph is written only beside
+/// a verified one.
+const CORE_ML_GRAPH: &[u8] = include_bytes!("model_O4.coreml.onnx");
+
+/// Whether this platform's GPU provider is Core ML (Apple silicon), which
+/// runs [`CORE_ML_FILE`].
+pub fn core_ml_platform() -> bool {
+    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
 
 /// The exports of multilingual-e5-base Shodh runs. Their vectors are close
 /// but not the same, so an index holds vectors of one export only
@@ -309,6 +328,17 @@ pub struct E5Config {
     /// ([`crate::compute::calibration`]); without it they are measured at
     /// every load.
     pub calibration_file: Option<PathBuf>,
+    /// Whether Core ML may run [`CORE_ML_FILE`] on Apple silicon. Off unless
+    /// asked for ([`core_ml_opted_in`]): the graph computes exact GELU where
+    /// the CPU's O4 uses the tanh form, and queries run on the CPU, so one
+    /// index would hold vectors of two slightly different functions until
+    /// their agreement is measured.
+    pub core_ml: bool,
+}
+
+/// Whether `SHODH_CORE_ML`'s value asks for Core ML: exactly `1`.
+pub fn core_ml_opted_in(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| v == "1")
 }
 
 /// The exports installed in `dir` (an [`E5_DIR`] folder with its tokenizer).
@@ -340,7 +370,14 @@ impl E5Config {
             compute: ComputePreference::Auto,
             status: None,
             calibration_file: None,
+            core_ml: core_ml_opted_in(std::env::var_os("SHODH_CORE_ML").as_deref()),
         })
+    }
+
+    /// This config with Core ML allowed (`true`) or not on Apple silicon.
+    pub fn with_core_ml(mut self, core_ml: bool) -> Self {
+        self.core_ml = core_ml;
+        self
     }
 
     /// This config with `compute` as the compute preference.
@@ -449,14 +486,36 @@ const MAX_BATCH_ITEMS: usize = 64;
 /// Most padded tokens per inference batch (sequences x longest length).
 const MAX_BATCH_TOKENS: usize = 8192;
 
-/// Passages of the calibration batch. It is run once untimed at the same
-/// shape (a graphics card compiles its kernels for each shape on its first
-/// run), then [`CALIBRATION_RUNS`] times timed; the median is the speed.
-const CALIBRATION_PASSAGES: usize = 6;
+/// The one input shape a session runs: every batch is padded to `rows`
+/// sequences of `tokens` tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FixedShape {
+    rows: usize,
+    tokens: usize,
+}
+
+/// Core ML's shape. Compiled for one static shape it runs about ten times the
+/// CPU's speed; with free dimensions it loses to the CPU. One 8 x 512 shape
+/// holds indexed chunks at about 0.85 fill.
+const CORE_ML_SHAPE: FixedShape = FixedShape {
+    rows: 8,
+    tokens: 512,
+};
+
+/// Batches of fewer rows than this run on the CPU while Core ML holds the
+/// model: a padded 8 x 512 run costs the same (about 125 ms) whatever its
+/// real row count, and the CPU is faster at one row and level at two.
+const CORE_ML_MIN_ROWS: usize = 3;
+
+/// Passages of the calibration batch: one full Core ML batch
+/// ([`CORE_ML_SHAPE`]) at about its real fill. It is run once untimed at the
+/// same shape (a graphics card compiles its kernels for each shape on its
+/// first run), then [`CALIBRATION_RUNS`] times timed; the median is the speed.
+const CALIBRATION_PASSAGES: usize = CORE_ML_SHAPE.rows;
 const CALIBRATION_RUNS: usize = 3;
 
-/// What one calibration passage says (about 220 tokens with its number):
-/// ordinary prose, at the length of a typical indexed chunk.
+/// About 220 tokens of ordinary prose; a calibration passage is it twice
+/// with its number (about 440 tokens, the length of a typical indexed chunk).
 const CALIBRATION_TEXT: &str = "The committee reviewed the annual maintenance report for the \
     building and its grounds. The roof was inspected in the spring and two sections of flashing \
     were replaced after the winter storms. The heating system was serviced in October; its \
@@ -474,6 +533,28 @@ struct Active {
     on_gpu: bool,
     accelerator: Accelerator,
     device: Option<Device>,
+    /// The CPU session small batches and queries run on while Core ML holds
+    /// `session` ([`runs_on_cpu`]); built when first needed.
+    cpu: Option<Session>,
+}
+
+impl Active {
+    /// The shape `session` must be run at, if it has one.
+    fn shape(&self) -> Option<FixedShape> {
+        fixed_shape(self.accelerator, self.on_gpu)
+    }
+}
+
+/// The shape a session on `accelerator` runs at (`on_gpu`: it still holds
+/// the model, no CPU has taken over).
+fn fixed_shape(accelerator: Accelerator, on_gpu: bool) -> Option<FixedShape> {
+    (on_gpu && accelerator == Accelerator::CoreMl).then_some(CORE_ML_SHAPE)
+}
+
+/// Whether `rows` sequences in `mode` go to the CPU session rather than to
+/// the fixed-shape one.
+fn runs_on_cpu(rows: usize, mode: E5Mode) -> bool {
+    matches!(mode, E5Mode::Query) || rows < CORE_ML_MIN_ROWS
 }
 
 pub struct E5Embeddings {
@@ -560,14 +641,20 @@ fn core_ml(builder: SessionBuilder, cache: &Path) -> std::result::Result<Session
     if let Err(e) = std::fs::create_dir_all(cache) {
         return Err(format!("Core ML cache folder: {e}"));
     }
-    let mut builder = builder;
+    let shape = CORE_ML_SHAPE;
+    let mut builder = builder
+        .with_dimension_override("batch_size", shape.rows as i64)
+        .map_err(|e| format!("batch size: {e}"))?
+        .with_dimension_override("sequence_length", shape.tokens as i64)
+        .map_err(|e| format!("sequence length: {e}"))?;
     crate::compute::ep::append_coreml(
         &mut builder,
         &[
-            // The ML Program format runs inputs of any length; the older
-            // neural network format needs fixed shapes.
             ("ModelFormat", "MLProgram".to_string()),
             ("MLComputeUnits", "ALL".to_string()),
+            // Free dimensions leave Core ML a dynamic model that loses to
+            // the CPU; the overrides above make every input static.
+            ("RequireStaticInputShapes", "1".to_string()),
             ("ModelCacheDirectory", cache.display().to_string()),
         ],
     )
@@ -577,8 +664,10 @@ fn core_ml(builder: SessionBuilder, cache: &Path) -> std::result::Result<Session
 
 /// Where Core ML keeps the model it compiled from the file at `model_path`:
 /// a folder named by the file's size and modification time, so a new model
-/// file (same graph, new weights) is compiled again; folders of earlier
-/// files are removed. Core ML itself recompiles only when the graph changes.
+/// file (same graph, new weights) is compiled again, and by the shape, since
+/// sessions of two shapes sharing a folder share one compiled model and the
+/// second fails at its first run. Folders of earlier files and shapes are
+/// removed. Core ML itself recompiles only when the graph changes.
 fn core_ml_cache(model_path: &Path) -> PathBuf {
     let root = model_path
         .parent()
@@ -594,6 +683,7 @@ fn core_ml_cache(model_path: &Path) -> PathBuf {
             format!("{}-{modified}", m.len())
         })
         .unwrap_or_else(|_| "unknown".to_string());
+    let stamp = format!("{stamp}-{}x{}", CORE_ML_SHAPE.rows, CORE_ML_SHAPE.tokens);
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
             if entry.file_name().to_string_lossy() != stamp {
@@ -604,12 +694,37 @@ fn core_ml_cache(model_path: &Path) -> PathBuf {
     root.join(stamp)
 }
 
+/// [`CORE_ML_FILE`] in `model_dir`, written there when missing or stale,
+/// beside a verified `model_O4.onnx`.
+fn core_ml_graph(model_dir: &Path) -> std::result::Result<PathBuf, String> {
+    let o4 = model_dir.join(E5Variant::Fp16.file_name());
+    let pin = super::model_store::e5_model_artifact(E5Variant::Fp16);
+    if !super::model_store::is_installed(&o4, &pin) {
+        return Err(format!(
+            "{} is not the pinned search model",
+            E5Variant::Fp16.file_name()
+        ));
+    }
+    let path = model_dir.join(CORE_ML_FILE);
+    if std::fs::read(&path).is_ok_and(|bytes| bytes == CORE_ML_GRAPH) {
+        return Ok(path);
+    }
+    let part = model_dir.join(format!("{CORE_ML_FILE}.part"));
+    std::fs::write(&part, CORE_ML_GRAPH)
+        .and_then(|()| std::fs::rename(&part, &path))
+        .map_err(|e| format!("writing {CORE_ML_FILE}: {e}"))?;
+    Ok(path)
+}
+
 /// Token ids of the calibration passages, numbered so none repeats.
 fn calibration_batch(tokenizer: &SentencePieceTokenizer) -> Result<Vec<Vec<u32>>> {
     (0..CALIBRATION_PASSAGES)
         .map(|i| {
             let mut ids = tokenizer.encode(
-                &format!("passage: Item {}. {CALIBRATION_TEXT}", i + 1),
+                &format!(
+                    "passage: Item {}. {CALIBRATION_TEXT} {CALIBRATION_TEXT}",
+                    i + 1
+                ),
                 true,
             )?;
             ids.truncate(512);
@@ -622,22 +737,24 @@ fn as_slices(ids: &[Vec<u32>]) -> Vec<&[u32]> {
     ids.iter().map(Vec::as_slice).collect()
 }
 
-/// Tokens a second `session` (of `variant`) embeds `passages` at, run the
-/// way that export always runs ([`run_sequences`]): one untimed run at the
-/// same shape, then the median of [`CALIBRATION_RUNS`] timed runs.
+/// Tokens a second `session` (of `variant`, at `shape` if it has one) embeds
+/// `passages` at, run the way it always runs ([`run_sequences`]): one untimed
+/// run at the same shape, then the median of [`CALIBRATION_RUNS`] timed runs.
+/// The tokens counted are the passages' own, not the padding.
 fn measure(
     session: &mut Session,
     variant: E5Variant,
+    shape: Option<FixedShape>,
     pad_id: u32,
     passages: &[Vec<u32>],
 ) -> std::result::Result<f64, String> {
     let batch = as_slices(passages);
     let tokens: usize = passages.iter().map(Vec::len).sum();
-    run_sequences(session, variant, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
+    run_sequences(session, variant, shape, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
     let mut rates = Vec::with_capacity(CALIBRATION_RUNS);
     for _ in 0..CALIBRATION_RUNS {
-        let (_, elapsed) =
-            run_sequences(session, variant, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
+        let (_, elapsed) = run_sequences(session, variant, shape, pad_id, false, &batch)
+            .map_err(|e| format!("{e:#}"))?;
         rates.push(
             speed::rate(tokens, elapsed)
                 .ok_or_else(|| "the calibration batch took no measurable time".to_string())?,
@@ -647,17 +764,21 @@ fn measure(
     Ok(rates[rates.len() / 2])
 }
 
-/// A session and the export it runs.
+/// A session, the export it runs and the shape it must be run at.
 struct Built {
     session: Session,
     variant: E5Variant,
+    shape: Option<FixedShape>,
 }
 
 /// Builds and times sessions of the model for [`choose::choose`]: a
-/// graphics card runs the plan's `gpu` export, the CPU its `cpu` export.
+/// graphics card runs the plan's `gpu` export (Core ML: [`CORE_ML_FILE`]),
+/// the CPU its `cpu` export.
 struct E5Candidate<'a> {
     config: &'a E5Config,
     plan: Plan,
+    /// [`CORE_ML_FILE`] when it is written and Core ML may run it.
+    core_ml_model: Option<&'a Path>,
     core_ml_cache: Option<&'a Path>,
     threads: usize,
     pad_id: u32,
@@ -674,77 +795,154 @@ impl Candidate for E5Candidate<'_> {
                 .ok_or_else(|| "no search model for a graphics card is installed".to_string())?,
             None => self.plan.cpu,
         };
-        let session = build_session(
-            &self.config.path_of(variant),
-            self.core_ml_cache,
-            device,
-            self.threads,
-        )?;
-        Ok(Built { session, variant })
+        let accelerator = device.map(|d| d.accelerator);
+        let path = match accelerator {
+            Some(Accelerator::CoreMl) => match (variant, self.core_ml_model) {
+                (E5Variant::Fp16, Some(path)) => path.to_path_buf(),
+                _ => {
+                    return Err(format!(
+                        "the search model for Core ML ({CORE_ML_FILE}) is not written"
+                    ))
+                }
+            },
+            _ => self.config.path_of(variant),
+        };
+        let session = build_session(&path, self.core_ml_cache, device, self.threads)?;
+        Ok(Built {
+            session,
+            variant,
+            shape: accelerator.and_then(|a| fixed_shape(a, true)),
+        })
     }
     fn time(&mut self, built: &mut Built) -> std::result::Result<f64, String> {
         measure(
             &mut built.session,
             built.variant,
+            built.shape,
             self.pad_id,
             self.passages,
         )
     }
 }
 
-/// Embeds token sequences with `session` the way `variant` must run: in one
-/// padded batch, or (int8, [`E5Variant::batches`]) each sequence on its own,
-/// so a text's vector never depends on the texts it was sent with. The time
-/// is the inference's alone.
+/// Embeds token sequences with `session` the way it must run: at its fixed
+/// `shape`, in chunks of its rows; else in one padded batch, or (int8,
+/// [`E5Variant::batches`]) each sequence on its own, so a text's vector never
+/// depends on the texts it was sent with. The time is the inference's alone.
 fn run_sequences(
     session: &mut Session,
     variant: E5Variant,
+    shape: Option<FixedShape>,
     pad_id: u32,
     normalize: bool,
     all_token_ids: &[&[u32]],
 ) -> Result<(Vec<Vec<f32>>, Duration)> {
-    if variant.batches() || all_token_ids.len() <= 1 {
-        return run_batch(session, pad_id, normalize, all_token_ids);
-    }
+    let chunk = match shape {
+        Some(shape) => shape.rows,
+        None if variant.batches() || all_token_ids.len() <= 1 => {
+            return run_batch(session, None, pad_id, normalize, all_token_ids);
+        }
+        None => 1,
+    };
     let mut vectors = Vec::with_capacity(all_token_ids.len());
     let mut elapsed = Duration::ZERO;
-    for ids in all_token_ids {
-        let (mut one, took) = run_batch(session, pad_id, normalize, std::slice::from_ref(ids))?;
-        vectors.append(&mut one);
+    for ids in all_token_ids.chunks(chunk) {
+        let (mut some, took) = run_batch(session, shape, pad_id, normalize, ids)?;
+        vectors.append(&mut some);
         elapsed += took;
     }
     Ok((vectors, elapsed))
 }
 
-/// Run one padded batch of token sequences through `session` and pool.
-/// The time is the inference's alone.
+/// Flat `input_ids` and `attention_mask` of `all_token_ids` padded to
+/// `rows` x `len` with `pad_id`: rows past the sequences are all padding,
+/// masked out, and a sequence longer than `len` is cut to it.
+fn padded_inputs(
+    all_token_ids: &[&[u32]],
+    rows: usize,
+    len: usize,
+    pad_id: u32,
+) -> (Vec<i64>, Vec<i64>) {
+    let pad_id = i64::from(pad_id);
+    let mut input_ids = Vec::with_capacity(rows * len);
+    let mut attention_mask = Vec::with_capacity(rows * len);
+    for row in 0..rows {
+        let ids = all_token_ids.get(row).copied().unwrap_or_default();
+        let ids = &ids[..ids.len().min(len)];
+        input_ids.extend(ids.iter().map(|&id| i64::from(id)));
+        attention_mask.extend(std::iter::repeat_n(1i64, ids.len()));
+        input_ids.extend(std::iter::repeat_n(pad_id, len - ids.len()));
+        attention_mask.extend(std::iter::repeat_n(0i64, len - ids.len()));
+    }
+    (input_ids, attention_mask)
+}
+
+/// Mean-pools the first `count` rows of `hidden` (`[rows, seq_len,
+/// hidden_dim]`) over the tokens `mask` (`[rows, padded_len]`) keeps; the
+/// padding rows after them are dropped.
+fn mean_pool(
+    hidden: &[f32],
+    seq_len: usize,
+    hidden_dim: usize,
+    mask: &[i64],
+    padded_len: usize,
+    count: usize,
+    normalize: bool,
+) -> Vec<Vec<f32>> {
+    (0..count)
+        .map(|sample_idx| {
+            let mask_offset = sample_idx * padded_len;
+            let sample_offset = sample_idx * seq_len * hidden_dim;
+            let mut pooled = vec![0.0f32; hidden_dim];
+            let mut mask_sum = 0.0f32;
+            for pos in 0..seq_len {
+                let mask_val = mask.get(mask_offset + pos).map_or(0.0, |&m| m as f32);
+                if mask_val > 0.0 {
+                    mask_sum += mask_val;
+                    let offset = sample_offset + pos * hidden_dim;
+                    for dim in 0..hidden_dim {
+                        pooled[dim] += hidden[offset + dim] * mask_val;
+                    }
+                }
+            }
+            if mask_sum > 0.0 {
+                for value in pooled.iter_mut() {
+                    *value /= mask_sum;
+                }
+            }
+            normalize_vec(normalize, pooled)
+        })
+        .collect()
+}
+
+/// Run one padded batch of token sequences through `session` and pool: padded
+/// to `shape` (at most its rows), else to the longest sequence. The time is
+/// the inference's alone.
 fn run_batch(
     session: &mut Session,
+    shape: Option<FixedShape>,
     pad_id: u32,
     normalize: bool,
     all_token_ids: &[&[u32]],
 ) -> Result<(Vec<Vec<f32>>, Duration)> {
-    let mut all_embeddings = Vec::with_capacity(all_token_ids.len());
-    let max_len = all_token_ids.iter().map(|ids| ids.len()).max().unwrap_or(0);
-    let padded_len = max_len.clamp(1, 512);
     let batch_size = all_token_ids.len();
-
-    let pad_id = i64::from(pad_id);
-    let mut input_ids_flat = Vec::with_capacity(batch_size * padded_len);
-    let mut attention_mask_flat = Vec::with_capacity(batch_size * padded_len);
-
-    for token_ids in all_token_ids {
-        for &id in token_ids.iter() {
-            input_ids_flat.push(id as i64);
-            attention_mask_flat.push(1i64);
+    let (rows, padded_len) = match shape {
+        Some(shape) if batch_size > shape.rows => {
+            return Err(anyhow!(
+                "{batch_size} sequences do not fit a batch of {}",
+                shape.rows
+            ));
         }
-        for _ in token_ids.len()..padded_len {
-            input_ids_flat.push(pad_id);
-            attention_mask_flat.push(0i64);
+        Some(shape) => (shape.rows, shape.tokens),
+        None => {
+            let max_len = all_token_ids.iter().map(|ids| ids.len()).max().unwrap_or(0);
+            (batch_size, max_len.clamp(1, 512))
         }
-    }
+    };
+    let (input_ids_flat, attention_mask_flat) =
+        padded_inputs(all_token_ids, rows, padded_len, pad_id);
 
-    let shape = vec![batch_size, padded_len];
+    let shape = vec![rows, padded_len];
     let input_ids = Value::from_array((shape.clone(), input_ids_flat))
         .map_err(|e| anyhow!("input_ids tensor: {:?}", e))?;
     let attention_mask = Value::from_array((shape, attention_mask_flat.clone()))
@@ -765,6 +963,7 @@ fn run_batch(
     // Check for sentence_embedding first (already pooled), then fall back to last_hidden_state
     let has_sentence_embedding = outputs.iter().any(|(name, _)| name == "sentence_embedding");
 
+    let mut all_embeddings = Vec::with_capacity(batch_size);
     if has_sentence_embedding {
         if let Ok((shape, data)) = outputs["sentence_embedding"].try_extract_tensor::<f32>() {
             let hidden_dim = shape[1] as usize;
@@ -775,38 +974,15 @@ fn run_batch(
             }
         }
     } else if let Ok((shape, data)) = outputs["last_hidden_state"].try_extract_tensor::<f32>() {
-        let seq_len = shape[1] as usize;
-        let hidden_dim = shape[2] as usize;
-
-        for sample_idx in 0..batch_size {
-            let mask_offset = sample_idx * padded_len;
-            let sample_offset = sample_idx * seq_len * hidden_dim;
-            let mut pooled = vec![0.0f32; hidden_dim];
-            let mut mask_sum = 0.0f32;
-
-            for pos in 0..seq_len {
-                let mask_val = if mask_offset + pos < attention_mask_flat.len() {
-                    attention_mask_flat[mask_offset + pos] as f32
-                } else {
-                    0.0
-                };
-                if mask_val > 0.0 {
-                    mask_sum += mask_val;
-                    let offset = sample_offset + pos * hidden_dim;
-                    for dim in 0..hidden_dim {
-                        pooled[dim] += data[offset + dim] * mask_val;
-                    }
-                }
-            }
-
-            if mask_sum > 0.0 {
-                for value in pooled.iter_mut().take(hidden_dim) {
-                    *value /= mask_sum;
-                }
-            }
-
-            all_embeddings.push(normalize_vec(normalize, pooled));
-        }
+        all_embeddings = mean_pool(
+            data,
+            shape[1] as usize,
+            shape[2] as usize,
+            &attention_mask_flat,
+            padded_len,
+            batch_size,
+            normalize,
+        );
     }
 
     Ok((all_embeddings, elapsed))
@@ -831,27 +1007,30 @@ impl E5Embeddings {
         let plan = config.plan()?;
         // The calibration holds for the files the targets run: one export,
         // or (no index yet) the graphics card's and the CPU's together, since
-        // a card's verdict is a comparison with the CPU's export.
-        let files: Vec<E5Variant> = match plan.gpu {
-            Some(gpu) if gpu != plan.cpu => vec![gpu, plan.cpu],
-            _ => vec![plan.cpu],
+        // a card's verdict is a comparison with the CPU's export. Core ML's
+        // own graph is part of it: a new graph is measured again.
+        let mut files: Vec<&str> = match plan.gpu {
+            Some(gpu) if gpu != plan.cpu => vec![gpu.file_name(), plan.cpu.file_name()],
+            _ => vec![plan.cpu.file_name()],
         };
+        let core_ml_model =
+            match (config.core_ml && plan.gpu == Some(E5Variant::Fp16) && core_ml_platform())
+                .then(|| core_ml_graph(&config.model_dir))
+            {
+                Some(Ok(path)) => {
+                    files.push(CORE_ML_FILE);
+                    Ok(Some(path))
+                }
+                Some(Err(error)) => Err(error),
+                None => Ok(None),
+            };
         let mut model_size = 0;
-        for variant in &files {
-            model_size += std::fs::metadata(config.path_of(*variant))
-                .map_err(|e| {
-                    anyhow!(
-                        "Failed to read the search model {}: {e}",
-                        variant.file_name()
-                    )
-                })?
+        for file in &files {
+            model_size += std::fs::metadata(config.model_dir.join(file))
+                .map_err(|e| anyhow!("Failed to read the search model {file}: {e}"))?
                 .len();
         }
-        let key_file = files
-            .iter()
-            .map(|v| v.file_name())
-            .collect::<Vec<_>>()
-            .join("+");
+        let key_file = files.join("+");
 
         let tokenizer = SentencePieceTokenizer::from_model_dir(&config.model_dir)?;
         let threads = crate::compute::cores::inference_threads();
@@ -863,10 +1042,12 @@ impl E5Embeddings {
             .unwrap_or_default();
         let now = chrono::Utc::now();
         let passages = calibration_batch(&tokenizer)?;
-        let core_ml_cache = plan.gpu.map(|v| core_ml_cache(&config.path_of(v)));
+        let core_ml_path = core_ml_model.as_ref().ok().cloned().flatten();
+        let core_ml_cache = core_ml_path.as_deref().map(core_ml_cache);
         let mut candidate = E5Candidate {
             config: &config,
             plan,
+            core_ml_model: core_ml_path.as_deref(),
             core_ml_cache: core_ml_cache.as_deref(),
             threads,
             pad_id: tokenizer.pad_id(),
@@ -884,7 +1065,14 @@ impl E5Embeddings {
         let mut chosen = choose::choose(
             &mut candidate,
             preference,
-            provider::probe_gpus,
+            // Without its graph Core ML is not tried, so no failure is kept
+            // for it and the next load tries again. Not asked for, it is not
+            // offered at all: Apple silicon then runs on the CPU, as before it.
+            || match core_ml_model {
+                _ if core_ml_platform() && !config.core_ml => GpuProbe::Unsupported,
+                Err(error) => GpuProbe::Failed(error),
+                Ok(_) => provider::probe_gpus(),
+            },
             &|device: Option<&Device>| saved.known(&key, device, now),
         )
         .map_err(|e| anyhow!("Failed to load model: {e}"))?;
@@ -892,7 +1080,11 @@ impl E5Embeddings {
             chosen.cpu_reason = Some(CpuReason::CpuModel);
         }
         let variant = chosen.session.variant;
-        let model_file = variant.file_name().to_string();
+        let model_file = match chosen.accelerator {
+            Accelerator::CoreMl => CORE_ML_FILE,
+            _ => variant.file_name(),
+        }
+        .to_string();
         if variant == E5Variant::Int8 && !int8_exact() {
             // An int8 index made elsewhere (or the only export installed):
             // queries stay in its export, but this processor's kernels round
@@ -977,6 +1169,7 @@ impl E5Embeddings {
                 on_gpu: chosen.accelerator.is_gpu(),
                 accelerator: chosen.accelerator,
                 device: chosen.device,
+                cpu: None,
             }),
             in_flight: AtomicUsize::new(0),
             tokenizer: Arc::new(tokenizer),
@@ -1027,7 +1220,13 @@ impl E5Embeddings {
             }
         }
         if let Some(status) = &self.status {
-            status.embedder_moved(self.generation, Accelerator::Cpu, reason, self.threads);
+            status.embedder_moved(
+                self.generation,
+                Accelerator::Cpu,
+                reason,
+                self.threads,
+                self.variant.file_name(),
+            );
         }
     }
 
@@ -1050,7 +1249,7 @@ impl E5Embeddings {
         let mut token_ids = self.tokenizer.encode(&prefixed, true)?;
         token_ids.truncate(self.config.max_length.min(512));
         let embedding = self
-            .embed_token_batch(&[token_ids.as_slice()])?
+            .embed_token_batch(&[token_ids.as_slice()], mode)?
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("embedding model returned no vector"))?;
@@ -1080,6 +1279,17 @@ impl E5Embeddings {
         }
         tokenized.sort_by_key(|(_, ids)| ids.len());
 
+        // A fixed shape pads every batch to its rows and tokens: batches of
+        // exactly its rows, so only the last can fall short and go to the CPU.
+        let fixed = self
+            .active
+            .lock()
+            .shape()
+            .filter(|_| matches!(mode, E5Mode::Passage));
+        let (max_items, max_tokens) = match fixed {
+            Some(shape) => (shape.rows, usize::MAX),
+            None => (MAX_BATCH_ITEMS, MAX_BATCH_TOKENS),
+        };
         let mut results: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
         let mut start = 0;
         while start < tokenized.len() {
@@ -1087,7 +1297,7 @@ impl E5Embeddings {
             while end < tokenized.len() {
                 let candidate = end + 1 - start;
                 let padded = tokenized[end].1.len().max(1) * candidate;
-                if candidate > MAX_BATCH_ITEMS || (padded > MAX_BATCH_TOKENS && end > start) {
+                if candidate > max_items || (padded > max_tokens && end > start) {
                     break;
                 }
                 end += 1;
@@ -1096,7 +1306,7 @@ impl E5Embeddings {
                 .iter()
                 .map(|(_, ids)| ids.as_slice())
                 .collect();
-            let embeddings = self.embed_token_batch(&batch)?;
+            let embeddings = self.embed_token_batch(&batch, mode)?;
             if embeddings.len() != batch.len() {
                 return Err(anyhow!(
                     "embedding model returned {} vectors for {} inputs",
@@ -1116,44 +1326,61 @@ impl E5Embeddings {
     }
     /// Run one padded batch of token sequences through the model and pool,
     /// reporting its speed to the status. A graphics card that fails here
-    /// hands over to the CPU, and the batch is embedded there.
-    fn embed_token_batch(&self, all_token_ids: &[&[u32]]) -> Result<Vec<Vec<f32>>> {
+    /// hands over to the CPU, and the batch is embedded there. While Core ML
+    /// holds the model, queries and small batches run on a CPU session
+    /// instead ([`runs_on_cpu`]); their speed is not the card's and is not
+    /// reported.
+    fn embed_token_batch(&self, all_token_ids: &[&[u32]], mode: E5Mode) -> Result<Vec<Vec<f32>>> {
         let tokens: usize = all_token_ids.iter().map(|ids| ids.len()).sum();
         // Another call running or waiting: this batch's speed says nothing
         // about the machine.
         let waited = self.in_flight.fetch_add(1, Ordering::SeqCst) > 0;
         let ocr_before = crate::compute::contention::ocr_active();
+        let run = |s: &mut Session, shape: Option<FixedShape>| {
+            run_sequences(
+                s,
+                self.variant,
+                shape,
+                self.tokenizer.pad_id(),
+                self.config.normalize,
+                all_token_ids,
+            )
+            .map_err(|e| format!("{e:#}"))
+        };
+        // The same export on the CPU: the vectors stay in it.
+        let cpu_session = || build_session(&self.model_path, None, None, self.threads);
         let result = {
             let mut active = self.active.lock();
+            let shape = active.shape();
             let Active {
-                session, on_gpu, ..
-            } = &mut *active;
-            let ran = choose::run_or_fall_back(
                 session,
                 on_gpu,
-                |s| {
-                    run_sequences(
-                        s,
-                        self.variant,
-                        self.tokenizer.pad_id(),
-                        self.config.normalize,
-                        all_token_ids,
-                    )
-                    .map_err(|e| format!("{e:#}"))
-                },
-                // The same export on the CPU: the vectors stay in it.
-                || build_session(&self.model_path, None, None, self.threads),
-            );
-            match ran {
-                Ok((value, Some(error))) => {
-                    let device = active.device.take();
-                    active.accelerator = Accelerator::Cpu;
-                    drop(active);
-                    self.moved_to_cpu(device, error);
-                    Ok((value, None))
+                cpu,
+                ..
+            } = &mut *active;
+            if shape.is_some() && runs_on_cpu(all_token_ids.len(), mode) {
+                cpu.take()
+                    .map_or_else(cpu_session, Ok)
+                    .and_then(|built| run(cpu.insert(built), None))
+                    .map(|value| (value, None))
+            } else {
+                let ran = choose::run_or_fall_back(
+                    session,
+                    on_gpu,
+                    |s, on_gpu| run(s, shape.filter(|_| on_gpu)),
+                    || cpu.take().map_or_else(cpu_session, Ok),
+                );
+                match ran {
+                    Ok((value, Some(error))) => {
+                        let device = active.device.take();
+                        active.accelerator = Accelerator::Cpu;
+                        drop(active);
+                        self.moved_to_cpu(device, error);
+                        Ok((value, None))
+                    }
+                    Ok((value, None)) => Ok((value, Some(()))),
+                    Err(e) => Err(e),
                 }
-                Ok((value, None)) => Ok((value, Some(()))),
-                Err(e) => Err(e),
             }
         };
         let contended = waited
@@ -1251,6 +1478,77 @@ mod tests {
         assert!(!matmul_integer_model().is_empty());
     }
 
+    /// A fixed shape pads every row to its tokens and adds masked rows of
+    /// padding up to its rows; a sequence longer than the shape is cut.
+    #[test]
+    fn sequences_are_padded_to_the_fixed_shape_with_masked_rows() {
+        let (ids, mask) = padded_inputs(&[&[5, 6, 7], &[8, 9, 10, 11, 12]], 4, 4, 1);
+        assert_eq!(ids, [5, 6, 7, 1, 8, 9, 10, 11, 1, 1, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(mask, [1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let (ids, mask) = padded_inputs(&[&[5], &[6, 7]], 2, 2, 0);
+        assert_eq!((ids, mask), (vec![5, 0, 6, 7], vec![1, 0, 1, 1]));
+    }
+
+    /// Pooling keeps one vector per real sequence, averaged over its own
+    /// tokens: padding tokens and padding rows count for nothing, however
+    /// large their outputs.
+    #[test]
+    fn pooling_drops_the_padding_rows_and_tokens() {
+        let (rows, len, dim) = (4, 3, 2);
+        let (_, mask) = padded_inputs(&[&[1, 2], &[3, 4, 5]], rows, len, 0);
+        let mut hidden = vec![1000.0f32; rows * len * dim];
+        let mut set = |row: usize, pos: usize, values: [f32; 2]| {
+            let at = (row * len + pos) * dim;
+            hidden[at..at + dim].copy_from_slice(&values);
+        };
+        set(0, 0, [1.0, 2.0]);
+        set(0, 1, [3.0, 4.0]);
+        set(1, 0, [0.0, 3.0]);
+        set(1, 1, [3.0, 0.0]);
+        set(1, 2, [0.0, 0.0]);
+        let pooled = mean_pool(&hidden, len, dim, &mask, len, 2, false);
+        assert_eq!(pooled, [vec![2.0, 3.0], vec![1.0, 1.0]]);
+        let normalized = mean_pool(&hidden, len, dim, &mask, len, 2, true);
+        let norm: f32 = normalized[1].iter().map(|x| x * x).sum();
+        assert!((norm - 1.0).abs() < 1e-6);
+    }
+
+    /// While Core ML holds the model, queries and batches of fewer than three
+    /// rows go to the CPU; a full batch stays on Core ML. Without Core ML (the
+    /// CPU, DirectML, or a CPU that took over) nothing has a fixed shape.
+    #[test]
+    fn queries_and_small_batches_go_to_the_cpu_while_core_ml_holds_the_model() {
+        assert_eq!(fixed_shape(Accelerator::CoreMl, true), Some(CORE_ML_SHAPE));
+        assert_eq!(fixed_shape(Accelerator::CoreMl, false), None, "taken over");
+        assert_eq!(fixed_shape(Accelerator::DirectMl, true), None);
+        assert_eq!(fixed_shape(Accelerator::Cpu, false), None);
+        for rows in [1, 2] {
+            assert!(runs_on_cpu(rows, E5Mode::Passage), "{rows} rows");
+        }
+        for rows in [3, 8] {
+            assert!(!runs_on_cpu(rows, E5Mode::Passage), "{rows} rows");
+            assert!(runs_on_cpu(rows, E5Mode::Query), "{rows} queries");
+        }
+        assert_eq!(CALIBRATION_PASSAGES, CORE_ML_SHAPE.rows);
+    }
+
+    /// Core ML's compiled model is kept per file and shape; folders of other
+    /// files or shapes (which would share one compiled model) are removed.
+    #[test]
+    fn the_core_ml_cache_is_keyed_by_file_and_shape() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let model = dir.path().join(CORE_ML_FILE);
+        std::fs::write(&model, b"weights").unwrap();
+        let root = dir.path().join("coreml-cache");
+        let stale = root.join("7-1700000000");
+        std::fs::create_dir_all(&stale).unwrap();
+        let cache = core_ml_cache(&model);
+        let name = cache.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("7-") && name.ends_with("-8x512"), "{name}");
+        assert_eq!(cache.parent(), Some(root.as_path()));
+        assert!(!stale.exists(), "an earlier file's or shape's folder goes");
+    }
+
     #[test]
     fn the_variants_name_their_files_and_how_they_run() {
         assert_eq!(E5Variant::Fp16.file_name(), "model_O4.onnx");
@@ -1262,6 +1560,31 @@ mod tests {
         assert!(E5Variant::Fp16.batches() && E5Variant::Fp16.runs_on_gpu());
         assert!(!E5Variant::Int8.batches() && !E5Variant::Int8.runs_on_gpu());
         assert_eq!(serde_json::to_value(E5Variant::Int8).unwrap(), "int8");
+    }
+
+    /// Core ML is off unless `SHODH_CORE_ML` is exactly `1`.
+    #[test]
+    fn core_ml_is_off_unless_asked_for() {
+        use std::ffi::OsStr;
+        assert!(!core_ml_opted_in(None));
+        assert!(!core_ml_opted_in(Some(OsStr::new(""))));
+        assert!(!core_ml_opted_in(Some(OsStr::new("0"))));
+        assert!(!core_ml_opted_in(Some(OsStr::new("yes"))));
+        assert!(!core_ml_opted_in(Some(OsStr::new("true"))));
+        assert!(core_ml_opted_in(Some(OsStr::new("1"))));
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let e5 = dir.path().join(E5_DIR);
+        std::fs::create_dir_all(&e5).unwrap();
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(e5.join(E5Variant::Fp16.file_name()), b"fp16").unwrap();
+        let config = E5Config::auto_detect(dir.path()).expect("fp16 installed");
+        assert_eq!(
+            config.core_ml,
+            core_ml_opted_in(std::env::var_os("SHODH_CORE_ML").as_deref())
+        );
+        assert!(config.clone().with_core_ml(true).core_ml);
+        assert!(!config.with_core_ml(false).core_ml);
     }
 
     /// Which export runs where: an index's export everywhere it can run; a
@@ -1548,9 +1871,12 @@ mod tests {
         )
         .expect("load");
         assert!(gpu.accelerator().is_gpu(), "no graphics card ran the model");
+        // Enough rows for Core ML to run them rather than hand them to the CPU.
         let texts = [
             "The heating system was serviced in October.",
             "Negative eigenvalues let linear RNNs track parity.",
+            "The delta rule updates the state with a rank-one correction.",
+            "Residents asked for more bicycle parking and better lighting.",
         ];
         let on_cpu = cpu
             .embed_batch_with_mode(&texts, E5Mode::Passage)
@@ -1561,6 +1887,82 @@ mod tests {
         for (a, b) in on_cpu.iter().zip(&on_gpu) {
             let cosine: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
             assert!(cosine > 0.99, "the GPU's vector differs: cos={cosine}");
+        }
+    }
+
+    /// The Core ML graph is written only beside the pinned model_O4: its
+    /// weights are read at that file's offsets.
+    #[test]
+    fn the_core_ml_graph_needs_the_pinned_o4() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(E5Variant::Fp16.file_name()), b"not O4").unwrap();
+        assert!(core_ml_graph(dir.path()).is_err());
+        assert!(!dir.path().join(CORE_ML_FILE).exists());
+    }
+
+    /// Core ML runs O4's weights through its own graph at 8 x 512: a run of
+    /// more rows than one batch (a full batch on Core ML and a remainder of
+    /// two on the CPU) comes back in input order with vectors matching the
+    /// CPU's model_O4, and queries match too. Needs Apple silicon and the
+    /// pinned model_O4 under SHODH_TEST_MODELS; its first load compiles for
+    /// about four minutes. Removes the Core ML cache and graph it makes.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    #[ignore = "needs Apple silicon and model_O4; compiles a Core ML model"]
+    fn core_ml_embeds_o4_like_the_cpu() {
+        let config = variant_config(E5Variant::Fp16);
+        let graph = config.model_dir.join(CORE_ML_FILE);
+        let had_graph = graph.exists();
+        let cache_root = config.model_dir.join("coreml-cache");
+        let had_cache = cache_root.exists();
+        let cpu = E5Embeddings::new(config.clone()).expect("load E5 on the CPU");
+        let status = Arc::new(ComputeStatus::default());
+        let mut auto = config
+            .with_compute(ComputePreference::Auto)
+            .with_core_ml(true);
+        auto.status = Some(status.clone());
+        let gpu = E5Embeddings::new(auto).expect("load");
+        assert_eq!(
+            gpu.accelerator(),
+            Accelerator::CoreMl,
+            "{:?}",
+            status.embedder()
+        );
+        assert_eq!(
+            status.embedder().map(|r| r.model_file),
+            Some(CORE_ML_FILE.to_string())
+        );
+        let texts: Vec<String> = (0..9)
+            .map(|i| format!("Item {i}. {CALIBRATION_TEXT}"))
+            .chain(["Negative eigenvalues let linear RNNs track parity.".to_string()])
+            .collect();
+        let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let on_cpu = cpu
+            .embed_batch_with_mode(&texts, E5Mode::Passage)
+            .expect("cpu");
+        let on_gpu = gpu
+            .embed_batch_with_mode(&texts, E5Mode::Passage)
+            .expect("core ml");
+        assert_eq!(on_gpu.len(), texts.len());
+        let cosine = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        for (i, (a, b)) in on_cpu.iter().zip(&on_gpu).enumerate() {
+            let c = cosine(a, b);
+            eprintln!("passage {i}: cos={c}");
+            assert!(c > 0.99, "passage {i} differs on Core ML: cos={c}");
+        }
+        let query = "when was the boiler serviced";
+        let c = cosine(
+            &cpu.embed_query(query).expect("cpu query"),
+            &gpu.embed_query(query).expect("query"),
+        );
+        assert!(c > 0.9999, "a query runs on the CPU's model: cos={c}");
+        assert_eq!(gpu.accelerator(), Accelerator::CoreMl, "still on Core ML");
+        drop(gpu);
+        if !had_cache {
+            let _ = std::fs::remove_dir_all(&cache_root);
+        }
+        if !had_graph {
+            let _ = std::fs::remove_file(&graph);
         }
     }
 }

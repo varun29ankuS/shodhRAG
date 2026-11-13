@@ -249,6 +249,8 @@ pub struct PairedDevice {
 pub fn clean_device_name(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
+        // Tabs and line breaks separate words; every other control character goes.
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
         .filter(|c| !c.is_control())
         .collect::<String>()
         .split_whitespace()

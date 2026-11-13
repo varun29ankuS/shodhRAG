@@ -4342,6 +4342,128 @@ mod tests {
             .any(|e| matches!(e, AgentEvent::Grounding { .. })));
     }
 
+    /// The time every event of a recorded session happened at (`atMs`).
+    const RECORDED_AT_MS: u64 = 1_763_000_600_100;
+    /// Every duration in a recorded session (`durationMs`).
+    const RECORDED_DURATION_MS: u64 = 250;
+
+    /// A recorded session's fixture: the app's transcript parity tests
+    /// (`app/tests/transcriptParity.test.ts` and `agent_transcript.rs`) fold its events
+    /// with both reducers, so they are checked against what the harness really sends.
+    fn recorded_fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../app/tests/fixtures/transcripts")
+            .join(name)
+    }
+
+    /// An event as the window receives it (serialised, then parsed), with its times fixed
+    /// so a recording is the same on every run.
+    fn recorded(event: &AgentEvent) -> serde_json::Value {
+        let text = serde_json::to_string(event).expect("an event serialises");
+        let mut value: serde_json::Value = serde_json::from_str(&text).expect("an event is JSON");
+        fix_times(&mut value);
+        value
+    }
+
+    /// Every time in `value` (`atMs`, `durationMs`, any other `…Ms`) set to a fixed one.
+    fn fix_times(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, v) in map.iter_mut() {
+                    if key.ends_with("Ms") && v.is_number() {
+                        *v = serde_json::json!(match key.as_str() {
+                            "atMs" => RECORDED_AT_MS,
+                            "durationMs" => RECORDED_DURATION_MS,
+                            _ => 0,
+                        });
+                    } else {
+                        fix_times(v);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(fix_times),
+            _ => {}
+        }
+    }
+
+    /// Two synthetic sessions run through the session as omp would drive it, recorded and
+    /// compared with the events of their fixtures in `app/tests/fixtures/transcripts`.
+    /// A recording that differs is printed whole, to be reviewed and copied into its
+    /// fixture (the fixture's expected transcript then follows from the parity tests).
+    #[tokio::test]
+    async fn recorded_sessions_match_their_fixtures() {
+        // A cited answer checked against its source, flagged, repaired and checked again.
+        let (inner, mut events, mut out) = offline_inner(Some(GroundingConfig::lexical()));
+        start(&inner);
+        let (first_prompt, _) = sent_prompt(&mut out);
+        say(
+            &inner,
+            "m1",
+            "Either party may terminate the agreement with 90 days written notice [1].",
+        );
+        complete(&inner, &first_prompt);
+        let mut repaired = events_until(&mut events, |e| {
+            matches!(e, AgentEvent::RevisionStarted { .. })
+        })
+        .await;
+        let (repair_prompt, _) = sent_prompt(&mut out);
+        say(
+            &inner,
+            "m2",
+            "Either party may terminate the agreement with 60 days written notice [1].",
+        );
+        complete(&inner, &repair_prompt);
+        repaired.extend(
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await,
+        );
+
+        // An answer that reasons, makes a call the runtime refuses for its arguments, and
+        // is answered without a check.
+        let (inner, mut events, mut out) = offline_inner(None);
+        start(&inner);
+        let (prompt, _) = sent_prompt(&mut out);
+        feed(
+            &inner,
+            r#"{"type":"message_update","messageId":"m1","assistantMessageEvent":{"type":"thinking_delta","delta":"The notice clause is in section 4."}}"#,
+        );
+        feed(
+            &inner,
+            r#"{"type":"tool_execution_start","toolCallId":"t1","toolName":"search_documents","args":{"query":"notice period","sources":null}}"#,
+        );
+        feed(
+            &inner,
+            r#"{"type":"tool_execution_end","toolCallId":"t1","toolName":"search_documents","result":{"content":[{"type":"text","text":"Validation failed for tool \"search_documents\":\n  - sources: must be array\n\nReceived arguments:\n{}"}]},"isError":true}"#,
+        );
+        say(&inner, "m2", "The notice period is sixty days [1].");
+        complete(&inner, &prompt);
+        let refused =
+            events_until(&mut events, |e| matches!(e, AgentEvent::RunFinished { .. })).await;
+
+        let mut differ = Vec::new();
+        for (name, session) in [
+            ("recorded-01-repaired-answer.json", &repaired),
+            ("recorded-02-refused-call.json", &refused),
+        ] {
+            let recording: Vec<serde_json::Value> = session.iter().map(recorded).collect();
+            let path = recorded_fixture(name);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+            let fixture: serde_json::Value = serde_json::from_str(&text).expect("a JSON fixture");
+            if fixture["actions"] != serde_json::Value::Array(recording.clone()) {
+                // Every recording that differs is printed before the test fails.
+                eprintln!(
+                    "{name}: the recorded session differs from the fixture's actions. Recorded:\n{}\n",
+                    serde_json::to_string_pretty(&recording).unwrap_or_default()
+                );
+                differ.push(name);
+            }
+        }
+        assert!(
+            differ.is_empty(),
+            "recorded sessions differ from their fixtures (printed above): {differ:?}"
+        );
+    }
+
     #[test]
     fn messages_are_validated() {
         assert!(matches!(

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import {
   appliesAtOnce,
   changeMessages,
+  changedSince,
   emptyView,
   loadConversation,
   markChange,
@@ -24,6 +25,7 @@ import {
   saveStep,
   startsCheck,
   upsertById,
+  withLiveRun,
 } from '../src/features/ask/chatPersistence.ts';
 import type { PersistView } from '../src/features/ask/chatPersistence.ts';
 import type { AgentEvent, GroundingReport } from '../src/features/agent/events.ts';
@@ -332,4 +334,34 @@ test('a transcript stored live without a checkpoint keeps the existing interrupt
   const restored = fromPersisted(JSON.parse(JSON.stringify(toPersisted(live))));
   assert.ok(restored);
   assert.equal(restored.error, 'The app closed before this answer finished.');
+});
+
+test('only the messages a change touched are written: the store keeps every other one as it has it', () => {
+  let v = loaded('c1', [user, { id: 'a1', text: 'answer the agent session saved', live: false }]);
+  v = publishMessage(v, 'c1', { id: 'n1', text: 'OCR notice', live: false }, 'debounced');
+  assert.deepEqual([...changedSince(v.changed, 0)], ['n1']);
+  const before = v.persist.seq;
+  v = changeMessages(v, 'c1', ms => ms.map(m => (m.id === 'a1' ? { ...m, text: 'cite [2] instead' } : m)), 'debounced');
+  assert.deepEqual([...changedSince(v.changed, before)], ['a1'], 'only the edited answer, not the list');
+  // A display-only change (an agent turn the session saves) is never written by the window.
+  const shown = publishMessage(v, 'c1', { id: 'q2', text: 'next question', live: false }, 'none');
+  assert.deepEqual([...changedSince(shown.changed, v.persist.seq)], []);
+  // Loading another conversation is not a change.
+  assert.equal(loadConversation(v, 'c2', [], {}).changed, v.changed);
+});
+
+test('a running answer is shown with its question over the stored conversation, without the answer it replaces', () => {
+  const question: Msg = { id: 'q2', text: 'And the fee?', live: false };
+  const answer: Msg = { id: 'a2', text: 'streaming', live: true };
+  const stored: Msg[] = [user, { id: 'a1', text: 'old try', live: false }];
+  // Before the agent session saved them: the question and answer follow the stored ones.
+  assert.deepEqual(withLiveRun(stored, { message: answer, question, replaces: null }).map(m => m.id), ['u1', 'a1', 'q2', 'a2']);
+  // A retry: the try it replaces is hidden, the answer goes in place of its stored copy.
+  const saved: Msg[] = [user, { id: 'a1', text: 'old try', live: false }, { id: 'a2', text: 'checkpoint', live: false }];
+  const shown = withLiveRun(saved, { message: answer, question: null, replaces: 'a1' });
+  assert.deepEqual(shown.map(m => m.text), [user.text, 'streaming']);
+  // Once saved, the question stays where the store has it.
+  const both: Msg[] = [user, question, { id: 'a2', text: 'checkpoint', live: false }];
+  assert.deepEqual(withLiveRun(both, { message: answer, question, replaces: null }).map(m => m.id), ['u1', 'q2', 'a2']);
+  assert.deepEqual(withLiveRun(stored, null), stored);
 });

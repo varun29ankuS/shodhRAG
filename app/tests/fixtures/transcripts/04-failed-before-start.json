@@ -1,0 +1,63 @@
+{
+  "name": "A request refused before the run started (the model failed moments ago): the memories it was given are dropped, and the failure keeps its model and provider error",
+  "seed": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-4",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1763000300000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "ask"
+  },
+  "actions": [
+    { "type": "memories_used", "runId": "run-4", "ids": ["mem-9"] },
+    {
+      "type": "local_failed",
+      "error": "The model failed moments ago.",
+      "code": "model_cooling",
+      "atMs": 1763000300250,
+      "model": "openrouter/cooling",
+      "providerError": { "kind": "rate_limited", "status": 429, "retryAfterSecs": null }
+    }
+  ],
+  "expectedText": "",
+  "expected": {
+    "providerError": { "kind": "rate_limited", "status": 429, "retryAfterSecs": null },
+    "fallback": null,
+    "runId": "run-4",
+    "sessionId": null,
+    "model": "openrouter/cooling",
+    "warning": null,
+    "status": "error",
+    "startedAtMs": 1763000300000,
+    "durationMs": 250,
+    "error": "The model failed moments ago.",
+    "errorCode": "model_cooling",
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "ask"
+  }
+}

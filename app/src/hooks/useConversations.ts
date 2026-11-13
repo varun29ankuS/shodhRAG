@@ -8,6 +8,16 @@ import { diagramLedger } from '../features/ask/visual/diagramLedger';
 import { diagramKeysToForget } from '../features/ask/visual/diagramKeys';
 import { APP_QUITTING_EVENT, ConversationSaves, FailureLatch, loadFailureNotice, quitRequestId, updateRecord } from './conversationSaves';
 import type { LoadFailureNotice } from './conversationSaves';
+import {
+  CONVERSATION_CHANGED_EVENT,
+  NEW_CHAT_TITLE,
+  autoTitle,
+  changedConversationId,
+  mergePatches,
+  reloadedConversation,
+  withPatch,
+} from './conversationSync';
+import type { MessagePatch } from './conversationSync';
 import type { AgentMode } from '../features/agent/agentModes';
 import { firstAskConversation } from '../features/connectors/conversations';
 import type { ConversationSeed, ConversationSource } from '../features/connectors/conversations';
@@ -69,6 +79,12 @@ export interface Conversation {
   aboutFile?: unknown;
 }
 
+/** A conversation whose messages changed in the store and were reloaded (`seq` tells repeats apart). */
+export interface ConversationReload {
+  id: string;
+  seq: number;
+}
+
 /** Emitted by the backend when the agent renames or pins a conversation. */
 const CONVERSATION_UPDATED_EVENT = 'conversation-updated';
 
@@ -118,13 +134,6 @@ function notifyNotSaved(what: string): void {
   });
 }
 
-function autoTitle(firstMessage: string): string {
-  const words = firstMessage.trim().split(/\s+/).slice(0, 6);
-  let title = words.join(' ');
-  if (firstMessage.trim().split(/\s+/).length > 6) title += '...';
-  return title || 'New Chat';
-}
-
 export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -137,27 +146,48 @@ export function useConversations() {
   const [loadFailureSeen, setLoadFailureSeen] = useState(false);
   // The saved conversations were read (or could not be): the list is final.
   const [loaded, setLoaded] = useState(false);
+  // The latest conversation reloaded from the store (`conversation_changed`).
+  const [reloaded, setReloaded] = useState<ConversationReload | null>(null);
   // A store that keeps refusing saves is reported once, not on every save.
   const [saveFailures] = useState(() => new FailureLatch());
-  // One debounce timer per conversation (a save for conversation A must not
-  // be cancelled by a save for conversation B scheduled within the window),
-  // and writes of one conversation in the order they were made.
+  const reportSaveFailure = useCallback((id: string, err: unknown) => {
+    console.error(`Failed to save conversation ${id}:`, err);
+    if (saveFailures.fail()) {
+      notify.error('Your conversation was not saved', {
+        description: `${String(err)} It is saved again with your next change.`,
+      });
+    }
+  }, [saveFailures]);
+  // A conversation's own settings (workspace, mode, side threads, …), never its messages:
+  // one debounce timer per conversation (a save for conversation A must not be cancelled
+  // by a save for conversation B scheduled within the window), and writes of one
+  // conversation in the order they were made.
   const [saves] = useState(() => new ConversationSaves<Conversation>({
     write: conversation => invoke('save_conversation', { conversation }),
     schedule: (run, ms) => {
       const timer = setTimeout(run, ms);
       return () => clearTimeout(timer);
     },
-    onError: (conversation, err) => {
-      console.error(`Failed to save conversation ${conversation.id}:`, err);
-      if (saveFailures.fail()) {
-        notify.error('Your conversation was not saved', {
-          description: `${String(err)} It is saved again with your next change.`,
-        });
-      }
-    },
+    onError: (conversation, err) => reportSaveFailure(conversation.id, err),
     onWritten: () => saveFailures.succeed(),
     delayMs: 500,
+  }));
+  // The messages this window changed, per conversation: only those are written (the agent
+  // session saves its turns itself), and changes made within the delay go as one.
+  const [messageSaves] = useState(() => new ConversationSaves<MessagePatch>({
+    write: patch => invoke('save_conversation_messages', {
+      conversationId: patch.id,
+      messages: patch.messages,
+      removed: patch.removed.length > 0 ? patch.removed : null,
+    }),
+    schedule: (run, ms) => {
+      const timer = setTimeout(run, ms);
+      return () => clearTimeout(timer);
+    },
+    onError: (patch, err) => reportSaveFailure(patch.id, err),
+    onWritten: () => saveFailures.succeed(),
+    delayMs: 500,
+    merge: mergePatches,
   }));
   const loadedRef = useRef(false);
   // The list with every change made so far, rendered or not. Changes are
@@ -171,8 +201,7 @@ export function useConversations() {
   }, []);
 
   // The agent renamed or pinned a conversation (organize_conversation). The
-  // backend saved it already; patch the in-memory copy so the next save of
-  // the whole record keeps the change.
+  // backend saved it already; patch the in-memory copy so it shows.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -193,6 +222,54 @@ export function useConversations() {
       if (unlisten) unlisten();
     };
   }, [setList]);
+
+  // The messages of a conversation were written (an answer the agent session saved, a
+  // question asked from another device, an edit in a window): reload it from the store,
+  // keeping this window's own changes still waiting to be written. Reloads of one
+  // conversation run one at a time; a change that arrives during one reloads again after.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    let seq = 0;
+    const running = new Set<string>();
+    const again = new Set<string>();
+    const reload = (id: string) => {
+      if (running.has(id)) {
+        again.add(id);
+        return;
+      }
+      running.add(id);
+      invoke<Conversation | null>('load_conversation', { conversationId: id })
+        .then(stored => {
+          if (disposed || !stored) return;
+          const existing = listRef.current.find(c => c.id === id);
+          const merged = reloadedConversation(existing, stored, messageSaves.waiting(id));
+          setList(existing
+            ? listRef.current.map(c => (c.id === id ? merged : c))
+            : [merged, ...listRef.current]);
+          seq += 1;
+          setReloaded({ id, seq });
+        })
+        .catch(err => console.error(`Failed to reload conversation ${id}:`, err))
+        .finally(() => {
+          running.delete(id);
+          if (!disposed && again.delete(id)) reload(id);
+        });
+    };
+    listen<unknown>(CONVERSATION_CHANGED_EVENT, event => {
+      const id = changedConversationId(event.payload);
+      if (id) reload(id);
+    })
+      .then(fn => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(err => console.error(`Failed to listen for ${CONVERSATION_CHANGED_EVENT}:`, err));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, [messageSaves, setList]);
 
   // A connector (Slack, Telegram) answered a question or forgot its conversations: the
   // backend saved it already; the list shows it now. The backend keeps the connector's
@@ -218,7 +295,7 @@ export function useConversations() {
             setActiveConversationId(fallback.id);
           } else {
             const now = new Date().toISOString();
-            const fresh: Conversation = { id: generateId(), title: 'New Chat', messages: [], createdAt: now, updatedAt: now, pinned: false };
+            const fresh: Conversation = { id: generateId(), title: NEW_CHAT_TITLE, messages: [], createdAt: now, updatedAt: now, pinned: false };
             next = [fresh, ...next];
             setActiveConversationId(fresh.id);
             void saves.write(fresh);
@@ -265,7 +342,7 @@ export function useConversations() {
           const now = new Date().toISOString();
           const fresh: Conversation = {
             id,
-            title: 'New Chat',
+            title: NEW_CHAT_TITLE,
             messages: [],
             createdAt: now,
             updatedAt: now,
@@ -283,12 +360,13 @@ export function useConversations() {
         // Nothing may overwrite the file the history is still in: saving
         // stays paused for this session, and the window says so.
         saves.pause();
+        messageSaves.pause();
         setLoadFailure(loadFailureNotice(err));
         const id = generateId();
         const now = new Date().toISOString();
         const fresh: Conversation = {
           id,
-          title: 'New Chat',
+          title: NEW_CHAT_TITLE,
           messages: [],
           createdAt: now,
           updatedAt: now,
@@ -297,26 +375,27 @@ export function useConversations() {
         setList([fresh]);
         setActiveConversationId(id);
       });
-  }, [saves, setList]);
+  }, [messageSaves, saves, setList]);
 
   const activeConversation = conversations.find(c => c.id === activeConversationId) || null;
 
-  // Debounced save, per conversation; `immediate` writes now (a finished
-  // answer), replacing a save still waiting for that conversation. `onSaved`
-  // runs only if this save is the one that reaches the backend and succeeds.
-  // Waiting saves are written when the provider unmounts (reload, hot
-  // update) or the page is hidden (also: closed to the tray) or unloaded, and
-  // before the app exits (`app-quitting`), so a change made in the last
-  // 500 ms is not dropped by a close or quit. A hard kill skips all of these;
-  // a finished answer is saved immediately for that reason.
+  // Debounced save, per conversation; `immediate` writes now, replacing a save still
+  // waiting for that conversation. `onSaved` runs only if this save is the one that
+  // reaches the backend and succeeds. Waiting saves are written when the provider
+  // unmounts (reload, hot update) or the page is hidden (also: closed to the tray) or
+  // unloaded, and before the app exits (`app-quitting`), so a change made in the last
+  // 500 ms is not dropped by a close or quit. Answers are saved by the backend.
   const scheduleSave = useCallback((conv: Conversation, onSaved?: () => void, immediate = false) => {
     saves.save(conv, onSaved, immediate);
   }, [saves]);
 
   useEffect(() => {
-    const flush = () => saves.flush();
+    const flush = () => {
+      saves.flush();
+      messageSaves.flush();
+    };
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') saves.flush();
+      if (document.visibilityState === 'hidden') flush();
     };
     window.addEventListener('pagehide', flush);
     window.addEventListener('beforeunload', flush);
@@ -325,9 +404,9 @@ export function useConversations() {
       window.removeEventListener('pagehide', flush);
       window.removeEventListener('beforeunload', flush);
       document.removeEventListener('visibilitychange', onVisibility);
-      saves.flush();
+      flush();
     };
-  }, [saves]);
+  }, [messageSaves, saves]);
 
   // The app is about to exit (tray Quit, closing the window, installing an
   // update): write every waiting save, wait for the writes, then let it go.
@@ -338,7 +417,7 @@ export function useConversations() {
     listen<unknown>(APP_QUITTING_EVENT, event => {
       const requestId = quitRequestId(event.payload);
       if (requestId === null) return;
-      void saves.drain()
+      void Promise.all([saves.drain(), messageSaves.drain()])
         .then(() => invoke('quit_ready', { requestId }))
         .catch(err => console.error('Failed to confirm the saves before quitting:', err));
     })
@@ -351,14 +430,14 @@ export function useConversations() {
       disposed = true;
       if (unlisten) unlisten();
     };
-  }, [saves]);
+  }, [messageSaves, saves]);
 
   const createConversation = useCallback((opts?: { workspaceId?: string | null }): string => {
     const id = generateId();
     const now = new Date().toISOString();
     const fresh: Conversation = {
       id,
-      title: 'New Chat',
+      title: NEW_CHAT_TITLE,
       messages: [],
       createdAt: now,
       updatedAt: now,
@@ -375,54 +454,71 @@ export function useConversations() {
     setActiveConversationId(id);
   }, []);
 
+  /** A conversation with every change made so far, rendered or not. */
+  const getConversation = useCallback((id: string): Conversation | null => (
+    listRef.current.find(c => c.id === id) ?? null
+  ), []);
+
+  /** `messages` and `removed` applied to the conversation in the list: the patch to write, or null when there is nothing to write. */
+  const patchShown = useCallback((conversationId: string, messages: ConversationMessage[], removed: string[]): MessagePatch | null => {
+    if (messages.length === 0 && removed.length === 0) return null;
+    const patch: MessagePatch = { id: conversationId, messages, removed };
+    const { list, updated } = updateRecord(listRef.current, conversationId, conv => withPatch(conv, patch, new Date().toISOString()));
+    if (!updated) return null;
+    setList(list);
+    return patch;
+  }, [setList]);
+
   /**
-   * Update the messages of a specific conversation. Takes an explicit id so a
-   * response that completes after the user switched conversations is written
-   * to the conversation it belongs to.
+   * Save messages this window changed in a conversation (visible or not): each replaces
+   * the stored message with its id, or is added at the end, and `removed` go. The list is
+   * never written whole: turns the agent session saved, or another device added, stay.
+   * Takes an explicit id so a change that completes after the user switched
+   * conversations is written to the conversation it belongs to.
    */
-  const updateConversationMessages = useCallback(
+  const saveMessages = useCallback(
     (
       conversationId: string,
-      updater: (prev: ConversationMessage[]) => ConversationMessage[],
+      messages: ConversationMessage[],
+      removed: string[] = [],
       options: { immediate?: boolean } = {},
     ) => {
-      const { list, updated } = updateRecord(listRef.current, conversationId, conv => {
-        const newMessages = updater(conv.messages);
-        const next = {
-          ...conv,
-          messages: newMessages,
-          updatedAt: new Date().toISOString(),
-        };
-        // Auto-title from first user message
-        if (conv.title === 'New Chat' && newMessages.length > 0) {
-          const firstUser = newMessages.find(m => m.role === 'user');
-          if (firstUser) {
-            next.title = autoTitle(firstUser.content);
-          }
-        }
-        return next;
-      });
-      if (!updated) return;
-      setList(list);
-      scheduleSave(updated, undefined, options.immediate === true);
+      const patch = patchShown(conversationId, messages, removed);
+      if (patch) messageSaves.save(patch, undefined, options.immediate === true);
     },
-    [scheduleSave, setList]
+    [messageSaves, patchShown]
   );
 
-  const updateActiveMessages = useCallback(
-    (updater: (prev: ConversationMessage[]) => ConversationMessage[]) => {
-      if (!activeConversationId) return;
-      updateConversationMessages(activeConversationId, updater);
+  /**
+   * {@link saveMessages} written now, resolving once the store has it (or the write
+   * failed, which is reported as any save is): a question and its starting answer must
+   * reach the store before the agent session is asked to save the rest. Resolves at once
+   * when saving is paused.
+   */
+  const saveMessagesNow = useCallback(
+    (conversationId: string, messages: ConversationMessage[], removed: string[] = []): Promise<void> => {
+      const patch = patchShown(conversationId, messages, removed);
+      return patch ? messageSaves.saveNow(patch) : Promise.resolve();
     },
-    [activeConversationId, updateConversationMessages]
+    [messageSaves, patchShown]
   );
 
-  const appendMessage = useCallback(
-    (msg: ConversationMessage) => {
-      updateActiveMessages(prev => [...prev, msg]);
-    },
-    [updateActiveMessages]
-  );
+  /**
+   * Saving is paused for this session (the saved conversations could not be loaded):
+   * nothing is written, and a question goes to the agent session without its turn, so it
+   * is answered and not saved, as the window says.
+   */
+  const savingPaused = useCallback(() => messageSaves.paused, [messageSaves]);
+
+  /**
+   * Show the conversation's name from the question just asked, before the agent session
+   * saves the question (and names it the same way). Display only.
+   */
+  const previewTitle = useCallback((conversationId: string, question: string) => {
+    const conv = listRef.current.find(c => c.id === conversationId);
+    if (!conv || conv.title !== NEW_CHAT_TITLE) return;
+    setList(listRef.current.map(c => (c.id === conversationId ? { ...c, title: autoTitle(question) } : c)));
+  }, [setList]);
 
   const renameConversation = useCallback((id: string, title: string) => {
     setList(listRef.current.map(c => (c.id === id ? { ...c, title, updatedAt: new Date().toISOString() } : c)));
@@ -447,7 +543,7 @@ export function useConversations() {
       const wasActive = id === activeConversationId;
       removeWithUndo({
         message: 'Conversation deleted',
-        description: conversation.title !== 'New Chat' ? conversation.title : undefined,
+        description: conversation.title !== NEW_CHAT_TITLE ? conversation.title : undefined,
         hide: () => {
           const remaining = listRef.current.filter(c => c.id !== id);
           if (remaining.length === 0) {
@@ -455,7 +551,7 @@ export function useConversations() {
             const now = new Date().toISOString();
             const fresh: Conversation = {
               id: freshId,
-              title: 'New Chat',
+              title: NEW_CHAT_TITLE,
               messages: [],
               createdAt: now,
               updatedAt: now,
@@ -582,14 +678,18 @@ export function useConversations() {
     /** The user saw the load failure notice; saving stays paused. */
     loadFailureSeen,
     acknowledgeLoadFailure,
+    /** The latest conversation reloaded from the store after its messages changed there. */
+    reloaded,
     activeConversationId,
     activeConversation,
     createConversation,
     createSeededConversation,
     switchConversation,
-    updateConversationMessages,
-    updateActiveMessages,
-    appendMessage,
+    getConversation,
+    saveMessages,
+    saveMessagesNow,
+    savingPaused,
+    previewTitle,
     renameConversation,
     deleteConversation,
     pinConversation,

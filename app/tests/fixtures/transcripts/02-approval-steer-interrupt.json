@@ -1,0 +1,165 @@
+{
+  "name": "A Creator answer from a fallback model: an approved step that then fails, a call refused for its arguments then retried, a nested step, a web source, a steer, and an interrupt with a step still open",
+  "seed": {
+    "providerError": null,
+    "fallback": { "from": "openrouter/a", "kind": "rate_limited", "automatic": false, "fromName": "Model A", "toName": "Model B" },
+    "runId": "run-2",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1763000100000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "priorRunIds": ["run-0"],
+    "agentMode": "creator"
+  },
+  "actions": [
+    { "type": "run_started", "runId": "run-2", "sessionId": "sess-2", "model": "openrouter/b", "atMs": 1763000100050, "warning": "This model's provider may keep your data." },
+    { "type": "step_started", "runId": "run-2", "stepId": "s1", "parentStepId": null, "tool": "create_note", "label": "Creating a note", "args": { "title": "Lease" }, "tier": "write", "atMs": 1763000100200 },
+    { "type": "approval_requested", "runId": "run-2", "stepId": "s1", "tool": "create_note", "label": "Create the note Lease", "tier": "write", "preview": { "title": "Lease" } },
+    { "type": "local_approval", "stepId": "s1", "approved": true },
+    { "type": "step_finished", "runId": "run-2", "stepId": "s1", "ok": false, "summary": "The notes folder is read-only", "detail": null, "durationMs": 30, "invalidArguments": false },
+    { "type": "step_started", "runId": "run-2", "stepId": "s2", "parentStepId": null, "tool": "search_documents", "label": "Searching", "args": {}, "tier": "read", "atMs": 1763000100300 },
+    { "type": "step_finished", "runId": "run-2", "stepId": "s2", "ok": false, "summary": "Invalid arguments", "detail": null, "durationMs": 5, "invalidArguments": true },
+    { "type": "step_started", "runId": "run-2", "stepId": "s3", "parentStepId": null, "tool": "search_documents", "label": "Searching", "args": { "query": "lease" }, "tier": "read", "atMs": 1763000100400 },
+    { "type": "step_started", "runId": "run-2", "stepId": "s4", "parentStepId": "s3", "tool": "read_page", "label": "Reading a page", "args": { "page": 2 }, "tier": "read", "atMs": 1763000100450 },
+    {
+      "type": "step_finished",
+      "runId": "run-2",
+      "stepId": "s3",
+      "ok": true,
+      "summary": "1 web source",
+      "detail": {
+        "passages": [],
+        "webSources": [
+          { "n": 3, "title": "", "url": "https://example.org/lease", "snippet": "Lease rules" },
+          { "n": 4, "title": "Not a web page", "url": "ftp://example.org/x", "snippet": "" }
+        ]
+      },
+      "durationMs": 90,
+      "invalidArguments": false
+    },
+    { "type": "local_steer", "id": "steer-1", "text": "Only the 2025 lease" },
+    { "type": "text_delta", "runId": "run-2", "messageId": "m1", "delta": "Stopping here." },
+    { "type": "local_interrupt_requested" },
+    { "type": "run_finished", "runId": "run-2", "status": "aborted", "durationMs": 2000, "error": null, "providerError": null }
+  ],
+  "expectedText": "Stopping here.",
+  "expected": {
+    "providerError": null,
+    "fallback": { "from": "openrouter/a", "kind": "rate_limited", "automatic": false, "fromName": "Model A", "toName": "Model B" },
+    "runId": "run-2",
+    "sessionId": "sess-2",
+    "model": "openrouter/b",
+    "warning": "This model's provider may keep your data.",
+    "status": "aborted",
+    "startedAtMs": 1763000100000,
+    "durationMs": 2000,
+    "error": null,
+    "errorCode": null,
+    "blocks": [
+      { "kind": "step", "stepId": "s1" },
+      { "kind": "step", "stepId": "s2" },
+      { "kind": "step", "stepId": "s3" },
+      { "kind": "steer", "id": "steer-1", "text": "Only the 2025 lease" },
+      { "kind": "text", "id": "m1", "text": "Stopping here." }
+    ],
+    "steps": {
+      "s1": {
+        "id": "s1",
+        "parentId": null,
+        "tool": "create_note",
+        "label": "Creating a note",
+        "args": { "title": "Lease" },
+        "tier": "write",
+        "startedAtMs": 1763000100200,
+        "status": "failed",
+        "summary": "The notes folder is read-only",
+        "detail": null,
+        "durationMs": 30,
+        "progress": null,
+        "approval": { "label": "Create the note Lease", "tier": "write", "preview": { "title": "Lease" }, "decision": "approved" },
+        "children": []
+      },
+      "s2": {
+        "id": "s2",
+        "parentId": null,
+        "tool": "search_documents",
+        "label": "Searching",
+        "args": {},
+        "tier": "read",
+        "startedAtMs": 1763000100300,
+        "status": "retried",
+        "summary": "Invalid arguments",
+        "detail": null,
+        "durationMs": 5,
+        "progress": null,
+        "approval": null,
+        "children": [],
+        "invalidArguments": true
+      },
+      "s3": {
+        "id": "s3",
+        "parentId": null,
+        "tool": "search_documents",
+        "label": "Searching",
+        "args": { "query": "lease" },
+        "tier": "read",
+        "startedAtMs": 1763000100400,
+        "status": "done",
+        "summary": "1 web source",
+        "detail": {
+          "passages": [],
+          "webSources": [
+            { "n": 3, "title": "", "url": "https://example.org/lease", "snippet": "Lease rules" },
+            { "n": 4, "title": "Not a web page", "url": "ftp://example.org/x", "snippet": "" }
+          ]
+        },
+        "durationMs": 90,
+        "progress": null,
+        "approval": null,
+        "children": ["s4"]
+      },
+      "s4": {
+        "id": "s4",
+        "parentId": "s3",
+        "tool": "read_page",
+        "label": "Reading a page",
+        "args": { "page": 2 },
+        "tier": "read",
+        "startedAtMs": 1763000100450,
+        "status": "failed",
+        "summary": "Interrupted",
+        "detail": null,
+        "durationMs": 1550,
+        "progress": null,
+        "approval": null,
+        "children": []
+      }
+    },
+    "plan": null,
+    "usage": null,
+    "passages": [
+      { "n": 3, "file": "https://example.org/lease", "path": "https://example.org/lease", "page": null, "heading": null, "score": 0, "text": "Lease rules", "web": true }
+    ],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "priorRunIds": ["run-0"],
+    "agentMode": "creator"
+  }
+}

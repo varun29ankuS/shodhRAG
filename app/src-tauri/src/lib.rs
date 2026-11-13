@@ -56,12 +56,14 @@ mod acl_manifest;
 mod agent_coverage;
 mod agent_session_commands;
 mod agent_tools;
+mod agent_transcript;
 mod calendar_commands;
 mod calendar_store;
 mod code_intel_commands;
 mod code_map_commands;
 mod code_review_commands;
 mod conversation_commands;
+mod conversation_turns;
 mod design_check_commands;
 mod event_emitter;
 
@@ -865,6 +867,8 @@ pub fn run() {
             // Conversation persistence commands
             conversation_commands::load_conversations,
             conversation_commands::save_conversation,
+            conversation_commands::save_conversation_messages,
+            conversation_commands::load_conversation,
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,

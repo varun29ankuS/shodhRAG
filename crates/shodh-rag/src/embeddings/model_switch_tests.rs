@@ -216,11 +216,7 @@ async fn add_row_like(dir: &Path, name: &str, id: &str) {
     let mut columns = one[0].columns().to_vec();
     columns[schema.index_of("id").unwrap()] = Arc::new(StringArray::from(vec![id]));
     let row = RecordBatch::try_new(schema.clone(), columns).unwrap();
-    table
-        .add(Box::new(RecordBatchIterator::new([Ok(row)], schema)))
-        .execute()
-        .await
-        .unwrap();
+    table.add(row).execute().await.unwrap();
 }
 
 #[tokio::test]

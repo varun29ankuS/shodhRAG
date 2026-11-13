@@ -2,10 +2,7 @@
 
 use std::sync::Arc;
 
-use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator,
-    StringArray,
-};
+use arrow_array::{Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
@@ -231,8 +228,7 @@ impl StatementTable {
                 Arc::new(vectors) as Arc<dyn Array>,
             ],
         )?;
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
-        self.table.add(Box::new(reader)).execute().await?;
+        self.table.add(batch).execute().await?;
         self.ensure_fts_index().await
     }
 

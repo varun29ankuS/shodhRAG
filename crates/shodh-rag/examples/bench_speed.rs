@@ -80,7 +80,8 @@ async fn main() -> Result<()> {
         );
     }
     let finish = Instant::now();
-    shared.read().await.optimize().await?;
+    let maintenance = shared.read().await.store_maintenance();
+    maintenance.run().await?;
     println!("optimize: {:.2}s", finish.elapsed().as_secs_f64());
 
     for rerank in [true, false] {

@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
 
-use super::maintenance::{Holder, StoreMaintenance};
+use super::maintenance::{StoreFiles, StoreMaintenance};
 use crate::types::ChunkRecord;
 
 pub struct LanceStore {
@@ -119,24 +119,22 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Brings the table's files and vector index up to date now; see
-    /// [`StoreMaintenance::run`].
-    pub async fn compact(&self) -> Result<()> {
-        self.maintenance.run().await
-    }
-
     /// Removes deleted and replaced rows from disk now, every older version
     /// included: compaction rewrites the files with deletions applied, and a
     /// prune with no retention removes the versions that still held them. For
     /// text that must leave the disk (secrets purged or redacted), unlike
-    /// [`Self::compact`], whose prune keeps an hour of versions.
+    /// [`StoreMaintenance::run`], whose prune keeps an hour of versions.
     ///
     /// The prune deletes every file no current version names, which includes
     /// the files a maintenance pass or index build is still writing, so it
-    /// waits for one running and keeps another from starting until it ends.
-    pub async fn purge_history(&self) -> Result<()> {
+    /// runs only with this table's `files` held
+    /// ([`StoreMaintenance::purge_lock`]).
+    pub async fn purge_history(&self, files: &StoreFiles) -> Result<()> {
         use lancedb::table::{CompactionOptions, Duration as LanceDuration, OptimizeAction};
-        let _files = self.maintenance.exclusive(Holder::Purge).await;
+        anyhow::ensure!(
+            self.maintenance.holds(files),
+            "purging the chunk table needs its own files held, not another table's"
+        );
         let table = self
             .db
             .open_table(&self.table_name)
@@ -689,10 +687,6 @@ impl LanceStore {
 
         let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
         Ok(extract_hits_from_batches(&batches, 0.0))
-    }
-
-    pub async fn create_index_if_needed(&self) -> Result<()> {
-        self.maintenance.index_vectors().await
     }
 
     /// Fetch neighboring chunks (±window) for a given doc_id and chunk_index.

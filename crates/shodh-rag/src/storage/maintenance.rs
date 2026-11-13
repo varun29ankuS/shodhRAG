@@ -33,7 +33,7 @@ struct Writes {
     /// compaction and index build write files no version names until they
     /// commit; a purge deletes every such file, so one running during the
     /// other leaves the table naming files that are gone.
-    running: tokio::sync::Mutex<()>,
+    running: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
     probe: std::sync::Mutex<Option<Arc<tests::Probe>>>,
 }
@@ -63,7 +63,7 @@ impl StoreMaintenance {
                 changed: AtomicBool::new(false),
                 last_ms: AtomicU64::new(0),
                 epoch: Instant::now(),
-                running: tokio::sync::Mutex::new(()),
+                running: Arc::new(tokio::sync::Mutex::new(())),
                 #[cfg(test)]
                 probe: std::sync::Mutex::new(None),
             }),
@@ -175,11 +175,28 @@ impl StoreMaintenance {
         index_vectors(&table, self.index_min_rows).await
     }
 
+    /// The table's files for a purge ([`super::LanceStore::purge_history`]):
+    /// waits for a pass or index build running now, and keeps another from
+    /// starting until the returned guard drops.
+    ///
+    /// Take it before the engine's write lock, never while holding it: a pass
+    /// can take minutes, and the engine lock held meanwhile would stop every
+    /// search. Nothing takes the engine lock while holding these files but a
+    /// purge, so that order cannot deadlock.
+    pub async fn purge_lock(&self) -> StoreFiles {
+        self.exclusive(Holder::Purge).await
+    }
+
+    /// Whether `files` are this table's.
+    pub(crate) fn holds(&self, files: &StoreFiles) -> bool {
+        Arc::ptr_eq(&self.writes, &files.writes)
+    }
+
     /// Takes the table's files for `holder` until the guard drops, waiting
     /// for a pass, index build or purge already running (in the order they
     /// asked), never skipping. Not reentrant: the holder must not ask again.
-    pub(crate) async fn exclusive(&self, holder: Holder) -> tokio::sync::MutexGuard<'_, ()> {
-        let guard = match self.writes.running.try_lock() {
+    async fn exclusive(&self, holder: Holder) -> StoreFiles {
+        let guard = match self.writes.running.clone().try_lock_owned() {
             Ok(guard) => guard,
             Err(_) => {
                 tracing::debug!(
@@ -189,13 +206,24 @@ impl StoreMaintenance {
                 );
                 #[cfg(test)]
                 self.writes.probe_event(tests::Event::Waiting(holder));
-                self.writes.running.lock().await
+                self.writes.running.clone().lock_owned().await
             }
         };
         #[cfg(test)]
         self.writes.probe_holding(holder).await;
-        guard
+        StoreFiles {
+            _guard: guard,
+            writes: self.writes.clone(),
+        }
     }
+}
+
+/// A table's files, held by one pass, index build or purge until dropped
+/// ([`StoreMaintenance::purge_lock`]).
+#[must_use = "the files are held only while this lives"]
+pub struct StoreFiles {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    writes: Arc<Writes>,
 }
 
 #[cfg(test)]
@@ -275,7 +303,7 @@ async fn index_vectors(table: &lancedb::Table, min_rows: usize) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::storage::LanceStore;
     use crate::types::ChunkRecord;
@@ -283,7 +311,7 @@ mod tests {
     const DIMENSION: usize = 16;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(super) enum Event {
+    pub(crate) enum Event {
         /// Asked for the table's files while another held them.
         Waiting(Holder),
         /// Holds the table's files.
@@ -294,18 +322,18 @@ mod tests {
 
     /// Reports who waits for and holds the table's files, and pauses the
     /// first holder until the test releases it.
-    pub(super) struct Probe {
-        pub(super) events: tokio::sync::mpsc::UnboundedSender<Event>,
-        pub(super) pause_first: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    pub(crate) struct Probe {
+        pub(crate) events: tokio::sync::mpsc::UnboundedSender<Event>,
+        pub(crate) pause_first: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     }
 
-    struct Probed {
-        events: tokio::sync::mpsc::UnboundedReceiver<Event>,
-        sender: tokio::sync::mpsc::UnboundedSender<Event>,
-        release: tokio::sync::oneshot::Sender<()>,
+    pub(crate) struct Probed {
+        pub(crate) events: tokio::sync::mpsc::UnboundedReceiver<Event>,
+        pub(crate) sender: tokio::sync::mpsc::UnboundedSender<Event>,
+        pub(crate) release: tokio::sync::oneshot::Sender<()>,
     }
 
-    fn probe(maintenance: &StoreMaintenance) -> Probed {
+    pub(crate) fn probe(maintenance: &StoreMaintenance) -> Probed {
         let (sender, events) = tokio::sync::mpsc::unbounded_channel();
         let (release, paused) = tokio::sync::oneshot::channel();
         *maintenance
@@ -341,7 +369,8 @@ mod tests {
     ) -> tokio::task::JoinHandle<Result<()>> {
         let (store, done) = (store.clone(), done.clone());
         tokio::spawn(async move {
-            let purged = store.purge_history().await;
+            let files = store.maintenance().purge_lock().await;
+            let purged = store.purge_history(&files).await;
             done.send(Event::Done(Holder::Purge)).ok();
             purged
         })
@@ -375,7 +404,8 @@ mod tests {
     // A purge deletes every file no version names yet, which includes a
     // running pass's new files. The pass is paused while it holds the files;
     // the purge must report waiting there, then run once the pass ends.
-    // Without the lock the purge never waits: its next event is Done.
+    // Without the lock in purge_lock the purge never waits: its next event
+    // is Done.
     #[tokio::test]
     async fn a_purge_waits_for_a_running_pass_then_runs() {
         let dir = tempfile::tempdir().unwrap();
@@ -453,6 +483,19 @@ mod tests {
             assert!(rest.contains(&event), "{event:?} missing from {rest:?}");
         }
         assert_readable(&dir, &store).await;
+    }
+
+    // Another table's files leave this one unguarded: the purge refuses.
+    #[tokio::test]
+    async fn a_purge_refuses_another_tables_files() {
+        let (dir, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let store = store_with_deletions(&dir).await;
+        let other = self::store(&other_dir).await;
+        let files = other.maintenance().purge_lock().await;
+        assert!(store.purge_history(&files).await.is_err());
+        drop(files);
+        let files = store.maintenance().purge_lock().await;
+        store.purge_history(&files).await.unwrap();
     }
 
     fn chunks(from: usize, count: usize) -> Vec<ChunkRecord> {

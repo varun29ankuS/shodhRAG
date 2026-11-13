@@ -526,12 +526,14 @@ pub async fn index_single_file_in(
 
     if let Some(reason) = secret_file_reason(&path) {
         // Indexed before such files were kept out: what the index holds of it goes.
-        let mut engine = rag.write().await;
         let source = crate::rag_engine::normalize_source_path(&path);
-        match engine.delete_by_source(&source).await {
+        let removed = rag.write().await.delete_by_source(&source).await;
+        match removed {
             Ok(0) => {}
             Ok(_) => {
-                if let Err(e) = engine.purge_deleted_text().await {
+                // The store's files first: waiting for a pass holds no engine lock.
+                let files = RAGEngine::files_for_purge(rag).await;
+                if let Err(e) = rag.write().await.purge_deleted_text(&files).await {
                     tracing::warn!(error = %format!("{e:#}"), "removed secret file's text not purged from disk yet");
                 }
             }

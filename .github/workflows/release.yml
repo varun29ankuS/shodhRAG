@@ -285,7 +285,12 @@ jobs:
       ${{ !cancelled() && needs.plan.result == 'success'
       && (needs.pr-key.result == 'success' || needs.pr-key.result == 'skipped')
       && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
-    # Slowest 88 minutes (Windows) and 86 (macOS), on cold caches.
+    # Cold caches: master's Windows builds 51-93 minutes; master's macOS
+    # builds 45-101 minutes (the macos-latest runners differ by about 2x).
+    # lancedb 0.41 (lance 14, datafusion 54) cancelled the cold macOS build
+    # at this limit until the lance and datafusion crates got codegen-units
+    # (Cargo.toml) and the macOS build a master cache; the build step's
+    # cargo-timings-* artifact shows where the time goes.
     timeout-minutes: 130
     # The release key is read from here on publishing runs only.
     environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
@@ -336,15 +341,19 @@ jobs:
           fi
 
       # Caches are saved by master runs only (a pull request's or a tag's
-      # cache is not readable by other refs), so a release restores what
-      # master built. The Windows key is the footprint job's (one entry for
-      # both). The macOS release build saves nothing: master builds it on
-      # every push now (ci.yml calls this workflow), and its cache would push
-      # the 10 GB pool, already full, into evicting caches on every master run.
+      # cache is not readable by other refs), so pull requests and releases
+      # restore what master built. The Windows key is the footprint job's
+      # (one entry for both). The macOS key is this job's own: master builds
+      # it on every push (ci.yml calls this workflow), and without a cache
+      # every macOS build compiled all dependencies cold, close to the
+      # job's limit. Its entry (expected near the Windows one's 3 GB) takes
+      # the repository's 10 GB cache pool past its limit, so GitHub evicts
+      # the least recently used entries; the master jobs save theirs again
+      # on their next run.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2  # zizmor: ignore[cache-poisoning]
         with:
           shared-key: release-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/master' && runner.os == 'Windows' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       # LanceDB's protobuf definitions are compiled at build time: a pinned,
       # checksum-verified protoc from the official release (the Chocolatey
@@ -462,13 +471,28 @@ jobs:
           echo "path=$conf" >> "$GITHUB_OUTPUT"
 
       # The frontend and the Rust build (dependencies' build scripts included)
-      # run without the signing key.
+      # run without the signing key. After the second `--` the arguments go
+      # to cargo build: --timings writes target/cargo-timings/ (how long each
+      # crate took, and how much of that was codegen), uploaded below; -v
+      # logs each rustc command line, so the log shows the codegen-units
+      # every crate was built with (Cargo.toml's release overrides).
       - name: Build the app
         working-directory: app
         shell: bash
         env:
           CONF: ${{ steps.conf.outputs.path }}
-        run: npm run tauri -- build --no-bundle --ci --config "$CONF"
+        run: npm run tauri -- build --no-bundle --ci --config "$CONF" -- --timings -v
+
+      # Written when cargo exits, on success or a compile error; a build
+      # cancelled at the job's limit leaves none.
+      - name: Upload the build timings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: cargo-timings-${{ matrix.name }}
+          path: target/cargo-timings/
+          retention-days: 14
+          if-no-files-found: warn
 
       # Only the Tauri bundler sees the key: it makes the installers and
       # signs the update bundles. Publishing runs use the release key (from

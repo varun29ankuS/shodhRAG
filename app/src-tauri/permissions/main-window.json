@@ -263,6 +263,7 @@
           "snippets_update",
           "snooze_reminder",
           "start_search_model_switch",
+          "startup_ready",
           "stop_search_model_switch",
           "store_notices",
           "sync_folder_sources",

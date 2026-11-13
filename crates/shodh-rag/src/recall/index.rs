@@ -345,7 +345,20 @@ impl RecallIndex {
             total,
             current: None,
         });
+        self.maintain_store().await;
         Ok(report)
+    }
+
+    /// Merges the chunk store's files and updates its vector index after a
+    /// sync or removal, detached as after a Library indexing run: a write only
+    /// marks the store changed (storage/maintenance.rs).
+    async fn maintain_store(&self) {
+        let maintenance = self.engine.read().await.store_maintenance();
+        tokio::spawn(async move {
+            if let Err(e) = maintenance.run_if_changed().await {
+                tracing::warn!(error = %format!("{e:#}"), "Recall chunk store maintenance failed");
+            }
+        });
     }
 
     /// Removes every part of a file from the index.
@@ -513,6 +526,7 @@ impl RecallIndex {
             self.catalog.set_state(file.id, FileState::Excluded, None)?;
         }
         self.catalog.add_removed(tool, session_id, now_secs())?;
+        self.maintain_store().await;
         Ok(files.len())
     }
 

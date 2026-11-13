@@ -56,9 +56,11 @@
     "delete_event": { "tool": "delete_event" },
 
     "load_conversations": { "tools": ["search_conversations", "open_conversation"] },
+    "load_conversation": { "tools": ["search_conversations", "open_conversation"] },
     "rename_conversation": { "tool": "organize_conversation" },
     "pin_conversation": { "tool": "organize_conversation" },
-    "save_conversation": { "excluded": "Persists the conversation the UI is showing, including the assistant's own answer as it streams; the assistant writes history only through organize_conversation." },
+    "save_conversation": { "excluded": "Saves the settings the user chose for a conversation in the window (its workspace, mode, instructions, side threads), never its messages; the assistant writes history only through organize_conversation." },
+    "save_conversation_messages": { "excluded": "Saves the messages the user changed in the window (a notice, an edited citation or artifact, a side thread, a question that failed before the assistant took it); the assistant's own turns are saved by its session as it answers, and it writes history only through organize_conversation." },
     "delete_conversation": { "excluded": "Deleting a conversation erases the visible record of what the assistant did and said; only the user may do it." },
 
     "audit_query": { "tool": "audit_query" },
@@ -258,6 +260,7 @@
     "check_for_update": { "excluded": "Contacts the update server for a newer version of Shodh itself; which version of itself runs is the user's decision, never the agent's." },
     "install_update": { "excluded": "Replaces the installed app with a new version and restarts it; installing software is the user's decision, never the agent's." },
     "quit_ready": { "excluded": "Shutdown handshake: the window confirms its waiting saves are written before the app exits; not a user ability." },
+    "startup_ready": { "excluded": "Startup handshake: the window reports that its first load finished, and the log records the startup times; not a user ability." },
     "pause_indexing": { "tool": "pause_indexing" },
     "resume_indexing": { "tool": "resume_indexing" },
     "cancel_indexing": { "tool": "cancel_indexing" },

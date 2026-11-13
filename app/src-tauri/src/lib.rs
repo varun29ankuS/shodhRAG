@@ -41,6 +41,7 @@ mod search_models_commands;
 mod shutdown;
 mod source_viewer_commands;
 mod space_manager;
+mod startup;
 mod storage_commands;
 mod store_notices;
 mod table_commands;
@@ -1056,6 +1057,8 @@ pub fn run() {
             background::set_agent_idle_minutes,
             background::set_start_with_windows,
             shutdown::quit_ready,
+            // The main window's first-load handshake (the log says it is ready)
+            startup::startup_ready,
             // Damaged data files (backup used, settings reset)
             store_notices::store_notices,
         ])

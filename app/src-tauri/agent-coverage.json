@@ -258,6 +258,7 @@
     "check_for_update": { "excluded": "Contacts the update server for a newer version of Shodh itself; which version of itself runs is the user's decision, never the agent's." },
     "install_update": { "excluded": "Replaces the installed app with a new version and restarts it; installing software is the user's decision, never the agent's." },
     "quit_ready": { "excluded": "Shutdown handshake: the window confirms its waiting saves are written before the app exits; not a user ability." },
+    "startup_ready": { "excluded": "Startup handshake: the window reports that its first load finished, and the log records the startup times; not a user ability." },
     "pause_indexing": { "tool": "pause_indexing" },
     "resume_indexing": { "tool": "resume_indexing" },
     "cancel_indexing": { "tool": "cancel_indexing" },

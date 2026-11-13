@@ -3075,6 +3075,174 @@ mod tests {
         assert_eq!(chunk_ids(&rag).await, after);
     }
 
+    /// A library synced under chunker 2: a Markdown file (structure chunks,
+    /// which this build makes the same) and a plain-text file of dense data
+    /// (window chunks, which 2 cut by bytes alone, past what the embedder
+    /// reads). The sync reads and embeds only the window-chunked file, whose
+    /// chunks then fit the token budget; the Markdown file's chunks are raised
+    /// to this version in place, with nothing embedded and their ids kept, and
+    /// its manifest entry comes to this version too. The chunks are raised by
+    /// the first listing, before the sync records anything: the state a quit
+    /// between the two leaves, which the sync completes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_library_of_chunker_two_embeds_again_only_its_window_chunked_files() {
+        use crate::processing::structure_chunker::{
+            clamp_chunk_tokens, text_budget, EMBEDDER_TOKEN_LIMIT,
+        };
+        use crate::statements::testing::{code_tokens, dense_json, CountingCodeEmbedder};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::RAGConfig::default();
+        config.data_dir = dir.path().join("data");
+        config.embedding.model_dir = dir.path().join("models");
+        config.embedding.use_e5 = false;
+        config.embedding.dimension = crate::statements::testing::DIM;
+        config.search.min_score_threshold = 0.0;
+        let max_tokens = clamp_chunk_tokens(config.chunking.max_tokens);
+        let embedder = Arc::new(CountingCodeEmbedder::default());
+        let mut engine = RAGEngine::new(config).await.expect("engine");
+        engine
+            .attach_search_models(crate::rag_engine::SearchModels::from_embedder(
+                embedder.clone(),
+            ))
+            .expect("models");
+        let rag = RwLock::new(engine);
+        let store = ManifestStore::in_dir(dir.path().join("sync"));
+        let folder = dir.path().join("library");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join("a.md"),
+            format!("# House rules\n\n{PASSAGE}\n\n## Parking\n\nVisitors park on the street; residents use the garage below the courtyard, and bicycles are kept in the shed.\n"),
+        )
+        .expect("file");
+        let data_text = dense_json(60);
+        std::fs::write(folder.join("data.txt"), &data_text).expect("file");
+
+        // Indexed by chunker 2: the Markdown file's chunks as this build
+        // makes them; each of the data file's windows the whole file, as
+        // a byte window that ran past what the embedder reads.
+        for (name, old_text) in [("a.md", None), ("data.txt", Some(data_text.as_str()))] {
+            let metadata =
+                std::collections::HashMap::from([("space_id".to_string(), "s1".to_string())]);
+            let prepared = rag
+                .read()
+                .await
+                .file_preparer()
+                .expect("preparer")
+                .prepare(&canonical_path(&folder.join(name)), metadata)
+                .expect("prepared");
+            rag.write()
+                .await
+                .commit_file_as_chunker(prepared, 2, |text| {
+                    old_text.map_or_else(|| text.to_string(), str::to_string)
+                })
+                .await
+                .expect("stored");
+        }
+        let files: BTreeMap<String, FileStamp> = scan_folder(&canonical_path(&folder))
+            .into_iter()
+            .map(|(key, (_, stamp))| (key, stamp))
+            .collect();
+        let versions: BTreeMap<String, u32> = files.keys().map(|key| (key.clone(), 2)).collect();
+        store
+            .save(
+                "s1",
+                &ManifestRef {
+                    folder: &folder.display().to_string(),
+                    files: &files,
+                    failures: &BTreeMap::new(),
+                    chunker_versions: &versions,
+                },
+            )
+            .expect("manifest");
+
+        let chunks = rag
+            .read()
+            .await
+            .list_documents_raw(None, 100_000)
+            .await
+            .expect("chunks");
+        let name_of = |source: &str| source.rsplit('/').next().unwrap_or_default().to_string();
+        for chunk in &chunks {
+            let metadata: std::collections::HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).expect("metadata");
+            assert_eq!(metadata[crate::rag_engine::CHUNKER_VERSION_KEY], "2");
+            if name_of(&chunk.source) == "a.md" {
+                assert!(metadata.contains_key("unit_kind"), "a structure chunk");
+            } else {
+                assert!(!metadata.contains_key("unit_kind"), "a window chunk");
+                assert!(
+                    code_tokens(&chunk.text) > max_tokens,
+                    "chunker 2's window is past the budget"
+                );
+            }
+        }
+        let before = chunk_ids(&rag).await;
+        let embedded = embedder.embedded();
+
+        assert_eq!(rechunk_count(&rag).await, 1, "the data file only");
+        assert_eq!(embedder.embedded(), embedded);
+
+        let report = sync_folder(&folder.display().to_string(), "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!(
+            (report.indexed, report.rechunked, report.failures.len()),
+            (1, 1, 0),
+            "{report:?}"
+        );
+        let after = chunk_ids(&rag).await;
+        assert_eq!(after["a.md"], before["a.md"], "not embedded again");
+        assert!(after["data.txt"].is_disjoint(&before["data.txt"]));
+        assert_eq!(
+            embedder.embedded() - embedded,
+            after["data.txt"].len(),
+            "only the data file's new chunks are embedded"
+        );
+        let versions = store.load("s1").expect("manifest").chunker_versions;
+        assert_eq!(versions.len(), 2);
+        assert!(
+            versions.values().all(|v| *v == CHUNKER_VERSION),
+            "{versions:?}"
+        );
+        assert_eq!(rechunk_count(&rag).await, 0);
+
+        let chunks = rag
+            .read()
+            .await
+            .list_documents_raw(None, 100_000)
+            .await
+            .expect("chunks");
+        for chunk in &chunks {
+            let metadata: std::collections::HashMap<String, String> =
+                serde_json::from_str(&chunk.metadata_json).expect("metadata");
+            assert_eq!(
+                metadata[crate::rag_engine::CHUNKER_VERSION_KEY],
+                CHUNKER_VERSION.to_string()
+            );
+            if name_of(&chunk.source) == "data.txt" {
+                let context = &metadata[crate::rag_engine::CHUNK_CONTEXT_KEY];
+                let budget = text_budget(max_tokens, context, &code_tokens);
+                assert!(
+                    code_tokens(&chunk.text) <= budget,
+                    "{} tokens over a budget of {budget}",
+                    code_tokens(&chunk.text)
+                );
+                assert!(code_tokens(&format!("{context}{}", chunk.text)) <= EMBEDDER_TOKEN_LIMIT);
+            }
+        }
+        assert_eq!(
+            stored_texts(&rag, "data.txt").await,
+            fresh_texts(&rag, &folder.join("data.txt"), Some("data")).await,
+            "chunked again by this build"
+        );
+
+        let settled = sync_folder(&folder.display().to_string(), "s1", &store, &rag, || false)
+            .await
+            .expect("sync");
+        assert_eq!((settled.indexed, settled.rechunked), (0, 0), "{settled:?}");
+        assert_eq!(chunk_ids(&rag).await, after);
+    }
+
     /// A file that failed under an older chunker is tried once more under
     /// this one; failing again, it is not tried again until it changes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

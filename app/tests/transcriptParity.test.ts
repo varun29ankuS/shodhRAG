@@ -7,7 +7,9 @@
  * Each fixture in `fixtures/transcripts` is a synthetic session (no user data): the
  * transcript the answer was first saved with (`seed`), the events and local actions of its
  * run, and the stored transcript and answer text both reducers must give. The Rust test
- * `fixtures_reduce_to_the_saved_transcript` reads the same files.
+ * `fixtures_reduce_to_the_saved_transcript` reads the same files. The `recorded-*` fixtures'
+ * events are what the harness sends (checked by `recorded_sessions_match_their_fixtures` in
+ * crates/shodh-rag/src/harness/session.rs); the others are built by hand.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

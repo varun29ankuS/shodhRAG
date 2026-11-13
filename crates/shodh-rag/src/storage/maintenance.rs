@@ -28,8 +28,22 @@ struct Writes {
     /// Milliseconds after `epoch` of the last write.
     last_ms: AtomicU64,
     epoch: Instant,
-    /// One pass at a time.
+    /// Held by whatever rewrites or removes the table's files: a pass, an
+    /// index build, a purge ([`StoreMaintenance::exclusive`]). A pass's
+    /// compaction and index build write files no version names until they
+    /// commit; a purge deletes every such file, so one running during the
+    /// other leaves the table naming files that are gone.
     running: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    probe: std::sync::Mutex<Option<Arc<tests::Probe>>>,
+}
+
+/// What takes the table's files exclusively (logged when it has to wait).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Holder {
+    Pass,
+    IndexBuild,
+    Purge,
 }
 
 #[derive(Clone)]
@@ -50,6 +64,8 @@ impl StoreMaintenance {
                 last_ms: AtomicU64::new(0),
                 epoch: Instant::now(),
                 running: tokio::sync::Mutex::new(()),
+                #[cfg(test)]
+                probe: std::sync::Mutex::new(None),
             }),
             index_min_rows: VECTOR_INDEX_MIN_ROWS,
         }
@@ -112,7 +128,7 @@ impl StoreMaintenance {
     /// indexes new rows ([`index_vectors`]). Each step is best-effort and
     /// logged; a failed merge leaves the table marked changed.
     pub async fn run(&self) -> Result<()> {
-        let _one = self.writes.running.lock().await;
+        let _files = self.exclusive(Holder::Pass).await;
         self.writes.changed.store(false, Ordering::SeqCst);
         let table = self
             .db
@@ -154,8 +170,61 @@ impl StoreMaintenance {
 
     /// Builds or updates the vector index now, without merging files.
     pub async fn index_vectors(&self) -> Result<()> {
+        let _files = self.exclusive(Holder::IndexBuild).await;
         let table = self.db.open_table(&self.table_name).execute().await?;
         index_vectors(&table, self.index_min_rows).await
+    }
+
+    /// Takes the table's files for `holder` until the guard drops, waiting
+    /// for a pass, index build or purge already running (in the order they
+    /// asked), never skipping. Not reentrant: the holder must not ask again.
+    pub(crate) async fn exclusive(&self, holder: Holder) -> tokio::sync::MutexGuard<'_, ()> {
+        let guard = match self.writes.running.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::debug!(
+                    ?holder,
+                    table = %self.table_name,
+                    "waiting for the chunk store's files"
+                );
+                #[cfg(test)]
+                self.writes.probe_event(tests::Event::Waiting(holder));
+                self.writes.running.lock().await
+            }
+        };
+        #[cfg(test)]
+        self.writes.probe_holding(holder).await;
+        guard
+    }
+}
+
+#[cfg(test)]
+impl Writes {
+    fn probe(&self) -> Option<Arc<tests::Probe>> {
+        self.probe.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn probe_event(&self, event: tests::Event) {
+        if let Some(probe) = self.probe() {
+            probe.events.send(event).ok();
+        }
+    }
+
+    /// Reports `holder` holding the files and, if the probe pauses the first
+    /// holder, waits there until the test releases it.
+    async fn probe_holding(&self, holder: Holder) {
+        let Some(probe) = self.probe() else {
+            return;
+        };
+        probe.events.send(tests::Event::Holding(holder)).ok();
+        let release = probe
+            .pause_first
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(release) = release {
+            release.await.ok();
+        }
     }
 }
 
@@ -212,6 +281,179 @@ mod tests {
     use crate::types::ChunkRecord;
 
     const DIMENSION: usize = 16;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Event {
+        /// Asked for the table's files while another held them.
+        Waiting(Holder),
+        /// Holds the table's files.
+        Holding(Holder),
+        /// Returned (sent by the test's task).
+        Done(Holder),
+    }
+
+    /// Reports who waits for and holds the table's files, and pauses the
+    /// first holder until the test releases it.
+    pub(super) struct Probe {
+        pub(super) events: tokio::sync::mpsc::UnboundedSender<Event>,
+        pub(super) pause_first: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    struct Probed {
+        events: tokio::sync::mpsc::UnboundedReceiver<Event>,
+        sender: tokio::sync::mpsc::UnboundedSender<Event>,
+        release: tokio::sync::oneshot::Sender<()>,
+    }
+
+    fn probe(maintenance: &StoreMaintenance) -> Probed {
+        let (sender, events) = tokio::sync::mpsc::unbounded_channel();
+        let (release, paused) = tokio::sync::oneshot::channel();
+        *maintenance
+            .writes
+            .probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Probe {
+            events: sender.clone(),
+            pause_first: std::sync::Mutex::new(Some(paused)),
+        }));
+        Probed {
+            events,
+            sender,
+            release,
+        }
+    }
+
+    fn spawn_pass(
+        maintenance: &StoreMaintenance,
+        done: &tokio::sync::mpsc::UnboundedSender<Event>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        let (maintenance, done) = (maintenance.clone(), done.clone());
+        tokio::spawn(async move {
+            let ran = maintenance.run().await;
+            done.send(Event::Done(Holder::Pass)).ok();
+            ran
+        })
+    }
+
+    fn spawn_purge(
+        store: &Arc<LanceStore>,
+        done: &tokio::sync::mpsc::UnboundedSender<Event>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        let (store, done) = (store.clone(), done.clone());
+        tokio::spawn(async move {
+            let purged = store.purge_history().await;
+            done.send(Event::Done(Holder::Purge)).ok();
+            purged
+        })
+    }
+
+    /// Every event left once both tasks returned.
+    fn rest(events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>) -> Vec<Event> {
+        std::iter::from_fn(|| events.try_recv().ok()).collect()
+    }
+
+    /// 64 chunks with d0's 4 deleted, so the purge and pass have work.
+    async fn store_with_deletions(dir: &tempfile::TempDir) -> Arc<LanceStore> {
+        let store = store(dir).await;
+        store.upsert_chunks(chunks(0, 64)).await.unwrap();
+        store.delete_by_doc_id("d0").await.unwrap();
+        Arc::new(store)
+    }
+
+    /// The table reads whole after the purge: every file a version names is
+    /// there, in this handle and a fresh one.
+    async fn assert_readable(dir: &tempfile::TempDir, store: &LanceStore) {
+        assert_eq!(store.count().await.unwrap(), 60);
+        assert_eq!(store.list_chunks(None, 1000).await.unwrap().len(), 60);
+        let query = chunks(5, 1).remove(0).vector;
+        assert_eq!(store.vector_search(&query, 3, None).await.unwrap().len(), 3);
+        let reopened = self::store(dir).await;
+        assert_eq!(reopened.list_chunks(None, 1000).await.unwrap().len(), 60);
+        reopened.maintenance().run().await.unwrap();
+    }
+
+    // A purge deletes every file no version names yet, which includes a
+    // running pass's new files. The pass is paused while it holds the files;
+    // the purge must report waiting there, then run once the pass ends.
+    // Without the lock the purge never waits: its next event is Done.
+    #[tokio::test]
+    async fn a_purge_waits_for_a_running_pass_then_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_deletions(&dir).await;
+        let maintenance = store.maintenance();
+        let mut probed = probe(&maintenance);
+
+        let pass = spawn_pass(&maintenance, &probed.sender);
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Holding(Holder::Pass))
+        );
+        let purge = spawn_purge(&store, &probed.sender);
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Waiting(Holder::Purge)),
+            "the purge ran while a pass held the table's files"
+        );
+
+        probed.release.send(()).unwrap();
+        pass.await.unwrap().unwrap();
+        purge.await.unwrap().unwrap();
+        let rest = rest(&mut probed.events);
+        assert_eq!(rest.len(), 3, "{rest:?}");
+        assert!(rest.contains(&Event::Done(Holder::Pass)), "{rest:?}");
+        assert!(rest.contains(&Event::Holding(Holder::Purge)), "{rest:?}");
+        assert_eq!(rest.last(), Some(&Event::Done(Holder::Purge)), "{rest:?}");
+        assert_readable(&dir, &store).await;
+    }
+
+    // The reverse order: a pass (or index build) asked for during a purge
+    // waits for it. Without the lock in the purge it never holds the files,
+    // so the first event is the purge's Done.
+    #[tokio::test]
+    async fn a_pass_waits_for_a_running_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_deletions(&dir).await;
+        let maintenance = store.maintenance();
+        let mut probed = probe(&maintenance);
+
+        let purge = spawn_purge(&store, &probed.sender);
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Holding(Holder::Purge)),
+            "the purge did not take the table's files"
+        );
+        let pass = spawn_pass(&maintenance, &probed.sender);
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Waiting(Holder::Pass)),
+            "a pass ran while the purge held the table's files"
+        );
+        let index = {
+            let maintenance = maintenance.clone();
+            tokio::spawn(async move { maintenance.index_vectors().await })
+        };
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Waiting(Holder::IndexBuild)),
+            "an index build ran while the purge held the table's files"
+        );
+
+        probed.release.send(()).unwrap();
+        purge.await.unwrap().unwrap();
+        pass.await.unwrap().unwrap();
+        index.await.unwrap().unwrap();
+        let rest = rest(&mut probed.events);
+        assert_eq!(rest.len(), 4, "{rest:?}");
+        for event in [
+            Event::Done(Holder::Purge),
+            Event::Holding(Holder::Pass),
+            Event::Done(Holder::Pass),
+            Event::Holding(Holder::IndexBuild),
+        ] {
+            assert!(rest.contains(&event), "{event:?} missing from {rest:?}");
+        }
+        assert_readable(&dir, &store).await;
+    }
 
     fn chunks(from: usize, count: usize) -> Vec<ChunkRecord> {
         (from..from + count)

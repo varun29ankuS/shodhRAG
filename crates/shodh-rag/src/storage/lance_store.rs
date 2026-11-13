@@ -7,7 +7,7 @@ use arrow_schema::{DataType, Field, Schema};
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
 
-use super::maintenance::StoreMaintenance;
+use super::maintenance::{Holder, StoreMaintenance};
 use crate::types::ChunkRecord;
 
 pub struct LanceStore {
@@ -130,8 +130,13 @@ impl LanceStore {
     /// prune with no retention removes the versions that still held them. For
     /// text that must leave the disk (secrets purged or redacted), unlike
     /// [`Self::compact`], whose prune keeps an hour of versions.
+    ///
+    /// The prune deletes every file no current version names, which includes
+    /// the files a maintenance pass or index build is still writing, so it
+    /// waits for one running and keeps another from starting until it ends.
     pub async fn purge_history(&self) -> Result<()> {
         use lancedb::table::{CompactionOptions, Duration as LanceDuration, OptimizeAction};
+        let _files = self.maintenance.exclusive(Holder::Purge).await;
         let table = self
             .db
             .open_table(&self.table_name)

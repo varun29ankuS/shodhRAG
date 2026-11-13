@@ -328,6 +328,17 @@ pub struct E5Config {
     /// ([`crate::compute::calibration`]); without it they are measured at
     /// every load.
     pub calibration_file: Option<PathBuf>,
+    /// Whether Core ML may run [`CORE_ML_FILE`] on Apple silicon. Off unless
+    /// asked for ([`core_ml_opted_in`]): the graph computes exact GELU where
+    /// the CPU's O4 uses the tanh form, and queries run on the CPU, so one
+    /// index would hold vectors of two slightly different functions until
+    /// their agreement is measured.
+    pub core_ml: bool,
+}
+
+/// Whether `SHODH_CORE_ML`'s value asks for Core ML: exactly `1`.
+pub fn core_ml_opted_in(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| v == "1")
 }
 
 /// The exports installed in `dir` (an [`E5_DIR`] folder with its tokenizer).
@@ -359,7 +370,14 @@ impl E5Config {
             compute: ComputePreference::Auto,
             status: None,
             calibration_file: None,
+            core_ml: core_ml_opted_in(std::env::var_os("SHODH_CORE_ML").as_deref()),
         })
+    }
+
+    /// This config with Core ML allowed (`true`) or not on Apple silicon.
+    pub fn with_core_ml(mut self, core_ml: bool) -> Self {
+        self.core_ml = core_ml;
+        self
     }
 
     /// This config with `compute` as the compute preference.
@@ -995,16 +1013,17 @@ impl E5Embeddings {
             Some(gpu) if gpu != plan.cpu => vec![gpu.file_name(), plan.cpu.file_name()],
             _ => vec![plan.cpu.file_name()],
         };
-        let core_ml_model = match (plan.gpu == Some(E5Variant::Fp16) && core_ml_platform())
-            .then(|| core_ml_graph(&config.model_dir))
-        {
-            Some(Ok(path)) => {
-                files.push(CORE_ML_FILE);
-                Ok(Some(path))
-            }
-            Some(Err(error)) => Err(error),
-            None => Ok(None),
-        };
+        let core_ml_model =
+            match (config.core_ml && plan.gpu == Some(E5Variant::Fp16) && core_ml_platform())
+                .then(|| core_ml_graph(&config.model_dir))
+            {
+                Some(Ok(path)) => {
+                    files.push(CORE_ML_FILE);
+                    Ok(Some(path))
+                }
+                Some(Err(error)) => Err(error),
+                None => Ok(None),
+            };
         let mut model_size = 0;
         for file in &files {
             model_size += std::fs::metadata(config.model_dir.join(file))
@@ -1047,8 +1066,10 @@ impl E5Embeddings {
             &mut candidate,
             preference,
             // Without its graph Core ML is not tried, so no failure is kept
-            // for it and the next load tries again.
+            // for it and the next load tries again. Not asked for, it is not
+            // offered at all: Apple silicon then runs on the CPU, as before it.
             || match core_ml_model {
+                _ if core_ml_platform() && !config.core_ml => GpuProbe::Unsupported,
                 Err(error) => GpuProbe::Failed(error),
                 Ok(_) => provider::probe_gpus(),
             },
@@ -1541,6 +1562,31 @@ mod tests {
         assert_eq!(serde_json::to_value(E5Variant::Int8).unwrap(), "int8");
     }
 
+    /// Core ML is off unless `SHODH_CORE_ML` is exactly `1`.
+    #[test]
+    fn core_ml_is_off_unless_asked_for() {
+        use std::ffi::OsStr;
+        assert!(!core_ml_opted_in(None));
+        assert!(!core_ml_opted_in(Some(OsStr::new(""))));
+        assert!(!core_ml_opted_in(Some(OsStr::new("0"))));
+        assert!(!core_ml_opted_in(Some(OsStr::new("yes"))));
+        assert!(!core_ml_opted_in(Some(OsStr::new("true"))));
+        assert!(core_ml_opted_in(Some(OsStr::new("1"))));
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let e5 = dir.path().join(E5_DIR);
+        std::fs::create_dir_all(&e5).unwrap();
+        std::fs::write(e5.join("tokenizer.json"), b"{}").unwrap();
+        std::fs::write(e5.join(E5Variant::Fp16.file_name()), b"fp16").unwrap();
+        let config = E5Config::auto_detect(dir.path()).expect("fp16 installed");
+        assert_eq!(
+            config.core_ml,
+            core_ml_opted_in(std::env::var_os("SHODH_CORE_ML").as_deref())
+        );
+        assert!(config.clone().with_core_ml(true).core_ml);
+        assert!(!config.with_core_ml(false).core_ml);
+    }
+
     /// Which export runs where: an index's export everywhere it can run; a
     /// new library fp16 unless int8 was chosen, and int8 only where it is
     /// installed and exact.
@@ -1871,7 +1917,9 @@ mod tests {
         let had_cache = cache_root.exists();
         let cpu = E5Embeddings::new(config.clone()).expect("load E5 on the CPU");
         let status = Arc::new(ComputeStatus::default());
-        let mut auto = config.with_compute(ComputePreference::Auto);
+        let mut auto = config
+            .with_compute(ComputePreference::Auto)
+            .with_core_ml(true);
         auto.status = Some(status.clone());
         let gpu = E5Embeddings::new(auto).expect("load");
         assert_eq!(

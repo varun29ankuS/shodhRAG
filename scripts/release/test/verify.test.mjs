@@ -288,7 +288,7 @@ test('only a newer release becomes the latest', () => {
 
 // --- Smoke ---
 
-function fakeGitHub({ staleReads = 0, headStatus = 200, headLength } = {}) {
+function fakeGitHub({ staleReads = 0, headStatus = 200, headLength, anonymousRefusal } = {}) {
   const r = makeRelease();
   const published = { ...r.release, draft: false };
   let reads = 0;
@@ -306,7 +306,12 @@ function fakeGitHub({ staleReads = 0, headStatus = 200, headLength } = {}) {
     const asset = /\/releases\/assets\/(\d+)$/.exec(url);
     if (asset && init.method === 'HEAD') {
       assert.equal(init.headers.Accept, 'application/octet-stream');
-      assert.equal(init.headers.Authorization, undefined);
+      if (init.headers.Authorization === undefined) {
+        if (anonymousRefusal) return { ok: false, status: anonymousRefusal.status, headers: new Map(Object.entries(anonymousRefusal.headers)) };
+      } else {
+        assert.ok(anonymousRefusal, 'a token is sent only after GitHub refuses the anonymous request');
+        assert.equal(init.headers.Authorization, 'Bearer t0ken');
+      }
       const size = published.assets.find((a) => String(a.id) === asset[1]).size;
       return { ok: headStatus === 200, status: headStatus, headers: new Map([['content-length', String(headLength ?? size)]]) };
     }
@@ -333,6 +338,27 @@ test('smoke: a bundle URL that does not download fails', async () => {
   await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl, sleep: async () => {} }), /answered 404/);
   const short = fakeGitHub({ headLength: 3 });
   await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl: short.fetchImpl, sleep: async () => {} }), /serves 3 bytes/);
+});
+
+test("smoke: when GitHub refuses the runner's anonymous requests for its rate limit, the bundles are checked with GH_TOKEN", async () => {
+  for (const headers of [{ 'x-ratelimit-remaining': '0' }, { 'retry-after': '60' }]) {
+    for (const status of [403, 429]) {
+      const { fetchImpl, calls } = fakeGitHub({ anonymousRefusal: { status, headers } });
+      await smoke({ repo: REPO, tag: TAG, fetchImpl, sleep: async () => {}, token: 't0ken' });
+      assert.equal(calls.filter((c) => c.init.method === 'HEAD' && c.init.headers.Authorization).length, 4);
+    }
+  }
+  const spent = { status: 403, headers: { 'x-ratelimit-remaining': '0' } };
+  const missing = fakeGitHub({ anonymousRefusal: spent, headStatus: 404 });
+  await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl: missing.fetchImpl, sleep: async () => {}, token: 't0ken' }), /answered 404 \(checked with GH_TOKEN/);
+  const tokenless = fakeGitHub({ anonymousRefusal: spent });
+  await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl: tokenless.fetchImpl, sleep: async () => {} }), /answered 403: .*anonymous API allowance, and no GH_TOKEN/);
+});
+
+test('smoke: any other refusal of the anonymous download fails, with a token or without', async () => {
+  const { fetchImpl, calls } = fakeGitHub({ headStatus: 403 });
+  await assert.rejects(smoke({ repo: REPO, tag: TAG, fetchImpl, sleep: async () => {}, token: 't0ken' }), /answered 403$/);
+  assert.equal(calls.filter((c) => c.init.method === 'HEAD' && c.init.headers.Authorization).length, 0);
 });
 
 test('smoke: a release that is not the latest checks its own latest.json, and that a newer one is latest', async () => {

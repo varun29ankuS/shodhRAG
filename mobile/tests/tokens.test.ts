@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { contrastRatio, themeTokens } from '../../app/src/lib/contrast.ts';
 import { tokensCss } from '../tokens';
 
-const desktop = readFileSync(new URL('../../app/src/index.css', import.meta.url), 'utf8');
-const phoneCss = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
+const desktop = readFileSync(resolve(process.cwd(), '../app/src/index.css'), 'utf8');
+const phoneCss = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8');
 const dark = themeTokens(desktop, '[data-theme="dark"]');
 const light = themeTokens(desktop, '[data-theme="light"]');
 

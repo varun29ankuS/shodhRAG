@@ -8,11 +8,11 @@
  * tests/screens.test.tsx.)
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PRESETS } from '../src/lib/motion';
 
-const css = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const css = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
 
 function sources(dir: string): Array<{ file: string; text: string }> {
   const out: Array<{ file: string; text: string }> = [];
@@ -23,7 +23,7 @@ function sources(dir: string): Array<{ file: string; text: string }> {
   }
   return out;
 }
-const code = sources(new URL('../src', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const code = sources(resolve(process.cwd(), 'src'));
 
 const ANIMATABLE = new Set(['transform', 'opacity']);
 /** Motion values that are transforms or opacity, and the keys that only configure them. */

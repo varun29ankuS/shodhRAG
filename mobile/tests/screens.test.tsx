@@ -5,6 +5,7 @@
  * app to every section, and every control's 44px size.
  */
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from '../src/App';
@@ -415,8 +416,8 @@ describe('the menu', () => {
 
 // ── Every control is at least 44px by 44px ──────────────────────────
 
-const stylesheet = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
-const desktopCss = readFileSync(new URL('../../app/src/index.css', import.meta.url), 'utf8');
+const stylesheet = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8');
+const desktopCss = readFileSync(resolve(process.cwd(), '../app/src/index.css'), 'utf8');
 
 function px(value: string): number | null {
   const match = /^(\d+(?:\.\d+)?)px$/.exec(value.trim());

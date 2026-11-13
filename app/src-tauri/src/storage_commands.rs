@@ -8,15 +8,21 @@ use tauri::State;
 pub async fn optimize_storage(state: State<'_, RagState>) -> Result<String, String> {
     tracing::info!("Optimizing storage...");
 
-    let rag_guard = state.rag.read().await;
-    let rag = &*rag_guard;
-
-    // Trigger index optimization
-    rag.optimize()
+    // The pass runs without the engine lock: searches go on meanwhile, and a
+    // purge waiting for the pass holds no engine lock either.
+    let maintenance = state.rag.read().await.store_maintenance();
+    maintenance
+        .run()
         .await
         .map_err(|e| format!("Failed to optimize: {}", e))?;
 
-    let stats = rag.get_statistics().await.unwrap_or_default();
+    let stats = state
+        .rag
+        .read()
+        .await
+        .get_statistics()
+        .await
+        .unwrap_or_default();
     let total_chunks = stats.get("total_chunks").cloned().unwrap_or_default();
 
     Ok(format!("Storage optimized. Total chunks: {}", total_chunks))

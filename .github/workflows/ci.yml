@@ -135,11 +135,13 @@ jobs:
           # them, the evals and the footprint build do not.
           release_files='^(scripts/release/|\.github/release-notes\.md$|\.github/workflows/(release|tag-release|prepare-release)\.yml$)'
           # The evals build shodh-eval and shodh-rag only, never the app or
-          # the sandbox probe. shodh-rag's tests read one app file
-          # (harness/events.rs includes app/src/features/agent/events.ts), and
-          # the E5 model tests build those tests.
+          # the sandbox probe. shodh-rag's tests read a few app files
+          # (harness/events.rs includes app/src/features/agent/events.ts, and
+          # harness/session.rs compares its recorded sessions with
+          # app/tests/fixtures/transcripts/recorded-*.json), and the E5 model
+          # tests build those tests.
           eval_skip="$docs|$release_files|^(app/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
-          eval_keep='^app/src/features/agent/events\.ts$'
+          eval_keep='^(app/src/features/agent/events\.ts|app/tests/fixtures/transcripts(/recorded-[^/]+\.json)?)$'
           # The footprint build is the app (app/, shodh-rag, shodh-ontology);
           # it never builds shodh-eval or the sandbox probe.
           footprint_skip="$docs|$release_files|^(crates/shodh-eval/|crates/sandbox-probe/)"

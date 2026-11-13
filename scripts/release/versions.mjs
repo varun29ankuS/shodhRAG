@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The app version lives in eight places across six files. This reads them
+// The app version lives in ten places across seven files. This reads them
 // all, checks they agree (and match a tag), and sets them all at once.
 //
 //   node scripts/release/versions.mjs check [--tag vX.Y.Z] [--root DIR] [--github-output]
@@ -23,8 +23,11 @@ export const LOCATIONS = [
   { file: 'app/src-tauri/tauri.conf.json', kind: 'json', path: ['version'] },
   { file: 'app/src-tauri/Cargo.toml', kind: 'manifest', package: 'shodh-rag-app' },
   { file: 'crates/shodh-rag/Cargo.toml', kind: 'manifest', package: 'shodh-rag' },
+  // The phone link's version is the app's: the phone and the desktop must match.
+  { file: 'crates/shodh-link/Cargo.toml', kind: 'manifest', package: 'shodh-link' },
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-rag-app' },
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-rag' },
+  { file: 'Cargo.lock', kind: 'lock', package: 'shodh-link' },
 ];
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

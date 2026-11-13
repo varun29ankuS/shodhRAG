@@ -64,6 +64,8 @@ regex = "1"
 # Include our RAG system
 shodh-rag = { path = "../../crates/shodh-rag" }
 shodh-ontology = { path = "../../crates/shodh-ontology" }
+# The phone link: pairing and the allowlisted bridge (phone_link.rs)
+shodh-link = { path = "../../crates/shodh-link" }
 
 # File watching
 notify = { version = "6.1", features = ["serde"] }

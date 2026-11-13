@@ -17,7 +17,7 @@ use shodh_rag::processing::pdf_info::{pdf_info, PdfInfo};
 use shodh_rag::processing::tabular;
 
 /// Largest file the viewer will read (bytes).
-const MAX_SOURCE_BYTES: u64 = 100 * 1024 * 1024;
+pub(crate) const MAX_SOURCE_BYTES: u64 = 100 * 1024 * 1024;
 /// Largest extracted text returned to the webview (characters).
 const MAX_TEXT_CHARS: usize = 8_000_000;
 /// Rows returned per sheet; larger sheets are truncated with a flag.

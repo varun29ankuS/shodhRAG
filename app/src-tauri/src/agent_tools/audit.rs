@@ -241,6 +241,20 @@ pub(crate) fn summarize(row: &AuditRow) -> String {
                 s(p, "reason")
             )
         }
+        "phone_link" => match p.get("reason").and_then(Value::as_str) {
+            Some(reason) => format!(
+                "Phone {}: {} {} ({reason})",
+                s(p, "device"),
+                s(p, "command"),
+                s(p, "outcome")
+            ),
+            None => format!(
+                "Phone {}: {} {}",
+                s(p, "device"),
+                s(p, "command"),
+                s(p, "outcome")
+            ),
+        },
         other => other.to_string(),
     };
     truncate(text.trim(), MAX_SUMMARY_CHARS)

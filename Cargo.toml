@@ -5,6 +5,7 @@ members = [
     "crates/shodh-ontology",
     "crates/shodh-eval",
     "crates/sandbox-probe",
+    "crates/shodh-link",
     "app/src-tauri",
 ]
 

@@ -203,7 +203,7 @@ jobs:
           annotations: true
 
   # The release and CI scripts' own tests, and the version check every
-  # release relies on: all six files that carry the app version agree.
+  # release relies on: all seven files that carry the app version agree.
   scripts:
     name: Release and CI scripts
     runs-on: ubuntu-latest

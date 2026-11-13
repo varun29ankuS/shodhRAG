@@ -45,7 +45,7 @@ test('every place in the repository has the same version', () => {
   assert.match(version, /^\d+\.\d+\.\d+$/);
 });
 
-test('set changes exactly the eight version strings of the real files', () => {
+test('set changes exactly the ten version strings of the real files', () => {
   const texts = repoTexts();
   const current = agreedVersion(readVersions(texts));
   const next = bump(current);

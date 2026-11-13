@@ -445,7 +445,25 @@ fn counts_need_emit(emitted: bool, stopped: bool) -> bool {
     stopped && !emitted
 }
 
+/// What the phone link checks of a live session before it forwards a phone's
+/// question or approval to it ([`crate::phone_link`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteFacts {
+    /// A Code session (it works in a code folder).
+    pub code: bool,
+    /// The mode the session answers in.
+    pub agent_mode: AgentMode,
+}
+
 impl AgentSessions {
+    /// [`RemoteFacts`] of a live session; `None` for one that is not live.
+    pub fn remote_facts(&self, session_id: &str) -> Option<RemoteFacts> {
+        self.sessions.get(session_id).map(|entry| RemoteFacts {
+            code: entry.code_folder.is_some(),
+            agent_mode: entry.agent_mode,
+        })
+    }
+
     fn entry(&self, session_id: &str) -> Result<Arc<SessionEntry>, AgentCommandError> {
         self.sessions
             .get(session_id)

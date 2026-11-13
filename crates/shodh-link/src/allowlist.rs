@@ -77,10 +77,11 @@ pub const ALLOWED: &[Entry] = &[
         "Conversations: the list (title, time, workspace, pin) from the desktop's \
          load_conversations, without the messages, which as a whole exceed one frame.",
     ),
-    bridge_only(
-        "conversation_load",
-        "Conversations: one conversation with its messages, to read and continue it. Read \
-         only; the desktop saves answers itself.",
+    command(
+        "load_conversation",
+        "Conversations: one conversation as the desktop saved it, to read it, continue it, \
+         and see an answer finished while the phone was away. Read only; the desktop saves \
+         every turn itself.",
     ),
     // Library and Reader
     bridge_only(

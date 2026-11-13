@@ -231,7 +231,7 @@ async fn next_agent_event(client: &mut LinkClient) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pair_ask_stream_approve_open() {
+async fn pair_ask_stream_approve_open_over_the_link() {
     let world = World::new().await;
     let phone = local_endpoint(false).await;
     let offer = world.scanned();

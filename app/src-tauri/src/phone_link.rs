@@ -44,7 +44,8 @@ use crate::agent_tools::files::{containing_root, IndexedRoots, SourceRoots};
 use crate::api_key_store;
 use crate::audit_commands::AuditState;
 use crate::connectors::telegram::{qr_matrix, QrMatrix};
-use crate::conversation_commands::ConversationMode;
+use crate::conversation_commands::{ConversationMode, CONVERSATION_CHANGED_EVENT};
+use crate::conversation_turns::SendTurn;
 use crate::memory_learn::TextOrigin;
 use crate::model_picker_commands::ModelOverride;
 use crate::rag_commands::RagState;
@@ -184,27 +185,30 @@ impl PhoneLinkState {
     }
 }
 
-/// Manage the state and forward the desktop's agent events to the bridge.
+/// Manage the state and forward the desktop's events the bridge sends on: agent
+/// events, and which conversation the desktop saved.
 pub fn manage(app: &AppHandle) {
     let (events, _) = broadcast::channel(EVENT_BUFFER);
-    let forward = events.clone();
-    app.listen_any(AGENT_EVENT, move |event| {
-        // Parsed only while a phone is connected.
-        if forward.receiver_count() == 0 {
-            return;
-        }
-        match serde_json::from_str::<Value>(event.payload()) {
-            Ok(payload) => {
-                let _ = forward.send(LinkEvent {
-                    name: AGENT_EVENT.to_string(),
-                    payload,
-                });
+    for name in [AGENT_EVENT, CONVERSATION_CHANGED_EVENT] {
+        let forward = events.clone();
+        app.listen_any(name, move |event| {
+            // Parsed only while a phone is connected.
+            if forward.receiver_count() == 0 {
+                return;
             }
-            Err(e) => {
-                tracing::warn!(target: "shodh::link", error = %e, "an agent event could not be read for the phone link")
+            match serde_json::from_str::<Value>(event.payload()) {
+                Ok(payload) => {
+                    let _ = forward.send(LinkEvent {
+                        name: name.to_string(),
+                        payload,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(target: "shodh::link", error = %e, event = name, "an event could not be read for the phone link")
+                }
             }
-        }
-    });
+        });
+    }
     app.manage(PhoneLinkState {
         devices: OnceCell::new(),
         pairing: Arc::new(PendingPairing::default()),
@@ -708,6 +712,10 @@ struct SendArgs {
     prior_run_ids: Option<Vec<String>>,
     review_action: Option<bool>,
     suggestion_ignored: Option<bool>,
+    /// The question and the answer as it starts, which the desktop saves
+    /// (`conversation_turns`): required from a phone, so every answer it asks for is
+    /// kept by the desktop even when the phone goes away mid-answer.
+    turn: Option<SendTurn>,
 }
 
 #[derive(Deserialize)]
@@ -726,8 +734,8 @@ struct ApproveArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct IdArgs {
-    id: String,
+struct ConversationArgs {
+    conversation_id: String,
 }
 
 #[derive(Deserialize)]
@@ -812,6 +820,11 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
             if a.review_action == Some(true) {
                 return Err(shodh_link::bridge::refused(CODE_ON_COMPUTER));
             }
+            if a.turn.is_none() {
+                return Err(invalid(
+                    "A question from your phone names its conversation, so your computer saves the answer.",
+                ));
+            }
             reply(
                 agent_session_commands::agent_send(
                     app.clone(),
@@ -826,6 +839,7 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
                     a.prior_run_ids,
                     None,
                     a.suggestion_ignored,
+                    a.turn,
                     app.state(),
                     app.state(),
                     app.state(),
@@ -838,7 +852,7 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
         }
         "agent_abort" => {
             let a: SessionArgs = args(raw)?;
-            reply(agent_session_commands::agent_abort(a.session_id, app.state()).await)
+            reply(agent_session_commands::agent_abort(app.clone(), a.session_id, app.state()).await)
         }
         "agent_approve" => {
             // The bridge sent only an answer this phone may give, without "for the
@@ -887,21 +901,12 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
                 .collect();
             Ok(Value::Array(list))
         }
-        "conversation_load" => {
-            let a: IdArgs = args(raw)?;
-            let records = crate::conversation_commands::load_conversations(
-                app.clone(),
-                app.state(),
-                app.state(),
-                app.state(),
+        "load_conversation" => {
+            let a: ConversationArgs = args(raw)?;
+            reply(
+                crate::conversation_commands::load_conversation(app.clone(), a.conversation_id)
+                    .await,
             )
-            .await
-            .map_err(|e| json!(e))?;
-            let record = records
-                .into_iter()
-                .find(|r| r.id == a.id)
-                .ok_or_else(|| json!({ "code": "not_found", "message": "This conversation is not on your computer any more." }))?;
-            reply::<_, String>(Ok(record))
         }
         "library_folders" => {
             let a: FolderArgs = args(raw)?;
@@ -1047,6 +1052,9 @@ fn render_page(path: &str, kind: &str, page: usize, width: u32) -> Result<Value,
 }
 
 #[cfg(test)]
+mod end_to_end;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use shodh_link::pairing::{MAX_DEVICES, MAX_DEVICE_NAME_CHARS};
@@ -1065,6 +1073,12 @@ mod tests {
     #[test]
     fn the_link_is_the_app_version() {
         assert_eq!(shodh_link::LINK_VERSION, env!("CARGO_PKG_VERSION"));
+        // The events the bridge forwards are the ones the desktop emits.
+        assert_eq!(shodh_link::bridge::AGENT_EVENT, AGENT_EVENT);
+        assert_eq!(
+            shodh_link::bridge::CONVERSATION_CHANGED,
+            CONVERSATION_CHANGED_EVENT
+        );
     }
 
     /// Every allowlisted command is one the desktop registers (and runs here with its

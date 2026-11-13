@@ -543,7 +543,7 @@ const PHONE_COMMANDS: Record<string, string> = {
   agent_approve: 'Answered an approval',
   workspaces_list: 'Listed the workspaces',
   conversations_list: 'Listed the conversations',
-  conversation_load: 'Opened a conversation',
+  load_conversation: 'Opened a conversation',
   library_folders: 'Browsed the library',
   get_source_file_info: 'Opened a document',
   get_pdf_info: 'Opened a document',

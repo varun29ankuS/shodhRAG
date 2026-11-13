@@ -44,6 +44,10 @@ pub const ALPN: &[u8] = b"shodh/link/1";
 /// The desktop event the bridge forwards.
 pub const AGENT_EVENT: &str = "agent_event";
 
+/// The desktop saved a conversation (`{ id }`): sent to every paired phone, so it
+/// reloads what it shows; the conversation itself is read with `load_conversation`.
+pub const CONVERSATION_CHANGED: &str = "conversation_changed";
+
 /// How long a new connection has to say who it is.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -559,6 +563,12 @@ fn forward(
     subscribed: &HashSet<String>,
     pending: &mut HashMap<(String, String), PendingStep>,
 ) -> Option<Response> {
+    if event.name == CONVERSATION_CHANGED {
+        return Some(Response::Event {
+            name: event.name.clone(),
+            payload: event.payload.clone(),
+        });
+    }
     if event.name != AGENT_EVENT {
         return None;
     }
@@ -726,6 +736,23 @@ mod tests {
         let done = agent_event("s1", json!({ "type": "step_finished", "stepId": "t1" }));
         forward(&done, &subscribed, &mut pending).unwrap();
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn a_saved_conversation_is_announced_to_every_phone() {
+        let mut pending = HashMap::new();
+        let saved = LinkEvent {
+            name: CONVERSATION_CHANGED.to_string(),
+            payload: json!({ "id": "conv-1" }),
+        };
+        let frame = forward(&saved, &HashSet::new(), &mut pending).expect("sent");
+        assert_eq!(
+            frame,
+            Response::Event {
+                name: CONVERSATION_CHANGED.to_string(),
+                payload: json!({ "id": "conv-1" }),
+            }
+        );
     }
 
     #[test]

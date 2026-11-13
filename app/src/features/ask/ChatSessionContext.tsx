@@ -98,8 +98,8 @@ interface LiveRun {
   replaces: string | null;
   /** The agent session saves it (`backendSavesTurn`): `agent_send` took the turn and did not say it failed to save it. */
   savedByBackend: boolean;
-  /** `agent_send` is in flight. */
-  sending: boolean;
+  /** `agent_send` was called: the run is its session's, which a stop must reach. */
+  sent: boolean;
   /** The user stopped it here. */
   stopped: boolean;
   queue: TranscriptAction[];
@@ -750,7 +750,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       question,
       replaces,
       savedByBackend: false,
-      sending: false,
+      sent: false,
       stopped: false,
       queue: [],
       frame: null,
@@ -800,7 +800,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // once it has saved the question, and one it cannot save is refused. A failure it did
       // not save says so (`turnSaved` absent), and this window saves it.
       live.savedByBackend = backendSavesTurn(sendsTurn, null);
-      live.sending = true;
+      live.sent = true;
       try {
         await api.send(sessionId, prompt, runId, historyOf(history), {
           scope: scopeOf(options, workspaceId),
@@ -822,8 +822,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         // Stopped while it was being sent, and the backend did not save it: saved here, stopped.
         if (live.settled && !live.savedByBackend) settleRun(live, live.message);
         throw error;
-      } finally {
-        live.sending = false;
       }
       // Stopped while the session was taking the question: the stop may have reached it
       // before the run started, so it is sent again now that the run is there (unless the
@@ -949,7 +947,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           question,
           replaces: null,
           savedByBackend: true,
-          sending: false,
+          sent: true,
           stopped: false,
           queue: [],
           frame: null,
@@ -975,7 +973,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const { sessionId, runId } = live;
     live.stopped = true;
     enqueue(live, { type: 'local_interrupted', atMs: Date.now() }, true);
-    if (sessionId === null) return;
+    // Not sent yet: there is no run to stop, and `runAgent` sends nothing now.
+    if (sessionId === null || !live.sent) return;
     stoppingRef.current?.end();
     let timer: number | null = null;
     let end = () => {};

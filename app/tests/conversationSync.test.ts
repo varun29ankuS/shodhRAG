@@ -125,7 +125,7 @@ test('the window reloads on conversation_changed and never writes whole message 
   const session = read('../src/features/ask/ChatSessionContext.tsx');
   // The question and the answer go to the agent session with their turn (none while
   // saving is paused), which saves them only when the backend says so ...
-  assert.match(session, /live\.savedByBackend = backendSavesTurn\(sendsTurn, null\);\s*live\.sending = true;\s*try \{\s*await api\.send\(/);
+  assert.match(session, /live\.savedByBackend = backendSavesTurn\(sendsTurn, null\);\s*live\.sent = true;\s*try \{\s*await api\.send\(/);
   assert.match(session, /live\.savedByBackend = backendSavesTurn\(sendsTurn, toAgentError\(error\)\);/);
   assert.match(session, /turn: sendsTurn\s*\?\s*\{\s*conversationId,\s*question: question \? toStored\(question\) : null,\s*answer: startedStored,/);
   assert.match(session, /const sendsTurn = !savingPaused\(\);/);

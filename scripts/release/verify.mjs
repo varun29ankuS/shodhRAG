@@ -22,7 +22,8 @@
 //              this version (or, for a release that is not the latest, its own
 //              latest.json), and every platform URL in it answers 200 with the
 //              asset's size, fetched as the updater does (no credentials,
-//              Accept: application/octet-stream).
+//              Accept: application/octet-stream). When GitHub refuses that for
+//              the runner's anonymous rate limit, it is fetched with GH_TOKEN.
 //
 //   node scripts/release/verify.mjs artifacts --dir D --version X.Y.Z [--pubkey-file F]
 //   node scripts/release/verify.mjs stage --dir D --out O --tag vX.Y.Z --repo O/R [--pubkey-file F]
@@ -330,6 +331,16 @@ export function isNewer(tag, latest) {
 
 // --- After publishing -----------------------------------------------------------
 
+// API asset URLs count against GitHub's anonymous allowance of 60 requests an
+// hour per IP address, which hosted runners share, so a credential-free HEAD can
+// be refused with nothing wrong with the release.
+const ANONYMOUS_LIMIT = "this runner's IP address has used GitHub's anonymous API allowance";
+
+function anonymousLimitSpent(response) {
+  if (response.status !== 403 && response.status !== 429) return false;
+  return response.headers.get('x-ratelimit-remaining') === '0' || response.headers.get('retry-after') != null;
+}
+
 /**
  * Fetches what installed apps fetch. `fetchImpl` and `sleep` are injectable
  * for tests. GitHub serves the new latest.json a few seconds after the
@@ -395,16 +406,20 @@ export async function smoke({
   for (const [platform, entry] of Object.entries(latest.platforms)) {
     const asset = assetForUrl(entry.url, release, repo, tag);
     if (!asset) throw new ReleaseError(`${platform}: ${entry.url} is not an asset of ${tag}`);
+    const head = (credentials = {}) =>
+      fetchImpl(entry.url, { method: 'HEAD', redirect: 'follow', headers: { Accept: 'application/octet-stream', ...credentials } });
     // As tauri-plugin-updater downloads it: no credentials, octet-stream.
-    const response = await fetchImpl(entry.url, {
-      method: 'HEAD',
-      redirect: 'follow',
-      headers: { Accept: 'application/octet-stream' },
-    });
+    let response = await head();
+    let note = '';
+    if (anonymousLimitSpent(response)) {
+      if (!token) throw new ReleaseError(`${platform}: HEAD ${entry.url} answered ${response.status}: ${ANONYMOUS_LIMIT}, and no GH_TOKEN to check with`);
+      response = await head({ Authorization: `Bearer ${token}` });
+      note = ` (checked with GH_TOKEN: ${ANONYMOUS_LIMIT})`;
+    }
     const length = Number(response.headers.get('content-length'));
-    if (response.status !== 200) throw new ReleaseError(`${platform}: HEAD ${entry.url} answered ${response.status}`);
+    if (response.status !== 200) throw new ReleaseError(`${platform}: HEAD ${entry.url} answered ${response.status}${note}`);
     if (length !== asset.size) throw new ReleaseError(`${platform}: ${entry.url} serves ${length} bytes, ${asset.name} has ${asset.size}`);
-    console.log(`  ${platform}: ${asset.name}, 200, ${length} bytes`);
+    console.log(`  ${platform}: ${asset.name}, 200, ${length} bytes${note}`);
   }
   console.log(`${endpoint} serves ${tag} and every update bundle in it downloads`);
 }

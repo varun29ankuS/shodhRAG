@@ -14,8 +14,9 @@ edition = "2021"
 name = "shodh_rag_app_lib"
 # rlib only: the desktop app (main.rs) is the only thing built from this
 # library. Tauri's template adds "staticlib" and "cdylib" for `tauri android`
-# and `tauri ios`, which nothing here builds; add them back before building
-# for mobile. With them, every build also linked the whole dependency graph
+# and `tauri ios`, which nothing builds from this crate (the phone app is a
+# separate crate). To build this crate for a phone, restore
+# crate-type = ["staticlib", "cdylib", "rlib"]. With them, every build also linked the whole dependency graph
 # into a shared and a static library nobody used, without LTO, so in release
 # builds every dependency was compiled to machine code as well as to the
 # bitcode the binary's ThinLTO reads (cargo --timings on the Windows release

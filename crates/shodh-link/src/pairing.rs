@@ -336,8 +336,8 @@ impl DeviceRegistry {
             paired_at: now,
             last_seen: Some(now),
         };
-        match next.iter_mut().find(|d| d.node_id == node_id) {
-            Some(existing) => *existing = device.clone(),
+        match next.iter().position(|d| d.node_id == node_id) {
+            Some(index) => next[index] = device.clone(),
             None if next.len() >= MAX_DEVICES => return Err(AddDeviceError::Full),
             None => next.push(device.clone()),
         }

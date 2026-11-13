@@ -12,7 +12,16 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "shodh_rag_app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# rlib only: the desktop app (main.rs) is the only thing built from this
+# library. Tauri's template adds "staticlib" and "cdylib" for `tauri android`
+# and `tauri ios`, which nothing here builds; add them back before building
+# for mobile. With them, every build also linked the whole dependency graph
+# into a shared and a static library nobody used, without LTO, so in release
+# builds every dependency was compiled to machine code as well as to the
+# bitcode the binary's ThinLTO reads (cargo --timings on the Windows release
+# build: most of each heavy crate's time in codegen, and this library's unit
+# 1,044 s on the critical path before the binary's link could start).
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }

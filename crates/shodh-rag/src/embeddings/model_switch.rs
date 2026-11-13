@@ -42,7 +42,7 @@ use std::sync::{Arc, LazyLock};
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::{
     Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Int64Array, RecordBatch,
-    RecordBatchIterator, StringArray, UInt32Array,
+    StringArray, UInt32Array,
 };
 use arrow_schema::{DataType, FieldRef, SchemaRef};
 use chrono::{DateTime, Utc};
@@ -934,8 +934,7 @@ async fn copy_rows(
             values,
         )?);
     }
-    let reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema.clone());
-    target.add(Box::new(reader)).execute().await?;
+    target.add(batches).execute().await?;
     Ok(())
 }
 

@@ -933,7 +933,9 @@ pub(crate) async fn adopt_indexed<'a>(
 
     // The rows the moves replaced leave the disk once, not per file.
     if !adopted.is_empty() {
-        if let Err(e) = rag.write().await.compact_chunks().await {
+        // Without the engine lock: a purge waits for the pass without it.
+        let maintenance = rag.read().await.store_maintenance();
+        if let Err(e) = maintenance.run().await {
             tracing::warn!(error = %format!("{e:#}"), "chunk store not compacted after adoption");
         }
     }

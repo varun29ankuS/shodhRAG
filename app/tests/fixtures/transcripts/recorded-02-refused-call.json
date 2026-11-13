@@ -1,0 +1,87 @@
+{
+  "name": "A recorded session: reasoning, a search the runtime refused for its arguments, and an answer without a check",
+  "seed": {
+    "providerError": null,
+    "fallback": null,
+    "runId": "run-1",
+    "sessionId": null,
+    "model": null,
+    "warning": null,
+    "status": "starting",
+    "startedAtMs": 1763000600000,
+    "durationMs": null,
+    "error": null,
+    "errorCode": null,
+    "blocks": [],
+    "steps": {},
+    "plan": null,
+    "usage": null,
+    "passages": [],
+    "groundings": [],
+    "interimIds": [],
+    "checking": false,
+    "thinking": "",
+    "interrupting": false,
+    "agentMode": "ask"
+  },
+  "actions": 
+  [
+    {
+      "type": "run_started",
+      "runId": "run-1",
+      "sessionId": "s",
+      "model": "test/model",
+      "atMs": 1763000600100,
+      "warning": null
+    },
+    {
+      "type": "thinking",
+      "runId": "run-1",
+      "messageId": "m1",
+      "delta": "The notice clause is in section 4."
+    },
+    {
+      "type": "step_started",
+      "runId": "run-1",
+      "stepId": "t1",
+      "parentStepId": null,
+      "tool": "search_documents",
+      "label": "search documents",
+      "args": {
+        "query": "notice period",
+        "sources": null
+      },
+      "tier": "destructive",
+      "atMs": 1763000600100
+    },
+    {
+      "type": "step_finished",
+      "runId": "run-1",
+      "stepId": "t1",
+      "ok": false,
+      "summary": "Invalid arguments",
+      "detail": {
+        "error": "Validation failed for tool \"search_documents\":\n  - sources: must be array\n\nReceived arguments:\n{}"
+      },
+      "durationMs": 250,
+      "invalidArguments": true
+    },
+    {
+      "type": "text_delta",
+      "runId": "run-1",
+      "messageId": "m2",
+      "delta": "The notice period is sixty days [1]."
+    },
+    {
+      "type": "run_finished",
+      "runId": "run-1",
+      "status": "completed",
+      "durationMs": 250,
+      "error": null,
+      "providerError": null
+    }
+  ]
+  ,
+  "expectedText": "The notice period is sixty days [1].",
+  "expected": {"providerError":null,"fallback":null,"runId":"run-1","sessionId":"s","model":"test/model","warning":null,"status":"completed","startedAtMs":1763000600000,"durationMs":250,"error":null,"errorCode":null,"blocks":[{"kind":"step","stepId":"t1"},{"kind":"text","id":"m2","text":"The notice period is sixty days [1]."}],"steps":{"t1":{"id":"t1","parentId":null,"tool":"search_documents","label":"search documents","args":{"query":"notice period","sources":null},"tier":"destructive","startedAtMs":1763000600100,"status":"failed","summary":"Invalid arguments","detail":{"error":"Validation failed for tool \"search_documents\":\n  - sources: must be array\n\nReceived arguments:\n{}"},"durationMs":250,"progress":null,"approval":null,"children":[],"invalidArguments":true}},"plan":null,"usage":null,"passages":[],"groundings":[],"interimIds":[],"checking":false,"thinking":"","interrupting":false,"agentMode":"ask","reasoning":{"segments":[{"at":0,"text":"The notice clause is in section 4."}],"truncated":false}}
+}

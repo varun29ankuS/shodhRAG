@@ -1,19 +1,19 @@
 use anyhow::{Context, Result};
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, RecordBatchIterator,
-    StringArray, UInt32Array,
+    Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::query::{ExecutableQuery, QueryBase};
-use lancedb::table::OptimizeAction;
 use std::sync::Arc;
 
+use super::maintenance::{StoreFiles, StoreMaintenance};
 use crate::types::ChunkRecord;
 
 pub struct LanceStore {
     db: lancedb::Connection,
     dimension: usize,
     table_name: String,
+    maintenance: StoreMaintenance,
 }
 
 impl LanceStore {
@@ -36,6 +36,7 @@ impl LanceStore {
             .context("Failed to connect to LanceDB")?;
 
         let store = Self {
+            maintenance: StoreMaintenance::new(db.clone(), table_name),
             db,
             dimension,
             table_name: table_name.to_string(),
@@ -103,9 +104,8 @@ impl LanceStore {
             )
             .context("Failed to create seed RecordBatch")?;
 
-            let batches = RecordBatchIterator::new(vec![Ok(batch)], schema);
             self.db
-                .create_table(&self.table_name, Box::new(batches))
+                .create_table(&self.table_name, batch)
                 .execute()
                 .await
                 .context("Failed to create documents table")?;
@@ -117,25 +117,22 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Public compaction entry point — opens the table and runs compact+prune.
-    pub async fn compact(&self) -> Result<()> {
-        let table = self
-            .db
-            .open_table(&self.table_name)
-            .execute()
-            .await
-            .context("Failed to open table for compaction")?;
-        self.compact_table(&table).await;
-        Ok(())
-    }
-
     /// Removes deleted and replaced rows from disk now, every older version
     /// included: compaction rewrites the files with deletions applied, and a
     /// prune with no retention removes the versions that still held them. For
     /// text that must leave the disk (secrets purged or redacted), unlike
-    /// [`Self::compact`], whose prune keeps a week of versions.
-    pub async fn purge_history(&self) -> Result<()> {
-        use lancedb::table::{CompactionOptions, Duration as LanceDuration};
+    /// [`StoreMaintenance::run`], whose prune keeps an hour of versions.
+    ///
+    /// The prune deletes every file no current version names, which includes
+    /// the files a maintenance pass or index build is still writing, so it
+    /// runs only with this table's `files` held
+    /// ([`StoreMaintenance::purge_lock`]).
+    pub async fn purge_history(&self, files: &StoreFiles) -> Result<()> {
+        use lancedb::table::{CompactionOptions, Duration as LanceDuration, OptimizeAction};
+        anyhow::ensure!(
+            self.maintenance.holds(files),
+            "purging the chunk table needs its own files held, not another table's"
+        );
         let table = self
             .db
             .open_table(&self.table_name)
@@ -164,20 +161,10 @@ impl LanceStore {
         Ok(())
     }
 
-    /// Compact and prune tombstoned rows so deleted data is physically removed.
-    /// Best-effort: failures are logged but don't propagate to the caller.
-    async fn compact_table(&self, table: &lancedb::Table) {
-        match table.optimize(OptimizeAction::All).await {
-            Ok(stats) => {
-                tracing::debug!(
-                    compaction = ?stats.compaction,
-                    "LanceDB compaction completed"
-                );
-            }
-            Err(e) => {
-                tracing::warn!("LanceDB compaction failed (non-fatal): {}", e);
-            }
-        }
+    /// The handle that maintains this table after writes, usable without
+    /// holding the store.
+    pub fn maintenance(&self) -> StoreMaintenance {
+        self.maintenance.clone()
     }
 
     pub async fn upsert_chunks(&self, chunks: Vec<ChunkRecord>) -> Result<()> {
@@ -240,12 +227,12 @@ impl LanceStore {
         )
         .context("Failed to create RecordBatch")?;
 
-        let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
         table
-            .add(Box::new(reader))
+            .add(batch)
             .execute()
             .await
             .context("Failed to insert chunks")?;
+        self.maintenance.wrote();
 
         tracing::debug!("Inserted {} chunks into LanceDB", len);
         Ok(())
@@ -282,7 +269,7 @@ impl LanceStore {
         let count_before = table.count_rows(None).await.unwrap_or(0);
         let predicate = format!("doc_id = '{}'", doc_id.replace('\'', "''"));
         table.delete(&predicate).await?;
-        self.compact_table(&table).await;
+        self.maintenance.wrote();
         let count_after = table.count_rows(None).await.unwrap_or(0);
         Ok(count_before - count_after)
     }
@@ -292,7 +279,7 @@ impl LanceStore {
         let count_before = table.count_rows(None).await.unwrap_or(0);
         let predicate = format!("source = '{}'", source.replace('\'', "''"));
         table.delete(&predicate).await?;
-        self.compact_table(&table).await;
+        self.maintenance.wrote();
         let count_after = table.count_rows(None).await.unwrap_or(0);
         Ok(count_before - count_after)
     }
@@ -303,7 +290,7 @@ impl LanceStore {
         let table = self.db.open_table(&self.table_name).execute().await?;
         let count_before = table.count_rows(None).await.unwrap_or(0);
         table.delete(predicate).await?;
-        self.compact_table(&table).await;
+        self.maintenance.wrote();
         let count_after = table.count_rows(None).await.unwrap_or(0);
         Ok(count_before - count_after)
     }
@@ -314,7 +301,7 @@ impl LanceStore {
         let count_before = table.count_rows(None).await.unwrap_or(0);
         let predicate = format!("space_id = '{}'", space_id.replace('\'', "''"));
         table.delete(&predicate).await?;
-        self.compact_table(&table).await;
+        self.maintenance.wrote();
         let count_after = table.count_rows(None).await.unwrap_or(0);
         tracing::info!(
             space_id = %space_id,
@@ -356,6 +343,7 @@ impl LanceStore {
             .execute()
             .await
             .context("Failed to move chunks to another space")?;
+        self.maintenance.wrote();
         Ok(moved.rows_updated)
     }
 
@@ -372,6 +360,7 @@ impl LanceStore {
             .execute()
             .await
             .context("Failed to update chunk metadata")?;
+        self.maintenance.wrote();
         Ok(updated.rows_updated)
     }
 
@@ -695,20 +684,6 @@ impl LanceStore {
 
         let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
         Ok(extract_hits_from_batches(&batches, 0.0))
-    }
-
-    pub async fn create_index_if_needed(&self) -> Result<()> {
-        let count = self.count().await?;
-        if count >= 1_000 {
-            let table = self.db.open_table(&self.table_name).execute().await?;
-            table
-                .create_index(&["vector"], lancedb::index::Index::Auto)
-                .execute()
-                .await
-                .context("Failed to create vector index")?;
-            tracing::info!("Created IVF-PQ index on {} rows", count);
-        }
-        Ok(())
     }
 
     /// Fetch neighboring chunks (±window) for a given doc_id and chunk_index.

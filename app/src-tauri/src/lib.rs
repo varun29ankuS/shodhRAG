@@ -56,12 +56,14 @@ mod acl_manifest;
 mod agent_coverage;
 mod agent_session_commands;
 mod agent_tools;
+mod agent_transcript;
 mod calendar_commands;
 mod calendar_store;
 mod code_intel_commands;
 mod code_map_commands;
 mod code_review_commands;
 mod conversation_commands;
+mod conversation_turns;
 mod design_check_commands;
 mod event_emitter;
 
@@ -521,6 +523,10 @@ pub fn run() {
             }
             // The window's status strip follows what runs search.
             indexing_control::watch_compute(app.handle().clone(), default_rag.compute_status());
+            tauri::async_runtime::spawn(default_rag.store_maintenance().maintain_when_quiet(
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(120),
+            ));
             let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
             table_model_commands::start_worker(app.handle().clone(), rag_engine.clone(), refinement);
             // Long-term memory: typed statements next to the document index, dynamics in
@@ -861,6 +867,8 @@ pub fn run() {
             // Conversation persistence commands
             conversation_commands::load_conversations,
             conversation_commands::save_conversation,
+            conversation_commands::save_conversation_messages,
+            conversation_commands::load_conversation,
             conversation_commands::delete_conversation,
             conversation_commands::rename_conversation,
             conversation_commands::pin_conversation,

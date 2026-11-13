@@ -3946,8 +3946,12 @@ impl RAGEngine {
     /// ([`crate::indexing::secret_file_reason`]), whatever source it belongs to (a
     /// folder, a single file, a chat upload), and then its text from disk
     /// ([`Self::purge_deleted_text`]). For an index built before such files were
-    /// kept out. Returns the chunks removed.
-    pub async fn purge_secret_files(&mut self) -> Result<usize> {
+    /// kept out. Returns the chunks removed. `files` as for
+    /// [`Self::purge_deleted_text`].
+    pub async fn purge_secret_files(
+        &mut self,
+        files: &crate::storage::StoreFiles,
+    ) -> Result<usize> {
         let rows = self.store.document_sources().await?;
         let mut sources: Vec<String> = rows
             .into_iter()
@@ -3962,17 +3966,27 @@ impl RAGEngine {
             removed += self.delete_by_source(source).await?;
         }
         if !sources.is_empty() {
-            self.purge_deleted_text().await?;
+            self.purge_deleted_text(files).await?;
         }
         Ok(removed)
     }
 
     /// Removes the text of deleted and replaced chunks from disk now: LanceDB's
     /// older versions (kept for a week otherwise) and Tantivy's deleted documents
-    /// (kept until a merge otherwise).
-    pub async fn purge_deleted_text(&mut self) -> Result<()> {
-        self.store.purge_history().await?;
+    /// (kept until a merge otherwise). `files` are the chunk store's, from
+    /// [`Self::files_for_purge`], taken before the engine's write lock.
+    pub async fn purge_deleted_text(&mut self, files: &crate::storage::StoreFiles) -> Result<()> {
+        self.store.purge_history(files).await?;
         self.text_search.expunge_deletes()
+    }
+
+    /// The chunk store's files for a purge, taken without holding the engine:
+    /// it waits for a maintenance pass or index build running now (minutes on
+    /// a large library), and searches go on meanwhile. Take it before the
+    /// engine's write lock, never while holding the engine.
+    pub async fn files_for_purge(rag: &tokio::sync::RwLock<Self>) -> crate::storage::StoreFiles {
+        let maintenance = rag.read().await.store_maintenance();
+        maintenance.purge_lock().await
     }
 
     /// Delete all documents from a specific source/folder.
@@ -4283,13 +4297,6 @@ impl RAGEngine {
                 .await?;
         }
         Ok(moved)
-    }
-
-    /// Compacts the chunk store: an update rewrites the rows it changes, so
-    /// after [`Self::move_source_to_space`] has moved files the old rows are
-    /// removed from disk here, once for all of them.
-    pub async fn compact_chunks(&mut self) -> Result<()> {
-        self.store.compact().await
     }
 
     /// Clear all data
@@ -4962,8 +4969,11 @@ impl RAGEngine {
 
     /// [`Self::redact_stored_source`] for every source [`Self::sources_to_redact`]
     /// lists, then the old text purged from disk when any changed. Returns the
-    /// sources whose text changed.
-    pub async fn redact_stored_chunks(&mut self) -> Result<usize> {
+    /// sources whose text changed. `files` as for [`Self::purge_deleted_text`].
+    pub async fn redact_stored_chunks(
+        &mut self,
+        files: &crate::storage::StoreFiles,
+    ) -> Result<usize> {
         let mut changed = 0;
         for source in self.sources_to_redact().await? {
             if self.redact_stored_source(&source).await? {
@@ -4971,7 +4981,7 @@ impl RAGEngine {
             }
         }
         if changed > 0 {
-            self.purge_deleted_text().await?;
+            self.purge_deleted_text(files).await?;
         }
         Ok(changed)
     }
@@ -5118,12 +5128,13 @@ impl RAGEngine {
         Ok(())
     }
 
-    /// Trigger index creation if needed (after large ingestion)
-    pub async fn optimize(&self) -> Result<()> {
-        // Compact LanceDB to remove tombstoned rows from previous deletions
-        self.store.compact().await?;
-        // Create vector index if enough rows exist
-        self.store.create_index_if_needed().await
+    /// The chunk store's maintenance handle, usable without the engine lock.
+    /// Run its passes without holding the engine: a purge waits for the
+    /// store's files before it takes the engine's write lock
+    /// ([`Self::files_for_purge`]), so a pass waiting for those files while
+    /// holding the engine would deadlock with it.
+    pub fn store_maintenance(&self) -> crate::storage::StoreMaintenance {
+        self.store.maintenance()
     }
 
     /// Rebuild the Tantivy full-text index from LanceDB.
@@ -8619,7 +8630,8 @@ mod secret_tests {
             "the marker is found on disk before the purge"
         );
 
-        let removed = engine.purge_secret_files().await.unwrap();
+        let files = engine.store_maintenance().purge_lock().await;
+        let removed = engine.purge_secret_files(&files).await.unwrap();
         assert!(removed >= 2, "{removed}");
         for (path, _) in &sources {
             let source = normalize_source_path(path);
@@ -8638,7 +8650,7 @@ mod secret_tests {
             "a purged secret file's text is still on disk"
         );
         // Nothing left to purge.
-        assert_eq!(engine.purge_secret_files().await.unwrap(), 0);
+        assert_eq!(engine.purge_secret_files(&files).await.unwrap(), 0);
     }
 
     /// A chunk stored before redaction (no redactor mark) is redacted in place, its
@@ -8702,7 +8714,8 @@ mod secret_tests {
         );
         assert_eq!(engine.sources_to_redact().await.unwrap().len(), 2);
 
-        assert_eq!(engine.redact_stored_chunks().await.unwrap(), 1);
+        let files = engine.store_maintenance().purge_lock().await;
+        assert_eq!(engine.redact_stored_chunks(&files).await.unwrap(), 1);
         let setup = stored_text(&engine, "c:/docs/setup.md").await;
         assert!(!setup.contains(secret), "{setup}");
         assert!(setup.contains("Deploy with"), "{setup}");
@@ -8717,7 +8730,77 @@ mod secret_tests {
             "the unredacted text is still on disk"
         );
         // Nothing left to do.
-        assert_eq!(engine.redact_stored_chunks().await.unwrap(), 0);
+        assert_eq!(engine.redact_stored_chunks(&files).await.unwrap(), 0);
+    }
+
+    /// A purge waiting for a running maintenance pass (minutes on a large
+    /// library) holds no engine lock meanwhile: searches and writes go on, and
+    /// the purge runs once the pass ends. The pass is paused while it holds the
+    /// store's files; had the purge taken the engine's write lock first, the
+    /// write lock would not be free while it waits.
+    #[tokio::test]
+    async fn searches_go_on_while_a_purge_waits_for_a_pass() {
+        use crate::storage::maintenance::tests::{probe, Event};
+        use crate::storage::maintenance::Holder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut engine = engine(dir.path()).await;
+        let notes = normalize_source_path(&dir.path().join("notes.txt"));
+        engine
+            .add_document(
+                "Meeting notes about the heron survey.",
+                DocumentFormat::TXT,
+                HashMap::from([("file_path".to_string(), notes.clone())]),
+                Citation::default(),
+            )
+            .await
+            .unwrap();
+        let rag = Arc::new(tokio::sync::RwLock::new(engine));
+        let maintenance = rag.read().await.store_maintenance();
+        let mut probed = probe(&maintenance);
+
+        let pass = {
+            let maintenance = maintenance.clone();
+            tokio::spawn(async move { maintenance.run().await })
+        };
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Holding(Holder::Pass))
+        );
+        let purge = {
+            let rag = rag.clone();
+            tokio::spawn(async move {
+                let files = RAGEngine::files_for_purge(&rag).await;
+                rag.write().await.purge_deleted_text(&files).await
+            })
+        };
+        assert_eq!(
+            probed.events.recv().await,
+            Some(Event::Waiting(Holder::Purge))
+        );
+
+        assert!(
+            rag.try_write().is_ok(),
+            "the purge waits for the pass holding the engine"
+        );
+        let hits = rag.read().await.search("heron survey", 3).await.unwrap();
+        assert!(!hits.is_empty(), "a search while the purge waits");
+        assert!(!rag
+            .read()
+            .await
+            .chunks_of_source(&notes)
+            .await
+            .unwrap()
+            .is_empty());
+
+        probed.release.send(()).unwrap();
+        pass.await.unwrap().unwrap();
+        purge.await.unwrap().unwrap();
+        assert_eq!(
+            probed.events.try_recv().ok(),
+            Some(Event::Holding(Holder::Purge)),
+            "the purge ran once the pass ended"
+        );
     }
 
     /// A file that may hold secrets is refused before it is read, whatever brought it.

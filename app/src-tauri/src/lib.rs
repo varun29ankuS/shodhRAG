@@ -523,6 +523,10 @@ pub fn run() {
             }
             // The window's status strip follows what runs search.
             indexing_control::watch_compute(app.handle().clone(), default_rag.compute_status());
+            tauri::async_runtime::spawn(default_rag.store_maintenance().maintain_when_quiet(
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_secs(120),
+            ));
             let rag_engine = Arc::new(AsyncRwLock::new(default_rag));
             table_model_commands::start_worker(app.handle().clone(), rag_engine.clone(), refinement);
             // Long-term memory: typed statements next to the document index, dynamics in

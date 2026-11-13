@@ -755,7 +755,9 @@ async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet
         let _turn = state.running.lock().await;
         // Files that may hold secrets, indexed before they were kept out (a single
         // file, a chat upload, a folder's), leave the index and the disk first.
-        match rag.write().await.purge_secret_files().await {
+        // The store's files first: waiting for a pass holds no engine lock.
+        let files = RAGEngine::files_for_purge(&rag).await;
+        match rag.write().await.purge_secret_files(&files).await {
             Ok(0) => {}
             Ok(removed) => {
                 tracing::info!(
@@ -769,13 +771,14 @@ async fn upgrade_unowned_once(app: &AppHandle, owned: std::collections::BTreeSet
         }
         // Chunks redacted under other rules (or before redaction) are redacted
         // again in place, without reading their files: scans are not read again.
-        match rag.write().await.redact_stored_chunks().await {
+        match rag.write().await.redact_stored_chunks(&files).await {
             Ok(0) => {}
             Ok(sources) => tracing::info!(sources, "stored chunks redacted in place"),
             Err(e) => {
                 tracing::warn!(error = %format!("{e:#}"), "stored chunks not redacted yet")
             }
         }
+        drop(files);
         // Files added in chats go where they belong before they are brought
         // up to date with the others.
         state.hand_over_uploads_in_turn(app, &rag).await;

@@ -526,12 +526,14 @@ pub async fn index_single_file_in(
 
     if let Some(reason) = secret_file_reason(&path) {
         // Indexed before such files were kept out: what the index holds of it goes.
-        let mut engine = rag.write().await;
         let source = crate::rag_engine::normalize_source_path(&path);
-        match engine.delete_by_source(&source).await {
+        let removed = rag.write().await.delete_by_source(&source).await;
+        match removed {
             Ok(0) => {}
             Ok(_) => {
-                if let Err(e) = engine.purge_deleted_text().await {
+                // The store's files first: waiting for a pass holds no engine lock.
+                let files = RAGEngine::files_for_purge(rag).await;
+                if let Err(e) = rag.write().await.purge_deleted_text(&files).await {
                     tracing::warn!(error = %format!("{e:#}"), "removed secret file's text not purged from disk yet");
                 }
             }
@@ -1108,6 +1110,15 @@ pub(crate) async fn index_folder_observed(
     };
 
     let ((), stopped) = futures::join!(reader, batches);
+
+    // Detached: merging files and indexing vectors takes seconds to minutes on
+    // a large library, and the run is over for the user.
+    let maintenance = rag.read().await.store_maintenance();
+    tokio::spawn(async move {
+        if let Err(e) = maintenance.run_if_changed().await {
+            tracing::warn!(error = %format!("{e:#}"), "chunk store maintenance failed");
+        }
+    });
 
     emit_progress(
         emitter,

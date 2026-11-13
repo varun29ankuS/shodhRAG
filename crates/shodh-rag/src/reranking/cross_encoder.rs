@@ -161,8 +161,10 @@ impl CrossEncoderReranker {
         self.rerank_batch(query, &texts, top_k)
     }
 
-    /// Batch reranking — tokenize all (query, doc) pairs and run ONNX inference
-    /// in batches of MAX_BATCH for better throughput.
+    /// Batch reranking: tokenize every (query, doc) pair, then run the pairs
+    /// shortest first in batches of at most MAX_BATCH. A batch is padded to
+    /// its longest pair, so grouping pairs of similar length keeps short
+    /// pairs from paying for a long one's padding.
     pub fn rerank_batch(
         &self,
         query: &str,
@@ -174,25 +176,22 @@ impl CrossEncoderReranker {
         }
 
         const MAX_BATCH: usize = 16;
-        let mut all_scored: Vec<(String, f32)> = Vec::with_capacity(candidates.len());
+        let mut all_scored: Vec<(usize, f32)> = Vec::with_capacity(candidates.len());
 
-        for chunk in candidates.chunks(MAX_BATCH) {
-            // Pair each encoding with its original candidate to maintain alignment
-            // when tokenization fails for some candidates
-            let paired: Vec<(&(String, String), _)> = chunk
-                .iter()
-                .filter_map(|candidate| {
-                    self.tokenizer
-                        .encode((query, candidate.1.as_str()), true)
-                        .ok()
-                        .map(|enc| (candidate, enc))
-                })
-                .collect();
+        // A pair that fails to tokenize is left unscored, as before.
+        let mut encoded: Vec<(usize, tokenizers::Encoding)> = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                self.tokenizer
+                    .encode((query, candidate.1.as_str()), true)
+                    .ok()
+                    .map(|enc| (index, enc))
+            })
+            .collect();
+        encoded.sort_by_key(|(_, enc)| enc.get_ids().len());
 
-            if paired.is_empty() {
-                continue;
-            }
-
+        for paired in encoded.chunks(MAX_BATCH) {
             let encodings: Vec<_> = paired.iter().map(|(_, enc)| enc).collect();
 
             let max_len = encodings
@@ -256,16 +255,24 @@ impl CrossEncoderReranker {
                     data.len(), paired.len()
                 );
             }
-            for (i, (candidate, _)) in paired.iter().enumerate() {
+            for (i, (index, _)) in paired.iter().enumerate() {
                 if i < data.len() {
-                    all_scored.push((candidate.0.clone(), data[i]));
+                    all_scored.push((*index, data[i]));
                 }
             }
         }
 
-        all_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Ties keep the candidates' order, whatever order the batches ran in.
+        all_scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
         all_scored.truncate(top_k);
-        Ok(all_scored)
+        Ok(all_scored
+            .into_iter()
+            .map(|(index, score)| (candidates[index].0.clone(), score))
+            .collect())
     }
 }
 

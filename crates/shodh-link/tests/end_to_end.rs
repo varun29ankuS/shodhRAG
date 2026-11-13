@@ -25,6 +25,9 @@ use shodh_link::pairing::{
     new_secret, DeviceRegistry, DeviceStore, PairedDevice, PairingOffer, PairingRefusal,
     PendingPairing, PAIRING_TTL_MS,
 };
+use shodh_link::phone::{
+    connect_to_kept, kept_desktop, pair_and_keep, phone_key, PairError, SecretVault,
+};
 use shodh_link::{ALPN, LINK_VERSION};
 use tokio::sync::broadcast;
 
@@ -659,4 +662,144 @@ async fn a_version_mismatch_says_update() {
     LinkClient::pair(&phone, world.addr(), &offer, "Updated phone")
         .await
         .expect("the code still works");
+}
+
+/// The phone's secure storage, in memory.
+#[derive(Default)]
+struct MemoryVault(Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+impl SecretVault for MemoryVault {
+    fn load(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.0.lock().unwrap().get(name).cloned())
+    }
+    fn store(&self, name: &str, value: &[u8]) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), value.to_vec());
+        Ok(())
+    }
+    fn remove(&self, name: &str) -> Result<(), String> {
+        self.0.lock().unwrap().remove(name);
+        Ok(())
+    }
+}
+
+/// A phone's endpoint on the loopback interface with its kept key.
+async fn phone_endpoint_with(key: SecretKey) -> Endpoint {
+    Endpoint::builder(presets::Minimal)
+        .secret_key(key)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .expect("a loopback address")
+        .bind()
+        .await
+        .expect("the endpoint binds")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_keeps_its_desktop_and_reconnects_with_its_kept_key() {
+    let world = World::new().await;
+    let vault = MemoryVault::default();
+    let key = phone_key(&vault).unwrap();
+    let phone = phone_endpoint_with(key.clone()).await;
+
+    // A code past its five minutes is refused on the phone, without dialling.
+    let mut stale = world.scanned();
+    stale.expires_at = world.desktop.now_ms();
+    let refused = pair_and_keep(
+        &phone,
+        &vault,
+        &stale,
+        world.addr(),
+        "Pixel 8",
+        world.desktop.now_ms(),
+    )
+    .await;
+    assert_eq!(refused.err(), Some(PairError::Expired));
+    assert!(kept_desktop(&vault).unwrap().is_none());
+    assert!(world.link.devices().list().is_empty());
+
+    // Pair, and the desktop is kept without the one-time secret.
+    let offer = world.scanned();
+    let mut client = within(
+        "pairing",
+        pair_and_keep(
+            &phone,
+            &vault,
+            &offer,
+            world.addr(),
+            "Pixel 8",
+            world.desktop.now_ms(),
+        ),
+    )
+    .await
+    .expect("the phone pairs");
+    let kept = kept_desktop(&vault).unwrap().expect("the desktop is kept");
+    assert_eq!(kept.node_id, world.endpoint.id().to_string());
+    assert_eq!(kept.addr().unwrap().id, world.endpoint.id());
+
+    // Events are read on their own task while calls are made from this one.
+    let mut events = client.take_events().expect("the stream");
+    assert!(client.take_events().is_none(), "the stream is taken once");
+    let session = within(
+        "agent_start",
+        client.invoke("agent_start", json!({ "conversationId": "conv-1" })),
+    )
+    .await
+    .unwrap();
+    client
+        .subscribe(vec![session.as_str().unwrap().to_string()])
+        .await
+        .unwrap();
+    let reader = tokio::spawn(async move { events.recv().await });
+    within(
+        "agent_send",
+        client.invoke(
+            "agent_send",
+            json!({ "sessionId": session, "text": "What does Self-RAG retrieve?", "requestId": "r1" }),
+        ),
+    )
+    .await
+    .unwrap();
+    let first = within("the first event", reader)
+        .await
+        .unwrap()
+        .expect("an event");
+    assert_eq!(first.payload["event"]["type"], "run_started");
+    assert!(client.next_event().await.is_none(), "the stream was taken");
+
+    // The app restarts: the same key from secure storage, the kept desktop.
+    client.close();
+    within("the close", client.closed()).await;
+    phone.close().await;
+    let again = phone_key(&vault).unwrap();
+    assert_eq!(again.public(), key.public());
+    let restarted = phone_endpoint_with(again).await;
+    let back = within(
+        "reconnecting",
+        connect_to_kept(&restarted, world.addr(), "Pixel 8"),
+    )
+    .await
+    .expect("a kept phone is let back in");
+    within(
+        "agent_start after the restart",
+        back.invoke("agent_start", json!({ "conversationId": "conv-1" })),
+    )
+    .await
+    .expect("its calls reach the desktop");
+    assert_eq!(world.link.devices().list().len(), 1, "paired once");
+
+    // A phone with another key is not let in with the kept desktop alone.
+    let stranger = local_endpoint(false).await;
+    let refused = within(
+        "a stranger",
+        connect_to_kept(&stranger, world.addr(), "Pixel 8"),
+    )
+    .await
+    .err();
+    assert!(
+        matches!(refused, Some(ConnectError::Refused(_))),
+        "{refused:?}"
+    );
 }

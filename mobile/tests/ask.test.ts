@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { askOnce, AskStopped } from '../src/lib/ask';
+import { answerText, type AnswerState } from '../src/lib/answer';
+import { ask, AskStopped } from '../src/lib/ask';
 import { createShim } from '../src/lib/invoke';
+import { Subscriptions } from '../src/lib/subscriptions';
 import { FakeLink } from './fakeLink';
 
 const ids = () => {
@@ -10,8 +12,8 @@ const ids = () => {
 
 const event = (sessionId: string, event: Record<string, unknown>) => ({ sessionId, event });
 
-describe('the test Ask', () => {
-  it('streams one answer and asks as the desktop window does', async () => {
+describe('a question to the computer', () => {
+  it('streams its answer and asks as the desktop window does', async () => {
     let link!: FakeLink;
     link = new FakeLink(async command => {
       if (command === 'agent_start') return 'session-1';
@@ -29,28 +31,35 @@ describe('the test Ask', () => {
       }
       throw new Error(`unexpected ${command}`);
     });
-    const seen: string[] = [];
-    const answer = await askOnce(createShim(link), 'What does Self-RAG retrieve?', {
-      onText: text => seen.push(text),
-      newId: ids(),
-      now: () => Date.UTC(2026, 10, 13, 10),
-    });
+    const shim = createShim(link);
+    const subscriptions = new Subscriptions(sessionIds => shim.subscribe(sessionIds));
+    // The Approvals screen already needs another session's events.
+    await subscriptions.set('approvals', ['session-7']);
+    const seen: AnswerState[] = [];
+    const answer = await ask(
+      shim,
+      subscriptions,
+      { conversationId: 'conv-1', text: 'What does Self-RAG retrieve?', history: [{ role: 'user', content: 'Earlier' }], workspaceId: 'w1' },
+      { onAnswer: a => seen.push(a), newId: ids(), now: () => Date.UTC(2026, 10, 13, 10) },
+    );
 
-    expect(answer).toEqual({ text: 'Self-RAG retrieves on demand [1].', status: 'completed', error: null });
-    expect(seen.at(-1)).toBe('Self-RAG retrieves on demand [1].');
-    expect(seen).not.toContain('another answer');
-    expect(link.subscriptions).toEqual([['session-1']]);
+    expect(answer.status).toBe('completed');
+    expect(answerText(answer)).toBe('Self-RAG retrieves on demand [1].');
+    expect(seen.map(answerText)).not.toContain('another answer');
+    // Both sessions stay subscribed: asking does not drop the approvals'.
+    expect(link.subscriptions).toEqual([['session-7'], ['session-1', 'session-7']]);
     expect(link.calls.map(c => c.command)).toEqual(['agent_start', 'agent_send']);
-    expect(link.calls[0].args).toEqual({ conversationId: 'id-1' });
+    expect(link.calls[0].args).toEqual({ conversationId: 'conv-1', workspaceId: 'w1' });
     expect(link.calls[1].args).toEqual({
       sessionId: 'session-1',
       text: 'What does Self-RAG retrieve?',
-      requestId: 'id-2',
+      requestId: 'id-1',
+      history: [{ role: 'user', content: 'Earlier' }],
       turn: {
-        conversationId: 'id-1',
-        question: { id: 'id-3', role: 'user', content: 'What does Self-RAG retrieve?', timestamp: '2026-11-13T10:00:00.000Z' },
+        conversationId: 'conv-1',
+        question: { id: 'id-2', role: 'user', content: 'What does Self-RAG retrieve?', timestamp: '2026-11-13T10:00:00.000Z' },
         answer: {
-          id: 'id-4',
+          id: 'id-3',
           role: 'assistant',
           content: '',
           timestamp: '2026-11-13T10:00:00.000Z',
@@ -61,15 +70,21 @@ describe('the test Ask', () => {
     });
   });
 
-  it('a stopped question stops waiting and stops listening', async () => {
+  it('stops waiting when stopped, and stops listening', async () => {
     const link = new FakeLink(async command => (command === 'agent_start' ? 'session-1' : 'run-1'));
+    const shim = createShim(link);
     const controller = new AbortController();
     const seen: string[] = [];
-    const asked = askOnce(createShim(link), 'Anything?', { onText: text => seen.push(text), signal: controller.signal, newId: ids() });
+    const asked = ask(
+      shim,
+      new Subscriptions(ids => shim.subscribe(ids)),
+      { conversationId: 'c', text: 'Anything?', history: [], workspaceId: null },
+      { onAnswer: a => seen.push(answerText(a)), signal: controller.signal, newId: ids() },
+    );
     await new Promise(resolve => setTimeout(resolve, 0));
     controller.abort();
     await expect(asked).rejects.toBeInstanceOf(AskStopped);
     link.send('agent_event', event('session-1', { type: 'text_delta', runId: 'run-1', messageId: 'm1', delta: 'late' }));
-    expect(seen).toEqual([]);
+    expect(seen.filter(t => t === 'late')).toEqual([]);
   });
 });

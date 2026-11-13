@@ -155,12 +155,13 @@ jobs:
           # The phone app (android job) is mobile/, its own Cargo workspace
           # and lockfile, with the crates it uses (shodh-link), the toolchain
           # and this workflow. From the desktop it reads only its colour
-          # tokens (app/src/index.css, parsed by app/src/lib/contrast.ts) and
-          # the shared components (app/src/shared/). The rest of the desktop,
-          # its crates, its Cargo workspace files and its CI helpers are
-          # skippable.
+          # tokens (app/src/index.css, parsed by app/src/lib/contrast.ts), its
+          # sections' names and order (app/src/lib/viewTabs.ts, the phone's
+          # menu) and the shared components (app/src/shared/). The rest of
+          # the desktop, its crates, its Cargo workspace files and its CI
+          # helpers are skippable.
           android_skip="$docs|$release_files|^(app/|crates/shodh-rag/|crates/shodh-eval/|crates/shodh-ontology/|crates/sandbox-probe/|Cargo\.toml$|Cargo\.lock$|scripts/ci/|scripts/measure-footprint\.ps1$|\.github/actions/onnxruntime/)"
-          android_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$)'
+          android_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$|app/src/lib/viewTabs\.ts$)'
 
           decide() {
             local job=$1 skip=$2 keep=$3 f
@@ -1172,7 +1173,10 @@ jobs:
       RUSTFLAGS: ""
       # r27c, the NDK's long-term-support release.
       NDK_VERSION: 27.2.12479018
-      ANDROID_PACKAGE: com.shodh.mobile
+      # Test and dev builds are their own app (com.shodhrag.mobile.dev,
+      # mobile/src-tauri/tauri.dev.conf.json), so they never replace the
+      # real one (com.shodhrag.mobile) on a phone.
+      ANDROID_PACKAGE: com.shodhrag.mobile.dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1187,11 +1191,35 @@ jobs:
         working-directory: mobile
         run: npm ci
 
-      # The invoke shim (invoke_shim_forwards_and_routes_events), the test
-      # Ask and the colour tokens read from the desktop's stylesheet.
+      # The invoke shim (invoke_shim_forwards_and_routes_events), asking and
+      # the streamed answer, every screen's loading, empty, connected and
+      # asleep states, the theme following the phone, the menu, the colour
+      # tokens and their contrast, and the UI rules (12px text, 44px
+      # controls, only transform and opacity animated).
       - name: Phone app tests
         working-directory: mobile
         run: npm test
+
+      - name: Type check (phone app)
+        working-directory: mobile
+        run: npx tsc --noEmit
+
+      # The scripted computer of the screenshots (src/lib/demo.ts) is in a
+      # debug build only: vite.config.ts sets __SHODH_DEMO__ from the Tauri
+      # CLI's TAURI_ENV_DEBUG. Both builds are checked, so the release check
+      # is not vacuous.
+      - name: The screenshots' scripted computer is not in a release build
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          marker='The sample computer has no'
+          TAURI_ENV_DEBUG=true npx vite build --outDir "$RUNNER_TEMP/js-debug" --logLevel warn
+          grep -rqF "$marker" "$RUNNER_TEMP/js-debug" || { echo "::error::The debug build lacks the scripted computer"; exit 1; }
+          TAURI_ENV_DEBUG=false npx vite build --outDir "$RUNNER_TEMP/js-release" --logLevel warn
+          if grep -rlF "$marker" "$RUNNER_TEMP/js-release"; then
+            echo "::error::A release build contains the scripted computer"
+            exit 1
+          fi
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
@@ -1224,7 +1252,9 @@ jobs:
           ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
           test -d "$ndk" || { echo "::error::NDK $NDK_VERSION is not at $ndk"; exit 1; }
           echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
-          NDK_HOME="$ndk" npx tauri android init --ci
+          # Test builds are com.shodhrag.mobile.dev (tauri.dev.conf.json),
+          # never the real app's identifier.
+          NDK_HOME="$ndk" npx tauri android init --ci --config src-tauri/tauri.dev.conf.json
           # The elephant launcher icons (tauri icon, from the desktop's
           # logo) replace the template's.
           cp -R src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
@@ -1245,7 +1275,7 @@ jobs:
         run: |
           set -euo pipefail
           start=$(date +%s)
-          npx tauri android build --debug --apk --target aarch64 --target x86_64
+          npx tauri android build --debug --apk --target aarch64 --target x86_64 --config src-tauri/tauri.dev.conf.json
           seconds=$(( $(date +%s) - start ))
           mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk')
           if [ "${#apks[@]}" -ne 1 ]; then
@@ -1334,7 +1364,8 @@ jobs:
               echo "::error::Reading logcat failed (status $status) while waiting for ready"
               exit 1
             fi
-            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | head -n 1)
+            # logcat writes a "beginning of main" header first: the line is the app's.
+            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | grep -m 1 'Shodh' || true)
             echo "$ready_line"
             if ! grep -q 'Shodh ready: the pair screen is shown' <<< "$ready_line"; then
               echo "::error::Shodh did not reach its pair screen: $ready_line"
@@ -1373,16 +1404,77 @@ jobs:
             fi
             echo "Still running 15 s after ready, no crash"
 
-            # Pictures for review. The night-mode switch re-renders the
-            # WebView; the 3 s pauses only let a picture settle and decide no
-            # result.
-            adb exec-out screencap -p > "$screens/pair-light.png" || true
-            adb shell cmd uimode night yes || true
-            sleep 3
-            adb exec-out screencap -p > "$screens/pair-dark.png" || true
-            adb shell cmd uimode night no || true
             wait "$recorder" || true
             adb pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
+
+            # Every main screen in light and dark, for review, on a phone-sized
+            # screen. A debug build opens at the screen named by the system
+            # property debug.shodh.screen (start_screen in link.rs; a release
+            # build never reads it). With no computer paired, the plain names
+            # show each screen as it is while not connected; demo-* screens
+            # show a scripted computer (src/lib/demo.ts, debug builds only) so
+            # the connected screens can be seen. Each launch waits for the
+            # app's own ready line, which names the theme shown: it must be
+            # the phone's (cmd uimode night), or the job fails after taking
+            # every picture. The 3 s pause only lets the data and the springs
+            # settle for the picture, and decides no result.
+            adb shell wm size 1080x2400
+            adb shell wm density 420
+            themes_wrong=()
+            shoot() {
+              local name=$1 property=$2 screen=$3 theme=$4 status=0 line
+              adb shell am force-stop "$ANDROID_PACKAGE"
+              if [ "$theme" = dark ]; then adb shell cmd uimode night yes; else adb shell cmd uimode night no; fi
+              # Quoted for the phone's shell, so an empty value (the app's own start) is one.
+              adb shell setprop debug.shodh.screen "'$property'"
+              adb logcat -b main -c
+              adb shell am start -W -n "$component" > /dev/null
+              # 60 s: a warm start of this app on this emulator is a few seconds.
+              line=$(timeout 60 adb logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 | tr -d '\r' | grep -m 1 'Shodh') || status=$?
+              if [ "$status" -ne 0 ] || ! grep -q "Shodh ready: the $screen screen is shown" <<< "$line"; then
+                echo "::error::$name ($theme) did not report ready: ${line:-nothing within 60 s}"
+                adb exec-out screencap -p > "$screens/$name-$theme-not-ready.png" || true
+                return 1
+              fi
+              if ! grep -q "in the $theme theme" <<< "$line"; then
+                themes_wrong+=("$name with the phone $theme: $line")
+              fi
+              sleep 3
+              adb exec-out screencap -p > "$screens/$name-$theme.png"
+            }
+            # name, property, the screen the ready line names
+            shots=(
+              "pair::pair"
+              "home:home:home"
+              "conversations:conversations:conversations"
+              "library:library:library"
+              "approvals:approvals:approvals"
+              "menu:menu:menu"
+              "settings:settings:settings"
+              "tasks:tasks:tasks"
+              "connected-home:demo-home:demo-home"
+              "connected-answer:demo-answer:demo-answer"
+              "connected-conversations:demo-conversations:demo-conversations"
+              "connected-library:demo-library:demo-library"
+              "connected-reader:demo-reader:demo-reader"
+              "connected-approvals:demo-approvals:demo-approvals"
+              "connected-approval-sheet:demo-sheet:demo-sheet"
+              "connected-workspaces:demo-workspaces:demo-workspaces"
+              "connected-menu:demo-menu:demo-menu"
+            )
+            for theme in light dark; do
+              for shot in "${shots[@]}"; do
+                IFS=: read -r name property screen <<< "$shot"
+                shoot "$name" "$property" "$screen" "$theme"
+              done
+            done
+            adb shell setprop debug.shodh.screen "''"
+            adb shell cmd uimode night no
+            echo "- ${#shots[@]} screens, each in light and dark, are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${#themes_wrong[@]}" -gt 0 ]; then
+              printf '::error::The app did not follow the phone'"'"'s theme: %s\n' "${themes_wrong[@]}"
+              exit 1
+            fi
             {
               echo
               echo "Launch on the emulator (API 34, x86_64, first run):"

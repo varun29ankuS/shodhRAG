@@ -1,8 +1,11 @@
 /**
  * The phone uses the desktop's colour tokens: the `--c-*` values of both
  * themes, read from the desktop's stylesheet (app/src/index.css, the single
- * source of truth) when the app is built, never copied. Dark is the default,
- * and the phone's light setting switches to the light values.
+ * source of truth) when the app is built, never copied.
+ *
+ * The app writes the theme it shows to `<html data-theme>` (lib/theme.ts:
+ * the phone's setting, or the user's choice). Before it does, the phone's
+ * setting decides, dark when it says nothing.
  */
 import { themeTokens } from '../app/src/lib/contrast.ts';
 
@@ -21,10 +24,14 @@ export function tokensCss(desktopCss: string): string {
     declarations(dark, '  '),
     '}',
     '@media (prefers-color-scheme: light) {',
-    '  :root {',
+    '  :root:not([data-theme]) {',
     '    color-scheme: light;',
     declarations(light, '    '),
     '  }',
+    '}',
+    ':root[data-theme="light"] {',
+    '  color-scheme: light;',
+    declarations(light, '  '),
     '}',
     '',
   ].join('\n');

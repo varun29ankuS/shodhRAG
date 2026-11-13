@@ -1,0 +1,419 @@
+/**
+ * Each screen as the phone shows it, against a scripted computer: loading,
+ * empty, connected with data, and with the computer asleep. Then the theme
+ * following the phone (and the user's choice over it), the menu taking the
+ * app to every section, and every control's 44px size.
+ */
+import { readFileSync } from 'node:fs';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { App } from '../src/App';
+import type { LinkStatus } from '../src/lib/link';
+import { initialNav, type Nav } from '../src/lib/nav';
+import { forgetPages } from '../src/lib/pages';
+import { tokensCss } from '../tokens';
+import { ASLEEP, computer, CONNECTED, fakeSource, setPhoneTheme, silentComputer, type FakeSource } from './phone';
+import type { FakeLink } from './fakeLink';
+
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+const CONVERSATIONS = [
+  { id: 'c1', title: 'How does Self-RAG decide when to retrieve?', createdAt: ago(5), updatedAt: ago(5), pinned: false, workspaceId: null, mode: null, messageCount: 2 },
+  { id: 'c2', title: 'Where should the best passages go?', createdAt: ago(200), updatedAt: ago(200), pinned: true, workspaceId: null, mode: null, messageCount: 4 },
+];
+
+const SAVED = {
+  id: 'c1',
+  title: CONVERSATIONS[0].title,
+  updatedAt: ago(5),
+  messages: [
+    { id: 'q', role: 'user', content: 'How does Self-RAG decide when to retrieve?', timestamp: ago(5) },
+    {
+      id: 'a',
+      role: 'assistant',
+      content: 'It decides itself [1].',
+      timestamp: ago(5),
+      transcript: {
+        runId: 'r',
+        status: 'completed',
+        startedAtMs: 0,
+        steps: {},
+        blocks: [{ kind: 'text', id: 'm', text: 'It decides itself [1].\n\n- **Retrieve token.** Only when needed [1].' }],
+        passages: [{ n: 1, file: 'self-rag.pdf', path: '/papers/self-rag.pdf', page: '3', heading: null, text: 'Passages are fetched only when needed.' }],
+        groundings: [],
+        interimIds: [],
+      },
+    },
+  ],
+};
+
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+function connectedComputer(overrides: Record<string, unknown> = {}): FakeLink {
+  return computer({
+    conversations_list: CONVERSATIONS,
+    load_conversation: SAVED,
+    library_folders: (args: Record<string, unknown>) =>
+      args.path === undefined
+        ? { folders: [{ name: 'Papers', path: '/papers' }] }
+        : { folders: [{ name: 'Retrieval', path: '/papers/retrieval' }], files: [{ name: 'self-rag.pdf', path: '/papers/self-rag.pdf' }, { name: 'notes.md', path: '/papers/notes.md' }] },
+    approvals_pending: [
+      { sessionId: 's1', stepId: 'note-1', conversationId: 'c1', tool: 'create_note', title: 'Save a note about Self-RAG', requestedAt: ago(2), phoneMay: true },
+      { sessionId: 's2', stepId: 'cmd-1', conversationId: null, tool: 'run_command', title: 'Run the test suite', requestedAt: ago(9), phoneMay: false },
+    ],
+    workspaces_list: [{ id: 'w1', name: 'Vector DB reading', description: '', color: '', pinned: false, chatCount: 3, lastActiveAt: ago(4) }],
+    get_source_file_info: (args: Record<string, unknown>) => ({ path: args.filePath, fileName: 'notes.md', extension: 'md', sizeBytes: 10, kind: 'text' }),
+    read_source_text: { text: 'Retrieve less, but better.', part: 0, parts: 1, truncated: false },
+    read_source_page: (args: Record<string, unknown>) => ({ page: args.page, pages: 12, width: 320, height: 414, png: PNG }),
+    agent_approve: null,
+    ...overrides,
+  });
+}
+
+function emptyComputer(): FakeLink {
+  return connectedComputer({ conversations_list: [], library_folders: { folders: [] }, approvals_pending: [], workspaces_list: [] });
+}
+
+let source: FakeSource;
+let shown: { unmount: () => void } | null = null;
+
+/** Show the app at `nav` (the screen shown before goes). */
+function show(link: FakeLink, status: LinkStatus, nav: Nav) {
+  shown?.unmount();
+  source = fakeSource(link, status);
+  const result = render(<App source={source} start={{ screen: 'test', nav }} />);
+  shown = result;
+  return result;
+}
+
+const answerNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'c1', question: null, workspaceId: null }] };
+const conversationsNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations' }] };
+const folderNav: Nav = { ...initialNav('library'), library: [{ path: '/papers', name: 'Papers' }] };
+
+beforeEach(() => forgetPages());
+afterEach(() => {
+  forgetPages();
+  shown = null;
+});
+
+const ASLEEP_WORDS = 'Your computer is asleep or offline';
+
+describe('Home', () => {
+  it('shows the greeting, the ask box, Today, the conversation to continue and the recent ones', async () => {
+    show(connectedComputer(), CONNECTED, initialNav('ask'));
+    expect(await screen.findByText('Continue')).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/^Good (morning|afternoon|evening)$/);
+    expect(screen.getByLabelText('Ask about your library')).toBeTruthy();
+    expect(screen.getByText('Your agenda, tasks and automations')).toBeTruthy();
+    expect(await screen.findByText(/^It decides itself./)).toBeTruthy();
+    expect(screen.getByText('Where should the best passages go?')).toBeTruthy();
+    expect(await screen.findByText('What do my files in Papers cover?')).toBeTruthy();
+  });
+
+  it('while loading shows a skeleton, and with nothing yet says how to start', async () => {
+    show(silentComputer(), CONNECTED, initialNav('ask'));
+    expect(await screen.findByLabelText('Loading your conversations')).toBeTruthy();
+    show(emptyComputer(), CONNECTED, initialNav('ask'));
+    expect(await screen.findByText('No conversations yet. Ask a question above to start one.')).toBeTruthy();
+  });
+
+  it('with the computer asleep says so, offers to try again, and cannot ask', async () => {
+    show(silentComputer(), ASLEEP, initialNav('ask'));
+    expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(source.reconnects).toBe(1));
+  });
+});
+
+describe('Ask', () => {
+  it('shows the question as a headline, the answer with its citations, and the pages it cites', async () => {
+    show(connectedComputer(), CONNECTED, answerNav);
+    expect(await screen.findByRole('heading', { level: 1, name: 'How does Self-RAG decide when to retrieve?' })).toBeTruthy();
+    expect(await screen.findByText('Retrieve token.')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Source 1: self-rag.pdf' })).toHaveLength(2);
+    expect(screen.getByText('Answered from 1 passage in your library')).toBeTruthy();
+    expect(screen.getByText('From your library')).toBeTruthy();
+    expect(await screen.findByAltText('self-rag.pdf, page 3')).toBeTruthy();
+    // A citation opens the cited page in the Reader, with the passage.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Source 1: self-rag.pdf' })[0]);
+    const reader = await screen.findByRole('dialog', { name: 'self-rag.pdf' });
+    expect(within(reader).getByText('Passages are fetched only when needed.')).toBeTruthy();
+  });
+
+  it('streams a new question and keeps the approvals it lists answerable', async () => {
+    let link!: FakeLink;
+    link = connectedComputer({
+      load_conversation: null,
+      agent_start: 'session-9',
+      agent_send: () => {
+        queueMicrotask(() => {
+          link.send('agent_event', { sessionId: 'session-9', event: { type: 'text_delta', runId: 'run-9', messageId: 'm', delta: 'Streaming now' } });
+        });
+        return 'run-9';
+      },
+    });
+    const nav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'new', question: 'What is new?', workspaceId: null }] };
+    show(link, CONNECTED, nav);
+    expect(await screen.findByRole('heading', { level: 1, name: 'What is new?' })).toBeTruthy();
+    expect(await screen.findByText((_, element) => element?.tagName === 'P' && element.textContent === 'Streaming now')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop the answer' })).toBeTruthy();
+    // The listed approvals' sessions and the answer's are subscribed together.
+    await waitFor(() => expect(link.subscriptions.at(-1)).toEqual(['s1', 's2', 'session-9']));
+  });
+
+  it('while loading shows a skeleton, and with the computer asleep says so', async () => {
+    show(silentComputer(), CONNECTED, answerNav);
+    expect(await screen.findByLabelText('Loading the conversation')).toBeTruthy();
+    show(silentComputer(), ASLEEP, answerNav);
+    expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+  });
+
+  it('says when the conversation is gone', async () => {
+    show(connectedComputer({ load_conversation: null }), CONNECTED, answerNav);
+    expect(await screen.findByText('This conversation is no longer on your computer.')).toBeTruthy();
+  });
+});
+
+describe('Conversations', () => {
+  it('lists them by when, pinned first, and searches titles', async () => {
+    show(connectedComputer(), CONNECTED, conversationsNav);
+    expect(await screen.findByText('Pinned')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Search conversations'), { target: { value: 'self-rag' } });
+    expect(screen.queryByText('Where should the best passages go?')).toBeNull();
+    expect(screen.getByText('How does Self-RAG decide when to retrieve?')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Search conversations'), { target: { value: 'zebra' } });
+    expect(screen.getByText('No conversation title has "zebra".')).toBeTruthy();
+  });
+
+  it('loading, empty and asleep', async () => {
+    show(silentComputer(), CONNECTED, conversationsNav);
+    expect(await screen.findByLabelText('Loading your conversations')).toBeTruthy();
+    show(emptyComputer(), CONNECTED, conversationsNav);
+    expect(await screen.findByText('No conversations yet. Ask a question to start one.')).toBeTruthy();
+    show(silentComputer(), ASLEEP, conversationsNav);
+    expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+  });
+});
+
+describe('Library', () => {
+  it('browses folders at any depth with breadcrumbs, and shows files as their first page', async () => {
+    const link = connectedComputer();
+    show(link, CONNECTED, initialNav('library'));
+    fireEvent.click(await screen.findByRole('button', { name: /Papers/ }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Papers' })).toBeTruthy();
+    expect(await screen.findByAltText('self-rag.pdf, page 1')).toBeTruthy();
+    // A file without pages shows its name and type.
+    expect(screen.getByText('md')).toBeTruthy();
+    expect(link.calls.find(c => c.command === 'read_source_page')?.args).toEqual({ filePath: '/papers/self-rag.pdf', page: 1, width: 320 });
+    fireEvent.click(await screen.findByRole('button', { name: /Retrieval/ }));
+    const crumbs = await screen.findByRole('navigation', { name: 'Folder path' });
+    await waitFor(() => expect(within(crumbs).getAllByRole('button').map(b => b.textContent)).toEqual(['Library', 'Papers', 'Retrieval']));
+    fireEvent.click(within(crumbs).getByRole('button', { name: 'Library' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Library' })).toBeTruthy();
+  });
+
+  it('opens a file in the Reader', async () => {
+    show(connectedComputer(), CONNECTED, folderNav);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open notes.md' }));
+    const reader = await screen.findByRole('dialog', { name: 'notes.md' });
+    expect(await within(reader).findByText('Retrieve less, but better.')).toBeTruthy();
+    expect(within(reader).getByRole('button', { name: 'Papers' })).toBeTruthy();
+  });
+
+  it('loading, empty and asleep', async () => {
+    show(silentComputer(), CONNECTED, initialNav('library'));
+    expect(await screen.findByLabelText('Loading the folder')).toBeTruthy();
+    show(emptyComputer(), CONNECTED, initialNav('library'));
+    expect(await screen.findByText('No folders linked yet')).toBeTruthy();
+    show(silentComputer(), ASLEEP, initialNav('library'));
+    expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+  });
+});
+
+describe('Approvals', () => {
+  it('lists what waits; a step the phone may allow opens the sheet, the rest say where to approve', async () => {
+    const link = connectedComputer();
+    show(link, CONNECTED, initialNav('approvals'));
+    expect(await screen.findByText('Save a note about Self-RAG')).toBeTruthy();
+    expect(screen.getByText('Approve this on your computer')).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Review' })).toHaveLength(1);
+    // The approvals' sessions are subscribed, so they stay answerable.
+    await waitFor(() => expect(link.subscriptions.at(-1)).toEqual(['s1', 's2']));
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Approve a step' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(link.calls.find(c => c.command === 'agent_approve')?.args).toEqual({ sessionId: 's1', stepId: 'note-1', approved: true }));
+    expect(await screen.findByText('Allowed. Your computer goes on.')).toBeTruthy();
+  });
+
+  it('a refusal from the computer is shown in its words', async () => {
+    show(connectedComputer({ agent_approve: () => Promise.reject({ code: 'refused', message: 'Approve this on your computer' }) }), CONNECTED, {
+      ...initialNav('approvals'),
+      sheet: { sessionId: 's1', stepId: 'note-1' },
+    });
+    const sheet = await screen.findByRole('dialog', { name: 'Approve a step' });
+    await within(sheet).findByText('Save a note about Self-RAG');
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Allow' }));
+    // The note says it in the computer's words, beside the Code step's own line.
+    await waitFor(() => expect(screen.getAllByText('Approve this on your computer')).toHaveLength(2));
+  });
+
+  it('loading, empty and asleep', async () => {
+    show(silentComputer(), CONNECTED, initialNav('approvals'));
+    expect(await screen.findByLabelText('Loading approvals')).toBeTruthy();
+    show(emptyComputer(), CONNECTED, initialNav('approvals'));
+    expect(await screen.findByText('Nothing needs you right now. When the assistant wants a yes, it asks here.')).toBeTruthy();
+    show(silentComputer(), ASLEEP, initialNav('approvals'));
+    expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+  });
+});
+
+describe('Workspaces and the sections still to come', () => {
+  it('lists the workspaces, and says the rest is coming without showing any data', async () => {
+    show(connectedComputer(), CONNECTED, initialNav('workspaces'));
+    expect(await screen.findByText('Vector DB reading')).toBeTruthy();
+    show(emptyComputer(), CONNECTED, initialNav('workspaces'));
+    expect(await screen.findByText('No workspaces yet')).toBeTruthy();
+    show(silentComputer(), ASLEEP, initialNav('workspaces'));
+    expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+    for (const section of ['tasks', 'activity', 'artifacts', 'connectors'] as const) {
+      show(connectedComputer(), CONNECTED, initialNav(section));
+      expect(await screen.findByText('Coming to the phone soon')).toBeTruthy();
+    }
+  });
+});
+
+describe('not paired', () => {
+  it('opens at pairing, and a screen asked for while unpaired offers to pair', async () => {
+    source = fakeSource(silentComputer(), { state: 'unpaired' });
+    const { unmount } = render(<App source={source} />);
+    expect(await screen.findByRole('heading', { name: 'Pair with your computer' })).toBeTruthy();
+    const readies = source.readies;
+    await waitFor(() => expect(readies).toEqual([['pair', 'dark']]));
+    unmount();
+    show(silentComputer(), { state: 'unpaired' }, initialNav('library'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pair this phone' }));
+    expect(await screen.findByRole('heading', { name: 'Pair with your computer' })).toBeTruthy();
+  });
+});
+
+describe('the theme', () => {
+  it('follows the phone, live, until the user picks Light or Dark', async () => {
+    show(connectedComputer(), CONNECTED, initialNav('settings'));
+    await screen.findByText('Theme');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    await waitFor(() => expect(source.readies).toEqual([['test', 'dark']]));
+    act(() => setPhoneTheme('light'));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    act(() => setPhoneTheme('light'));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(window.localStorage.getItem('shodh.theme')).toBe('dark');
+    fireEvent.click(screen.getByRole('radio', { name: 'Phone' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(window.localStorage.getItem('shodh.theme')).toBeNull();
+  });
+
+  it('the menu has the same choice', async () => {
+    show(connectedComputer(), CONNECTED, { ...initialNav('ask'), drawer: true });
+    const menu = await screen.findByRole('navigation', { name: 'All sections' });
+    fireEvent.click(within(menu).getByRole('radio', { name: 'Light' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+  });
+});
+
+describe('the menu', () => {
+  it("lists the desktop's sections in its order and takes the app to each", async () => {
+    show(connectedComputer(), CONNECTED, initialNav('ask'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open menu' }));
+    const menu = await screen.findByRole('navigation', { name: 'All sections' });
+    const items = within(menu)
+      .getAllByRole('button')
+      .map(b => b.textContent?.replace(/\d+ ?$/, '').replace(/\d+$/, '') ?? '');
+    expect(items).toEqual(['Ask', 'Artifacts', 'Library', 'Workspaces', 'Connectors', 'Tasks', 'Approvals', 'Activity', 'Settings']);
+    // The approvals waiting are counted.
+    expect(await within(menu).findByLabelText('2 waiting')).toBeTruthy();
+    fireEvent.click(within(menu).getByRole('button', { name: /^Library/ }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Library' })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('navigation', { name: 'All sections' })).toBeNull());
+    // The tab bar follows.
+    const tabs = screen.getByRole('navigation', { name: 'Main' });
+    expect(within(tabs).getByRole('button', { name: 'Library' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(screen.getByRole('button', { name: 'Open menu' }));
+    fireEvent.click(within(await screen.findByRole('navigation', { name: 'All sections' })).getByRole('button', { name: /^Tasks/ }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Tasks' })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Main' })).getByRole('button', { name: /Approvals/ }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Approvals' })).toBeTruthy();
+  });
+});
+
+// ── Every control is at least 44px by 44px ──────────────────────────
+
+const stylesheet = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
+const desktopCss = readFileSync(new URL('../../app/src/index.css', import.meta.url), 'utf8');
+
+function px(value: string): number | null {
+  const match = /^(\d+(?:\.\d+)?)px$/.exec(value.trim());
+  return match ? Number(match[1]) : null;
+}
+
+function checkTargets(where: string) {
+  const controls = document.querySelectorAll<HTMLElement>('button, a[href], input, textarea, select, [role="button"], [role="radio"]');
+  expect(controls.length, where).toBeGreaterThan(0);
+  for (const control of controls) {
+    const name = `${where}: ${control.tagName.toLowerCase()}.${control.className || '(no class)'} "${control.textContent?.trim().slice(0, 30) ?? ''}"`;
+    // A citation chip's 44px is its ::before (tests/rules.test.ts).
+    if (control.classList.contains('chip')) continue;
+    const style = getComputedStyle(control);
+    const height = Math.max(px(style.minHeight) ?? 0, px(style.height) ?? 0);
+    expect(height, `${name} is at least 44px tall`).toBeGreaterThanOrEqual(44);
+    if (control.tagName === 'INPUT' || control.tagName === 'TEXTAREA') continue;
+    const width = Math.max(px(style.minWidth) ?? 0, px(style.width) ?? 0);
+    expect(width, `${name} is at least 44px wide`).toBeGreaterThanOrEqual(44);
+  }
+}
+
+describe('every control', () => {
+  beforeEach(() => {
+    const style = document.createElement('style');
+    style.id = 'phone-css';
+    style.textContent = `${tokensCss(desktopCss)}\n${stylesheet}`;
+    document.head.appendChild(style);
+  });
+  afterEach(() => document.getElementById('phone-css')?.remove());
+
+  it('is 44px or more on every screen', async () => {
+    const screens: Array<[string, Nav, LinkStatus]> = [
+      ['home', initialNav('ask'), CONNECTED],
+      ['answer', answerNav, CONNECTED],
+      ['conversations', conversationsNav, CONNECTED],
+      ['library', folderNav, CONNECTED],
+      ['approvals', initialNav('approvals'), CONNECTED],
+      ['approval sheet', { ...initialNav('approvals'), sheet: { sessionId: 's1', stepId: 'note-1' } }, CONNECTED],
+      ['settings', initialNav('settings'), CONNECTED],
+      ['workspaces', initialNav('workspaces'), CONNECTED],
+      ['tasks', initialNav('tasks'), CONNECTED],
+      ['menu', { ...initialNav('ask'), drawer: true }, CONNECTED],
+      ['reader', { ...folderNav, reader: { path: '/papers/notes.md', name: 'notes.md', page: null, passage: 'Cited.', back: 'Papers', origin: null } }, CONNECTED],
+      ['home asleep', initialNav('ask'), ASLEEP],
+      ['library unpaired', initialNav('library'), { state: 'unpaired' }],
+    ];
+    for (const [name, nav, status] of screens) {
+      show(connectedComputer(), status, nav);
+      // Let the screen read its data.
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+      checkTargets(name);
+    }
+    shown?.unmount();
+    shown = null;
+    source = fakeSource(silentComputer(), { state: 'unpaired' });
+    const { unmount } = render(<App source={source} />);
+    await screen.findByRole('heading', { name: 'Pair with your computer' });
+    checkTargets('pair');
+    unmount();
+  });
+});

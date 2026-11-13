@@ -55,7 +55,8 @@ describe('motion', () => {
     expect(transitions.length).toBeGreaterThan(0);
     for (const transition of transitions) {
       if (transition === 'none') continue;
-      for (const part of transition.split(',')) {
+      // Commas inside parentheses (a cubic-bezier) do not separate transitions.
+      for (const part of transition.split(/,(?![^(]*\))/)) {
         const property = part.trim().split(/\s+/)[0];
         expect(ANIMATABLE.has(property), `transition of "${property}" (${transition})`).toBe(true);
       }

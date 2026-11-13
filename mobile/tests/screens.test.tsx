@@ -197,7 +197,7 @@ describe('Conversations', () => {
 });
 
 describe('Library', () => {
-  it('browses folders at any depth with breadcrumbs, and shows files as their first page', async () => {
+  it('the_tree_matches_the_desktop_at_three_levels: folders at any depth with breadcrumbs, files as their first page', async () => {
     const link = connectedComputer();
     show(link, CONNECTED, initialNav('library'));
     fireEvent.click(await screen.findByRole('button', { name: /Papers/ }));
@@ -228,6 +228,70 @@ describe('Library', () => {
     expect(await screen.findByText('No folders linked yet')).toBeTruthy();
     show(silentComputer(), ASLEEP, initialNav('library'));
     expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+  });
+});
+
+describe('the Reader', () => {
+  const readerNav = (path: string, name: string): Nav => ({
+    ...folderNav,
+    reader: { path, name, page: null, passage: null, back: 'Papers', origin: null },
+  });
+  const kind = (kind: string, extension: string) => (args: Record<string, unknown>) => ({
+    path: args.filePath,
+    fileName: String(args.filePath).split('/').pop(),
+    extension,
+    sizeBytes: 10,
+    kind,
+  });
+
+  it('each_file_kind_opens_in_the_reader', async () => {
+    // A PDF: its pages, rendered on the computer at the phone's width.
+    show(connectedComputer({ get_source_file_info: kind('pdf', 'pdf') }), CONNECTED, readerNav('/papers/a.pdf', 'a.pdf'));
+    let reader = await screen.findByRole('dialog', { name: 'a.pdf' });
+    expect(await within(reader).findByAltText('Page 1')).toBeTruthy();
+    expect(within(reader).getByText('12 pages')).toBeTruthy();
+    // An image: full width, zoomable.
+    show(connectedComputer({ get_source_file_info: kind('image', 'png') }), CONNECTED, readerNav('/papers/board.png', 'board.png'));
+    reader = await screen.findByRole('dialog', { name: 'board.png' });
+    expect((await within(reader).findByAltText('board.png')).className).toBe('zoomable');
+    // Text, Markdown, code and Office files: their extracted text.
+    show(connectedComputer(), CONNECTED, readerNav('/papers/notes.md', 'notes.md'));
+    reader = await screen.findByRole('dialog', { name: 'notes.md' });
+    expect(await within(reader).findByText('Retrieve less, but better.')).toBeTruthy();
+    // A spreadsheet: its sheets.
+    show(
+      connectedComputer({
+        get_source_file_info: kind('table', 'xlsx'),
+        read_source_table: [{ name: 'Results', headers: ['Model', 'Recall'], rows: [['HNSW', '0.97']], totalRows: 1, truncated: false }],
+      }),
+      CONNECTED,
+      readerNav('/papers/results.xlsx', 'results.xlsx'),
+    );
+    reader = await screen.findByRole('dialog', { name: 'results.xlsx' });
+    expect(await within(reader).findByRole('cell', { name: 'HNSW' })).toBeTruthy();
+    // Anything else says where to open it.
+    show(connectedComputer({ get_source_file_info: kind('unsupported', 'bin') }), CONNECTED, readerNav('/papers/a.bin', 'a.bin'));
+    reader = await screen.findByRole('dialog', { name: 'a.bin' });
+    expect(await within(reader).findByText(/cannot be shown on the phone/)).toBeTruthy();
+  });
+
+  it('loading and asleep', async () => {
+    show(silentComputer(), CONNECTED, readerNav('/papers/a.pdf', 'a.pdf'));
+    expect(await screen.findByLabelText('Loading')).toBeTruthy();
+    show(silentComputer(), ASLEEP, readerNav('/papers/a.pdf', 'a.pdf'));
+    const reader = await screen.findByRole('dialog', { name: 'a.pdf' });
+    expect(await within(reader).findByText(ASLEEP_WORDS)).toBeTruthy();
+  });
+});
+
+describe('Settings', () => {
+  it('says where the computer is, and offers to try again while it is asleep', async () => {
+    show(connectedComputer(), CONNECTED, initialNav('settings'));
+    expect(await screen.findByText('Your computer is connected.')).toBeTruthy();
+    show(silentComputer(), ASLEEP, initialNav('settings'));
+    expect(await screen.findByText('Your computer is asleep or offline. Ask when it is back.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(source.reconnects).toBe(1));
   });
 });
 

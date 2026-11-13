@@ -44,9 +44,10 @@ env:
 # minutes at a time).
 #
 # Heavy jobs run on a pull request only when it changes a file they read:
-# Retrieval eval, Retrieval eval (int8, Apple silicon), Footprint budget and
-# the release builds (release.yml: the Windows and macOS installers, built and
-# verified as a release would be, without publishing) are skipped when every
+# Retrieval eval, Retrieval eval (int8, Apple silicon), Footprint budget, the
+# release builds (release.yml: the Windows and macOS installers, built and
+# verified as a release would be, without publishing) and the Android phone
+# app (its debug APK, launched on an emulator) are skipped when every
 # changed file is in their known-irrelevant set (the Changes job; an unknown
 # or new path always runs them). Every other job runs on every pull request.
 # Pushes to master, release pull requests (release/*) and the nightly run
@@ -77,6 +78,7 @@ jobs:
       eval-recall: ${{ steps.filter.outputs.eval-recall }}
       footprint: ${{ steps.filter.outputs.footprint }}
       release-builds: ${{ steps.filter.outputs.release-builds }}
+      android: ${{ steps.filter.outputs.android }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -90,7 +92,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          heavy=(eval-retrieval eval-retrieval-int8 eval-recall footprint release-builds)
+          heavy=(eval-retrieval eval-retrieval-int8 eval-recall footprint release-builds android)
           run_all() {
             for job in "${heavy[@]}"; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
             echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -139,16 +141,26 @@ jobs:
           # (harness/events.rs includes app/src/features/agent/events.ts, and
           # harness/session.rs compares its recorded sessions with
           # app/tests/fixtures/transcripts/recorded-*.json), and the E5 model
-          # tests build those tests.
-          eval_skip="$docs|$release_files|^(app/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
+          # tests build those tests. None of them builds the phone app
+          # (mobile/, its own Cargo workspace).
+          eval_skip="$docs|$release_files|^(app/|mobile/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
           eval_keep='^(app/src/features/agent/events\.ts|app/tests/fixtures/transcripts(/recorded-[^/]+\.json)?)$'
           # The footprint build is the app (app/, shodh-rag, shodh-ontology);
-          # it never builds shodh-eval or the sandbox probe.
-          footprint_skip="$docs|$release_files|^(crates/shodh-eval/|crates/sandbox-probe/)"
+          # it never builds shodh-eval, the sandbox probe or the phone app.
+          footprint_skip="$docs|$release_files|^(mobile/|crates/shodh-eval/|crates/sandbox-probe/)"
           # The installers are the app too, bundled with release.yml and its
           # scripts, so only documentation and the crates the app never
           # builds are skippable.
-          release_skip="$docs|^(crates/shodh-eval/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
+          release_skip="$docs|^(mobile/|crates/shodh-eval/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
+          # The phone app (android job) is mobile/, its own Cargo workspace
+          # and lockfile, with the crates it uses (shodh-link), the toolchain
+          # and this workflow. From the desktop it reads only its colour
+          # tokens (app/src/index.css, parsed by app/src/lib/contrast.ts) and
+          # the shared components (app/src/shared/). The rest of the desktop,
+          # its crates, its Cargo workspace files and its CI helpers are
+          # skippable.
+          android_skip="$docs|$release_files|^(app/|crates/shodh-rag/|crates/shodh-eval/|crates/shodh-ontology/|crates/sandbox-probe/|Cargo\.toml$|Cargo\.lock$|scripts/ci/|scripts/measure-footprint\.ps1$|\.github/actions/onnxruntime/)"
+          android_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$)'
 
           decide() {
             local job=$1 skip=$2 keep=$3 f
@@ -170,6 +182,7 @@ jobs:
           decide eval-recall "$eval_skip" "$eval_keep"
           decide footprint "$footprint_skip" ''
           decide release-builds "$release_skip" ''
+          decide android "$android_skip" "$android_keep"
           echo "::${token}::"
 
   # actionlint (workflow syntax, expressions, shellcheck on run scripts) and
@@ -205,7 +218,7 @@ jobs:
           annotations: true
 
   # The release and CI scripts' own tests, and the version check every
-  # release relies on: all seven files that carry the app version agree.
+  # release relies on: every file that carries the app version agrees.
   scripts:
     name: Release and CI scripts
     runs-on: ubuntu-latest
@@ -1135,6 +1148,250 @@ jobs:
           path: footprint.json
           if-no-files-found: ignore
 
+  # Shodh for Android (mobile/): its frontend tests, a debug APK for phones
+  # (arm64) and the emulator (x86_64), then the APK launched on an Android
+  # emulator as a tester opens it (the_app_reaches_its_pair_screen): installed,
+  # started, its pair screen reached, and still running 15 s later with no
+  # crash. Ready is the app's own logcat line (link.rs), written once the
+  # window has shown its first screen, the link's key was read from the
+  # Android Keystore-backed storage (made on this first start) and the link's
+  # iroh endpoint is bound. The Android project (gen/android) is generated
+  # here by the pinned Tauri CLI from mobile/src-tauri; it is not committed.
+  android:
+    name: Android build + launch
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    # This job has no run history yet. 90 minutes bounds a cold run: no Rust
+    # or Gradle cache, two Android targets, the Gradle build and an emulator
+    # boot of up to 10 minutes.
+    timeout-minutes: 90
+    env:
+      # The workflow's -crt-static is for the desktop's builds; Android links
+      # its C library dynamically whatever the flag says.
+      RUSTFLAGS: ""
+      # r27c, the NDK's long-term-support release.
+      NDK_VERSION: 27.2.12479018
+      ANDROID_PACKAGE: com.shodh.mobile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install the phone app's dependencies
+        working-directory: mobile
+        run: npm ci
+
+      # The invoke shim (invoke_shim_forwards_and_routes_events), the test
+      # Ask and the colour tokens read from the desktop's stylesheet.
+      - name: Phone app tests
+        working-directory: mobile
+        run: npm test
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4.0.4
+        with:
+          packages: platform-tools platforms;android-36 build-tools;35.0.0 ndk;${{ env.NDK_VERSION }}
+          log-accepted-android-sdk-licenses: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+          targets: aarch64-linux-android,x86_64-linux-android
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          workspaces: mobile/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Format (phone app)
+        run: cargo fmt --manifest-path mobile/src-tauri/Cargo.toml --check
+
+      - name: Generate the Android project
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ndk" || { echo "::error::NDK $NDK_VERSION is not at $ndk"; exit 1; }
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          NDK_HOME="$ndk" npx tauri android init --ci
+          # The elephant launcher icons (tauri icon, from the desktop's
+          # logo) replace the template's.
+          cp -R src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
+
+      # Every warning fails, Clippy's included: the phone app's own code is
+      # new. --locked: a Cargo.lock that does not match the manifests fails.
+      - name: Clippy (phone app, Android)
+        run: |
+          set -euo pipefail
+          bin="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_x86_64_linux_android="$bin/x86_64-linux-android24-clang"
+          export AR_x86_64_linux_android="$bin/llvm-ar"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android24-clang"
+          cargo clippy --manifest-path mobile/src-tauri/Cargo.toml --target x86_64-linux-android --locked -- -D warnings
+
+      - name: Build the debug APK
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          npx tauri android build --debug --apk --target aarch64 --target x86_64
+          seconds=$(( $(date +%s) - start ))
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk')
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected one APK, found ${#apks[@]}: ${apks[*]}"
+            exit 1
+          fi
+          apk="$PWD/${apks[0]}"
+          # Both libraries are in it: arm64 for phones, x86_64 for the emulator.
+          abis=$(unzip -l "$apk" | grep -o 'lib/[^/]*/libshodh_mobile_lib\.so' | sort -u | tr '\n' ' ' || true)
+          for abi in arm64-v8a x86_64; do
+            if ! grep -q "lib/$abi/" <<< "$abis"; then
+              echo "::error::The APK has no $abi library (it has: $abis)"
+              exit 1
+            fi
+          done
+          echo "APK=$apk" >> "$GITHUB_ENV"
+          {
+            echo '### Android'
+            echo
+            echo "- debug APK \`$(basename "$apk")\`: $(du -h "$apk" | cut -f1), built in ${seconds} s; libraries: ${abis}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: shodh-android-debug-apk
+          path: ${{ env.APK }}
+          retention-days: 14
+          if-no-files-found: error
+
+      # The emulator runs with KVM: without it an x86_64 image boots in tens
+      # of minutes, if at all.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The launch test runs inside the emulator action (the emulator stops
+      # when the action ends), which runs each line of `script` on its own,
+      # so the test is one bash program, in LAUNCH_TEST.
+      - name: Launch it on an emulator (the_app_reaches_its_pair_screen)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
+        env:
+          LAUNCH_TEST: |
+            now_ms() { date +%s%3N; }
+            evidence="$RUNNER_TEMP/android-launch"
+            mkdir -p "$evidence"
+            # Whatever happens, the whole log and the crash buffer are kept.
+            trap 'adb logcat -d -v threadtime > "$evidence/logcat.txt" 2>&1 || true; adb logcat -d -b crash -v threadtime > "$evidence/crash.txt" 2>&1 || true' EXIT
+            # Room for the whole launch, and nothing from before it: the
+            # ready line read below is this launch's.
+            adb logcat -G 16M
+            adb logcat -b main,system,crash -c
+
+            start=$(now_ms)
+            adb install -r "$APK" | tr -d '\r' | tee "$evidence/install.txt"
+            installed_ms=$(( $(now_ms) - start ))
+            component=$(adb shell cmd package resolve-activity --brief "$ANDROID_PACKAGE" | tr -d '\r' | tail -n 1)
+            case "$component" in
+              "$ANDROID_PACKAGE"/*) ;;
+              *) echo "::error::$ANDROID_PACKAGE has no launcher activity: $component"; exit 1 ;;
+            esac
+
+            start=$(now_ms)
+            adb shell am start -W -n "$component" | tr -d '\r' | tee "$evidence/am-start.txt"
+            # 120 s: the slowest first start a tester would wait through
+            # without calling the app hung. On this emulator the first start
+            # includes the WebView's first start with software rendering, the
+            # Keystore generating the link's key and the app's first run.
+            # logcat ends at the first ready (or not-ready) line.
+            status=0
+            timeout 120 adb logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$evidence/ready.txt" || status=$?
+            ready_ms=$(( $(now_ms) - start ))
+            if [ "$status" -eq 124 ]; then
+              echo "::error::Shodh did not report ready within 120 s of its launch"
+              exit 1
+            elif [ "$status" -ne 0 ]; then
+              echo "::error::Reading logcat failed (status $status) while waiting for ready"
+              exit 1
+            fi
+            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | head -n 1)
+            echo "$ready_line"
+            if ! grep -q 'Shodh ready: the pair screen is shown' <<< "$ready_line"; then
+              echo "::error::Shodh did not reach its pair screen: $ready_line"
+              exit 1
+            fi
+            pid=$(adb shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
+            if [ -z "$pid" ]; then
+              echo "::error::Shodh reported ready but is not running"
+              exit 1
+            fi
+
+            # 15 s after ready covers the start's background work: the link's
+            # first relay connection and address lookup, which run after the
+            # endpoint is bound. A crash of the app ends the wait at once.
+            status=0
+            timeout 15 adb logcat -b crash -v threadtime -e "$ANDROID_PACKAGE" -m 1 > "$evidence/crash-wait.txt" || status=$?
+            if [ "$status" -ne 124 ]; then
+              if [ -s "$evidence/crash-wait.txt" ]; then
+                echo "::error::Shodh crashed within 15 s of being ready"
+                cat "$evidence/crash-wait.txt"
+              else
+                echo "::error::Reading the crash log ended (status $status) before the 15 s were up"
+              fi
+              exit 1
+            fi
+            now_pid=$(adb shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
+            if [ "$now_pid" != "$pid" ]; then
+              echo "::error::Shodh is not the process it was at ready (pid $pid, now ${now_pid:-none})"
+              exit 1
+            fi
+            errors=$(adb logcat -d -s Shodh:E | tr -d '\r')
+            if grep -q 'Shodh panicked' <<< "$errors"; then
+              echo "::error::Shodh panicked"
+              echo "$errors"
+              exit 1
+            fi
+            echo "Still running 15 s after ready, no crash"
+            {
+              echo
+              echo "Launch on the emulator (API 34, x86_64, first run):"
+              echo
+              echo "- installed in ${installed_ms} ms"
+              echo "- pair screen ready ${ready_ms} ms after launch: \`${ready_line}\`"
+              echo "- still running 15 s after ready (pid ${pid}), no crash in logcat"
+            } >> "$GITHUB_STEP_SUMMARY"
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          # The action's default, kept explicit: a cold boot of this image
+          # without a snapshot takes a few minutes on these runners, and a
+          # boot not done in 10 minutes is a broken image or runner.
+          emulator-boot-timeout: 600
+          script: bash -euo pipefail -c "$LAUNCH_TEST"
+
+      - name: Upload the emulator's log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-launch-evidence
+          path: ${{ runner.temp }}/android-launch
+          retention-days: 14
+          if-no-files-found: warn
+
   # The installers (release.yml, build-only: no tag, so nothing is published
   # and the update bundles are signed with a throwaway key): the Windows NSIS
   # installer and the Apple Silicon dmg are built and checked as a release
@@ -1167,7 +1424,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [changes, lint, scripts, fmt, check, test, macos, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds]
+    needs: [changes, lint, scripts, fmt, check, test, macos, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

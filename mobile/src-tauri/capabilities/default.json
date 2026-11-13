@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "The app's one window: Tauri's core and scanning the pairing QR code.",
+  "windows": ["main"],
+  "permissions": ["core:default", "barcode-scanner:default"]
+}

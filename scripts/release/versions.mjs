@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The app version lives in ten places across seven files. This reads them
+// The app version lives in sixteen places across eleven files. This reads them
 // all, checks they agree (and match a tag), and sets them all at once.
 //
 //   node scripts/release/versions.mjs check [--tag vX.Y.Z] [--root DIR] [--github-output]
@@ -32,6 +32,14 @@ export const LOCATIONS = [
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-rag-app' },
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-rag' },
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-link', since: '0.0.11' },
+  // The phone app (mobile/) is released with the desktop: the phone link
+  // refuses a phone of another version. Its Rust side has its own lockfile.
+  { file: 'mobile/package.json', kind: 'json', path: ['version'], since: '0.0.11' },
+  { file: 'mobile/package-lock.json', kind: 'json', path: ['version'], since: '0.0.11' },
+  { file: 'mobile/package-lock.json', kind: 'json', path: ['packages', '', 'version'], since: '0.0.11' },
+  { file: 'mobile/src-tauri/Cargo.toml', kind: 'manifest', package: 'shodh-mobile', since: '0.0.11' },
+  { file: 'mobile/src-tauri/Cargo.lock', kind: 'lock', package: 'shodh-mobile', since: '0.0.11' },
+  { file: 'mobile/src-tauri/Cargo.lock', kind: 'lock', package: 'shodh-link', since: '0.0.11' },
 ];
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

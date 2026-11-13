@@ -1,0 +1,47 @@
+[package]
+name = "shodh-mobile"
+# The phone and the desktop must be the same Shodh version (the phone link
+# checks it), so it is set with the app's: scripts/release/versions.mjs.
+# lib.rs fails the build when it differs from shodh-link's.
+version = "0.0.10"
+edition = "2021"
+description = "Shodh on the phone: a remote for the user's own Shodh computer, over the phone link"
+publish = false
+
+# Its own workspace and lockfile, built for Android by CI's android job only:
+# the desktop's jobs never build it, and a phone-only dependency change does
+# not touch the desktop's Cargo.lock.
+[workspace]
+
+[lib]
+name = "shodh_mobile_lib"
+# cdylib: the library Android loads. rlib: what the binary target links.
+crate-type = ["cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+shodh-link = { path = "../../crates/shodh-link" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# The phone's link key and its paired computer, in SharedPreferences
+# encrypted with an AES-GCM key that the Android Keystore generates and never
+# exports (vault.rs). By the keyring-rs maintainers; MIT OR Apache-2.0.
+android-native-keyring-store = "=1.0.0"
+keyring-core = "1"
+# Scanning the pairing QR code (the official plugin); MIT OR Apache-2.0.
+tauri-plugin-barcode-scanner = "=2.5.3"
+# The phone's model name (Android's system properties), and logcat.
+libc = "0.2"
+
+# Line tables only (file:line in panics and backtraces): a full-debuginfo
+# library makes a debug APK several times larger.
+[profile.dev]
+debug = "line-tables-only"

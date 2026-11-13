@@ -105,7 +105,7 @@ test('a job skipped by the Changes job is decided by its own output', () => {
     filtered.push(job.id);
   }
   assert.deepEqual([...outputs].sort(), [...filtered].sort());
-  assert.deepEqual([...filtered].sort(), ['eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds']);
+  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds']);
   // The script's own list of the jobs it decides is the same set.
   const heavy = changes.block.match(/^ +heavy=\((.+)\)$/m)[1].split(/\s+/);
   assert.deepEqual([...heavy].sort(), [...filtered].sort());
@@ -125,7 +125,7 @@ function skipSets() {
         return vars[v];
       });
   }
-  for (const v of ['eval_skip', 'eval_keep', 'footprint_skip', 'release_skip']) assert.ok(vars[v], `ci.yml sets ${v}`);
+  for (const v of ['eval_skip', 'eval_keep', 'footprint_skip', 'release_skip', 'android_skip', 'android_keep']) assert.ok(vars[v], `ci.yml sets ${v}`);
   return Object.fromEntries(Object.entries(vars).map(([k, v]) => [k, new RegExp(v)]));
 }
 
@@ -262,6 +262,54 @@ test('the skip sets skip documentation and keep everything a build reads', () =>
   ];
   for (const path of installers) assert.ok(!skippable(path, release_skip), `the release builds skip ${path}`);
 });
+
+test('the android job runs for the phone app and what it reads; a phone-only change skips the desktop jobs', () => {
+  const { eval_skip, eval_keep, footprint_skip, release_skip, android_skip, android_keep } = skipSets();
+  const phone = [
+    'mobile/src/App.tsx',
+    'mobile/src/lib/invoke.ts',
+    'mobile/tokens.ts',
+    'mobile/package-lock.json',
+    'mobile/src-tauri/src/link.rs',
+    'mobile/src-tauri/Cargo.toml',
+    'mobile/src-tauri/Cargo.lock',
+    'mobile/src-tauri/tauri.conf.json',
+    'mobile/src-tauri/icons/android/mipmap-hdpi/ic_launcher.png',
+    'crates/shodh-link/src/client.rs',
+    'crates/shodh-link/Cargo.toml',
+    // The desktop files the phone app reads: its colour tokens and their parser.
+    'app/src/index.css',
+    'app/src/lib/contrast.ts',
+    'app/src/shared/ChatMessage.tsx',
+    'rust-toolchain.toml',
+    '.github/workflows/ci.yml',
+    '.github/workflows/nightly.yml',
+  ];
+  for (const path of phone) assert.ok(!skippable(path, android_skip, android_keep), `the android job skips ${path}`);
+  const desktopOnly = [
+    'README.md',
+    'app/src/App-SplitView.tsx',
+    'app/package-lock.json',
+    'app/src-tauri/src/phone_link.rs',
+    'crates/shodh-rag/src/search/hybrid.rs',
+    'crates/shodh-ontology/src/lib.rs',
+    'Cargo.lock',
+    'Cargo.toml',
+    'scripts/release/versions.mjs',
+    '.github/workflows/release.yml',
+  ];
+  for (const path of desktopOnly) assert.ok(skippable(path, android_skip, android_keep), `the android job runs for ${path}`);
+  // The desktop's heavy jobs never build the phone app.
+  for (const path of ['mobile/src/App.tsx', 'mobile/src-tauri/Cargo.lock', 'mobile/package-lock.json']) {
+    assert.ok(skippable(path, eval_skip, eval_keep), `the evals run for ${path}`);
+    assert.ok(skippable(path, footprint_skip), `Footprint budget runs for ${path}`);
+    assert.ok(skippable(path, release_skip), `the release builds run for ${path}`);
+  }
+  // The phone link is built into the desktop app too.
+  assert.ok(!skippable('crates/shodh-link/src/client.rs', footprint_skip));
+  assert.ok(!skippable('crates/shodh-link/src/client.rs', release_skip));
+});
+
 
 test('a red or running nightly run of the commit holds the release', () => {
   assert.equal(evaluateChecks([...allPassed(), run(NIGHTLY_CHECK, 'completed', 'success')]).state, 'success');

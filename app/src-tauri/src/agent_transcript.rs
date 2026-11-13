@@ -87,6 +87,9 @@ pub fn reduce_transcript(seed: &Value, actions: &[Value]) -> Value {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Transcript {
     state: Map<String, Value>,
+    /// UTF-16 units of reasoning kept so far (the segments' text), so a thinking token
+    /// does not count the whole log again.
+    reasoning_units: usize,
 }
 
 impl Transcript {
@@ -125,7 +128,20 @@ impl Transcript {
                 state.insert(key.clone(), value.clone());
             }
         }
-        Self { state }
+        let reasoning_units = state
+            .get("reasoning")
+            .and_then(|r| r.get("segments"))
+            .and_then(Value::as_array)
+            .map_or(0, |segments| {
+                segments
+                    .iter()
+                    .map(|seg| utf16_len(seg.get("text").and_then(Value::as_str).unwrap_or("")))
+                    .sum()
+            });
+        Self {
+            state,
+            reasoning_units,
+        }
     }
 
     /// The run's id.
@@ -165,7 +181,10 @@ impl Transcript {
         if !self.is_live() && kind != "usage" {
             return;
         }
-        let s = &mut self.state;
+        let Self {
+            state: s,
+            reasoning_units,
+        } = self;
         match kind {
             "run_started" => {
                 s.insert("sessionId".into(), field(action, "sessionId"));
@@ -217,8 +236,7 @@ impl Transcript {
                     .get("blocks")
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len);
-                let reasoning = append_reasoning(s.get("reasoning"), at, delta);
-                s.insert("reasoning".into(), reasoning);
+                append_reasoning(s, at, delta, reasoning_units);
             }
             "step_started" => {
                 let id = str_field(action, "stepId").to_string();
@@ -684,8 +702,12 @@ fn append_text(blocks: &mut Vec<Value>, id: &str, delta: &str) {
     match at {
         Some(index) => {
             if let Some(Value::Object(block)) = blocks.get_mut(index) {
-                let text = format!("{}{}", str_field(block, "text"), delta);
-                block.insert("text".into(), json!(text));
+                match block.get_mut("text") {
+                    Some(Value::String(text)) => text.push_str(delta),
+                    _ => {
+                        block.insert("text".into(), json!(delta));
+                    }
+                }
             }
         }
         None => blocks.push(json!({ "kind": "text", "id": id, "text": delta })),
@@ -708,27 +730,14 @@ fn utf16_slice_from(text: &str, start: usize) -> String {
     String::from_utf16_lossy(&units)
 }
 
-/// The reasoning log with `delta` appended at block position `at`, within
-/// [`MAX_REASONING_CHARS`] (`appendReasoning`).
-fn append_reasoning(log: Option<&Value>, at: usize, delta: &str) -> Value {
-    let mut current = match log {
-        Some(Value::Object(log)) => log.clone(),
-        _ => {
-            let mut empty = Map::new();
-            empty.insert("segments".into(), json!([]));
-            empty.insert("truncated".into(), json!(false));
-            empty
-        }
-    };
-    if current.get("truncated") == Some(&Value::Bool(true)) {
-        return Value::Object(current);
+/// The state's reasoning log with `delta` appended at block position `at`, within
+/// [`MAX_REASONING_CHARS`] (`appendReasoning`); `used` counts the units kept so far.
+fn append_reasoning(state: &mut Map<String, Value>, at: usize, delta: &str, used: &mut usize) {
+    let log = object_mut(state, "reasoning");
+    if log.get("truncated") == Some(&Value::Bool(true)) {
+        return;
     }
-    let segments = array_mut(&mut current, "segments");
-    let used: usize = segments
-        .iter()
-        .map(|seg| utf16_len(seg.get("text").and_then(Value::as_str).unwrap_or("")))
-        .sum();
-    let room = MAX_REASONING_CHARS.saturating_sub(used);
+    let room = MAX_REASONING_CHARS.saturating_sub(*used);
     let delta_len = utf16_len(delta);
     let kept = if delta_len <= room {
         delta.to_string()
@@ -737,23 +746,25 @@ fn append_reasoning(log: Option<&Value>, at: usize, delta: &str) -> Value {
     };
     let kept_len = utf16_len(&kept);
     let truncated = kept_len < delta_len;
+    let segments = array_mut(log, "segments");
     if kept_len > 0 {
+        *used += kept_len;
         let joins = segments
             .last()
             .and_then(|last| last.get("at"))
             .and_then(Value::as_f64)
             .is_some_and(|last_at| last_at == at as f64);
         if joins {
-            if let Some(Value::Object(last)) = segments.last_mut() {
-                let text = format!("{}{}", str_field(last, "text"), kept);
-                last.insert("text".into(), json!(text));
+            if let Some(Value::String(text)) =
+                segments.last_mut().and_then(|last| last.get_mut("text"))
+            {
+                text.push_str(&kept);
             }
         } else {
             segments.push(json!({ "at": at, "text": kept }));
         }
     }
-    current.insert("truncated".into(), json!(truncated));
-    Value::Object(current)
+    log.insert("truncated".into(), json!(truncated));
 }
 
 fn step_finished(s: &mut Map<String, Value>, action: &Map<String, Value>) {

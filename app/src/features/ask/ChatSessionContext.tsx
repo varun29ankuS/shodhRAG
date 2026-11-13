@@ -65,6 +65,7 @@ import {
   loadConversation,
   publishMessage,
   saveStep,
+  upsertById,
   withLiveRun,
 } from './chatPersistence';
 import type { PersistMode, PersistView } from './chatPersistence';
@@ -355,14 +356,25 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     saveMessages(step.conversationId, stored, [], { immediate: step.immediate });
   }, [saveMessages]);
 
+  // Each stored message restored once: a reload keeps the unchanged ones' objects
+  // (`unchangedKept`), so only changed messages render (and parse markdown) again.
+  const restoredRef = useRef(new WeakMap<ConversationMessage, ChatMessage>());
+  const restore = useCallback((m: ConversationMessage): ChatMessage => {
+    const cached = restoredRef.current.get(m);
+    if (cached) return cached;
+    const restored = fromStored(m);
+    restoredRef.current.set(m, restored);
+    return restored;
+  }, []);
+
   /** What to show for `conversation` as stored: with the answer running in it, if any. */
   const shownMessages = useCallback((conversationId: string, stored: readonly ConversationMessage[]): ChatMessage[] => {
     const live = liveRef.current;
     const running = live && !live.settled && live.conversationId === conversationId ? live : null;
-    return withLiveRun(stored.map(fromStored), running
+    return withLiveRun(stored.map(restore), running
       ? { message: running.message, question: running.question, replaces: running.replaces }
       : null);
-  }, []);
+  }, [restore]);
 
   // Load messages when the active conversation changes. A running answer for
   // that conversation is re-attached so it stays visible.
@@ -388,7 +400,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     const conversation = conv.getConversation(reloaded.id);
     if (!conversation) return;
     const loaded = shownMessages(reloaded.id, conversation.messages);
-    setView(v => (v.conversationId === reloaded.id ? loadConversation(v, reloaded.id, loaded, {}) : v));
+    setView(v => {
+      if (v.conversationId !== reloaded.id) return v;
+      // A change made since (a notice published in the same tick) stays, to be saved.
+      const due = changedSince(v.changed, lastSavedSeqRef.current);
+      const shown = v.messages.filter(m => due.has(m.id)).reduce((list, m) => upsertById(list, m), loaded);
+      return loadConversation(v, reloaded.id, shown, {});
+    });
   }, [reloaded, conv.getConversation, saveView, shownMessages]);
 
   // Persist after real mutations only (never on load), so switching

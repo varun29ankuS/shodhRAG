@@ -58,6 +58,7 @@ test('a reload takes the stored messages, keeps the window settings and its wait
   const waiting: MessagePatch = { id: 'c1', messages: [message('n1', 'Indexed lease.pdf', 'system')], removed: [] };
   const reloaded = reloadedConversation(existing, stored, waiting);
   assert.deepEqual(reloaded.messages.map(m => m.id), ['q1', 'a1', 'q2', 'n1'], 'no turn is lost, the window change stays');
+  assert.equal(reloaded.messages[0], existing.messages[0], 'an unchanged message keeps its object, so it is not rendered again');
   assert.equal(reloaded.workspaceId, 'w1', 'a setting the window saves itself stays as the window has it');
   assert.equal(reloaded.mode, 'code');
   assert.equal(reloaded.title, 'q1', 'the name the first question gave it is shown');

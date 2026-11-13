@@ -232,14 +232,26 @@ impl ConversationStore {
         &self,
         change: impl FnOnce(&mut Vec<ConversationRecord>) -> Result<R, String>,
     ) -> Result<R, String> {
+        self.update_if(|conversations| change(conversations).map(Some))?
+            .ok_or_else(|| "The conversations were not changed.".to_string())
+    }
+
+    /// [`Self::update`] where `change` may decide to change nothing (`None`): then
+    /// nothing is written.
+    fn update_if<R>(
+        &self,
+        change: impl FnOnce(&mut Vec<ConversationRecord>) -> Result<Option<R>, String>,
+    ) -> Result<Option<R>, String> {
         let _guard = CONVERSATIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Loaded {
             value: mut conversations,
             origin,
         } = self.read_unlocked()?;
-        let result = change(&mut conversations)?;
+        let Some(result) = change(&mut conversations)? else {
+            return Ok(None);
+        };
         self.write_unlocked(conversations, &origin)?;
-        Ok(result)
+        Ok(Some(result))
     }
 }
 
@@ -386,28 +398,23 @@ impl ConversationStore {
         if crate::connectors::conversations::is_connector_id(conversation_id) {
             return Err(CONNECTOR_KEEPS_IT.to_string());
         }
-        let _guard = CONVERSATIONS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let Loaded {
-            value: mut conversations,
-            origin,
-        } = self.read_unlocked()?;
-        let index = match conversations.iter().position(|c| c.id == conversation_id) {
-            Some(index) => index,
-            // Deleted meanwhile: a late answer does not bring it back (nothing is written).
-            None if !create => return Ok(None),
-            None => {
-                conversations.push(new_record(conversation_id));
-                conversations.len() - 1
+        self.update_if(|conversations| {
+            let index = match conversations.iter().position(|c| c.id == conversation_id) {
+                Some(index) => index,
+                // Deleted meanwhile: a late answer does not bring it back.
+                None if !create => return Ok(None),
+                None => {
+                    conversations.push(new_record(conversation_id));
+                    conversations.len() - 1
+                }
+            };
+            let record = &mut conversations[index];
+            if record.source.is_some() {
+                return Err(CONNECTOR_KEEPS_IT.to_string());
             }
-        };
-        let record = &mut conversations[index];
-        if record.source.is_some() {
-            return Err(CONNECTOR_KEEPS_IT.to_string());
-        }
-        apply_turns(record, writes, removed);
-        let written = record.clone();
-        self.write_unlocked(conversations, &origin)?;
-        Ok(Some(written))
+            apply_turns(record, writes, removed);
+            Ok(Some(record.clone()))
+        })
     }
 
     /// Adds one message to a conversation atomically, or replaces the one with its id

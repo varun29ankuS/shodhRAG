@@ -85,6 +85,18 @@ export function withPatch(conversation: Conversation, patch: Pick<MessagePatch, 
 }
 
 /**
+ * `stored`, with each message equal to the one the window already has kept as that same
+ * object: a reload re-renders only what changed, not the whole history.
+ */
+export function unchangedKept(shown: readonly ConversationMessage[], stored: readonly ConversationMessage[]): ConversationMessage[] {
+  const byId = new Map(shown.map(m => [m.id, m]));
+  return stored.map(m => {
+    const kept = byId.get(m.id);
+    return kept && JSON.stringify(kept) === JSON.stringify(m) ? kept : m;
+  });
+}
+
+/**
  * A conversation reloaded after `conversation_changed`: its messages and time as stored,
  * with the window's own changes still waiting to be written on top, and the name its
  * first question gave it while the window still calls it "New Chat". What the window
@@ -100,7 +112,7 @@ export function reloadedConversation(
   const base: Conversation = existing
     ? {
         ...existing,
-        messages: stored.messages,
+        messages: unchangedKept(existing.messages, stored.messages),
         title: existing.title === NEW_CHAT_TITLE ? stored.title : existing.title,
         updatedAt: stored.updatedAt > existing.updatedAt ? stored.updatedAt : existing.updatedAt,
       }

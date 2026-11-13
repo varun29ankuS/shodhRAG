@@ -34,6 +34,7 @@ use shodh_rag::audit::{AuditEventType, AuditRecord, LOCAL_OWNER};
 use shodh_rag::harness::code_mode::{CHANGE_TOOLS, OMP_EXECUTION_TOOLS};
 use shodh_rag::harness::modes::AgentMode;
 use shodh_rag::harness::run_command::RUN_COMMAND;
+use shodh_rag::inbox::InboxItem;
 use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tokio::sync::{broadcast, Mutex as AsyncMutex, OnceCell};
 
@@ -46,6 +47,7 @@ use crate::audit_commands::AuditState;
 use crate::connectors::telegram::{qr_matrix, QrMatrix};
 use crate::conversation_commands::{ConversationMode, CONVERSATION_CHANGED_EVENT};
 use crate::conversation_turns::SendTurn;
+use crate::inbox_commands::INBOX_CHANGED_EVENT;
 use crate::memory_learn::TextOrigin;
 use crate::model_picker_commands::ModelOverride;
 use crate::rag_commands::RagState;
@@ -186,10 +188,10 @@ impl PhoneLinkState {
 }
 
 /// Manage the state and forward the desktop's events the bridge sends on: agent
-/// events, and which conversation the desktop saved.
+/// events, which conversation the desktop saved, and that the Inbox changed.
 pub fn manage(app: &AppHandle) {
     let (events, _) = broadcast::channel(EVENT_BUFFER);
-    for name in [AGENT_EVENT, CONVERSATION_CHANGED_EVENT] {
+    for name in [AGENT_EVENT, CONVERSATION_CHANGED_EVENT, INBOX_CHANGED_EVENT] {
         let forward = events.clone();
         app.listen_any(name, move |event| {
             // Parsed only while a phone is connected.
@@ -777,6 +779,39 @@ async fn linked_file(app: &AppHandle, raw: &str) -> Result<String, Value> {
         .map_err(path_refused)
 }
 
+/// An approval waiting on the computer, as the phone's Approvals lists it:
+/// the step, its conversation and title, when it was asked, and whether the
+/// phone may allow it (`phoneMay`, the desktop's own rule). An item without
+/// its tool is sent without one: the bridge then never lets a phone answer
+/// it, and it shows "Approve this on your computer".
+pub fn phone_approval(item: &InboxItem, facts: Option<RemoteFacts>) -> Value {
+    let text = |name: &str| {
+        item.data
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let tool = text("tool");
+    let phone_may = tool.as_ref().is_some_and(|tool| {
+        let step = PendingStep {
+            tool: tool.clone(),
+            tier: String::new(),
+        };
+        shodh_link::allowlist::remote_may_approve(&approval_kind(facts, &step))
+    });
+    json!({
+        "sessionId": text("sessionId"),
+        "stepId": text("stepId"),
+        "conversationId": text("conversationId"),
+        "tool": tool,
+        "title": item.title,
+        "requestedAt": item.created_at,
+        "phoneMay": phone_may,
+    })
+}
+
 /// Run an allowlisted command for a phone with the desktop's own handler.
 async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, Value> {
     use crate::source_viewer_commands as viewer;
@@ -870,6 +905,20 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
                 )
                 .await,
             )
+        }
+        "approvals_pending" => {
+            let items = crate::inbox_commands::pending_approvals(app)
+                .await
+                .map_err(|e| json!({ "code": "unavailable", "message": e }))?;
+            let sessions = app.state::<AgentSessions>();
+            let list: Vec<Value> = items
+                .iter()
+                .map(|item| {
+                    let session = item.data["sessionId"].as_str().unwrap_or_default();
+                    phone_approval(item, sessions.remote_facts(session))
+                })
+                .collect();
+            Ok(Value::Array(list))
         }
         "workspaces_list" => reply(
             crate::workspace_commands::workspaces_list(app.clone(), app.state(), Some(false)).await,
@@ -1079,6 +1128,74 @@ mod tests {
             shodh_link::bridge::CONVERSATION_CHANGED,
             CONVERSATION_CHANGED_EVENT
         );
+        assert_eq!(shodh_link::bridge::INBOX_CHANGED, INBOX_CHANGED_EVENT);
+        assert_eq!(
+            shodh_link::bridge::PENDING_APPROVALS,
+            "approvals_pending",
+            "the bridge remembers the steps of the read the desktop serves"
+        );
+    }
+
+    /// The phone's Approvals: each waiting step says whether the phone may allow it,
+    /// by the desktop's own rule, and a step without its tool never may.
+    #[test]
+    fn approvals_listed_for_a_phone_say_which_it_may_answer() {
+        use shodh_rag::inbox::{InboxKind, InboxStatus};
+        let item = |tool: Option<&str>| InboxItem {
+            id: "approval:s1:t1".to_string(),
+            kind: InboxKind::Approval,
+            status: InboxStatus::NeedsYou,
+            title: "Fetch arxiv.org".to_string(),
+            detail: None,
+            link: None,
+            data: match tool {
+                Some(tool) => {
+                    json!({ "sessionId": "s1", "stepId": "t1", "tool": tool, "conversationId": "c1" })
+                }
+                None => json!({ "sessionId": "s1", "stepId": "t1" }),
+            },
+            created_at: "2026-11-13T10:00:00.000Z".to_string(),
+            updated_at: "2026-11-13T10:00:00.000Z".to_string(),
+        };
+        let ask = facts(false, AgentMode::Ask);
+        let listed = phone_approval(&item(Some("fetch_url")), ask);
+        assert_eq!(
+            listed,
+            json!({
+                "sessionId": "s1",
+                "stepId": "t1",
+                "conversationId": "c1",
+                "tool": "fetch_url",
+                "title": "Fetch arxiv.org",
+                "requestedAt": "2026-11-13T10:00:00.000Z",
+                "phoneMay": true,
+            })
+        );
+        assert_eq!(
+            phone_approval(&item(Some("fetch_url")), facts(false, AgentMode::Creator))["phoneMay"],
+            true
+        );
+        // Code mode, a command or an edit anywhere, and a session that is not live.
+        assert_eq!(
+            phone_approval(&item(Some("fetch_url")), facts(true, AgentMode::Ask))["phoneMay"],
+            false
+        );
+        assert_eq!(
+            phone_approval(&item(Some(RUN_COMMAND)), ask)["phoneMay"],
+            false
+        );
+        for tool in CHANGE_TOOLS {
+            assert_eq!(phone_approval(&item(Some(tool)), ask)["phoneMay"], false);
+        }
+        assert_eq!(
+            phone_approval(&item(Some("fetch_url")), None)["phoneMay"],
+            false
+        );
+        // Without its tool (an item from an older build), never.
+        let unplaced = phone_approval(&item(None), ask);
+        assert_eq!(unplaced["phoneMay"], false);
+        assert_eq!(unplaced["tool"], Value::Null);
+        assert_eq!(unplaced["stepId"], "t1");
     }
 
     /// Every allowlisted command is one the desktop registers (and runs here with its

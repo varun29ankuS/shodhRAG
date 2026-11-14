@@ -193,9 +193,11 @@ export function plainText(inlines: readonly Inline[]): string {
 
 /** A short plain-text snippet of an answer's Markdown. */
 export function snippet(markdown: string, max = 160): string {
-  const text = parseAnswer(markdown)
-    .map(block => (block.kind === 'code' ? '' : block.kind === 'table' ? '' : plainText(block.inlines)))
-    .filter(t => t !== '')
-    .join(' ');
+  // The answer's first paragraph only: a heading run into the text after it
+  // ("…question. How it works Retrieve token…") reads as one garbled sentence.
+  const blocks = parseAnswer(markdown);
+  const first =
+    blocks.find(block => block.kind === 'p' || block.kind === 'quote') ?? blocks.find(block => block.kind === 'li');
+  const text = first && first.kind !== 'code' && first.kind !== 'table' ? plainText(first.inlines).trim() : '';
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }

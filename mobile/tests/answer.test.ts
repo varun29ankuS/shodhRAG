@@ -102,7 +102,10 @@ describe("the answer's structure", () => {
   });
 
   it('makes a plain snippet', () => {
-    expect(snippet('## Title\n\nIt **retrieves** on demand [1].', 60)).toBe('Title It retrieves on demand.');
+    expect(snippet('## Title\n\nIt **retrieves** on demand [1].', 60)).toBe('It retrieves on demand.');
+    // The first paragraph only: a heading is never run into the text after it.
+    expect(snippet('It decides itself [1].\n\n## How it works\n\n- **Retrieve token.** Only when needed [1].', 140)).toBe('It decides itself.');
+    expect(snippet('## Steps\n\n- First do this.\n- Then that.', 140)).toBe('First do this.');
     expect(snippet('a'.repeat(200), 20)).toHaveLength(20);
   });
 });

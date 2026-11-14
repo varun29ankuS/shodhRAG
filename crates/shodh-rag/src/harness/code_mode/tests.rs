@@ -173,18 +173,20 @@ fn code_launch_args_enable_exactly_the_code_tools_with_the_guard() {
         Path::new("/data/omp/overlay.yml"),
         Path::new("/data/omp/code/overlay.yml"),
         Path::new("/data/omp/code/guard.js"),
-        "Be careful.",
+        Path::new("/data/omp/prompts/system-prompt-1.txt"),
         crate::harness::sidecar::Thinking::Low,
         false,
     );
     assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write".to_string()));
+    // The prompt's file, never its text.
+    assert!(args.contains(&"--system-prompt=/data/omp/prompts/system-prompt-1.txt".to_string()));
     // Plan mode: only the reading tools, with the same guard.
     let reading = code_launch_args(
         "anthropic/claude-sonnet-4-5",
         Path::new("/data/omp/overlay.yml"),
         Path::new("/data/omp/code/overlay.yml"),
         Path::new("/data/omp/code/guard.js"),
-        "Be careful.",
+        Path::new("/data/omp/prompts/system-prompt-1.txt"),
         crate::harness::sidecar::Thinking::Low,
         true,
     );

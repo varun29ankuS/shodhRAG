@@ -180,9 +180,7 @@ fn refuse_all(listener: TcpListener, log: Log, label: String) {
 /// The refusing proxy (its port) and the canaries; every connection they see
 /// goes to `log`.
 async fn refusing_network(log: &Log) -> u16 {
-    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = proxy.local_addr().unwrap().port();
-    refuse_all(proxy, log.clone(), "proxy".into());
+    let port = refusing_proxy(log).await;
     for canary in LOCAL_SERVER_PORTS {
         let listener = TcpListener::bind(("127.0.0.1", canary))
             .await
@@ -192,8 +190,26 @@ async fn refusing_network(log: &Log) -> u16 {
     port
 }
 
+/// The refusing proxy alone (its port), without the canaries' fixed ports.
+async fn refusing_proxy(log: &Log) -> u16 {
+    let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = proxy.local_addr().unwrap().port();
+    refuse_all(proxy, log.clone(), "proxy".into());
+    port
+}
+
 fn spec(data: &std::path::Path, provider: u16, proxy: u16, code: Option<CodeFolder>) -> LaunchSpec {
     let binary = std::path::PathBuf::from(std::env::var_os("SHODH_OMP_PATH").unwrap());
+    spec_with(binary, data, provider, proxy, code)
+}
+
+fn spec_with(
+    binary: std::path::PathBuf,
+    data: &std::path::Path,
+    provider: u16,
+    proxy: u16,
+    code: Option<CodeFolder>,
+) -> LaunchSpec {
     let proxy = format!("http://127.0.0.1:{proxy}");
     let mut env = vec![
         (
@@ -556,4 +572,107 @@ async fn code_sessions_run_their_host_tools() {
         calls.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         [json!({"q": "x"})]
     );
+}
+
+/// The omp binary of the long-prompt check: `SHODH_OMP_PATH`, else the
+/// pinned release downloaded into `data` as setup does ([`fetch_omp`],
+/// checked against the pinned SHA-256), so CI needs no copy of the version
+/// or the hash.
+///
+/// [`fetch_omp`]: super::sidecar::fetch_omp
+async fn live_binary(data: &std::path::Path) -> std::path::PathBuf {
+    match std::env::var_os("SHODH_OMP_PATH") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            super::sidecar::fetch_omp(data, &|_, _| {})
+                .await
+                .expect("downloading the pinned omp release")
+                .path
+        }
+    }
+}
+
+/// Start omp, wait for `ready` and return its `get_state` response.
+async fn session_state(spec: &LaunchSpec) -> Value {
+    let mut process = spawn(spec).await.unwrap();
+    let prompt_file = process.system_prompt.path().to_path_buf();
+    assert!(
+        prompt_file.exists(),
+        "the prompt file is there while omp runs"
+    );
+    let mut lines = BufReader::new(process.stdout).lines();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let mut asked = false;
+    loop {
+        let line = tokio::time::timeout_at(deadline, lines.next_line())
+            .await
+            .unwrap_or_else(|_| panic!("no get_state response within 180 s"))
+            .unwrap()
+            .unwrap_or_else(|| panic!("omp exited before its get_state response"));
+        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if frame["type"] == "ready" && !asked {
+            asked = true;
+            let request = json!({"type": "get_state", "id": "state"});
+            process
+                .stdin
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+        } else if frame["type"] == "response" && frame["id"] == "state" {
+            let _ = process.child.kill().await;
+            return frame;
+        }
+    }
+}
+
+/// A system prompt longer than Windows allows on a command line (os error
+/// 206 while it was passed as `--system-prompt=<text>`) reaches omp whole
+/// through its file, in Research and Code sessions: omp reports it as its
+/// system prompt, not the file's path (what omp would use if it could not
+/// read the file).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the omp binary at SHODH_OMP_PATH, or the network to download it"]
+async fn a_system_prompt_longer_than_a_command_line_reaches_omp_whole() {
+    let network: Log = Arc::default();
+    let proxy = refusing_proxy(&network).await;
+    let port = provider(Arc::default(), 0).await;
+    let data = tempfile::tempdir().unwrap();
+    let binary = live_binary(data.path()).await;
+
+    let mut prompt = String::from("You are Shodh, a private assistant.\n");
+    let mut n = 0;
+    while prompt.chars().count() <= 45_000 {
+        n += 1;
+        prompt.push_str(&format!(
+            "Workspace rule {n}: cite every claim with its passage number — \"quoted\" & <tagged> ✓\n"
+        ));
+    }
+    prompt.push_str("END-OF-PROMPT-MARKER");
+    assert!(prompt.chars().count() > 40_000);
+
+    let folder = tempfile::tempdir().unwrap();
+    for code in [None, Some(CodeFolder::open(folder.path()).unwrap())] {
+        let label = if code.is_some() { "code" } else { "research" };
+        let launch = LaunchSpec {
+            system_prompt: prompt.clone(),
+            ..spec_with(binary.clone(), data.path(), port, proxy, code)
+        };
+        let state = session_state(&launch).await;
+        assert_eq!(state["success"], true, "{label}: {state}");
+        let parts: Vec<&str> = state["data"]["systemPrompt"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{label}: no systemPrompt in {state}"))
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            parts.iter().any(|part| part.contains(&prompt)),
+            "{label}: omp's system prompt is not Shodh's whole prompt (first part starts {:?})",
+            parts
+                .first()
+                .map(|p| p.chars().take(200).collect::<String>())
+        );
+    }
 }

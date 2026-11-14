@@ -13,7 +13,10 @@ export interface ConversationSummary {
   updatedAt: string;
   pinned: boolean;
   workspaceId: string | null;
+  /** `"research"`, `"code"`, or null (an older record: Research). */
   mode: string | null;
+  /** The agent mode picked for it (`"creator"` among them), or null. */
+  agentMode: string | null;
   messageCount: number;
 }
 
@@ -32,6 +35,9 @@ export interface SavedConversation {
   messages: SavedMessage[];
   updatedAt: string;
   workspaceId?: string | null;
+  /** Absent on older records (Research). */
+  mode?: string | null;
+  agentMode?: string | null;
 }
 
 export interface FolderEntry {

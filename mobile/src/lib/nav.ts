@@ -9,6 +9,7 @@
  * its Inbox).
  */
 import { VIEW_TABS, VIEW_TAB_LABELS, type ViewTab } from '../../../app/src/lib/viewTabs.ts';
+import type { KindFilter } from './modes';
 
 export type Section = ViewTab | 'approvals';
 
@@ -27,7 +28,8 @@ export const TABS: readonly Section[] = ['ask', 'library', 'approvals'];
 /** A screen of the Ask section. */
 export type AskScreen =
   | { kind: 'home' }
-  | { kind: 'conversations' }
+  /** Every conversation, or only those of one kind. */
+  | { kind: 'conversations'; filter?: KindFilter }
   /** A conversation: saved, and (with `question`) asking a new question in it. */
   | { kind: 'answer'; conversationId: string; question: string | null; workspaceId: string | null };
 
@@ -78,6 +80,8 @@ export type NavAction =
   | { type: 'go'; section: Section }
   | { type: 'drawer'; open: boolean }
   | { type: 'push'; screen: AskScreen }
+  /** The Conversations list shown shows only `filter` (kept for Back from a conversation). */
+  | { type: 'filter'; filter: KindFilter }
   | { type: 'folder'; folder: Folder }
   /** Show the Library at a breadcrumb: `depth` folders deep (0: the linked folders). */
   | { type: 'crumb'; depth: number }
@@ -115,6 +119,11 @@ export function navigate(nav: Nav, action: NavAction): Nav {
       return { ...nav, drawer: action.open };
     case 'push':
       return { ...nav, section: 'ask', drawer: false, ask: [...nav.ask, action.screen] };
+    case 'filter': {
+      const top = nav.ask[nav.ask.length - 1];
+      if (top?.kind !== 'conversations') return nav;
+      return { ...nav, ask: [...nav.ask.slice(0, -1), { kind: 'conversations', filter: action.filter }] };
+    }
     case 'folder':
       return { ...nav, section: 'library', drawer: false, library: [...nav.library, action.folder] };
     case 'crumb':

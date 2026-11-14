@@ -125,7 +125,8 @@ export function NavProvider({ initial, children }: { initial?: Nav; children: Re
       const before = navRef.current;
       const after = navigate(before, action);
       if (after === before) return;
-      const forward = action.type !== 'back' && action.type !== 'crumb' && !(action.type === 'drawer' && !action.open) && !(action.type === 'sheet' && action.target === null);
+      // A filter replaces the list shown, so it is not a step Back undoes.
+      const forward = action.type !== 'back' && action.type !== 'crumb' && action.type !== 'filter' && !(action.type === 'drawer' && !action.open) && !(action.type === 'sheet' && action.target === null);
       if (forward && canGoBack(after)) {
         window.history.pushState({ shodh: pushed.current + 1 }, '');
         pushed.current += 1;

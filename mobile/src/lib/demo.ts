@@ -41,16 +41,111 @@ const ANSWER = [
 ].join('\n');
 
 const CONVERSATIONS = [
-  { id: 'demo-selfrag', title: 'How does Self-RAG decide when to retrieve?', updatedAt: minutesAgo(4), pinned: false, messageCount: 2 },
-  { id: 'demo-middle', title: 'Where should the best passages go in the prompt?', updatedAt: minutesAgo(130), pinned: false, messageCount: 4 },
-  { id: 'demo-notes', title: 'What do my reading notes say about retrieval?', updatedAt: minutesAgo(60 * 26), pinned: true, messageCount: 2 },
-  { id: 'demo-hnsw', title: 'Compare HNSW and IVF for my index size', updatedAt: minutesAgo(60 * 24 * 3), pinned: false, messageCount: 6 },
-].map(c => ({ ...c, createdAt: c.updatedAt, workspaceId: null, mode: null }));
+  { id: 'demo-selfrag', title: 'How does Self-RAG decide when to retrieve?', updatedAt: minutesAgo(4), pinned: false, messageCount: 2, workspaceId: 'w1', mode: null, agentMode: null },
+  { id: 'demo-rerank', title: 'Make the reranker skip empty passages', updatedAt: minutesAgo(48), pinned: false, messageCount: 2, workspaceId: 'w1', mode: 'code', agentMode: 'ask' },
+  { id: 'demo-middle', title: 'Where should the best passages go in the prompt?', updatedAt: minutesAgo(130), pinned: false, messageCount: 4, workspaceId: 'w1', mode: 'research', agentMode: null },
+  { id: 'demo-notes', title: 'What do my reading notes say about retrieval?', updatedAt: minutesAgo(60 * 26), pinned: true, messageCount: 2, workspaceId: null, mode: null, agentMode: null },
+  { id: 'demo-poster', title: 'A one-page poster of the chapter 2 results', updatedAt: minutesAgo(60 * 27), pinned: false, messageCount: 2, workspaceId: 'w2', mode: 'code', agentMode: 'creator' },
+  { id: 'demo-hnsw', title: 'Compare HNSW and IVF for my index size', updatedAt: minutesAgo(60 * 24 * 3), pinned: false, messageCount: 6, workspaceId: 'w1', mode: null, agentMode: null },
+  { id: 'demo-bench', title: 'Add a benchmark for the int8 index', updatedAt: minutesAgo(60 * 24 * 9), pinned: false, messageCount: 4, workspaceId: 'w2', mode: 'code', agentMode: 'acceptEdits' },
+].map(c => ({ ...c, createdAt: c.updatedAt }));
+
+const CODE_ANSWER = [
+  'The reranker now skips passages whose text is empty or only whitespace, before scoring, so they never reach the prompt.',
+  '',
+  'I added a test with two empty passages and one real one; the suite passes.',
+].join('\n');
+
+/** A Code answer's saved transcript: two files changed, two commands run. */
+const CODE_TRANSCRIPT = {
+  runId: 'demo-rerank-run',
+  startedAtMs: 0,
+  status: 'completed',
+  agentMode: 'ask',
+  blocks: [
+    { kind: 'step', stepId: 'read-1' },
+    { kind: 'step', stepId: 'edit-1' },
+    { kind: 'step', stepId: 'write-1' },
+    { kind: 'step', stepId: 'cmd-1' },
+    { kind: 'step', stepId: 'cmd-2' },
+    { kind: 'text', id: 'm1', text: CODE_ANSWER },
+  ],
+  steps: {
+    'read-1': { id: 'read-1', tool: 'read', label: 'Read rerank.rs', status: 'done', args: { path: 'crates/shodh-rag/src/rerank.rs' }, startedAtMs: 1 },
+    'edit-1': { id: 'edit-1', tool: 'edit', label: 'Edit rerank.rs', status: 'done', args: { path: 'crates/shodh-rag/src/rerank.rs' }, startedAtMs: 2 },
+    'write-1': { id: 'write-1', tool: 'write', label: 'Write rerank_empty.rs', status: 'done', args: { path: 'crates/shodh-rag/tests/rerank_empty.rs' }, startedAtMs: 3 },
+    'cmd-1': {
+      id: 'cmd-1',
+      tool: 'run_command',
+      label: 'Run cargo test',
+      status: 'done',
+      args: { command: 'cargo test -p shodh-rag --test rerank_empty' },
+      startedAtMs: 4,
+      command: {
+        commandId: 'c1',
+        command: 'cargo test -p shodh-rag --test rerank_empty',
+        state: 'done',
+        startedAtMs: 4,
+        timeLimitSecs: 600,
+        sandbox: null,
+        exitCode: 0,
+        note: null,
+        durationMs: 18_400,
+        output: 'running 3 tests\ntest empty_passages_are_skipped ... ok\ntest whitespace_is_empty ... ok\ntest real_passages_are_kept ... ok\n\ntest result: ok. 3 passed; 0 failed',
+        outputCut: false,
+      },
+    },
+    'cmd-2': {
+      id: 'cmd-2',
+      tool: 'run_command',
+      label: 'Run cargo clippy',
+      status: 'done',
+      args: { command: 'cargo clippy -p shodh-rag -- -D warnings' },
+      startedAtMs: 5,
+      command: {
+        commandId: 'c2',
+        command: 'cargo clippy -p shodh-rag -- -D warnings',
+        state: 'done',
+        startedAtMs: 5,
+        timeLimitSecs: 600,
+        sandbox: null,
+        exitCode: 0,
+        note: null,
+        durationMs: 9_100,
+        output: '    Checking shodh-rag v0.0.10\n    Finished `dev` profile in 9.06s',
+        outputCut: false,
+      },
+    },
+  },
+  passages: [],
+  groundings: [],
+  interimIds: [],
+};
+
+const CREATOR_ANSWER = 'The poster is ready: one page with the three results and the recall chart.';
+
+/** A Creator answer's saved transcript: what it made, and its finish summary. */
+const CREATOR_TRANSCRIPT = {
+  runId: 'demo-poster-run',
+  startedAtMs: 0,
+  status: 'completed',
+  agentMode: 'creator',
+  blocks: [{ kind: 'text', id: 'm1', text: CREATOR_ANSWER }],
+  steps: {
+    'write-1': { id: 'write-1', tool: 'write', label: 'Write index.html', status: 'done', args: { path: 'index.html' }, startedAtMs: 1 },
+    'write-2': { id: 'write-2', tool: 'write', label: 'Write poster.css', status: 'done', args: { path: 'poster.css' }, startedAtMs: 2 },
+    'finish-1': { id: 'finish-1', tool: 'finish_creation', label: 'Finish', status: 'done', args: {}, startedAtMs: 3, detail: { summary: 'A one-page poster of the chapter 2 results, with the recall chart.', choices: [] } },
+  },
+  passages: [],
+  groundings: [],
+  interimIds: [],
+};
 
 function conversation(id: string) {
   const summary = CONVERSATIONS.find(c => c.id === id);
   if (!summary) return null;
-  const transcript = {
+  let content = ANSWER;
+  let transcript: unknown = {
     runId: `${id}-run`,
     startedAtMs: 0,
     status: 'completed',
@@ -60,13 +155,23 @@ function conversation(id: string) {
     groundings: [],
     interimIds: [],
   };
+  if (summary.mode === 'code' && summary.agentMode !== 'creator') {
+    content = CODE_ANSWER;
+    transcript = CODE_TRANSCRIPT;
+  } else if (summary.agentMode === 'creator') {
+    content = CREATOR_ANSWER;
+    transcript = CREATOR_TRANSCRIPT;
+  }
   return {
     id,
     title: summary.title,
     updatedAt: summary.updatedAt,
+    workspaceId: summary.workspaceId,
+    mode: summary.mode,
+    agentMode: summary.agentMode,
     messages: [
       { id: `${id}-q`, role: 'user', content: summary.title, timestamp: summary.updatedAt },
-      { id: `${id}-a`, role: 'assistant', content: ANSWER, timestamp: summary.updatedAt, transcript },
+      { id: `${id}-a`, role: 'assistant', content, timestamp: summary.updatedAt, transcript },
     ],
   };
 }
@@ -251,6 +356,17 @@ export function demoNav(screen: string): Nav | null {
       return answer;
     case 'conversations':
       return { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations' }] };
+    case 'conversations-research':
+      return { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations', filter: 'research' }] };
+    case 'conversations-code':
+      return { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations', filter: 'code' }] };
+    case 'conversations-creator':
+      return { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations', filter: 'creator' }] };
+    case 'code':
+      return {
+        ...initialNav('ask'),
+        ask: [{ kind: 'home' }, { kind: 'conversations', filter: 'code' }, { kind: 'answer', conversationId: 'demo-rerank', question: null, workspaceId: 'w1' }],
+      };
     case 'library':
       return { ...initialNav('library'), library: [{ path: ROOT, name: 'Papers' }] };
     case 'reader':

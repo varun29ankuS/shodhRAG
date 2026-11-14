@@ -2,19 +2,31 @@
  * A conversation: each question as a headline and its answer under it, as
  * the computer saved them, and a new question's answer as it streams. Ask a
  * follow-up from the box at the bottom; Stop ends the answer being written.
+ *
+ * The layout follows the conversation's kind on the computer (lib/modes.ts):
+ * Research reads as prose; Code is monospace, with the files each answer
+ * changed and the commands it ran, from the saved transcript, under a note
+ * that code changes are approved on the computer; Creator says where to see
+ * its preview. A question from the phone always starts a Research session
+ * (it sends no mode, and the computer refuses Code from a phone), so in a
+ * Code conversation the phone asks questions and anything that edits waits
+ * for the computer.
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowUp, Square, TriangleAlert } from 'lucide-react';
 import { AnswerBlocks, AnswerSources, whereOf, type CiteHandler } from '../components/AnswerView';
 import { BackBar } from '../components/Bars';
+import { CodeNote, CodeWorkView, CreatorPreview } from '../components/CodeWork';
 import { connectionWords, Dot, NotConnected } from '../components/Connection';
 import { Sheet } from '../components/Sheet';
 import { answerText, citedNumbers, isLive, savedAnswer, startingAnswer, type AnswerState, type Passage } from '../lib/answer';
 import { ask, AskStopped } from '../lib/ask';
+import { codeWork, NO_WORK, type CodeWork } from '../lib/code';
 import { useLink, useNav } from '../lib/context';
 import { abortAnswer, CONVERSATION_CHANGED, loadConversation, type HistoryTurn, type SavedConversation } from '../lib/desktop';
 import { errorText } from '../lib/link';
+import { conversationKind } from '../lib/modes';
 import { pushIn } from '../lib/motion';
 import { useRemote } from '../lib/remote';
 
@@ -22,6 +34,8 @@ interface Turn {
   id: string;
   question: string;
   answer: AnswerState;
+  /** What the answer changed and ran (Code and Creator), from its transcript. */
+  work: CodeWork;
 }
 
 /** The saved conversation as question and answer pairs. */
@@ -29,15 +43,29 @@ export function savedTurns(conversation: SavedConversation | null | undefined): 
   const turns: Turn[] = [];
   for (const message of conversation?.messages ?? []) {
     if (message.role === 'user') {
-      turns.push({ id: message.id, question: message.content, answer: { ...startingAnswer(), status: 'completed' } });
+      turns.push({ id: message.id, question: message.content, answer: { ...startingAnswer(), status: 'completed' }, work: NO_WORK });
     } else if (message.role === 'assistant') {
       const answer = savedAnswer(message.content, message.transcript);
+      const work = codeWork(message.transcript);
       const last = turns[turns.length - 1];
-      if (last && answerText(last.answer) === '' && last.answer.passages.length === 0) last.answer = answer;
-      else turns.push({ id: message.id, question: '', answer });
+      if (last && answerText(last.answer) === '' && last.answer.passages.length === 0 && last.work === NO_WORK) {
+        last.answer = answer;
+        last.work = work;
+      } else turns.push({ id: message.id, question: '', answer, work });
     }
   }
   return turns;
+}
+
+/** A Creator conversation's build: every file its answers made, and the latest summary it finished with. */
+export function creationWork(turns: Turn[]): CodeWork {
+  const files = new Map<string, CodeWork['files'][number]>();
+  let finished: string | null = null;
+  for (const turn of turns) {
+    for (const file of turn.work.files) files.set(file.path, file);
+    finished = turn.work.finished ?? finished;
+  }
+  return { ...NO_WORK, files: [...files.values()], finished };
 }
 
 function historyOf(conversation: SavedConversation | null | undefined): HistoryTurn[] {
@@ -134,6 +162,8 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   };
 
   const words = connectionWords(status);
+  // Older records have no mode: Research, the reading layout.
+  const kind = saved.data ? conversationKind(saved.data) : 'research';
   return (
     <motion.div className="view" variants={pushIn} initial="hidden" animate="shown" exit="gone">
       <BackBar label="Ask">
@@ -142,7 +172,9 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
           {words.short}
         </span>
       </BackBar>
-      <div className="scroll">
+      <div className={kind === 'code' ? 'scroll layout-code' : 'scroll'} data-layout={kind}>
+        {kind === 'code' && <CodeNote />}
+        {kind === 'creator' && <CreatorPreview work={creationWork(turns)} />}
         {saved.data === undefined && !showLive && !connected && <NotConnected what="this conversation" />}
         {saved.data === undefined && !showLive && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading the conversation">
@@ -154,15 +186,16 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
         {saved.data === null && !showLive && <p className="panel-text pad">This conversation is no longer on your computer.</p>}
         {turns.map(turn => (
           <section key={turn.id} className="turn">
-            {turn.question !== '' && <h1 className="question serif">{turn.question}</h1>}
+            {turn.question !== '' && <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{turn.question}</h1>}
             <TurnStatus answer={turn.answer} />
             <AnswerBlocks answer={turn.answer} onCite={onCite} />
+            {kind === 'code' && <CodeWorkView work={turn.work} />}
             <AnswerSources answer={turn.answer} onCite={onCite} />
           </section>
         ))}
         {showLive && live && (
           <section className="turn" ref={liveRef}>
-            <h1 className="question serif">{live.question}</h1>
+            <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{live.question}</h1>
             <TurnStatus answer={live.answer} />
             {live.stopped !== null && (
               <div className="callout" role="status" style={{ margin: '18px 24px 0' }}>
@@ -205,7 +238,7 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
           id="follow-up"
           value={followUp}
           onChange={event => setFollowUp(event.target.value)}
-          placeholder={connected ? 'Ask a follow-up' : 'Connect to your computer to ask'}
+          placeholder={!connected ? 'Connect to your computer to ask' : kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up'}
           enterKeyHint="send"
           autoComplete="off"
         />

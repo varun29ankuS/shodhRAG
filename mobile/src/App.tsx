@@ -114,7 +114,7 @@ function sectionView(nav: Nav, key: string) {
   switch (nav.section) {
     case 'ask': {
       const screen = askScreen(nav);
-      if (screen.kind === 'conversations') return <Conversations key={key} />;
+      if (screen.kind === 'conversations') return <Conversations key={key} filter={screen.filter ?? 'all'} />;
       if (screen.kind === 'answer')
         return <Ask key={key} conversationId={screen.conversationId} question={screen.question} workspaceId={screen.workspaceId} />;
       return <Home key={key} />;

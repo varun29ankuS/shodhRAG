@@ -45,7 +45,9 @@ use crate::agent_tools::files::{containing_root, IndexedRoots, SourceRoots};
 use crate::api_key_store;
 use crate::audit_commands::AuditState;
 use crate::connectors::telegram::{qr_matrix, QrMatrix};
-use crate::conversation_commands::{ConversationMode, CONVERSATION_CHANGED_EVENT};
+use crate::conversation_commands::{
+    ConversationMode, ConversationRecord, CONVERSATION_CHANGED_EVENT,
+};
 use crate::conversation_turns::SendTurn;
 use crate::inbox_commands::INBOX_CHANGED_EVENT;
 use crate::memory_learn::TextOrigin;
@@ -779,6 +781,25 @@ async fn linked_file(app: &AppHandle, raw: &str) -> Result<String, Value> {
         .map_err(path_refused)
 }
 
+/// One conversation as the phone's list shows it (`conversations_list`):
+/// no messages, which as a whole exceed one frame. `mode` is the record's
+/// (`"research"`, `"code"`) and `agentMode` the agent mode picked for it
+/// (`"creator"` among them); each is null when the record has none, which
+/// the phone reads as Research.
+pub fn phone_conversation_summary(record: &ConversationRecord) -> Value {
+    json!({
+        "id": record.id,
+        "title": record.title,
+        "createdAt": record.created_at,
+        "updatedAt": record.updated_at,
+        "pinned": record.pinned,
+        "workspaceId": record.workspace_id,
+        "mode": record.mode,
+        "agentMode": record.agent_mode,
+        "messageCount": record.messages.len(),
+    })
+}
+
 /// An approval waiting on the computer, as the phone's Approvals lists it:
 /// the step, its conversation and title, when it was asked, and whether the
 /// phone may allow it (`phoneMay`, the desktop's own rule). An item without
@@ -932,23 +953,9 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
             )
             .await
             .map_err(|e| json!(e))?;
-            let list: Vec<Value> = records
-                .iter()
-                .filter_map(|r| serde_json::to_value(r).ok())
-                .map(|r| {
-                    json!({
-                        "id": r["id"],
-                        "title": r["title"],
-                        "createdAt": r["createdAt"],
-                        "updatedAt": r["updatedAt"],
-                        "pinned": r["pinned"],
-                        "workspaceId": r.get("workspaceId").cloned().unwrap_or(Value::Null),
-                        "mode": r.get("mode").cloned().unwrap_or(Value::Null),
-                        "messageCount": r["messages"].as_array().map_or(0, Vec::len),
-                    })
-                })
-                .collect();
-            Ok(Value::Array(list))
+            Ok(Value::Array(
+                records.iter().map(phone_conversation_summary).collect(),
+            ))
         }
         "load_conversation" => {
             let a: ConversationArgs = args(raw)?;
@@ -1134,6 +1141,62 @@ mod tests {
             "approvals_pending",
             "the bridge remembers the steps of the read the desktop serves"
         );
+    }
+
+    /// The phone's Conversations: each summary says the conversation's mode and agent
+    /// mode as the desktop saved them (read through the record's own rules for unknown
+    /// values), null for a record without them, and carries none of the messages.
+    #[test]
+    fn the_conversation_summary_includes_the_mode() {
+        let record = |extra: Value| {
+            let mut stored = json!({
+                "id": "c1",
+                "title": "Fix the flaky test",
+                "messages": [
+                    {"id": "q", "role": "user", "content": "secret question", "timestamp": "2026-11-14T09:00:00Z"},
+                    {"id": "a", "role": "assistant", "content": "secret answer", "timestamp": "2026-11-14T09:01:00Z"}
+                ],
+                "createdAt": "2026-11-14T09:00:00Z",
+                "updatedAt": "2026-11-14T09:01:00Z",
+                "pinned": false,
+            });
+            for (key, value) in extra.as_object().unwrap() {
+                stored[key] = value.clone();
+            }
+            serde_json::from_value::<ConversationRecord>(stored).unwrap()
+        };
+
+        let older = phone_conversation_summary(&record(json!({})));
+        assert_eq!(older["mode"], Value::Null, "an older record is Research");
+        assert_eq!(older["agentMode"], Value::Null);
+        assert_eq!(older["workspaceId"], Value::Null);
+        assert_eq!(older["messageCount"], 2);
+        assert_eq!(older["title"], "Fix the flaky test");
+        assert!(
+            !older.to_string().contains("secret"),
+            "no message text goes to the list"
+        );
+
+        let code = phone_conversation_summary(&record(
+            json!({"mode": "code", "agentMode": "acceptEdits", "workspaceId": "w1"}),
+        ));
+        assert_eq!(code["mode"], "code");
+        assert_eq!(code["agentMode"], "acceptEdits");
+        assert_eq!(code["workspaceId"], "w1");
+
+        let creator =
+            phone_conversation_summary(&record(json!({"mode": "code", "agentMode": "creator"})));
+        assert_eq!(creator["agentMode"], "creator");
+
+        let research = phone_conversation_summary(&record(json!({"mode": "research"})));
+        assert_eq!(research["mode"], "research");
+
+        // A mode from a newer version: the record reads it as none (Research), and an
+        // unknown agent mode as Ask, never a looser one.
+        let newer =
+            phone_conversation_summary(&record(json!({"mode": "hologram", "agentMode": "warp"})));
+        assert_eq!(newer["mode"], Value::Null);
+        assert_eq!(newer["agentMode"], "ask");
     }
 
     /// The phone's Approvals: each waiting step says whether the phone may allow it,

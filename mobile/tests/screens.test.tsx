@@ -15,12 +15,15 @@ import { forgetPages } from '../src/lib/pages';
 import { tokensCss } from '../tokens';
 import { ASLEEP, computer, CONNECTED, fakeSource, setPhoneTheme, silentComputer, type FakeSource } from './phone';
 import type { FakeLink } from './fakeLink';
+import { CODE_CONVERSATION } from './codeFixture';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 
 const CONVERSATIONS = [
-  { id: 'c1', title: 'How does Self-RAG decide when to retrieve?', createdAt: ago(5), updatedAt: ago(5), pinned: false, workspaceId: null, mode: null, messageCount: 2 },
-  { id: 'c2', title: 'Where should the best passages go?', createdAt: ago(200), updatedAt: ago(200), pinned: true, workspaceId: null, mode: null, messageCount: 4 },
+  { id: 'c1', title: 'How does Self-RAG decide when to retrieve?', createdAt: ago(5), updatedAt: ago(5), pinned: false, workspaceId: 'w1', mode: null, agentMode: null, messageCount: 2 },
+  { id: 'c2', title: 'Where should the best passages go?', createdAt: ago(200), updatedAt: ago(200), pinned: true, workspaceId: null, mode: null, agentMode: null, messageCount: 4 },
+  { id: 'code-1', title: 'Make the reranker skip empty passages', createdAt: ago(30), updatedAt: ago(30), pinned: false, workspaceId: 'w1', mode: 'code', agentMode: 'ask', messageCount: 2 },
+  { id: 'make-1', title: 'A poster of the results', createdAt: ago(40), updatedAt: ago(40), pinned: false, workspaceId: 'w-gone', mode: 'code', agentMode: 'creator', messageCount: 2 },
 ];
 
 const SAVED = {
@@ -89,6 +92,7 @@ function show(link: FakeLink, status: LinkStatus, nav: Nav) {
 
 const answerNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'c1', question: null, workspaceId: null }] };
 const conversationsNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations' }] };
+const codeNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'code-1', question: null, workspaceId: 'w1' }] };
 const folderNav: Nav = { ...initialNav('library'), library: [{ path: '/papers', name: 'Papers' }] };
 
 beforeEach(() => forgetPages());
@@ -170,6 +174,90 @@ describe('Ask', () => {
     expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
   });
 
+  it('a Code conversation shows the code layout: the note, the files changed and the commands with their output, and nothing to approve', async () => {
+    const link = connectedComputer({ load_conversation: CODE_CONVERSATION, agent_start: 'session-c', agent_send: 'run-c' });
+    show(link, CONNECTED, codeNav);
+    const note = await screen.findByRole('note');
+    expect(note.textContent).toBe('Code changes are approved on your computer.');
+    const question = screen.getByRole('heading', { level: 1, name: 'Make the reranker skip empty passages' });
+    expect(question.classList.contains('mono')).toBe(true);
+    expect(document.querySelector('[data-layout="code"]')?.classList.contains('layout-code')).toBe(true);
+
+    const files = screen.getByRole('region', { name: 'Files changed' });
+    expect(within(files).getByText('2 files changed')).toBeTruthy();
+    expect(within(files).getByText('src/rerank.rs')).toBeTruthy();
+    expect(within(files).getByText('2 edits')).toBeTruthy();
+    expect(within(files).getByText('tests/rerank_empty.rs')).toBeTruthy();
+    expect(within(files).getByText('Written')).toBeTruthy();
+    expect(within(files).queryByText('Cargo.toml')).toBeNull();
+
+    const commands = screen.getByRole('region', { name: 'Commands run' });
+    expect(within(commands).getByText('cargo test --test rerank_empty')).toBeTruthy();
+    expect(within(commands).getByText('Exit 0')).toBeTruthy();
+    expect(within(commands).getByLabelText('Output of cargo test --test rerank_empty').textContent).toBe('test result: ok. 3 passed; 0 failed');
+    expect(within(commands).getByText('Failed, exit 101')).toBeTruthy();
+    expect(within(commands).getByLabelText('Output of cargo clippy -- -D warnings').textContent).toBe('…\nerror: unused variable `x`');
+
+    // Nothing in a Code conversation approves a step on the phone.
+    expect(screen.queryByRole('button', { name: /^(Allow|Approve|Review)\b/ })).toBeNull();
+
+    // A follow-up question is asked, in a session that is not Code (the computer refuses Code from a phone).
+    expect((screen.getByLabelText('Ask a follow-up') as HTMLInputElement).placeholder).toBe('Ask a question about this code');
+    fireEvent.change(screen.getByLabelText('Ask a follow-up'), { target: { value: 'Why skip them?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(link.calls.some(c => c.command === 'agent_start')).toBe(true));
+    const start = link.calls.find(c => c.command === 'agent_start');
+    expect(start?.args).toEqual({ conversationId: 'code-1', workspaceId: 'w1' });
+    expect(start?.args).not.toHaveProperty('mode');
+  });
+
+  it('a Creator conversation says where to see its preview, with what it made', async () => {
+    const creator = {
+      ...CODE_CONVERSATION,
+      id: 'make-1',
+      title: 'A poster of the results',
+      agentMode: 'creator',
+      messages: [
+        { id: 'q', role: 'user', content: 'A poster of the results', timestamp: ago(40) },
+        {
+          id: 'a',
+          role: 'assistant',
+          content: 'The poster is ready.',
+          timestamp: ago(40),
+          transcript: {
+            runId: 'r',
+            status: 'completed',
+            blocks: [{ kind: 'text', id: 'm', text: 'The poster is ready.' }],
+            steps: {
+              w: { tool: 'write', status: 'done', args: { path: 'index.html' } },
+              f: { tool: 'finish_creation', status: 'done', detail: { summary: 'A one-page poster.', choices: [] } },
+            },
+            passages: [],
+            groundings: [],
+          },
+        },
+      ],
+    };
+    show(connectedComputer({ load_conversation: creator }), CONNECTED, { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'make-1', question: null, workspaceId: null }] });
+    expect(await screen.findByText('Open on your computer to see the preview')).toBeTruthy();
+    expect(screen.getByText('A one-page poster.')).toBeTruthy();
+    expect(screen.getByText('1 file made')).toBeTruthy();
+    expect(screen.queryByRole('note')).toBeNull();
+    // Without a finish summary or files, the plain line alone.
+    show(connectedComputer({ load_conversation: { ...creator, messages: creator.messages.slice(0, 1) } }), CONNECTED, { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'make-1', question: null, workspaceId: null }] });
+    expect(await screen.findByText('Open on your computer to see the preview')).toBeTruthy();
+    expect(screen.queryByText(/file made/)).toBeNull();
+  });
+
+  it('a conversation without a mode uses the reading layout', async () => {
+    show(connectedComputer(), CONNECTED, answerNav);
+    await screen.findByText('Retrieve token.');
+    expect(document.querySelector('[data-layout="research"]')).toBeTruthy();
+    expect(screen.queryByRole('note')).toBeNull();
+    expect(screen.queryByText('Open on your computer to see the preview')).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: 'How does Self-RAG decide when to retrieve?' }).classList.contains('serif')).toBe(true);
+  });
+
   it('says when the conversation is gone', async () => {
     show(connectedComputer({ load_conversation: null }), CONNECTED, answerNav);
     expect(await screen.findByText('This conversation is no longer on your computer.')).toBeTruthy();
@@ -185,6 +273,44 @@ describe('Conversations', () => {
     expect(screen.getByText('How does Self-RAG decide when to retrieve?')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('Search conversations'), { target: { value: 'zebra' } });
     expect(screen.getByText('No conversation title has "zebra".')).toBeTruthy();
+  });
+
+  it('shows each row with its kind, title, workspace and time, and filters by kind', async () => {
+    show(connectedComputer(), CONNECTED, conversationsNav);
+    const row = (title: string) => screen.getByText(title).closest('button') as HTMLElement;
+    await screen.findByText('Make the reranker skip empty passages');
+    // The mode icon is left of the title, named for its kind; a record without a mode is Research.
+    const kindOf = (title: string) => within(row(title)).getByRole('img').getAttribute('aria-label');
+    expect(kindOf('How does Self-RAG decide when to retrieve?')).toBe('Research');
+    expect(kindOf('Where should the best passages go?')).toBe('Research');
+    expect(kindOf('Make the reranker skip empty passages')).toBe('Code');
+    expect(kindOf('A poster of the results')).toBe('Creator');
+    const first = row('Make the reranker skip empty passages').firstElementChild;
+    expect(first?.classList.contains('mode-code')).toBe(true);
+    expect(row('How does Self-RAG decide when to retrieve?').querySelector('.mode-research')).toBeTruthy();
+    expect(row('A poster of the results').querySelector('.mode-creator')).toBeTruthy();
+    // The workspace by name, "No workspace" without one, and no name for one not listed.
+    expect(await within(row('How does Self-RAG decide when to retrieve?')).findByText(/^Vector DB reading · \d+ minutes ago$/)).toBeTruthy();
+    expect(within(row('Where should the best passages go?')).getByText(/^No workspace · /)).toBeTruthy();
+    expect(within(row('A poster of the results')).getByText(/^\d+ minutes ago$/)).toBeTruthy();
+
+    // The chips: All is chosen; Code shows only Code.
+    const chips = within(screen.getByRole('group', { name: 'Show conversations' })).getAllByRole('button');
+    expect(chips.map(c => c.textContent)).toEqual(['All', 'Research', 'Code', 'Creator']);
+    expect(screen.getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Code' }));
+    expect(screen.getByRole('button', { name: 'Code' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('Make the reranker skip empty passages')).toBeTruthy();
+    expect(screen.queryByText('How does Self-RAG decide when to retrieve?')).toBeNull();
+    expect(screen.queryByText('A poster of the results')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Research' }));
+    expect(screen.getByText('How does Self-RAG decide when to retrieve?')).toBeTruthy();
+    expect(screen.getByText('Where should the best passages go?')).toBeTruthy();
+    expect(screen.queryByText('Make the reranker skip empty passages')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Creator' }));
+    expect(screen.getByText('A poster of the results')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Search conversations'), { target: { value: 'reranker' } });
+    expect(screen.getByText('No Creator conversation title has "reranker".')).toBeTruthy();
   });
 
   it('loading, empty and asleep', async () => {
@@ -454,6 +580,8 @@ describe('every control', () => {
       ['home', initialNav('ask'), CONNECTED],
       ['answer', answerNav, CONNECTED],
       ['conversations', conversationsNav, CONNECTED],
+      ['conversations filtered', { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations', filter: 'code' }] }, CONNECTED],
+      ['code conversation', codeNav, CONNECTED],
       ['library', folderNav, CONNECTED],
       ['approvals', initialNav('approvals'), CONNECTED],
       ['approval sheet', { ...initialNav('approvals'), sheet: { sessionId: 's1', stepId: 'note-1' } }, CONNECTED],

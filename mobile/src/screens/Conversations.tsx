@@ -1,22 +1,41 @@
-/** Every conversation on the computer, newest first, with search by title. */
+/**
+ * Every conversation on the computer, newest first: filtered by kind
+ * (Research, Code, Creator), grouped by when, and searched by title. Each
+ * row shows its kind as an icon, its title, its workspace and its time.
+ *
+ * Search reads titles only: the computer offers the phone no search of
+ * message text (its `search_conversations` is a tool of the assistant, not a
+ * command on the phone link's allowlist), and the list carries no messages.
+ */
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Pin, Search } from 'lucide-react';
 import { BackBar } from '../components/Bars';
 import { NotConnected } from '../components/Connection';
+import { ModeIcon } from '../components/ModeIcon';
 import { useLink, useNav } from '../lib/context';
 import { sortedConversations, useData } from '../lib/data';
-import type { ConversationSummary } from '../lib/desktop';
-import { pushIn } from '../lib/motion';
+import { workspacesList, type ConversationSummary } from '../lib/desktop';
+import { conversationKind, KIND_FILTERS, KIND_LABELS, matchesFilter, type KindFilter } from '../lib/modes';
+import { press, pushIn } from '../lib/motion';
+import { useRemote } from '../lib/remote';
 import { ago, period, type Period } from '../lib/time';
 
 const PERIODS: readonly Period[] = ['Today', 'Yesterday', 'This week', 'Earlier'];
 
-/** Pinned first, then by when they were last used; only titles that contain every word searched. */
-export function groupConversations(list: ConversationSummary[], query: string, now: Date): Array<{ label: string; items: ConversationSummary[] }> {
+export interface ConversationGroup {
+  label: string;
+  items: ConversationSummary[];
+}
+
+/**
+ * Pinned first, then Today, Yesterday, This week and Earlier, newest first in each:
+ * only conversations of `filter`'s kind whose title contains every word searched.
+ */
+export function groupConversations(list: ConversationSummary[], query: string, now: Date, filter: KindFilter = 'all'): ConversationGroup[] {
   const words = query.toLowerCase().split(/\s+/).filter(w => w !== '');
-  const matching = sortedConversations(list).filter(c => words.every(w => c.title.toLowerCase().includes(w)));
-  const groups: Array<{ label: string; items: ConversationSummary[] }> = [];
+  const matching = sortedConversations(list).filter(c => matchesFilter(c, filter) && words.every(w => c.title.toLowerCase().includes(w)));
+  const groups: ConversationGroup[] = [];
   const pinned = matching.filter(c => c.pinned);
   if (pinned.length > 0) groups.push({ label: 'Pinned', items: pinned });
   for (const p of PERIODS) {
@@ -26,13 +45,28 @@ export function groupConversations(list: ConversationSummary[], query: string, n
   return groups;
 }
 
-export function Conversations({ now = () => new Date() }: { now?: () => Date }) {
+/** What an empty list says: nothing at all, nothing of this kind, or no title with the words searched. */
+export function emptyWords(total: number, ofKind: number, query: string, filter: KindFilter): string {
+  const kind = filter === 'all' ? '' : `${KIND_LABELS[filter]} `;
+  if (total === 0) return 'No conversations yet. Ask a question to start one.';
+  if (ofKind === 0) return `No ${kind}conversations yet.`;
+  return `No ${kind}conversation title has "${query.trim()}".`;
+}
+
+export function Conversations({ filter = 'all', now = () => new Date() }: { filter?: KindFilter; now?: () => Date }) {
   const { connected } = useLink();
   const { dispatch } = useNav();
   const { conversations } = useData();
+  const workspaces = useRemote('workspaces', workspacesList);
   const [query, setQuery] = useState('');
   const today = now();
-  const groups = useMemo(() => (conversations.data ? groupConversations(conversations.data, query, today) : null), [conversations.data, query, today]);
+  const list = conversations.data;
+  const groups = useMemo(() => (list ? groupConversations(list, query, today, filter) : null), [list, query, today, filter]);
+  const names = useMemo(() => new Map((workspaces.data ?? []).map(w => [w.id, w.name])), [workspaces.data]);
+  const ofKind = list ? list.filter(c => matchesFilter(c, filter)).length : 0;
+
+  // A workspace not read yet (or since deleted) shows no name rather than a wrong one.
+  const workspaceName = (id: string | null): string | null => (id === null ? 'No workspace' : (names.get(id) ?? null));
 
   return (
     <motion.div className="view" variants={pushIn} initial="hidden" animate="shown" exit="gone">
@@ -51,9 +85,24 @@ export function Conversations({ now = () => new Date() }: { now?: () => Date }) 
             type="search"
             value={query}
             onChange={event => setQuery(event.target.value)}
-            placeholder="Search conversations"
+            placeholder="Search conversation titles"
             autoComplete="off"
           />
+        </div>
+        <div className="filters" role="group" aria-label="Show conversations">
+          {KIND_FILTERS.map(f => (
+            <motion.button
+              key={f}
+              type="button"
+              className="filter"
+              aria-pressed={filter === f}
+              whileTap={press}
+              onClick={() => dispatch({ type: 'filter', filter: f })}
+            >
+              {f !== 'all' && <ModeIcon kind={f} decorative />}
+              {KIND_LABELS[f]}
+            </motion.button>
+          ))}
         </div>
         {groups === null && !connected && <NotConnected what="your conversations" />}
         {groups === null && connected && (
@@ -63,14 +112,9 @@ export function Conversations({ now = () => new Date() }: { now?: () => Date }) 
             ))}
           </div>
         )}
-        {groups !== null && conversations.data?.length === 0 && (
+        {groups !== null && groups.length === 0 && (
           <p className="panel-text pad" style={{ marginTop: 16 }}>
-            No conversations yet. Ask a question to start one.
-          </p>
-        )}
-        {groups !== null && groups.length === 0 && (conversations.data?.length ?? 0) > 0 && (
-          <p className="panel-text pad" style={{ marginTop: 16 }}>
-            {`No conversation title has "${query.trim()}".`}
+            {emptyWords(list?.length ?? 0, ofKind, query, filter)}
           </p>
         )}
         {groups?.map(group => (
@@ -79,22 +123,25 @@ export function Conversations({ now = () => new Date() }: { now?: () => Date }) 
               {group.label}
             </div>
             <div className="rows">
-              {group.items.map(c => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className="row"
-                  onClick={() => dispatch({ type: 'push', screen: { kind: 'answer', conversationId: c.id, question: null, workspaceId: c.workspaceId } })}
-                >
-                  <span className="row-text" style={{ gap: 5 }}>
-                    <span className="row-title-serif">{c.title}</span>
-                    <span className="row-sub">
-                      {`${ago(c.updatedAt, today)}, ${c.messageCount} ${c.messageCount === 1 ? 'message' : 'messages'}`}
+              {group.items.map(c => {
+                const where = workspaceName(c.workspaceId);
+                const when = ago(c.updatedAt, today);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className="row"
+                    onClick={() => dispatch({ type: 'push', screen: { kind: 'answer', conversationId: c.id, question: null, workspaceId: c.workspaceId } })}
+                  >
+                    <ModeIcon kind={conversationKind(c)} />
+                    <span className="row-text" style={{ gap: 5 }}>
+                      <span className="row-title-serif">{c.title}</span>
+                      <span className="row-sub">{where === null ? when : `${where} · ${when}`}</span>
                     </span>
-                  </span>
-                  {c.pinned && <Pin aria-label="Pinned" className="icon-small faint" />}
-                </button>
-              ))}
+                    {c.pinned && <Pin aria-label="Pinned" className="icon-small faint" />}
+                  </button>
+                );
+              })}
             </div>
           </section>
         ))}

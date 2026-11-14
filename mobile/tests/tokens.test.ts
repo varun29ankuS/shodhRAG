@@ -51,6 +51,15 @@ describe("the phone's colours", () => {
         ['the count on the tab bar', brandRed ?? '#ffffff', t['on-accent']],
         ['muted text in the menu', t['text-muted'], t['sidebar']],
         ['links in the menu', t['accent-text'], t['sidebar']],
+        // The conversation kinds' icons (on their light tint), and the Code layout.
+        ['the Research icon', t['accent-text'], t['surface']],
+        ['the Code icon', t['info'], t['surface']],
+        ['the Code icon on the ground', t['info'], t['ground']],
+        ['the Creator icon', t['violet'], t['surface']],
+        ['the Creator icon on the ground', t['violet'], t['ground']],
+        ['a command that passed', t['success'], t['surface']],
+        ['a command that failed', t['error'], t['surface']],
+        ["a command's output", t['text-secondary'], t['raised']],
       ];
       for (const [what, fg, bg] of pairs) {
         expect(fg, `${theme}: ${what}`).toMatch(/^#[0-9a-f]{6}$/i);

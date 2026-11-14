@@ -233,7 +233,7 @@ export function Ask({
         {saved.data === null && !showLive && <p className="panel-text pad">This conversation is no longer on your computer.</p>}
         {turns.map(turn => (
           <section key={turn.id} className="turn">
-            {turn.question !== '' && <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{turn.question}</h1>}
+            {turn.question !== '' && <h1 className="question serif">{turn.question}</h1>}
             <TurnStatus answer={turn.answer} />
             <AnswerBlocks answer={turn.answer} onCite={onCite} />
             {kind === 'code' && <CodeWorkView work={turn.work} />}
@@ -249,7 +249,7 @@ export function Ask({
         )}
         {showLive && live && (
           <section className="turn" ref={liveRef}>
-            <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{live.question}</h1>
+            <h1 className="question serif">{live.question}</h1>
             <TurnStatus answer={live.answer} />
             {live.stopped !== null && (
               <div className="callout" role="status" style={{ margin: '18px 24px 0' }}>

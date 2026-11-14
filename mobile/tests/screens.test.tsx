@@ -245,11 +245,14 @@ describe('Ask', () => {
     const note = await screen.findByRole('note');
     expect(note.textContent).toBe('Code changes are approved on your computer.');
     const question = screen.getByRole('heading', { level: 1, name: 'Make the reranker skip empty passages' });
-    expect(question.classList.contains('mono')).toBe(true);
+    // The question and the explanation read in the normal font; only paths, commands and output are monospace.
+    expect(question.classList.contains('mono')).toBe(false);
+    expect(question.classList.contains('serif')).toBe(true);
     expect(document.querySelector('[data-layout="code"]')?.classList.contains('layout-code')).toBe(true);
 
     const files = screen.getByRole('region', { name: 'Files changed' });
-    expect(within(files).getByText('2 files changed')).toBeTruthy();
+    expect(within(files).getByText('Files changed (2)')).toBeTruthy();
+    expect(within(files).getByText('src/rerank.rs').classList.contains('mono')).toBe(true);
     expect(within(files).getByText('src/rerank.rs')).toBeTruthy();
     expect(within(files).getByText('2 edits')).toBeTruthy();
     expect(within(files).getByText('tests/rerank_empty.rs')).toBeTruthy();
@@ -257,6 +260,7 @@ describe('Ask', () => {
     expect(within(files).queryByText('Cargo.toml')).toBeNull();
 
     const commands = screen.getByRole('region', { name: 'Commands run' });
+    expect(within(commands).getByText('Commands (2)')).toBeTruthy();
     expect(within(commands).getByText('cargo test --test rerank_empty')).toBeTruthy();
     expect(within(commands).getByText('Exit 0')).toBeTruthy();
     expect(within(commands).getByLabelText('Output of cargo test --test rerank_empty').textContent).toBe('test result: ok. 3 passed; 0 failed');

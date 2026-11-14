@@ -29,7 +29,7 @@ export function CodeWorkView({ work }: { work: CodeWork }) {
     <div className="code-work">
       {work.files.length > 0 && (
         <section aria-label="Files changed">
-          <div className="code-label">{work.files.length === 1 ? '1 file changed' : `${work.files.length} files changed`}</div>
+          <div className="code-label">{`Files changed (${work.files.length})`}</div>
           <ul className="code-files">
             {work.files.map(file => (
               <li key={file.path} className="code-file">
@@ -46,7 +46,7 @@ export function CodeWorkView({ work }: { work: CodeWork }) {
       )}
       {work.commands.length > 0 && (
         <section aria-label="Commands run">
-          <div className="code-label">{work.commands.length === 1 ? '1 command' : `${work.commands.length} commands`}</div>
+          <div className="code-label">{`Commands (${work.commands.length})`}</div>
           {work.commands.map(command => {
             const ok = commandOk(command);
             return (

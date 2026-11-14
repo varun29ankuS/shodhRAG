@@ -1425,7 +1425,12 @@ jobs:
                   echo "== emulator processes"; pgrep -a -f 'qemu-system|emulator' || echo "none"
                   echo "== runner memory"; free -m
                   echo "== kernel log"; timeout -k 5 15 sudo -n dmesg -T | tail -n 200
+                  # The emulator's own crash reports: at its start it prints
+                  # "Storing crashdata in: /tmp/android-runner/emu-crash-<version>.db".
+                  # A minidump there names the emulator thread that died.
+                  echo "== emulator crash reports"; ls -laR /tmp/android-runner/emu-crash-*.db || echo "none"
                 } > "$evidence/host.txt" 2>&1 || true
+                cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
                 echo "::group::Evidence (all of it is in the android-launch-evidence artifact)"
                 tail -n 80 "$evidence/host.txt" || true
                 echo "== the app's deaths in the streamed log"
@@ -1434,6 +1439,20 @@ jobs:
               fi
             }
             trap on_exit EXIT
+
+            # The phone's screen is the AVD's own (profile pixel_6 below:
+            # 1080x2400 at 420 dpi), never a runtime override. With no
+            # profile the panel was 320x640, and `wm size 1080x2400` on it
+            # became 1080x1920 (the system caps the override at 3x the panel),
+            # left the touch digitizer at 320x640, and on the second relaunch
+            # under it the emulator's renderer printed "Failed to find
+            # ColorBuffer" and its process was gone seconds later.
+            display_size=$(adb_within 30 shell wm size | tr -d '\r')
+            display_density=$(adb_within 30 shell wm density | tr -d '\r')
+            if [ "$display_size" != "Physical size: 1080x2400" ] || [ "$display_density" != "Physical density: 420" ]; then
+              echo "::error::The emulator's screen is not the pixel_6 profile's 1080x2400 at 420 dpi, with no override: $display_size; $display_density"
+              exit 1
+            fi
 
             start=$(now_ms)
             # 180 s: the universal debug APK installs in about 15 s here.
@@ -1517,8 +1536,8 @@ jobs:
             wait "$recorder" || true
             adb_within 30 pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
 
-            # Every main screen in light and dark, for review, on a phone-sized
-            # screen. A debug build opens at the screen named by the system
+            # Every main screen in light and dark, for review, on the AVD's
+            # phone-sized screen (checked above). A debug build opens at the screen named by the system
             # property debug.shodh.screen (start_screen in link.rs; a release
             # build never reads it). With no computer paired, the plain names
             # show each screen as it is while not connected; demo-* screens
@@ -1528,8 +1547,6 @@ jobs:
             # the phone's (cmd uimode night), or the job fails after taking
             # every picture. The 3 s pause only lets the data and the springs
             # settle for the picture, and decides no result.
-            adb_within 30 shell wm size 1080x2400
-            adb_within 30 shell wm density 420
             themes_wrong=()
             shoot() {
               local name=$1 property=$2 screen=$3 theme=$4 status=0 line state ready="$evidence/ready-$1-$4.txt"
@@ -1626,6 +1643,11 @@ jobs:
           api-level: 34
           target: google_apis
           arch: x86_64
+          # A phone's screen from the AVD's creation: 1080x2400 at 420 dpi
+          # (the launch test checks it). Without a profile the AVD's panel is
+          # 320x640, and the runtime `wm size` the tour used on it is where
+          # the emulator died (see the check in LAUNCH_TEST).
+          profile: pixel_6
           # The action's default, kept explicit: a cold boot of this image
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.

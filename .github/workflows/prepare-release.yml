@@ -1,7 +1,7 @@
 name: Prepare release
 
 # One command for a release: Actions > Prepare release > Run workflow, with
-# the new version (X.Y.Z). This sets the version in all six files that carry
+# the new version (X.Y.Z). This sets the version in all seven files that carry
 # it (scripts/release/versions.mjs), pushes branch release/X.Y.Z and opens the
 # draft PR "Release X.Y.Z". Marking it ready for review runs CI and the
 # release build; merging it tags vX.Y.Z and publishes the release
@@ -117,7 +117,7 @@ jobs:
           set -euo pipefail
           branch="release/${VERSION}"
           body=$(cat <<EOF
-          Sets the app version to ${VERSION} in all six files that carry it (\`scripts/release/versions.mjs set ${VERSION}\`).
+          Sets the app version to ${VERSION} in all seven files that carry it (\`scripts/release/versions.mjs set ${VERSION}\`).
 
           - **Mark this PR ready for review** to run CI and the release build: it was opened by GitHub Actions, whose pull requests start no workflows until a person acts on them.
           - **Merging**, once CI passes on the merge commit, tags \`v${VERSION}\` there and runs the Release workflow, which builds the installers, verifies every asset, \`latest.json\` and the update signatures, and only then publishes the release (as the latest, when it is the newest).

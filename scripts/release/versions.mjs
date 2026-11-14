@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The app version lives in eight places across six files. This reads them
+// The app version lives in ten places across seven files. This reads them
 // all, checks they agree (and match a tag), and sets them all at once.
 //
 //   node scripts/release/versions.mjs check [--tag vX.Y.Z] [--root DIR] [--github-output]
@@ -10,8 +10,12 @@
 // that name and no registry source), never by line number. `set` rewrites
 // only the characters of each version string, so the files keep their
 // formatting, then re-reads every file and checks that nothing else changed.
+//
+// A location added after a release carries `since`: the first version that
+// has it. A checked tree older than that (a published release's files) may
+// lack it; from `since` on it is required like every other.
 
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -23,8 +27,11 @@ export const LOCATIONS = [
   { file: 'app/src-tauri/tauri.conf.json', kind: 'json', path: ['version'] },
   { file: 'app/src-tauri/Cargo.toml', kind: 'manifest', package: 'shodh-rag-app' },
   { file: 'crates/shodh-rag/Cargo.toml', kind: 'manifest', package: 'shodh-rag' },
+  // The phone link's version is the app's: the phone and the desktop must match.
+  { file: 'crates/shodh-link/Cargo.toml', kind: 'manifest', package: 'shodh-link', since: '0.0.11' },
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-rag-app' },
   { file: 'Cargo.lock', kind: 'lock', package: 'shodh-rag' },
+  { file: 'Cargo.lock', kind: 'lock', package: 'shodh-link', since: '0.0.11' },
 ];
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -221,14 +228,40 @@ export function locate(text, location) {
 
 function readTexts(root) {
   const texts = new Map();
-  for (const { file } of LOCATIONS) {
-    if (!texts.has(file)) texts.set(file, readFileSync(join(root, file), 'utf8'));
+  for (const { file, since } of LOCATIONS) {
+    if (texts.has(file)) continue;
+    const path = join(root, file);
+    // A file only newer versions have is checked by readVersions.
+    if (since !== undefined && !existsSync(path)) continue;
+    texts.set(file, readFileSync(path, 'utf8'));
   }
   return texts;
 }
 
+/** Whether `text` lacks `location` altogether (its file, or its Cargo.lock entry). */
+function absent(text, location) {
+  if (text === undefined) return true;
+  if (location.kind !== 'lock') return false;
+  return !tomlTables(text).some(
+    (t) => t.header === 'package' && t.array && t.keys.get('name')?.value === location.package && !t.keys.has('source'),
+  );
+}
+
 export function readVersions(texts) {
-  return LOCATIONS.map((location) => ({ location, ...locate(texts.get(location.file), location) }));
+  const found = LOCATIONS.filter((l) => l.since === undefined).map((location) => ({
+    location,
+    ...locate(texts.get(location.file), location),
+  }));
+  const versions = [...new Set(found.map((f) => f.value))];
+  // Older than `since` only when every other location agrees on such a version.
+  const older = (since) => versions.length === 1 && SEMVER.test(versions[0]) && compareVersions(versions[0], since) < 0;
+  for (const location of LOCATIONS.filter((l) => l.since !== undefined)) {
+    const text = texts.get(location.file);
+    if (absent(text, location) && older(location.since)) continue;
+    if (text === undefined) throw new VersionError(`${describe(location)}: ${location.file} is missing`);
+    found.push({ location, ...locate(text, location) });
+  }
+  return found;
 }
 
 /** The one version all locations agree on; throws listing them when they differ. */

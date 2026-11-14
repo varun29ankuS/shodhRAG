@@ -23,6 +23,7 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Smartphone,
   Wrench,
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
@@ -69,6 +70,7 @@ const ICONS: Record<EventIcon, typeof Archive> = {
   citation: Quote,
   scope: Layers,
   connector: Plug,
+  phone: Smartphone,
   other: CircleDot,
 };
 

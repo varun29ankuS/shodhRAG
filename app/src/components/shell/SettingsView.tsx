@@ -14,12 +14,13 @@ import ScanReaderSettings from '../ScanReaderSettings';
 import ToolsSettings from '../ToolsSettings';
 import CodeSkillsSettings from '../../features/codeIntel/CodeSkillsSettings';
 import AppearanceSettings from '../AppearanceSettings';
+import PhoneSettings from '../../features/phone/PhoneSettings';
 import { cn } from '../../lib/utils';
 import { useWorkspaces } from '../../features/workspaces/WorkspaceContext';
 import { useNavigationTarget } from '../../features/agent/useNavigationTarget';
 import { agentItemKey, revealAgentItem } from '../../lib/agentHighlight';
 
-export type SettingsSection = 'models' | 'search' | 'tools' | 'code' | 'tables' | 'general' | 'appearance' | 'notifications' | 'privacy' | 'memory' | 'data';
+export type SettingsSection = 'models' | 'search' | 'tools' | 'code' | 'tables' | 'general' | 'appearance' | 'notifications' | 'phone' | 'privacy' | 'memory' | 'data';
 
 const SECTIONS: { id: SettingsSection; label: string; description: string }[] = [
   {
@@ -61,6 +62,11 @@ const SECTIONS: { id: SettingsSection; label: string; description: string }[] = 
     id: 'notifications',
     label: 'Notifications',
     description: 'Which desktop notifications Shodh shows while you are in another window: reminders, approvals, finished work and problems.',
+  },
+  {
+    id: 'phone',
+    label: 'Phone',
+    description: 'Pair your phone to ask Shodh and read your library away from this computer, end to end encrypted. Remove a phone here to lock it out at once.',
   },
   {
     id: 'privacy',
@@ -217,6 +223,8 @@ export default function SettingsView({
                 <AppearanceSettings />
               ) : section === 'notifications' ? (
                 <NotificationSettings />
+              ) : section === 'phone' ? (
+                <PhoneSettings />
               ) : section === 'privacy' ? (
                 <PrivacySettings />
               ) : section === 'memory' ? (

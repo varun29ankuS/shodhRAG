@@ -65,6 +65,14 @@ pub fn load(provider: &str) -> Result<Option<String>, String> {
 /// commands can never read, overwrite or delete it.
 pub const AUDIT_DB_KEY_USER: &str = "audit-db-key";
 
+/// Credential-store user of the phone link's node key (hex-encoded ed25519
+/// secret key): the desktop's identity to its paired phones. Not a provider id.
+pub const PHONE_NODE_KEY_USER: &str = "phone-link-node-key";
+
+/// Credential-store user of the paired phones (JSON, see `phone_link`). Not a
+/// provider id.
+pub const PHONE_DEVICES_USER: &str = "phone-link-devices";
+
 /// Load a non-provider secret (e.g. [`AUDIT_DB_KEY_USER`]). `Ok(None)` means
 /// none is stored.
 pub fn load_secret(user: &str) -> Result<Option<String>, String> {
@@ -388,5 +396,7 @@ mod tests {
         assert!(!is_known_provider("ollama"));
         assert!(!is_known_provider(""));
         assert!(!is_known_provider(AUDIT_DB_KEY_USER));
+        assert!(!is_known_provider(PHONE_NODE_KEY_USER));
+        assert!(!is_known_provider(PHONE_DEVICES_USER));
     }
 }

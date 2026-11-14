@@ -8,7 +8,7 @@ name: Release
 # existing tag, to retry a release that failed.
 #   plan            the tag's commit is on master and CI passed on it
 #                   (scripts/release/ci-gate.mjs), and the tag equals the
-#                   version in all six files that carry it at that commit
+#                   version in all seven files that carry it at that commit
 #                   (scripts/release/versions.mjs).
 #   create-release  a draft release named after the tag (body from
 #                   .github/release-notes.md); a re-run reuses its draft.
@@ -287,10 +287,12 @@ jobs:
       && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
     # Cold caches: master's Windows builds 51-93 minutes; master's macOS
     # builds 45-101 minutes (the macos-latest runners differ by about 2x).
-    # lancedb 0.41 (lance 14, datafusion 54) cancelled the cold macOS build
-    # at this limit until the lance and datafusion crates got codegen-units
-    # (Cargo.toml) and the macOS build a master cache; the build step's
-    # cargo-timings-* artifact shows where the time goes.
+    # With lancedb 0.41 (lance 14, datafusion 54) and the app library also
+    # built as a staticlib and cdylib, master's Windows build was cancelled at
+    # this limit (run 43432377001, 122 minutes in "Build the app") and its
+    # macOS build took 124 minutes. The library is an rlib only now
+    # (app/src-tauri/Cargo.toml); the build step's cargo-timings-* artifact
+    # shows where the time goes.
     timeout-minutes: 130
     # The release key is read from here on publishing runs only.
     environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
@@ -346,12 +348,17 @@ jobs:
       # (one entry for both). The macOS key is this job's own: master builds
       # it on every push (ci.yml calls this workflow), and without a cache
       # every macOS build compiled all dependencies cold, close to the
-      # job's limit. Its entry (expected near the Windows one's 3 GB) takes
-      # the repository's 10 GB cache pool past its limit, so GitHub evicts
-      # the least recently used entries; the master jobs save theirs again
-      # on their next run.
+      # job's limit.
+      # rust-cache keeps target/ files by crate name, not by version or
+      # build settings: after a lockfile or profile change, master restores
+      # the previous entry, and the one it saves keeps the old builds of every
+      # crate next to the new ones (the Windows entry grew from 3.1 to 4.2 GB
+      # with lancedb 0.41). prefix-key starts both platforms' entries over;
+      # change it here and in ci.yml's footprint job together (they share
+      # the Windows entry) when a change replaces most dependency builds.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2  # zizmor: ignore[cache-poisoning]
         with:
+          prefix-key: v1-rust
           shared-key: release-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -372,15 +379,37 @@ jobs:
         with:
           save-cache: ${{ github.ref == 'refs/heads/master' }}
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0  # zizmor: ignore[cache-poisoning]
+      # npm's download cache: one entry per platform, the same key as ci.yml's
+      # frontend and footprint jobs, restored here and saved by master only.
+      # setup-node's own cache saved a second copy under another key, and one
+      # more from every pull request, which no other ref can read.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: app/package-lock.json
+          package-manager-cache: false
+
+      - name: Locate the npm cache
+        id: npm-cache-dir
+        shell: bash
+        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the npm cache
+        id: npm-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0  # zizmor: ignore[cache-poisoning]
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
 
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci
+
+      - name: Save the npm cache
+        if: github.ref == 'refs/heads/master' && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0  # zizmor: ignore[cache-poisoning]
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: npm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
 
       # app/src-tauri/.cargo/config.toml holds a developer machine's Windows
       # settings (target-dir C:/build/kalki-rag, MSVC /MD flags, the Visual
@@ -474,8 +503,8 @@ jobs:
       # run without the signing key. After the second `--` the arguments go
       # to cargo build: --timings writes target/cargo-timings/ (how long each
       # crate took, and how much of that was codegen), uploaded below; -v
-      # logs each rustc command line, so the log shows the codegen-units
-      # every crate was built with (Cargo.toml's release overrides).
+      # logs each rustc command line and every unit cargo found fresh, so
+      # the log shows how much the restored cache saved.
       - name: Build the app
         working-directory: app
         shell: bash

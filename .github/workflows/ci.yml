@@ -205,7 +205,7 @@ jobs:
           annotations: true
 
   # The release and CI scripts' own tests, and the version check every
-  # release relies on: all six files that carry the app version agree.
+  # release relies on: all seven files that carry the app version agree.
   scripts:
     name: Release and CI scripts
     runs-on: ubuntu-latest
@@ -893,8 +893,10 @@ jobs:
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
+      # prefix-key and shared-key as in release.yml's Windows build (one entry).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
+          prefix-key: v1-rust
           shared-key: release-x86_64-pc-windows-msvc
           save-if: ${{ github.ref == 'refs/heads/master' }}
 

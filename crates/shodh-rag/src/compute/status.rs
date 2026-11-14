@@ -120,13 +120,15 @@ impl ComputeStatus {
     }
 
     /// What runs the model changed while it was loaded (a graphics card
-    /// failed and the CPU took over): the report says so, speed unmeasured.
+    /// failed and the CPU took over, from `model_file`): the report says so,
+    /// speed unmeasured.
     pub fn embedder_moved(
         &self,
         generation: u64,
         accelerator: Accelerator,
         reason: CpuReason,
         threads: usize,
+        model_file: &str,
     ) {
         if *self.generation.lock() != generation {
             return;
@@ -137,6 +139,7 @@ impl ComputeStatus {
             report.device = None;
             report.cpu_reason = Some(reason);
             report.threads = Some(threads);
+            report.model_file = model_file.to_string();
             report.pages_per_minute = None;
             report.speed = None;
             report.recent_pages_per_minute = None;
@@ -331,18 +334,29 @@ mod tests {
     fn a_card_that_fails_while_loaded_moves_the_report_to_the_cpu() {
         let status = ComputeStatus::default();
         let mut gpu = report();
-        gpu.accelerator = Accelerator::DirectMl;
-        gpu.device = Some("RTX 4060".to_string());
+        gpu.accelerator = Accelerator::CoreMl;
+        gpu.device = Some("Apple M3".to_string());
         gpu.cpu_reason = None;
+        gpu.model_file = "model_fp16.onnx".to_string();
         let generation = status.embedder_loaded(gpu, Some(20_000.0));
         let reason = CpuReason::Failed {
-            device: Some("RTX 4060".to_string()),
+            device: Some("Apple M3".to_string()),
             error: "device removed".to_string(),
         };
-        status.embedder_moved(generation, Accelerator::Cpu, reason.clone(), 8);
+        status.embedder_moved(
+            generation,
+            Accelerator::Cpu,
+            reason.clone(),
+            8,
+            "model_O4.onnx",
+        );
         let moved = status.embedder().expect("report");
         assert_eq!(moved.accelerator, Accelerator::Cpu);
         assert_eq!(moved.cpu_reason, Some(reason));
+        assert_eq!(
+            moved.model_file, "model_O4.onnx",
+            "the CPU runs the export the vectors are in, not Core ML's"
+        );
         assert_eq!(
             moved.pages_per_minute, None,
             "the CPU's speed is not measured"

@@ -211,7 +211,7 @@ impl HostTool for UpdateSettingTool {
 
 /// The sections of the Settings view, in its order (`SettingsView.tsx`; the
 /// coverage test checks the two agree).
-pub const SETTINGS_SECTIONS: [&str; 11] = [
+pub const SETTINGS_SECTIONS: [&str; 12] = [
     "models",
     "search",
     "tools",
@@ -220,6 +220,7 @@ pub const SETTINGS_SECTIONS: [&str; 11] = [
     "general",
     "appearance",
     "notifications",
+    "phone",
     "privacy",
     "memory",
     "data",
@@ -237,6 +238,7 @@ fn section_label(section: &str) -> &str {
         "general" => "General",
         "appearance" => "Appearance",
         "notifications" => "Notifications",
+        "phone" => "Phone",
         "privacy" => "Privacy",
         "memory" => "Memory",
         "data" => "Data",
@@ -278,7 +280,7 @@ impl HostTool for ShowSettingTool {
     fn description(&self) -> &'static str {
         "Open Settings for the user at a section: models, search, tools (tools, MCP servers and \
          skills), code (Code mode's building skills), tables, general (running in the background), appearance (text size), \
-         notifications, privacy (Local-only mode and web access), memory or data. Give `key` \
+         notifications, phone (pair a phone: the pairing QR code, and the paired phones), privacy (Local-only mode and web access), memory or data. Give `key` \
          (a setting you may change) to highlight it, or `memory_id` (from recall) to highlight \
          a memory in the memory section. Use it to show the user where to change a setting \
          you may not change yourself."
@@ -519,5 +521,51 @@ mod tests {
             before
         );
         assert!(t.effects.settings.lock().unwrap().is_empty());
+    }
+
+    /// Agent-first: the assistant opens Settings → Phone, where the pairing QR code is
+    /// shown, but no tool removes a phone (only the user does), and agent-coverage.json
+    /// records both.
+    #[tokio::test]
+    async fn the_agent_can_open_pairing_but_not_remove_a_device() {
+        let t = testing::host().await;
+        let tool = ShowSettingTool {
+            host: t.host.clone(),
+        };
+        let (ctx, mut rx) = testing::ctx();
+        let out = tool
+            .execute(json!({"section": "phone"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(
+            next_setting_target(&mut rx, "show_setting"),
+            ("phone".into(), None)
+        );
+        assert!(
+            !out.text_for_model.contains("shodh-pair:"),
+            "the pairing code never reaches the model"
+        );
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("agent-coverage.json");
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let commands = &manifest["commands"];
+        assert_eq!(commands["phone_pairing_start"]["tool"], "show_setting");
+        assert_eq!(commands["phone_devices"]["tool"], "show_setting");
+        assert!(commands["phone_device_remove"]["tool"].is_null());
+        assert!(commands["phone_device_remove"]["excluded"]
+            .as_str()
+            .is_some_and(|why| why.contains("only the user")));
+
+        let registry = super::super::build_registry(t.host.clone()).unwrap();
+        let phone_tools: Vec<&str> = registry
+            .names()
+            .into_iter()
+            .filter(|name| name.contains("phone") || name.contains("device"))
+            .collect();
+        assert!(
+            phone_tools.is_empty(),
+            "no tool reaches the phones: {phone_tools:?}"
+        );
     }
 }

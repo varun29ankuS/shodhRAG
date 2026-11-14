@@ -1076,7 +1076,8 @@ async fn dispatch(
             let a: SendArgs = args(raw)?;
             check_session(app.state::<AgentSessions>().remote_facts(&a.session_id))?;
             // Only this phone hears (by push) that this session's answer is ready.
-            app.state::<push::Askers>().asked(&a.session_id, &caller.node_id);
+            app.state::<push::Askers>()
+                .asked(&a.session_id, &caller.node_id);
             if a.review_action == Some(true) {
                 return Err(shodh_link::bridge::refused(CODE_ON_COMPUTER));
             }

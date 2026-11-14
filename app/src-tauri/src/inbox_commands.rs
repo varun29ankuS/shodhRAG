@@ -264,8 +264,28 @@ pub fn approval_item(
         },
         detail: Some(detail),
         link: Some(conversation_link(conversation_id)),
-        data: json!({ "sessionId": session_id, "stepId": step_id }),
+        // The tool says what granting the step would allow: the phone link's
+        // Approvals read (`approvals_pending`) classifies it with it, and an item
+        // without one is never answerable from a phone.
+        data: json!({
+            "sessionId": session_id,
+            "stepId": step_id,
+            "tool": tool,
+            "conversationId": conversation_id,
+        }),
     }
+}
+
+/// The approvals waiting for an answer: the phone's Approvals, read over the
+/// phone link (`approvals_pending`), including those asked before the phone
+/// connected.
+pub async fn pending_approvals(app: &AppHandle) -> Result<Vec<InboxItem>, String> {
+    let state = app.state::<InboxState>().inner().clone();
+    let items = state.run(|store| store.list()).await?;
+    Ok(items
+        .into_iter()
+        .filter(|i| i.kind == InboxKind::Approval && i.status == InboxStatus::NeedsYou)
+        .collect())
 }
 
 /// The Inbox item of a pending memory suggestion.
@@ -413,6 +433,9 @@ mod tests {
             ))
         );
         assert_eq!(item.data["stepId"], "step-9");
+        assert_eq!(item.data["sessionId"], "s1");
+        assert_eq!(item.data["tool"], "write_file");
+        assert_eq!(item.data["conversationId"], "conv-1");
         let unnamed = approval_item("s1", "c", "a", " ", "run_command", &json!({}));
         assert_eq!(unnamed.title, "Approve run_command?");
     }

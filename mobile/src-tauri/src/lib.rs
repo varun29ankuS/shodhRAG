@@ -60,6 +60,7 @@ pub fn run() {
             link::link_subscribe,
             link::link_reset,
             link::app_ready,
+            link::start_screen,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

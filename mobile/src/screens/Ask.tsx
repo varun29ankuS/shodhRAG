@@ -30,7 +30,7 @@ import { QueuedRows } from '../components/Queued';
 import { MicButton, ReadAloud } from '../components/Voice';
 import { queuedQuestion } from '../lib/outbox';
 import { canQueue, useQueue } from '../lib/queue';
-import { abortAnswer, CONVERSATION_CHANGED, loadConversation, type HistoryTurn, type SavedConversation } from '../lib/desktop';
+import { abortAnswer, CONVERSATION_CHANGED, loadConversation, workspacesList, type HistoryTurn, type SavedConversation } from '../lib/desktop';
 import { errorText } from '../lib/link';
 import { conversationKind } from '../lib/modes';
 import { pushIn } from '../lib/motion';
@@ -100,6 +100,9 @@ export function Ask({
   const { show } = useNote();
   const queueable = canQueue(status);
   const saved = useRemote(`conversation:${conversationId}`, d => loadConversation(d, conversationId), [CONVERSATION_CHANGED]);
+  // The workspace's name heads the screen; none for a conversation outside a workspace, or one not read yet.
+  const workspaces = useRemote('workspaces', workspacesList);
+  const workspaceName = workspaceId === null ? null : (workspaces.data?.find(w => w.id === workspaceId)?.name ?? null);
   const [live, setLive] = useState<Live | null>(null);
   const [followUp, setFollowUp] = useState('');
   const [web, setWeb] = useState<Passage | null>(null);
@@ -213,8 +216,8 @@ export function Ask({
   const kind = saved.data ? conversationKind(saved.data) : 'research';
   return (
     <motion.div className="view" variants={pushIn} initial="hidden" animate="shown" exit="gone">
-      <BackBar label="Ask">
-        <span className="connection" style={{ paddingRight: 8 }}>
+      <BackBar label="Ask" title={workspaceName}>
+        <span className="connection" style={{ paddingRight: 12 }}>
           <Dot status={status} small />
           {words.short}
         </span>

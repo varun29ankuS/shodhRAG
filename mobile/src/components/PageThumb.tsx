@@ -14,14 +14,12 @@ interface Props {
   path: string;
   /** 1-based page; the first when not known. */
   page?: number | null;
-  /** The citation number shown on the page, for a source. */
-  badge?: number | null;
   className?: string;
   /** A row's thumbnail: a small paper page, no words on it. */
   small?: boolean;
 }
 
-export function PageThumb({ path, page = null, badge = null, className = '', small = false }: Props) {
+export function PageThumb({ path, page = null, className = '', small = false }: Props) {
   const { desktop, connected } = useLink();
   const ref = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
@@ -86,7 +84,6 @@ export function PageThumb({ path, page = null, badge = null, className = '', sma
           <span className="paper-type-ext">{extensionOf(path) || 'file'}</span>
         </span>
       )}
-      {badge !== null && <span className="paper-badge">{badge}</span>}
     </span>
   );
 }

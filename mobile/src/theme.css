@@ -809,17 +809,18 @@ button.row .row-icon {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 22px 24px 0;
+  padding: 24px 20px 0;
 }
 
 .skeleton-line {
-  height: 15px;
+  height: 16px;
 }
 
 /* ── The answer ─────────────────────────────────────────────────── */
 
+/* The question: a 28px semibold heading, 28px under the bar. */
 .question {
-  padding: 10px 24px 0;
+  padding: 28px 20px 0;
   font-size: 28px;
   line-height: 1.2;
   font-weight: 600;
@@ -828,14 +829,14 @@ button.row .row-icon {
 }
 
 .turn + .turn {
-  margin-top: 36px;
+  margin-top: 40px;
 }
 
 .status {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 24px 0;
+  padding: 12px 20px 0;
   font-size: 13px;
   color: var(--label-2);
 }
@@ -843,18 +844,19 @@ button.row .row-icon {
 .blocks {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px 24px 0;
+  gap: 16px;
+  padding: 16px 20px 0;
 }
 
+/* Reading text: 18px at 1.55. */
 .block-p,
 .block-li p,
 .block-quote {
   font-size: 18px;
   line-height: 1.55;
+  letter-spacing: -0.005em;
   color: var(--label);
   overflow-wrap: anywhere;
-  letter-spacing: -0.005em;
 }
 
 .block-li {
@@ -863,49 +865,46 @@ button.row .row-icon {
   align-items: flex-start;
 }
 
-.block-li p {
-  font-size: 18px;
-  color: var(--label-2);
-}
-
 .bullet {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   flex: none;
   margin-top: 12px;
   border-radius: 50%;
-  background: var(--tint);
+  background: var(--label-2);
 }
 
 .number {
   flex: none;
   min-width: 18px;
-  margin-top: 3px;
-  font-size: 15px;
+  font-size: 18px;
+  line-height: 1.55;
   font-weight: 600;
-  color: var(--tint);
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .block-h {
-  margin-top: 10px;
-  font-size: 17px;
+  margin-top: 8px;
+  font-size: 20px;
+  line-height: 1.3;
   font-weight: 600;
   color: var(--label);
 }
 
 .block-quote {
   padding-left: 14px;
-  border-left: 3px solid var(--separator);
+  box-shadow: inset 3px 0 0 var(--separator);
   color: var(--label-2);
 }
 
 .block-code {
   margin: 0;
-  padding: 14px;
+  padding: 14px 16px;
   border-radius: 12px;
-  background: var(--fill);
+  background: var(--cell);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -914,18 +913,22 @@ button.row .row-icon {
 .block-table {
   overflow-x: auto;
   border-radius: 12px;
-  border: 1px solid var(--separator);
+  background: var(--cell);
 }
 
 .block-table table {
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .block-table td {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--separator);
+  padding: 10px 14px;
+  border-bottom: 0.5px solid var(--separator);
   vertical-align: top;
+}
+
+.block-table tr:last-child td {
+  border-bottom: none;
 }
 
 .block-table tr:first-child td {
@@ -952,49 +955,50 @@ strong {
   animation: word-in 280ms cubic-bezier(0.2, 0.8, 0.3, 1) both;
 }
 
-/* A citation: small on the line, 44px to the finger (the ::before). */
+/* A citation: a small superscript number in the tint, 44px to the finger (the ::before). */
 .chip {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  margin: 0 0 0 2px;
+  width: 18px;
+  height: 18px;
+  margin: 0 0 0 1px;
   padding: 0;
   border: none;
-  border-radius: 12px;
-  background: var(--tint);
-  color: var(--on-tint);
+  background: transparent;
+  color: var(--tint);
   font-size: 12px;
   font-weight: 600;
   line-height: 1;
-  vertical-align: 2px;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 7px;
   transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
 .chip::before {
   content: '';
   position: absolute;
-  inset: -10px;
+  inset: -13px;
 }
 
+/* Under a finished answer: a hairline drawn across. */
 .sweep {
   display: block;
-  height: 2px;
-  margin: 22px 24px 0;
-  border-radius: 1px;
-  background: var(--tint);
+  height: 1px;
+  margin: 28px 20px 0;
+  background: var(--separator);
   transform-origin: left center;
 }
 
+/* Its sources: small cells side by side, each a page and where it is. */
 .sources {
   display: flex;
-  gap: 14px;
+  gap: 10px;
   overflow-x: auto;
-  padding: 4px 24px 8px;
+  padding: 0 20px 4px;
   scroll-snap-type: x mandatory;
-  scroll-padding-left: 24px;
+  scroll-padding-left: 20px;
   scrollbar-width: none;
 }
 
@@ -1004,27 +1008,43 @@ strong {
 
 .source {
   flex: none;
-  width: 148px;
-  min-height: 44px;
+  width: 172px;
+  min-height: 64px;
+  min-width: 44px;
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 10px;
-  padding: 0;
+  padding: 10px;
   border: none;
-  background: transparent;
+  border-radius: 12px;
+  background: var(--cell);
   color: var(--label);
   text-align: left;
   scroll-snap-align: start;
 }
 
+.source-page {
+  width: 32px;
+  flex: none;
+}
+
+.source-n {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tint);
+}
+
 .source-title {
   font-size: 15px;
+  line-height: 1.3;
   font-weight: 500;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .source-where {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--label-2);
 }
 
@@ -1032,11 +1052,14 @@ strong {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  margin: 18px 24px 0;
+  margin: 16px 20px 0;
   padding: 16px;
-  border-radius: 18px;
-  border: 1px solid var(--separator);
+  border-radius: 12px;
   background: var(--cell);
+}
+
+.read-aloud {
+  margin: 16px 20px 0;
 }
 
 /* ── Paper: page thumbnails and pages ───────────────────────────── */
@@ -1098,22 +1121,6 @@ strong {
 
 .paper-lines span:nth-child(3) {
   width: 90%;
-}
-
-.paper-badge {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 12px;
-  background: var(--tint);
-  color: var(--on-tint);
-  font-size: 12px;
-  font-weight: 600;
 }
 
 /* A file without pages shows its name and type, on paper. */
@@ -1789,74 +1796,75 @@ strong {
   font-family: var(--mono);
 }
 
+/* A conversation's kind: a glyph in its colour, no square behind it. */
 .mode-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   flex: none;
-  border-radius: 11px;
+}
+
+.mode-icon .icon-small {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.7;
 }
 
 .mode-research {
-  background: var(--fill);
   color: var(--tint);
 }
 
 .mode-code {
-  background: color-mix(in srgb, var(--c-info) 14%, transparent);
   color: var(--c-info);
 }
 
 .mode-creator {
-  background: color-mix(in srgb, var(--c-violet) 14%, transparent);
   color: var(--c-violet);
 }
 
+/* The kinds to show: a segmented control, 24px under the search field. */
 .filters {
-  display: flex;
-  gap: 8px;
-  padding: 6px 16px 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.filters::-webkit-scrollbar {
-  display: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 16px 20px 0;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--fill);
 }
 
 .filter {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  flex: none;
+  justify-content: center;
+  gap: 2px;
   min-height: 44px;
   min-width: 44px;
-  padding: 0 16px 0 8px;
-  border: 1px solid var(--separator);
-  border-radius: 22px;
-  background: var(--cell);
-  color: var(--label-2);
-  font-size: 14px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--label);
+  font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
 }
 
-.filter:first-child {
-  padding: 0 18px;
+.filter .mode-icon {
+  width: 18px;
+  height: 18px;
 }
 
-.filter .mode-icon {
-  width: 28px;
-  height: 28px;
-  background: transparent;
+.filter .mode-icon .icon-small {
+  width: 15px;
+  height: 15px;
 }
 
 .filter[aria-pressed='true'] {
-  border-color: var(--tint);
-  background: var(--fill);
-  color: var(--label);
+  background: var(--segment);
+  font-weight: 600;
+  box-shadow: 0 1px 3px var(--shadow), 0 0 0 0.5px var(--separator);
 }
 
 /* The Code layout: the question and the explanation read like any answer; only
@@ -1866,12 +1874,12 @@ strong {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 8px 16px 6px;
-  padding: 10px 14px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--c-info) 12%, transparent);
+  margin: 16px 20px 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--cell);
   color: var(--label);
-  font-size: 13px;
+  font-size: 15px;
   line-height: 1.4;
 }
 
@@ -1882,23 +1890,23 @@ strong {
 .code-work {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 18px 24px 0;
+  gap: 24px;
+  padding: 24px 0 0;
 }
 
+/* A header over its group, inset to 36px like any section's. */
 .code-label {
-  margin-bottom: 8px;
-  font-size: 14px;
-  font-weight: 600;
+  padding: 0 36px 8px;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--label-2);
 }
 
 .code-files {
-  margin: 0;
+  margin: 0 20px;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--separator);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--cell);
   overflow: hidden;
 }
@@ -1906,13 +1914,16 @@ strong {
 .code-file {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--separator);
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 16px;
 }
 
-.code-file:last-child {
-  border-bottom: none;
+.code-file + .code-file {
+  background-image: linear-gradient(var(--separator), var(--separator));
+  background-repeat: no-repeat;
+  background-position: right top;
+  background-size: calc(100% - 46px) 0.5px;
 }
 
 .code-file-icon {
@@ -1928,7 +1939,7 @@ strong {
 }
 
 .code-file-name {
-  font-size: 14px;
+  font-size: 15px;
   color: var(--label);
   overflow-wrap: anywhere;
 }
@@ -1941,13 +1952,13 @@ strong {
 
 .code-file-what {
   flex: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--label-2);
 }
 
 .command {
-  border: 1px solid var(--separator);
-  border-radius: 14px;
+  margin: 0 20px;
+  border-radius: 12px;
   background: var(--cell);
   overflow: hidden;
 }
@@ -1960,11 +1971,12 @@ strong {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 10px 12px 4px;
+  padding: 12px 16px 4px;
 }
 
 .command-line {
   font-size: 13px;
+  line-height: 1.45;
   color: var(--label);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1974,8 +1986,8 @@ strong {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 12px 10px 40px;
-  font-size: 12px;
+  padding: 0 16px 12px 44px;
+  font-size: 13px;
 }
 
 .command-ok {
@@ -1988,8 +2000,8 @@ strong {
 
 .command-note {
   margin: 0;
-  padding: 0 12px 10px 40px;
-  font-size: 12px;
+  padding: 0 16px 12px 44px;
+  font-size: 13px;
   color: var(--label-2);
 }
 
@@ -1997,8 +2009,7 @@ strong {
   margin: 0;
   max-height: 320px;
   overflow: auto;
-  padding: 10px 12px;
-  border-top: 1px solid var(--separator);
+  padding: 12px 16px;
   background: var(--fill);
   color: var(--label-2);
   font-size: 12px;
@@ -2007,17 +2018,20 @@ strong {
   overflow-wrap: anywhere;
 }
 
+.layout-code .on-computer {
+  margin: 0 20px;
+}
+
 /* Creator: where to see what was built. */
 
 .creator-preview {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 12px 16px 0;
+  margin: 16px 20px 0;
   padding: 16px;
-  border: 1px dashed color-mix(in srgb, var(--c-violet) 45%, transparent);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--c-violet) 8%, transparent);
+  border-radius: 12px;
+  background: var(--cell);
 }
 
 .creator-preview-head {
@@ -2026,7 +2040,7 @@ strong {
   gap: 10px;
   color: var(--label);
   font-size: 15px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .creator-preview-head .icon-small {
@@ -2042,7 +2056,7 @@ strong {
 
 .creator-files {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--label-2);
 }
 
@@ -2260,11 +2274,8 @@ strong {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.read-aloud {
-  margin: 12px 24px 0;
-}
 
-/* Chips side by side keep a little room; a chip is flush with what follows it (“question ①.”). */
+/* Citations side by side keep a little room; each is flush with what follows it (“question¹.”). */
 .chip + .chip {
-  margin-left: 4px;
+  margin-left: 3px;
 }

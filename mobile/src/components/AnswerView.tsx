@@ -1,7 +1,8 @@
 /**
  * An answer: its structure (paragraphs, headings, lists, code, tables) in
- * reading type, its citations as chips that open the cited page, and, once
- * it is finished, a line drawn under it and the pages it cites fanning in.
+ * reading type, its citations as small superscript numbers that open the
+ * cited page, and, once it is finished, a hairline drawn under it and the
+ * pages it cites fanning in, each a small cell with its page.
  *
  * While it streams, each new word fades in where it lands; words never move
  * once shown, and nothing waits for an animation.
@@ -169,7 +170,7 @@ export function AnswerSources({ answer, onCite }: { answer: AnswerState; onCite:
     <>
       <motion.span className="sweep" aria-hidden="true" variants={sweep} initial="hidden" animate="shown" />
       {photos.length > 0 && (
-        <div className="rows">
+        <div className="rows rows-icons" style={{ marginTop: 16 }}>
           {photos.map(passage => (
             <button
               key={passage.n}
@@ -205,8 +206,11 @@ export function AnswerSources({ answer, onCite }: { answer: AnswerState; onCite:
                 initial="hidden"
                 animate="shown"
               >
-                <PageThumb path={passage.path} page={passage.page} badge={passage.n} />
-                <span className="row-text">
+                <span className="source-page">
+                  <PageThumb path={passage.path} page={passage.page} small />
+                </span>
+                <span className="row-text" style={{ gap: 0 }}>
+                  <span className="source-n">{passage.n}</span>
                   <span className="source-title">{passage.title}</span>
                   <span className="source-where">{whereOf(passage)}</span>
                 </span>
@@ -218,7 +222,7 @@ export function AnswerSources({ answer, onCite }: { answer: AnswerState; onCite:
       {web.length > 0 && (
         <>
           <div className="label">From the web</div>
-          <div className="rows">
+          <div className="rows rows-icons">
             {web.map(passage => (
               <button key={passage.n} type="button" className="row" onClick={event => onCite(passage, originOf(event))}>
                 <span className="row-icon">

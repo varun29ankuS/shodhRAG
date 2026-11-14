@@ -335,6 +335,8 @@
     "phone_pairing_start": { "tool": "show_setting", "note": "The assistant opens Settings → Phone (show_setting, section phone), where the pairing QR code is made and shown; the code itself is never given to the assistant, and only the person at this computer can scan it." },
     "phone_devices": { "tool": "show_setting", "note": "The paired phones are listed in Settings → Phone, which the assistant opens with show_setting (section phone)." },
     "phone_device_remove": { "excluded": "Removing a phone revokes a device the user paired; only the user removes one, in Settings → Phone. The assistant may open that page (show_setting) but never removes a device, and a phone can never approve a removal either." },
+    "phone_stay_available": { "tool": "show_setting", "note": "Settings → Phone shows whether the computer is kept awake for the phone; the assistant opens that page with show_setting (section phone)." },
+    "phone_stay_available_set": { "excluded": "Keeping the computer awake is the user's call about their computer and its power; only the user turns it on, in Settings → Phone. Neither the assistant nor a phone can." },
     "github_status": { "tool": "github_status" },
     "github_activity": { "tool": "github_status" },
     "github_sign_in_start": { "excluded": "Signing in gives Shodh the user's GitHub access: the user types the code on github.com themselves and the token goes straight to the OS credential store; an agent must never start, handle or supply a sign-in." },

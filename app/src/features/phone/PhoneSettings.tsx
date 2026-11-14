@@ -6,6 +6,7 @@ import { QrCode } from '../connectors/TelegramLink';
 import { countdown } from '../connectors/telegramModel';
 import { Callout, DANGER_BUTTON, OUTLINE_BUTTON, PRIMARY_BUTTON, QUIET_BUTTON, Skeleton } from '../connectors/ui';
 import { errorText, type PairedPhone, type PairingCode, PHONE_DEVICES_CHANGED, whenSeen } from './phoneModel';
+import StayAvailable from './StayAvailable';
 
 /**
  * Settings → Phone: pair a phone with a QR code (it works once, for five minutes), and
@@ -170,6 +171,8 @@ export default function PhoneSettings() {
           </Callout>
         )}
       </div>
+
+      <StayAvailable />
     </div>
   );
 }

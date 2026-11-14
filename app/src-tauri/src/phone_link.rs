@@ -81,6 +81,7 @@ fn devices_changed(app: &AppHandle) {
     if let Err(e) = app.emit(PHONE_DEVICES_EVENT, ()) {
         tracing::warn!(target: "shodh::link", error = %e, "the window was not told the paired phones changed");
     }
+    refresh_stay(app);
 }
 
 const LOCAL_ONLY: &str =
@@ -176,6 +177,8 @@ pub struct PhoneLinkState {
     /// The desktop's `agent_event`s, for the bridge's connections.
     events: broadcast::Sender<LinkEvent>,
     running: AsyncMutex<Option<Running>>,
+    /// "Stay available for my phone": the thread that keeps the computer awake.
+    stay: stay_available::StayAvailable,
 }
 
 impl PhoneLinkState {
@@ -218,6 +221,7 @@ pub fn manage(app: &AppHandle) {
         pairing: Arc::new(PendingPairing::default()),
         events,
         running: AsyncMutex::new(None),
+        stay: stay_available::StayAvailable::start(),
     });
 }
 
@@ -253,6 +257,7 @@ pub fn start_saved(app: &AppHandle) {
                 tracing::warn!(target: "shodh::link", error = %e, "the phone link did not start");
             }
         }
+        apply_stay(&app).await;
     });
 }
 
@@ -261,10 +266,85 @@ pub fn start_saved(app: &AppHandle) {
 pub fn settings_changed(app: &AppHandle, settings: &crate::app_settings::AppSettings) {
     if settings.policy.local_only {
         let app = app.clone();
-        tauri::async_runtime::spawn(async move { stop(&app).await });
+        tauri::async_runtime::spawn(async move {
+            stop(&app).await;
+            apply_stay(&app).await;
+        });
     } else {
         start_saved(app);
     }
+}
+
+// ── "Stay available for my phone" ─────────────────────────────────
+
+/// Apply "Stay available for my phone" to what is true now: the setting,
+/// Local-only mode and whether a phone is paired (the thread adds the
+/// power source). Returns what it did, and tells the window.
+async fn apply_stay(app: &AppHandle) -> Option<stay_available::StayStatus> {
+    let state = app.try_state::<PhoneLinkState>()?;
+    let data_dir = crate::profile::app_data_dir(app).ok();
+    let paired = match state.devices().await {
+        Ok(devices) => !devices.is_empty(),
+        Err(_) => false,
+    };
+    let conditions = stay_available::Conditions {
+        enabled: data_dir
+            .as_deref()
+            .is_some_and(stay_available::load_enabled),
+        local_only: local_only(app),
+        paired,
+    };
+    let handle = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .try_state::<PhoneLinkState>()
+            .map(|state| state.stay.apply(conditions))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    if let Err(e) = app.emit(stay_available::STAY_EVENT, &status) {
+        tracing::warn!(target: "shodh::link", error = %e, "the window was not told whether the computer stays available");
+    }
+    Some(status)
+}
+
+/// [`apply_stay`] in the background (from code that is not async).
+fn refresh_stay(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        apply_stay(&app).await;
+    });
+}
+
+/// Let the computer sleep again as the app closes.
+pub fn release_stay(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PhoneLinkState>() {
+        state.stay.stop();
+    }
+}
+
+/// "Stay available for my phone" and what it does now (Settings → Phone).
+#[tauri::command]
+pub async fn phone_stay_available(app: AppHandle) -> Result<stay_available::StayStatus, String> {
+    apply_stay(&app)
+        .await
+        .ok_or_else(|| "The phone link is still starting. Try again in a moment.".to_string())
+}
+
+/// Turn "Stay available for my phone" on or off. Only the user, in
+/// Settings → Phone: neither the assistant nor a phone may keep the computer
+/// awake.
+#[tauri::command]
+pub async fn phone_stay_available_set(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<stay_available::StayStatus, String> {
+    let data_dir = crate::profile::app_data_dir(&app)
+        .map_err(|e| format!("The app data folder is unavailable: {e}"))?;
+    stay_available::save_enabled(&data_dir, enabled)?;
+    tracing::info!(target: "shodh::link", enabled, "\"Stay available for my phone\" changed");
+    phone_stay_available(app).await
 }
 
 async fn ensure_running(app: &AppHandle) -> Result<Arc<Link<TauriHost>>, String> {
@@ -1106,6 +1186,8 @@ fn render_page(path: &str, kind: &str, page: usize, width: u32) -> Result<Value,
         "png": base64::engine::general_purpose::STANDARD.encode(&png),
     }))
 }
+
+pub mod stay_available;
 
 #[cfg(test)]
 mod end_to_end;

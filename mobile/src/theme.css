@@ -176,6 +176,13 @@ h3 {
   -webkit-overflow-scrolling: touch;
 }
 
+/* A screen with the floating ask box over its end (a conversation): room for the
+   tab bar's space, the ask box and a little more, so the last line and the last
+   command's output can be read above it. */
+.scroll-with-composer {
+  padding-bottom: calc(92px + 58px + 32px + env(safe-area-inset-bottom));
+}
+
 .pad {
   padding-left: 24px;
   padding-right: 24px;
@@ -349,6 +356,7 @@ h3 {
   left: 14px;
   right: 14px;
   bottom: calc(92px + env(safe-area-inset-bottom));
+  min-height: 58px;
   z-index: 5;
   background: var(--glass);
   backdrop-filter: blur(18px);

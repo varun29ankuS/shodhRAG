@@ -133,3 +133,18 @@ describe('a citation chip', () => {
     expect(margin[1] ?? margin[0]).toBe('0');
   });
 });
+
+describe('the follow-up composer', () => {
+  const rule = (selector: string) => new RegExp(`\\n${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  const pixels = (value: string) => [...value.matchAll(/(\d+)px/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+
+  it("leaves the answer's last line and the Code output readable above it", () => {
+    const box = rule('.askbox-floating');
+    const above = pixels(/\bbottom:\s*([^;]+);/.exec(box)?.[1] ?? '') + pixels(/min-height:\s*([^;]+);/.exec(box)?.[1] ?? '');
+    const room = pixels(/padding-bottom:\s*([^;]+);/.exec(rule('.scroll-with-composer'))?.[1] ?? '');
+    expect(above).toBeGreaterThan(92);
+    expect(room).toBeGreaterThanOrEqual(above + 16);
+    const ask = readFileSync(resolve(process.cwd(), 'src/screens/Ask.tsx'), 'utf8');
+    expect(ask).toContain('scroll scroll-with-composer');
+  });
+});

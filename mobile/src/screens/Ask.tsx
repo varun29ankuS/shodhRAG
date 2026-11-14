@@ -219,7 +219,7 @@ export function Ask({
           {words.short}
         </span>
       </BackBar>
-      <div className={kind === 'code' ? 'scroll layout-code' : 'scroll'} data-layout={kind}>
+      <div className={kind === 'code' ? 'scroll scroll-with-composer layout-code' : 'scroll scroll-with-composer'} data-layout={kind}>
         {kind === 'code' && <CodeNote />}
         {kind === 'creator' && <CreatorPreview work={creationWork(turns)} />}
         {saved.data === undefined && !showLive && !connected && queuedHere.length === 0 && <NotConnected what="this conversation" />}

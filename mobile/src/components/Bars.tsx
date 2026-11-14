@@ -26,7 +26,7 @@ export function TopBar({ brand = true }: { brand?: boolean }) {
         {brand && (
           <>
             <img src={logo} alt="" className="brand-logo" width={36} height={36} />
-            <span className="brand-name serif">Shodh</span>
+            <span className="brand-name">Shodh</span>
           </>
         )}
       </span>

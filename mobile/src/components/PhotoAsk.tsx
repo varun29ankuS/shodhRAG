@@ -55,14 +55,14 @@ export function PhotoAsk({ taken, conversationId, onClose }: { taken: Picked; co
         <Camera aria-hidden="true" className="icon-small" /> Ask about your photo
       </span>
       <div className="sheet-card">
-        <span className="sheet-card-title serif">Your photo</span>
+        <span className="sheet-card-title">Your photo</span>
         {read === null && error === null && (
           <span className="sheet-card-text" role="status">
             <LoaderCircle aria-hidden="true" className="icon-small spin" /> Your computer is reading it…
           </span>
         )}
         {read !== null && (
-          <span className="sheet-card-text serif">{read.text ? read.text.slice(0, 400) : 'Shodh found no text in this photo. Ask about what it shows anyway, or take another.'}</span>
+          <span className="sheet-card-text">{read.text ? read.text.slice(0, 400) : 'Shodh found no text in this photo. Ask about what it shows anyway, or take another.'}</span>
         )}
         {error !== null && <span className="sheet-card-text">{error}</span>}
         <span className="passage-label">Not added to your library unless you keep it.</span>

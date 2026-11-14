@@ -217,7 +217,7 @@ function drawPage(path: string, page: number, width: number): { png: string; wid
   let y = 26 * u;
   if (page === 1) {
     g.fillStyle = '#1c1c1f';
-    g.font = `600 ${15 * u}px Georgia, serif`;
+    g.font = `600 ${15 * u}px 'Inter Variable', system-ui, sans-serif`;
     const words = (TITLES[path] ?? path.split('/').pop() ?? '').split(' ');
     let line = '';
     for (const word of words) {

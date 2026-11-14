@@ -79,7 +79,7 @@ export function Library() {
             </Fragment>
           ))}
         </nav>
-        <h1 className="title serif pad">{here?.name ?? 'Library'}</h1>
+        <h1 className="title pad">{here?.name ?? 'Library'}</h1>
         {paired && here === null && (
           <div className="toolbar">
             <button type="button" className="button" onClick={add}>

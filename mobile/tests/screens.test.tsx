@@ -245,9 +245,9 @@ describe('Ask', () => {
     const note = await screen.findByRole('note');
     expect(note.textContent).toBe('Code changes are approved on your computer.');
     const question = screen.getByRole('heading', { level: 1, name: 'Make the reranker skip empty passages' });
-    // The question and the explanation read in the normal font; only paths, commands and output are monospace.
+    // The question and the explanation read in Inter like any answer; only paths, commands and output are monospace.
     expect(question.classList.contains('mono')).toBe(false);
-    expect(question.classList.contains('serif')).toBe(true);
+    expect(question.classList.contains('question')).toBe(true);
     expect(document.querySelector('[data-layout="code"]')?.classList.contains('layout-code')).toBe(true);
 
     const files = screen.getByRole('region', { name: 'Files changed' });
@@ -324,7 +324,7 @@ describe('Ask', () => {
     expect(document.querySelector('[data-layout="research"]')).toBeTruthy();
     expect(screen.queryByRole('note')).toBeNull();
     expect(screen.queryByText('Open on your computer to see the preview')).toBeNull();
-    expect(screen.getByRole('heading', { level: 1, name: 'How does Self-RAG decide when to retrieve?' }).classList.contains('serif')).toBe(true);
+    expect(screen.getByRole('heading', { level: 1, name: 'How does Self-RAG decide when to retrieve?' })).toBeTruthy();
   });
 
   it('says when the conversation is gone', async () => {

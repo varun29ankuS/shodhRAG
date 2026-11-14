@@ -12,7 +12,7 @@ export function Splash() {
       <span className="splash-glow" aria-hidden="true" />
       {/* Visible from the first frame (only its size settles), so even the earliest picture shows the elephant. */}
       <motion.img className="splash-logo" src={logo} alt="Shodh" width={128} height={128} initial={{ scale: 0.86 }} animate={{ scale: 1 }} transition={bouncy} />
-      <motion.span className="splash-name serif" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ ...bouncy, delay: 0.2 }}>
+      <motion.span className="splash-name" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ ...bouncy, delay: 0.2 }}>
         Shodh
       </motion.span>
       <span className="splash-line">Connecting to your computer</span>

@@ -147,7 +147,7 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
         <TopBar brand={false} />
-        <h1 className="title serif pad">Tasks</h1>
+        <h1 className="title pad">Tasks</h1>
         {agenda.fromCopy && agenda.savedAt !== null && (
           <p className="line line-waiting pad">
             {`Your computer is away. This is your agenda as of ${new Date(agenda.savedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}; what you change is sent when it wakes.`}

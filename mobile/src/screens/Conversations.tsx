@@ -72,7 +72,7 @@ export function Conversations({ filter = 'all', now = () => new Date() }: { filt
     <motion.div className="view" variants={pushIn} initial="hidden" animate="shown" exit="gone">
       <BackBar label="Ask" />
       <div className="scroll">
-        <h1 className="title serif pad" style={{ marginTop: 6 }}>
+        <h1 className="title pad" style={{ marginTop: 6 }}>
           Conversations
         </h1>
         <div className="search">
@@ -135,7 +135,7 @@ export function Conversations({ filter = 'all', now = () => new Date() }: { filt
                   >
                     <ModeIcon kind={conversationKind(c)} />
                     <span className="row-text" style={{ gap: 5 }}>
-                      <span className="row-title-serif">{c.title}</span>
+                      <span className="row-title">{c.title}</span>
                       <span className="row-sub">{where === null ? when : `${where} · ${when}`}</span>
                     </span>
                     {c.pinned && <Pin aria-label="Pinned" className="icon-small faint" />}

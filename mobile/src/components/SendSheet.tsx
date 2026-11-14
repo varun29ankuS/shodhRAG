@@ -58,7 +58,7 @@ export function SendSheet({ files }: { files: Picked[] }) {
     <Sheet label="Send to Shodh" onClose={cancel}>
       <span className="approval-context">Send to Shodh on your computer</span>
       <div className="sheet-card">
-        <span className="sheet-card-title serif">
+        <span className="sheet-card-title">
           <FileUp aria-hidden="true" className="icon-small" /> {label}
         </span>
         {files.length > 1 && <span className="sheet-card-text">{files.map(f => f.name).join(', ')}</span>}

@@ -86,7 +86,7 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
       <div className="scroll">
         <TopBar />
         <div className="pad" style={{ paddingTop: 26 }}>
-          <h1 className="greeting serif">{greeting(today)}</h1>
+          <h1 className="greeting">{greeting(today)}</h1>
           <p className={`line${words.dot === 'waiting' && status.state === 'offline' ? ' line-waiting' : ''}`} style={{ marginTop: 8 }}>
             {words.line}
           </p>
@@ -179,7 +179,7 @@ function Continue({ conversation, now }: { conversation: ConversationSummary; no
       <div className="label">Continue</div>
       <button type="button" className="continue" onClick={open}>
         <span className="row-text" style={{ gap: 6 }}>
-          <span className="continue-question serif">{lastQuestion?.content ?? conversation.title}</span>
+          <span className="continue-question">{lastQuestion?.content ?? conversation.title}</span>
           {text !== '' && <span className="continue-answer">{snippet(text, 140)}</span>}
           <span className="row-sub">{ago(conversation.updatedAt, now)}</span>
         </span>
@@ -207,7 +207,7 @@ function Suggestions({ onAsk }: { onAsk: (question: string) => void }) {
           return (
             <button key={folder.path} type="button" className="row" onClick={() => onAsk(question)}>
               <Sparkles aria-hidden="true" className="icon" style={{ color: 'var(--c-accent-text)' }} />
-              <span className="row-title-serif" style={{ flex: 1 }}>
+              <span className="row-title" style={{ flex: 1 }}>
                 {question}
               </span>
             </button>

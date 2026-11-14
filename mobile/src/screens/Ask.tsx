@@ -233,7 +233,7 @@ export function Ask({
         {saved.data === null && !showLive && <p className="panel-text pad">This conversation is no longer on your computer.</p>}
         {turns.map(turn => (
           <section key={turn.id} className="turn">
-            {turn.question !== '' && <h1 className="question serif">{turn.question}</h1>}
+            {turn.question !== '' && <h1 className="question">{turn.question}</h1>}
             <TurnStatus answer={turn.answer} />
             <AnswerBlocks answer={turn.answer} onCite={onCite} />
             {kind === 'code' && <CodeWorkView work={turn.work} />}
@@ -249,7 +249,7 @@ export function Ask({
         )}
         {showLive && live && (
           <section className="turn" ref={liveRef}>
-            <h1 className="question serif">{live.question}</h1>
+            <h1 className="question">{live.question}</h1>
             <TurnStatus answer={live.answer} />
             {live.stopped !== null && (
               <div className="callout" role="status" style={{ margin: '18px 24px 0' }}>
@@ -269,7 +269,7 @@ export function Ask({
               live.answer.waiting.map(step => (
                 <div key={step.stepId} className="waiting">
                   <span className="approval-context">The assistant is waiting for your answer</span>
-                  <span className="approval-title serif">{step.label}</span>
+                  <span className="approval-title">{step.label}</span>
                   <button
                     type="button"
                     className="button button-primary"
@@ -323,8 +323,8 @@ export function Ask({
           <Sheet label="Web source" onClose={() => setWeb(null)}>
             <span className="approval-context">{`Source ${web.n}, from the web`}</span>
             <div className="sheet-card">
-              <span className="sheet-card-title serif">{web.title}</span>
-              {web.text && <span className="sheet-card-text serif">{web.text}</span>}
+              <span className="sheet-card-title">{web.title}</span>
+              {web.text && <span className="sheet-card-text">{web.text}</span>}
               <span className="passage-label">{whereOf(web)}</span>
             </div>
             <button type="button" className="button button-wide" onClick={() => setWeb(null)}>
@@ -338,8 +338,8 @@ export function Ask({
               <Camera aria-hidden="true" className="icon-small" /> {`Source ${photo.n}, the photo you took`}
             </span>
             <div className="sheet-card">
-              <span className="sheet-card-title serif">Your photo</span>
-              {photo.text && <span className="sheet-card-text serif">{photo.text}</span>}
+              <span className="sheet-card-title">Your photo</span>
+              {photo.text && <span className="sheet-card-text">{photo.text}</span>}
               <span className="passage-label">Read by Shodh on your computer. It is not in your library.</span>
             </div>
             {kept && <p className="panel-text">{kept}</p>}

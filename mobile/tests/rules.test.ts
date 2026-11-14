@@ -49,6 +49,43 @@ describe('text', () => {
   });
 });
 
+describe('fonts', () => {
+  const INTER = "'Inter Variable', system-ui, sans-serif";
+  const MONO = "ui-monospace, 'Cascadia Mono', Menlo, monospace";
+  const raw = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8');
+
+  it('are Inter for everything, and one monospace stack for code', () => {
+    expect(/--font:\s*([^;]+);/.exec(css)?.[1].trim()).toBe(INTER);
+    expect(/--mono:\s*([^;]+);/.exec(css)?.[1].trim()).toBe(MONO);
+    const families = [...css.matchAll(/font-family:\s*([^;]+);/g)].map(m => m[1].trim());
+    expect(families.length).toBeGreaterThan(0);
+    for (const family of families) expect(['var(--font)', 'var(--mono)'], `font-family: ${family}`).toContain(family);
+    // The `font` shorthand only inherits.
+    for (const font of css.matchAll(/(?:^|[;{\s])font:\s*([^;]+);/g)) expect(font[1].trim()).toBe('inherit');
+    for (const { file, text } of code) {
+      expect(text, `${file}: a font family written in the code`).not.toMatch(/fontFamily\s*:/);
+      // A canvas draws in Inter too (the scripted pages of CI's screenshots).
+      for (const font of text.matchAll(/\.font\s*=\s*`([^`]*)`/g)) expect(font[1], file).toContain(INTER);
+    }
+  });
+
+  it('name no other face: no Newsreader, Literata, Geist or serif anywhere in the phone app', () => {
+    const pkg = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8');
+    const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+    const OTHERS = /newsreader|literata|geist|georgia|\bserif\b|times new roman/i;
+    expect(raw.replace(/sans-serif/g, ''), 'src/theme.css').not.toMatch(OTHERS);
+    expect(html, 'index.html').not.toMatch(OTHERS);
+    for (const { file, text } of code) expect(text.replace(/sans-serif/g, ''), file).not.toMatch(OTHERS);
+    // The only font the app bundles is Inter, and its licence (SIL OFL 1.1) is kept with the app.
+    const fonts = Object.keys(JSON.parse(pkg).dependencies).filter(name => name.startsWith('@fontsource'));
+    expect(fonts).toEqual(['@fontsource-variable/inter']);
+    const licence = readFileSync(resolve(process.cwd(), 'licenses/Inter-OFL-1.1.txt'), 'utf8');
+    expect(licence).toContain('SIL OPEN FONT LICENSE Version 1.1');
+    expect(licence).toContain('The Inter Project Authors');
+    expect(readFileSync(resolve(process.cwd(), '../NOTICE'), 'utf8')).toContain('mobile/licenses/Inter-OFL-1.1.txt');
+  });
+});
+
 describe('motion', () => {
   it('in the stylesheet, transitions and keyframes move only transform and opacity', () => {
     const transitions = [...css.matchAll(/transition(?:-property)?:\s*([^;]+);/g)].map(m => m[1].trim());

@@ -49,8 +49,8 @@ export function AskAbout({ shared }: { shared: Shared }) {
         {link ? <Link2 aria-hidden="true" className="icon-small" /> : <Quote aria-hidden="true" className="icon-small" />} Ask Shodh about this
       </span>
       <div className="sheet-card">
-        {shared.subject && <span className="sheet-card-title serif">{shared.subject}</span>}
-        <span className="sheet-card-text serif">{shared.text.length > 600 ? `${shared.text.slice(0, 600)}…` : shared.text}</span>
+        {shared.subject && <span className="sheet-card-title">{shared.subject}</span>}
+        <span className="sheet-card-text">{shared.text.length > 600 ? `${shared.text.slice(0, 600)}…` : shared.text}</span>
         <span className="passage-label">
           {link ? 'A link you shared: Shodh may open it to answer.' : 'Shared from another app. Shodh answers from your library.'}
         </span>

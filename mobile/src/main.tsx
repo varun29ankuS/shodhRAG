@@ -1,7 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import '@fontsource-variable/geist';
-import '@fontsource-variable/newsreader/opsz.css';
+import '@fontsource-variable/inter';
 import { App, type Start } from './App';
 import { tauriLink, type LinkSource } from './lib/link';
 import { startNav } from './lib/start';

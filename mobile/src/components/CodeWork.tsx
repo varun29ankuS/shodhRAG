@@ -93,7 +93,7 @@ export function CreatorPreview({ work }: { work: CodeWork }) {
         <Sparkles aria-hidden="true" className="icon-small" />
         <span>{CREATOR_PREVIEW_ELSEWHERE}</span>
       </div>
-      {work.finished && <p className="creator-summary serif">{work.finished}</p>}
+      {work.finished && <p className="creator-summary">{work.finished}</p>}
       {work.files.length > 0 && (
         <p className="creator-files">{work.files.length === 1 ? '1 file made' : `${work.files.length} files made`}</p>
       )}

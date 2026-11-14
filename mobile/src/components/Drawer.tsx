@@ -57,7 +57,7 @@ export function Drawer({ waiting }: { waiting: number }) {
         <div className="drawer-head">
           <img src={logo} alt="" className="brand-logo" width={40} height={40} />
           <span className="row-text">
-            <span className="drawer-name serif">Shodh</span>
+            <span className="drawer-name">Shodh</span>
             <span className="drawer-line connection">
               <Dot status={status} small />
               {connectionWords(status).short}

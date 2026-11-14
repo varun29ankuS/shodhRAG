@@ -22,7 +22,7 @@ export function Workspaces({ now = () => new Date() }: { now?: () => Date }) {
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
         <TopBar brand={false} />
-        <h1 className="title serif pad">Workspaces</h1>
+        <h1 className="title pad">Workspaces</h1>
         {list === undefined && !connected && <NotConnected what="your workspaces" />}
         {list === undefined && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading your workspaces">

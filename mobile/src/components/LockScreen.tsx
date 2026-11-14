@@ -50,7 +50,7 @@ export function LockScreen({ status, onOpen }: { status: LockStatus; onOpen: () 
       <span className="panel-icon">
         <LockKeyhole aria-hidden="true" className="icon" />
       </span>
-      <h1 className="title serif">{setting ? 'Keep Shodh private' : 'Shodh is locked'}</h1>
+      <h1 className="title">{setting ? 'Keep Shodh private' : 'Shodh is locked'}</h1>
       <p className="panel-text">
         {setting
           ? 'Set a PIN of 4 to 12 digits. Shodh asks for it when it opens, so nobody else can ask your computer anything from this phone. You can change this in Settings.'

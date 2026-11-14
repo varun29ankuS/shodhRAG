@@ -125,4 +125,11 @@ describe('a citation chip', () => {
     expect(chip).toMatch(/position:\s*relative/);
     expect(before).toMatch(/position:\s*absolute/);
   });
+
+  it('sits flush with the punctuation after it: "question ①." not "question ① ."', () => {
+    const chip = /\.chip\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    const margin = /\bmargin:\s*([^;]+);/.exec(chip)?.[1].trim().split(/\s+/) ?? [];
+    // margin: top right bottom left; the right one is 0.
+    expect(margin[1] ?? margin[0]).toBe('0');
+  });
 });

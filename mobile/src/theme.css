@@ -802,7 +802,7 @@ strong {
   justify-content: center;
   width: 24px;
   height: 24px;
-  margin: 0 6px 0 2px;
+  margin: 0 0 0 2px;
   padding: 0;
   border: none;
   border-radius: 12px;
@@ -2079,4 +2079,9 @@ strong {
 
 .read-aloud {
   margin: 12px 24px 0;
+}
+
+/* Chips side by side keep a little room; a chip is flush with what follows it (“question ①.”). */
+.chip + .chip {
+  margin-left: 4px;
 }

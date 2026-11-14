@@ -1,7 +1,8 @@
 /**
  * The Library as on the computer: the linked folders, then their folders and
- * files at any depth, with a path of breadcrumbs back up. Files show their
- * first page, rendered on the computer; a tap opens the Reader, zooming
+ * files at any depth, with a path of breadcrumbs back up, in one grouped
+ * list. Folders are tinted outlines; a file shows its first page, rendered
+ * on the computer, as a small paper page; a tap opens the Reader, zooming
  * from the page.
  */
 import { Fragment, type MouseEvent } from 'react';
@@ -10,6 +11,7 @@ import { Camera, ChevronRight, Folder, Plus, Smartphone } from 'lucide-react';
 import { TopBar } from '../components/Bars';
 import { NotConnected } from '../components/Connection';
 import { PageThumb } from '../components/PageThumb';
+import { extensionOf } from '../lib/pages';
 import { useLink, useNav, useNote } from '../lib/context';
 import { libraryFolders, type FolderEntry } from '../lib/desktop';
 import { pushIn, viewIn } from '../lib/motion';
@@ -46,7 +48,8 @@ export function Library() {
   const data = listing.data;
 
   const openFile = (file: FolderEntry, event: MouseEvent<HTMLElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    // The Reader zooms from the file's page in its row.
+    const rect = (event.currentTarget.querySelector('.paper') ?? event.currentTarget).getBoundingClientRect();
     dispatch({
       type: 'read',
       target: {
@@ -97,12 +100,12 @@ export function Library() {
         {data === undefined && connected && listing.error === null && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading the folder">
             {[70, 55, 62].map(width => (
-              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 48, borderRadius: 14 }} />
+              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 48, borderRadius: 12 }} />
             ))}
           </div>
         )}
         {listing.error !== null && data === undefined && (
-          <p className="panel-text pad" style={{ marginTop: 16 }}>
+          <p className="panel-text panel-quiet" style={{ marginTop: 24 }}>
             {listing.error}
           </p>
         )}
@@ -117,8 +120,8 @@ export function Library() {
           </section>
         )}
 
-        {data !== undefined && data.folders.length > 0 && (
-          <div className="rows" style={{ marginTop: 12 }}>
+        {data !== undefined && data.folders.length + data.files.length > 0 && (
+          <div className="rows rows-icons" style={{ marginTop: 24 }}>
             {data.folders.map(folder => (
               <button
                 key={folder.path}
@@ -126,27 +129,26 @@ export function Library() {
                 className="row"
                 onClick={() => dispatch({ type: 'folder', folder: { path: folder.path, name: folder.name } })}
               >
-                <span className="row-icon">
+                <span className="row-icon folder-icon">
                   {!here && folder.name === INBOX ? <Smartphone aria-hidden="true" className="icon" /> : <Folder aria-hidden="true" className="icon" />}
                 </span>
                 <span className="row-text">
-                  <span className="row-title" style={{ fontSize: 16 }}>
-                    {folder.name}
-                  </span>
+                  <span className="row-title">{folder.name}</span>
                   {!here && <span className="row-sub">{folder.name === INBOX ? 'Files you sent from this phone' : 'Linked folder'}</span>}
                 </span>
-                <ChevronRight aria-hidden="true" className="icon-small faint" />
+                <ChevronRight aria-hidden="true" className="chevron" />
               </button>
             ))}
-          </div>
-        )}
-
-        {data !== undefined && data.files.length > 0 && (
-          <div className="files">
             {data.files.map(file => (
-              <button key={file.path} type="button" className="tile" aria-label={`Open ${file.name}`} onClick={event => openFile(file, event)}>
-                <PageThumb path={file.path} />
-                <span className="tile-name">{file.name}</span>
+              <button key={file.path} type="button" className="row" aria-label={`Open ${file.name}`} onClick={event => openFile(file, event)}>
+                <span className="row-icon row-thumb">
+                  <PageThumb path={file.path} small />
+                </span>
+                <span className="row-text">
+                  <span className="row-title row-title-one-line">{file.name}</span>
+                  <span className="row-sub">{extensionOf(file.path).toUpperCase() || 'File'}</span>
+                </span>
+                <ChevronRight aria-hidden="true" className="chevron" />
               </button>
             ))}
           </div>

@@ -393,14 +393,14 @@ describe('Conversations', () => {
 });
 
 describe('Library', () => {
-  it('the_tree_matches_the_desktop_at_three_levels: folders at any depth with breadcrumbs, files as their first page', async () => {
+  it('the_tree_matches_the_desktop_at_three_levels: folders at any depth with breadcrumbs, files as their first page in one list', async () => {
     const link = connectedComputer();
     show(link, CONNECTED, initialNav('library'));
     fireEvent.click(await screen.findByRole('button', { name: /Papers/ }));
     expect(await screen.findByRole('heading', { level: 1, name: 'Papers' })).toBeTruthy();
     expect(await screen.findByAltText('self-rag.pdf, page 1')).toBeTruthy();
-    // A file without pages shows its name and type.
-    expect(screen.getByText('md')).toBeTruthy();
+    // A file without pages shows its name and type beside a plain paper page.
+    expect(screen.getByText('MD')).toBeTruthy();
     expect(link.calls.find(c => c.command === 'read_source_page')?.args).toEqual({ filePath: '/papers/self-rag.pdf', page: 1, width: 320 });
     fireEvent.click(await screen.findByRole('button', { name: /Retrieval/ }));
     const crumbs = await screen.findByRole('navigation', { name: 'Folder path' });

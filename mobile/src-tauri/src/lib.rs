@@ -20,6 +20,7 @@ mod queue;
 mod store;
 mod update;
 mod vault;
+mod voice;
 
 use tauri::Manager;
 
@@ -110,6 +111,10 @@ pub fn run() {
             lock::lock_configure,
             lock::lock_hidden,
             lock::lock_shown,
+            voice::voice_listen,
+            voice::voice_stop_listening,
+            voice::voice_speak,
+            voice::voice_stop,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

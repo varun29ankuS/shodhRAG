@@ -7,6 +7,7 @@ import { useState, type FormEvent } from 'react';
 import { ArrowUp, CalendarDays, Camera, Sparkles } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { PhotoAsk } from '../components/PhotoAsk';
+import { MicButton } from '../components/Voice';
 import type { Picked } from '../lib/device';
 import { TopBar } from '../components/Bars';
 import { connectionWords, NotConnected } from '../components/Connection';
@@ -103,6 +104,7 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
             enterKeyHint="send"
             autoComplete="off"
           />
+          <MicButton onHeard={text => setQuestion(text)} />
           <button type="button" className="send send-quiet" aria-label="Ask about a photo" disabled={!connected} onClick={takePhoto}>
             <Camera aria-hidden="true" className="icon" />
           </button>

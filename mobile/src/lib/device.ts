@@ -128,6 +128,15 @@ export interface Sealed {
   write(name: SealedName, value: unknown): Promise<void>;
 }
 
+export interface PhoneVoice {
+  /** Listen once: what the user said. */
+  listen(): Promise<string>;
+  stopListening(): Promise<void>;
+  /** Read aloud; resolves when it was read. */
+  speak(text: string): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export interface Device {
   outbox: OutboxSource;
   updater: Updater;
@@ -138,6 +147,7 @@ export interface Device {
   systemBars(theme: 'light' | 'dark'): Promise<void>;
   notifications: PhoneNotifications;
   lock: PhoneLock;
+  voice: PhoneVoice;
 }
 
 /** How the phone tells the user while the app is closed: never (the default), Stay connected, or UnifiedPush. */
@@ -225,6 +235,12 @@ export const tauriDevice: Device = {
     distributors: () => invoke<string[]>('push_distributors'),
     syncPush: () => invoke<boolean>('push_sync'),
     scheduleBriefs: briefs => invoke<void>('briefs_schedule', { briefs }),
+  },
+  voice: {
+    listen: () => invoke<string>('voice_listen'),
+    stopListening: () => invoke<void>('voice_stop_listening'),
+    speak: text => invoke<void>('voice_speak', { text }),
+    stop: () => invoke<void>('voice_stop'),
   },
   lock: {
     status: () => invoke<LockStatus>('lock_status'),

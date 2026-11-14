@@ -2098,3 +2098,7 @@ strong {
 .segmented-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+
+.read-aloud {
+  margin: 12px 24px 0;
+}

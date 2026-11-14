@@ -53,6 +53,7 @@ class ShodhFileProvider : FileProvider()
         Permission(strings = [Manifest.permission.CAMERA], alias = "camera"),
         Permission(strings = [Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR], alias = "calendar"),
         Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+        Permission(strings = [Manifest.permission.RECORD_AUDIO], alias = "microphone"),
     ],
 )
 class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
@@ -229,6 +230,49 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun takeIncoming(invoke: Invoke) {
         invoke.resolve(Incoming.take() ?: JSObject().put("kind", "none"))
+    }
+
+    // ── Voice ──────────────────────────────────────────────────────
+
+    private val voice by lazy { Voice(activity) }
+
+    @Command
+    fun voiceListen(invoke: Invoke) {
+        if (getPermissionState("microphone") != PermissionState.GRANTED) {
+            requestPermissionForAlias("microphone", invoke, "microphoneAnswered")
+            return
+        }
+        listenNow(invoke)
+    }
+
+    @PermissionCallback
+    private fun microphoneAnswered(invoke: Invoke) {
+        if (getPermissionState("microphone") == PermissionState.GRANTED) listenNow(invoke)
+        else invoke.reject("Shodh needs the microphone to listen. Allow it in Android's settings for Shodh.")
+    }
+
+    private fun listenNow(invoke: Invoke) {
+        voice.listen { text, error ->
+            if (error != null) invoke.reject(error) else invoke.resolve(JSObject().put("text", text ?: ""))
+        }
+    }
+
+    @Command
+    fun voiceStopListening(invoke: Invoke) {
+        voice.stopListening()
+        invoke.resolve()
+    }
+
+    @Command
+    fun voiceSpeak(invoke: Invoke) {
+        val text = invoke.getArgs().getString("text", "") ?: ""
+        voice.speak(text) { error -> if (error != null) invoke.reject(error) else invoke.resolve() }
+    }
+
+    @Command
+    fun voiceStop(invoke: Invoke) {
+        voice.stopSpeaking()
+        invoke.resolve()
     }
 
     // ── Notifications ──────────────────────────────────────────────

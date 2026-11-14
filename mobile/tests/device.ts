@@ -5,7 +5,7 @@
  * test can "kill" the app (drop the sender) and start it again on the same
  * queue.
  */
-import type { CalendarChoice, CalendarWrite, Device, LockStatus, NotifyMode, PhoneLock, PhoneNotifications, FileAdded, Incoming, PhoneCalendar, PhoneCalendarInfo, PhoneFiles, Picked, PhotoRead, Sealed, SealedName, UpdateCheck } from '../src/lib/device';
+import type { CalendarChoice, CalendarWrite, Device, LockStatus, NotifyMode, PhoneLock, PhoneNotifications, PhoneVoice, FileAdded, Incoming, PhoneCalendar, PhoneCalendarInfo, PhoneFiles, Picked, PhotoRead, Sealed, SealedName, UpdateCheck } from '../src/lib/device';
 import type { PhoneEvent } from '../src/lib/calsync';
 import type { OutboxSource, QueuedFile, QueuedItem, QueueState, Work } from '../src/lib/outbox';
 
@@ -78,6 +78,7 @@ export interface MemoryDevice extends Device {
   sealed: MemorySealed;
   lock: MemoryLock;
   notifications: MemoryNotifications;
+  voice: MemoryVoice;
   checks: number;
   installs: number;
 }
@@ -90,6 +91,7 @@ export function memoryDevice(options: { update?: UpdateCheck; install?: () => Pr
     sealed: new MemorySealed(),
     lock: new MemoryLock(),
     notifications: new MemoryNotifications(),
+    voice: new MemoryVoice(),
     bars: [],
     systemBars: async theme => {
       device.bars.push(theme);
@@ -287,4 +289,18 @@ export class MemoryNotifications implements PhoneNotifications {
   async scheduleBriefs(briefs: Array<[string, number]>) {
     this.briefs.push(briefs);
   }
+}
+
+/** Voice in tests: what the user "says", and everything read aloud. */
+export class MemoryVoice implements PhoneVoice {
+  heard = 'What does Self-RAG retrieve?';
+  spoken: string[] = [];
+  async listen() {
+    return this.heard;
+  }
+  async stopListening() {}
+  async speak(text: string) {
+    this.spoken.push(text);
+  }
+  async stop() {}
 }

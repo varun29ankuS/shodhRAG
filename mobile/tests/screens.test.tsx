@@ -738,6 +738,22 @@ describe('not paired', () => {
   });
 });
 
+describe('voice', () => {
+  it('Talk puts what was said in the ask box; Read aloud names the sources from their metadata', async () => {
+    const phone = memoryDevice();
+    show(connectedComputer(), CONNECTED, initialNav('ask'), phone);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask by speaking' }));
+    await waitFor(() => expect((screen.getByLabelText('Ask about your library') as HTMLInputElement).value).toBe('What does Self-RAG retrieve?'));
+
+    show(connectedComputer(), CONNECTED, answerNav, phone);
+    fireEvent.click(await screen.findByRole('button', { name: 'Read aloud' }));
+    await waitFor(() => expect(phone.voice.spoken).toHaveLength(1));
+    expect(phone.voice.spoken[0]).toMatch(/^It decides itself\./);
+    expect(phone.voice.spoken[0]).toMatch(/Source: self-rag, page 3\.$/);
+    expect(phone.voice.spoken[0]).not.toContain('[1]');
+  });
+});
+
 describe('the lock', () => {
   it('the_lock_is_required_on_open_by_default', async () => {
     const phone = memoryDevice();

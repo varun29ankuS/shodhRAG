@@ -27,6 +27,7 @@ import { isPhotoPath, photoIdOf } from '../lib/photo';
 import { codeWork, NO_WORK, type CodeWork } from '../lib/code';
 import { useLink, useNav, useNote } from '../lib/context';
 import { QueuedRows } from '../components/Queued';
+import { MicButton, ReadAloud } from '../components/Voice';
 import { queuedQuestion } from '../lib/outbox';
 import { canQueue, useQueue } from '../lib/queue';
 import { abortAnswer, CONVERSATION_CHANGED, loadConversation, type HistoryTurn, type SavedConversation } from '../lib/desktop';
@@ -237,6 +238,7 @@ export function Ask({
             <AnswerBlocks answer={turn.answer} onCite={onCite} />
             {kind === 'code' && <CodeWorkView work={turn.work} />}
             <AnswerSources answer={turn.answer} onCite={onCite} />
+            <ReadAloud answer={turn.answer} />
           </section>
         ))}
         {queuedHere.length > 0 && (
@@ -278,6 +280,7 @@ export function Ask({
                 </div>
               ))}
             <AnswerSources answer={live.answer} onCite={onCite} />
+            <ReadAloud answer={live.answer} />
           </section>
         )}
       </div>
@@ -296,6 +299,7 @@ export function Ask({
           enterKeyHint="send"
           autoComplete="off"
         />
+        <MicButton onHeard={text => setFollowUp(text)} disabled={running} />
         {running ? (
           <button
             type="button"

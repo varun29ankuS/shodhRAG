@@ -112,6 +112,15 @@ function show(link: FakeLink, status: LinkStatus, nav: Nav, phone: MemoryDevice 
   return result;
 }
 
+/**
+ * Take down the screen `show` put up. A function, so that TypeScript does not
+ * narrow `shown` to null for the rest of a test that shows another screen.
+ */
+function hide() {
+  shown?.unmount();
+  shown = null;
+}
+
 const answerNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'c1', question: null, workspaceId: null }] };
 const conversationsNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'conversations' }] };
 const codeNav: Nav = { ...initialNav('ask'), ask: [{ kind: 'home' }, { kind: 'answer', conversationId: 'code-1', question: null, workspaceId: 'w1' }] };
@@ -968,8 +977,7 @@ describe('every control', () => {
       });
       checkTargets(name);
     }
-    shown?.unmount();
-    shown = null;
+    hide();
     source = fakeSource(silentComputer(), { state: 'unpaired' });
     const { unmount } = render(<App source={source} device={memoryDevice()} />);
     await screen.findByRole('heading', { name: 'Pair with your computer' });
@@ -1000,7 +1008,6 @@ describe('every control', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Brief' }));
     await screen.findByText('Reading group notes');
     checkTargets('brief');
-    shown?.unmount();
-    shown = null;
+    hide();
   });
 });

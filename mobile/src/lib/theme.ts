@@ -62,7 +62,7 @@ export interface ThemeState {
 }
 
 /** The theme, kept on `<html data-theme>` and following the phone while the choice is "phone". */
-export function useTheme(): ThemeState {
+export function useTheme(systemBars?: (theme: Theme) => Promise<void>): ThemeState {
   const [choice, setChoice] = useState<ThemeChoice>(savedChoice);
   const [phone, setPhone] = useState<Theme>(phoneTheme);
 
@@ -78,7 +78,9 @@ export function useTheme(): ThemeState {
   const theme = resolveTheme(choice, phone);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    // Android's status and navigation bars follow: light icons on dark, dark icons on light.
+    systemBars?.(theme).catch(() => undefined);
+  }, [theme, systemBars]);
 
   const choose = useCallback((next: ThemeChoice) => {
     saveChoice(next);

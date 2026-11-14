@@ -70,6 +70,8 @@ export class MemoryOutbox implements OutboxSource {
 }
 
 export interface MemoryDevice extends Device {
+  /** Every theme the system bars were set to. */
+  bars: Array<'light' | 'dark'>;
   outbox: MemoryOutbox;
   files: MemoryFiles;
   calendar: MemoryCalendar;
@@ -84,6 +86,10 @@ export function memoryDevice(options: { update?: UpdateCheck; install?: () => Pr
     files: new MemoryFiles(),
     calendar: new MemoryCalendar(),
     sealed: new MemorySealed(),
+    bars: [],
+    systemBars: async theme => {
+      device.bars.push(theme);
+    },
     checks: 0,
     installs: 0,
     updater: {

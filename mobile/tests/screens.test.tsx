@@ -756,6 +756,16 @@ describe('the theme', () => {
     expect(window.localStorage.getItem('shodh.theme')).toBeNull();
   });
 
+  it("Android's system bars follow the theme, live: light icons on dark, dark icons on light", async () => {
+    show(connectedComputer(), CONNECTED, initialNav('settings'));
+    await screen.findByText('Theme');
+    await waitFor(() => expect(device.bars).toEqual(['dark']));
+    act(() => setPhoneTheme('light'));
+    await waitFor(() => expect(device.bars).toEqual(['dark', 'light']));
+    fireEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+    await waitFor(() => expect(device.bars).toEqual(['dark', 'light', 'dark']));
+  });
+
   it('the menu has the same choice', async () => {
     show(connectedComputer(), CONNECTED, { ...initialNav('ask'), drawer: true });
     const menu = await screen.findByRole('navigation', { name: 'All sections' });

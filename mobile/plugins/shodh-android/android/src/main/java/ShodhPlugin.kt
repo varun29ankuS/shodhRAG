@@ -88,6 +88,21 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    // ── The system bars ──────────────────────────────────────────
+
+    /** Light icons on the dark theme, dark icons on the light one. */
+    @Command
+    fun setSystemBars(invoke: Invoke) {
+        val dark = invoke.getArgs().getBoolean("dark", true) ?: true
+        activity.runOnUiThread {
+            val window = activity.window
+            val bars = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            bars.isAppearanceLightStatusBars = !dark
+            bars.isAppearanceLightNavigationBars = !dark
+            invoke.resolve()
+        }
+    }
+
     // ── The one-tap update ─────────────────────────────────────────
 
     @Command

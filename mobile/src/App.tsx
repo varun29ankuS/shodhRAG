@@ -46,7 +46,7 @@ export function App({ source, start = null, device = tauriDevice }: { source: Li
   const openPairing = useCallback(() => setPairing(true), []);
   return (
     <MotionConfig reducedMotion="user">
-      <ThemeProvider>
+      <ThemeProvider systemBars={device.systemBars}>
         <LinkProvider source={source} openPairing={openPairing}>
           <DeviceProvider device={device}>
             <QueueProvider>

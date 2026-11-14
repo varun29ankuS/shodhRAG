@@ -132,6 +132,8 @@ export interface Device {
   files: PhoneFiles;
   calendar: PhoneCalendar;
   sealed: Sealed;
+  /** Android's status and navigation bars: light icons on the dark theme, dark icons on the light. */
+  systemBars(theme: 'light' | 'dark'): Promise<void>;
 }
 
 const PLUGIN = 'shodh-android';
@@ -179,4 +181,5 @@ export const tauriDevice: Device = {
     read: <T,>(name: SealedName) => invoke<T | null>('sealed_read', { name }),
     write: (name, value) => invoke<void>('sealed_write', { name, value }),
   },
+  systemBars: theme => invoke<void>('system_bars', { theme }),
 };

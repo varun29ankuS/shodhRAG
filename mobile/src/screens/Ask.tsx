@@ -3,7 +3,7 @@
  * the computer saved them, and a new question's answer as it streams. Ask a
  * follow-up from the box at the bottom; Stop ends the answer being written.
  *
- * The layout follows the conversation's kind on the computer (lib/modes.ts):
+ * How it reads follows the conversation's kind on the computer (lib/modes.ts):
  * Research reads as prose; Code is monospace, with the files each answer
  * changed and the commands it ran, from the saved transcript, under a note
  * that code changes are approved on the computer; Creator says where to see

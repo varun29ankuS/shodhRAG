@@ -56,7 +56,7 @@ const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwA
 function connectedComputer(overrides: Record<string, unknown> = {}): FakeLink {
   return computer({
     conversations_list: CONVERSATIONS,
-    load_conversation: SAVED,
+    load_conversation: (args: Record<string, unknown>) => (args.conversationId === CODE_CONVERSATION.id ? CODE_CONVERSATION : SAVED),
     library_folders: (args: Record<string, unknown>) =>
       args.path === undefined
         ? { folders: [{ name: 'Papers', path: '/papers' }] }
@@ -280,7 +280,7 @@ describe('Conversations', () => {
     const row = (title: string) => screen.getByText(title).closest('button') as HTMLElement;
     await screen.findByText('Make the reranker skip empty passages');
     // The mode icon is left of the title, named for its kind; a record without a mode is Research.
-    const kindOf = (title: string) => within(row(title)).getByRole('img').getAttribute('aria-label');
+    const kindOf = (title: string) => row(title).querySelector('.mode-icon')?.getAttribute('aria-label');
     expect(kindOf('How does Self-RAG decide when to retrieve?')).toBe('Research');
     expect(kindOf('Where should the best passages go?')).toBe('Research');
     expect(kindOf('Make the reranker skip empty passages')).toBe('Code');

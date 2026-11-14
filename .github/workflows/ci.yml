@@ -352,8 +352,10 @@ jobs:
       # reach omp whole through its file (it failed with os error 206 while
       # it was passed on the command line). The test downloads the pinned omp
       # release as setup does, checked against the pinned SHA-256.
+      # --workspace selects the packages (and so the features) of the step
+      # above, so its builds are reused; the other crates match no test.
       - name: Long system prompt against the agent runtime
-        run: cargo test --package shodh-rag --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
+        run: cargo test --workspace --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
 
       - name: Doc tests (workspace)
         run: cargo test --workspace --doc

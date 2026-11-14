@@ -539,7 +539,8 @@ impl OmpLayout {
     /// text (Windows limits a command line to 32,767 characters, and the
     /// prompt can be longer). The file is removed when the returned value is
     /// dropped. Files a previous run of the app left behind (it stopped before
-    /// its sessions ended) are removed before this process writes its first.
+    /// its sessions ended) are removed before this process writes its first
+    /// ([`sweep_left_prompts_once`]).
     pub fn write_system_prompt(&self, text: &str) -> Result<SystemPromptFile, HarnessError> {
         super::run_command::prepare_scratch(&self.prompts).map_err(HarnessError::Spawn)?;
         sweep_left_prompts_once(&self.prompts);
@@ -552,10 +553,17 @@ static SWEPT_PROMPT_DIRS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<PathBuf>>,
 > = std::sync::LazyLock::new(Default::default);
 
-/// Remove every file in `dir` the first time this process writes a prompt
-/// there. Before that first write no session of this process has a file in
-/// it, so whatever is there was left by an earlier run. The lock is held
-/// through the sweep, so a concurrent first write waits for it.
+/// How old a prompt file of another process must be before a sweep removes
+/// it: omp reads its prompt file as it starts, well within this time, so an
+/// older file is no longer needed by any omp (another app instance's
+/// included), while a newer one may be about to be read.
+const LEFT_PROMPT_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Remove the files of `dir` older than [`LEFT_PROMPT_AGE`] the first time
+/// this process writes a prompt there. Before that first write no session of
+/// this process has a file in it, so they were left by an earlier run (it
+/// stopped before its sessions ended). The lock is held through the sweep,
+/// so a concurrent first write waits for it.
 fn sweep_left_prompts_once(dir: &Path) {
     let mut swept = SWEPT_PROMPT_DIRS.lock().unwrap_or_else(|e| e.into_inner());
     if !swept.insert(dir.to_path_buf()) {
@@ -565,7 +573,15 @@ fn sweep_left_prompts_once(dir: &Path) {
         return;
     };
     for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+        let left = entry.metadata().is_ok_and(|meta| {
+            meta.is_file()
+                && meta
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > LEFT_PROMPT_AGE)
+        });
+        if !left {
             continue;
         }
         let path = entry.path();
@@ -1445,12 +1461,25 @@ mod tests {
     fn concurrent_sessions_get_their_own_prompt_files_and_leftovers_are_swept() {
         let data = tempfile::tempdir().unwrap();
         let layout = OmpLayout::new(data.path());
-        // A file an earlier run left (it stopped before its session ended).
+        // A file an earlier run left (it stopped before its session ended),
+        // and one another app instance just wrote for an omp still starting.
         std::fs::create_dir_all(&layout.prompts).unwrap();
         let left = layout.prompts.join("system-prompt-left.txt");
         std::fs::write(&left, "old instructions").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&left)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - 2 * LEFT_PROMPT_AGE)
+            .unwrap();
+        let starting = layout.prompts.join("system-prompt-starting.txt");
+        std::fs::write(&starting, "another instance's instructions").unwrap();
         let first = layout.write_system_prompt("first").unwrap();
         assert!(!left.exists(), "a leftover prompt file was kept");
+        assert!(
+            starting.exists(),
+            "a file an omp may still read was removed"
+        );
         // Later sessions never remove a live session's file.
         let second = layout.write_system_prompt("second").unwrap();
         assert_ne!(first.path(), second.path());

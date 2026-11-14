@@ -35,6 +35,7 @@ export const REQUIRED_CHECKS = [
   'Recall scorecard',
   'Frontend Typecheck + Tests',
   'Footprint budget',
+  'Android build + launch',
   'CI gate',
 ];
 

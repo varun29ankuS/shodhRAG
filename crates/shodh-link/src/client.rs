@@ -46,7 +46,8 @@ pub struct LinkClient {
     connection: Connection,
     requests: mpsc::Sender<Request>,
     calls: Calls,
-    events: mpsc::Receiver<LinkEvent>,
+    /// `None` once an app took the stream ([`LinkClient::take_events`]).
+    events: Option<mpsc::Receiver<LinkEvent>>,
     next_call: AtomicU64,
     /// Why the desktop ended the connection, once it did.
     ended: Arc<Mutex<Option<String>>>,
@@ -148,7 +149,7 @@ impl LinkClient {
             connection,
             requests,
             calls,
-            events,
+            events: Some(events),
             next_call: AtomicU64::new(1),
             ended,
         })
@@ -190,9 +191,20 @@ impl LinkClient {
             .map_err(|_| offline(self.ended()))
     }
 
-    /// The next event; `None` once the connection ended.
+    /// The next event; `None` once the connection ended, or once the stream
+    /// was taken ([`Self::take_events`]).
     pub async fn next_event(&mut self) -> Option<LinkEvent> {
-        self.events.recv().await
+        match &mut self.events {
+            Some(events) => events.recv().await,
+            None => None,
+        }
+    }
+
+    /// The event stream, for an app that reads events on one task while it
+    /// calls commands from others (`invoke` needs only `&self`). It ends when
+    /// the connection does. `None` when it was already taken.
+    pub fn take_events(&mut self) -> Option<mpsc::Receiver<LinkEvent>> {
+        self.events.take()
     }
 
     /// Why the desktop ended the connection (removed, refused), once it did.

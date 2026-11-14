@@ -27,8 +27,8 @@ kotlin {
 }
 
 dependencies {
-    // Apache-2.0: NotificationCompat, ContextCompat.
-    implementation("androidx.core:core-ktx:1.9.0")
+    // Apache-2.0: NotificationCompat, ServiceCompat (1.12+), WindowCompat.
+    implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.6.0")
     implementation(project(":tauri-android"))
 }

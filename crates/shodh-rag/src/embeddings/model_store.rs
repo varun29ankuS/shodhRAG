@@ -817,6 +817,12 @@ impl ModelStore {
     }
 }
 
+/// Whether the file at `path` is `artifact`: by its stamp, or else by hashing
+/// it (and stamping it when it matches).
+pub fn is_installed(path: &Path, artifact: &ModelArtifact) -> bool {
+    matches!(check_file(path, artifact, true), Ok(FileCheck::Verified))
+}
+
 enum FileCheck {
     Missing,
     Unverified,

@@ -35,6 +35,20 @@ pub const EMBEDDER_TOKEN_LIMIT: usize = 500;
 /// Default token budget for a chunk's text (prefix excluded).
 pub const DEFAULT_CHUNK_TOKENS: usize = 380;
 
+/// A budget for a chunk's text, clamped so that text plus context prefix
+/// can stay within [`EMBEDDER_TOKEN_LIMIT`].
+pub fn clamp_chunk_tokens(max_tokens: usize) -> usize {
+    max_tokens.clamp(64, EMBEDDER_TOKEN_LIMIT - 60)
+}
+
+/// The budget for a chunk's text under the context `prefix`: `max_tokens`,
+/// or less where the prefix leaves less of [`EMBEDDER_TOKEN_LIMIT`].
+pub fn text_budget(max_tokens: usize, prefix: &str, count_tokens: &dyn Fn(&str) -> usize) -> usize {
+    max_tokens
+        .min(EMBEDDER_TOKEN_LIMIT.saturating_sub(count_tokens(prefix)))
+        .max(32)
+}
+
 /// Version tag stored with every chunk this chunker produces.
 pub const STRUCTURE_CHUNKER_VERSION: &str = "structure-v1";
 
@@ -139,7 +153,7 @@ impl StructureChunker {
     /// text plus context prefix stays within [`EMBEDDER_TOKEN_LIMIT`].
     pub fn new(max_tokens: usize) -> Self {
         Self {
-            max_tokens: max_tokens.clamp(64, EMBEDDER_TOKEN_LIMIT - 60),
+            max_tokens: clamp_chunk_tokens(max_tokens),
         }
     }
 
@@ -159,10 +173,7 @@ impl StructureChunker {
         while i < units.len() {
             let unit = &units[i];
             let prefix = context_prefix(doc_context, &unit.section_path, unit.kind);
-            let budget = self
-                .max_tokens
-                .min(EMBEDDER_TOKEN_LIMIT.saturating_sub(count_tokens(&prefix)))
-                .max(32);
+            let budget = text_budget(self.max_tokens, &prefix, count_tokens);
             match unit.kind {
                 UnitKind::Flow => {
                     let text = unit_text(unit, &doc.blocks);

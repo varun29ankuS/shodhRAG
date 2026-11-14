@@ -86,6 +86,74 @@ impl EmbeddingModel for HashEmbedder {
     }
 }
 
+/// [`HashEmbedder`] that counts the documents it embeds and counts tokens the
+/// way a subword tokenizer counts code ([`code_tokens`]), so that a window of
+/// code or data is more than the embedder reads, as it is with the real one.
+#[derive(Default)]
+pub(crate) struct CountingCodeEmbedder {
+    embedded: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingCodeEmbedder {
+    /// The documents embedded so far.
+    pub(crate) fn embedded(&self) -> usize {
+        self.embedded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl EmbeddingModel for CountingCodeEmbedder {
+    fn embed_query(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        HashEmbedder.embed_query(text)
+    }
+    fn embed_document(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        self.embedded
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        HashEmbedder.embed_document(text)
+    }
+    fn dimension(&self) -> usize {
+        DIM
+    }
+    fn count_tokens(&self, text: &str) -> Option<usize> {
+        Some(code_tokens(text))
+    }
+}
+
+/// A stand-in for a subword tokenizer on code: every run of letters, digits
+/// and underscores is a token and so is every other character that is not
+/// whitespace, plus four for the instruction prefix and special tokens.
+pub(crate) fn code_tokens(text: &str) -> usize {
+    let mut tokens = 4;
+    let mut in_word = false;
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            tokens += usize::from(!in_word);
+            in_word = true;
+        } else {
+            tokens += usize::from(!c.is_whitespace());
+            in_word = false;
+        }
+    }
+    tokens
+}
+
+/// Dense JSON (about three bytes a token by [`code_tokens`]): a byte window
+/// of it is far more tokens than the embedder reads.
+pub(crate) fn dense_json(rows: usize) -> String {
+    let rows: Vec<String> = (0..rows)
+        .map(|i| {
+            format!(
+                r#"{{"id":{i},"sku":"A-{i:05}","dims":[{},{},{}],"ok":{},"tags":["x{i}","y{}"]}}"#,
+                i * 3,
+                i * 7 % 11,
+                i % 5,
+                i % 2 == 0,
+                i * 13
+            )
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
 pub(crate) struct FixedEmbedder(pub Arc<dyn EmbeddingModel>);
 
 #[async_trait::async_trait]

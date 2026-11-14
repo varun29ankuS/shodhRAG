@@ -196,7 +196,12 @@ impl PhoneLinkState {
 /// events, which conversation the desktop saved, and that the Inbox changed.
 pub fn manage(app: &AppHandle) {
     let (events, _) = broadcast::channel(EVENT_BUFFER);
-    for name in [AGENT_EVENT, CONVERSATION_CHANGED_EVENT, INBOX_CHANGED_EVENT] {
+    for name in [
+        AGENT_EVENT,
+        CONVERSATION_CHANGED_EVENT,
+        INBOX_CHANGED_EVENT,
+        crate::calendar_commands::CALENDAR_CHANGED_EVENT,
+    ] {
         let forward = events.clone();
         app.listen_any(name, move |event| {
             // Parsed only while a phone is connected.
@@ -817,6 +822,102 @@ struct ApproveArgs {
     approved: bool,
 }
 
+/// Where a task or an event made on a phone says it came from (the desktop's
+/// Tasks view shows it, and the assistant's calendar tools read it).
+pub const PHONE_SOURCE: &str = "phone";
+
+/// The most characters of a phone's own reference for what it made.
+const MAX_SOURCE_REF: usize = 200;
+
+/// A phone's own reference for a task or event it makes, or none. Only two
+/// shapes: `phone:<id>` (the outbox item that made it, so a resend after the
+/// app was killed is recognised) and `phone-calendar:<calendar>:<event>` (an
+/// event of the phone's own calendar, which the phone sends only while "Let
+/// Shodh use my calendar" is on). Nothing a phone sends can claim to be the
+/// assistant's or a connector's.
+pub fn phone_source_ref(raw: Option<&str>) -> Result<Option<String>, Value> {
+    let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    let shaped = match raw.split(':').collect::<Vec<_>>().as_slice() {
+        ["phone", id] => plain(id),
+        ["phone-calendar", calendar, event] => plain(calendar) && plain(event),
+        _ => false,
+    };
+    if !shaped || raw.len() > MAX_SOURCE_REF {
+        return Err(invalid("This reference is not one a phone makes."));
+    }
+    Ok(Some(raw.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewTaskArgs {
+    title: String,
+    description: Option<String>,
+    due_date: Option<String>,
+    priority: Option<String>,
+    tags: Option<Vec<String>>,
+    project: Option<String>,
+    workspace_id: Option<String>,
+    reminder: Option<String>,
+    source_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskPatchArgs {
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    due_date: Option<String>,
+    priority: Option<String>,
+    status: Option<String>,
+    tags: Option<Vec<String>>,
+    project: Option<String>,
+    workspace_id: Option<String>,
+    reminder: Option<String>,
+    clear: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewEventArgs {
+    title: String,
+    start_time: String,
+    end_time: Option<String>,
+    all_day: Option<bool>,
+    description: Option<String>,
+    color: Option<String>,
+    location: Option<String>,
+    source_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventPatchArgs {
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    all_day: Option<bool>,
+    color: Option<String>,
+    location: Option<String>,
+    clear: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdArgs {
+    id: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConversationArgs {
@@ -1037,6 +1138,93 @@ async fn dispatch(
                 .collect();
             Ok(Value::Array(list))
         }
+        // Tasks and the calendar: the user's own edits on the phone, saved as the
+        // desktop's Tasks view saves them, always as made on the phone.
+        "load_tasks" => reply(crate::calendar_commands::load_tasks(app.clone()).await),
+        "load_events" => reply(crate::calendar_commands::load_events(app.clone()).await),
+        "create_task" => {
+            let a: NewTaskArgs = args(raw)?;
+            let source_ref = phone_source_ref(a.source_ref.as_deref())?;
+            reply(
+                crate::calendar_commands::create_task(
+                    app.clone(),
+                    app.state(),
+                    a.title,
+                    a.description,
+                    a.due_date,
+                    a.priority,
+                    a.tags,
+                    a.project,
+                    a.workspace_id,
+                    Some(PHONE_SOURCE.to_string()),
+                    source_ref,
+                    a.reminder,
+                )
+                .await,
+            )
+        }
+        "update_task" => {
+            let a: TaskPatchArgs = args(raw)?;
+            reply(
+                crate::calendar_commands::update_task(
+                    app.clone(),
+                    app.state(),
+                    a.id,
+                    a.title,
+                    a.description,
+                    a.due_date,
+                    a.priority,
+                    a.status,
+                    a.tags,
+                    a.project,
+                    a.workspace_id,
+                    a.reminder,
+                    a.clear,
+                )
+                .await,
+            )
+        }
+        "create_event" => {
+            let a: NewEventArgs = args(raw)?;
+            let source_ref = phone_source_ref(a.source_ref.as_deref())?;
+            reply(
+                crate::calendar_commands::create_event(
+                    app.clone(),
+                    a.title,
+                    a.start_time,
+                    a.end_time,
+                    a.all_day,
+                    a.description,
+                    a.color,
+                    Some(PHONE_SOURCE.to_string()),
+                    source_ref,
+                    a.location,
+                )
+                .await,
+            )
+        }
+        "update_event" => {
+            let a: EventPatchArgs = args(raw)?;
+            reply(
+                crate::calendar_commands::update_event(
+                    app.clone(),
+                    a.id,
+                    a.title,
+                    a.description,
+                    a.start_time,
+                    a.end_time,
+                    a.all_day,
+                    a.color,
+                    a.location,
+                    a.clear,
+                )
+                .await,
+            )
+        }
+        "delete_event" => {
+            let a: IdArgs = args(raw)?;
+            reply(crate::calendar_commands::delete_event(app.clone(), a.id).await)
+        }
         "workspaces_list" => reply(
             crate::workspace_commands::workspaces_list(app.clone(), app.state(), Some(false)).await,
         ),
@@ -1247,6 +1435,42 @@ mod tests {
             "approvals_pending",
             "the bridge remembers the steps of the read the desktop serves"
         );
+    }
+
+    /// Tasks and events from a phone: always saved as the phone's, with only the two
+    /// references a phone makes.
+    #[test]
+    fn a_task_or_event_from_a_phone_names_only_the_phone_as_its_source() {
+        assert_eq!(PHONE_SOURCE, "phone");
+        assert_eq!(phone_source_ref(None), Ok(None));
+        assert_eq!(phone_source_ref(Some("  ")), Ok(None));
+        assert_eq!(
+            phone_source_ref(Some("phone:7f3a-item_1")),
+            Ok(Some("phone:7f3a-item_1".to_string()))
+        );
+        assert_eq!(
+            phone_source_ref(Some("phone-calendar:12:3456")),
+            Ok(Some("phone-calendar:12:3456".to_string()))
+        );
+        for claimed in [
+            "agent:run-1",
+            "slack:C123:1700000000.1",
+            "phone:",
+            "phone:a:b",
+            "phone-calendar:12",
+            "phone:../../x",
+            "phone:a b",
+            "calendar://task/1",
+        ] {
+            assert!(phone_source_ref(Some(claimed)).is_err(), "{claimed}");
+        }
+        assert!(phone_source_ref(Some(&format!("phone:{}", "a".repeat(MAX_SOURCE_REF)))).is_err());
+        // The dispatch forces the source: no argument a phone sends is read for it.
+        let source = include_str!("phone_link.rs");
+        let body = &source[source.find("\"create_task\" =>").unwrap()
+            ..source.find("\"workspaces_list\" =>").unwrap()];
+        assert_eq!(body.matches("Some(PHONE_SOURCE.to_string())").count(), 2);
+        assert!(!body.contains("a.source,"));
     }
 
     /// The phone's Conversations: each summary says the conversation's mode and agent

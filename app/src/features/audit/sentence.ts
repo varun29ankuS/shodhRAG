@@ -555,6 +555,13 @@ const PHONE_COMMANDS: Record<string, string> = {
   phone_file_chunk: 'Sent part of a file',
   phone_file_finish: 'Added a file',
   phone_photo_keep: 'Kept a photo in the library',
+  load_tasks: 'Read the tasks',
+  load_events: 'Read the calendar',
+  create_task: 'Added a task',
+  update_task: 'Changed a task',
+  create_event: 'Added an event',
+  update_event: 'Changed an event',
+  delete_event: 'Removed an event',
 };
 
 function phoneLink(p: Record<string, unknown>): EventSentence {

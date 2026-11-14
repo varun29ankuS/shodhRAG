@@ -8,6 +8,7 @@
 import { addPluginListener, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { tauriOutbox, type OutboxSource, type QueuedFile } from './outbox';
+import type { PhoneEvent } from './calsync';
 
 /** What looking for the phone's update found (`update_check`). */
 export type UpdateCheck = { state: 'ready'; version: string; size: number } | { state: 'unavailable'; message: string };
@@ -80,10 +81,57 @@ export interface PhoneFiles {
   onProgress(handler: (progress: FileProgress) => void): Promise<() => void>;
 }
 
+/** The user's calendar choices (crates/shodh-link/src/phone_calendar.rs). */
+export interface CalendarChoice {
+  enabled: boolean;
+  chosen: number[];
+  shodhCalendar: number | null;
+  /** "Let Shodh use my calendar". */
+  useWithShodh: boolean;
+}
+
+/** A calendar on the phone. */
+export interface PhoneCalendarInfo {
+  id: number;
+  name: string;
+  account: string;
+  color: string;
+  /** Shodh's own calendar. */
+  shodh: boolean;
+}
+
+export type CalendarWrite =
+  | { kind: 'insert'; calendarId: number; fields: Record<string, unknown> }
+  | { kind: 'update'; calendarId: number; eventId: number; fields: Record<string, unknown> }
+  | { kind: 'delete'; calendarId: number; eventId: number };
+
+export interface PhoneCalendar {
+  /** Ask Android for the calendar permission; whether it was given. */
+  access(): Promise<boolean>;
+  list(): Promise<PhoneCalendarInfo[]>;
+  choice(): Promise<CalendarChoice>;
+  choose(choice: CalendarChoice): Promise<CalendarChoice>;
+  /** Single events of the calendars Shodh may read. */
+  events(fromMs: number, toMs: number): Promise<PhoneEvent[]>;
+  write(write: CalendarWrite): Promise<{ eventId?: number }>;
+  /** The phone's calendars changed (while the app runs). */
+  onChanged(handler: () => void): Promise<() => void>;
+}
+
+/** The phone's sealed files the window keeps. */
+export type SealedName = 'agenda' | 'calendar-sync' | 'settings';
+
+export interface Sealed {
+  read<T>(name: SealedName): Promise<T | null>;
+  write(name: SealedName, value: unknown): Promise<void>;
+}
+
 export interface Device {
   outbox: OutboxSource;
   updater: Updater;
   files: PhoneFiles;
+  calendar: PhoneCalendar;
+  sealed: Sealed;
 }
 
 const PLUGIN = 'shodh-android';
@@ -113,4 +161,22 @@ export const tauriDevice: Device = {
     install: () => invoke<boolean>('update_install'),
   },
   files: tauriFiles,
+  calendar: {
+    access: () => invoke<boolean>('calendar_access'),
+    list: () => invoke<PhoneCalendarInfo[]>('calendar_list'),
+    choice: () => invoke<CalendarChoice>('calendar_choice'),
+    choose: choice => invoke<CalendarChoice>('calendar_choose', { choice }),
+    events: (fromMs, toMs) => invoke<PhoneEvent[]>('calendar_events', { fromMs, toMs }),
+    write: write => invoke<{ eventId?: number }>('calendar_write', { write }),
+    onChanged: async handler => {
+      const listener = await addPluginListener(PLUGIN, 'calendar', () => handler());
+      return () => {
+        void listener.unregister();
+      };
+    },
+  },
+  sealed: {
+    read: <T,>(name: SealedName) => invoke<T | null>('sealed_read', { name }),
+    write: (name, value) => invoke<void>('sealed_write', { name, value }),
+  },
 };

@@ -55,6 +55,21 @@ const SAVED = {
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const todayKey = (() => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+})();
+
+const TASKS = [
+  { id: 't1', title: 'Read the Self-RAG paper', status: 'pending', dueDate: todayKey, source: 'user', createdAt: ago(60), updatedAt: ago(60) },
+  { id: 't2', title: 'Send the slides', status: 'completed', source: 'user', createdAt: ago(90), updatedAt: ago(30) },
+];
+
+const EVENTS = [
+  { id: 'e1', title: 'Reading group', startTime: `${todayKey}T23:00`, endTime: `${todayKey}T23:30`, allDay: false, source: 'user', createdAt: ago(100) },
+];
+
 function connectedComputer(overrides: Record<string, unknown> = {}): FakeLink {
   return computer({
     conversations_list: CONVERSATIONS,
@@ -72,6 +87,9 @@ function connectedComputer(overrides: Record<string, unknown> = {}): FakeLink {
     read_source_text: { text: 'Retrieve less, but better.', part: 0, parts: 1, truncated: false },
     read_source_page: (args: Record<string, unknown>) => ({ page: args.page, pages: 12, width: 320, height: 414, png: PNG }),
     agent_approve: null,
+    load_tasks: TASKS,
+    load_events: EVENTS,
+    update_task: (args: Record<string, unknown>) => ({ ...TASKS[0], ...args }),
     ...overrides,
   });
 }
@@ -113,7 +131,8 @@ describe('Home', () => {
     expect(await screen.findByText('Continue')).toBeTruthy();
     expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/^Good (morning|afternoon|evening)$/);
     expect(screen.getByLabelText('Ask about your library')).toBeTruthy();
-    expect(screen.getByText('Your agenda, tasks and automations')).toBeTruthy();
+    expect(await screen.findByText(/Reading group$/)).toBeTruthy();
+    expect(screen.getByText('1 on your calendar today, and 1 task due.')).toBeTruthy();
     expect(await screen.findByText(/^It decides itself./)).toBeTruthy();
     expect(screen.getByText('Where should the best passages go?')).toBeTruthy();
     expect(await screen.findByText('What do my files in Papers cover?')).toBeTruthy();
@@ -443,6 +462,75 @@ describe('Send to Shodh', () => {
   });
 });
 
+describe('Tasks', () => {
+  it("shows today's agenda and the tasks, and ticks one off on the computer", async () => {
+    const link = connectedComputer();
+    show(link, CONNECTED, initialNav('tasks'));
+    expect(await screen.findByText('Reading group')).toBeTruthy();
+    expect(screen.getByText('23:00 to 23:30')).toBeTruthy();
+    expect(screen.getByText('Read the Self-RAG paper')).toBeTruthy();
+    expect(screen.getByText('Due today')).toBeTruthy();
+    expect(screen.getByText('1 done')).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tick off “Read the Self-RAG paper”' }));
+    await waitFor(() => expect(link.calls.find(c => c.command === 'update_task')?.args).toEqual({ id: 't1', status: 'completed' }));
+  });
+
+  it('while the computer is away shows the sealed copy and keeps a new task until it wakes', async () => {
+    const phone = memoryDevice();
+    await phone.sealed.write('agenda', { tasks: TASKS, events: EVENTS, savedAt: Date.now() - 60_000 });
+    show(silentComputer(), ASLEEP, initialNav('tasks'), phone);
+    expect(await screen.findByText(/^Your computer is away\. This is your agenda as of/)).toBeTruthy();
+    expect(screen.getByText('Read the Self-RAG paper')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('The new task'), { target: { value: 'Call Asha' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add' })[0]);
+    await waitFor(() => expect(phone.outbox.items.length).toBe(1));
+    const work = phone.outbox.items[0].work;
+    expect(work).toMatchObject({ kind: 'edit', command: 'create_task', args: { title: 'Call Asha', sourceRef: `phone:${phone.outbox.items[0].id}` } });
+    expect(await screen.findByText('Add the task “Call Asha”')).toBeTruthy();
+  });
+
+  it('a delete in the phone calendar asks before Shodh removes its event', async () => {
+    const phone = memoryDevice();
+    await phone.calendar.choose({ enabled: true, chosen: [], shodhCalendar: null, useWithShodh: false });
+    await phone.sealed.write('calendar-sync', {
+      links: [{ desktopId: 'e1', calendarId: 9, eventId: 500, origin: 'shodh', base: { title: 'Reading group', start: `${todayKey}T23:00`, end: `${todayKey}T23:30`, allDay: false, location: null, description: '' }, phoneChangedAt: null }],
+      history: [],
+      pending: [],
+    });
+    const link = connectedComputer({ delete_event: true });
+    show(link, CONNECTED, initialNav('tasks'), phone);
+    expect(await screen.findByText('“Reading group” was removed from your phone’s calendar. Remove it from Shodh too?')).toBeTruthy();
+    expect(link.calls.some(c => c.command === 'delete_event')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(link.calls.find(c => c.command === 'delete_event')?.args).toEqual({ id: 'e1' }));
+  });
+});
+
+describe('Settings, Calendar', () => {
+  it('sync is off until turned on; then the calendars to read and "Let Shodh use my calendar"', async () => {
+    const phone = memoryDevice();
+    show(connectedComputer(), CONNECTED, initialNav('settings'), phone);
+    const sync = await screen.findByRole('switch', { name: "Sync with this phone's calendar" });
+    expect(sync.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(sync);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Work/ }));
+    await waitFor(() => expect(phone.calendar.current.chosen).toEqual([2]));
+    expect(phone.calendar.current.shodhCalendar).toBe(9);
+    expect(screen.getByText(/Off: events of the calendars you ticked show here only/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('switch', { name: 'Let Shodh use my calendar' }));
+    await waitFor(() => expect(phone.calendar.current.useWithShodh).toBe(true));
+  });
+
+  it('says plainly when Android refuses the calendar', async () => {
+    const phone = memoryDevice();
+    phone.calendar.granted = false;
+    show(connectedComputer(), CONNECTED, initialNav('settings'), phone);
+    fireEvent.click(await screen.findByRole('switch', { name: "Sync with this phone's calendar" }));
+    expect(await screen.findByText(/Shodh may not use this phone’s calendar/)).toBeTruthy();
+    expect(phone.calendar.current.enabled).toBe(false);
+  });
+});
+
 describe('the Reader', () => {
   const readerNav = (path: string, name: string): Nav => ({
     ...folderNav,
@@ -553,7 +641,7 @@ describe('Workspaces and the sections still to come', () => {
     expect(await screen.findByText('No workspaces yet')).toBeTruthy();
     show(silentComputer(), ASLEEP, initialNav('workspaces'));
     expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
-    for (const section of ['tasks', 'activity', 'artifacts', 'connectors'] as const) {
+    for (const section of ['activity', 'artifacts', 'connectors'] as const) {
       show(connectedComputer(), CONNECTED, initialNav(section));
       expect(await screen.findByText('Coming to the phone soon')).toBeTruthy();
     }

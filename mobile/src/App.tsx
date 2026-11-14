@@ -16,6 +16,8 @@ import { tauriDevice, type Device } from './lib/device';
 import { DeviceProvider, QueueProvider } from './lib/queue';
 import { IncomingProvider, useOffers } from './lib/incoming';
 import { SendSheet } from './components/SendSheet';
+import { AgendaProvider } from './lib/agenda';
+import { Tasks } from './screens/Tasks';
 import { askScreen, type Nav } from './lib/nav';
 import { Approvals, ApprovalSheet } from './screens/Approvals';
 import { Ask } from './screens/Ask';
@@ -51,7 +53,9 @@ export function App({ source, start = null, device = tauriDevice }: { source: Li
                 <NoteProvider>
                   <IncomingProvider>
                     <DataProvider>
-                      <Shell start={start} pairing={pairing} closePairing={() => setPairing(false)} />
+                      <AgendaProvider>
+                        <Shell start={start} pairing={pairing} closePairing={() => setPairing(false)} />
+                      </AgendaProvider>
                     </DataProvider>
                   </IncomingProvider>
                 </NoteProvider>
@@ -139,6 +143,8 @@ function sectionView(nav: Nav, key: string) {
       return <Settings key={key} />;
     case 'workspaces':
       return <Workspaces key={key} />;
+    case 'tasks':
+      return <Tasks key={key} />;
     default:
       return <ComingSoon key={key} section={nav.section} />;
   }

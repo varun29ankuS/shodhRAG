@@ -5,7 +5,8 @@
  * test can "kill" the app (drop the sender) and start it again on the same
  * queue.
  */
-import type { Device, FileAdded, Incoming, PhoneFiles, Picked, PhotoRead, UpdateCheck } from '../src/lib/device';
+import type { CalendarChoice, CalendarWrite, Device, FileAdded, Incoming, PhoneCalendar, PhoneCalendarInfo, PhoneFiles, Picked, PhotoRead, Sealed, SealedName, UpdateCheck } from '../src/lib/device';
+import type { PhoneEvent } from '../src/lib/calsync';
 import type { OutboxSource, QueuedFile, QueuedItem, QueueState, Work } from '../src/lib/outbox';
 
 const STEPS: Record<QueueState, QueueState[]> = {
@@ -71,6 +72,8 @@ export class MemoryOutbox implements OutboxSource {
 export interface MemoryDevice extends Device {
   outbox: MemoryOutbox;
   files: MemoryFiles;
+  calendar: MemoryCalendar;
+  sealed: MemorySealed;
   checks: number;
   installs: number;
 }
@@ -79,6 +82,8 @@ export function memoryDevice(options: { update?: UpdateCheck; install?: () => Pr
   const device: MemoryDevice = {
     outbox: new MemoryOutbox(),
     files: new MemoryFiles(),
+    calendar: new MemoryCalendar(),
+    sealed: new MemorySealed(),
     checks: 0,
     installs: 0,
     updater: {
@@ -146,5 +151,73 @@ export class MemoryFiles implements PhoneFiles {
   }
   async onProgress() {
     return () => undefined;
+  }
+}
+
+/** The phone's sealed files in memory. */
+export class MemorySealed implements Sealed {
+  files = new Map<SealedName, unknown>();
+  async read<T>(name: SealedName): Promise<T | null> {
+    return (this.files.get(name) as T | undefined) ?? null;
+  }
+  async write(name: SealedName, value: unknown) {
+    this.files.set(name, JSON.parse(JSON.stringify(value)));
+  }
+}
+
+/** The phone's own calendar in memory: its calendars and events, and every write. */
+export class MemoryCalendar implements PhoneCalendar {
+  granted = true;
+  calendars: PhoneCalendarInfo[] = [
+    { id: 1, name: 'Personal', account: 'me@example.org', color: '#3366ff', shodh: false },
+    { id: 2, name: 'Work', account: 'me@example.org', color: '#22aa66', shodh: false },
+  ];
+  events: PhoneEvent[] = [];
+  writes: CalendarWrite[] = [];
+  current: CalendarChoice = { enabled: false, chosen: [], shodhCalendar: null, useWithShodh: false };
+  private nextId = 100;
+  private handlers = new Set<() => void>();
+
+  async access() {
+    return this.granted;
+  }
+  async list() {
+    return this.calendars;
+  }
+  async choice() {
+    return this.current;
+  }
+  async choose(choice: CalendarChoice) {
+    const shodhCalendar = choice.enabled ? (this.current.shodhCalendar ?? 9) : this.current.shodhCalendar;
+    if (choice.enabled && !this.calendars.some(c => c.shodh)) this.calendars.push({ id: 9, name: 'Shodh', account: 'Shodh', color: '#e8482a', shodh: true });
+    this.current = { ...choice, shodhCalendar };
+    return this.current;
+  }
+  async events() {
+    const reachable = new Set([...(this.current.enabled ? this.current.chosen : []), ...(this.current.enabled && this.current.shodhCalendar !== null ? [this.current.shodhCalendar] : [])]);
+    return this.events.filter(e => reachable.has(e.calendarId)).map(e => ({ ...e }));
+  }
+  async write(write: CalendarWrite) {
+    this.writes.push(write);
+    if (write.kind === 'insert') {
+      const eventId = ++this.nextId;
+      const f = write.fields as { title: string; startMs: number; endMs: number | null; allDay: boolean; location: string | null; description: string; shodhUri?: string };
+      this.events.push({ eventId, calendarId: write.calendarId, title: f.title, startMs: f.startMs, endMs: f.endMs ?? f.startMs + 3_600_000, allDay: f.allDay, location: f.location, description: f.description, shodhUri: f.shodhUri ?? null });
+      return { eventId };
+    }
+    if (write.kind === 'update') {
+      const event = this.events.find(e => e.eventId === write.eventId && e.calendarId === write.calendarId);
+      const f = write.fields as { title: string; startMs: number; endMs: number | null; allDay: boolean; location: string | null; description: string };
+      if (event) Object.assign(event, { ...f, endMs: f.endMs ?? f.startMs + 3_600_000 });
+      return {};
+    }
+    this.events = this.events.filter(e => !(e.eventId === write.eventId && e.calendarId === write.calendarId));
+    return {};
+  }
+  async onChanged(handler: () => void) {
+    this.handlers.add(handler);
+    return () => {
+      this.handlers.delete(handler);
+    };
   }
 }

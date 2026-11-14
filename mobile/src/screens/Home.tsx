@@ -18,6 +18,8 @@ import { viewIn } from '../lib/motion';
 import { useRemote } from '../lib/remote';
 import { ago, dayName, greeting } from '../lib/time';
 import { QueuedRows } from '../components/Queued';
+import { useAgenda } from '../lib/agenda';
+import { agendaItems, dayKey, timeWords } from './Tasks';
 import { errorText } from '../lib/link';
 import { queuedQuestion } from '../lib/outbox';
 import { canQueue, useQueue } from '../lib/queue';
@@ -106,17 +108,7 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
           <span>Today</span>
           <span className="label-note">{dayName(today)}</span>
         </div>
-        <div className="card">
-          <div className="row row-tinted" style={{ borderRadius: 0 }}>
-            <span className="row-icon">
-              <CalendarDays aria-hidden="true" className="icon-small" />
-            </span>
-            <span className="row-text">
-              <span className="row-title">Your agenda, tasks and automations</span>
-              <span className="row-sub">Coming to the phone soon. They are in Shodh on your computer.</span>
-            </span>
-          </div>
-        </div>
+        <TodayCard today={today} />
 
         {list === null && !connected ? (
           <NotConnected what="your conversations" />
@@ -239,5 +231,43 @@ function Recent({ list, empty, now }: { list: ConversationSummary[]; empty: bool
         </div>
       )}
     </>
+  );
+}
+
+/** Today: the next things on the agenda and what is due, from the computer (or its copy). */
+function TodayCard({ today }: { today: Date }) {
+  const { dispatch } = useNav();
+  const agenda = useAgenda();
+  const items = agenda.events ? agendaItems(agenda.events, agenda.phoneEvents, today, 1).slice(0, 3) : [];
+  const due = (agenda.tasks ?? []).filter(t => t.status !== 'completed' && t.dueDate?.slice(0, 10) === dayKey(today)).length;
+  const summary =
+    agenda.events === null
+      ? 'Your agenda and tasks show when your computer answers.'
+      : items.length === 0
+        ? due === 0
+          ? 'Nothing on your calendar today.'
+          : `Nothing on your calendar today; ${due} ${due === 1 ? 'task is' : 'tasks are'} due.`
+        : due === 0
+          ? `${items.length} on your calendar today.`
+          : `${items.length} on your calendar today, and ${due} ${due === 1 ? 'task' : 'tasks'} due.`;
+  return (
+    <div className="card">
+      <button type="button" className="row row-tinted" style={{ borderRadius: 0, width: '100%' }} onClick={() => dispatch({ type: 'go', section: 'tasks' })}>
+        <span className="row-icon">
+          <CalendarDays aria-hidden="true" className="icon-small" />
+        </span>
+        <span className="row-text">
+          <span className="row-title">{items[0] ? `${timeWords(items[0].fields)} \u00b7 ${items[0].title}` : 'Your agenda and tasks'}</span>
+          <span className="row-sub">{summary}</span>
+        </span>
+      </button>
+      {items.slice(1).map(item => (
+        <div key={item.key} className="row" style={{ borderRadius: 0 }}>
+          <span className="row-text">
+            <span className="row-title">{`${timeWords(item.fields)} \u00b7 ${item.title}`}</span>
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }

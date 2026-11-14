@@ -16,6 +16,7 @@
 //! - [`outbox`]: what the phone sends when the computer is back, in order.
 //! - [`update`]: the one-tap update, verified before it is installed.
 //! - [`transfer`]: files from the phone, in parts that resume.
+//! - [`phone_calendar`]: which of the phone's calendars Shodh may touch.
 //!
 //! Transport: iroh (QUIC, end-to-end encrypted, dialled by public key),
 //! direct where it can be and through n0's public relays otherwise. A relay
@@ -28,6 +29,7 @@ pub mod messages;
 pub mod outbox;
 pub mod pairing;
 pub mod phone;
+pub mod phone_calendar;
 pub mod sealed;
 pub mod transfer;
 pub mod update;

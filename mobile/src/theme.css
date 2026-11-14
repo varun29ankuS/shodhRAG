@@ -1925,6 +1925,105 @@ strong {
   padding: 4px 16px 0;
 }
 
+/* ── Tasks and the agenda ───────────────────────────────────────── */
+
+.task {
+  gap: 8px;
+}
+
+.row-alert {
+  color: var(--c-accent-text);
+}
+
+.date-field input,
+.quick-add input {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: 15px;
+}
+
+.date-field input {
+  width: 140px;
+}
+
+.quick-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px;
+}
+
+.quick-add input:first-of-type {
+  flex: 1 1 100%;
+}
+
+.agenda-row[data-source='phone'] .row-icon {
+  background: var(--c-raised);
+  color: var(--c-text-muted);
+}
+
+/* ── Switches (Settings) ────────────────────────────────────────── */
+
+.setting-switch {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 52px;
+  min-width: 52px;
+  min-height: 44px;
+  border: none;
+  background: transparent;
+}
+
+.switch::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: 9px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--c-raised-2, var(--c-raised));
+}
+
+.switch[aria-checked='true']::before {
+  background: var(--c-accent-text);
+}
+
+.switch-knob {
+  position: absolute;
+  left: 5px;
+  top: 12px;
+  width: 20px;
+  height: 20px;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px var(--shadow);
+  transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+
+.switch[aria-checked='true'] .switch-knob {
+  transform: translateX(22px);
+}
+
+.calendar-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  border-radius: 6px;
+}
+
 /* "Remove animations": nothing moves; words still fade in, briefly. */
 @media (prefers-reduced-motion: reduce) {
   .word {
@@ -1945,6 +2044,7 @@ strong {
   .button,
   .continue,
   .choice,
+  .switch-knob,
   .menu-item {
     transition: none;
   }

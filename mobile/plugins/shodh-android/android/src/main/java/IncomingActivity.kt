@@ -58,6 +58,14 @@ class IncomingActivity : Activity() {
     }
 
     private fun read(intent: Intent): JSObject {
+        if (intent.action == android.provider.CalendarContract.ACTION_HANDLE_CUSTOM_EVENT) {
+            val uri = intent.getStringExtra(android.provider.CalendarContract.EXTRA_CUSTOM_APP_URI).orEmpty()
+            val id = uri.removePrefix(EVENT_LINK)
+            if (uri.startsWith(EVENT_LINK) && id.isNotEmpty() && id.all { it.isLetterOrDigit() || it == '-' }) {
+                return JSObject().put("kind", "event").put("id", id)
+            }
+            return JSObject().put("kind", "error").put("message", "This event is not one of Shodh's.")
+        }
         val uris = streams(intent).take(MAX_FILES)
         if (uris.isNotEmpty()) {
             val files = JSArray()
@@ -78,6 +86,8 @@ class IncomingActivity : Activity() {
     companion object {
         const val MAX_FILES = 20
         const val MAX_TEXT = 20_000
+        /** The "Open in Shodh" link of an event Shodh put in the phone's calendar. */
+        const val EVENT_LINK = "shodh://event/"
     }
 }
 

@@ -51,15 +51,25 @@ class ShodhFileProvider : FileProvider()
 @TauriPlugin(
     permissions = [
         Permission(strings = [Manifest.permission.CAMERA], alias = "camera"),
+        Permission(strings = [Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR], alias = "calendar"),
     ],
 )
 class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
     /** The photo being taken, until the camera answers. */
     private var photo: File? = null
 
+    /** Watches the phone's calendars while the app runs (once it may read them). */
+    private var calendarWatch: android.database.ContentObserver? = null
+
     override fun load(webView: WebView) {
         super.load(webView)
         Incoming.listener = { trigger("incoming", JSObject()) }
+        watchCalendar()
+    }
+
+    private fun watchCalendar() {
+        if (calendarWatch != null || getPermissionState("calendar") != PermissionState.GRANTED) return
+        calendarWatch = PhoneCalendar.watch(activity) { trigger("calendar", JSObject()) }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -184,5 +194,82 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun takeIncoming(invoke: Invoke) {
         invoke.resolve(Incoming.take() ?: JSObject().put("kind", "none"))
+    }
+
+    // ── The phone's own calendar ──────────────────────────────────
+
+    @Command
+    fun calendarAccess(invoke: Invoke) {
+        if (getPermissionState("calendar") == PermissionState.GRANTED) {
+            watchCalendar()
+            invoke.resolve(JSObject().put("granted", true))
+            return
+        }
+        requestPermissionForAlias("calendar", invoke, "calendarAnswered")
+    }
+
+    @PermissionCallback
+    private fun calendarAnswered(invoke: Invoke) {
+        val granted = getPermissionState("calendar") == PermissionState.GRANTED
+        if (granted) watchCalendar()
+        invoke.resolve(JSObject().put("granted", granted))
+    }
+
+    private fun needCalendar(invoke: Invoke): Boolean {
+        if (getPermissionState("calendar") == PermissionState.GRANTED) return true
+        invoke.reject("Shodh may not use this phone's calendar. Allow it in Settings, Calendar.")
+        return false
+    }
+
+    @Command
+    fun calendarList(invoke: Invoke) {
+        if (!needCalendar(invoke)) return
+        background(invoke) { JSObject().put("calendars", PhoneCalendar.list(activity)) }
+    }
+
+    @Command
+    fun calendarEnsureShodh(invoke: Invoke) {
+        if (!needCalendar(invoke)) return
+        background(invoke) { JSObject().put("id", PhoneCalendar.ensureShodh(activity)) }
+    }
+
+    @Command
+    fun calendarEvents(invoke: Invoke) {
+        if (!needCalendar(invoke)) return
+        val args = invoke.getArgs()
+        val ids = args.getJSONArray("calendarIds")
+        val calendars = (0 until ids.length()).map { ids.getLong(it) }
+        background(invoke) {
+            JSObject().put("events", PhoneCalendar.events(activity, calendars, args.getLong("fromMs"), args.getLong("toMs")))
+        }
+    }
+
+    @Command
+    fun calendarInsert(invoke: Invoke) {
+        if (!needCalendar(invoke)) return
+        val args = invoke.getArgs()
+        val fields = args.getJSObject("fields") ?: JSObject()
+        background(invoke) { JSObject().put("eventId", PhoneCalendar.insert(activity, args.getLong("calendarId"), fields)) }
+    }
+
+    @Command
+    fun calendarUpdate(invoke: Invoke) {
+        if (!needCalendar(invoke)) return
+        val args = invoke.getArgs()
+        val fields = args.getJSObject("fields") ?: JSObject()
+        background(invoke) {
+            PhoneCalendar.update(activity, args.getLong("calendarId"), args.getLong("eventId"), fields)
+            JSObject()
+        }
+    }
+
+    @Command
+    fun calendarDelete(invoke: Invoke) {
+        if (!needCalendar(invoke)) return
+        val args = invoke.getArgs()
+        background(invoke) {
+            PhoneCalendar.delete(activity, args.getLong("calendarId"), args.getLong("eventId"))
+            JSObject()
+        }
     }
 }

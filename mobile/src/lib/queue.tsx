@@ -10,8 +10,8 @@ import { finished, OutboxSender, type QueuedItem, type SenderDeps, type Work } f
 
 export interface Queue {
   items: QueuedItem[];
-  /** Keep `work` to send when the computer is back (at once when it is connected). */
-  add(work: Work): Promise<QueuedItem>;
+  /** Keep `work` to send when the computer is back (at once when it is connected), as item `id` (new when absent). */
+  add(work: Work, id?: string): Promise<QueuedItem>;
   remove(id: string): Promise<void>;
   /** Items not finished yet. */
   waiting: number;
@@ -100,8 +100,8 @@ export function QueueProvider({ children }: { children: ReactNode }) {
   }, [connected, sender]);
 
   const add = useCallback(
-    async (work: Work) => {
-      const item = await outbox.add(crypto.randomUUID(), work);
+    async (work: Work, id: string = crypto.randomUUID()) => {
+      const item = await outbox.add(id, work);
       reload();
       kick();
       return item;

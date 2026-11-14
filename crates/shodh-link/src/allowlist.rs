@@ -147,6 +147,42 @@ pub const ALLOWED: &[Entry] = &[
         "Ask: \"Keep in library\" for a photo the user asked about: moved to \"From my phone\" \
          and added through the chat upload path. Until then the photo is never indexed.",
     ),
+    // Tasks and the calendar: the user's own edits, which need no approval (the
+    // assistant's go through its approval gate on the computer).
+    command(
+        "load_tasks",
+        "Tasks: the task list, shown on the phone and kept as its sealed offline copy. Read \
+         only.",
+    ),
+    command(
+        "load_events",
+        "Tasks and Today: the agenda, shown on the phone, kept as its sealed offline copy, and \
+         mirrored into the phone's own \"Shodh\" calendar when the user turns that on. Read only.",
+    ),
+    command(
+        "create_task",
+        "Tasks: add a task. Saved as made on the phone (source \"phone\"); the phone may name \
+         only its own reference, so a resend after the app was killed is recognised.",
+    ),
+    command(
+        "update_task",
+        "Tasks: tick a task off, rename it or reschedule it, as the desktop's Tasks view does.",
+    ),
+    command(
+        "create_event",
+        "Tasks and Today: add an event, or (only while \"Let Shodh use my calendar\" is on) an \
+         event of the phone's own calendar. Saved as made on the phone.",
+    ),
+    command(
+        "update_event",
+        "Today and the phone's calendar: move or rename an event, from the phone's agenda or \
+         from an edit in the phone's own calendar app (calendar sync).",
+    ),
+    command(
+        "delete_event",
+        "Today and the phone's calendar: remove an event, only after the user confirmed it on \
+         the phone (an event deleted in the phone's calendar asks first).",
+    ),
 ];
 
 /// Whether a phone may call `command`.
@@ -257,6 +293,9 @@ mod tests {
         for refused in [
             "save_conversation",
             "delete_conversation",
+            "delete_task",
+            "delete_subtask",
+            "add_subtask",
             "clear_all_documents",
             "reset_database",
             "set_app_policy",

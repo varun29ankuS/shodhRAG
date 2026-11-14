@@ -9,6 +9,7 @@ compile_error!(
      (vault.rs). Build it with `npm run tauri android build`."
 );
 
+mod calendar;
 mod files;
 mod link;
 mod logcat;
@@ -82,6 +83,14 @@ pub fn run() {
             files::file_discard,
             files::file_send,
             files::photo_send,
+            calendar::calendar_access,
+            calendar::calendar_list,
+            calendar::calendar_choice,
+            calendar::calendar_choose,
+            calendar::calendar_events,
+            calendar::calendar_write,
+            calendar::sealed_read,
+            calendar::sealed_write,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

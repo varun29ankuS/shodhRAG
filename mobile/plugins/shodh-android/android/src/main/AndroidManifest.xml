@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- A photo to send or to ask about (asked for when the user first takes one). -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- The phone's own calendar, only when the user turns on calendar sync. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
     <application>
         <!-- Android's installer reports here (it first asks the user to confirm). -->
@@ -29,6 +32,12 @@
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- "Open in Shodh" on an event Shodh put in the phone's calendar. -->
+            <intent-filter>
+                <action android:name="android.provider.calendar.action.HANDLE_CUSTOM_EVENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="vnd.android.cursor.item/event" />
             </intent-filter>
         </activity>
 

@@ -147,6 +147,18 @@ export function answerFinished(conversation: SavedConversation | null | undefine
   return !isLive(answer) && (answerText(answer) !== '' || answer.status !== 'completed');
 }
 
+/** The computer's list each create command adds to, to find what an earlier try made. */
+const MADE_IN: Record<string, string> = { create_task: 'load_tasks', create_event: 'load_events' };
+
+/** Whether an edit that creates something already reached the computer (its own reference is there). */
+export async function madeAlready(desktop: Shim, edit: QueuedEdit): Promise<boolean> {
+  const list = MADE_IN[edit.command];
+  const ref = edit.args.sourceRef;
+  if (!list || typeof ref !== 'string') return false;
+  const made = await desktop.invoke<Array<{ sourceRef?: string | null }>>(list);
+  return made.some(m => m.sourceRef === ref);
+}
+
 export interface SenderDeps {
   desktop: Shim;
   subscriptions: Subscriptions;
@@ -199,7 +211,10 @@ export class OutboxSender {
           break;
         case 'edit':
           if (item.state === 'waiting') await this.source.mark(item.id, 'sending');
-          await this.deps.desktop.invoke(item.work.command, item.work.args);
+          // Killed while it was being sent: something it made is found by its reference, not made twice.
+          if (!(item.state === 'sending' && (await madeAlready(this.deps.desktop, item.work)))) {
+            await this.deps.desktop.invoke(item.work.command, item.work.args);
+          }
           await this.source.mark(item.id, 'sent');
           // An edit is done once it is sent: nothing comes back to wait for.
           await this.source.mark(item.id, 'answered');

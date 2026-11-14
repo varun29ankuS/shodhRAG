@@ -1318,6 +1318,26 @@ jobs:
             exit 1
           fi
 
+      # no_emoji_compat: AppCompat's EmojiCompat fetches its font from Play Services'
+      # font provider at start, and Android then kills Shodh whenever Play Services
+      # restarts (seen on the emulator: "depends on provider
+      # com.google.android.gms/.fonts.provider.FontsProvider in dying proc"). The
+      # plugin's manifest removes its initializer. Read from the built app's merged
+      # manifest, which must still have the startup provider that held it (so the
+      # check reads the right manifest and is not vacuous).
+      - name: The built app does not tie itself to Play Services' font provider
+        run: |
+          set -euo pipefail
+          manifest=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
+          if ! grep -q '"androidx.startup.InitializationProvider"' <<< "$manifest"; then
+            echo "::error::the built app's manifest has no androidx.startup.InitializationProvider: this check reads the wrong manifest"
+            exit 1
+          fi
+          if grep -q 'androidx.emoji2.text.EmojiCompatInitializer' <<< "$manifest"; then
+            echo "::error::the built app still starts EmojiCompat (androidx.emoji2.text.EmojiCompatInitializer)"
+            exit 1
+          fi
+
       # The launcher icon is an adaptive icon: the whole elephant inside the safe zone
       # (its layer scaled to 0.66, not full bleed), a white background with the phone
       # in light mode and black in dark mode, and a monochrome layer for themed icons.
@@ -1363,22 +1383,64 @@ jobs:
       # so the test is one bash program, in LAUNCH_TEST.
       - name: Launch it on an emulator (the_app_reaches_its_pair_screen)
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
+        # The backstop for anything outside the script's bounded calls (the
+        # action's own boot wait and emulator shutdown): the boot's 10-minute
+        # limit plus the launch and the tour, about 10 minutes here, with
+        # room. Past it the step fails, and the evidence is uploaded.
+        timeout-minutes: 30
         env:
           LAUNCH_TEST: |
             now_ms() { date +%s%3N; }
             evidence="$RUNNER_TEMP/android-launch"
             mkdir -p "$evidence"
-            # Whatever happens, the whole log and the crash buffer are kept.
-            trap 'adb logcat -d -v threadtime > "$evidence/logcat.txt" 2>&1 || true; adb logcat -d -b crash -v threadtime > "$evidence/crash.txt" 2>&1 || true' EXIT
+            # Every adb call is bounded. A call that outlives its limit means
+            # the emulator or adb is wedged: the call fails, the step ends at
+            # once (bash -e) and the evidence below is kept. With unbounded
+            # adb calls, this step once hung for 70 minutes after the
+            # emulator went offline, until the job's limit cancelled it and
+            # no evidence was uploaded.
+            # -k 5: an adb that ignores the TERM is killed 5 s later.
+            adb_within() { local seconds=$1; shift; timeout -k 5 "$seconds" adb "$@"; }
+            # The log streams to the runner from the start, so it is kept
+            # even when the emulator dies or goes offline (a dump at the end
+            # cannot be read from an offline emulator). The stream ends
+            # with the emulator, or at the end of this script.
             # Room for the whole launch, and nothing from before it: the
-            # ready line read below is this launch's.
-            adb logcat -G 16M
-            adb logcat -b main,system,crash -c
+            # ready line read below is this launch's. 10 s: each is one
+            # request to logd.
+            adb_within 10 logcat -G 16M
+            adb_within 10 logcat -b main,system,crash -c
+            adb logcat -v threadtime -b main,system,crash > "$evidence/logcat.txt" 2>&1 &
+            log_stream=$!
+            # On a failure, what the runner saw too: whether adb still sees
+            # the emulator, whether its process lives, the runner's memory
+            # and the kernel's log (an out-of-memory kill of the emulator is
+            # there), and every death of the app in the streamed log.
+            on_exit() {
+              local status=$?
+              kill "$log_stream" 2>/dev/null || true
+              if [ "$status" -ne 0 ]; then
+                {
+                  echo "== adb devices"; timeout -k 5 15 adb devices -l
+                  echo "== emulator processes"; pgrep -a -f 'qemu-system|emulator' || echo "none"
+                  echo "== runner memory"; free -m
+                  echo "== kernel log"; timeout -k 5 15 sudo -n dmesg -T | tail -n 200
+                } > "$evidence/host.txt" 2>&1 || true
+                echo "::group::Evidence (all of it is in the android-launch-evidence artifact)"
+                tail -n 80 "$evidence/host.txt" || true
+                echo "== the app's deaths in the streamed log"
+                grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
+                echo "::endgroup::"
+              fi
+            }
+            trap on_exit EXIT
 
             start=$(now_ms)
-            adb install -r "$APK" | tr -d '\r' | tee "$evidence/install.txt"
+            # 180 s: the universal debug APK installs in about 15 s here.
+            adb_within 180 install -r "$APK" | tr -d '\r' | tee "$evidence/install.txt"
             installed_ms=$(( $(now_ms) - start ))
-            component=$(adb shell cmd package resolve-activity --brief "$ANDROID_PACKAGE" | tr -d '\r' | tail -n 1)
+            # 30 s for each quick shell command: they take well under a second.
+            component=$(adb_within 30 shell cmd package resolve-activity --brief "$ANDROID_PACKAGE" | tr -d '\r' | tail -n 1)
             case "$component" in
               "$ANDROID_PACKAGE"/*) ;;
               *) echo "::error::$ANDROID_PACKAGE has no launcher activity: $component"; exit 1 ;;
@@ -1388,18 +1450,21 @@ jobs:
             # recording of the launch and screenshots in both themes.
             screens="$RUNNER_TEMP/android-screens"
             mkdir -p "$screens"
-            adb shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
+            # 45 s: the recording stops itself at 30 s, then writes its file.
+            adb_within 45 shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
             recorder=$!
 
             start=$(now_ms)
-            adb shell am start -W -n "$component" | tr -d '\r' | tee "$evidence/am-start.txt"
+            # 120 s, the same as the ready line's wait below: am start -W
+            # returns at the first frame, which comes before that line.
+            adb_within 120 shell am start -W -n "$component" | tr -d '\r' | tee "$evidence/am-start.txt"
             # 120 s: the slowest first start a tester would wait through
             # without calling the app hung. On this emulator the first start
             # includes the WebView's first start with software rendering, the
             # Keystore generating the link's key and the app's first run.
             # logcat ends at the first ready (or not-ready) line.
             status=0
-            timeout 120 adb logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$evidence/ready.txt" || status=$?
+            adb_within 120 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$evidence/ready.txt" || status=$?
             ready_ms=$(( $(now_ms) - start ))
             if [ "$status" -eq 124 ]; then
               echo "::error::Shodh did not report ready within 120 s of its launch"
@@ -1416,7 +1481,7 @@ jobs:
               echo "::error::Shodh did not reach its pair screen: $ready_line"
               exit 1
             fi
-            pid=$(adb shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
+            pid=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
             if [ -z "$pid" ]; then
               echo "::error::Shodh reported ready but is not running"
               exit 1
@@ -1426,7 +1491,7 @@ jobs:
             # first relay connection and address lookup, which run after the
             # endpoint is bound. A crash of the app ends the wait at once.
             status=0
-            timeout 15 adb logcat -b crash -v threadtime -e "$ANDROID_PACKAGE" -m 1 > "$evidence/crash-wait.txt" || status=$?
+            adb_within 15 logcat -b crash -v threadtime -e "$ANDROID_PACKAGE" -m 1 > "$evidence/crash-wait.txt" || status=$?
             if [ "$status" -ne 124 ]; then
               if [ -s "$evidence/crash-wait.txt" ]; then
                 echo "::error::Shodh crashed within 15 s of being ready"
@@ -1436,12 +1501,12 @@ jobs:
               fi
               exit 1
             fi
-            now_pid=$(adb shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
+            now_pid=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
             if [ "$now_pid" != "$pid" ]; then
               echo "::error::Shodh is not the process it was at ready (pid $pid, now ${now_pid:-none})"
               exit 1
             fi
-            errors=$(adb logcat -d -s Shodh:E | tr -d '\r')
+            errors=$(adb_within 30 logcat -d -s Shodh:E | tr -d '\r')
             if grep -q 'Shodh panicked' <<< "$errors"; then
               echo "::error::Shodh panicked"
               echo "$errors"
@@ -1450,7 +1515,7 @@ jobs:
             echo "Still running 15 s after ready, no crash"
 
             wait "$recorder" || true
-            adb pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
+            adb_within 30 pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
 
             # Every main screen in light and dark, for review, on a phone-sized
             # screen. A debug build opens at the screen named by the system
@@ -1463,29 +1528,40 @@ jobs:
             # the phone's (cmd uimode night), or the job fails after taking
             # every picture. The 3 s pause only lets the data and the springs
             # settle for the picture, and decides no result.
-            adb shell wm size 1080x2400
-            adb shell wm density 420
+            adb_within 30 shell wm size 1080x2400
+            adb_within 30 shell wm density 420
             themes_wrong=()
             shoot() {
-              local name=$1 property=$2 screen=$3 theme=$4 status=0 line
-              adb shell am force-stop "$ANDROID_PACKAGE"
-              if [ "$theme" = dark ]; then adb shell cmd uimode night yes; else adb shell cmd uimode night no; fi
+              local name=$1 property=$2 screen=$3 theme=$4 status=0 line state ready="$evidence/ready-$1-$4.txt"
+              adb_within 30 shell am force-stop "$ANDROID_PACKAGE"
+              if [ "$theme" = dark ]; then adb_within 30 shell cmd uimode night yes; else adb_within 30 shell cmd uimode night no; fi
               # Quoted for the phone's shell, so an empty value (the app's own start) is one.
-              adb shell setprop debug.shodh.screen "'$property'"
-              adb logcat -b main -c
-              adb shell am start -W -n "$component" > /dev/null
+              adb_within 30 shell setprop debug.shodh.screen "'$property'"
+              adb_within 10 logcat -b main -c
+              # 60 s, the same as the ready line's wait: the first frame comes before it.
+              adb_within 60 shell am start -W -n "$component" > /dev/null
               # 60 s: a warm start of this app on this emulator is a few seconds.
-              line=$(timeout 60 adb logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 | tr -d '\r' | grep -m 1 'Shodh') || status=$?
+              adb_within 60 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$ready" || status=$?
+              line=$(tr -d '\r' < "$ready" | grep -m 1 'Shodh' || true)
               if [ "$status" -ne 0 ] || ! grep -q "Shodh ready: the $screen screen is shown" <<< "$line"; then
-                echo "::error::$name ($theme) did not report ready: ${line:-nothing within 60 s}"
-                adb exec-out screencap -p > "$screens/$name-$theme-not-ready.png" || true
+                if [ "$status" -eq 124 ]; then
+                  echo "::error::$name ($theme) did not report ready within 60 s"
+                elif [ "$status" -ne 0 ]; then
+                  # logcat ends early when the emulator goes away.
+                  state=$(timeout -k 5 15 adb get-state 2>&1 | tr -d '\r' || true)
+                  echo "::error::$name ($theme): reading logcat ended (status $status) before the ready line; the emulator is ${state:-unknown}"
+                else
+                  echo "::error::$name ($theme) did not reach its screen: $line"
+                fi
+                adb_within 20 exec-out screencap -p > "$screens/$name-$theme-not-ready.png" || true
                 return 1
               fi
               if ! grep -q "in the $theme theme" <<< "$line"; then
                 themes_wrong+=("$name with the phone $theme: $line")
               fi
               sleep 3
-              adb exec-out screencap -p > "$screens/$name-$theme.png"
+              # 20 s: a screenshot is one PNG of the screen, under a second here.
+              adb_within 20 exec-out screencap -p > "$screens/$name-$theme.png"
             }
             # name, property, the screen the ready line names
             shots=(
@@ -1517,22 +1593,22 @@ jobs:
                 shoot "$name" "$property" "$screen" "$theme"
               done
             done
-            adb shell setprop debug.shodh.screen "''"
+            adb_within 30 shell setprop debug.shodh.screen "''"
             # The launcher, with Shodh's icon, in light and dark (for the user's review):
             # the home screen, then the list of all apps (a swipe up). The pauses only
             # let the launcher settle for the picture, and decide no result.
-            adb shell am force-stop "$ANDROID_PACKAGE"
+            adb_within 30 shell am force-stop "$ANDROID_PACKAGE"
             for theme in light dark; do
-              if [ "$theme" = dark ]; then adb shell cmd uimode night yes; else adb shell cmd uimode night no; fi
-              adb shell input keyevent KEYCODE_HOME
+              if [ "$theme" = dark ]; then adb_within 30 shell cmd uimode night yes; else adb_within 30 shell cmd uimode night no; fi
+              adb_within 30 shell input keyevent KEYCODE_HOME
               sleep 3
-              adb exec-out screencap -p > "$screens/launcher-home-$theme.png"
-              adb shell input swipe 540 2000 540 500 300
+              adb_within 20 exec-out screencap -p > "$screens/launcher-home-$theme.png"
+              adb_within 30 shell input swipe 540 2000 540 500 300
               sleep 3
-              adb exec-out screencap -p > "$screens/launcher-apps-$theme.png"
-              adb shell input keyevent KEYCODE_HOME
+              adb_within 20 exec-out screencap -p > "$screens/launcher-apps-$theme.png"
+              adb_within 30 shell input keyevent KEYCODE_HOME
             done
-            adb shell cmd uimode night no
+            adb_within 30 shell cmd uimode night no
             echo "- ${#shots[@]} screens, each in light and dark, are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
             if [ "${#themes_wrong[@]}" -gt 0 ]; then
               printf '::error::The app did not follow the phone'"'"'s theme: %s\n' "${themes_wrong[@]}"

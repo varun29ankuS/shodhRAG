@@ -5,7 +5,7 @@
  * computer applies its upload rules and says why it skipped any.
  */
 import { useState } from 'react';
-import { FileUp, FolderInput, Send, X } from 'lucide-react';
+import { Check, FileUp, FolderInput, Send, X } from 'lucide-react';
 import { useLink, useNote } from '../lib/context';
 import type { Picked } from '../lib/device';
 import { workspacesList } from '../lib/desktop';
@@ -79,6 +79,7 @@ export function SendSheet({ files }: { files: Picked[] }) {
               <span className="row-title">{choice.name}</span>
               <span className="row-sub">{choice.note}</span>
             </span>
+            {where === choice.id && <Check aria-hidden="true" className="choice-check" />}
           </button>
         ))}
       </div>

@@ -41,16 +41,16 @@ export function Approvals({ now = () => new Date() }: { now?: () => Date }) {
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading approvals">
             <div className="skeleton skeleton-line" style={{ width: '50%' }} />
             <div className="skeleton skeleton-line" style={{ width: '88%', height: 24 }} />
-            <div className="skeleton" style={{ width: 120, height: 44, borderRadius: 22 }} />
+            <div className="skeleton" style={{ width: 96, height: 44, borderRadius: 12 }} />
           </div>
         )}
         {list !== undefined && list.length === 0 && (
-          <p className="panel-text pad" style={{ marginTop: 20, fontSize: 19 }}>
+          <p className="panel-text panel-quiet" style={{ marginTop: 24 }}>
             Nothing needs you right now. When the assistant wants a yes, it asks here.
           </p>
         )}
         {list !== undefined && list.length > 0 && (
-          <div className="pad">
+          <div className="card" style={{ marginTop: 24 }}>
             {list.map(approval => (
               <article key={`${approval.sessionId}:${approval.stepId}`} className="approval">
                 <span className="approval-context">{context(approval, conversations.data, today)}</span>

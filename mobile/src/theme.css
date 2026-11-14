@@ -1347,15 +1347,18 @@ strong {
 
 /* ── Approvals ──────────────────────────────────────────────────── */
 
+/* One step waiting: a cell of the list, what it is about, and Review. */
 .approval {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px 0;
-  border-bottom: 1px solid var(--separator);
+  gap: 8px;
+  padding: 14px 16px 16px;
 }
 
 .approval-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
   color: var(--label-2);
 }
@@ -1363,8 +1366,12 @@ strong {
 .approval-title {
   font-size: 17px;
   line-height: 1.35;
-  overflow-wrap: anywhere;
   font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.approval .button {
+  margin-top: 4px;
 }
 
 .on-computer {
@@ -1373,7 +1380,7 @@ strong {
   gap: 10px;
   min-height: 44px;
   color: var(--label-2);
-  font-size: 14px;
+  font-size: 15px;
 }
 
 /* ── Bottom sheet ───────────────────────────────────────────────── */
@@ -1396,20 +1403,21 @@ strong {
   background: var(--scrim);
 }
 
+/* A sheet: the grouped background, its content in cells. */
 .sheet {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 10px 22px calc(28px + env(safe-area-inset-bottom));
-  border-radius: 30px 30px 0 0;
-  background: var(--cell);
-  box-shadow: 0 -18px 50px var(--shadow);
+  padding: 8px 20px calc(24px + env(safe-area-inset-bottom));
+  border-radius: 16px 16px 0 0;
+  background: var(--background);
+  box-shadow: 0 -12px 40px var(--shadow);
 }
 
 .grabber {
   align-self: center;
-  width: 40px;
+  width: 36px;
   height: 5px;
   border-radius: 3px;
   background: var(--label-3);
@@ -1418,12 +1426,11 @@ strong {
 .sheet-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 16px 18px;
-  border-radius: 8px;
-  background: var(--paper);
-  color: var(--paper-ink);
-  box-shadow: 0 14px 36px var(--shadow);
+  gap: 6px;
+  padding: 14px 16px 16px;
+  border-radius: 12px;
+  background: var(--cell);
+  color: var(--label);
 }
 
 .sheet-card-title {
@@ -1433,8 +1440,14 @@ strong {
 
 .sheet-card-text {
   font-size: 15px;
-  line-height: 1.55;
-  color: var(--paper-text);
+  line-height: 1.5;
+  color: var(--label-2);
+}
+
+.sheet-card .passage-label {
+  margin: 4px 0 0;
+  font-weight: 400;
+  color: var(--label-2);
 }
 
 .sheet-actions {
@@ -1445,9 +1458,9 @@ strong {
 
 .sheet-actions .button {
   align-self: stretch;
-  min-height: 54px;
-  border-radius: 27px;
-  font-size: 16px;
+  min-height: 50px;
+  border-radius: 12px;
+  font-size: 17px;
 }
 
 /* ── Menu ───────────────────────────────────────────────────────── */
@@ -2070,34 +2083,61 @@ strong {
 
 /* ── Send to Shodh, and what waits for the computer ─────────────── */
 
+/* Inside a sheet, a list and its header take the sheet's own margins. */
+.sheet .rows,
+.sheet .card,
+.sheet .choices {
+  margin: 0;
+}
+
+.sheet .label {
+  padding: 8px 16px 0;
+}
+
+/* Where it goes: a grouped list, the choice ticked in the tint. */
 .choices {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  border-radius: 12px;
+  background: var(--cell);
+  overflow: hidden;
 }
 
 .choice {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 56px;
+  min-height: 52px;
   min-width: 44px;
-  padding: 10px 14px;
-  border-radius: 16px;
-  border: 1px solid var(--separator);
-  background: var(--cell);
+  padding: 10px 16px;
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
   color: var(--label);
   text-align: left;
-  transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
-.choice[aria-checked='true'] {
-  border-color: var(--tint);
-  background: var(--fill);
+.choice + .choice {
+  background-image: linear-gradient(var(--separator), var(--separator));
+  background-repeat: no-repeat;
+  background-position: right top;
+  background-size: calc(100% - 46px) 0.5px;
+}
+
+.choice > .icon-small {
+  color: var(--tint);
 }
 
 .choice:active {
-  transform: scale(0.98);
+  background-color: var(--fill);
+}
+
+.choice-check {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--tint);
+  stroke-width: 2.4;
 }
 
 .queued .row-sub {

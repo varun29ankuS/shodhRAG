@@ -33,7 +33,7 @@ export function BriefSheet({ eventId, title, onClose }: { eventId: string; title
           {brief.data.conversations.length > 0 && (
             <>
               <div className="label">Last time</div>
-              <div className="rows">
+              <div className="rows rows-icons">
                 {brief.data.conversations.map(c => (
                   <button
                     key={c.id}
@@ -44,7 +44,9 @@ export function BriefSheet({ eventId, title, onClose }: { eventId: string; title
                       dispatch({ type: 'push', screen: { kind: 'answer', conversationId: c.id, question: null, workspaceId: null } });
                     }}
                   >
-                    <MessageSquareText aria-hidden="true" className="icon-small" />
+                    <span className="row-icon">
+                      <MessageSquareText aria-hidden="true" className="icon-small" />
+                    </span>
                     <span className="row-text">
                       <span className="row-title">{c.title}</span>
                       <span className="row-sub">{ago(c.updatedAt, new Date())}</span>

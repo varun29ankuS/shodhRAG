@@ -26,11 +26,6 @@ impl Storage {
         SealedFile::new(&self.dir, name, &self.key)
     }
 
-    /// The app's private folder for Shodh's files.
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// The app's cache folder (downloads, copies of files being sent).
     pub fn cache(&self) -> &Path {
         &self.cache

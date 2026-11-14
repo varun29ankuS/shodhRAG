@@ -632,10 +632,10 @@ mod tests {
         );
         assert_eq!(staging.begin(PHONE, &offer, 0).unwrap().received, 0);
         // An id that is not one of ours never reaches the disk.
-        assert_eq!(
+        assert!(matches!(
             staging.finish(PHONE, "../../etc/passwd"),
             Err(TransferError::Unknown)
-        );
+        ));
         let mut bad = offer.clone();
         bad.sha256 = "zz".into();
         assert_eq!(staging.begin(PHONE, &bad, 0), Err(TransferError::Invalid));

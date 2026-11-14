@@ -174,13 +174,20 @@ describe('a citation chip', () => {
 describe('the follow-up composer', () => {
   const rule = (selector: string) => new RegExp(`\\n${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
   const pixels = (value: string) => [...value.matchAll(/(\d+)px/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+  const declared = (body: string, property: string) => pixels(new RegExp(`(?:^|[\\s;])${property}:\\s*([^;]+);`).exec(body)?.[1] ?? '');
 
-  it("leaves the answer's last line and the Code output readable above it", () => {
+  it('sits above the tab bar, and leaves the answer\'s last line and the Code output readable above both', () => {
+    const bar = declared(rule('.tabbar'), 'height');
+    expect(bar).toBeGreaterThanOrEqual(44);
     const box = rule('.askbox-floating');
-    const above = pixels(/\bbottom:\s*([^;]+);/.exec(box)?.[1] ?? '') + pixels(/min-height:\s*([^;]+);/.exec(box)?.[1] ?? '');
-    const room = pixels(/padding-bottom:\s*([^;]+);/.exec(rule('.scroll-with-composer'))?.[1] ?? '');
-    expect(above).toBeGreaterThan(92);
+    const bottom = declared(box, 'bottom');
+    const above = bottom + declared(box, 'min-height');
+    // The field clears the tab bar, with a gap between them.
+    expect(bottom).toBeGreaterThanOrEqual(bar + 8);
+    const room = declared(rule('.scroll-with-composer'), 'padding-bottom');
     expect(room).toBeGreaterThanOrEqual(above + 16);
+    // Every other screen's end clears the tab bar.
+    expect(declared(rule('.scroll'), 'padding-bottom')).toBeGreaterThanOrEqual(bar + 16);
     const ask = readFileSync(resolve(process.cwd(), 'src/screens/Ask.tsx'), 'utf8');
     expect(ask).toContain('scroll scroll-with-composer');
   });

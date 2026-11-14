@@ -1,23 +1,16 @@
 /**
- * The floating tab bar: Ask, Library and Approvals, the three used most.
- * The highlight slides to the chosen tab on a spring.
+ * The tab bar: Ask, Library and Approvals, the three used most. Full width
+ * along the bottom, translucent over what scrolls under it; each tab is its
+ * icon over its name, and only the tab shown is in the tint.
  */
-import { motion } from 'framer-motion';
 import { useNav } from '../lib/context';
-import { snappy } from '../lib/motion';
 import { SECTION_LABELS, TABS } from '../lib/nav';
 import { SECTION_ICONS } from './Drawer';
 
 export function TabBar({ waiting }: { waiting: number }) {
   const { nav, dispatch } = useNav();
-  const index = TABS.indexOf(nav.section);
-  // The highlight is one tab wide: it moves by whole widths.
-  const x = `${index * 100}%`;
   return (
     <nav className="tabbar" aria-label="Main">
-      {index >= 0 && (
-        <motion.span className="tab-indicator" aria-hidden="true" initial={false} animate={{ x }} transition={snappy} />
-      )}
       {TABS.map(section => {
         const Icon = SECTION_ICONS[section];
         const count = section === 'approvals' ? waiting : 0;
@@ -29,7 +22,7 @@ export function TabBar({ waiting }: { waiting: number }) {
             aria-current={nav.section === section ? 'page' : undefined}
             onClick={() => dispatch({ type: 'go', section })}
           >
-            <Icon aria-hidden="true" className="icon-small" />
+            <Icon aria-hidden="true" className="tab-icon" />
             <span>{SECTION_LABELS[section]}</span>
             {count > 0 && (
               <span className="tab-count" aria-label={`${count} waiting`}>

@@ -16,7 +16,7 @@ export function ComingSoon({ section }: { section: ViewTab }) {
   return (
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
+        <TopBar />
         <h1 className="title pad">{label}</h1>
         <section className="panel">
           <span className="panel-icon">

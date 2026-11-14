@@ -35,7 +35,7 @@ export function Settings() {
   return (
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
+        <TopBar />
         <h1 className="title pad">Settings</h1>
 
         <div className="label">This phone</div>

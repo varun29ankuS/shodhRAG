@@ -35,10 +35,13 @@
   --glow: rgba(232, 72, 42, 0.22);
   /* The splash: near-black in the dark theme, white in the light one. */
   --splash: #0b0b0d;
+  /* The chosen segment of a segmented control, raised on its grey track. */
+  --segment: #636366;
 }
 
 :root[data-theme='light'] {
   --splash: #ffffff;
+  --segment: #ffffff;
   --scrim: rgba(24, 24, 27, 0.4);
   --shadow: rgba(24, 24, 27, 0.14);
   --glow: rgba(232, 72, 42, 0.14);
@@ -47,6 +50,7 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --splash: #ffffff;
+    --segment: #ffffff;
     --scrim: rgba(24, 24, 27, 0.4);
     --shadow: rgba(24, 24, 27, 0.14);
     --glow: rgba(232, 72, 42, 0.14);
@@ -155,17 +159,7 @@ h3 {
   display: flex;
   flex-direction: column;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
-}
-
-.glow {
-  position: absolute;
-  top: -180px;
-  right: -160px;
-  width: 420px;
-  height: 420px;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--glow) 0%, transparent 70%);
-  pointer-events: none;
+  background: var(--background);
 }
 
 .view {
@@ -176,52 +170,82 @@ h3 {
   min-height: 0;
 }
 
+/* Room at the end for the tab bar (50px) and a little more. */
 .scroll {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-bottom: calc(120px + env(safe-area-inset-bottom));
+  padding-bottom: calc(50px + 40px + env(safe-area-inset-bottom));
   -webkit-overflow-scrolling: touch;
 }
 
-/* A screen with the floating ask box over its end (a conversation): room for the
-   tab bar's space, the ask box and a little more, so the last line and the last
-   command's output can be read above it. */
+/* A screen with the follow-up field over its end (a conversation): room for the
+   tab bar, the field above it and a little more, so the last line and the last
+   command's output can be read above them. */
 .scroll-with-composer {
-  padding-bottom: calc(92px + 58px + 32px + env(safe-area-inset-bottom));
+  padding-bottom: calc(50px + 8px + 48px + 32px + env(safe-area-inset-bottom));
 }
 
 .pad {
-  padding-left: 24px;
-  padding-right: 24px;
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
+/* The bar at the top: 44px tall, 8px under the status bar. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 12px 4px 10px;
-  min-height: 60px;
+  min-height: 52px;
+  padding: 8px 8px 0 10px;
+}
+
+/* A pushed screen's bar: Back, the title in the middle, the end. */
+.navbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  padding: 8px 8px 0 4px;
+}
+
+.navbar-side {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.navbar-end {
+  justify-content: flex-end;
+}
+
+.navbar-title {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 17px;
+  font-weight: 600;
+  text-align: center;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
+/* The elephant, whole at its own shape: never cropped, never squeezed by a row. */
 .brand-logo {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   object-fit: contain;
-  /* The whole elephant at its own shape: never cropped, never squeezed by a row. */
   flex: none;
 }
 
 .brand-name {
   font-size: 20px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 
@@ -234,12 +258,11 @@ h3 {
   border: none;
   border-radius: 22px;
   background: transparent;
-  color: var(--label);
+  color: var(--tint);
   transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
 .icon-button:active,
-.row:active,
 .tile:active,
 .chip:active {
   transform: scale(0.96);
@@ -248,15 +271,22 @@ h3 {
 .back {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   min-height: 44px;
   min-width: 44px;
-  padding: 0 10px 0 4px;
+  padding: 0 8px 0 0;
   border: none;
   background: transparent;
   color: var(--tint);
-  font-size: 15px;
-  font-weight: 500;
+  font-size: 17px;
+  font-weight: 400;
+}
+
+.icon-back {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  stroke-width: 2.4;
 }
 
 /* The connection: a dot and plain words. */
@@ -283,33 +313,55 @@ h3 {
 }
 
 .dot-small {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   box-shadow: none;
 }
 
 .connection {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 13px;
   color: var(--label-2);
 }
 
+/* The connection at the top right: its words, and a tap opens Settings. */
+.connection-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--label-2);
+  font-size: 13px;
+}
+
 /* ── Type ───────────────────────────────────────────────────────── */
 
+/* A section's large title: 28px under the bar, 34/700. */
+.title,
 .greeting {
+  padding-top: 28px;
   font-size: 34px;
   line-height: 1.12;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
-.title {
-  font-size: 34px;
-  line-height: 1.12;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+/* Home's large title, with the elephant beside it. */
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 28px;
+}
+
+.title-row .greeting {
+  padding-top: 0;
 }
 
 .line {
@@ -321,12 +373,14 @@ h3 {
   color: var(--c-warning);
 }
 
+/* A section header: 13px secondary, 32px above, inset to 36px over its group. */
 .label {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 30px 24px 10px;
+  min-height: 24px;
+  padding: 32px 36px 8px;
   font-size: 13px;
   font-weight: 400;
   color: var(--label-2);
@@ -346,32 +400,44 @@ h3 {
   background: transparent;
   color: var(--tint);
   font-size: 15px;
-  font-weight: 500;
+  font-weight: 400;
+}
+
+/* A link in a section header keeps its 44px without pushing the header apart. */
+.label .link-button {
+  margin: -14px -4px -14px 0;
 }
 
 /* ── Fields ─────────────────────────────────────────────────────── */
 
+/* The ask field: a grey field like a search field, its buttons inside it. */
 .askbox {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 6px 6px 18px;
-  border-radius: 28px;
+  gap: 0;
+  min-height: 48px;
+  padding: 2px 2px 2px 14px;
+  border-radius: 12px;
   background: var(--fill);
-  border: 1px solid var(--separator);
+  color: var(--label-2);
 }
 
+/* The follow-up field: a translucent capsule above the tab bar. */
 .askbox-floating {
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: calc(92px + env(safe-area-inset-bottom));
-  min-height: 58px;
+  left: 12px;
+  right: 12px;
+  bottom: calc(50px + 8px + env(safe-area-inset-bottom));
+  min-height: 48px;
   z-index: 5;
+  padding: 2px 2px 2px 18px;
+  border-radius: 24px;
   background: var(--glass);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  box-shadow: 0 16px 40px var(--shadow);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  box-shadow:
+    0 0 0 0.5px var(--separator),
+    0 8px 24px var(--shadow);
 }
 
 .askbox input {
@@ -380,6 +446,7 @@ h3 {
   min-height: 44px;
   border: none;
   background: transparent;
+  color: var(--label);
   font-size: 17px;
   outline: none;
 }
@@ -387,8 +454,10 @@ h3 {
 .askbox input::placeholder,
 .search input::placeholder {
   color: var(--label-2);
+  opacity: 1;
 }
 
+/* Send: a small tinted circle, 32px, in a 44px target. */
 .send {
   display: inline-flex;
   align-items: center;
@@ -398,9 +467,16 @@ h3 {
   flex: none;
   border: none;
   border-radius: 22px;
-  background: var(--tint);
+  background: radial-gradient(circle, var(--tint) 0 16px, transparent 16.5px);
   color: var(--on-tint);
   transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+
+.send .icon,
+.send .icon-small {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2.6;
 }
 
 .send:active {
@@ -408,17 +484,30 @@ h3 {
 }
 
 .send:disabled {
-  opacity: 0.45;
+  opacity: 0.35;
+}
+
+/* A second button in a field (the camera, the microphone): a grey glyph beside Send. */
+.send-quiet {
+  background: transparent;
+  color: var(--label-2);
+}
+
+.send-quiet .icon,
+.send-quiet .icon-small {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2;
 }
 
 .search {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 18px 16px 8px;
-  padding: 0 14px;
-  min-height: 48px;
-  border-radius: 16px;
+  gap: 8px;
+  margin: 24px 20px 0;
+  padding: 0 12px;
+  min-height: 44px;
+  border-radius: 12px;
   background: var(--fill);
   color: var(--label-2);
 }
@@ -436,34 +525,53 @@ h3 {
 
 /* ── Cards and rows ─────────────────────────────────────────────── */
 
-.card {
-  margin: 0 16px;
-  border-radius: 22px;
-  border: 1px solid var(--separator);
-  background: var(--cell);
-  overflow: hidden;
-}
-
+/*
+ * Inset grouped lists: cells on the grouped background, 20px in from the
+ * sides, 12px corners. Rows are 52px or taller, and a hairline between two
+ * rows starts after the leading icon (--inset: 16px, or 58px in a list whose
+ * rows have one: `rows-icons`).
+ */
+.card,
 .rows {
   display: flex;
   flex-direction: column;
-  padding: 0 12px;
+  margin: 0 20px;
+  border-radius: 12px;
+  background: var(--cell);
+  overflow: hidden;
+  --inset: 16px;
+}
+
+.rows-icons {
+  --inset: 58px;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
-  min-height: 56px;
+  min-height: 52px;
   min-width: 44px;
-  padding: 8px 12px;
+  padding: 10px 16px;
   border: none;
-  border-radius: 16px;
-  background: transparent;
+  border-radius: 0;
+  background-color: transparent;
   color: var(--label);
+  font-size: 17px;
   text-align: left;
-  transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+
+button.row:active {
+  background-color: var(--fill);
+}
+
+.card > * + *,
+.rows > * + * {
+  background-image: linear-gradient(var(--separator), var(--separator));
+  background-repeat: no-repeat;
+  background-position: right top;
+  background-size: calc(100% - var(--inset)) 0.5px;
 }
 
 .row-text {
@@ -471,53 +579,64 @@ h3 {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .row-title {
   font-size: 17px;
+  line-height: 1.3;
   font-weight: 400;
   overflow-wrap: anywhere;
 }
 
-
 .row-sub {
   font-size: 13px;
+  line-height: 1.35;
   color: var(--label-2);
 }
 
-.row-divided {
-  border-radius: 0;
-  border-bottom: 1px solid var(--separator);
+/* What a row ends with: a time, a count. */
+.row-value {
+  flex: none;
+  font-size: 15px;
+  color: var(--label-2);
+  font-variant-numeric: tabular-nums;
 }
 
-.row-tinted {
-  background: var(--fill);
-}
-
+/* A row's leading icon: a glyph, no square behind it; in the tint where the row is tapped. */
 .row-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 30px;
+  height: 30px;
   flex: none;
-  border-radius: 12px;
-  background: var(--fill);
+  color: var(--label-2);
+}
+
+button.row .row-icon {
   color: var(--tint);
 }
 
+.row-icon .icon,
+.row-icon .icon-small {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.7;
+}
+
+/* The latest conversation, to continue: one cell, the page it cites beside it. */
 .continue {
   display: flex;
   gap: 14px;
   align-items: flex-start;
-  width: calc(100% - 32px);
+  width: calc(100% - 40px);
   min-height: 56px;
   min-width: 44px;
-  margin: 0 16px;
-  padding: 18px 18px 16px;
-  border-radius: 22px;
-  border: 1px solid var(--separator);
+  margin: 0 20px;
+  padding: 14px 16px;
+  border: none;
+  border-radius: 12px;
   background: var(--cell);
   color: var(--label);
   text-align: left;
@@ -536,7 +655,7 @@ h3 {
 
 .continue-answer {
   font-size: 15px;
-  line-height: 1.45;
+  line-height: 1.4;
   color: var(--label-2);
 }
 
@@ -545,18 +664,18 @@ h3 {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  margin: 22px 16px 0;
-  padding: 20px;
-  border-radius: 22px;
-  border: 1px solid var(--separator);
+  gap: 12px;
+  margin: 24px 20px 0;
+  padding: 16px;
+  border-radius: 12px;
   background: var(--cell);
 }
 
+/* An empty list's words: on the background, inset like a section header. */
 .panel-quiet {
-  border: none;
   background: transparent;
-  padding: 8px 8px 0;
+  margin-top: 16px;
+  padding: 0 16px;
 }
 
 .panel-title {
@@ -567,33 +686,38 @@ h3 {
 
 .panel-text {
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.45;
   color: var(--label-2);
 }
 
+/* A panel's icon: a grey glyph, no square behind it. */
 .panel-icon {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
-  background: var(--fill);
-  color: var(--tint);
+  width: 30px;
+  height: 30px;
+  color: var(--label-2);
 }
 
+.panel-icon .icon {
+  width: 28px;
+  height: 28px;
+  stroke-width: 1.6;
+}
+
+/* A button: grey with words in the label colour; the primary one in the tint. */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   align-self: flex-start;
-  min-height: 48px;
+  min-height: 44px;
   min-width: 44px;
-  padding: 0 22px;
-  border: 1px solid var(--separator);
-  border-radius: 24px;
-  background: transparent;
+  padding: 0 16px;
+  border: none;
+  border-radius: 12px;
+  background: var(--fill);
   color: var(--label);
   font-size: 17px;
   font-weight: 600;
@@ -601,21 +725,21 @@ h3 {
 }
 
 .button:active {
-  transform: scale(0.96);
+  transform: scale(0.97);
 }
 
 .button:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
 }
 
 .button-primary {
-  border: none;
   background: var(--tint);
   color: var(--on-tint);
 }
 
 .button-wide {
   align-self: stretch;
+  min-height: 50px;
 }
 
 .callout {
@@ -623,11 +747,11 @@ h3 {
   align-items: flex-start;
   gap: 10px;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--c-warning-soft);
   color: var(--label);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.4;
 }
 
 .callout .icon {
@@ -1272,44 +1396,44 @@ strong {
   top: 0;
   bottom: 0;
   left: 0;
-  width: min(300px, 86vw);
+  width: min(304px, 86vw);
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: calc(24px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
-  border-right: 1px solid var(--separator);
-  border-radius: 0 28px 28px 0;
-  background: var(--cell);
-  box-shadow: 24px 0 60px var(--shadow);
+  gap: 0;
+  padding: calc(28px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
+  background: var(--background);
+  box-shadow: 0 0 0 0.5px var(--separator), 24px 0 60px var(--shadow);
   overflow-y: auto;
 }
 
 .drawer-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 10px 18px 6px;
+  gap: 10px;
+  padding: 0 8px 24px;
 }
 
 .drawer-name {
   font-size: 20px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .drawer-line {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--label-2);
 }
 
+/* The sections: rows of a list, the one shown on a grey fill. */
 .menu-item {
   display: flex;
   align-items: center;
   gap: 14px;
-  min-height: 50px;
+  min-height: 48px;
   min-width: 44px;
-  padding: 0 14px;
+  padding: 0 12px;
   border: none;
-  border-radius: 16px;
+  border-radius: 10px;
   background: transparent;
   color: var(--label);
   font-size: 17px;
@@ -1318,19 +1442,27 @@ strong {
   transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
+.menu-item .icon {
+  width: 22px;
+  height: 22px;
+  color: var(--tint);
+  stroke-width: 1.8;
+}
+
 .menu-item:active {
-  transform: scale(0.97);
+  transform: scale(0.98);
 }
 
 .menu-item[aria-current='page'] {
   background: var(--fill);
-  color: var(--tint);
+  font-weight: 600;
 }
 
 .menu-label {
   flex: 1;
 }
 
+/* How many approvals wait: a small red count. */
 .count {
   display: inline-flex;
   align-items: center;
@@ -1340,9 +1472,9 @@ strong {
   padding: 0 6px;
   border-radius: 10px;
   background: var(--brand-red);
-  color: var(--on-tint);
+  color: #ffffff;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .appearance {
@@ -1350,19 +1482,21 @@ strong {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 16px 6px 0;
+  padding: 24px 4px 0;
 }
 
 .appearance-label {
-  font-size: 12px;
+  padding: 0 12px;
+  font-size: 13px;
   color: var(--label-2);
 }
 
+/* A segmented control: a grey track, the choice raised on it. */
 .segmented {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 4px;
-  border-radius: 14px;
+  padding: 2px;
+  border-radius: 10px;
   background: var(--fill);
 }
 
@@ -1370,73 +1504,70 @@ strong {
   min-height: 44px;
   min-width: 44px;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
-  color: var(--label-2);
+  color: var(--label);
   font-size: 13px;
   font-weight: 500;
 }
 
 .segment[aria-checked='true'] {
-  background: var(--cell);
-  color: var(--label);
-  box-shadow: 0 1px 3px var(--shadow);
+  background: var(--segment);
+  font-weight: 600;
+  box-shadow: 0 1px 3px var(--shadow), 0 0 0 0.5px var(--separator);
 }
 
 /* ── Tab bar ────────────────────────────────────────────────────── */
 
+/* Full width along the bottom, translucent, 50px over the gesture area. */
 .tabbar {
   position: absolute;
-  left: 50%;
-  bottom: calc(18px + env(safe-area-inset-bottom));
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 10;
-  width: 304px;
-  margin-left: -152px;
-  height: 62px;
+  height: calc(50px + env(safe-area-inset-bottom));
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 6px;
-  border-radius: 31px;
-  border: 1px solid var(--separator);
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   background: var(--glass);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  box-shadow: 0 18px 44px var(--shadow);
-}
-
-.tab-indicator {
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 6px;
-  width: calc((100% - 12px) / 3);
-  border-radius: 25px;
-  background: var(--tint);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: 0 -0.5px 0 var(--separator);
 }
 
 .tab {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 48px;
+  gap: 2px;
+  min-height: 50px;
   min-width: 44px;
   border: none;
   background: transparent;
   color: var(--label-2);
   font-size: 12px;
   font-weight: 500;
+  letter-spacing: 0;
+}
+
+.tab-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  stroke-width: 1.8;
 }
 
 .tab[aria-current='page'] {
-  color: var(--on-tint);
+  color: var(--tint);
 }
 
 .tab-count {
   position: absolute;
-  top: 0;
-  right: 2px;
+  top: 3px;
+  left: calc(50% + 6px);
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -1444,11 +1575,10 @@ strong {
   align-items: center;
   justify-content: center;
   border-radius: 9px;
-  background: var(--on-tint);
-  color: var(--brand-red);
+  background: var(--brand-red);
+  color: #ffffff;
   font-size: 12px;
-  font-weight: 700;
-  box-shadow: 0 1px 4px var(--shadow);
+  font-weight: 600;
 }
 
 /* ── Notes and the splash ───────────────────────────────────────── */
@@ -1909,13 +2039,6 @@ strong {
   flex-wrap: wrap;
   gap: 8px;
   padding: 4px 16px 0;
-}
-
-/* A second button in the ask box (the camera, the microphone): quiet beside Send. */
-.send-quiet {
-  background: var(--fill);
-  color: var(--label);
-  margin-right: 6px;
 }
 
 /* ── The lock ───────────────────────────────────────────────────── */

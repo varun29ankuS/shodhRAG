@@ -1,7 +1,7 @@
 /**
  * The app: the splash while the link starts, pairing when this phone has no
- * computer yet, and otherwise the sections (lib/nav.ts) with the floating
- * tab bar, the menu, the Reader and the approval sheet over them.
+ * computer yet, and otherwise the sections (lib/nav.ts) with the tab bar,
+ * the menu, the Reader and the approval sheet over them.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig } from 'framer-motion';
@@ -98,7 +98,6 @@ function Shell({ start, pairing, closePairing }: { start: Start | null; pairing:
 
   return (
     <div className="app">
-      <span className="glow" aria-hidden="true" />
       {status.state === 'failed' ? (
         <Failed message={status.message} />
       ) : showPair ? (

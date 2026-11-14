@@ -21,7 +21,7 @@ export function Workspaces({ now = () => new Date() }: { now?: () => Date }) {
   return (
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
+        <TopBar />
         <h1 className="title pad">Workspaces</h1>
         {list === undefined && !connected && <NotConnected what="your workspaces" />}
         {list === undefined && connected && (

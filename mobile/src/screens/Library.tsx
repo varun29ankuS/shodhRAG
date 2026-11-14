@@ -63,7 +63,7 @@ export function Library() {
   return (
     <motion.div key={here?.path ?? ''} className="view" variants={here ? pushIn : viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
+        <TopBar />
         <nav className="crumbs" aria-label="Folder path">
           {[{ name: 'Library', path: '' }, ...nav.library].map((crumb, depth, all) => (
             <Fragment key={`${depth}:${crumb.path}`}>

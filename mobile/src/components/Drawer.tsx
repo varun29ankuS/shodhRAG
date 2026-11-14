@@ -55,7 +55,7 @@ export function Drawer({ waiting }: { waiting: number }) {
         onDragEnd={released}
       >
         <div className="drawer-head">
-          <img src={logo} alt="" className="brand-logo" width={40} height={40} />
+          <img src={logo} alt="" className="brand-logo" width={34} height={34} />
           <span className="row-text">
             <span className="drawer-name">Shodh</span>
             <span className="drawer-line connection">

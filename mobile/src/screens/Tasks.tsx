@@ -17,6 +17,7 @@ import { QueuedRows } from '../components/Queued';
 import { useAgenda, type Task } from '../lib/agenda';
 import { desktopFields, phoneFields, type DesktopEvent, type Fields, type PhoneEvent } from '../lib/calsync';
 import { useLink, useNote } from '../lib/context';
+import { useOffers } from '../lib/incoming';
 import { errorText } from '../lib/link';
 import { viewIn } from '../lib/motion';
 import { canQueue, useQueue } from '../lib/queue';
@@ -89,6 +90,9 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
   const today = now();
   const queueable = canQueue(status);
   const [brief, setBrief] = useState<{ eventId: string; title: string } | null>(null);
+  const offers = useOffers();
+  const closeOpened = offers.closeOpened;
+  const openedEvent = offers.opened ? agenda.events?.find(e => e.id === offers.opened) : undefined;
   // Briefs read the calendar: only with "Let Shodh use my calendar", and from the computer.
   const onBrief = connected && briefsAllowed(agenda.choice) ? (eventId: string, title: string) => setBrief({ eventId, title }) : undefined;
 
@@ -157,6 +161,22 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
           </div>
         )}
 
+        {openedEvent && (
+          <div className="callout" role="status" style={{ margin: '12px 16px 0' }}>
+            <CalendarDays aria-hidden="true" className="icon" />
+            <div className="row-text">
+              <p className="row-title">{openedEvent.title}</p>
+              <p className="row-sub">{`Opened from your phone’s calendar · ${desktopFields(openedEvent).start.replace('T', ' ')}`}</p>
+              <button type="button" className="button" onClick={closeOpened}>
+                <Undo2 aria-hidden="true" className="icon-small" />
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+        {offers.opened && agenda.events !== null && !openedEvent && (
+          <p className="panel-text pad">This event is no longer in Shodh.</p>
+        )}
         {agenda.pending.map(question => (
           <div key={question.id} className="callout" role="alert" style={{ margin: '12px 16px 0' }}>
             <Trash2 aria-hidden="true" className="icon" />

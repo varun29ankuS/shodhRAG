@@ -22,6 +22,9 @@ interface Offers {
   /** The event whose brief a notification opened. */
   briefing: string | null;
   closeBrief: () => void;
+  /** The event "Open in Shodh" opened, from the phone's calendar. */
+  opened: string | null;
+  closeOpened: () => void;
   offerSend: (files: Picked[]) => void;
   offerAsk: (shared: Shared) => void;
   closeSend: () => void;
@@ -36,6 +39,7 @@ export function IncomingProvider({ children }: { children: ReactNode }) {
   const [sending, setSending] = useState<Picked[] | null>(null);
   const [asking, setAsking] = useState<Shared | null>(null);
   const [briefing, setBriefing] = useState<string | null>(null);
+  const [opened, setOpened] = useState<string | null>(null);
 
   const route = useCallback(
     (incoming: Incoming) => {
@@ -51,6 +55,9 @@ export function IncomingProvider({ children }: { children: ReactNode }) {
           break;
         case 'brief':
           setBriefing(incoming.eventId);
+          break;
+        case 'event':
+          setOpened(incoming.id);
           break;
         case 'none':
           break;
@@ -93,12 +100,14 @@ export function IncomingProvider({ children }: { children: ReactNode }) {
       asking,
       briefing,
       closeBrief: () => setBriefing(null),
+      opened,
+      closeOpened: () => setOpened(null),
       offerSend: list => setSending(list),
       offerAsk: shared => setAsking(shared),
       closeSend: () => setSending(null),
       closeAsk: () => setAsking(null),
     }),
-    [sending, asking, briefing],
+    [sending, asking, briefing, opened],
   );
   return <OffersContext.Provider value={value}>{children}</OffersContext.Provider>;
 }

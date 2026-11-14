@@ -147,7 +147,12 @@ pub fn start(app: &AppHandle) {
     app.manage(Askers::default());
     let handle = app.clone();
     app.listen_any(crate::agent_session_commands::AGENT_EVENT, move |event| {
-        let Ok(payload) = serde_json::from_str::<Value>(event.payload()) else {
+        // Most events are text being written: only these two can call for a push.
+        let raw = event.payload();
+        if !raw.contains("approval_requested") && !raw.contains("run_finished") {
+            return;
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(raw) else {
             return;
         };
         let Some(kind) = notify::kind_of(shodh_link::bridge::AGENT_EVENT, &payload) else {

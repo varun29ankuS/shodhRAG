@@ -1725,6 +1725,73 @@ mod tests {
         );
     }
 
+    /// "From my phone" is Shodh's own folder inside the app data folder: as a root a
+    /// phone may browse, it opens only itself, never the app data around it.
+    #[test]
+    fn from_my_phone_opens_only_itself_not_the_app_data_around_it() {
+        let data = tempfile::tempdir().unwrap();
+        let inbox = files::inbox_dir(data.path());
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("scan.pdf"), b"%PDF").unwrap();
+        for (folder, name) in [
+            ("", "settings.json"),
+            ("", "conversations.json"),
+            (photos::PHOTO_FOLDER, "0123456789abcdef0123456789abcdef.jpg"),
+            ("phone_transfers", "0123456789abcdef0123456789abcdef.part"),
+        ] {
+            let dir = data.path().join(folder);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let roots = vec![inbox.clone()];
+        let shown = |p: std::path::PathBuf| p.display().to_string();
+        assert!(within_linked(&shown(inbox.join("scan.pdf")), &roots).is_ok());
+        for refused in [
+            data.path().join("settings.json"),
+            data.path().join("conversations.json"),
+            data.path()
+                .join(photos::PHOTO_FOLDER)
+                .join("0123456789abcdef0123456789abcdef.jpg"),
+            data.path()
+                .join("phone_transfers")
+                .join("0123456789abcdef0123456789abcdef.part"),
+        ] {
+            assert_eq!(
+                within_linked(&shown(refused.clone()), &roots),
+                Err(PathRefusal::OutsideLinkedFolders),
+                "{}",
+                refused.display()
+            );
+        }
+        // Climbing out of it by name is refused before the disk is looked at.
+        let climbed = format!(
+            "{}{}..{}settings.json",
+            inbox.display(),
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        );
+        assert!(within_linked(&climbed, &roots).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(data.path().join("settings.json"), inbox.join("link.json"))
+                .unwrap();
+            assert!(within_linked(&shown(inbox.join("link.json")), &roots).is_err());
+        }
+    }
+
+    /// `phone_push_register`: refused in Local-only mode before anything is kept, and only
+    /// an https address is kept (push.rs).
+    #[test]
+    fn a_push_address_is_kept_only_outside_local_only_and_only_https() {
+        let source = include_str!("phone_link.rs");
+        let arm = &source[source.find("\"phone_push_register\" =>").unwrap()..];
+        let arm = &arm[..arm.find("Ok(Value::Bool").unwrap()];
+        let local = arm.find("local_only(app)").expect("checks Local-only mode");
+        let kept = arm.find("push::register(").expect("keeps the address");
+        assert!(local < kept, "Local-only mode is checked first");
+        assert!(push::register("phone", Some("http://ntfy.example/x")).is_err());
+    }
+
     #[test]
     fn a_path_outside_linked_folders_is_refused() {
         let linked = tempfile::tempdir().unwrap();

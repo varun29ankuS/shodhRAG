@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react';
 import { useAgenda } from '../lib/agenda';
 import { briefsAllowed, loadBrief } from '../lib/brief';
 import { desktopFields, toPhone } from '../lib/calsync';
-import { useLink } from '../lib/context';
+import { useLink, useNav } from '../lib/context';
 import { useOffers } from '../lib/incoming';
 import { useDevice } from '../lib/queue';
 import { AnimatePresence } from 'framer-motion';
@@ -99,6 +99,12 @@ export function Background() {
       alive = false;
     };
   }, [allowed, connected, agenda.events, settings.briefMinutes, desktop, notifications]);
+
+  // "Open in Shodh" from the phone's calendar: Tasks, with that event shown first.
+  const { dispatch } = useNav();
+  useEffect(() => {
+    if (offers.opened) dispatch({ type: 'go', section: 'tasks' });
+  }, [offers.opened, dispatch]);
 
   const event = offers.briefing ? agenda.events?.find(e => e.id === offers.briefing) : undefined;
   return (

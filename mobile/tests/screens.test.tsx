@@ -754,6 +754,18 @@ describe('voice', () => {
   });
 });
 
+describe('Open in Shodh', () => {
+  it("an event's link in the phone's calendar opens Tasks with that event", async () => {
+    const phone = memoryDevice();
+    phone.files.incoming = { kind: 'event', id: 'e1' };
+    show(connectedComputer(), CONNECTED, initialNav('ask'), phone);
+    expect(await screen.findByText(/^Opened from your phone’s calendar/)).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Tasks' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(screen.queryByText(/^Opened from your phone’s calendar/)).toBeNull());
+  });
+});
+
 describe('the lock', () => {
   it('the_lock_is_required_on_open_by_default', async () => {
     const phone = memoryDevice();
@@ -917,6 +929,10 @@ describe('every control', () => {
     const updating = memoryDevice({ update: { state: 'ready', version: '0.0.11', size: 1_048_576 } });
     const sharing = memoryDevice();
     sharing.files.incoming = { kind: 'files', files: [{ path: '/cache/outgoing/1/scan.pdf', name: 'scan.pdf' }] };
+    const syncing = memoryDevice();
+    syncing.calendar.current = { enabled: true, chosen: [1], shodhCalendar: 9, useWithShodh: true };
+    const asking = memoryDevice();
+    asking.files.incoming = { kind: 'text', text: 'The meeting moved to Friday.', subject: null };
     const screens: Array<[string, Nav, LinkStatus, MemoryDevice?]> = [
       ['home', initialNav('ask'), CONNECTED],
       ['answer', answerNav, CONNECTED],
@@ -936,6 +952,9 @@ describe('every control', () => {
       ['home with questions waiting', initialNav('ask'), ASLEEP, queued],
       ['settings with an update', initialNav('settings'), { state: 'update', message: '', desktop: '0.0.11' }, updating],
       ['send sheet', initialNav('library'), CONNECTED, sharing],
+      ['settings with calendar sync', initialNav('settings'), CONNECTED, syncing],
+      ['tasks with calendar consent', initialNav('tasks'), CONNECTED, syncing],
+      ['ask about this', initialNav('ask'), CONNECTED, asking],
     ];
     for (const [name, nav, status, phone] of screens) {
       show(connectedComputer(), status, nav, phone);
@@ -952,5 +971,32 @@ describe('every control', () => {
     await screen.findByRole('heading', { name: 'Pair with your computer' });
     checkTargets('pair');
     unmount();
+
+    // The lock, both ways it shows.
+    for (const [name, hasPin] of [['lock', true], ['set a PIN', false]] as const) {
+      const locked = memoryDevice();
+      locked.lock.status_ = { required: true, hasPin, biometric: true, locked: true };
+      source = fakeSource(connectedComputer(), CONNECTED);
+      const lock = render(<App source={source} device={locked} />);
+      await screen.findByRole('dialog', { name: hasPin ? 'Shodh is locked' : 'Set a PIN' });
+      checkTargets(name);
+      lock.unmount();
+    }
+
+    // Asking about a photo, and a brief.
+    const camera = memoryDevice();
+    camera.files.photo = { path: '/cache/outgoing/1/Photo.jpg', name: 'Photo.jpg' };
+    show(connectedComputer(), CONNECTED, initialNav('ask'), camera);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask about a photo' }));
+    await screen.findByRole('dialog', { name: 'Ask about your photo' });
+    checkTargets('photo ask');
+    const briefing = memoryDevice();
+    briefing.calendar.current = { enabled: true, chosen: [1], shodhCalendar: 9, useWithShodh: true };
+    show(connectedComputer({ meeting_brief: { eventId: 'e1', title: 'Reading group', conversations: [{ id: 'c1', title: 'Reading group notes', updatedAt: ago(60) }], sources: [{ n: 1, file: 'self-rag.pdf', path: '/papers/self-rag.pdf', page: '3', text: 'Reading group: Self-RAG.', kind: 'document' }] } }), CONNECTED, initialNav('tasks'), briefing);
+    fireEvent.click(await screen.findByRole('button', { name: 'Brief' }));
+    await screen.findByText('Reading group notes');
+    checkTargets('brief');
+    shown?.unmount();
+    shown = null;
   });
 });

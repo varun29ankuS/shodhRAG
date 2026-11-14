@@ -36,7 +36,9 @@ export type Incoming =
   | { kind: 'text'; text: string; subject: string | null }
   | { kind: 'error'; message: string }
   /** A brief's notification was tapped. */
-  | { kind: 'brief'; eventId: string };
+  | { kind: 'brief'; eventId: string }
+  /** "Open in Shodh" on one of Shodh's events in the phone's calendar. */
+  | { kind: 'event'; id: string };
 
 /** The computer's answer to a file sent (`phone_file_finish`). */
 export interface FileAdded {

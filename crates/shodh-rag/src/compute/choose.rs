@@ -227,24 +227,24 @@ fn cpu_speed<C: Candidate>(
     }
 }
 
-/// Runs `run` on `session`. When it fails on a graphics card (`on_gpu`),
-/// a CPU session from `cpu` takes its place and `run` is tried on it: the
-/// returned error text is the card's failure, for the status. A failure on
-/// the CPU is the caller's.
+/// Runs `run` on `session`, telling it whether that is a graphics card's.
+/// When it fails on a graphics card (`on_gpu`), a CPU session from `cpu`
+/// takes its place and `run` is tried on it: the returned error text is the
+/// card's failure, for the status. A failure on the CPU is the caller's.
 pub fn run_or_fall_back<S, R>(
     session: &mut S,
     on_gpu: &mut bool,
-    mut run: impl FnMut(&mut S) -> Result<R, String>,
+    mut run: impl FnMut(&mut S, bool) -> Result<R, String>,
     cpu: impl FnOnce() -> Result<S, String>,
 ) -> Result<(R, Option<String>), String> {
-    match run(session) {
+    match run(session, *on_gpu) {
         Ok(value) => Ok((value, None)),
         Err(error) if *on_gpu => {
             tracing::warn!(%error, "The graphics card failed while embedding; the CPU takes over");
             let mut fresh = cpu().map_err(|e| {
                 format!("the graphics card failed ({error}) and the CPU could not take over: {e}")
             })?;
-            let value = run(&mut fresh)?;
+            let value = run(&mut fresh, false)?;
             *session = fresh;
             *on_gpu = false;
             Ok((value, Some(error)))
@@ -464,7 +464,8 @@ mod tests {
     fn a_card_failing_mid_run_hands_over_to_the_cpu_and_the_run_goes_on() {
         let mut session = Fake("RTX 4060");
         let mut on_gpu = true;
-        let run = |s: &mut Fake| -> Result<&'static str, String> {
+        let run = |s: &mut Fake, gpu: bool| -> Result<&'static str, String> {
+            assert_eq!(gpu, s.0 == "RTX 4060", "told which session it runs on");
             match s.0 {
                 "RTX 4060" => Err("887A0006 device hung".to_string()),
                 other => Ok(other),
@@ -477,7 +478,8 @@ mod tests {
         assert_eq!(session, Fake("cpu"));
         assert!(!on_gpu);
         // On the CPU a failure is the caller's; nothing is swapped.
-        let failing = |_: &mut Fake| -> Result<(), String> { Err("bad input".to_string()) };
+        let failing =
+            |_: &mut Fake, _: bool| -> Result<(), String> { Err("bad input".to_string()) };
         let result = run_or_fall_back(&mut session, &mut on_gpu, failing, || {
             panic!("no second CPU")
         });

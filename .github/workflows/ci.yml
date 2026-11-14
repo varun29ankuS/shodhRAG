@@ -907,8 +907,10 @@ jobs:
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
+      # prefix-key and shared-key as in release.yml's Windows build (one entry).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
+          prefix-key: v1-rust
           shared-key: release-x86_64-pc-windows-msvc
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
@@ -1364,8 +1366,9 @@ jobs:
               echo "::error::Reading logcat failed (status $status) while waiting for ready"
               exit 1
             fi
-            # logcat writes a "beginning of main" header first: the line is the app's.
-            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | grep -m 1 'Shodh' || true)
+            # logcat prints a "--------- beginning of main" header before the
+            # first line it matches; the ready line is the first Shodh line.
+            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | grep -E 'Shodh (not )?ready' | head -n 1 || true)
             echo "$ready_line"
             if ! grep -q 'Shodh ready: the pair screen is shown' <<< "$ready_line"; then
               echo "::error::Shodh did not reach its pair screen: $ready_line"

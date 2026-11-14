@@ -277,9 +277,11 @@ test('the android job runs for the phone app and what it reads; a phone-only cha
     'mobile/src-tauri/icons/android/mipmap-hdpi/ic_launcher.png',
     'crates/shodh-link/src/client.rs',
     'crates/shodh-link/Cargo.toml',
-    // The desktop files the phone app reads: its colour tokens and their parser.
+    // The desktop files the phone app reads: its colour tokens and their parser,
+    // and its sections' names and order (the phone's menu).
     'app/src/index.css',
     'app/src/lib/contrast.ts',
+    'app/src/lib/viewTabs.ts',
     'app/src/shared/ChatMessage.tsx',
     'rust-toolchain.toml',
     '.github/workflows/ci.yml',
@@ -289,6 +291,7 @@ test('the android job runs for the phone app and what it reads; a phone-only cha
   const desktopOnly = [
     'README.md',
     'app/src/App-SplitView.tsx',
+    'app/src/lib/viewTabsExtra.ts',
     'app/package-lock.json',
     'app/src-tauri/src/phone_link.rs',
     'crates/shodh-rag/src/search/hybrid.rs',

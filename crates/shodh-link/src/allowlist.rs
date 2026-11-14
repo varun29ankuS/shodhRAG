@@ -66,6 +66,13 @@ pub const ALLOWED: &[Entry] = &[
          Creator steps may be allowed from a phone (remote_may_approve); the rest wait for \
          the computer.",
     ),
+    bridge_only(
+        "approvals_pending",
+        "Approvals: the steps waiting for an answer on the computer (the Inbox's approvals), \
+         also those asked before the phone connected, each with whether the phone may allow \
+         it. Read only; the steps it lists may then be answered with agent_approve under the \
+         same rules as the ones the phone was sent.",
+    ),
     command(
         "workspaces_list",
         "Ask and Library: the workspace picker (names and sources of the user's \

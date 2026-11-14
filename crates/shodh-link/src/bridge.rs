@@ -9,21 +9,23 @@
 //!
 //! Then each request is checked here, on the desktop:
 //! - a command not on [`allowlist::ALLOWED`] is refused;
-//! - an approval is granted only for a step this connection was sent and
-//!   only for the kinds [`allowlist::remote_may_approve`] allows (the gate
-//!   stays pending otherwise, for the computer to answer);
+//! - an approval is granted only for a step this connection was sent (or
+//!   listed by [`PENDING_APPROVALS`], with its tool) and only for the kinds
+//!   [`allowlist::remote_may_approve`] allows (the gate stays pending
+//!   otherwise, for the computer to answer);
 //! - everything else goes to the [`LinkHost`], which runs the desktop's own
 //!   command handlers with the desktop's own rules;
 //! - every call is recorded ([`LinkHost::record`]) with the phone's name.
 //!
 //! Events: only `agent_event`s of the sessions the phone subscribed to are
-//! sent. A phone that falls behind is disconnected (it reconnects and reloads)
+//! sent, and to every phone [`CONVERSATION_CHANGED`] (an id) and
+//! [`INBOX_CHANGED`] (nothing more). A phone that falls behind is disconnected (it reconnects and reloads)
 //! instead of making the desktop buffer without bound. A removed phone's live
 //! connections are closed at once.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, RecvStream, SendStream, VarInt};
@@ -47,6 +49,16 @@ pub const AGENT_EVENT: &str = "agent_event";
 /// The desktop saved a conversation (`{ id }`): sent to every paired phone, so it
 /// reloads what it shows; the conversation itself is read with `load_conversation`.
 pub const CONVERSATION_CHANGED: &str = "conversation_changed";
+
+/// The desktop's Inbox changed (no payload): sent to every paired phone, so its
+/// Approvals reread [`PENDING_APPROVALS`]. It says nothing of what changed.
+pub const INBOX_CHANGED: &str = "inbox-changed";
+
+/// The bridge-only read of the approvals waiting on the desktop: a list of
+/// `{ sessionId, stepId, tool, … }`. The steps it lists may be answered by the
+/// connection that read them, with the same checks as the steps it was sent;
+/// a step listed without its tool never may.
+pub const PENDING_APPROVALS: &str = "approvals_pending";
 
 /// How long a new connection has to say who it is.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -346,7 +358,9 @@ impl<H: LinkHost> Link<H> {
         let mut events = self.host.events();
         let mut revoked = self.devices.revocations();
         let mut subscribed: HashSet<String> = HashSet::new();
-        let mut pending: HashMap<(String, String), PendingStep> = HashMap::new();
+        // Shared with the call tasks: a read of the pending approvals adds the
+        // steps it lists (`remember_listed`).
+        let pending: Arc<Mutex<Steps>> = Arc::default();
 
         let welcome = Response::Welcome {
             desktop: LINK_VERSION.to_string(),
@@ -380,11 +394,12 @@ impl<H: LinkHost> Link<H> {
                         match request {
                             Request::Subscribe { session_ids } => {
                                 subscribed = session_ids.into_iter().collect();
-                                pending.retain(|(session, _), _| subscribed.contains(session));
+                                lock(&pending).retain(|(session, _), _| subscribed.contains(session));
                             }
                             Request::Invoke { command, args, call_id } => {
-                                match self.check(&command, args, &mut pending) {
-                                    Ok(args) => self.run(&caller, command, args, call_id, &out),
+                                let checked = self.check(&command, args, &mut lock(&pending));
+                                match checked {
+                                    Ok(args) => self.run(&caller, command, args, call_id, &out, &pending),
                                     Err(reason) => {
                                         self.host.record(CallRecord {
                                             caller: caller.clone(),
@@ -406,7 +421,8 @@ impl<H: LinkHost> Link<H> {
                     }
                     event = events.recv() => match event {
                         Ok(event) => {
-                            if let Some(frame) = forward(&event, &subscribed, &mut pending) {
+                            let frame = forward(&event, &subscribed, &mut lock(&pending));
+                            if let Some(frame) = frame {
                                 if out.try_send(Outgoing::Frame(frame)).is_err() {
                                     let _ = out.try_send(Outgoing::Close(CLOSE_DONE, "fell behind"));
                                     break;
@@ -452,7 +468,7 @@ impl<H: LinkHost> Link<H> {
         &self,
         command: &str,
         args: Value,
-        pending: &mut HashMap<(String, String), PendingStep>,
+        pending: &mut Steps,
     ) -> Result<Value, &'static str> {
         if !allowlist::allowed(command) {
             return Err(NOT_ON_PHONE);
@@ -487,7 +503,9 @@ impl<H: LinkHost> Link<H> {
     }
 
     /// Run one checked call in its own task, so a long answer never holds up
-    /// events or other calls.
+    /// events or other calls. A read of the pending approvals remembers the
+    /// steps it lists before the phone receives them, so the phone can answer
+    /// any step it was shown.
     fn run(
         &self,
         caller: &Caller,
@@ -495,12 +513,19 @@ impl<H: LinkHost> Link<H> {
         args: Value,
         call_id: u64,
         out: &mpsc::Sender<Outgoing>,
+        pending: &Arc<Mutex<Steps>>,
     ) {
         let host = self.host.clone();
         let caller = caller.clone();
         let out = out.clone();
+        let pending = pending.clone();
         tokio::spawn(async move {
             let value = host.invoke(&caller, &command, args).await;
+            if command == PENDING_APPROVALS {
+                if let Ok(listed) = &value {
+                    remember_listed(listed, &mut lock(&pending));
+                }
+            }
             let outcome = match &value {
                 Ok(_) => Outcome::Done,
                 Err(error) => refusal_message(error).map_or(Outcome::Failed, Outcome::Refused),
@@ -556,14 +581,52 @@ fn approval(args: &Value) -> Option<Answer> {
     })
 }
 
+/// Approval steps a connection may answer, by (session, step).
+type Steps = HashMap<(String, String), PendingStep>;
+
+fn lock(steps: &Mutex<Steps>) -> MutexGuard<'_, Steps> {
+    steps.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Remember the steps a read of the pending approvals ([`PENDING_APPROVALS`])
+/// listed, so this connection may answer them. A step listed without its
+/// tool is not remembered: what granting it would allow is unknown, so it
+/// waits for the computer.
+fn remember_listed(listed: &Value, pending: &mut Steps) {
+    let Some(items) = listed.as_array() else {
+        return;
+    };
+    let text = |item: &Value, name: &str| {
+        item.get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    for item in items {
+        if pending.len() >= MAX_PENDING_STEPS {
+            return;
+        }
+        let (Some(session), Some(step), Some(tool)) = (
+            text(item, "sessionId"),
+            text(item, "stepId"),
+            text(item, "tool"),
+        ) else {
+            continue;
+        };
+        let tier = text(item, "tier").unwrap_or_default();
+        pending.insert((session, step), PendingStep { tool, tier });
+    }
+}
+
 /// The frame for `event`, when this phone subscribed to its session; the
 /// approval steps it carries are remembered so the phone can answer them.
 fn forward(
     event: &LinkEvent,
     subscribed: &HashSet<String>,
-    pending: &mut HashMap<(String, String), PendingStep>,
+    pending: &mut Steps,
 ) -> Option<Response> {
-    if event.name == CONVERSATION_CHANGED {
+    if event.name == CONVERSATION_CHANGED || event.name == INBOX_CHANGED {
         return Some(Response::Event {
             name: event.name.clone(),
             payload: event.payload.clone(),
@@ -753,6 +816,55 @@ mod tests {
                 payload: json!({ "id": "conv-1" }),
             }
         );
+    }
+
+    #[test]
+    fn an_inbox_change_is_announced_to_every_phone() {
+        let mut pending = HashMap::new();
+        let changed = LinkEvent {
+            name: INBOX_CHANGED.to_string(),
+            payload: Value::Null,
+        };
+        let frame = forward(&changed, &HashSet::new(), &mut pending).expect("sent");
+        assert_eq!(
+            frame,
+            Response::Event {
+                name: INBOX_CHANGED.to_string(),
+                payload: Value::Null,
+            }
+        );
+    }
+
+    #[test]
+    fn listed_approvals_are_remembered_and_a_step_without_its_tool_is_not() {
+        let mut pending = HashMap::new();
+        let listed = json!([
+            { "sessionId": "s7", "stepId": "fetch-7", "tool": "fetch_url", "tier": "write", "title": "Fetch arxiv.org" },
+            { "sessionId": "s7", "stepId": "cmd-7", "tool": "run_command" },
+            { "sessionId": "s7", "stepId": "anon-7" },
+            { "sessionId": "s7", "stepId": "blank-7", "tool": "  " },
+            { "stepId": "orphan", "tool": "fetch_url" },
+            "not an approval",
+        ]);
+        remember_listed(&listed, &mut pending);
+        assert_eq!(
+            pending.get(&("s7".to_string(), "fetch-7".to_string())),
+            Some(&PendingStep {
+                tool: "fetch_url".into(),
+                tier: "write".into()
+            })
+        );
+        assert_eq!(
+            pending.get(&("s7".to_string(), "cmd-7".to_string())),
+            Some(&PendingStep {
+                tool: "run_command".into(),
+                tier: String::new()
+            }),
+            "remembered, so the kind check refuses it with its reason"
+        );
+        assert_eq!(pending.len(), 2, "no tool, no answer from a phone");
+        remember_listed(&json!({ "not": "a list" }), &mut pending);
+        assert_eq!(pending.len(), 2);
     }
 
     #[test]

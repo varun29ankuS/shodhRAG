@@ -122,6 +122,13 @@ impl LinkHost for Desktop {
                 self.emit(&session, json!({ "type": "text_delta", "runId": "run-1", "messageId": "m1", "delta": "on demand [1]." }));
                 Ok(Value::Null)
             }
+            // Asked on the computer before the phone connected: an Ask step, a
+            // Code command, and an item from before approvals carried their tool.
+            "approvals_pending" => Ok(json!([
+                { "sessionId": "session-7", "stepId": "fetch-7", "tool": "fetch_url", "tier": "write", "title": "Fetch arxiv.org", "phoneMay": true },
+                { "sessionId": "session-7", "stepId": "cmd-7", "tool": "run_command", "title": "Run cargo test", "phoneMay": false },
+                { "sessionId": "session-7", "stepId": "old-7", "title": "Approve write_file?", "phoneMay": false },
+            ])),
             "get_source_file_info" => {
                 Ok(json!({ "kind": "pdf", "fileName": "self-rag.pdf", "path": args["filePath"] }))
             }
@@ -440,6 +447,85 @@ async fn a_remote_code_approval_is_refused() {
         .desktop
         .commands()
         .contains(&"agent_approve".to_string()));
+}
+
+fn approval_of(step: &str) -> Value {
+    json!({ "sessionId": "session-7", "stepId": step, "approved": true })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_approval_asked_before_the_phone_connected_is_answered_after_the_read() {
+    let world = World::new().await;
+    let phone = local_endpoint(false).await;
+    let client = LinkClient::pair(&phone, world.addr(), &world.scanned(), "Pixel 8")
+        .await
+        .unwrap();
+    let approvals = |world: &World| -> Vec<Value> {
+        world
+            .desktop
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, c, _)| c == "agent_approve")
+            .map(|(_, _, a)| a.clone())
+            .collect()
+    };
+
+    // Not read yet: the phone was never sent the step, so it waits for the computer.
+    let unread = within(
+        "an approval before the read",
+        client.invoke("agent_approve", approval_of("fetch-7")),
+    )
+    .await
+    .expect_err("refused before the read");
+    assert_eq!(unread["message"], APPROVE_ON_COMPUTER);
+    assert!(approvals(&world).is_empty());
+
+    let listed = within(
+        "the read",
+        client.invoke(shodh_link::bridge::PENDING_APPROVALS, json!({})),
+    )
+    .await
+    .expect("the pending approvals are read");
+    assert_eq!(listed.as_array().map(Vec::len), Some(3));
+
+    // A Code command listed by the read is still the computer's to allow.
+    let code = within(
+        "a listed Code approval",
+        client.invoke("agent_approve", approval_of("cmd-7")),
+    )
+    .await
+    .expect_err("a Code command is never approved from a phone");
+    assert_eq!(code["message"], APPROVE_ON_COMPUTER);
+    // A step listed without its tool cannot be placed, so it is refused too.
+    let unplaced = within(
+        "a listed approval without its tool",
+        client.invoke("agent_approve", approval_of("old-7")),
+    )
+    .await
+    .expect_err("refused without its tool");
+    assert_eq!(unplaced["message"], APPROVE_ON_COMPUTER);
+    assert!(approvals(&world).is_empty());
+
+    // The Ask step listed by the read is answered, once.
+    within(
+        "the approval",
+        client.invoke("agent_approve", approval_of("fetch-7")),
+    )
+    .await
+    .expect("a listed Ask step may be approved from the phone");
+    let approved = approvals(&world);
+    assert_eq!(approved.len(), 1);
+    assert_eq!(approved[0]["stepId"], "fetch-7");
+    assert_eq!(approved[0]["forConversation"], false);
+    let again = within(
+        "a second answer",
+        client.invoke("agent_approve", approval_of("fetch-7")),
+    )
+    .await
+    .expect_err("an answered step is answered once");
+    assert_eq!(again["message"], APPROVE_ON_COMPUTER);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

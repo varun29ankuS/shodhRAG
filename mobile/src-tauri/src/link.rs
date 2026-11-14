@@ -334,12 +334,13 @@ impl Link {
     }
 
     /// The window shows its first screen: the line CI's launch test waits
-    /// for, written once the key was read and the endpoint is bound.
-    pub async fn ready(&self, screen: &str) -> Result<(), String> {
+    /// for, written once the key was read and the endpoint is bound. It
+    /// names the theme shown, so CI checks the app follows the phone's.
+    pub async fn ready(&self, screen: &str, theme: &str) -> Result<(), String> {
         match self.identity().await {
             Ok(identity) => {
                 tracing::info!(
-                    "Shodh ready: the {screen} screen is shown (phone node {})",
+                    "Shodh ready: the {screen} screen is shown in the {theme} theme (phone node {})",
                     identity.endpoint.id().fmt_short()
                 );
                 Ok(())
@@ -352,16 +353,20 @@ impl Link {
     }
 }
 
-/// The phone's model ("Pixel 8"), the name the computer lists it under.
-pub fn device_name() -> String {
+/// An Android system property's value ("" when it is not set).
+fn system_property(name: &std::ffi::CStr) -> String {
     let mut value: [c_char; libc::PROP_VALUE_MAX as usize] = [0; libc::PROP_VALUE_MAX as usize];
     // SAFETY: the name is NUL-terminated and the buffer has the
     // PROP_VALUE_MAX bytes the call may write.
-    let len =
-        unsafe { libc::__system_property_get(c"ro.product.model".as_ptr(), value.as_mut_ptr()) };
+    let len = unsafe { libc::__system_property_get(name.as_ptr(), value.as_mut_ptr()) };
     let len = usize::try_from(len).unwrap_or(0).min(value.len());
     let bytes: Vec<u8> = value[..len].iter().map(|&c| c as u8).collect();
-    let name = String::from_utf8_lossy(&bytes).trim().to_string();
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+/// The phone's model ("Pixel 8"), the name the computer lists it under.
+pub fn device_name() -> String {
+    let name = system_property(c"ro.product.model");
     if name.is_empty() {
         "Android phone".to_string()
     } else {
@@ -405,10 +410,41 @@ pub async fn link_reset(app: AppHandle, link: State<'_, Link>) -> Result<(), Str
     link.reset(&app).await
 }
 
+/// A screen's name as the window reports it: a few lowercase words joined
+/// by hyphens ("home", "demo-answer"), nothing that could forge a log line.
+pub fn is_screen_name(screen: &str) -> bool {
+    !screen.is_empty()
+        && screen.len() <= 32
+        && screen.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+}
+
 #[tauri::command]
-pub async fn app_ready(screen: String, link: State<'_, Link>) -> Result<(), String> {
-    if !matches!(screen.as_str(), "pair" | "connected" | "offline" | "failed") {
-        return Err(format!("{screen} is not a screen of this app"));
+pub async fn app_ready(screen: String, theme: String, link: State<'_, Link>) -> Result<(), String> {
+    if !is_screen_name(&screen) {
+        return Err("This is not a screen of this app".to_string());
     }
-    link.ready(&screen).await
+    if !matches!(theme.as_str(), "light" | "dark") {
+        return Err("The theme is light or dark".to_string());
+    }
+    link.ready(&screen, &theme).await
+}
+
+/// The system property a debug build reads its first screen from (CI's
+/// screenshots: `adb shell setprop debug.shodh.screen library`).
+#[cfg(debug_assertions)]
+const START_SCREEN_PROPERTY: &std::ffi::CStr = c"debug.shodh.screen";
+
+/// The screen to open at. Only a debug build reads it: in a release build
+/// this is always `None`, and the app opens as it always does.
+#[tauri::command]
+pub fn start_screen() -> Option<String> {
+    #[cfg(debug_assertions)]
+    {
+        let screen = system_property(START_SCREEN_PROPERTY);
+        if is_screen_name(&screen) {
+            tracing::info!("Shodh opens at the {screen} screen (debug build)");
+            return Some(screen);
+        }
+    }
+    None
 }

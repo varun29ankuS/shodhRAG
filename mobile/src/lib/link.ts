@@ -1,11 +1,12 @@
 /**
  * The phone's link to the computer, as the app's Rust side runs it
  * (mobile/src-tauri/src/link.rs): its state, pairing, and the shim's
- * transport.
+ * transport. Screens reach it through `LinkSource` (lib/context.tsx), so
+ * tests give them a scripted computer instead.
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { createShim, type LinkTransport } from './invoke';
+import type { LinkTransport } from './invoke';
 
 /** The connection's state (`Status` in link.rs). */
 export type LinkStatus =
@@ -21,6 +22,26 @@ export type LinkStatus =
 export const STATUS_EVENT = 'link://status';
 const DESKTOP_EVENT = 'link://event';
 
+/** What the app needs of the link. */
+export interface LinkSource {
+  transport: LinkTransport;
+  status(): Promise<LinkStatus>;
+  onStatus(handler: (status: LinkStatus) => void): Promise<() => void>;
+  /** Try the kept computer again. */
+  reconnect(): Promise<void>;
+  /** Pair with the computer of a scanned or pasted `shodh-pair:1:…` code. */
+  pair(code: string): Promise<void>;
+  /** Start over after secure storage could not be read: pair again as a new phone. */
+  reset(): Promise<void>;
+  /** Tell the app a screen is shown, in which theme (CI's launch test waits for it). */
+  ready(screen: string, theme: 'light' | 'dark'): Promise<void>;
+  /**
+   * The screen a debug build was asked to open at (CI's screenshots); always
+   * null in a release build, where the app has no such setting.
+   */
+  startScreen(): Promise<string | null>;
+}
+
 /** The phone's link, over the app's own commands. */
 export const tauriTransport: LinkTransport = {
   call: (command, args) => invoke('link_invoke', { command, args }),
@@ -29,29 +50,25 @@ export const tauriTransport: LinkTransport = {
     listen<{ name: string; payload: unknown }>(DESKTOP_EVENT, event => handler(event.payload.name, event.payload.payload)),
 };
 
-/** The computer's commands and events, for the screens. */
-export const desktop = createShim(tauriTransport);
-
-export const linkStatus = () => invoke<LinkStatus>('link_status');
-
-export const onLinkStatus = (handler: (status: LinkStatus) => void) =>
-  listen<LinkStatus>(STATUS_EVENT, event => handler(event.payload));
-
-/** Pair with the computer of a scanned or pasted `shodh-pair:1:…` code. */
-export const pair = (code: string) => invoke<void>('link_pair', { code });
-
-/** Try the kept computer again. */
-export const reconnect = () => invoke<LinkStatus>('link_connect');
-
-/** Start over after secure storage could not be read: pair again as a new phone. */
-export const resetLink = () => invoke<void>('link_reset');
-
-/** Tell the app the first screen is shown (CI's launch test waits for it). */
-export const screenShown = (screen: 'pair' | 'connected' | 'offline' | 'failed') => invoke<void>('app_ready', { screen });
+export const tauriLink: LinkSource = {
+  transport: tauriTransport,
+  status: () => invoke<LinkStatus>('link_status'),
+  onStatus: handler => listen<LinkStatus>(STATUS_EVENT, event => handler(event.payload)),
+  reconnect: () => invoke<LinkStatus>('link_connect').then(() => undefined),
+  pair: code => invoke<void>('link_pair', { code }),
+  reset: () => invoke<void>('link_reset'),
+  ready: (screen, theme) => invoke<void>('app_ready', { screen, theme }),
+  startScreen: () => invoke<string | null>('start_screen'),
+};
 
 /** Plain words for an error from a command. */
 export function errorText(error: unknown): string {
   if (typeof error === 'string') return error;
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message;
   return 'Something went wrong.';
+}
+
+/** Whether the computer can be asked now. */
+export function isConnected(status: LinkStatus): boolean {
+  return status.state === 'connected';
 }

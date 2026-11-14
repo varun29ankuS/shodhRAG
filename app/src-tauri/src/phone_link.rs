@@ -1331,6 +1331,8 @@ async fn dispatch(
         "phone_file_finish" => files::finish(app, caller, raw).await,
         // "Keep in library" for a photo asked about (phone_link/photos.rs).
         "phone_photo_keep" => photos::keep(app, caller, raw).await,
+        // A brief before a meeting (phone_link/brief.rs): retrieval only, cited.
+        "meeting_brief" => brief::meeting_brief(app, raw).await,
         other => Err(shodh_link::bridge::refused(format!(
             "Your phone cannot do this ({other}). Use Shodh on your computer."
         ))),
@@ -1397,6 +1399,7 @@ fn render_page(path: &str, kind: &str, page: usize, width: u32) -> Result<Value,
     }))
 }
 
+pub mod brief;
 pub mod files;
 pub mod photos;
 pub mod stay_available;

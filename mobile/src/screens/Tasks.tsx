@@ -7,8 +7,10 @@
  * too, marked as the phone's.
  */
 import { useState, type FormEvent } from 'react';
-import { motion } from 'framer-motion';
-import { CalendarDays, CalendarPlus, Circle, Plus, Smartphone, Trash2, Undo2 } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { CalendarDays, CalendarPlus, Circle, NotebookText, Plus, Smartphone, Trash2, Undo2 } from 'lucide-react';
+import { BriefSheet } from '../components/BriefSheet';
+import { briefsAllowed } from '../lib/brief';
 import { TopBar } from '../components/Bars';
 import { NotConnected } from '../components/Connection';
 import { QueuedRows } from '../components/Queued';
@@ -86,6 +88,9 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
   const [eventTime, setEventTime] = useState('');
   const today = now();
   const queueable = canQueue(status);
+  const [brief, setBrief] = useState<{ eventId: string; title: string } | null>(null);
+  // Briefs read the calendar: only with "Let Shodh use my calendar", and from the computer.
+  const onBrief = connected && briefsAllowed(agenda.choice) ? (eventId: string, title: string) => setBrief({ eventId, title }) : undefined;
 
   /** The user's own edit: sent now, or kept until the computer wakes. */
   const edit = async (command: string, args: Record<string, unknown>, label: string) => {
@@ -181,11 +186,11 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
               <span>Today</span>
               <span className="label-note">{today.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</span>
             </div>
-            <AgendaRows items={todayItems} empty="Nothing on your calendar today." />
+            <AgendaRows items={todayItems} empty="Nothing on your calendar today." onBrief={onBrief} />
             {coming.length > 0 && (
               <>
                 <div className="label">Coming up</div>
-                <AgendaRows items={coming} empty="" withDay />
+                <AgendaRows items={coming} empty="" withDay onBrief={onBrief} />
               </>
             )}
           </>
@@ -292,11 +297,23 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
         )}
         {agenda.syncError && <p className="panel-text pad">{`Calendar sync stopped: ${agenda.syncError}`}</p>}
       </div>
+      <AnimatePresence>{brief && <BriefSheet key={brief.eventId} eventId={brief.eventId} title={brief.title} onClose={() => setBrief(null)} />}</AnimatePresence>
     </motion.div>
   );
 }
 
-function AgendaRows({ items, empty, withDay = false }: { items: AgendaItem[]; empty: string; withDay?: boolean }) {
+function AgendaRows({
+  items,
+  empty,
+  withDay = false,
+  onBrief,
+}: {
+  items: AgendaItem[];
+  empty: string;
+  withDay?: boolean;
+  /** A brief before a meeting, for Shodh's events (with the user's calendar consent). */
+  onBrief?: (eventId: string, title: string) => void;
+}) {
   if (items.length === 0) return empty ? <p className="panel-text pad">{empty}</p> : null;
   return (
     <div className="rows">
@@ -312,6 +329,12 @@ function AgendaRows({ items, empty, withDay = false }: { items: AgendaItem[]; em
               <span className="row-title">{item.title}</span>
               <span className="row-sub">{`${day}${timeWords(item.fields)}${item.phone ? ' · your phone’s calendar' : ''}`}</span>
             </span>
+            {onBrief && !item.phone && (
+              <button type="button" className="button" onClick={() => onBrief(item.key.slice(2), item.title)}>
+                <NotebookText aria-hidden="true" className="icon-small" />
+                Brief
+              </button>
+            )}
           </div>
         );
       })}

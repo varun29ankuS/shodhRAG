@@ -562,6 +562,7 @@ const PHONE_COMMANDS: Record<string, string> = {
   create_event: 'Added an event',
   update_event: 'Changed an event',
   delete_event: 'Removed an event',
+  meeting_brief: 'Read a meeting brief',
 };
 
 function phoneLink(p: Record<string, unknown>): EventSentence {

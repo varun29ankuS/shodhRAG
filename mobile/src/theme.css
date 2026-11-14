@@ -1925,6 +1925,13 @@ strong {
   padding: 4px 16px 0;
 }
 
+/* A second button in the ask box (the camera, the microphone): quiet beside Send. */
+.send-quiet {
+  background: var(--c-raised);
+  color: var(--c-text);
+  margin-right: 6px;
+}
+
 /* ── Tasks and the agenda ───────────────────────────────────────── */
 
 .task {

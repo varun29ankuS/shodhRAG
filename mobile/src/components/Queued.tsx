@@ -3,7 +3,7 @@
  * where it is (waiting, sending, sent, answered, or why it was not sent),
  * and Remove for one not yet sent or one that failed.
  */
-import { CheckCircle2, Clock, LoaderCircle, Send, Trash2, TriangleAlert } from 'lucide-react';
+import { CircleCheck, Clock, LoaderCircle, Send, Trash2, TriangleAlert } from 'lucide-react';
 import { itemWords, type QueuedItem } from '../lib/outbox';
 import { useQueue } from '../lib/queue';
 
@@ -16,7 +16,7 @@ function StateIcon({ item }: { item: QueuedItem }) {
     case 'sent':
       return <Send aria-hidden="true" className="icon-small" />;
     case 'answered':
-      return <CheckCircle2 aria-hidden="true" className="icon-small" />;
+      return <CircleCheck aria-hidden="true" className="icon-small" />;
     case 'failed':
       return <TriangleAlert aria-hidden="true" className="icon-small" />;
   }

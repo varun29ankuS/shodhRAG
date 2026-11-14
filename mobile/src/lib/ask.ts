@@ -11,7 +11,7 @@
  * another app) goes as attached context, which the computer fences and never
  * learns from.
  */
-import { answerText, foldAnswer, savedAnswer, startingAnswer, type AnswerState } from './answer';
+import { answerText, foldAnswer, savedAnswer, startingAnswer, type AnswerState, type Passage } from './answer';
 import type { HistoryTurn, SavedConversation } from './desktop';
 import type { Shim } from './invoke';
 import type { Subscriptions } from './subscriptions';
@@ -91,6 +91,11 @@ export function historyOf(conversation: SavedConversation | null | undefined): H
     .filter(t => t.content.trim() !== '');
 }
 
+/** A passage the question carries, as the answer shows its sources. */
+export function asPassage(p: CarriedPassage): Passage {
+  return { n: p.n, title: p.file, path: p.path, page: null, heading: null, text: p.text, web: p.web === true };
+}
+
 /** Ask `question` and wait for the whole answer. The answer's session stays subscribed. */
 export async function ask(shim: Shim, subscriptions: Subscriptions, question: Question, options: AskOptions): Promise<AnswerState> {
   const newId = options.newId ?? (() => crypto.randomUUID());
@@ -106,7 +111,8 @@ export async function ask(shim: Shim, subscriptions: Subscriptions, question: Qu
   options.onSession?.(sessionId);
   await subscriptions.set(options.owner ?? ASK_OWNER, [sessionId]);
 
-  let answer = startingAnswer();
+  // The question's own passages (a photo, "Your photo") are the answer's sources from the start.
+  let answer: AnswerState = { ...startingAnswer(), passages: (question.passages ?? []).map(asPassage) };
   // Events can arrive before agent_send returns the run's id: they wait here.
   let runId: string | null = null;
   const early: unknown[] = [];

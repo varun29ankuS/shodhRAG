@@ -4,8 +4,10 @@
  * conversations. Everything comes from the computer.
  */
 import { useState, type FormEvent } from 'react';
-import { ArrowUp, CalendarDays, Sparkles } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { ArrowUp, CalendarDays, Camera, Sparkles } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { PhotoAsk } from '../components/PhotoAsk';
+import type { Picked } from '../lib/device';
 import { TopBar } from '../components/Bars';
 import { connectionWords, NotConnected } from '../components/Connection';
 import { PageThumb } from '../components/PageThumb';
@@ -22,7 +24,7 @@ import { useAgenda } from '../lib/agenda';
 import { agendaItems, dayKey, timeWords } from './Tasks';
 import { errorText } from '../lib/link';
 import { queuedQuestion } from '../lib/outbox';
-import { canQueue, useQueue } from '../lib/queue';
+import { canQueue, useDevice, useQueue } from '../lib/queue';
 
 /** A new conversation's id, as the desktop makes them. */
 export function newConversationId(): string {
@@ -37,6 +39,15 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
   const { show } = useNote();
   const queueable = canQueue(status);
   const [question, setQuestion] = useState('');
+  const { files } = useDevice();
+  const [photo, setPhoto] = useState<{ taken: Picked; conversationId: string } | null>(null);
+  const takePhoto = () =>
+    files
+      .takePhoto()
+      .then(taken => {
+        if (taken) setPhoto({ taken, conversationId: newConversationId() });
+      })
+      .catch(e => show(errorText(e), 'problem'));
   const today = now();
   const words = connectionWords(status);
 
@@ -92,10 +103,16 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
             enterKeyHint="send"
             autoComplete="off"
           />
+          <button type="button" className="send send-quiet" aria-label="Ask about a photo" disabled={!connected} onClick={takePhoto}>
+            <Camera aria-hidden="true" className="icon" />
+          </button>
           <button type="submit" className="send" aria-label="Send" disabled={!(connected || queueable) || question.trim() === ''}>
             <ArrowUp aria-hidden="true" className="icon" />
           </button>
         </form>
+        <AnimatePresence>
+          {photo && <PhotoAsk key="photo" taken={photo.taken} conversationId={photo.conversationId} onClose={() => setPhoto(null)} />}
+        </AnimatePresence>
 
         {waiting.length > 0 && (
           <>

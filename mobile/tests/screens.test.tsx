@@ -506,6 +506,82 @@ describe('Tasks', () => {
   });
 });
 
+describe('Point the camera and ask, Ask about this, and briefs', () => {
+  const finished = (link: FakeLink, sessionId: string, runId: string, text: string) =>
+    queueMicrotask(() => {
+      link.send('agent_event', { sessionId, event: { type: 'text_delta', runId, messageId: 'm', delta: text } });
+      link.send('agent_event', { sessionId, event: { type: 'run_finished', runId, status: 'completed', durationMs: 1, error: null } });
+    });
+
+  it('a_photo_is_not_indexed_unless_kept', async () => {
+    const phone = memoryDevice();
+    phone.files.photo = { path: '/cache/outgoing/1/Photo.jpg', name: 'Photo.jpg' };
+    let link!: FakeLink;
+    link = connectedComputer({
+      load_conversation: null,
+      agent_start: 'session-p',
+      agent_send: () => {
+        finished(link, 'session-p', 'run-p', 'Adaptive retrieval [1].');
+        return 'run-p';
+      },
+      phone_photo_keep: { name: 'Photo.jpg', path: '/data/From my phone/Photo.jpg', added: true, reason: null, notice: null },
+    });
+    show(link, CONNECTED, initialNav('ask'), phone);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask about a photo' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Ask about your photo' });
+    expect(await within(sheet).findByText('Retrieval should be adaptive.')).toBeTruthy();
+    fireEvent.change(within(sheet).getByLabelText('Your question about the photo'), { target: { value: 'What does it say?' } });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Ask' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'What does it say?' })).toBeTruthy();
+    expect(phone.files.photosSent.map(f => f.name)).toEqual(['Photo.jpg']);
+    // Asked about, not added: nothing asks the computer to keep it.
+    expect(link.calls.some(c => c.command === 'phone_photo_keep')).toBe(false);
+    // "Your photo" is its source; Keep in library adds it.
+    fireEvent.click(await screen.findByRole('button', { name: 'Your photo, the photo you took' }));
+    const photoSheet = await screen.findByRole('dialog', { name: 'Your photo' });
+    fireEvent.click(within(photoSheet).getByRole('button', { name: 'Keep in library' }));
+    await waitFor(() => expect(link.calls.find(c => c.command === 'phone_photo_keep')?.args).toEqual({ photoId: 'p'.repeat(32) }));
+    expect(await within(photoSheet).findByText('Added to your library, in From my phone.')).toBeTruthy();
+  });
+
+  it('text shared from another app opens Ask about this', async () => {
+    const phone = memoryDevice();
+    phone.files.incoming = { kind: 'text', text: 'https://arxiv.org/abs/2310.11511', subject: 'Self-RAG' };
+    let link!: FakeLink;
+    link = connectedComputer({
+      load_conversation: null,
+      agent_start: 'session-s',
+      agent_send: () => {
+        finished(link, 'session-s', 'run-s', 'It adds reflection tokens.');
+        return 'run-s';
+      },
+    });
+    show(link, CONNECTED, initialNav('ask'), phone);
+    const sheet = await screen.findByRole('dialog', { name: 'Ask about this' });
+    expect(within(sheet).getByText('A link you shared: Shodh may open it to answer.')).toBeTruthy();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Ask' }));
+    await waitFor(() => expect(link.calls.some(c => c.command === 'agent_send')).toBe(true));
+    expect(link.calls.find(c => c.command === 'agent_send')?.args).toMatchObject({
+      text: 'What does my library say about this?\n\nhttps://arxiv.org/abs/2310.11511',
+      textOrigin: 'typed',
+    });
+  });
+
+  it('offers a brief only with calendar consent, and says when nothing matches', async () => {
+    const link = connectedComputer({ meeting_brief: null });
+    show(link, CONNECTED, initialNav('tasks'));
+    expect(await screen.findByText('Reading group')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Brief' })).toBeNull();
+
+    const phone = memoryDevice();
+    phone.calendar.current = { enabled: true, chosen: [1], shodhCalendar: 9, useWithShodh: true };
+    show(link, CONNECTED, initialNav('tasks'), phone);
+    fireEvent.click(await screen.findByRole('button', { name: 'Brief' }));
+    await waitFor(() => expect(link.calls.find(c => c.command === 'meeting_brief')?.args).toEqual({ eventId: 'e1' }));
+    expect(await screen.findByText('Nothing in your library or your conversations is about this event.')).toBeTruthy();
+  });
+});
+
 describe('Settings, Calendar', () => {
   it('sync is off until turned on; then the calendars to read and "Let Shodh use my calendar"', async () => {
     const phone = memoryDevice();

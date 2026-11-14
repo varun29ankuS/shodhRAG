@@ -14,14 +14,16 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUp, Square, TriangleAlert } from 'lucide-react';
+import { ArrowUp, Camera, LibraryBig, Square, TriangleAlert } from 'lucide-react';
 import { AnswerBlocks, AnswerSources, whereOf, type CiteHandler } from '../components/AnswerView';
 import { BackBar } from '../components/Bars';
 import { CodeNote, CodeWorkView, CreatorPreview } from '../components/CodeWork';
 import { connectionWords, Dot, NotConnected } from '../components/Connection';
 import { Sheet } from '../components/Sheet';
 import { answerText, citedNumbers, isLive, savedAnswer, startingAnswer, type AnswerState, type Passage } from '../lib/answer';
-import { ask, AskStopped, historyOf } from '../lib/ask';
+import { ask, asPassage, AskStopped, historyOf } from '../lib/ask';
+import type { AskContext } from '../lib/nav';
+import { isPhotoPath, photoIdOf } from '../lib/photo';
 import { codeWork, NO_WORK, type CodeWork } from '../lib/code';
 import { useLink, useNav, useNote } from '../lib/context';
 import { QueuedRows } from '../components/Queued';
@@ -79,7 +81,18 @@ interface Live {
   stopped: string | null;
 }
 
-export function Ask({ conversationId, question, workspaceId }: { conversationId: string; question: string | null; workspaceId: string | null }) {
+export function Ask({
+  conversationId,
+  question,
+  workspaceId,
+  context,
+}: {
+  conversationId: string;
+  question: string | null;
+  workspaceId: string | null;
+  /** What the first question is about besides its words (a photo, shared text). */
+  context?: AskContext;
+}) {
   const { desktop, subscriptions, connected, status } = useLink();
   const { dispatch } = useNav();
   const queue = useQueue();
@@ -89,17 +102,25 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   const [live, setLive] = useState<Live | null>(null);
   const [followUp, setFollowUp] = useState('');
   const [web, setWeb] = useState<Passage | null>(null);
+  const [photo, setPhoto] = useState<Passage | null>(null);
+  const [kept, setKept] = useState<string | null>(null);
+  const keep = (photoId: string) => {
+    desktop
+      .invoke<{ added: boolean; reason: string | null }>('phone_photo_keep', { photoId })
+      .then(answer => setKept(answer.added ? 'Added to your library, in From my phone.' : `Not added: ${answer.reason ?? 'your computer did not add it.'}`))
+      .catch(e => setKept(errorText(e)));
+  };
   const stop = useRef<AbortController | null>(null);
   const asked = useRef(false);
   const liveRef = useRef<HTMLDivElement>(null);
 
   const start = useCallback(
-    (text: string, history: HistoryTurn[]) => {
+    (text: string, history: HistoryTurn[], about?: AskContext) => {
       stop.current?.abort();
       const controller = new AbortController();
       stop.current = controller;
       setLive({ question: text, answer: startingAnswer(), sessionId: null, stopped: null });
-      ask(desktop, subscriptions, { conversationId, text, history, workspaceId }, {
+      ask(desktop, subscriptions, { conversationId, text, history, workspaceId, attached: about?.attached, passages: about?.passages }, {
         signal: controller.signal,
         onSession: sessionId => setLive(l => (l && l.question === text ? { ...l, sessionId } : l)),
         onAnswer: answer => setLive(l => (l && l.question === text ? { ...l, answer } : l)),
@@ -123,8 +144,8 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   useEffect(() => {
     if (question === null || asked.current || !connected) return;
     asked.current = true;
-    start(question, []);
-  }, [question, connected, start]);
+    start(question, [], context);
+  }, [question, connected, start, context]);
 
   // The phone stops waiting when the connection ends or the screen goes.
   useEffect(() => {
@@ -136,7 +157,13 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
     if (live && live.answer.status === 'starting') liveRef.current?.scrollIntoView({ block: 'start' });
   }, [live]);
 
-  const turns = savedTurns(saved.data);
+  // The first question's own passages ("Your photo") stay its sources once it is saved.
+  const carried = (context?.passages ?? []).map(asPassage);
+  const turns = savedTurns(saved.data).map(turn =>
+    carried.length > 0 && turn.question === question
+      ? { ...turn, answer: { ...turn.answer, passages: [...carried.filter(c => !turn.answer.passages.some(p => p.n === c.n)), ...turn.answer.passages] } }
+      : turn,
+  );
   // The live answer, until the saved conversation holds it.
   const lastSaved = turns[turns.length - 1];
   const liveSaved =
@@ -145,6 +172,11 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   const running = live !== null && isLive(live.answer) && live.stopped === null;
 
   const onCite: CiteHandler = (passage, origin) => {
+    if (isPhotoPath(passage.path)) {
+      // The photo is on the phone, not in the library: its text, and "Keep in library".
+      setPhoto(passage);
+      return;
+    }
     if (passage.web) {
       setWeb(passage);
       return;
@@ -294,6 +326,36 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
             <button type="button" className="button button-wide" onClick={() => setWeb(null)}>
               Close
             </button>
+          </Sheet>
+        )}
+        {photo && (
+          <Sheet label="Your photo" onClose={() => setPhoto(null)}>
+            <span className="approval-context">
+              <Camera aria-hidden="true" className="icon-small" /> {`Source ${photo.n}, the photo you took`}
+            </span>
+            <div className="sheet-card">
+              <span className="sheet-card-title serif">Your photo</span>
+              {photo.text && <span className="sheet-card-text serif">{photo.text}</span>}
+              <span className="passage-label">Read by Shodh on your computer. It is not in your library.</span>
+            </div>
+            {kept && <p className="panel-text">{kept}</p>}
+            <div className="sheet-actions">
+              <button type="button" className="button" onClick={() => setPhoto(null)}>
+                Close
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={!connected || kept !== null}
+                onClick={() => {
+                  const id = photoIdOf(photo.path);
+                  if (id) keep(id);
+                }}
+              >
+                <LibraryBig aria-hidden="true" className="icon-small" />
+                Keep in library
+              </button>
+            </div>
           </Sheet>
         )}
       </AnimatePresence>

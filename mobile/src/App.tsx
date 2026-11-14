@@ -16,6 +16,7 @@ import { tauriDevice, type Device } from './lib/device';
 import { DeviceProvider, QueueProvider } from './lib/queue';
 import { IncomingProvider, useOffers } from './lib/incoming';
 import { SendSheet } from './components/SendSheet';
+import { AskAbout } from './components/AskAbout';
 import { AgendaProvider } from './lib/agenda';
 import { Tasks } from './screens/Tasks';
 import { askScreen, type Nav } from './lib/nav';
@@ -122,6 +123,7 @@ function Main() {
         {nav.sheet && <ApprovalSheet key={`${nav.sheet.sessionId}:${nav.sheet.stepId}`} target={nav.sheet} />}
       </AnimatePresence>
       <AnimatePresence>{offers.sending && <SendSheet key="send" files={offers.sending} />}</AnimatePresence>
+      <AnimatePresence>{offers.asking && <AskAbout key="ask-about" shared={offers.asking} />}</AnimatePresence>
     </>
   );
 }
@@ -132,7 +134,7 @@ function sectionView(nav: Nav, key: string) {
       const screen = askScreen(nav);
       if (screen.kind === 'conversations') return <Conversations key={key} filter={screen.filter ?? 'all'} />;
       if (screen.kind === 'answer')
-        return <Ask key={key} conversationId={screen.conversationId} question={screen.question} workspaceId={screen.workspaceId} />;
+        return <Ask key={key} conversationId={screen.conversationId} question={screen.question} workspaceId={screen.workspaceId} context={screen.context} />;
       return <Home key={key} />;
     }
     case 'library':

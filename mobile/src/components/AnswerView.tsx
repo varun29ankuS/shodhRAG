@@ -8,8 +8,9 @@
  */
 import { Fragment, type MouseEvent, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { Globe } from 'lucide-react';
+import { Camera, Globe } from 'lucide-react';
 import { answerText, citedNumbers, isLive, type AnswerState, type Passage } from '../lib/answer';
+import { isPhotoPath } from '../lib/photo';
 import { parseAnswer, type Block, type Inline } from '../lib/markdown';
 import { fanIn, popIn, sweep } from '../lib/motion';
 import type { Origin } from '../lib/nav';
@@ -149,6 +150,7 @@ export function whereOf(passage: Passage): string {
       return 'Web page';
     }
   }
+  if (isPhotoPath(passage.path)) return 'The photo you took';
   if (passage.page !== null) return `Page ${passage.page}`;
   return passage.heading ?? 'In your library';
 }
@@ -159,11 +161,34 @@ export function AnswerSources({ answer, onCite }: { answer: AnswerState; onCite:
   const cited = citedNumbers(answerText(answer))
     .map(n => answer.passages.find(p => p.n === n))
     .filter((p): p is Passage => p !== undefined);
-  const library = cited.filter(p => !p.web);
+  // A photo asked about is on the phone, not in the library: its own row, no page image.
+  const photos = cited.filter(p => isPhotoPath(p.path));
+  const library = cited.filter(p => !p.web && !isPhotoPath(p.path));
   const web = cited.filter(p => p.web);
   return (
     <>
       <motion.span className="sweep" aria-hidden="true" variants={sweep} initial="hidden" animate="shown" />
+      {photos.length > 0 && (
+        <div className="rows">
+          {photos.map(passage => (
+            <button
+              key={passage.n}
+              type="button"
+              className="row"
+              aria-label={`${passage.title}, the photo you took`}
+              onClick={event => onCite(passage, originOf(event))}
+            >
+              <span className="row-icon">
+                <Camera aria-hidden="true" className="icon-small" />
+              </span>
+              <span className="row-text">
+                <span className="row-title">{passage.title}</span>
+                <span className="row-sub">{`[${passage.n}] ${whereOf(passage)}`}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       {library.length > 0 && (
         <>
           <div className="label">From your library</div>

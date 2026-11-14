@@ -183,6 +183,12 @@ pub const ALLOWED: &[Entry] = &[
         "Today and the phone's calendar: remove an event, only after the user confirmed it on \
          the phone (an event deleted in the phone's calendar asks first).",
     ),
+    bridge_only(
+        "meeting_brief",
+        "Today: a short brief before a meeting (the conversations and the notes and documents \
+         about it, each cited), asked only while calendar sync and \"Let Shodh use my \
+         calendar\" are on. Read only, retrieval only; nothing for an event nothing matches.",
+    ),
 ];
 
 /// Whether a phone may call `command`.

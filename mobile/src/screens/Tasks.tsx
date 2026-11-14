@@ -8,7 +8,7 @@
  */
 import { useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { CalendarDays, CalendarPlus, Circle, NotebookText, Plus, Smartphone, Trash2, Undo2 } from 'lucide-react';
+import { CalendarDays, CalendarPlus, Circle, NotebookText, Plus, Trash2, Undo2 } from 'lucide-react';
 import { BriefSheet } from '../components/BriefSheet';
 import { briefsAllowed } from '../lib/brief';
 import { TopBar } from '../components/Bars';
@@ -162,7 +162,7 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
         )}
 
         {openedEvent && (
-          <div className="callout" role="status" style={{ margin: '12px 16px 0' }}>
+          <div className="callout" role="status" style={{ margin: '16px 20px 0' }}>
             <CalendarDays aria-hidden="true" className="icon" />
             <div className="row-text">
               <p className="row-title">{openedEvent.title}</p>
@@ -175,10 +175,10 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
           </div>
         )}
         {offers.opened && agenda.events !== null && !openedEvent && (
-          <p className="panel-text pad">This event is no longer in Shodh.</p>
+          <p className="panel-text panel-quiet">This event is no longer in Shodh.</p>
         )}
         {agenda.pending.map(question => (
-          <div key={question.id} className="callout" role="alert" style={{ margin: '12px 16px 0' }}>
+          <div key={question.id} className="callout" role="alert" style={{ margin: '16px 20px 0' }}>
             <Trash2 aria-hidden="true" className="icon" />
             <div className="row-text">
               <p>
@@ -223,9 +223,9 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
               {finished > 0 && <span className="label-note">{`${finished} done`}</span>}
             </div>
             {open.length === 0 ? (
-              <p className="panel-text pad">Nothing to do. Add a task below.</p>
+              <p className="panel-text panel-quiet">Nothing to do. Add a task below.</p>
             ) : (
-              <div className="rows">
+              <div className="rows rows-tasks">
                 {open.map(task => {
                   const due = dueWords(task, today);
                   return (
@@ -315,7 +315,7 @@ export function Tasks({ now = () => new Date() }: { now?: () => Date }) {
             </form>
           </>
         )}
-        {agenda.syncError && <p className="panel-text pad">{`Calendar sync stopped: ${agenda.syncError}`}</p>}
+        {agenda.syncError && <p className="panel-text panel-quiet">{`Calendar sync stopped: ${agenda.syncError}`}</p>}
       </div>
       <AnimatePresence>{brief && <BriefSheet key={brief.eventId} eventId={brief.eventId} title={brief.title} onClose={() => setBrief(null)} />}</AnimatePresence>
     </motion.div>
@@ -334,17 +334,15 @@ function AgendaRows({
   /** A brief before a meeting, for Shodh's events (with the user's calendar consent). */
   onBrief?: (eventId: string, title: string) => void;
 }) {
-  if (items.length === 0) return empty ? <p className="panel-text pad">{empty}</p> : null;
+  if (items.length === 0) return empty ? <p className="panel-text panel-quiet">{empty}</p> : null;
   return (
-    <div className="rows">
+    <div className="rows rows-agenda">
       {items.map(item => {
         const [y, m, d] = item.fields.start.slice(0, 10).split('-').map(Number);
         const day = withDay ? `${new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} · ` : '';
         return (
           <div key={item.key} className="row agenda-row" data-source={item.phone ? 'phone' : 'shodh'}>
-            <span className="row-icon">
-              {item.phone ? <Smartphone aria-hidden="true" className="icon-small" /> : <CalendarDays aria-hidden="true" className="icon-small" />}
-            </span>
+            <span className="agenda-bar" aria-hidden="true" />
             <span className="row-text">
               <span className="row-title">{item.title}</span>
               <span className="row-sub">{`${day}${timeWords(item.fields)}${item.phone ? ' · your phone’s calendar' : ''}`}</span>

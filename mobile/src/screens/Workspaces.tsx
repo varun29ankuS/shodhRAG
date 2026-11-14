@@ -27,7 +27,7 @@ export function Workspaces({ now = () => new Date() }: { now?: () => Date }) {
         {list === undefined && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading your workspaces">
             {[76, 60, 68].map(width => (
-              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 52, borderRadius: 14 }} />
+              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 52, borderRadius: 12 }} />
             ))}
           </div>
         )}
@@ -40,9 +40,9 @@ export function Workspaces({ now = () => new Date() }: { now?: () => Date }) {
         {list !== undefined && list.length > 0 && (
           <>
             <div className="label">Your workspaces</div>
-            <div className="card">
+            <div className="rows rows-icons">
               {list.map(workspace => (
-                <div key={workspace.id} className="row row-divided">
+                <div key={workspace.id} className="row">
                   <span className="row-icon">
                     <Layers aria-hidden="true" className="icon-small" />
                   </span>
@@ -60,7 +60,7 @@ export function Workspaces({ now = () => new Date() }: { now?: () => Date }) {
                 </div>
               ))}
             </div>
-            <p className="panel-text pad" style={{ marginTop: 14 }}>
+            <p className="group-footer">
               Opening a workspace (its sources, instructions and chats) is coming to the phone soon.
             </p>
           </>

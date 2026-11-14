@@ -42,7 +42,7 @@ export function Settings() {
         <div className="card">
           <div className="setting">
             <span className="row-title">Your computer</span>
-            <span className="connection" style={{ fontSize: 14 }}>
+            <span className="connection">
               <Dot status={status} small />
               {words.line}
             </span>

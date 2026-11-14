@@ -1679,7 +1679,7 @@ strong {
   border-radius: 24px;
   background: var(--c-success-soft);
   color: var(--c-success);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 500;
   box-shadow: 0 16px 36px var(--shadow);
 }
@@ -1736,38 +1736,46 @@ strong {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 8px 24px 40px;
+  padding: 0 20px 40px;
 }
 
 .pair textarea {
   width: 100%;
   min-height: 88px;
-  padding: 12px 14px;
-  border: 1px solid var(--separator);
-  border-radius: 16px;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 12px;
   background: var(--cell);
-  font-size: 16px;
+  color: var(--label);
+  font-size: 17px;
   resize: vertical;
 }
 
+.pair textarea::placeholder {
+  color: var(--label-2);
+  opacity: 1;
+}
+
 .field-label {
-  font-size: 14px;
-  font-weight: 600;
+  padding: 8px 16px 0;
+  font-size: 13px;
+  font-weight: 400;
   color: var(--label-2);
 }
 
 /* ── Settings ───────────────────────────────────────────────────── */
 
+/* One setting: a cell of its group; the hairline between two is the group's. */
 .setting {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-  border-bottom: 1px solid var(--separator);
+  gap: 8px;
+  min-height: 52px;
+  padding: 12px 16px;
 }
 
-.setting:last-child {
-  border-bottom: none;
+.setting .connection {
+  font-size: 15px;
 }
 
 /* ── Motion ─────────────────────────────────────────────────────── */
@@ -2158,11 +2166,20 @@ strong {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: 24px;
+  gap: 12px;
+  padding: 24px 20px;
   background: var(--background);
   color: var(--label);
   text-align: center;
+}
+
+.lock .title {
+  padding-top: 0;
+  font-size: 28px;
+}
+
+.lock .panel-icon {
+  justify-content: center;
 }
 
 .lock-form {
@@ -2170,15 +2187,16 @@ strong {
   flex-direction: column;
   gap: 10px;
   width: min(100%, 320px);
+  margin-top: 12px;
 }
 
 .lock-form input,
 .pin-field {
-  min-height: 48px;
+  min-height: 50px;
   min-width: 44px;
-  padding: 0 14px;
-  border-radius: 14px;
-  border: 1px solid var(--separator);
+  padding: 0 16px;
+  border: none;
+  border-radius: 12px;
   background: var(--cell);
   color: var(--label);
   font-size: 20px;
@@ -2186,14 +2204,34 @@ strong {
   text-align: center;
 }
 
+.setting .pin-field {
+  background: var(--fill);
+}
+
 /* ── Tasks and the agenda ───────────────────────────────────────── */
+
+/* A task: its tick at the start, 44px to the finger. */
+.rows-tasks {
+  --inset: 62px;
+}
 
 .task {
   gap: 8px;
+  padding-left: 6px;
+}
+
+.task > .icon-button .icon {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.6;
+}
+
+.rows-agenda {
+  --inset: 31px;
 }
 
 .row-alert {
-  color: var(--tint);
+  color: var(--c-error);
 }
 
 .date-field input,
@@ -2201,11 +2239,16 @@ strong {
   min-height: 44px;
   min-width: 44px;
   padding: 0 12px;
-  border-radius: 12px;
-  border: 1px solid var(--separator);
-  background: var(--cell);
+  border: none;
+  border-radius: 10px;
+  background: var(--fill);
   color: var(--label);
   font-size: 15px;
+}
+
+.quick-add input {
+  background: var(--cell);
+  font-size: 17px;
 }
 
 .date-field input {
@@ -2216,16 +2259,11 @@ strong {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 0 16px;
+  padding: 0 20px;
 }
 
 .quick-add input:first-of-type {
   flex: 1 1 100%;
-}
-
-.agenda-row[data-source='phone'] .row-icon {
-  background: var(--fill);
-  color: var(--label-2);
 }
 
 /* ── Switches (Settings) ────────────────────────────────────────── */
@@ -2236,6 +2274,7 @@ strong {
   justify-content: space-between;
 }
 
+/* A switch: 51 by 31, the tint when on, in a 44px target. */
 .switch {
   position: relative;
   flex: none;
@@ -2249,12 +2288,12 @@ strong {
 .switch::before {
   content: "";
   position: absolute;
-  left: 2px;
-  right: 2px;
-  top: 9px;
-  height: 26px;
-  border-radius: 13px;
-  background: var(--separator);
+  left: 0;
+  right: 1px;
+  top: 6px;
+  height: 31px;
+  border-radius: 16px;
+  background: var(--fill);
 }
 
 .switch[aria-checked='true']::before {
@@ -2263,18 +2302,22 @@ strong {
 
 .switch-knob {
   position: absolute;
-  left: 5px;
-  top: 12px;
-  width: 20px;
-  height: 20px;
-  border-radius: 10px;
+  left: 2px;
+  top: 8px;
+  width: 27px;
+  height: 27px;
+  border-radius: 14px;
   background: #ffffff;
-  box-shadow: 0 1px 3px var(--shadow);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
   transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
 .switch[aria-checked='true'] .switch-knob {
-  transform: translateX(22px);
+  transform: translateX(20px);
+}
+
+.switch:disabled {
+  opacity: 0.45;
 }
 
 .calendar-swatch {
@@ -2313,7 +2356,6 @@ strong {
 .segmented-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
-
 
 /* Citations side by side keep a little room; each is flush with what follows it (“question¹.”). */
 .chip + .chip {

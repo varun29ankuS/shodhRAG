@@ -233,7 +233,7 @@ export function Ask({
             <div className="skeleton skeleton-line" style={{ width: '70%' }} />
           </div>
         )}
-        {saved.data === null && !showLive && <p className="panel-text pad">This conversation is no longer on your computer.</p>}
+        {saved.data === null && !showLive && <p className="panel-text panel-quiet">This conversation is no longer on your computer.</p>}
         {turns.map(turn => (
           <section key={turn.id} className="turn">
             {turn.question !== '' && <h1 className="question">{turn.question}</h1>}
@@ -255,7 +255,7 @@ export function Ask({
             <h1 className="question">{live.question}</h1>
             <TurnStatus answer={live.answer} />
             {live.stopped !== null && (
-              <div className="callout" role="status" style={{ margin: '18px 24px 0' }}>
+              <div className="callout" role="status" style={{ margin: '16px 20px 0' }}>
                 <TriangleAlert aria-hidden="true" className="icon" />
                 <p>{live.stopped}</p>
               </div>

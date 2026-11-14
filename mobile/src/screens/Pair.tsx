@@ -54,12 +54,12 @@ export function Pair({ refusal, onClose }: { refusal: string | null; onClose: ((
         <header className="topbar">
           {onClose ? (
             <button type="button" className="back" onClick={onClose}>
-              <ChevronLeft aria-hidden="true" className="icon" />
+              <ChevronLeft aria-hidden="true" className="icon-back" />
               <span>Back</span>
             </button>
           ) : (
             <span className="brand" style={{ paddingLeft: 10 }}>
-              <img src={logo} alt="" className="brand-logo" width={36} height={36} />
+              <img src={logo} alt="" className="brand-logo" width={34} height={34} />
               <span className="brand-name">Shodh</span>
             </span>
           )}

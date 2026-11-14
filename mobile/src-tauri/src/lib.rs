@@ -11,6 +11,9 @@ compile_error!(
 
 mod link;
 mod logcat;
+mod queue;
+mod store;
+mod update;
 mod vault;
 
 use tauri::Manager;
@@ -44,7 +47,11 @@ pub fn run() {
     tracing::info!("Shodh {} is starting", env!("CARGO_PKG_VERSION"));
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_shodh_android::init())
         .manage(link::Link::new(link::device_name()))
+        .manage(store::Store::default())
+        .manage(queue::Queue::default())
+        .manage(update::Updates::default())
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -61,6 +68,12 @@ pub fn run() {
             link::link_reset,
             link::app_ready,
             link::start_screen,
+            queue::outbox_list,
+            queue::outbox_add,
+            queue::outbox_mark,
+            queue::outbox_remove,
+            update::update_check,
+            update::update_install,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

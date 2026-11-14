@@ -7,6 +7,7 @@ import { motion } from 'framer-motion';
 import { LoaderCircle, RefreshCw, Smartphone } from 'lucide-react';
 import { TopBar } from '../components/Bars';
 import { connectionWords, Dot } from '../components/Connection';
+import { UpdatePanel } from '../components/Update';
 import { useLink, useThemeChoice } from '../lib/context';
 import { errorText } from '../lib/link';
 import { viewIn } from '../lib/motion';
@@ -59,6 +60,7 @@ export function Settings() {
             {error && <span className="row-sub">{error}</span>}
           </div>
         </div>
+        {status.state === 'update' && <UpdatePanel desktop={status.desktop} />}
 
         <div className="label">Appearance</div>
         <div className="card">

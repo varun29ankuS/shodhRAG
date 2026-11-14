@@ -10,13 +10,17 @@ import { TopBar } from '../components/Bars';
 import { connectionWords, NotConnected } from '../components/Connection';
 import { PageThumb } from '../components/PageThumb';
 import { answerText, citedNumbers, savedAnswer } from '../lib/answer';
-import { useLink, useNav } from '../lib/context';
+import { useLink, useNav, useNote } from '../lib/context';
 import { useData } from '../lib/data';
 import { libraryFolders, loadConversation, type ConversationSummary } from '../lib/desktop';
 import { snippet } from '../lib/markdown';
 import { viewIn } from '../lib/motion';
 import { useRemote } from '../lib/remote';
 import { ago, dayName, greeting } from '../lib/time';
+import { QueuedRows } from '../components/Queued';
+import { errorText } from '../lib/link';
+import { queuedQuestion } from '../lib/outbox';
+import { canQueue, useQueue } from '../lib/queue';
 
 /** A new conversation's id, as the desktop makes them. */
 export function newConversationId(): string {
@@ -27,16 +31,34 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
   const { status, connected } = useLink();
   const { dispatch } = useNav();
   const { conversations } = useData();
+  const queue = useQueue();
+  const { show } = useNote();
+  const queueable = canQueue(status);
   const [question, setQuestion] = useState('');
   const today = now();
   const words = connectionWords(status);
 
   const ask = (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || !connected) return;
-    dispatch({ type: 'push', screen: { kind: 'answer', conversationId: newConversationId(), question: trimmed, workspaceId: null } });
-    setQuestion('');
+    if (!trimmed) return;
+    if (connected) {
+      dispatch({ type: 'push', screen: { kind: 'answer', conversationId: newConversationId(), question: trimmed, workspaceId: null } });
+      setQuestion('');
+      return;
+    }
+    if (!queueable) return;
+    // The computer is asleep: the question waits on the phone and is sent when it wakes.
+    const conversationId = newConversationId();
+    queue
+      .add(queuedQuestion({ conversationId, text: trimmed, workspaceId: null }))
+      .then(() => {
+        setQuestion('');
+        show('Saved on your phone. It is sent when your computer wakes.');
+        dispatch({ type: 'push', screen: { kind: 'answer', conversationId, question: null, workspaceId: null } });
+      })
+      .catch(e => show(errorText(e), 'problem'));
   };
+  const waiting = queue.items.filter(i => i.state !== 'answered');
   const submit = (event: FormEvent) => {
     event.preventDefault();
     ask(question);
@@ -64,14 +86,21 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
             id="home-ask"
             value={question}
             onChange={event => setQuestion(event.target.value)}
-            placeholder={connected ? 'Ask about your library' : 'Connect to your computer to ask'}
+            placeholder={connected ? 'Ask about your library' : queueable ? 'Ask now. It is sent when your computer wakes' : 'Connect to your computer to ask'}
             enterKeyHint="send"
             autoComplete="off"
           />
-          <button type="submit" className="send" aria-label="Send" disabled={!connected || question.trim() === ''}>
+          <button type="submit" className="send" aria-label="Send" disabled={!(connected || queueable) || question.trim() === ''}>
             <ArrowUp aria-hidden="true" className="icon" />
           </button>
         </form>
+
+        {waiting.length > 0 && (
+          <>
+            <div className="label">Waiting for your computer</div>
+            <QueuedRows items={waiting} />
+          </>
+        )}
 
         <div className="label">
           <span>Today</span>

@@ -12,6 +12,8 @@ import { TabBar } from './components/TabBar';
 import { LinkProvider, NavProvider, NoteProvider, ThemeProvider, useLink, useNav, useThemeChoice } from './lib/context';
 import { DataProvider, useData } from './lib/data';
 import type { LinkSource } from './lib/link';
+import { tauriDevice, type Device } from './lib/device';
+import { DeviceProvider, QueueProvider } from './lib/queue';
 import { askScreen, type Nav } from './lib/nav';
 import { Approvals, ApprovalSheet } from './screens/Approvals';
 import { Ask } from './screens/Ask';
@@ -34,20 +36,24 @@ export interface Start {
   nav: Nav | null;
 }
 
-export function App({ source, start = null }: { source: LinkSource; start?: Start | null }) {
+export function App({ source, start = null, device = tauriDevice }: { source: LinkSource; start?: Start | null; device?: Device }) {
   const [pairing, setPairing] = useState(start?.screen === 'pair');
   const openPairing = useCallback(() => setPairing(true), []);
   return (
     <MotionConfig reducedMotion="user">
       <ThemeProvider>
         <LinkProvider source={source} openPairing={openPairing}>
-          <NavProvider initial={start?.nav ?? undefined}>
-            <NoteProvider>
-              <DataProvider>
-                <Shell start={start} pairing={pairing} closePairing={() => setPairing(false)} />
-              </DataProvider>
-            </NoteProvider>
-          </NavProvider>
+          <DeviceProvider device={device}>
+            <QueueProvider>
+              <NavProvider initial={start?.nav ?? undefined}>
+                <NoteProvider>
+                  <DataProvider>
+                    <Shell start={start} pairing={pairing} closePairing={() => setPairing(false)} />
+                  </DataProvider>
+                </NoteProvider>
+              </NavProvider>
+            </QueueProvider>
+          </DeviceProvider>
         </LinkProvider>
       </ThemeProvider>
     </MotionConfig>

@@ -21,9 +21,12 @@ import { CodeNote, CodeWorkView, CreatorPreview } from '../components/CodeWork';
 import { connectionWords, Dot, NotConnected } from '../components/Connection';
 import { Sheet } from '../components/Sheet';
 import { answerText, citedNumbers, isLive, savedAnswer, startingAnswer, type AnswerState, type Passage } from '../lib/answer';
-import { ask, AskStopped } from '../lib/ask';
+import { ask, AskStopped, historyOf } from '../lib/ask';
 import { codeWork, NO_WORK, type CodeWork } from '../lib/code';
-import { useLink, useNav } from '../lib/context';
+import { useLink, useNav, useNote } from '../lib/context';
+import { QueuedRows } from '../components/Queued';
+import { queuedQuestion } from '../lib/outbox';
+import { canQueue, useQueue } from '../lib/queue';
 import { abortAnswer, CONVERSATION_CHANGED, loadConversation, type HistoryTurn, type SavedConversation } from '../lib/desktop';
 import { errorText } from '../lib/link';
 import { conversationKind } from '../lib/modes';
@@ -68,13 +71,6 @@ export function creationWork(turns: Turn[]): CodeWork {
   return { ...NO_WORK, files: [...files.values()], finished };
 }
 
-function historyOf(conversation: SavedConversation | null | undefined): HistoryTurn[] {
-  return (conversation?.messages ?? [])
-    .filter((m): m is SavedConversation['messages'][number] & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
-    .map(m => ({ role: m.role, content: m.role === 'assistant' ? answerText(savedAnswer(m.content, m.transcript)) : m.content }))
-    .filter(t => t.content.trim() !== '');
-}
-
 interface Live {
   question: string;
   answer: AnswerState;
@@ -86,6 +82,9 @@ interface Live {
 export function Ask({ conversationId, question, workspaceId }: { conversationId: string; question: string | null; workspaceId: string | null }) {
   const { desktop, subscriptions, connected, status } = useLink();
   const { dispatch } = useNav();
+  const queue = useQueue();
+  const { show } = useNote();
+  const queueable = canQueue(status);
   const saved = useRemote(`conversation:${conversationId}`, d => loadConversation(d, conversationId), [CONVERSATION_CHANGED]);
   const [live, setLive] = useState<Live | null>(null);
   const [followUp, setFollowUp] = useState('');
@@ -156,10 +155,25 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = followUp.trim();
-    if (!text || !connected || running) return;
-    setFollowUp('');
-    start(text, historyOf(saved.data));
+    if (!text || running) return;
+    if (connected) {
+      setFollowUp('');
+      start(text, historyOf(saved.data));
+      return;
+    }
+    if (!queueable) return;
+    // The computer is asleep: kept on the phone, sent in order when it wakes.
+    queue
+      .add(queuedQuestion({ conversationId, text, workspaceId }))
+      .then(() => setFollowUp(''))
+      .catch(e => show(errorText(e), 'problem'));
   };
+
+  // This conversation's questions waiting for the computer, until the saved conversation holds them.
+  const savedIds = new Set((saved.data?.messages ?? []).map(m => m.id));
+  const queuedHere = queue.items.filter(
+    i => i.work.kind === 'question' && i.work.conversationId === conversationId && i.state !== 'answered' && !savedIds.has(i.work.questionId),
+  );
 
   const words = connectionWords(status);
   // Older records have no mode: Research, the reading layout.
@@ -175,7 +189,7 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
       <div className={kind === 'code' ? 'scroll layout-code' : 'scroll'} data-layout={kind}>
         {kind === 'code' && <CodeNote />}
         {kind === 'creator' && <CreatorPreview work={creationWork(turns)} />}
-        {saved.data === undefined && !showLive && !connected && <NotConnected what="this conversation" />}
+        {saved.data === undefined && !showLive && !connected && queuedHere.length === 0 && <NotConnected what="this conversation" />}
         {saved.data === undefined && !showLive && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading the conversation">
             <div className="skeleton skeleton-line" style={{ width: '90%', height: 28 }} />
@@ -193,6 +207,12 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
             <AnswerSources answer={turn.answer} onCite={onCite} />
           </section>
         ))}
+        {queuedHere.length > 0 && (
+          <section className="turn">
+            <div className="label">Waiting for your computer</div>
+            <QueuedRows items={queuedHere} />
+          </section>
+        )}
         {showLive && live && (
           <section className="turn" ref={liveRef}>
             <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{live.question}</h1>
@@ -238,7 +258,9 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
           id="follow-up"
           value={followUp}
           onChange={event => setFollowUp(event.target.value)}
-          placeholder={!connected ? 'Connect to your computer to ask' : kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up'}
+          placeholder={
+            connected ? (kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up') : queueable ? 'Ask now. It is sent when your computer wakes' : 'Connect to your computer to ask'
+          }
           enterKeyHint="send"
           autoComplete="off"
         />
@@ -254,7 +276,7 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
             <Square aria-hidden="true" className="icon-small" />
           </button>
         ) : (
-          <button type="submit" className="send" aria-label="Send" disabled={!connected || followUp.trim() === ''}>
+          <button type="submit" className="send" aria-label="Send" disabled={!(connected || queueable) || followUp.trim() === ''}>
             <ArrowUp aria-hidden="true" className="icon" />
           </button>
         )}

@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { LoaderCircle, Monitor, RefreshCw, Smartphone, TriangleAlert } from 'lucide-react';
 import { useLink } from '../lib/context';
 import { errorText, type LinkStatus } from '../lib/link';
+import { UpdatePanel } from './Update';
 
 export interface ConnectionWords {
   dot: 'connected' | 'waiting' | 'off';
@@ -24,7 +25,7 @@ export function connectionWords(status: LinkStatus): ConnectionWords {
     case 'connecting':
       return { dot: 'waiting', short: 'Connecting', line: 'Connecting to your computer…' };
     case 'offline':
-      return { dot: 'waiting', short: 'Computer asleep', line: 'Your computer is asleep or offline. Ask when it is back.' };
+      return { dot: 'waiting', short: 'Computer asleep', line: 'Your computer is asleep. What you ask is sent when it wakes.' };
     case 'unpaired':
     case 'refused':
       return { dot: 'off', short: 'Not paired', line: 'This phone is not paired with a computer yet.' };
@@ -100,7 +101,8 @@ export function NotConnected({ what }: { what: string }) {
       </section>
     );
   }
-  // An update is needed, or the link could not start.
+  if (status.state === 'update') return <UpdatePanel desktop={status.desktop} />;
+  // The link could not start.
   const message = 'message' in status ? status.message : '';
   return (
     <section className="panel">

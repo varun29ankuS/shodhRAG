@@ -55,9 +55,11 @@ pub enum Status {
     Refused {
         message: String,
     },
-    /// The phone and the computer run different Shodh versions.
+    /// The phone and the computer run different Shodh versions; `desktop`
+    /// is the computer's.
     Update {
         message: String,
+        desktop: String,
     },
     /// The phone's secure storage or the link could not start.
     Failed {
@@ -69,8 +71,12 @@ impl From<ConnectError> for Status {
     fn from(error: ConnectError) -> Self {
         match error {
             ConnectError::Refused(message) => Status::Refused { message },
-            e @ ConnectError::VersionMismatch { .. } => Status::Update {
-                message: e.to_string(),
+            ConnectError::VersionMismatch { desktop } => Status::Update {
+                message: ConnectError::VersionMismatch {
+                    desktop: desktop.clone(),
+                }
+                .to_string(),
+                desktop,
             },
             e @ ConnectError::Unreachable(_) => Status::Offline {
                 message: e.to_string(),
@@ -101,7 +107,7 @@ pub struct Link {
     status: Mutex<Status>,
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -116,7 +122,7 @@ fn not_connected() -> Value {
     json!({ "code": "offline", "message": "Your phone is not connected to your computer." })
 }
 
-async fn blocking<T: Send + 'static>(
+pub async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work)

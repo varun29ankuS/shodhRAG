@@ -16,6 +16,8 @@ import { tokensCss } from '../tokens';
 import { ASLEEP, computer, CONNECTED, fakeSource, setPhoneTheme, silentComputer, type FakeSource } from './phone';
 import type { FakeLink } from './fakeLink';
 import { CODE_CONVERSATION } from './codeFixture';
+import { memoryDevice, type MemoryDevice } from './device';
+import { queuedQuestion } from '../src/lib/outbox';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 
@@ -79,13 +81,15 @@ function emptyComputer(): FakeLink {
 }
 
 let source: FakeSource;
+let device: MemoryDevice;
 let shown: { unmount: () => void } | null = null;
 
 /** Show the app at `nav` (the screen shown before goes). */
-function show(link: FakeLink, status: LinkStatus, nav: Nav) {
+function show(link: FakeLink, status: LinkStatus, nav: Nav, phone: MemoryDevice = memoryDevice()) {
   shown?.unmount();
   source = fakeSource(link, status);
-  const result = render(<App source={source} start={{ screen: 'test', nav }} />);
+  device = phone;
+  const result = render(<App source={source} start={{ screen: 'test', nav }} device={device} />);
   shown = result;
   return result;
 }
@@ -122,12 +126,54 @@ describe('Home', () => {
     expect(await screen.findByText('No conversations yet. Ask a question above to start one.')).toBeTruthy();
   });
 
-  it('with the computer asleep says so, offers to try again, and cannot ask', async () => {
+  it('with the computer asleep says so, offers to try again, and keeps a question until it wakes', async () => {
     show(silentComputer(), ASLEEP, initialNav('ask'));
     expect(await screen.findByText(ASLEEP_WORDS)).toBeTruthy();
+    expect(screen.getByText('Your computer is asleep. What you ask is sent when it wakes.')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(source.reconnects).toBe(1));
+
+    fireEvent.change(screen.getByLabelText('Ask about your library'), { target: { value: 'What did Asha say about HNSW?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    // Kept on the phone, and its conversation shows it waiting.
+    expect(await screen.findByText('Waiting for your computer')).toBeTruthy();
+    expect(screen.getByText('What did Asha say about HNSW?')).toBeTruthy();
+    expect(screen.getByText('Sent when your computer wakes')).toBeTruthy();
+    expect(device.outbox.items.map(i => [i.work.kind, i.state])).toEqual([['question', 'waiting']]);
+  });
+
+  it('an unpaired or outdated phone keeps nothing it could never send', async () => {
+    show(silentComputer(), { state: 'update', message: 'Update Shodh on your phone: your computer has version 0.0.11.', desktop: '0.0.11' }, initialNav('ask'));
+    expect(await screen.findByText('Update Shodh on your phone')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(device.outbox.items).toEqual([]);
+  });
+});
+
+describe('One-tap update', () => {
+  it('finds the matching app, and one tap installs it once verified', async () => {
+    const phone = memoryDevice({ update: { state: 'ready', version: '0.0.11', size: 24 * 1_048_576 } });
+    show(silentComputer(), { state: 'update', message: 'Update Shodh on your phone: your computer has version 0.0.11.', desktop: '0.0.11' }, initialNav('settings'), phone);
+    const button = await screen.findByRole('button', { name: 'Update to 0.0.11 (24 MB)' });
+    expect(screen.getByText(/Your computer runs Shodh 0.0.11, and this phone runs/)).toBeTruthy();
+    fireEvent.click(button);
+    expect(await screen.findByText('The update is checked. Android asks you to confirm it.')).toBeTruthy();
+    expect(phone.installs).toBe(1);
+  });
+
+  it('says plainly when the update is not published or was refused', async () => {
+    const refused = memoryDevice({
+      update: { state: 'ready', version: '0.0.11', size: 1_048_576 },
+      install: async () => {
+        throw 'The downloaded app is not the one Shodh released: its checksum differs from the release’s. It was not installed.';
+      },
+    });
+    show(silentComputer(), { state: 'update', message: '', desktop: '0.0.11' }, initialNav('settings'), refused);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update to 0.0.11 (1 MB)' }));
+    expect(await screen.findByText(/It was not installed\./)).toBeTruthy();
+    show(silentComputer(), { state: 'update', message: '', desktop: '0.0.11' }, initialNav('settings'));
+    expect(await screen.findByText('Shodh 0.0.11 for Android is not published yet.')).toBeTruthy();
   });
 });
 
@@ -416,7 +462,7 @@ describe('Settings', () => {
     show(connectedComputer(), CONNECTED, initialNav('settings'));
     expect(await screen.findByText('Your computer is connected.')).toBeTruthy();
     show(silentComputer(), ASLEEP, initialNav('settings'));
-    expect(await screen.findByText('Your computer is asleep or offline. Ask when it is back.')).toBeTruthy();
+    expect(await screen.findByText('Your computer is asleep. What you ask is sent when it wakes.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(source.reconnects).toBe(1));
   });
@@ -478,7 +524,7 @@ describe('Workspaces and the sections still to come', () => {
 describe('not paired', () => {
   it('opens at pairing, and a screen asked for while unpaired offers to pair', async () => {
     source = fakeSource(silentComputer(), { state: 'unpaired' });
-    const { unmount } = render(<App source={source} />);
+    const { unmount } = render(<App source={source} device={memoryDevice()} />);
     expect(await screen.findByRole('heading', { name: 'Pair with your computer' })).toBeTruthy();
     const readies = source.readies;
     await waitFor(() => expect(readies).toEqual([['pair', 'dark']]));
@@ -576,7 +622,10 @@ describe('every control', () => {
   afterEach(() => document.getElementById('phone-css')?.remove());
 
   it('is 44px or more on every screen', async () => {
-    const screens: Array<[string, Nav, LinkStatus]> = [
+    const queued = memoryDevice();
+    await queued.outbox.add('q1', queuedQuestion({ conversationId: 'c9', text: 'What did Asha say?', workspaceId: null }));
+    const updating = memoryDevice({ update: { state: 'ready', version: '0.0.11', size: 1_048_576 } });
+    const screens: Array<[string, Nav, LinkStatus, MemoryDevice?]> = [
       ['home', initialNav('ask'), CONNECTED],
       ['answer', answerNav, CONNECTED],
       ['conversations', conversationsNav, CONNECTED],
@@ -592,9 +641,11 @@ describe('every control', () => {
       ['reader', { ...folderNav, reader: { path: '/papers/notes.md', name: 'notes.md', page: null, passage: 'Cited.', back: 'Papers', origin: null } }, CONNECTED],
       ['home asleep', initialNav('ask'), ASLEEP],
       ['library unpaired', initialNav('library'), { state: 'unpaired' }],
+      ['home with questions waiting', initialNav('ask'), ASLEEP, queued],
+      ['settings with an update', initialNav('settings'), { state: 'update', message: '', desktop: '0.0.11' }, updating],
     ];
-    for (const [name, nav, status] of screens) {
-      show(connectedComputer(), status, nav);
+    for (const [name, nav, status, phone] of screens) {
+      show(connectedComputer(), status, nav, phone);
       // Let the screen read its data.
       await act(async () => {
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -604,7 +655,7 @@ describe('every control', () => {
     shown?.unmount();
     shown = null;
     source = fakeSource(silentComputer(), { state: 'unpaired' });
-    const { unmount } = render(<App source={source} />);
+    const { unmount } = render(<App source={source} device={memoryDevice()} />);
     await screen.findByRole('heading', { name: 'Pair with your computer' });
     checkTargets('pair');
     unmount();

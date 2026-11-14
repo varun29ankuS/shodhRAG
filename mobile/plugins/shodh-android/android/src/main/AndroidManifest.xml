@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The one-tap update: a verified Shodh app handed to Android's installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- Android's installer reports here (it first asks the user to confirm). -->
+        <receiver
+            android:name="com.shodhrag.android.InstallResult"
+            android:exported="false" />
+    </application>
+</manifest>

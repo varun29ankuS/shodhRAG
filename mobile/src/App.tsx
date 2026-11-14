@@ -14,6 +14,8 @@ import { DataProvider, useData } from './lib/data';
 import type { LinkSource } from './lib/link';
 import { tauriDevice, type Device } from './lib/device';
 import { DeviceProvider, QueueProvider } from './lib/queue';
+import { IncomingProvider, useOffers } from './lib/incoming';
+import { SendSheet } from './components/SendSheet';
 import { askScreen, type Nav } from './lib/nav';
 import { Approvals, ApprovalSheet } from './screens/Approvals';
 import { Ask } from './screens/Ask';
@@ -47,9 +49,11 @@ export function App({ source, start = null, device = tauriDevice }: { source: Li
             <QueueProvider>
               <NavProvider initial={start?.nav ?? undefined}>
                 <NoteProvider>
-                  <DataProvider>
-                    <Shell start={start} pairing={pairing} closePairing={() => setPairing(false)} />
-                  </DataProvider>
+                  <IncomingProvider>
+                    <DataProvider>
+                      <Shell start={start} pairing={pairing} closePairing={() => setPairing(false)} />
+                    </DataProvider>
+                  </IncomingProvider>
                 </NoteProvider>
               </NavProvider>
             </QueueProvider>
@@ -97,6 +101,7 @@ function Shell({ start, pairing, closePairing }: { start: Start | null; pairing:
 function Main() {
   const { nav } = useNav();
   const { approvals } = useData();
+  const offers = useOffers();
   const waiting = approvals.data?.length ?? 0;
   const ask = askScreen(nav);
   const key =
@@ -112,6 +117,7 @@ function Main() {
       <AnimatePresence>
         {nav.sheet && <ApprovalSheet key={`${nav.sheet.sessionId}:${nav.sheet.stepId}`} target={nav.sheet} />}
       </AnimatePresence>
+      <AnimatePresence>{offers.sending && <SendSheet key="send" files={offers.sending} />}</AnimatePresence>
     </>
   );
 }

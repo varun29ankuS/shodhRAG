@@ -550,6 +550,11 @@ const PHONE_COMMANDS: Record<string, string> = {
   read_source_page: 'Read a page',
   read_source_text: 'Read a document',
   read_source_table: 'Read a table',
+  approvals_pending: 'Listed the approvals',
+  phone_file_begin: 'Started sending a file',
+  phone_file_chunk: 'Sent part of a file',
+  phone_file_finish: 'Added a file',
+  phone_photo_keep: 'Kept a photo in the library',
 };
 
 function phoneLink(p: Record<string, unknown>): EventSentence {

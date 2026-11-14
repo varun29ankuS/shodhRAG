@@ -1,11 +1,13 @@
 /**
  * What the app needs of the phone itself, besides the link: its sealed
- * outbox, the one-tap update, and (in later parts) files, the calendar,
- * notifications, the lock and voice. The app's Rust side and Kotlin plugin
- * provide them (`tauriDevice`); tests give the app their own.
+ * outbox, the one-tap update, files (Add, the camera, the share sheet) and,
+ * in later parts, the calendar, notifications, the lock and voice. The app's
+ * Rust side and Kotlin plugin provide them (`tauriDevice`); tests give the app
+ * their own.
  */
-import { invoke } from '@tauri-apps/api/core';
-import { tauriOutbox, type OutboxSource } from './outbox';
+import { addPluginListener, invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { tauriOutbox, type OutboxSource, type QueuedFile } from './outbox';
 
 /** What looking for the phone's update found (`update_check`). */
 export type UpdateCheck = { state: 'ready'; version: string; size: number } | { state: 'unavailable'; message: string };
@@ -20,10 +22,89 @@ export interface Updater {
   install(): Promise<boolean>;
 }
 
+/** A file Android copied into the app's own storage, ready to send. */
+export interface Picked {
+  path: string;
+  name: string;
+}
+
+/** What another app shared to Shodh. */
+export type Incoming =
+  | { kind: 'none' }
+  | { kind: 'files'; files: Picked[] }
+  | { kind: 'text'; text: string; subject: string | null }
+  | { kind: 'error'; message: string };
+
+/** The computer's answer to a file sent (`phone_file_finish`). */
+export interface FileAdded {
+  name: string;
+  path: string;
+  added: boolean;
+  /** Why it was not added (the computer's upload rules). */
+  reason: string | null;
+  notice: string | null;
+}
+
+/** A photo sent to ask about (`phone_file_finish` for a photo). */
+export interface PhotoRead {
+  photoId: string;
+  name: string;
+  /** Its text, read on the computer. */
+  text: string;
+  words: number;
+}
+
+export interface FileProgress {
+  localPath: string;
+  received: number;
+  size: number;
+}
+
+export interface PhoneFiles {
+  /** Add: Android's file picker (nothing when the user went back). */
+  pick(): Promise<Picked[]>;
+  /** The camera: the photo taken, or null when the user went back. */
+  takePhoto(): Promise<Picked | null>;
+  /** What was shared to Shodh, once. */
+  takeIncoming(): Promise<Incoming>;
+  /** Something was shared to Shodh (read it with `takeIncoming`). */
+  onIncoming(handler: () => void): Promise<() => void>;
+  /** Its size and SHA-256, for the outbox. */
+  details(picked: Picked, workspaceId: string | null): Promise<QueuedFile>;
+  /** The user chose not to send it. */
+  discard(path: string): Promise<void>;
+  /** Send it to the library; the computer's answer. */
+  send(file: QueuedFile): Promise<FileAdded>;
+  /** Send a photo to ask about; its text, read on the computer. */
+  sendPhoto(file: QueuedFile): Promise<PhotoRead>;
+  onProgress(handler: (progress: FileProgress) => void): Promise<() => void>;
+}
+
 export interface Device {
   outbox: OutboxSource;
   updater: Updater;
+  files: PhoneFiles;
 }
+
+const PLUGIN = 'shodh-android';
+
+export const tauriFiles: PhoneFiles = {
+  pick: () => invoke<Picked[]>('files_pick'),
+  takePhoto: () => invoke<Picked | null>('photo_take'),
+  takeIncoming: () => invoke<Incoming>('incoming_take'),
+  onIncoming: async handler => {
+    const listener = await addPluginListener(PLUGIN, 'incoming', () => handler());
+    return () => {
+      void listener.unregister();
+    };
+  },
+  details: (picked, workspaceId) =>
+    invoke<Omit<QueuedFile, 'kind'>>('file_details', { path: picked.path, name: picked.name, workspaceId }).then(file => ({ ...file, kind: 'file' as const })),
+  discard: path => invoke<void>('file_discard', { path }),
+  send: file => invoke<FileAdded>('file_send', { file }),
+  sendPhoto: file => invoke<PhotoRead>('photo_send', { file }),
+  onProgress: handler => listen<FileProgress>('transfer://progress', event => handler(event.payload)),
+};
 
 export const tauriDevice: Device = {
   outbox: tauriOutbox,
@@ -31,4 +112,5 @@ export const tauriDevice: Device = {
     check: () => invoke<UpdateCheck>('update_check'),
     install: () => invoke<boolean>('update_install'),
   },
+  files: tauriFiles,
 };

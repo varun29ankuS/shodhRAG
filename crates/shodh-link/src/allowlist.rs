@@ -122,11 +122,46 @@ pub const ALLOWED: &[Entry] = &[
         "Reader: the sheets of a spreadsheet or CSV file. Only indexed files inside the \
          linked folders.",
     ),
+    // Files from the phone (transfer.rs)
+    bridge_only(
+        "phone_file_begin",
+        "Library and Ask: send a file from the phone (the share sheet, Add, a camera photo) to \
+         \"From my phone\" or a workspace. The computer applies every upload rule before a \
+         byte is sent (the file name, files that may hold secrets, file kinds, size limits) \
+         and says how much of it it already has, so a broken transfer resumes.",
+    ),
+    bridge_only(
+        "phone_file_chunk",
+        "Library and Ask: one part (at most 512 KiB) of a file being sent, appended only at \
+         the offset the computer has, and only to this phone's own transfer.",
+    ),
+    bridge_only(
+        "phone_file_finish",
+        "Library and Ask: the file is complete. The computer checks its size and SHA-256, then \
+         adds it through the chat upload path (secret files blocked, size limits, legacy \
+         Office in the guarded worker, skipped reasons), or reads a photo to ask about \
+         without adding it to the library.",
+    ),
+    bridge_only(
+        "phone_photo_keep",
+        "Ask: \"Keep in library\" for a photo the user asked about: moved to \"From my phone\" \
+         and added through the chat upload path. Until then the photo is never indexed.",
+    ),
 ];
 
 /// Whether a phone may call `command`.
 pub fn allowed(command: &str) -> bool {
     ALLOWED.iter().any(|e| e.command == command)
+}
+
+/// Calls recorded in Activity only when refused or when they fail: each part of
+/// a file being sent. The file itself is recorded when it begins and when it is
+/// added.
+pub const QUIET: &[&str] = &["phone_file_chunk"];
+
+/// Whether a call that went well is left out of Activity ([`QUIET`]).
+pub fn quiet(command: &str) -> bool {
+    QUIET.contains(&command)
 }
 
 /// The argument of each allowlisted command that names a file or folder on
@@ -257,6 +292,9 @@ mod tests {
         }
         for (command, _) in PATH_ARGS {
             assert!(allowed(command), "{command} has a path but is not allowed");
+        }
+        for command in QUIET {
+            assert!(allowed(command), "{command} is quiet but not allowed");
         }
     }
 

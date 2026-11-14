@@ -229,6 +229,17 @@ impl FilePreparer {
         self.prepare_with_progress(path, metadata, &|_, _| {})
     }
 
+    /// The text of the file at `path` as the indexer reads it (an image through
+    /// OCR), without chunking, embedding or storing it (blocking): a photo a
+    /// phone asks about is read, and indexed only if the user keeps it. A file
+    /// that may hold secrets is never read.
+    pub fn read_text(&self, path: &Path) -> Result<String> {
+        if let Some(reason) = crate::indexing::secret_file_reason(path) {
+            return Err(crate::indexing::SecretFileKeptBack { reason }.into());
+        }
+        Ok(self.parser.parse_file(path)?.content)
+    }
+
     /// [`Self::prepare`], reporting OCR's progress through a scanned PDF.
     pub fn prepare_with_progress(
         &self,

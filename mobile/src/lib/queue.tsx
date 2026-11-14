@@ -35,11 +35,22 @@ export function useDevice(): Device {
   return device;
 }
 
-export function QueueProvider({ sendFile, children }: { sendFile?: SenderDeps['sendFile']; children: ReactNode }) {
+/** A queued file sent to the library; one the computer did not add fails with its reason. */
+export function fileSender(files: Device['files']): NonNullable<SenderDeps['sendFile']> {
+  return async item => {
+    const answer = await files.send(item.work);
+    if (!answer.added) throw { code: 'refused', message: answer.reason ?? 'Your computer did not add it.' };
+  };
+}
+
+export function QueueProvider({ children }: { children: ReactNode }) {
   const { connected, desktop, subscriptions } = useLink();
-  const { outbox } = useDevice();
+  const { outbox, files } = useDevice();
   const [items, setItems] = useState<QueuedItem[]>([]);
-  const sender = useMemo(() => new OutboxSender(outbox, { desktop, subscriptions, sendFile }), [outbox, desktop, subscriptions, sendFile]);
+  const sender = useMemo(
+    () => new OutboxSender(outbox, { desktop, subscriptions, sendFile: fileSender(files) }),
+    [outbox, desktop, subscriptions, files],
+  );
   const running = useRef<AbortController | null>(null);
 
   const reload = useCallback(() => {

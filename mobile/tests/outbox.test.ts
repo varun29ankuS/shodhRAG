@@ -9,7 +9,8 @@ import { describe, expect, it } from 'vitest';
 import { createShim } from '../src/lib/invoke';
 import { answerFinished, itemWords, OutboxSender, queuedQuestion, type QueuedItem } from '../src/lib/outbox';
 import { Subscriptions } from '../src/lib/subscriptions';
-import { MemoryOutbox } from './device';
+import { MemoryFiles, MemoryOutbox } from './device';
+import { fileSender } from '../src/lib/queue';
 import { FakeLink } from './fakeLink';
 
 interface Message {
@@ -212,3 +213,57 @@ function until(outbox: MemoryOutbox, ready: () => boolean): Promise<void> {
     });
   });
 }
+
+describe('files from the phone', () => {
+  it('queued_files_send_after_the_computer_wakes', async () => {
+    const desktop = new Desktop();
+    const outbox = new MemoryOutbox();
+    const files = new MemoryFiles();
+    // Kept while the computer sleeps: nothing is sent.
+    const scan = await files.details({ path: '/cache/outgoing/1/scan.pdf', name: 'scan.pdf' }, 'w1');
+    const env = await files.details({ path: '/cache/outgoing/2/.env', name: '.env' }, null);
+    await outbox.add('f1', scan);
+    await outbox.add('f2', env);
+    expect(files.sent).toEqual([]);
+    expect(itemWords(outbox.items[0]).state).toBe('Sent when your computer wakes');
+
+    // The computer wakes; it adds the scan to the workspace and keeps the secret file back.
+    files.answer = file =>
+      file.name === '.env'
+        ? { name: file.name, path: '', added: false, reason: 'Kept back: an environment file. Shodh does not index files that may hold secrets.', notice: null }
+        : { name: file.name, path: '/data/From my phone/scan.pdf', added: true, reason: null, notice: null };
+    const shim = createShim(desktop.link);
+    await new OutboxSender(outbox, { desktop: shim, subscriptions: new Subscriptions(ids => shim.subscribe(ids)), sendFile: fileSender(files) }).run(
+      new AbortController().signal,
+    );
+    expect(files.sent.map(f => [f.name, f.workspaceId])).toEqual([
+      ['scan.pdf', 'w1'],
+      ['.env', null],
+    ]);
+    expect(outbox.items.map(i => i.state)).toEqual(['answered', 'failed']);
+    expect(itemWords(outbox.items[0]).state).toBe('Added to Shodh on your computer');
+    expect(itemWords(outbox.items[1]).state).toBe(
+      'Not added: Kept back: an environment file. Shodh does not index files that may hold secrets.',
+    );
+  });
+
+  it('a file whose sending broke off stays to be sent again', async () => {
+    const outbox = new MemoryOutbox();
+    const files = new MemoryFiles();
+    await outbox.add('f1', await files.details({ path: '/cache/outgoing/1/a.pdf', name: 'a.pdf' }, null));
+    const desktop = new Desktop();
+    const shim = createShim(desktop.link);
+    const offline = async () => {
+      throw { code: 'offline', message: 'Your phone is not connected to your computer.' };
+    };
+    await new OutboxSender(outbox, { desktop: shim, subscriptions: new Subscriptions(ids => shim.subscribe(ids)), sendFile: offline }).run(
+      new AbortController().signal,
+    );
+    // Not failed: it resumes (crates/shodh-link/src/transfer.rs) when the computer is back.
+    expect(outbox.items[0].state).toBe('sending');
+    await new OutboxSender(outbox, { desktop: shim, subscriptions: new Subscriptions(ids => shim.subscribe(ids)), sendFile: fileSender(files) }).run(
+      new AbortController().signal,
+    );
+    expect(outbox.items[0].state).toBe('answered');
+  });
+});

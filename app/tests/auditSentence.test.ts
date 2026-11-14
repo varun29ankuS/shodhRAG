@@ -188,6 +188,20 @@ test('a phone link entry names the phone and never a command id', () => {
   assert.equal(said({ device: 'Pixel 8', command: 'remove', outcome: 'done' }), 'You removed a phone · Pixel 8');
 });
 
+test('every command a phone may call reads as words in Activity', () => {
+  const allowlist = readFileSync(fileURLToPath(new URL('../../crates/shodh-link/src/allowlist.rs', import.meta.url)), 'utf8');
+  const listed = [...allowlist.matchAll(/(?:command|bridge_only)\(\s*"([a-z_-]+)"/g)].map(m => m[1]);
+  assert.ok(listed.length > 10, 'the allowlist was read');
+  for (const command of listed) {
+    const said = sentenceText(describeEvent({ eventType: 'phone_link', payload: { device: 'Pixel 8', command, outcome: 'done' } }));
+    assert.doesNotMatch(said, /Tried something phones cannot do/, `${command} has no words in Activity`);
+  }
+  assert.equal(
+    sentenceText(describeEvent({ eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'phone_file_finish', outcome: 'done' } })),
+    'From Pixel 8 · Added a file',
+  );
+});
+
 /** What no sentence may show: ids, JSON, or values that were never filled in. */
 function unreadable(text: string): string | null {
   const id = /\b[a-z]+_[a-z_]+\b/.exec(text);

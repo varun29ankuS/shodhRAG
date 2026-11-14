@@ -404,6 +404,45 @@ describe('Library', () => {
   });
 });
 
+describe('Send to Shodh', () => {
+  it('Add picks files and sends them to the workspace chosen, "From my phone" by default', async () => {
+    const phone = memoryDevice();
+    phone.files.picks = [{ path: '/cache/outgoing/1/scan.pdf', name: 'scan.pdf' }];
+    show(connectedComputer(), CONNECTED, initialNav('library'), phone);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Send to Shodh' });
+    expect(within(sheet).getByText('scan.pdf')).toBeTruthy();
+    expect(within(sheet).getByRole('radio', { name: /From my phone/ }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(await within(sheet).findByRole('radio', { name: /Vector DB reading/ }));
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(phone.outbox.items.length).toBe(1));
+    expect(phone.outbox.items[0].work).toMatchObject({ kind: 'file', name: 'scan.pdf', workspaceId: 'w1' });
+    // Sent at once while the computer is connected.
+    await waitFor(() => expect(phone.files.sent.map(f => f.name)).toEqual(['scan.pdf']));
+  });
+
+  it('what another app shares opens the sheet; Cancel removes the copies', async () => {
+    const phone = memoryDevice();
+    phone.files.incoming = { kind: 'files', files: [{ path: '/cache/outgoing/2/notes.md', name: 'notes.md' }] };
+    show(silentComputer(), ASLEEP, initialNav('ask'), phone);
+    const sheet = await screen.findByRole('dialog', { name: 'Send to Shodh' });
+    expect(within(sheet).getByRole('button', { name: 'Send when it wakes' })).toBeTruthy();
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(phone.files.discarded).toEqual(['/cache/outgoing/2/notes.md']));
+    expect(phone.outbox.items).toEqual([]);
+  });
+
+  it('the Library shows "From my phone" as a folder of its own', async () => {
+    show(
+      connectedComputer({ library_folders: { folders: [{ name: 'From my phone', path: '/data/From my phone' }, { name: 'Papers', path: '/papers' }] } }),
+      CONNECTED,
+      initialNav('library'),
+    );
+    expect(await screen.findByText('Files you sent from this phone')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Photo' })).toBeTruthy();
+  });
+});
+
 describe('the Reader', () => {
   const readerNav = (path: string, name: string): Nav => ({
     ...folderNav,
@@ -625,6 +664,8 @@ describe('every control', () => {
     const queued = memoryDevice();
     await queued.outbox.add('q1', queuedQuestion({ conversationId: 'c9', text: 'What did Asha say?', workspaceId: null }));
     const updating = memoryDevice({ update: { state: 'ready', version: '0.0.11', size: 1_048_576 } });
+    const sharing = memoryDevice();
+    sharing.files.incoming = { kind: 'files', files: [{ path: '/cache/outgoing/1/scan.pdf', name: 'scan.pdf' }] };
     const screens: Array<[string, Nav, LinkStatus, MemoryDevice?]> = [
       ['home', initialNav('ask'), CONNECTED],
       ['answer', answerNav, CONNECTED],
@@ -643,6 +684,7 @@ describe('every control', () => {
       ['library unpaired', initialNav('library'), { state: 'unpaired' }],
       ['home with questions waiting', initialNav('ask'), ASLEEP, queued],
       ['settings with an update', initialNav('settings'), { state: 'update', message: '', desktop: '0.0.11' }, updating],
+      ['send sheet', initialNav('library'), CONNECTED, sharing],
     ];
     for (const [name, nav, status, phone] of screens) {
       show(connectedComputer(), status, nav, phone);

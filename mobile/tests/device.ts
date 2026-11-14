@@ -5,8 +5,8 @@
  * test can "kill" the app (drop the sender) and start it again on the same
  * queue.
  */
-import type { Device, UpdateCheck } from '../src/lib/device';
-import type { OutboxSource, QueuedItem, QueueState, Work } from '../src/lib/outbox';
+import type { Device, FileAdded, Incoming, PhoneFiles, Picked, PhotoRead, UpdateCheck } from '../src/lib/device';
+import type { OutboxSource, QueuedFile, QueuedItem, QueueState, Work } from '../src/lib/outbox';
 
 const STEPS: Record<QueueState, QueueState[]> = {
   waiting: ['sending', 'failed'],
@@ -70,6 +70,7 @@ export class MemoryOutbox implements OutboxSource {
 
 export interface MemoryDevice extends Device {
   outbox: MemoryOutbox;
+  files: MemoryFiles;
   checks: number;
   installs: number;
 }
@@ -77,6 +78,7 @@ export interface MemoryDevice extends Device {
 export function memoryDevice(options: { update?: UpdateCheck; install?: () => Promise<boolean> } = {}): MemoryDevice {
   const device: MemoryDevice = {
     outbox: new MemoryOutbox(),
+    files: new MemoryFiles(),
     checks: 0,
     installs: 0,
     updater: {
@@ -91,4 +93,58 @@ export function memoryDevice(options: { update?: UpdateCheck; install?: () => Pr
     },
   };
   return device;
+}
+
+/** The phone's files in tests: what the picker, the camera and the share sheet give, and what was sent. */
+export class MemoryFiles implements PhoneFiles {
+  picks: Picked[] = [];
+  photo: Picked | null = null;
+  incoming: Incoming = { kind: 'none' };
+  sent: QueuedFile[] = [];
+  photosSent: QueuedFile[] = [];
+  discarded: string[] = [];
+  /** The computer's answer to each file sent. */
+  answer: (file: QueuedFile) => FileAdded = file => ({ name: file.name, path: `/data/From my phone/${file.name}`, added: true, reason: null, notice: null });
+  photoText = 'Retrieval should be adaptive.';
+  private handlers = new Set<() => void>();
+
+  async pick() {
+    return this.picks;
+  }
+  async takePhoto() {
+    return this.photo;
+  }
+  async takeIncoming() {
+    const incoming = this.incoming;
+    this.incoming = { kind: 'none' };
+    return incoming;
+  }
+  async onIncoming(handler: () => void) {
+    this.handlers.add(handler);
+    return () => {
+      this.handlers.delete(handler);
+    };
+  }
+  /** Another app shares to Shodh while it runs. */
+  share(incoming: Incoming) {
+    this.incoming = incoming;
+    for (const handler of [...this.handlers]) handler();
+  }
+  async details(picked: Picked, workspaceId: string | null): Promise<QueuedFile> {
+    return { kind: 'file', localPath: picked.path, name: picked.name, size: 1234, sha256: 'a'.repeat(64), workspaceId };
+  }
+  async discard(path: string) {
+    this.discarded.push(path);
+  }
+  async send(file: QueuedFile) {
+    this.sent.push(file);
+    return this.answer(file);
+  }
+  async sendPhoto(file: QueuedFile): Promise<PhotoRead> {
+    this.photosSent.push(file);
+    return { photoId: 'p'.repeat(32), name: file.name, text: this.photoText, words: this.photoText.split(/\s+/).length };
+  }
+  async onProgress() {
+    return () => undefined;
+  }
 }

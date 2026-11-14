@@ -530,11 +530,14 @@ impl<H: LinkHost> Link<H> {
                 Ok(_) => Outcome::Done,
                 Err(error) => refusal_message(error).map_or(Outcome::Failed, Outcome::Refused),
             };
-            host.record(CallRecord {
-                caller,
-                command,
-                outcome,
-            });
+            // Each part of a file is recorded only when it goes wrong (allowlist::QUIET).
+            if !(outcome == Outcome::Done && allowlist::quiet(&command)) {
+                host.record(CallRecord {
+                    caller,
+                    command,
+                    outcome,
+                });
+            }
             let _ = out
                 .send(Outgoing::Frame(Response::Result { call_id, value }))
                 .await;

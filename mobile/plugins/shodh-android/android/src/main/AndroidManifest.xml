@@ -3,11 +3,44 @@
 
     <!-- The one-tap update: a verified Shodh app handed to Android's installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- A photo to send or to ask about (asked for when the user first takes one). -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <application>
         <!-- Android's installer reports here (it first asks the user to confirm). -->
         <receiver
             android:name="com.shodhrag.android.InstallResult"
             android:exported="false" />
+
+        <!-- "Send to Shodh" in Android's share sheet: files, or text and links to ask about. -->
+        <activity
+            android:name="com.shodhrag.android.IncomingActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="Shodh"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- The camera writes a photo into the app's own cache through this. -->
+        <provider
+            android:name="com.shodhrag.android.ShodhFileProvider"
+            android:authorities="${applicationId}.shodh.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shodh_file_paths" />
+        </provider>
     </application>
 </manifest>

@@ -9,6 +9,7 @@ compile_error!(
      (vault.rs). Build it with `npm run tauri android build`."
 );
 
+mod files;
 mod link;
 mod logcat;
 mod queue;
@@ -74,6 +75,13 @@ pub fn run() {
             queue::outbox_remove,
             update::update_check,
             update::update_install,
+            files::files_pick,
+            files::photo_take,
+            files::incoming_take,
+            files::file_details,
+            files::file_discard,
+            files::file_send,
+            files::photo_send,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

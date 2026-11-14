@@ -555,13 +555,14 @@ struct TauriHost {
 impl LinkHost for TauriHost {
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         command: &str,
         args: Value,
     ) -> impl std::future::Future<Output = Result<Value, Value>> + Send {
         let app = self.app.clone();
+        let caller = caller.clone();
         let command = command.to_string();
-        async move { dispatch(&app, &command, args).await }
+        async move { dispatch(&app, &caller, &command, args).await }
     }
 
     fn approval_kind(&self, session_id: &str, step: &PendingStep) -> ApprovalKind {
@@ -844,13 +845,23 @@ struct PageArgs {
     width: u32,
 }
 
+/// The folders a phone may browse and open files in: the user's linked folders,
+/// and "From my phone" once a file was sent from one (Shodh's own folder of the
+/// files phones sent, phone_link/files.rs).
 async fn linked_roots(app: &AppHandle) -> Result<Vec<PathBuf>, Value> {
-    IndexedRoots {
+    let mut roots = IndexedRoots {
         rag: app.state::<RagState>().rag.clone(),
     }
     .folders()
     .await
-    .map_err(|e| json!({ "code": "unavailable", "message": e.to_string() }))
+    .map_err(|e| json!({ "code": "unavailable", "message": e.to_string() }))?;
+    if let Ok(data_dir) = crate::profile::app_data_dir(app) {
+        let inbox = files::inbox_dir(&data_dir);
+        if inbox.is_dir() && !roots.contains(&inbox) {
+            roots.push(inbox);
+        }
+    }
+    Ok(roots)
 }
 
 /// The file a phone named, admitted only inside a linked folder.
@@ -914,7 +925,12 @@ pub fn phone_approval(item: &InboxItem, facts: Option<RemoteFacts>) -> Value {
 }
 
 /// Run an allowlisted command for a phone with the desktop's own handler.
-async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, Value> {
+async fn dispatch(
+    app: &AppHandle,
+    caller: &Caller,
+    command: &str,
+    raw: Value,
+) -> Result<Value, Value> {
     use crate::source_viewer_commands as viewer;
     match command {
         "agent_start" => {
@@ -1121,6 +1137,12 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
                 .await
                 .map_err(|e| json!({ "code": "runtime_error", "message": e.to_string() }))?
         }
+        // Files from the phone (phone_link/files.rs): every upload rule applies.
+        "phone_file_begin" => files::begin(app, caller, raw).await,
+        "phone_file_chunk" => files::chunk(app, caller, raw).await,
+        "phone_file_finish" => files::finish(app, caller, raw).await,
+        // "Keep in library" for a photo asked about (phone_link/photos.rs).
+        "phone_photo_keep" => photos::keep(app, caller, raw).await,
         other => Err(shodh_link::bridge::refused(format!(
             "Your phone cannot do this ({other}). Use Shodh on your computer."
         ))),
@@ -1187,6 +1209,8 @@ fn render_page(path: &str, kind: &str, page: usize, width: u32) -> Result<Value,
     }))
 }
 
+pub mod files;
+pub mod photos;
 pub mod stay_available;
 
 #[cfg(test)]

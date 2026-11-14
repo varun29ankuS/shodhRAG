@@ -127,7 +127,9 @@ export function itemWords(item: QueuedItem): { title: string; state: string } {
               : item.work.kind === 'file'
                 ? 'Added to Shodh on your computer'
                 : 'Done on your computer'
-            : `Not sent: ${item.error ?? 'your computer refused it.'}`;
+            : item.work.kind === 'file'
+              ? `Not added: ${item.error ?? 'your computer did not add it.'}`
+              : `Not sent: ${item.error ?? 'your computer refused it.'}`;
   return { title, state };
 }
 

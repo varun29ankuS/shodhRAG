@@ -353,12 +353,13 @@ impl FilePreparer {
                     &parsed.structured_sections,
                     context,
                     label,
+                    &count,
                 ));
             }
             if chunks.is_empty() {
                 chunks = self
                     .chunker
-                    .chunk_with_context(&parsed.content, context, label);
+                    .chunk_with_context(&parsed.content, context, label, &count);
             }
             chunks
         };
@@ -514,7 +515,7 @@ impl FilePreparer {
         };
         let chunks = chunk_in_context(&title, true, &count, &|context| {
             self.chunker
-                .chunk_with_context(text, context, source_label(source))
+                .chunk_with_context(text, context, source_label(source), &count)
         });
         if chunks.is_empty() && !text.trim().is_empty() {
             // Stored as it is, the document would replace its previous chunks with none.
@@ -676,11 +677,25 @@ pub const INDEX_FORMAT_KEY: &str = "index_format";
 /// one-word units; a page too short for a chunk joins its neighbour; no
 /// redundant tail chunks; HTML is read on byte offsets with comments, CDATA
 /// and C1 references handled; `.htm` files are indexed.
+/// 3: window chunks ([`TextChunker`]) are within the token budget of their
+/// text under their context, so code and data are no longer cut off where
+/// they are embedded. Structure chunks are as in 2, and those of 2 are
+/// raised to 3 in place ([`STRUCTURE_CHUNKS_SINCE`]).
 ///
 /// Redaction ([`redact_chunks`]) is not a chunker version: chunks redacted under
 /// other rules are redacted again in place ([`RAGEngine::redact_stored_chunks`],
 /// [`REDACTOR_KEY`]), without reading their files again.
-pub const CHUNKER_VERSION: u32 = 2;
+pub const CHUNKER_VERSION: u32 = 3;
+
+/// The oldest [`CHUNKER_VERSION`] whose structure chunks ([`StructureChunker`],
+/// `unit_kind` set) are the text this build makes of the same file: a version
+/// raised since changed only how other chunks are made. Structure chunks of
+/// these versions are raised to [`CHUNKER_VERSION`] in place, with their
+/// text, vectors and ids kept ([`RAGEngine::raise_current_structure_chunks`]),
+/// so a document of structure chunks only is not read or embedded again.
+/// Set it to [`CHUNKER_VERSION`] whenever a raise changes structure chunks
+/// (their chunker, the parsers, or the token count that budgets them).
+pub const STRUCTURE_CHUNKS_SINCE: u32 = 2;
 
 /// Chunk metadata key: the fingerprint of the redactor a chunk was redacted with
 /// ([`document_redactor_fingerprint`]). A chunk without it, or with another, is
@@ -2022,6 +2037,9 @@ pub struct RAGEngine {
     no_stale_chunks: Arc<std::sync::atomic::AtomicBool>,
     /// [`Self::rechunk_sources`] found every chunk of the current [`CHUNKER_VERSION`].
     no_rechunk_chunks: Arc<std::sync::atomic::AtomicBool>,
+    /// [`Self::raise_current_structure_chunks`] raised every structure chunk
+    /// of a version since [`STRUCTURE_CHUNKS_SINCE`] to [`CHUNKER_VERSION`].
+    structure_chunks_raised: Arc<std::sync::atomic::AtomicBool>,
     /// Told which files left the index, after every removal (see
     /// [`LibraryRemovalObserver`]).
     removal_observer: Option<Arc<dyn LibraryRemovalObserver>>,
@@ -2123,7 +2141,8 @@ impl RAGEngine {
             config.chunking.chunk_size,
             config.chunking.chunk_overlap,
             config.chunking.min_chunk_size,
-        );
+        )
+        .with_max_tokens(config.chunking.max_tokens);
 
         let structure_chunker = StructureChunker::new(config.chunking.max_tokens);
         let ocr = crate::processing::ocr::shared_ocr_model();
@@ -2155,6 +2174,7 @@ impl RAGEngine {
             source_ranker: None,
             no_stale_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             no_rechunk_chunks: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            structure_chunks_raised: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             removal_observer: None,
             #[cfg(test)]
             fail_source_listing: std::sync::atomic::AtomicBool::new(false),
@@ -2433,7 +2453,7 @@ impl RAGEngine {
         };
         let chunks = chunk_in_context(&title, true, &count, &|context| {
             self.chunker
-                .chunk_with_context(content, context, source_label(&source))
+                .chunk_with_context(content, context, source_label(&source), &count)
         });
         let prepared = prepare_chunks(embedder, chunks, title, source, &metadata, &citation)?;
         self.store_prepared(prepared).await
@@ -4436,7 +4456,10 @@ impl RAGEngine {
     /// than this build makes: their text was read or cut another way, so
     /// each is read and chunked again in full by whatever indexed it (folder
     /// sync, the Library's file sources, the calendar). An upgrade in place
-    /// cannot help them ([`Self::upgrade_in_place`]).
+    /// cannot help them ([`Self::upgrade_in_place`]). Structure chunks whose
+    /// text this build makes the same are raised in place first
+    /// ([`Self::raise_current_structure_chunks`]), so only documents with
+    /// other chunks of an older version are listed.
     pub async fn rechunk_sources(&self) -> Result<Vec<crate::storage::DocumentSourceRow>> {
         // Nothing writes an older version, so once none is left none comes back.
         if self
@@ -4445,6 +4468,7 @@ impl RAGEngine {
         {
             return Ok(Vec::new());
         }
+        self.raise_current_structure_chunks().await?;
         let outdated = self
             .store
             .document_sources_where(Some(&current_chunker_excluded()))
@@ -4454,6 +4478,68 @@ impl RAGEngine {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(outdated)
+    }
+
+    /// Raises the structure chunks (`unit_kind` set) of a [`CHUNKER_VERSION`]
+    /// from [`STRUCTURE_CHUNKS_SINCE`] on to the current one in place: this
+    /// build would make the same text of their files, so only their metadata
+    /// changes, and their text, vectors and ids stay. Other chunks keep their
+    /// version, so a document with any of an older version is still listed by
+    /// [`Self::rechunk_sources`] and read and chunked again in full. Chunks
+    /// kept on purpose ([`CHUNKS_KEPT_FROM_KEY`]) keep theirs too: a raise is
+    /// when they are looked at again. Each version is one update, all its
+    /// chunks or none, so an update a quit cut short is made by the next call.
+    /// Done once per engine, before anything compares a chunk's version with
+    /// [`CHUNKER_VERSION`]; nothing writes an older version, so none comes back.
+    async fn raise_current_structure_chunks(&self) -> Result<()> {
+        if self
+            .structure_chunks_raised
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(());
+        }
+        // serde_json writes keys without spaces and escapes a quote inside a
+        // value, so an entry appears verbatim and only as an entry.
+        let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+        let current = format!("\"{CHUNKER_VERSION_KEY}\":\"{CHUNKER_VERSION}\"");
+        for older in STRUCTURE_CHUNKS_SINCE..CHUNKER_VERSION {
+            let entry = format!("\"{CHUNKER_VERSION_KEY}\":\"{older}\"");
+            let predicate = format!(
+                "metadata_json LIKE {} AND metadata_json LIKE {} AND metadata_json NOT LIKE {}",
+                quote(&format!("%{entry}%")),
+                quote("%\"unit_kind\":\"%"),
+                quote(&format!("%\"{CHUNKS_KEPT_FROM_KEY}\":\"%")),
+            );
+            // Listed first: an update that matches nothing would still write.
+            if self
+                .store
+                .document_sources_where(Some(&predicate))
+                .await?
+                .is_empty()
+            {
+                continue;
+            }
+            let raised = self
+                .store
+                .update_metadata_where(
+                    &predicate,
+                    &format!(
+                        "replace(metadata_json, {}, {})",
+                        quote(&entry),
+                        quote(&current)
+                    ),
+                )
+                .await?;
+            tracing::info!(
+                chunks = raised,
+                from = older,
+                to = CHUNKER_VERSION,
+                "structure chunks raised to the current chunker in place, not embedded again"
+            );
+        }
+        self.structure_chunks_raised
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     /// The indexed documents to index again: those of [`Self::stale_sources`]
@@ -4622,6 +4708,9 @@ impl RAGEngine {
         source: &str,
         older_chunks_kept: bool,
     ) -> Result<bool> {
+        // A structure chunk of an older version whose text is current is not
+        // a reason to read its file again.
+        self.raise_current_structure_chunks().await?;
         let current_chunker = CHUNKER_VERSION.to_string();
         let embedder = self
             .embeddings
@@ -5322,6 +5411,30 @@ impl RAGEngine {
             record.text = old_text(&record.text);
         }
         self.no_rechunk_chunks
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.commit_file(file).await
+    }
+
+    /// Stores `file` as a build of chunker `version` did: chunks recording
+    /// that version, in the current [`INDEX_FORMAT`], each with the text
+    /// `old_text` makes of the text chunked now. Then the engine starts over
+    /// as the next start of this build does: nothing raised or found yet.
+    pub(crate) async fn commit_file_as_chunker(
+        &mut self,
+        mut file: PreparedFile,
+        version: u32,
+        old_text: impl Fn(&str) -> String,
+    ) -> Result<Vec<Uuid>> {
+        for record in &mut file.document.records {
+            let mut metadata: HashMap<String, String> =
+                serde_json::from_str(&record.metadata_json)?;
+            metadata.insert(CHUNKER_VERSION_KEY.to_string(), version.to_string());
+            record.metadata_json = serde_json::to_string(&metadata)?;
+            record.text = old_text(&record.text);
+        }
+        self.no_rechunk_chunks
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.structure_chunks_raised
             .store(false, std::sync::atomic::Ordering::Relaxed);
         self.commit_file(file).await
     }
@@ -7425,6 +7538,121 @@ Language models trained on long documents reach lower perplexity.
         assert!(fresh
             .iter()
             .all(|c| !c.metadata_json.contains(CHUNKS_KEPT_FROM_KEY)));
+    }
+
+    /// Structure chunks of chunker 2 are the text this build makes of their
+    /// file: on the next start they are raised to the current version in
+    /// place, with nothing embedded and their text, ids and the rest of their
+    /// metadata kept, and their document is not listed for re-chunking. A
+    /// document that also has a window chunk of 2 is still listed (it is
+    /// chunked again in full); only its structure chunks are raised.
+    #[tokio::test]
+    async fn structure_chunks_of_chunker_two_are_raised_in_place_without_embedding() {
+        let dir = tempfile::tempdir().unwrap();
+        let embedder = Arc::new(crate::statements::testing::CountingCodeEmbedder::default());
+        let mut engine = RAGEngine::new(test_engine_config(dir.path()))
+            .await
+            .unwrap();
+        engine
+            .attach_search_models(SearchModels::from_embedder(embedder.clone()))
+            .unwrap();
+        let metadata_of = |hit: &crate::storage::SearchHit| -> HashMap<String, String> {
+            serde_json::from_str(&hit.metadata_json).unwrap()
+        };
+
+        // Three sections: three structure chunks.
+        let rules = "# House rules\n\nQuiet hours begin at ten in the evening and end at seven in the morning.\n\n\
+                     ## Parking\n\nVisitors park on the street; residents use the garage below the courtyard.\n\n\
+                     ## Pets\n\nCats and small dogs are welcome; the building manager keeps a list of them.\n";
+        let lease = dir.path().join("rules.md");
+        std::fs::write(&lease, rules).unwrap();
+        let lease_source = normalize_source_path(&lease);
+        let prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&lease, HashMap::new())
+            .unwrap();
+        engine
+            .commit_file_as_chunker(prepared, 2, str::to_string)
+            .await
+            .unwrap();
+        // The same document with its last chunk made a window chunk.
+        let mixed = dir.path().join("mixed.md");
+        std::fs::write(&mixed, rules).unwrap();
+        let mixed_source = normalize_source_path(&mixed);
+        let mut prepared = engine
+            .file_preparer()
+            .unwrap()
+            .prepare(&mixed, HashMap::new())
+            .unwrap();
+        assert!(prepared.document.records.len() > 1);
+        let window = prepared.document.records.last_mut().unwrap();
+        let mut metadata: HashMap<String, String> =
+            serde_json::from_str(&window.metadata_json).unwrap();
+        assert!(metadata.remove("unit_kind").is_some());
+        window.metadata_json = serde_json::to_string(&metadata).unwrap();
+        let window_id = window.id.clone();
+        engine
+            .commit_file_as_chunker(prepared, 2, str::to_string)
+            .await
+            .unwrap();
+
+        let before = engine.store.list_chunks(None, 1000).await.unwrap();
+        for chunk in &before {
+            let metadata = metadata_of(chunk);
+            assert_eq!(metadata[CHUNKER_VERSION_KEY], "2");
+            assert_eq!(metadata.contains_key("unit_kind"), chunk.id != window_id);
+        }
+        let embedded = embedder.embedded();
+
+        let rechunk = engine.rechunk_sources().await.unwrap();
+        assert_eq!(
+            rechunk
+                .iter()
+                .map(|row| row.source.as_str())
+                .collect::<Vec<_>>(),
+            [mixed_source.as_str()],
+            "only the document with a window chunk"
+        );
+        assert_eq!(embedder.embedded(), embedded, "nothing embedded");
+
+        let after = engine.store.list_chunks(None, 1000).await.unwrap();
+        assert_eq!(after.len(), before.len());
+        let by_id: HashMap<&str, &crate::storage::SearchHit> =
+            after.iter().map(|hit| (hit.id.as_str(), hit)).collect();
+        for old in &before {
+            let new = by_id[old.id.as_str()];
+            assert_eq!(new.text, old.text);
+            assert_eq!(new.doc_id, old.doc_id);
+            let mut was = metadata_of(old);
+            let mut now = metadata_of(new);
+            let expected = if old.id == window_id {
+                "2".to_string()
+            } else {
+                CHUNKER_VERSION.to_string()
+            };
+            assert_eq!(now[CHUNKER_VERSION_KEY], expected, "{}", old.id);
+            assert!(!now.contains_key(CHUNKS_KEPT_FROM_KEY));
+            was.remove(CHUNKER_VERSION_KEY);
+            now.remove(CHUNKER_VERSION_KEY);
+            assert_eq!(now, was, "the rest of the metadata is kept");
+        }
+
+        // Raised once: listing again finds the same and writes nothing.
+        assert_eq!(engine.rechunk_sources().await.unwrap().len(), 1);
+        assert_eq!(
+            engine.store.list_chunks(None, 1000).await.unwrap().len(),
+            before.len()
+        );
+        // The raised document is current: brought to the current format in
+        // place, never read again for its chunker.
+        assert!(engine.upgrade_in_place(&lease_source).await.unwrap());
+        let lease_chunks = before
+            .iter()
+            .filter(|chunk| chunk.source == lease_source)
+            .count();
+        assert!(lease_chunks > 1);
+        assert_eq!(embedder.embedded(), embedded + lease_chunks);
     }
 
     /// No context names a file's folders: not for plain text (window chunks),

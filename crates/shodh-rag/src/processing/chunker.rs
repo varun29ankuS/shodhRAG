@@ -1,6 +1,8 @@
 use crate::types::DocumentSection;
 use uuid::Uuid;
 
+use super::structure_chunker::{clamp_chunk_tokens, text_budget, DEFAULT_CHUNK_TOKENS};
+
 #[derive(Debug, Clone)]
 pub struct ChunkResult {
     pub id: Uuid,
@@ -16,6 +18,16 @@ pub struct TextChunker {
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_size: usize,
+    /// Token budget for a window's text where it is chunked with a context
+    /// ([`Self::chunk_with_context`]), as [`super::structure_chunker::StructureChunker`] budgets.
+    max_tokens: usize,
+}
+
+/// What a window is measured by besides its bytes: its tokens, by
+/// `count_tokens`, must be within `budget` of the window's text.
+struct TokenBound<'a> {
+    count_tokens: &'a dyn Fn(&str) -> usize,
+    budget: &'a dyn Fn(&str) -> usize,
 }
 
 impl TextChunker {
@@ -24,7 +36,15 @@ impl TextChunker {
             chunk_size,
             chunk_overlap,
             min_chunk_size,
+            max_tokens: clamp_chunk_tokens(DEFAULT_CHUNK_TOKENS),
         }
+    }
+
+    /// The chunker with `max_tokens` (clamped as [`clamp_chunk_tokens`]) as
+    /// the token budget of a window's text.
+    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
+        self.max_tokens = clamp_chunk_tokens(max_tokens);
+        self
     }
 
     /// Sliding windows over `text`, in order, covering all of it. Each window
@@ -36,6 +56,12 @@ impl TextChunker {
     /// it. Text shorter than `min_chunk_size` is still one chunk; only blank
     /// text (and blank windows) yields none.
     pub fn chunk(&self, text: &str) -> Vec<ChunkResult> {
+        self.chunk_within(text, None)
+    }
+
+    /// The windows of [`Self::chunk`], each also within `bound` when given
+    /// ([`Self::bounded_window`]).
+    fn chunk_within(&self, text: &str, bound: Option<&TokenBound>) -> Vec<ChunkResult> {
         if text.trim().is_empty() {
             return Vec::new();
         }
@@ -44,7 +70,14 @@ impl TextChunker {
         let mut start = 0;
         let mut prev_end = 0;
         loop {
-            let end = self.window_end(text, start, prev_end);
+            let end = match bound {
+                Some(bound) => {
+                    let (bounded_start, end) = self.bounded_window(text, start, prev_end, bound);
+                    start = bounded_start;
+                    end
+                }
+                None => self.window_end(text, start, prev_end),
+            };
             let chunk_text = &text[start..end];
             if !chunk_text.trim().is_empty() {
                 let index = chunks.len();
@@ -92,6 +125,41 @@ impl TextChunker {
             len
         } else {
             end
+        }
+    }
+
+    /// The window of [`Self::window_end`], shortened until its text is
+    /// within `bound`: cut nearer its start, in proportion to how far over the
+    /// budget it is, at a break as [`Self::find_break_point`] finds one. When
+    /// the overlap with the window before leaves no room, the window starts
+    /// where that one ended instead. Returns the window's start and end; the
+    /// end is past `prev_end` as [`Self::window_end`]'s is, even in the
+    /// (unreachable) case of one character over the budget.
+    fn bounded_window(
+        &self,
+        text: &str,
+        mut start: usize,
+        prev_end: usize,
+        bound: &TokenBound,
+    ) -> (usize, usize) {
+        let floor = start.max(prev_end);
+        let mut end = self.window_end(text, start, prev_end);
+        loop {
+            let window = &text[start..end];
+            let tokens = (bound.count_tokens)(window);
+            let budget = (bound.budget)(window);
+            if tokens <= budget {
+                return (start, end);
+            }
+            let cut = snap_to_char_boundary(text, start + (end - start) * budget / tokens);
+            if cut > floor {
+                end = self.find_break_point(text, floor, cut);
+            } else if start < floor {
+                start = floor;
+                end = self.window_end(text, start, prev_end);
+            } else {
+                return (start, next_char_boundary(text, floor));
+            }
         }
     }
 
@@ -338,36 +406,51 @@ impl TextChunker {
     /// Chunk with document-level context prepended (Anthropic's contextual retrieval approach).
     /// Prepending "Document: X. Section: Y." to each chunk before embedding
     /// improves retrieval by giving the embedding model document-level awareness.
+    ///
+    /// Each window is also within the token budget of its text under its
+    /// context ([`text_budget`]), counted by `count_tokens` the way the
+    /// embedder tokenizes, so that the embedder reads all of it: code and
+    /// data tokenize at about three bytes a token, so `chunk_size` bytes of
+    /// them are more than the embedder reads.
     pub fn chunk_with_context(
         &self,
         text: &str,
         doc: &DocumentContext,
         doc_source: &str,
+        count_tokens: &dyn Fn(&str) -> usize,
     ) -> Vec<ContextualChunkResult> {
-        let base_chunks = self.chunk(text);
+        let header = doc.header();
+        let context_of = |heading: Option<&str>| {
+            let mut context_prefix = format!("{} Source: {}. ", header, doc_source);
+            if let Some(section) = heading.filter(|h| !h.is_empty()) {
+                context_prefix.push_str("Section: ");
+                context_prefix.push_str(section);
+                context_prefix.push_str(". ");
+            }
+            context_prefix
+        };
+        let budget = |window: &str| {
+            let context = context_of(self.extract_heading(window).as_deref());
+            text_budget(self.max_tokens, &context, count_tokens)
+        };
+        let bound = TokenBound {
+            count_tokens,
+            budget: &budget,
+        };
 
-        base_chunks
+        self.chunk_within(text, Some(&bound))
             .into_iter()
-            .map(|chunk| {
-                let mut context_prefix = format!("{} Source: {}. ", doc.header(), doc_source);
-                if let Some(section) = chunk.heading.as_deref().filter(|h| !h.is_empty()) {
-                    context_prefix.push_str("Section: ");
-                    context_prefix.push_str(section);
-                    context_prefix.push_str(". ");
-                }
-
-                ContextualChunkResult {
-                    context: context_prefix,
-                    id: chunk.id,
-                    text: chunk.text,
-                    index: chunk.index,
-                    heading: chunk.heading,
-                    start_offset: chunk.start_offset,
-                    end_offset: chunk.end_offset,
-                    page: None,
-                    page_end: None,
-                    layout: None,
-                }
+            .map(|chunk| ContextualChunkResult {
+                context: context_of(chunk.heading.as_deref()),
+                id: chunk.id,
+                text: chunk.text,
+                index: chunk.index,
+                heading: chunk.heading,
+                start_offset: chunk.start_offset,
+                end_offset: chunk.end_offset,
+                page: None,
+                page_end: None,
+                layout: None,
             })
             .collect()
     }
@@ -380,6 +463,7 @@ impl TextChunker {
         sections: &[DocumentSection],
         doc: &DocumentContext,
         doc_source: &str,
+        count_tokens: &dyn Fn(&str) -> usize,
     ) -> Vec<ContextualChunkResult> {
         let mut results = Vec::new();
         let mut global_index = 0usize;
@@ -525,7 +609,8 @@ impl TextChunker {
                         global_index += 1;
                     } else {
                         // Large relationship block — use sliding window
-                        let sub_chunks = self.chunk_with_context(content, doc, doc_source);
+                        let sub_chunks =
+                            self.chunk_with_context(content, doc, doc_source, count_tokens);
                         for mut sc in sub_chunks {
                             sc.index = global_index;
                             sc.heading = Some("Relationships".to_string());
@@ -539,7 +624,9 @@ impl TextChunker {
                     let Some(group) = group_at[section_index] else {
                         continue;
                     };
-                    for mut sc in self.chunk_text_group(sections, group, doc, doc_source) {
+                    for mut sc in
+                        self.chunk_text_group(sections, group, doc, doc_source, count_tokens)
+                    {
                         sc.index = global_index;
                         results.push(sc);
                         global_index += 1;
@@ -594,6 +681,7 @@ impl TextChunker {
         group: &[usize],
         doc: &DocumentContext,
         doc_source: &str,
+        count_tokens: &dyn Fn(&str) -> usize,
     ) -> Vec<ContextualChunkResult> {
         // Where each section starts in the joined text, its page and heading.
         let mut text = String::new();
@@ -631,7 +719,7 @@ impl TextChunker {
             (None, _) => doc_source.to_string(),
         };
 
-        let mut chunks = self.chunk_with_context(&text, doc, &page_source);
+        let mut chunks = self.chunk_with_context(&text, doc, &page_source, count_tokens);
         for chunk in &mut chunks {
             // The chunk's first and last characters that are not whitespace.
             let start = chunk.start_offset + (chunk.text.len() - chunk.text.trim_start().len());
@@ -823,6 +911,7 @@ impl Default for TextChunker {
 
 #[cfg(test)]
 mod tests {
+    use super::super::structure_chunker::EMBEDDER_TOKEN_LIMIT;
     use super::*;
 
     fn table(
@@ -852,8 +941,12 @@ mod tests {
             0,
             "Q1 Sheet",
         )];
-        let chunks =
-            chunker.chunk_structured(&sections, &DocumentContext::titled("Report"), "report.xlsx");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Report"),
+            "report.xlsx",
+            &words,
+        );
         assert_eq!(chunks.len(), 1);
         assert_eq!(
             chunks[0].text,
@@ -880,8 +973,12 @@ mod tests {
             })
             .collect();
         let sections = vec![table(&["Name", "Größe", "Price"], &rows, 3, "Inventory")];
-        let chunks =
-            chunker.chunk_structured(&sections, &DocumentContext::titled("Doc"), "doc.pdf");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Doc"),
+            "doc.pdf",
+            &words,
+        );
         assert!(chunks.len() > 1, "expected multiple chunks");
 
         let mut seen_rows = Vec::new();
@@ -923,8 +1020,12 @@ mod tests {
         let long_value = "é".repeat(100);
         let rows = vec![row(&["a", long_value.as_str()]), row(&["b", "short"])];
         let sections = vec![table(&["K", "V"], &rows, 0, "T")];
-        let chunks =
-            chunker.chunk_structured(&sections, &DocumentContext::titled("Doc"), "doc.csv");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Doc"),
+            "doc.csv",
+            &words,
+        );
         assert_eq!(chunks.len(), 2);
         assert!(chunks[0]
             .text
@@ -974,6 +1075,7 @@ mod tests {
             &sections,
             &DocumentContext::titled("Contract"),
             "contract.pdf",
+            &words,
         );
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].page, Some(2));
@@ -993,8 +1095,12 @@ mod tests {
             fields: vec![("Name".to_string(), "Asha".to_string())],
             page: 0,
         }];
-        let chunks =
-            chunker.chunk_structured(&sections, &DocumentContext::titled("Form"), "form.pdf");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Form"),
+            "form.pdf",
+            &words,
+        );
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].page, None);
         assert_eq!(chunks[0].text, "Name: Asha");
@@ -1016,8 +1122,12 @@ mod tests {
                 page: 2,
             },
         ];
-        let chunks =
-            chunker.chunk_structured(&sections, &DocumentContext::titled("Form"), "form.pdf");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Form"),
+            "form.pdf",
+            &words,
+        );
         let parts: Vec<&str> = chunks[1..].iter().map(|c| c.context.as_str()).collect();
         assert!(parts.len() > 1, "{parts:?}");
         for (i, context) in parts.iter().enumerate() {
@@ -1297,8 +1407,12 @@ mod tests {
             page: 4,
             heading: None,
         }];
-        let chunks =
-            chunker.chunk_structured(&sections, &DocumentContext::titled("Deed"), "deed.pdf");
+        let chunks = chunker.chunk_structured(
+            &sections,
+            &DocumentContext::titled("Deed"),
+            "deed.pdf",
+            &words,
+        );
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "Signed.");
         assert_eq!(chunks[0].page, Some(4));
@@ -1329,7 +1443,7 @@ mod tests {
             page_text(2, " 3 "),
             page_text(3, third),
         ];
-        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf");
+        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf", &words);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].text, first);
         assert_eq!((chunks[0].page, chunks[0].page_end), (Some(1), None));
@@ -1341,17 +1455,202 @@ mod tests {
 
         // The last page joins the one before it.
         let sections = vec![page_text(1, first), page_text(2, "3")];
-        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf");
+        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf", &words);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, format!("{first}\n\n3"));
         assert_eq!((chunks[0].page, chunks[0].page_end), (Some(1), Some(2)));
 
         // Short pages only: one chunk of all of them.
         let sections = vec![page_text(1, "1"), page_text(2, "2")];
-        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf");
+        let chunks = chunker.chunk_structured(&sections, &context, "report.pdf", &words);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].text, "1\n\n2");
         assert_eq!((chunks[0].page, chunks[0].page_end), (Some(1), Some(2)));
+    }
+
+    /// A stand-in for a subword tokenizer on code: every run of letters and
+    /// digits is a token and so is every other character that is not
+    /// whitespace, plus the four tokens of `passage: ` and the special tokens.
+    fn code_tokens(text: &str) -> usize {
+        let mut tokens = 4;
+        let mut in_word = false;
+        for c in text.chars() {
+            if c.is_alphanumeric() || c == '_' {
+                tokens += usize::from(!in_word);
+                in_word = true;
+            } else {
+                tokens += usize::from(!c.is_whitespace());
+                in_word = false;
+            }
+        }
+        tokens
+    }
+
+    fn dense_json() -> String {
+        let rows: Vec<String> = (0..400)
+            .map(|i| {
+                format!(
+                    r#"{{"id":{i},"sku":"A-{i:05}","dims":[{},{},{}],"ok":{},"tags":["x{i}","y{}"]}}"#,
+                    i * 3,
+                    i * 7 % 11,
+                    i % 5,
+                    i % 2 == 0,
+                    i * 13
+                )
+            })
+            .collect();
+        format!("[{}]", rows.join(","))
+    }
+
+    /// Every window of `text` chunked with a context is within the token
+    /// budget of its text under that context and within the embedder's limit
+    /// with it, and the windows cover the text in order with no more than the
+    /// configured overlap.
+    fn assert_within_budget(
+        chunker: &TextChunker,
+        text: &str,
+        count: &dyn Fn(&str) -> usize,
+    ) -> Vec<ContextualChunkResult> {
+        let context = DocumentContext::titled("src");
+        let chunks = chunker.chunk_with_context(text, &context, "lib.rs", count);
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks[0].start_offset, 0);
+        assert_eq!(chunks.last().unwrap().end_offset, text.len());
+        for chunk in &chunks {
+            assert_eq!(chunk.text, text[chunk.start_offset..chunk.end_offset]);
+            let budget = text_budget(chunker.max_tokens, &chunk.context, count);
+            assert!(
+                count(&chunk.text) <= budget,
+                "{} tokens over a budget of {budget} at {}",
+                count(&chunk.text),
+                chunk.start_offset
+            );
+            assert!(count(&chunk.contextualized_text()) <= EMBEDDER_TOKEN_LIMIT);
+            assert!(chunk.text.len() < chunker.chunk_size + chunker.min_chunk_size);
+        }
+        for pair in chunks.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            assert!(b.start_offset > a.start_offset && b.start_offset <= a.end_offset);
+            assert!(b.end_offset > a.end_offset);
+            assert!(a.end_offset - b.start_offset <= chunker.chunk_overlap);
+        }
+        chunks
+    }
+
+    #[test]
+    fn dense_code_and_json_windows_fit_the_token_budget() {
+        let chunker = TextChunker::default();
+        let rust = include_str!("structure_chunker.rs");
+        let rust_chunks = assert_within_budget(&chunker, rust, &code_tokens);
+        // The byte windows alone hold more tokens than the budget.
+        assert!(chunker
+            .chunk(rust)
+            .iter()
+            .any(|c| code_tokens(&c.text) > chunker.max_tokens));
+        assert!(rust_chunks.len() > chunker.chunk(rust).len());
+        for chunk in &rust_chunks[..rust_chunks.len() - 1] {
+            assert!(
+                chunk.text.ends_with(char::is_whitespace),
+                "{:?}",
+                chunk.text
+            );
+        }
+
+        assert_within_budget(&chunker, &dense_json(), &code_tokens);
+        let tight = TextChunker::default().with_max_tokens(64);
+        assert_within_budget(&tight, rust, &code_tokens);
+        assert_within_budget(&tight, &dense_json(), &code_tokens);
+    }
+
+    /// Prose whose byte windows are within the budget is cut where it was,
+    /// at paragraph and sentence ends.
+    #[test]
+    fn prose_within_the_budget_keeps_its_windows() {
+        let chunker = TextChunker::default();
+        let paragraph = "The lessee shall pay the monthly rent by the fifth day of each month. \
+                         Rent escalates by five percent every twelve months from the commencement date. \
+                         The security deposit is refundable within thirty days of vacating the premises.";
+        let prose = vec![paragraph; 30].join("\n\n");
+        let bounded = assert_within_budget(&chunker, &prose, &words);
+        let spans: Vec<(usize, usize)> = bounded
+            .iter()
+            .map(|c| (c.start_offset, c.end_offset))
+            .collect();
+        let unbounded: Vec<(usize, usize)> = chunker
+            .chunk(&prose)
+            .iter()
+            .map(|c| (c.start_offset, c.end_offset))
+            .collect();
+        assert_eq!(spans, unbounded);
+        assert!(bounded.len() > 1);
+        for chunk in &bounded[..bounded.len() - 1] {
+            assert!(
+                chunk.text.ends_with("\n\n") || chunk.text.ends_with(". "),
+                "{:?}",
+                chunk.text
+            );
+        }
+    }
+
+    /// Without the model's tokenizer the callers count with
+    /// [`crate::embeddings::estimate_tokens`], three characters a token, and
+    /// windows of code are bounded by it.
+    #[test]
+    fn without_a_tokenizer_windows_fit_the_three_characters_a_token_estimate() {
+        let chunker = TextChunker::default();
+        let estimate = |t: &str| crate::embeddings::estimate_tokens(t);
+        let rust = include_str!("structure_chunker.rs");
+        for text in [rust, dense_json().as_str()] {
+            let chunks = assert_within_budget(&chunker, text, &estimate);
+            for chunk in &chunks {
+                assert!(chunk.text.chars().count() <= 3 * chunker.max_tokens);
+            }
+        }
+    }
+
+    /// Bounded windows end, cover the text and stay on char boundaries in
+    /// every script, under budgets from tight to loose.
+    #[test]
+    fn bounded_windows_terminate_and_cover_every_script() {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for max_tokens in [1, 64, 200, 1000] {
+            let chunker = TextChunker::new(1750, 200, 100).with_max_tokens(max_tokens);
+            for script in (0..SCRIPTS.len()).map(Some).chain([None]) {
+                for breaks in [false, true] {
+                    let text = generated(&mut rng, 6000, script, breaks);
+                    let count = |t: &str| t.chars().count() / 2 + 4;
+                    assert_within_budget(&chunker, &text, &count);
+                }
+            }
+        }
+    }
+
+    /// The installed E5 tokenizer, counting as the embedder does.
+    #[test]
+    #[cfg_attr(
+        not(shodh_test_models),
+        ignore = "requires SHODH_TEST_MODELS containing multilingual-e5-base/"
+    )]
+    fn with_the_e5_tokenizer_code_windows_fit_what_the_embedder_reads() {
+        let root = std::env::var_os("SHODH_TEST_MODELS").expect("SHODH_TEST_MODELS");
+        let tokenizer = crate::embeddings::tokenizer::SentencePieceTokenizer::from_model_dir(
+            &std::path::Path::new(&root).join("multilingual-e5-base"),
+        )
+        .expect("E5 tokenizer");
+        let count = |t: &str| {
+            tokenizer
+                .encode(&format!("passage: {t}"), true)
+                .expect("tokenize")
+                .len()
+        };
+        let chunker = TextChunker::default();
+        for text in [
+            include_str!("structure_chunker.rs"),
+            include_str!("chunker.rs"),
+            dense_json().as_str(),
+        ] {
+            assert_within_budget(&chunker, text, &count);
+        }
     }
 
     #[test]
@@ -1362,7 +1661,7 @@ mod tests {
                     Rent escalates by 5% every twelve months from the commencement date. \
                     The Lessee pays a security deposit of six months rent.";
         let context = DocumentContext::titled("lease").with_opening(body, &words);
-        let chunks = chunker.chunk_with_context(body, &context, "lease.txt");
+        let chunks = chunker.chunk_with_context(body, &context, "lease.txt", &words);
         assert!(chunks.len() > 1);
         for chunk in &chunks {
             assert!(chunk.context.starts_with(

@@ -84,8 +84,9 @@ pub struct ChunkingConfig {
     pub chunk_size: usize,
     pub chunk_overlap: usize,
     pub min_chunk_size: usize,
-    /// Token budget for structure-aware chunks (PDF, LaTeX, Markdown),
-    /// counted with the embedder's tokenizer, context prefix excluded.
+    /// Token budget for structure-aware chunks (PDF, LaTeX, Markdown) and
+    /// window chunks (code, data, plain text), counted with the embedder's
+    /// tokenizer, context prefix excluded.
     #[serde(default = "default_max_chunk_tokens")]
     pub max_tokens: usize,
 }

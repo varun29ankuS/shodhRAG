@@ -906,8 +906,10 @@ jobs:
         with:
           toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
 
+      # prefix-key and shared-key as in release.yml's Windows build (one entry).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
         with:
+          prefix-key: v1-rust
           shared-key: release-x86_64-pc-windows-msvc
           save-if: ${{ github.ref == 'refs/heads/master' }}
 

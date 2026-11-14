@@ -44,6 +44,12 @@ tauri-plugin-barcode-scanner = "=2.5.3"
 tauri-plugin-shodh-android = { path = "../plugins/shodh-android" }
 # The phone's model name (Android's system properties), and logcat.
 libc = "0.2"
+# Content-free notifications posted through the plugin's Notifier from any thread
+# (notify.rs): the JVM and the app's context, as Tauri's runtime set them up.
+jni = "0.21"
+ndk-context = "0.1"
+# The lock's fingerprint (the official plugin); Apache-2.0 OR MIT.
+tauri-plugin-biometric = "=2.5.0"
 
 # Line tables only (file:line in panics and backtraces): a full-debuginfo
 # library makes a debug APK several times larger.

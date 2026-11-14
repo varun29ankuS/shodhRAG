@@ -32,7 +32,7 @@ export function useLink(): Linked {
 }
 
 /** The link's state, kept current: listen first, then read, so no change is missed. */
-function useLinkStatus(source: LinkSource): LinkStatus {
+export function useLinkStatus(source: LinkSource): LinkStatus {
   const [status, setStatus] = useState<LinkStatus>({ state: 'starting' });
   useEffect(() => {
     let alive = true;

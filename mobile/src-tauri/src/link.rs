@@ -265,6 +265,8 @@ impl Link {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(event) = events.recv().await {
+                // "Stay connected": a step waiting or an answer finished is told (no content).
+                crate::notify::on_event(&app, &event.name, &event.payload).await;
                 let forwarded = json!({ "name": event.name, "payload": event.payload });
                 if let Err(e) = app.emit(DESKTOP_EVENT, forwarded) {
                     tracing::warn!("An event of the computer did not reach the window: {e}");
@@ -402,12 +404,20 @@ pub async fn link_invoke(
     command: String,
     args: Value,
     link: State<'_, Link>,
+    gate: State<'_, crate::lock::LockGate>,
 ) -> Result<Value, Value> {
+    // Locked: nothing reaches the computer.
+    gate.check()?;
     link.invoke(&command, args).await
 }
 
 #[tauri::command]
-pub async fn link_subscribe(session_ids: Vec<String>, link: State<'_, Link>) -> Result<(), Value> {
+pub async fn link_subscribe(
+    session_ids: Vec<String>,
+    link: State<'_, Link>,
+    gate: State<'_, crate::lock::LockGate>,
+) -> Result<(), Value> {
+    gate.check()?;
     link.subscribe(session_ids).await
 }
 

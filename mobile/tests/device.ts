@@ -5,7 +5,7 @@
  * test can "kill" the app (drop the sender) and start it again on the same
  * queue.
  */
-import type { CalendarChoice, CalendarWrite, Device, FileAdded, Incoming, PhoneCalendar, PhoneCalendarInfo, PhoneFiles, Picked, PhotoRead, Sealed, SealedName, UpdateCheck } from '../src/lib/device';
+import type { CalendarChoice, CalendarWrite, Device, LockStatus, NotifyMode, PhoneLock, PhoneNotifications, FileAdded, Incoming, PhoneCalendar, PhoneCalendarInfo, PhoneFiles, Picked, PhotoRead, Sealed, SealedName, UpdateCheck } from '../src/lib/device';
 import type { PhoneEvent } from '../src/lib/calsync';
 import type { OutboxSource, QueuedFile, QueuedItem, QueueState, Work } from '../src/lib/outbox';
 
@@ -76,6 +76,8 @@ export interface MemoryDevice extends Device {
   files: MemoryFiles;
   calendar: MemoryCalendar;
   sealed: MemorySealed;
+  lock: MemoryLock;
+  notifications: MemoryNotifications;
   checks: number;
   installs: number;
 }
@@ -86,6 +88,8 @@ export function memoryDevice(options: { update?: UpdateCheck; install?: () => Pr
     files: new MemoryFiles(),
     calendar: new MemoryCalendar(),
     sealed: new MemorySealed(),
+    lock: new MemoryLock(),
+    notifications: new MemoryNotifications(),
     bars: [],
     systemBars: async theme => {
       device.bars.push(theme);
@@ -225,5 +229,62 @@ export class MemoryCalendar implements PhoneCalendar {
     return () => {
       this.handlers.delete(handler);
     };
+  }
+}
+
+/** The lock in tests: the PIN is 482913; `status` says what it is now. */
+export class MemoryLock implements PhoneLock {
+  status_: LockStatus = { required: true, hasPin: true, biometric: false, locked: false };
+  pin = '482913';
+  async status() {
+    return { ...this.status_ };
+  }
+  async setPin(pin: string) {
+    if (!/^\d{4,12}$/.test(pin)) throw 'A PIN is 4 to 12 digits.';
+    this.pin = pin;
+    this.status_ = { ...this.status_, hasPin: true, locked: false };
+  }
+  async unlock(pin: string) {
+    if (pin !== this.pin) throw 'That is not your PIN. 4 more tries before Shodh waits 30 seconds.';
+    this.status_ = { ...this.status_, locked: false };
+  }
+  async unlockBiometric() {
+    if (!this.status_.biometric) throw 'Use your PIN.';
+    this.status_ = { ...this.status_, locked: false };
+  }
+  async configure(pin: string, change: { enabled?: boolean; biometric?: boolean }) {
+    if (pin !== this.pin) throw 'That is not your PIN.';
+    this.status_ = { ...this.status_, required: change.enabled ?? this.status_.required, biometric: change.biometric ?? this.status_.biometric };
+  }
+  async hidden() {}
+  async shown() {
+    return this.status_.locked;
+  }
+}
+
+/** Notifications in tests: the mode, and what was asked of Android. */
+export class MemoryNotifications implements PhoneNotifications {
+  current: NotifyMode = 'off';
+  sets: Array<[NotifyMode, string | undefined]> = [];
+  pushApps = ['io.heckel.ntfy'];
+  syncs = 0;
+  briefs: Array<Array<[string, number]>> = [];
+  async mode() {
+    return this.current;
+  }
+  async set(mode: NotifyMode, distributor?: string) {
+    this.sets.push([mode, distributor]);
+    this.current = mode;
+    return mode;
+  }
+  async distributors() {
+    return this.pushApps;
+  }
+  async syncPush() {
+    this.syncs += 1;
+    return true;
+  }
+  async scheduleBriefs(briefs: Array<[string, number]>) {
+    this.briefs.push(briefs);
   }
 }

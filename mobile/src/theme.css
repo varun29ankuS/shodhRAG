@@ -1932,6 +1932,44 @@ strong {
   margin-right: 6px;
 }
 
+/* ── The lock ───────────────────────────────────────────────────── */
+
+.lock {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  background: var(--c-ground);
+  color: var(--c-text);
+  text-align: center;
+}
+
+.lock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(100%, 320px);
+}
+
+.lock-form input,
+.pin-field {
+  min-height: 48px;
+  min-width: 44px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: 20px;
+  letter-spacing: 0.2em;
+  text-align: center;
+}
+
 /* ── Tasks and the agenda ───────────────────────────────────────── */
 
 .task {
@@ -2000,7 +2038,7 @@ strong {
   top: 9px;
   height: 26px;
   border-radius: 13px;
-  background: var(--c-raised-2, var(--c-raised));
+  background: var(--c-border-strong);
 }
 
 .switch[aria-checked='true']::before {
@@ -2055,4 +2093,8 @@ strong {
   .menu-item {
     transition: none;
   }
+}
+
+.segmented-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }

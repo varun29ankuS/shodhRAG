@@ -11,6 +11,7 @@ import { useNote } from '../lib/context';
 import type { PhoneCalendarInfo } from '../lib/device';
 import { errorText } from '../lib/link';
 import { useDevice } from '../lib/queue';
+import { NO_SETTINGS, SETTINGS_CHANGED, type PhoneSettings } from './Background';
 
 function Switch({ label, checked, onChange, disabled = false }: { label: string; checked: boolean; onChange: (on: boolean) => void; disabled?: boolean }) {
   return (
@@ -97,6 +98,7 @@ export function CalendarSettings() {
             </span>
             <Switch label="Let Shodh use my calendar" checked={choice.useWithShodh} disabled={saving} onChange={on => save({ ...choice, useWithShodh: on })} />
           </div>
+          {choice.useWithShodh && <BriefMinutes />}
         </>
       )}
       {!choice.enabled && (
@@ -106,6 +108,46 @@ export function CalendarSettings() {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+const BRIEF_CHOICES: ReadonlyArray<{ value: number | null; label: string }> = [
+  { value: null, label: 'Off' },
+  { value: 5, label: '5 min' },
+  { value: 10, label: '10 min' },
+  { value: 30, label: '30 min' },
+];
+
+/** "A brief before your meetings": off unless the user picks how long before. */
+function BriefMinutes() {
+  const { sealed } = useDevice();
+  const [minutes, setMinutes] = useState<number | null>(null);
+  useEffect(() => {
+    sealed
+      .read<PhoneSettings>('settings')
+      .then(saved => setMinutes(saved?.briefMinutes ?? null))
+      .catch(() => undefined);
+  }, [sealed]);
+  const choose = (value: number | null) => {
+    setMinutes(value);
+    sealed
+      .read<PhoneSettings>('settings')
+      .then(saved => sealed.write('settings', { ...NO_SETTINGS, ...(saved ?? {}), briefMinutes: value }))
+      .then(() => window.dispatchEvent(new Event(SETTINGS_CHANGED)))
+      .catch(() => undefined);
+  };
+  return (
+    <div className="setting">
+      <span className="row-title">A brief before your meetings</span>
+      <span className="row-sub">Shodh tells you, this long before a meeting, when your library or your conversations have something on it. Nothing is shown for meetings nothing matches.</span>
+      <div className="segmented segmented-4" role="radiogroup" aria-label="A brief before your meetings">
+        {BRIEF_CHOICES.map(choice => (
+          <button key={choice.label} type="button" role="radio" className="segment" aria-checked={minutes === choice.value} onClick={() => choose(choice.value)}>
+            {choice.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

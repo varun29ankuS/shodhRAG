@@ -189,6 +189,10 @@ pub const ALLOWED: &[Entry] = &[
          about it, each cited), asked only while calendar sync and \"Let Shodh use my \
          calendar\" are on. Read only, retrieval only; nothing for an event nothing matches.",
     ),
+    bridge_only(
+        "phone_push_register",
+        "Settings, Notifications: the phone's UnifiedPush address (or none, to stop), kept in \n         the computer's credential store and never logged. The computer posts it only a \n         content-free word (an approval, an answer, a reminder); never in Local-only mode.",
+    ),
 ];
 
 /// Whether a phone may call `command`.

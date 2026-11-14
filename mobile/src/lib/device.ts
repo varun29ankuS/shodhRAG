@@ -34,7 +34,9 @@ export type Incoming =
   | { kind: 'none' }
   | { kind: 'files'; files: Picked[] }
   | { kind: 'text'; text: string; subject: string | null }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  /** A brief's notification was tapped. */
+  | { kind: 'brief'; eventId: string };
 
 /** The computer's answer to a file sent (`phone_file_finish`). */
 export interface FileAdded {
@@ -134,6 +136,41 @@ export interface Device {
   sealed: Sealed;
   /** Android's status and navigation bars: light icons on the dark theme, dark icons on the light. */
   systemBars(theme: 'light' | 'dark'): Promise<void>;
+  notifications: PhoneNotifications;
+  lock: PhoneLock;
+}
+
+/** How the phone tells the user while the app is closed: never (the default), Stay connected, or UnifiedPush. */
+export type NotifyMode = 'off' | 'stay' | 'push';
+
+export interface PhoneNotifications {
+  mode(): Promise<NotifyMode>;
+  /** Choose the mode (with the push app, for UnifiedPush). */
+  set(mode: NotifyMode, distributor?: string): Promise<NotifyMode>;
+  /** The push apps on this phone. */
+  distributors(): Promise<string[]>;
+  /** Give the computer the push address; whether it has it. */
+  syncPush(): Promise<boolean>;
+  /** Alarms for briefs: [event id, Unix ms]. */
+  scheduleBriefs(briefs: Array<[string, number]>): Promise<void>;
+}
+
+export interface LockStatus {
+  required: boolean;
+  hasPin: boolean;
+  biometric: boolean;
+  locked: boolean;
+}
+
+export interface PhoneLock {
+  status(): Promise<LockStatus>;
+  setPin(pin: string): Promise<void>;
+  unlock(pin: string): Promise<void>;
+  unlockBiometric(): Promise<void>;
+  configure(pin: string, change: { enabled?: boolean; biometric?: boolean }): Promise<void>;
+  hidden(): Promise<void>;
+  /** Back on screen: whether it is locked again. */
+  shown(): Promise<boolean>;
 }
 
 const PLUGIN = 'shodh-android';
@@ -182,4 +219,20 @@ export const tauriDevice: Device = {
     write: (name, value) => invoke<void>('sealed_write', { name, value }),
   },
   systemBars: theme => invoke<void>('system_bars', { theme }),
+  notifications: {
+    mode: () => invoke<NotifyMode>('notifications_mode'),
+    set: (mode, distributor) => invoke<NotifyMode>('notifications_set', { mode, distributor: distributor ?? null }),
+    distributors: () => invoke<string[]>('push_distributors'),
+    syncPush: () => invoke<boolean>('push_sync'),
+    scheduleBriefs: briefs => invoke<void>('briefs_schedule', { briefs }),
+  },
+  lock: {
+    status: () => invoke<LockStatus>('lock_status'),
+    setPin: pin => invoke<void>('lock_set_pin', { pin }),
+    unlock: pin => invoke<void>('lock_unlock', { pin }),
+    unlockBiometric: () => invoke<void>('lock_unlock_biometric'),
+    configure: (pin, change) => invoke<void>('lock_configure', { pin, enabled: change.enabled ?? null, biometric: change.biometric ?? null }),
+    hidden: () => invoke<void>('lock_hidden'),
+    shown: () => invoke<boolean>('lock_shown'),
+  },
 };

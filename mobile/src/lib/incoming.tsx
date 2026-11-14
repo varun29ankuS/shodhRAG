@@ -19,6 +19,9 @@ interface Offers {
   sending: Picked[] | null;
   /** Text or a link waiting to be asked about. */
   asking: Shared | null;
+  /** The event whose brief a notification opened. */
+  briefing: string | null;
+  closeBrief: () => void;
   offerSend: (files: Picked[]) => void;
   offerAsk: (shared: Shared) => void;
   closeSend: () => void;
@@ -32,6 +35,7 @@ export function IncomingProvider({ children }: { children: ReactNode }) {
   const { show } = useNote();
   const [sending, setSending] = useState<Picked[] | null>(null);
   const [asking, setAsking] = useState<Shared | null>(null);
+  const [briefing, setBriefing] = useState<string | null>(null);
 
   const route = useCallback(
     (incoming: Incoming) => {
@@ -44,6 +48,9 @@ export function IncomingProvider({ children }: { children: ReactNode }) {
           break;
         case 'error':
           show(incoming.message, 'problem');
+          break;
+        case 'brief':
+          setBriefing(incoming.eventId);
           break;
         case 'none':
           break;
@@ -84,12 +91,14 @@ export function IncomingProvider({ children }: { children: ReactNode }) {
     () => ({
       sending,
       asking,
+      briefing,
+      closeBrief: () => setBriefing(null),
       offerSend: list => setSending(list),
       offerAsk: shared => setAsking(shared),
       closeSend: () => setSending(null),
       closeAsk: () => setAsking(null),
     }),
-    [sending, asking],
+    [sending, asking, briefing],
   );
   return <OffersContext.Provider value={value}>{children}</OffersContext.Provider>;
 }

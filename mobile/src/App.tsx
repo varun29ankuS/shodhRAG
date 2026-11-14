@@ -17,6 +17,8 @@ import { DeviceProvider, QueueProvider } from './lib/queue';
 import { IncomingProvider, useOffers } from './lib/incoming';
 import { SendSheet } from './components/SendSheet';
 import { AskAbout } from './components/AskAbout';
+import { LockGate } from './components/LockGate';
+import { Background } from './components/Background';
 import { AgendaProvider } from './lib/agenda';
 import { Tasks } from './screens/Tasks';
 import { askScreen, type Nav } from './lib/nav';
@@ -47,8 +49,9 @@ export function App({ source, start = null, device = tauriDevice }: { source: Li
   return (
     <MotionConfig reducedMotion="user">
       <ThemeProvider systemBars={device.systemBars}>
+        <DeviceProvider device={device}>
+          <LockGate source={source} skip={start !== null}>
         <LinkProvider source={source} openPairing={openPairing}>
-          <DeviceProvider device={device}>
             <QueueProvider>
               <NavProvider initial={start?.nav ?? undefined}>
                 <NoteProvider>
@@ -62,8 +65,9 @@ export function App({ source, start = null, device = tauriDevice }: { source: Li
                 </NoteProvider>
               </NavProvider>
             </QueueProvider>
-          </DeviceProvider>
         </LinkProvider>
+          </LockGate>
+        </DeviceProvider>
       </ThemeProvider>
     </MotionConfig>
   );
@@ -124,6 +128,7 @@ function Main() {
       </AnimatePresence>
       <AnimatePresence>{offers.sending && <SendSheet key="send" files={offers.sending} />}</AnimatePresence>
       <AnimatePresence>{offers.asking && <AskAbout key="ask-about" shared={offers.asking} />}</AnimatePresence>
+      <Background />
     </>
   );
 }

@@ -13,7 +13,9 @@ mod bars;
 mod calendar;
 mod files;
 mod link;
+mod lock;
 mod logcat;
+mod notify;
 mod queue;
 mod store;
 mod update;
@@ -51,6 +53,8 @@ pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_barcode_scanner::init())
         .plugin(tauri_plugin_shodh_android::init())
+        .plugin(tauri_plugin_biometric::init())
+        .manage(lock::LockGate::default())
         .manage(link::Link::new(link::device_name()))
         .manage(store::Store::default())
         .manage(queue::Queue::default())
@@ -59,6 +63,7 @@ pub fn run() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle.state::<link::Link>().start(&handle).await;
+                notify::resume(&handle).await;
             });
             Ok(())
         })
@@ -93,6 +98,18 @@ pub fn run() {
             calendar::sealed_read,
             calendar::sealed_write,
             bars::system_bars,
+            notify::notifications_mode,
+            notify::notifications_set,
+            notify::push_distributors,
+            notify::push_sync,
+            notify::briefs_schedule,
+            lock::lock_status,
+            lock::lock_set_pin,
+            lock::lock_unlock,
+            lock::lock_unlock_biometric,
+            lock::lock_configure,
+            lock::lock_hidden,
+            lock::lock_shown,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

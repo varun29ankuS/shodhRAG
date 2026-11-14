@@ -136,7 +136,9 @@ export function itemWords(item: QueuedItem): { title: string; state: string } {
 /** Whether `error` means the computer is not reachable now (try again later), not a refusal. */
 export function isOffline(error: unknown): boolean {
   if (error instanceof AskStopped) return true;
-  return typeof error === 'object' && error !== null && 'code' in error && (error as { code: unknown }).code === 'offline';
+  // Offline, or the app is locked: it waits, it does not fail.
+  const code = typeof error === 'object' && error !== null && 'code' in error ? (error as { code: unknown }).code : null;
+  return code === 'offline' || code === 'locked';
 }
 
 /** The question's answer in `conversation`, when it is there and finished. */

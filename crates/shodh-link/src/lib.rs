@@ -17,6 +17,8 @@
 //! - [`update`]: the one-tap update, verified before it is installed.
 //! - [`transfer`]: files from the phone, in parts that resume.
 //! - [`phone_calendar`]: which of the phone's calendars Shodh may touch.
+//! - [`lock`]: the phone's PIN lock, on by default.
+//! - [`notify`]: what a notification may say (no content), and the push address.
 //!
 //! Transport: iroh (QUIC, end-to-end encrypted, dialled by public key),
 //! direct where it can be and through n0's public relays otherwise. A relay
@@ -25,7 +27,9 @@
 pub mod allowlist;
 pub mod bridge;
 pub mod client;
+pub mod lock;
 pub mod messages;
+pub mod notify;
 pub mod outbox;
 pub mod pairing;
 pub mod phone;

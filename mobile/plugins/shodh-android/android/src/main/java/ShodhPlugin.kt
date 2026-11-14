@@ -52,6 +52,7 @@ class ShodhFileProvider : FileProvider()
     permissions = [
         Permission(strings = [Manifest.permission.CAMERA], alias = "camera"),
         Permission(strings = [Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR], alias = "calendar"),
+        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
     ],
 )
 class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
@@ -65,6 +66,24 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
         super.load(webView)
         Incoming.listener = { trigger("incoming", JSObject()) }
         watchCalendar()
+        briefFrom(activity.intent)
+    }
+
+    /** A brief's notification was tapped: the app opens at that brief. */
+    private fun briefFrom(intent: Intent?) {
+        val eventId = intent?.getStringExtra(Notifier.EXTRA_BRIEF) ?: return
+        intent.removeExtra(Notifier.EXTRA_BRIEF)
+        Incoming.deliver(JSObject().put("kind", "brief").put("eventId", eventId))
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Notifier.foreground = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Notifier.foreground = false
     }
 
     private fun watchCalendar() {
@@ -74,6 +93,7 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        briefFrom(intent)
         trigger("incoming", JSObject())
     }
 
@@ -209,6 +229,80 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun takeIncoming(invoke: Invoke) {
         invoke.resolve(Incoming.take() ?: JSObject().put("kind", "none"))
+    }
+
+    // ── Notifications ──────────────────────────────────────────────
+
+    @Command
+    fun notificationsAccess(invoke: Invoke) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
+            getPermissionState("notifications") == PermissionState.GRANTED
+        ) {
+            invoke.resolve(JSObject().put("granted", androidx.core.app.NotificationManagerCompat.from(activity).areNotificationsEnabled()))
+            return
+        }
+        requestPermissionForAlias("notifications", invoke, "notificationsAnswered")
+    }
+
+    @PermissionCallback
+    private fun notificationsAnswered(invoke: Invoke) {
+        invoke.resolve(JSObject().put("granted", getPermissionState("notifications") == PermissionState.GRANTED))
+    }
+
+    @Command
+    fun startConnection(invoke: Invoke) {
+        activity.runOnUiThread {
+            try {
+                ConnectionService.start(activity)
+                invoke.resolve()
+            } catch (e: Exception) {
+                invoke.reject(e.message ?: "Shodh could not stay connected.")
+            }
+        }
+    }
+
+    @Command
+    fun stopConnection(invoke: Invoke) {
+        ConnectionService.stop(activity)
+        invoke.resolve()
+    }
+
+    @Command
+    fun pushDistributors(invoke: Invoke) {
+        val list = JSArray()
+        for (name in Push.distributors(activity)) list.put(name)
+        invoke.resolve(JSObject().put("distributors", list))
+    }
+
+    @Command
+    fun pushRegister(invoke: Invoke) {
+        val distributor = invoke.getArgs().getString("distributor", null)
+        background(invoke) {
+            Push.register(activity, distributor ?: throw IllegalArgumentException("Choose a push app."))
+            JSObject()
+        }
+    }
+
+    @Command
+    fun pushUnregister(invoke: Invoke) {
+        Push.unregister(activity)
+        invoke.resolve()
+    }
+
+    @Command
+    fun pushTakeEndpoint(invoke: Invoke) {
+        invoke.resolve(JSObject().put("endpoint", Push.takeEndpoint(activity)))
+    }
+
+    @Command
+    fun scheduleBriefs(invoke: Invoke) {
+        val list = invoke.getArgs().getJSONArray("briefs")
+        val briefs = (0 until list.length()).associate {
+            val item = list.getJSONObject(it)
+            item.getString("eventId") to item.getLong("atMs")
+        }
+        Briefs.schedule(activity, briefs)
+        invoke.resolve()
     }
 
     // ── The phone's own calendar ──────────────────────────────────

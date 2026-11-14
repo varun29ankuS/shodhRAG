@@ -1298,6 +1298,24 @@ jobs:
             echo "- debug APK \`$(basename "$apk")\`: $(du -h "$apk" | cut -f1), built in ${seconds} s; libraries: ${abis}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # allow_backup_is_off: nothing of Shodh leaves the phone in a backup or a move
+      # to a new phone (its link key and sealed files belong to this phone's
+      # Keystore). Read from the built app's merged manifest, so a template or a
+      # library that turned backup back on fails here.
+      - name: Android backup is off in the built app
+        run: |
+          set -euo pipefail
+          manifest=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
+          if ! grep -Eq 'allowBackup\(0x[0-9a-f]+\)=false' <<< "$manifest"; then
+            echo "::error::android:allowBackup is not false in the built app"
+            grep -i backup <<< "$manifest" || true
+            exit 1
+          fi
+          if ! grep -q 'dataExtractionRules' <<< "$manifest"; then
+            echo "::error::the built app has no dataExtractionRules (Android 12 and later would move its data to a new phone)"
+            exit 1
+          fi
+
       - name: Upload the debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

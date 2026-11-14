@@ -8,8 +8,20 @@
     <!-- The phone's own calendar, only when the user turns on calendar sync. -->
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <!-- Notifications (Settings, Notifications): content-free, and "Stay connected". -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
-    <application>
+    <!--
+      Nothing of Shodh leaves this phone in a backup or a move to a new phone: its
+      link key and sealed files are kept with a key of this phone's Keystore, which a
+      restored copy could not open (and the pairing must not travel).
+    -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/shodh_data_extraction_rules"
+        android:fullBackupContent="false">
         <!-- Android's installer reports here (it first asks the user to confirm). -->
         <receiver
             android:name="com.shodhrag.android.InstallResult"
@@ -40,6 +52,33 @@
                 <data android:mimeType="vnd.android.cursor.item/event" />
             </intent-filter>
         </activity>
+
+        <!-- "Stay connected": keeps the link to the user's computer open. -->
+        <service
+            android:name="com.shodhrag.android.ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the encrypted link to the user's own computer open, to tell them when an approval or an answer waits." />
+        </service>
+
+        <!-- UnifiedPush: the user's distributor app (for example ntfy) wakes Shodh. -->
+        <receiver
+            android:name="com.shodhrag.android.PushReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- A brief before a meeting: its alarm. -->
+        <receiver
+            android:name="com.shodhrag.android.BriefAlarm"
+            android:exported="false" />
 
         <!-- The camera writes a photo into the app's own cache through this. -->
         <provider

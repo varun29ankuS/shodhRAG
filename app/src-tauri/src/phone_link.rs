@@ -221,6 +221,7 @@ pub fn manage(app: &AppHandle) {
             }
         });
     }
+    push::start(app);
     app.manage(PhoneLinkState {
         devices: OnceCell::new(),
         pairing: Arc::new(PendingPairing::default()),
@@ -515,6 +516,10 @@ pub async fn phone_device_remove(
             }));
     }
     if removed {
+        // Its push address goes with it: a removed phone is never woken again.
+        if let Err(e) = api_key_store::remove_secret(&push::push_user(&node_id)) {
+            tracing::warn!(target: "shodh::link", error = %e, "a removed phone's push address could not be forgotten");
+        }
         devices_changed(&app);
     }
     stop_if_idle(&app).await;
@@ -1070,6 +1075,8 @@ async fn dispatch(
         "agent_send" => {
             let a: SendArgs = args(raw)?;
             check_session(app.state::<AgentSessions>().remote_facts(&a.session_id))?;
+            // Only this phone hears (by push) that this session's answer is ready.
+            app.state::<push::Askers>().asked(&a.session_id, &caller.node_id);
             if a.review_action == Some(true) {
                 return Err(shodh_link::bridge::refused(CODE_ON_COMPUTER));
             }
@@ -1333,6 +1340,16 @@ async fn dispatch(
         "phone_photo_keep" => photos::keep(app, caller, raw).await,
         // A brief before a meeting (phone_link/brief.rs): retrieval only, cited.
         "meeting_brief" => brief::meeting_brief(app, raw).await,
+        // Notifications by UnifiedPush (phone_link/push.rs): the phone's endpoint, kept
+        // in the credential store, never logged; `null` forgets it.
+        "phone_push_register" => {
+            if local_only(app) {
+                return Err(shodh_link::bridge::refused(LOCAL_ONLY));
+            }
+            let endpoint = raw.get("endpoint").and_then(Value::as_str);
+            push::register(&caller.node_id, endpoint).map_err(shodh_link::bridge::refused)?;
+            Ok(Value::Bool(endpoint.is_some()))
+        }
         other => Err(shodh_link::bridge::refused(format!(
             "Your phone cannot do this ({other}). Use Shodh on your computer."
         ))),
@@ -1402,6 +1419,7 @@ fn render_page(path: &str, kind: &str, page: usize, width: u32) -> Result<Value,
 pub mod brief;
 pub mod files;
 pub mod photos;
+pub mod push;
 pub mod stay_available;
 
 #[cfg(test)]

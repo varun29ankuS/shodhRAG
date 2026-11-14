@@ -738,6 +738,67 @@ describe('not paired', () => {
   });
 });
 
+describe('the lock', () => {
+  it('the_lock_is_required_on_open_by_default', async () => {
+    const phone = memoryDevice();
+    phone.lock.status_ = { required: true, hasPin: true, biometric: false, locked: true };
+    source = fakeSource(connectedComputer(), CONNECTED);
+    const { unmount } = render(<App source={source} device={phone} />);
+    expect(await screen.findByRole('dialog', { name: 'Shodh is locked' })).toBeTruthy();
+    // Nothing behind it runs: no conversation, nothing asked of the computer.
+    expect(screen.queryByText('Continue')).toBeNull();
+    fireEvent.change(screen.getByLabelText('Your PIN'), { target: { value: '000000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+    expect(await screen.findByText(/That is not your PIN/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Your PIN'), { target: { value: '482913' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
+    expect(await screen.findByText('Continue')).toBeTruthy();
+    unmount();
+  });
+
+  it('the first time, the PIN is set before anything opens', async () => {
+    const phone = memoryDevice();
+    phone.lock.status_ = { required: true, hasPin: false, biometric: false, locked: true };
+    source = fakeSource(connectedComputer(), CONNECTED);
+    const { unmount } = render(<App source={source} device={phone} />);
+    expect(await screen.findByRole('dialog', { name: 'Set a PIN' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Your new PIN'), { target: { value: '2468' } });
+    fireEvent.change(screen.getByLabelText('The new PIN again'), { target: { value: '2469' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set the PIN' }));
+    expect(await screen.findByText('The two PINs are not the same.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Your new PIN'), { target: { value: '2468' } });
+    fireEvent.change(screen.getByLabelText('The new PIN again'), { target: { value: '2468' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set the PIN' }));
+    expect(await screen.findByText('Continue')).toBeTruthy();
+    expect(phone.lock.pin).toBe('2468');
+    unmount();
+  });
+
+  it('an unpaired phone shows pairing, not the lock', async () => {
+    const phone = memoryDevice();
+    phone.lock.status_ = { required: true, hasPin: false, biometric: false, locked: true };
+    source = fakeSource(silentComputer(), { state: 'unpaired' });
+    const { unmount } = render(<App source={source} device={phone} />);
+    expect(await screen.findByRole('heading', { name: 'Pair with your computer' })).toBeTruthy();
+    unmount();
+  });
+});
+
+describe('Settings, Notifications', () => {
+  it('is off by default; Stay connected and Push are the user’s to choose', async () => {
+    const phone = memoryDevice();
+    show(connectedComputer(), CONNECTED, initialNav('settings'), phone);
+    const group = await screen.findByRole('radiogroup', { name: 'Notifications' });
+    await waitFor(() => expect(within(group).getByRole('radio', { name: 'Off' }).getAttribute('aria-checked')).toBe('true'));
+    expect(phone.notifications.sets).toEqual([]);
+    fireEvent.click(within(group).getByRole('radio', { name: 'Stay connected' }));
+    await waitFor(() => expect(phone.notifications.sets).toEqual([['stay', undefined]]));
+    fireEvent.click(within(group).getByRole('radio', { name: 'Push' }));
+    await waitFor(() => expect(phone.notifications.sets.at(-1)).toEqual(['push', 'io.heckel.ntfy']));
+    expect(screen.getByText('Every notification says only what waits, never what it is about.')).toBeTruthy();
+  });
+});
+
 describe('the theme', () => {
   it('follows the phone, live, until the user picks Light or Dark', async () => {
     show(connectedComputer(), CONNECTED, initialNav('settings'));

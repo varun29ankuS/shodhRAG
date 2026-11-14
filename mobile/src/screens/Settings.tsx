@@ -9,6 +9,7 @@ import { TopBar } from '../components/Bars';
 import { connectionWords, Dot } from '../components/Connection';
 import { UpdatePanel } from '../components/Update';
 import { CalendarSettings } from '../components/CalendarSettings';
+import { LockSettings, NotificationSettings } from '../components/PrivacySettings';
 import { useLink, useThemeChoice } from '../lib/context';
 import { errorText } from '../lib/link';
 import { viewIn } from '../lib/motion';
@@ -62,6 +63,12 @@ export function Settings() {
           </div>
         </div>
         {status.state === 'update' && <UpdatePanel desktop={status.desktop} />}
+
+        <div className="label">Notifications</div>
+        <NotificationSettings />
+
+        <div className="label">Lock</div>
+        <LockSettings />
 
         <div className="label">Calendar</div>
         <CalendarSettings />

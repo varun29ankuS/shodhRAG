@@ -148,3 +148,28 @@ describe('the follow-up composer', () => {
     expect(ask).toContain('scroll scroll-with-composer');
   });
 });
+
+describe('the launcher icon', () => {
+  const res = resolve(process.cwd(), 'src-tauri/icons/android');
+  const read = (path: string) => readFileSync(join(res, path), 'utf8');
+
+  it('is adaptive: the whole elephant inside the safe zone, white or black behind it, and a monochrome layer', () => {
+    for (const name of ['ic_launcher', 'ic_launcher_round']) {
+      const icon = read(`mipmap-anydpi-v26/${name}.xml`);
+      expect(icon).toContain('@color/shodh_icon_background');
+      expect(icon).toContain('@drawable/shodh_icon_foreground');
+      expect(icon).toContain('<monochrome android:drawable="@drawable/shodh_icon_monochrome"');
+    }
+    const foreground = read('drawable/shodh_icon_foreground.xml');
+    // The elephant's layer is scaled into the central 66% of the icon, never full bleed.
+    const scale = Number(/android:scaleX="([\d.]+)"/.exec(foreground)?.[1]);
+    expect(scale).toBeGreaterThan(0.5);
+    expect(scale).toBeLessThanOrEqual(0.7);
+    // The elephant itself is unchanged: every shape of the logo is there.
+    const svg = readFileSync(resolve(process.cwd(), '../app/public/shodh_logo_nobackground.svg'), 'utf8');
+    expect(foreground.match(/<path /g)?.length).toBe(svg.match(/<path\b/g)?.length);
+    expect(read('drawable/shodh_icon_monochrome.xml').match(/<path /g)?.length).toBe(svg.match(/<path\b/g)?.length);
+    expect(read('values/shodh_icon.xml')).toMatch(/shodh_icon_background">#FFFFFF</);
+    expect(read('values-night/shodh_icon.xml')).toMatch(/shodh_icon_background">#000000</);
+  });
+});

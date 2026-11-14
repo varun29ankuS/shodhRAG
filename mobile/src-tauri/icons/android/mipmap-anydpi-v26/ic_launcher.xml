@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Shodh's adaptive icon: the whole elephant inside the safe zone (drawable/shodh_icon_foreground),
+  on white with the phone in light mode and black in dark mode (values/ and values-night/,
+  so a dark mode scheduled for sunset follows too), and a monochrome layer for Android 13+
+  themed icons.
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-  <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-  <background android:drawable="@color/ic_launcher_background"/>
+    <background android:drawable="@color/shodh_icon_background" />
+    <foreground android:drawable="@drawable/shodh_icon_foreground" />
+    <monochrome android:drawable="@drawable/shodh_icon_monochrome" />
 </adaptive-icon>

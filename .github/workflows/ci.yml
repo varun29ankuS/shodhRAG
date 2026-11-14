@@ -1318,6 +1318,30 @@ jobs:
             exit 1
           fi
 
+      # The launcher icon is an adaptive icon: the whole elephant inside the safe zone
+      # (its layer scaled to 0.66, not full bleed), a white background with the phone
+      # in light mode and black in dark mode, and a monochrome layer for themed icons.
+      - name: The launcher icon is adaptive, inset, and follows night mode
+        run: |
+          set -euo pipefail
+          aapt2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          icon=$("$aapt2" dump xmltree --file res/mipmap-anydpi-v26/ic_launcher.xml "$APK")
+          for layer in background foreground monochrome; do
+            grep -q "E: $layer" <<< "$icon" || { echo "::error::the adaptive icon has no $layer layer"; echo "$icon"; exit 1; }
+          done
+          foreground=$("$aapt2" dump xmltree --file res/drawable/shodh_icon_foreground.xml "$APK")
+          scale=$(grep -m 1 -oE 'scaleX\(0x[0-9a-f]+\)=[0-9.]+' <<< "$foreground" | sed 's/.*=//')
+          if [ -z "$scale" ] || ! awk -v s="$scale" 'BEGIN { exit !(s > 0 && s <= 0.7) }'; then
+            echo "::error::the icon's elephant is not inset into the safe zone (scale ${scale:-none})"
+            exit 1
+          fi
+          resources=$("$aapt2" dump resources "$APK")
+          background=$(grep -A4 'color/shodh_icon_background' <<< "$resources")
+          grep -q '(night)' <<< "$background" || { echo "::error::the icon has no night background"; echo "$background"; exit 1; }
+          grep -qi '#ff000000' <<< "$background" || { echo "::error::the night background is not black"; echo "$background"; exit 1; }
+          grep -qi '#ffffffff' <<< "$background" || { echo "::error::the light background is not white"; echo "$background"; exit 1; }
+          echo "- launcher icon: adaptive, elephant at scale $scale, white or black background, monochrome layer" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
@@ -1494,6 +1518,20 @@ jobs:
               done
             done
             adb shell setprop debug.shodh.screen "''"
+            # The launcher, with Shodh's icon, in light and dark (for the user's review):
+            # the home screen, then the list of all apps (a swipe up). The pauses only
+            # let the launcher settle for the picture, and decide no result.
+            adb shell am force-stop "$ANDROID_PACKAGE"
+            for theme in light dark; do
+              if [ "$theme" = dark ]; then adb shell cmd uimode night yes; else adb shell cmd uimode night no; fi
+              adb shell input keyevent KEYCODE_HOME
+              sleep 3
+              adb exec-out screencap -p > "$screens/launcher-home-$theme.png"
+              adb shell input swipe 540 2000 540 500 300
+              sleep 3
+              adb exec-out screencap -p > "$screens/launcher-apps-$theme.png"
+              adb shell input keyevent KEYCODE_HOME
+            done
             adb shell cmd uimode night no
             echo "- ${#shots[@]} screens, each in light and dark, are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
             if [ "${#themes_wrong[@]}" -gt 0 ]; then

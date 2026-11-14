@@ -184,7 +184,8 @@ export class MemoryCalendar implements PhoneCalendar {
     { id: 1, name: 'Personal', account: 'me@example.org', color: '#3366ff', shodh: false },
     { id: 2, name: 'Work', account: 'me@example.org', color: '#22aa66', shodh: false },
   ];
-  events: PhoneEvent[] = [];
+  /** Every event on the phone, in the calendars Shodh may and may not read. */
+  stored: PhoneEvent[] = [];
   writes: CalendarWrite[] = [];
   current: CalendarChoice = { enabled: false, chosen: [], shodhCalendar: null, useWithShodh: false };
   private nextId = 100;
@@ -207,23 +208,23 @@ export class MemoryCalendar implements PhoneCalendar {
   }
   async events() {
     const reachable = new Set([...(this.current.enabled ? this.current.chosen : []), ...(this.current.enabled && this.current.shodhCalendar !== null ? [this.current.shodhCalendar] : [])]);
-    return this.events.filter(e => reachable.has(e.calendarId)).map(e => ({ ...e }));
+    return this.stored.filter(e => reachable.has(e.calendarId)).map(e => ({ ...e }));
   }
   async write(write: CalendarWrite) {
     this.writes.push(write);
     if (write.kind === 'insert') {
       const eventId = ++this.nextId;
       const f = write.fields as { title: string; startMs: number; endMs: number | null; allDay: boolean; location: string | null; description: string; shodhUri?: string };
-      this.events.push({ eventId, calendarId: write.calendarId, title: f.title, startMs: f.startMs, endMs: f.endMs ?? f.startMs + 3_600_000, allDay: f.allDay, location: f.location, description: f.description, shodhUri: f.shodhUri ?? null });
+      this.stored.push({ eventId, calendarId: write.calendarId, title: f.title, startMs: f.startMs, endMs: f.endMs ?? f.startMs + 3_600_000, allDay: f.allDay, location: f.location, description: f.description, shodhUri: f.shodhUri ?? null });
       return { eventId };
     }
     if (write.kind === 'update') {
-      const event = this.events.find(e => e.eventId === write.eventId && e.calendarId === write.calendarId);
+      const event = this.stored.find(e => e.eventId === write.eventId && e.calendarId === write.calendarId);
       const f = write.fields as { title: string; startMs: number; endMs: number | null; allDay: boolean; location: string | null; description: string };
       if (event) Object.assign(event, { ...f, endMs: f.endMs ?? f.startMs + 3_600_000 });
       return {};
     }
-    this.events = this.events.filter(e => !(e.eventId === write.eventId && e.calendarId === write.calendarId));
+    this.stored = this.stored.filter(e => !(e.eventId === write.eventId && e.calendarId === write.calendarId));
     return {};
   }
   async onChanged(handler: () => void) {

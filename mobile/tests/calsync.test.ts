@@ -118,7 +118,7 @@ describe('calendar sync', () => {
     const computer = new Computer();
     const device = memoryDevice();
     await syncOn(device);
-    device.calendar.events.push(phoneEvent(PERSONAL, 41, 'Dentist', at(16, 10)));
+    device.calendar.stored.push(phoneEvent(PERSONAL, 41, 'Dentist', at(16, 10)));
 
     // The phone's event appears in Shodh, marked as the phone calendar's copy.
     let { state } = await syncOnce(computer, device, emptyState());
@@ -130,13 +130,13 @@ describe('calendar sync', () => {
     // Moved in Shodh: the phone's calendar follows.
     computer.edit(computer.events[0].id, { startTime: '2026-11-16T11:30', endTime: '2026-11-16T12:30' }, NOW + 60_000);
     ({ state } = await syncOnce(computer, device, state));
-    const dentist = device.calendar.events.find(e => e.eventId === 41)!;
+    const dentist = device.calendar.stored.find(e => e.eventId === 41)!;
     expect(phoneFields(dentist)).toMatchObject({ start: '2026-11-16T11:30', end: '2026-11-16T12:30' });
 
     // And Shodh's own event goes into the phone's Shodh calendar, with its "Open in Shodh" link.
     computer.events.push({ id: 'shodh-1', title: 'Reading group', startTime: '2026-11-15T17:00', endTime: '2026-11-15T18:00', allDay: false, source: 'user', createdAt: new Date(NOW).toISOString() });
     ({ state } = await syncOnce(computer, device, state));
-    const mirrored = device.calendar.events.find(e => e.calendarId === SHODH)!;
+    const mirrored = device.calendar.stored.find(e => e.calendarId === SHODH)!;
     expect(mirrored).toMatchObject({ title: 'Reading group', shodhUri: 'shodh://event/shodh-1' });
     // Nothing more to do: both sides agree.
     expect((await syncOnce(computer, device, state)).actions).toEqual([]);
@@ -148,7 +148,7 @@ describe('calendar sync', () => {
     await syncOn(device);
     computer.events.push({ id: 'm1', title: 'Meet Asha', startTime: '2026-11-17T09:00', endTime: '2026-11-17T10:00', allDay: false, source: 'user', createdAt: new Date(NOW).toISOString() });
     let { state } = await syncOnce(computer, device, emptyState());
-    const onPhone = device.calendar.events.find(e => e.calendarId === SHODH)!;
+    const onPhone = device.calendar.stored.find(e => e.calendarId === SHODH)!;
 
     // The phone's edit is seen at 08:05 (while the computer was asleep); the computer's is at 08:10.
     onPhone.title = 'Meet Asha (phone)';
@@ -172,9 +172,9 @@ describe('calendar sync', () => {
     const computer = new Computer();
     const device = memoryDevice();
     await syncOn(device, { chosen: [PERSONAL] });
-    device.calendar.events.push(phoneEvent(WORK, 7, 'Board meeting', at(18, 14)), phoneEvent(PERSONAL, 8, 'Yoga', at(18, 7)));
+    device.calendar.stored.push(phoneEvent(WORK, 7, 'Board meeting', at(18, 14)), phoneEvent(PERSONAL, 8, 'Yoga', at(18, 7)));
     // Even if an event of another calendar reached the plan, it is left out.
-    const planned = plan(emptyState(), [], device.calendar.events, options());
+    const planned = plan(emptyState(), [], device.calendar.stored, options());
     expect(planned.actions.map(a => (a.kind === 'desktopCreate' ? a.fields.title : a.kind))).toEqual(['Yoga']);
     await syncOnce(computer, device, emptyState());
     expect(computer.events.map(e => e.title)).toEqual(['Yoga']);
@@ -184,7 +184,7 @@ describe('calendar sync', () => {
     const computer = new Computer();
     const device = memoryDevice();
     await syncOn(device, { useWithShodh: false });
-    device.calendar.events.push(phoneEvent(PERSONAL, 8, 'Yoga', at(18, 7)));
+    device.calendar.stored.push(phoneEvent(PERSONAL, 8, 'Yoga', at(18, 7)));
     // Off: shown on the phone, never sent to the computer (where events are indexed).
     let { state, actions } = await syncOnce(computer, device, emptyState(), { useWithShodh: false });
     expect(actions.filter(a => a.kind.startsWith('desktop'))).toEqual([]);
@@ -211,18 +211,18 @@ describe('calendar sync', () => {
     computer.events.push({ id: 'm1', title: 'Meet Asha', startTime: '2026-11-17T09:00', allDay: false, createdAt: new Date(NOW).toISOString() });
     let { state } = await syncOnce(computer, device, emptyState());
     // Removed on the phone: the computer keeps it until the user says.
-    device.calendar.events = device.calendar.events.filter(e => e.calendarId !== SHODH);
+    device.calendar.stored = device.calendar.stored.filter(e => e.calendarId !== SHODH);
     let actions;
     ({ state, actions } = await syncOnce(computer, device, state));
     expect(actions).toEqual([]);
     expect(state.pending).toEqual([expect.objectContaining({ deletedOn: 'phone', title: 'Meet Asha' })]);
     // "Keep it": it comes back on the phone. Asked again, and "Remove": gone on the computer too.
-    const kept = resolveDelete(state, state.pending[0].id, false, computer.events, device.calendar.events);
+    const kept = resolveDelete(state, state.pending[0].id, false, computer.events, device.calendar.stored);
     state = await applyActions(kept.actions, kept.state, computer.shim, device);
-    expect(device.calendar.events.some(e => e.calendarId === SHODH && e.title === 'Meet Asha')).toBe(true);
-    device.calendar.events = device.calendar.events.filter(e => e.calendarId !== SHODH);
+    expect(device.calendar.stored.some(e => e.calendarId === SHODH && e.title === 'Meet Asha')).toBe(true);
+    device.calendar.stored = device.calendar.stored.filter(e => e.calendarId !== SHODH);
     ({ state } = await syncOnce(computer, device, state));
-    const removed = resolveDelete(state, state.pending[0].id, true, computer.events, device.calendar.events);
+    const removed = resolveDelete(state, state.pending[0].id, true, computer.events, device.calendar.stored);
     await applyActions(removed.actions, removed.state, computer.shim, device);
     expect(computer.events).toEqual([]);
   });

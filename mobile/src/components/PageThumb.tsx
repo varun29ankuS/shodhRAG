@@ -1,7 +1,9 @@
 /**
  * A file as a small page: the real page rendered on the computer for a PDF
  * or an image (`read_source_page`), loaded when it scrolls into view, or
- * the file's name and type on paper for a file without pages.
+ * the file's name and type on paper for a file without pages. Small (a
+ * row's thumbnail), a file without pages is a plain paper page with ruled
+ * lines: its name is already beside it.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useLink } from '../lib/context';
@@ -15,9 +17,11 @@ interface Props {
   /** The citation number shown on the page, for a source. */
   badge?: number | null;
   className?: string;
+  /** A row's thumbnail: a small paper page, no words on it. */
+  small?: boolean;
 }
 
-export function PageThumb({ path, page = null, badge = null, className = '' }: Props) {
+export function PageThumb({ path, page = null, badge = null, className = '', small = false }: Props) {
   const { desktop, connected } = useLink();
   const ref = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
@@ -64,11 +68,18 @@ export function PageThumb({ path, page = null, badge = null, className = '' }: P
 
   const name = fileName(path);
   return (
-    <span ref={ref} className={`paper paper-thumb ${className}`}>
+    <span ref={ref} className={`paper paper-thumb${small ? ' paper-small' : ''} ${className}`}>
       {image ? (
         <img src={image.src} alt={`${name}, page ${page ?? 1}`} />
       ) : paged && !failed ? (
         <span className="paper-skeleton" aria-hidden="true" />
+      ) : small ? (
+        <span className="paper-lines" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <span />
+        </span>
       ) : (
         <span className="paper-type">
           <span className="paper-type-name">{name}</span>

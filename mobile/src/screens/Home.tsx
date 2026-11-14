@@ -4,7 +4,7 @@
  * conversations. Everything comes from the computer.
  */
 import { useState, type FormEvent } from 'react';
-import { ArrowUp, CalendarDays, Camera, Sparkles } from 'lucide-react';
+import { ArrowUp, CalendarDays, Camera, ChevronRight, Sparkles } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { PhotoAsk } from '../components/PhotoAsk';
 import { MicButton } from '../components/Voice';
@@ -26,6 +26,7 @@ import { agendaItems, dayKey, timeWords } from './Tasks';
 import { errorText } from '../lib/link';
 import { queuedQuestion } from '../lib/outbox';
 import { canQueue, useDevice, useQueue } from '../lib/queue';
+import logo from '../../src-tauri/icons/icon.png';
 
 /** A new conversation's id, as the desktop makes them. */
 export function newConversationId(): string {
@@ -85,14 +86,17 @@ export function Home({ now = () => new Date() }: { now?: () => Date }) {
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
         <TopBar />
-        <div className="pad" style={{ paddingTop: 26 }}>
-          <h1 className="greeting">{greeting(today)}</h1>
+        <div className="pad">
+          <div className="title-row">
+            <img src={logo} alt="" className="brand-logo" width={34} height={34} />
+            <h1 className="greeting">{greeting(today)}</h1>
+          </div>
           <p className={`line${words.dot === 'waiting' && status.state === 'offline' ? ' line-waiting' : ''}`} style={{ marginTop: 8 }}>
             {words.line}
           </p>
         </div>
 
-        <form className="askbox" style={{ margin: '22px 16px 0' }} onSubmit={submit}>
+        <form className="askbox" style={{ margin: '24px 20px 0' }} onSubmit={submit}>
           <label htmlFor="home-ask" className="visually-hidden">
             Ask about your library
           </label>
@@ -149,7 +153,7 @@ function HomeSkeleton() {
   return (
     <div aria-busy="true" aria-label="Loading your conversations">
       <div className="label">Continue</div>
-      <div className="skeleton" style={{ margin: '0 16px', height: 120, borderRadius: 22 }} />
+      <div className="skeleton" style={{ margin: '0 20px', height: 104, borderRadius: 12 }} />
       <div className="skeleton-lines">
         <div className="skeleton skeleton-line" style={{ width: '82%' }} />
         <div className="skeleton skeleton-line" style={{ width: '64%' }} />
@@ -178,14 +182,14 @@ function Continue({ conversation, now }: { conversation: ConversationSummary; no
     <>
       <div className="label">Continue</div>
       <button type="button" className="continue" onClick={open}>
-        <span className="row-text" style={{ gap: 6 }}>
+        <span className="row-text" style={{ gap: 4 }}>
           <span className="continue-question">{lastQuestion?.content ?? conversation.title}</span>
           {text !== '' && <span className="continue-answer">{snippet(text, 140)}</span>}
           <span className="row-sub">{ago(conversation.updatedAt, now)}</span>
         </span>
         {firstCited && (
-          <span style={{ width: 54, flex: 'none' }}>
-            <PageThumb path={firstCited.path} page={firstCited.page} />
+          <span style={{ width: 44, flex: 'none' }}>
+            <PageThumb path={firstCited.path} page={firstCited.page} small />
           </span>
         )}
       </button>
@@ -201,12 +205,14 @@ function Suggestions({ onAsk }: { onAsk: (question: string) => void }) {
   return (
     <>
       <div className="label">Ask about your library</div>
-      <div className="rows">
+      <div className="rows rows-icons">
         {folders.map(folder => {
           const question = `What do my files in ${folder.name} cover?`;
           return (
             <button key={folder.path} type="button" className="row" onClick={() => onAsk(question)}>
-              <Sparkles aria-hidden="true" className="icon" style={{ color: 'var(--c-accent-text)' }} />
+              <span className="row-icon">
+                <Sparkles aria-hidden="true" className="icon-small" />
+              </span>
               <span className="row-title" style={{ flex: 1 }}>
                 {question}
               </span>
@@ -231,7 +237,7 @@ function Recent({ list, empty, now }: { list: ConversationSummary[]; empty: bool
         )}
       </div>
       {empty ? (
-        <p className="panel-text pad">No conversations yet. Ask a question above to start one.</p>
+        <p className="panel-text panel-quiet">No conversations yet. Ask a question above to start one.</p>
       ) : (
         <div className="rows">
           {list.map(c => (
@@ -245,6 +251,7 @@ function Recent({ list, empty, now }: { list: ConversationSummary[]; empty: bool
                 <span className="row-title">{c.title}</span>
                 <span className="row-sub">{ago(c.updatedAt, now)}</span>
               </span>
+              <ChevronRight aria-hidden="true" className="chevron" />
             </button>
           ))}
         </div>
@@ -269,24 +276,34 @@ function TodayCard({ today }: { today: Date }) {
         : due === 0
           ? `${items.length} on your calendar today.`
           : `${items.length} on your calendar today, and ${due} ${due === 1 ? 'task' : 'tasks'} due.`;
+  const tasks = () => dispatch({ type: 'go', section: 'tasks' });
   return (
-    <div className="card">
-      <button type="button" className="row row-tinted" style={{ borderRadius: 0, width: '100%' }} onClick={() => dispatch({ type: 'go', section: 'tasks' })}>
-        <span className="row-icon">
-          <CalendarDays aria-hidden="true" className="icon-small" />
-        </span>
-        <span className="row-text">
-          <span className="row-title">{items[0] ? `${timeWords(items[0].fields)} \u00b7 ${items[0].title}` : 'Your agenda and tasks'}</span>
-          <span className="row-sub">{summary}</span>
-        </span>
-      </button>
-      {items.slice(1).map(item => (
-        <div key={item.key} className="row" style={{ borderRadius: 0 }}>
-          <span className="row-text">
-            <span className="row-title">{`${timeWords(item.fields)} \u00b7 ${item.title}`}</span>
-          </span>
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="card">
+        {items.length === 0 ? (
+          <button type="button" className="row" onClick={tasks}>
+            <span className="row-icon">
+              <CalendarDays aria-hidden="true" className="icon-small" />
+            </span>
+            <span className="row-title" style={{ flex: 1 }}>
+              Your agenda and tasks
+            </span>
+            <ChevronRight aria-hidden="true" className="chevron" />
+          </button>
+        ) : (
+          items.map(item => (
+            <button key={item.key} type="button" className="row agenda-row" data-source={item.phone ? 'phone' : 'shodh'} onClick={tasks}>
+              <span className="agenda-bar" aria-hidden="true" />
+              <span className="row-text">
+                <span className="row-title">{item.title}</span>
+                <span className="row-sub">{item.phone ? 'Your phone’s calendar' : 'Shodh'}</span>
+              </span>
+              <span className="row-value">{timeWords(item.fields)}</span>
+            </button>
+          ))
+        )}
+      </div>
+      <p className="group-footer">{summary}</p>
+    </>
   );
 }

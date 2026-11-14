@@ -26,7 +26,7 @@ export function QueuedRows({ items }: { items: QueuedItem[] }) {
   const { remove } = useQueue();
   if (items.length === 0) return null;
   return (
-    <div className="rows" aria-label="Waiting for your computer">
+    <div className="rows rows-icons" aria-label="Waiting for your computer">
       {items.map(item => {
         const words = itemWords(item);
         const removable = item.state === 'waiting' || item.state === 'failed';

@@ -659,6 +659,27 @@ button.row .row-icon {
   color: var(--label-2);
 }
 
+/* Words under a group: 13px secondary, inset like its header. */
+.group-footer {
+  padding: 8px 36px 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--label-2);
+}
+
+/* An event's calendar, as a thin bar in its colour: Shodh's red, or the phone's. */
+.agenda-bar {
+  width: 3px;
+  height: 28px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--brand-red);
+}
+
+.agenda-row[data-source='phone'] .agenda-bar {
+  background: var(--c-info);
+}
+
 /* ── Panels: not connected, empty, coming soon ──────────────────── */
 
 .panel {
@@ -1046,6 +1067,37 @@ strong {
   height: 100%;
   object-fit: cover;
   object-position: top;
+}
+
+/* A row's thumbnail: a small paper page with a hairline edge. */
+.paper-small {
+  border-radius: 3px;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.2),
+    0 0 0 0.5px rgba(0, 0, 0, 0.08);
+}
+
+.paper-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 18% 14%;
+}
+
+.paper-lines span {
+  height: 2px;
+  background: var(--paper-line);
+}
+
+.paper-lines span:first-child {
+  height: 3px;
+  width: 80%;
+  background: var(--paper-rule);
+}
+
+.paper-lines span:nth-child(3) {
+  width: 90%;
 }
 
 .paper-badge {
@@ -2031,7 +2083,7 @@ strong {
 }
 
 .queued[data-state='failed'] .row-sub {
-  color: var(--tint);
+  color: var(--c-error);
 }
 
 .toolbar {

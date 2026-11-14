@@ -191,21 +191,21 @@ h3 {
   padding-right: 20px;
 }
 
-/* The bar at the top: 44px tall, 8px under the status bar. */
+/* The bar at the top: 44px tall, 16px under the status bar. */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 52px;
-  padding: 8px 8px 0 10px;
+  min-height: 60px;
+  padding: 16px 8px 0 10px;
 }
 
 /* A pushed screen's bar: Back, the title in the middle, the end. */
 .navbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
-  padding: 8px 8px 0 4px;
+  padding: 16px 8px 0 4px;
 }
 
 .navbar-side {
@@ -559,10 +559,11 @@ h3 {
   color: var(--label);
   font-size: 17px;
   text-align: left;
+  transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
 button.row:active {
-  background-color: var(--fill);
+  transform: scale(0.96);
 }
 
 .card > * + *,
@@ -693,9 +694,9 @@ button.row .row-icon {
 
 /* An empty list's words: on the background, inset like a section header. */
 .panel-quiet {
-  background: transparent;
-  margin-top: 16px;
+  margin: 16px 20px 0;
   padding: 0 16px;
+  background: transparent;
 }
 
 .panel-title {
@@ -745,7 +746,7 @@ button.row .row-icon {
 }
 
 .button:active {
-  transform: scale(0.97);
+  transform: scale(0.96);
 }
 
 .button:disabled {
@@ -1250,8 +1251,8 @@ strong {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 8px 16px 0 4px;
-  min-height: 52px;
+  padding: 16px 16px 0 4px;
+  min-height: 60px;
 }
 
 .reader-where {
@@ -1530,7 +1531,7 @@ strong {
 }
 
 .menu-item:active {
-  transform: scale(0.98);
+  transform: scale(0.97);
 }
 
 .menu-item[aria-current='page'] {
@@ -2123,6 +2124,7 @@ strong {
   background-color: transparent;
   color: var(--label);
   text-align: left;
+  transition: transform 180ms cubic-bezier(0.3, 1.5, 0.5, 1);
 }
 
 .choice + .choice {
@@ -2137,7 +2139,7 @@ strong {
 }
 
 .choice:active {
-  background-color: var(--fill);
+  transform: scale(0.98);
 }
 
 .choice-check {

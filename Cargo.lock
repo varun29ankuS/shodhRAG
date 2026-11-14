@@ -10150,9 +10150,12 @@ dependencies = [
 name = "shodh-link"
 version = "0.0.10"
 dependencies = [
+ "blake2",
  "data-encoding",
  "getrandom 0.4.1",
  "iroh",
+ "minisign-verify",
+ "ring",
  "serde",
  "serde_json",
  "subtle",

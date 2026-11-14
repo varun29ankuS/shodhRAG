@@ -11,6 +11,10 @@
 //! - [`client`]: the phone's side.
 //! - [`phone`]: what the phone keeps (its key, the paired desktop) and how
 //!   it pairs and reconnects.
+//! - [`sealed`]: the phone's private files, sealed with a key kept in its
+//!   secure storage.
+//! - [`outbox`]: what the phone sends when the computer is back, in order.
+//! - [`update`]: the one-tap update, verified before it is installed.
 //!
 //! Transport: iroh (QUIC, end-to-end encrypted, dialled by public key),
 //! direct where it can be and through n0's public relays otherwise. A relay
@@ -20,8 +24,11 @@ pub mod allowlist;
 pub mod bridge;
 pub mod client;
 pub mod messages;
+pub mod outbox;
 pub mod pairing;
 pub mod phone;
+pub mod sealed;
+pub mod update;
 
 pub use bridge::ALPN;
 /// The iroh the link is built on, so the apps use the very same one.

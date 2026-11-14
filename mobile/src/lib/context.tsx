@@ -196,3 +196,6 @@ export function useNote() {
   if (!notes) throw new Error('useNote outside NoteProvider');
   return notes;
 }
+
+/** The menu finished opening: the ready line of a screen that opens with the menu waits for it (CI screenshots). */
+export const MenuShown = createContext<(() => void) | null>(null);

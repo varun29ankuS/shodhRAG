@@ -30,10 +30,13 @@
   --glow: rgba(232, 72, 42, 0.22);
   --tint: rgba(232, 72, 42, 0.12);
   --selected: rgba(232, 72, 42, 0.16);
+  /* The splash: near-black in the dark theme, white in the light one. */
+  --splash: #0b0b0d;
 }
 
 :root[data-theme='light'] {
   --glass: rgba(255, 255, 255, 0.9);
+  --splash: #ffffff;
   --scrim: rgba(24, 24, 27, 0.4);
   --shadow: rgba(24, 24, 27, 0.14);
   --glow: rgba(232, 72, 42, 0.14);
@@ -44,6 +47,7 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --glass: rgba(255, 255, 255, 0.9);
+    --splash: #ffffff;
     --scrim: rgba(24, 24, 27, 0.4);
     --shadow: rgba(24, 24, 27, 0.14);
     --glow: rgba(232, 72, 42, 0.14);
@@ -207,6 +211,8 @@ h3 {
   width: 36px;
   height: 36px;
   object-fit: contain;
+  /* The whole elephant at its own shape: never cropped, never squeezed by a row. */
+  flex: none;
 }
 
 .brand-name {
@@ -1489,7 +1495,7 @@ strong {
   align-items: center;
   justify-content: center;
   gap: 18px;
-  background: var(--c-ground);
+  background: var(--splash);
 }
 
 .splash-glow {
@@ -1505,6 +1511,7 @@ strong {
   width: 128px;
   height: 128px;
   object-fit: contain;
+  flex: none;
 }
 
 .splash-name {

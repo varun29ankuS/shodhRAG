@@ -9,7 +9,7 @@ import { Drawer } from './components/Drawer';
 import { NoteView } from './components/NoteView';
 import { Splash } from './components/Splash';
 import { TabBar } from './components/TabBar';
-import { LinkProvider, NavProvider, NoteProvider, ThemeProvider, useLink, useNav, useThemeChoice } from './lib/context';
+import { LinkProvider, NavProvider, NoteProvider, ThemeProvider, MenuShown, useLink, useNav, useThemeChoice } from './lib/context';
 import { DataProvider, useData } from './lib/data';
 import type { LinkSource } from './lib/link';
 import { tauriDevice, type Device } from './lib/device';
@@ -81,15 +81,20 @@ function Shell({ start, pairing, closePairing }: { start: Start | null; pairing:
 
   const screen =
     status.state === 'starting' ? null : status.state === 'failed' ? 'failed' : showPair ? 'pair' : (start?.screen ?? 'home');
-  // The first screen shown, once: the line CI's launch test waits for.
+  // The first screen shown, once: the line CI's launch test and screenshots wait for. It is
+  // written once the screen is really there: the splash has gone and, for a screen
+  // that opens with the menu, the menu has finished opening.
+  const [splashGone, setSplashGone] = useState(false);
+  const [menuShown, setMenuShown] = useState(false);
+  const waitsForMenu = start?.nav?.drawer === true;
   const told = useRef(false);
   useEffect(() => {
-    if (screen === null || told.current) return;
+    if (screen === null || told.current || !splashGone || (waitsForMenu && !menuShown)) return;
     told.current = true;
     source.ready(screen, theme).catch(() => {
       // The app logged why it is not ready, and the screen says it too.
     });
-  }, [screen, theme, source]);
+  }, [screen, theme, source, splashGone, waitsForMenu, menuShown]);
 
   return (
     <div className="app">
@@ -99,9 +104,11 @@ function Shell({ start, pairing, closePairing }: { start: Start | null; pairing:
       ) : showPair ? (
         <Pair refusal={status.state === 'refused' ? status.message : null} onClose={unpaired && !pairing ? null : closePairing} />
       ) : (
-        <Main />
+        <MenuShown.Provider value={() => setMenuShown(true)}>
+          <Main />
+        </MenuShown.Provider>
       )}
-      <AnimatePresence>{status.state === 'starting' && <Splash key="splash" />}</AnimatePresence>
+      <AnimatePresence onExitComplete={() => setSplashGone(true)}>{status.state === 'starting' && <Splash key="splash" />}</AnimatePresence>
       <NoteView />
     </div>
   );

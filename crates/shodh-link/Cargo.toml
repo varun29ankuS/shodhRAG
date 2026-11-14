@@ -1,0 +1,27 @@
+[package]
+name = "shodh-link"
+# The phone and the desktop must be the same Shodh version (LINK_VERSION is
+# this version), so it is set with the app's: scripts/release/versions.mjs.
+version = "0.0.10"
+edition = "2021"
+description = "The phone link: pairing, identity and the allowlisted bridge between Shodh's phone app and the desktop"
+publish = false
+
+[dependencies]
+# Pinned: iroh's API changes between releases. Only rustls with ring: no
+# portmapper (it would ask the user's router for port mappings over UPnP) and
+# no metrics.
+iroh = { version = "=1.4.1", default-features = false, features = ["tls-ring"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "sync", "rt", "macros", "time"] }
+data-encoding = "2"
+# The pairing secret, from the operating system's random source.
+getrandom = "0.4"
+# Constant-time comparison of pairing secrets.
+subtle = "2"
+thiserror = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

@@ -867,6 +867,7 @@ pub fn broadcast(app: &AppHandle, settings: &AppSettings) {
     crate::connectors::slack::settings_changed(app, settings);
     crate::connectors::telegram::settings_changed(app, settings);
     crate::connectors::github::settings_changed(app, settings);
+    crate::phone_link::settings_changed(app, settings);
     if let Err(e) = app.emit(APP_SETTINGS_CHANGED_EVENT, settings) {
         tracing::warn!("Failed to emit {}: {}", APP_SETTINGS_CHANGED_EVENT, e);
     }

@@ -30,6 +30,7 @@ mod model_fallback;
 mod model_picker_commands;
 mod notifications;
 mod pdf_export;
+mod phone_link;
 mod profile;
 mod rag_commands;
 mod recall_commands;
@@ -659,6 +660,10 @@ pub fn run() {
             }
             app.manage(agent_session_commands::AgentSessions::default());
             agent_session_commands::start_idle_reaper(app.handle().clone());
+            // The phone link: listens only once a phone is paired (and Local-only mode is
+            // off); pairing in Settings, Phone starts it.
+            phone_link::manage(app.handle());
+            phone_link::start_saved(app.handle());
             pdf_export::manage(app.handle());
 
             // Quiet update checks (off in Local-only mode or when the user
@@ -953,6 +958,10 @@ pub fn run() {
             telegram::telegram_remove_person,
             telegram::telegram_set_daily_cap,
             telegram::telegram_disconnect,
+            // The phone link (Settings → Phone)
+            phone_link::phone_pairing_start,
+            phone_link::phone_devices,
+            phone_link::phone_device_remove,
             github::github_status,
             github::github_sign_in_start,
             github::github_sign_in_cancel,

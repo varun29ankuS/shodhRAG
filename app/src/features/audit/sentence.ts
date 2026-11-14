@@ -31,6 +31,7 @@ export type EventIcon =
   | 'citation'
   | 'scope'
   | 'connector'
+  | 'phone'
   | 'other';
 
 /** A run of the details; `strong` marks a new value. */
@@ -528,6 +529,45 @@ function modelLabel(ref: unknown, described: unknown): string | null {
   return text && text !== 'none' ? text : null;
 }
 
+/**
+ * What a paired phone did, in words (`phone_link.rs` records the command name, never its
+ * arguments). A command phones may not call is never shown by its id.
+ */
+const PHONE_COMMANDS: Record<string, string> = {
+  pair: 'Paired with this computer',
+  connect: 'Connected',
+  remove: 'Removed',
+  agent_start: 'Started a conversation',
+  agent_send: 'Asked a question',
+  agent_abort: 'Stopped an answer',
+  agent_approve: 'Answered an approval',
+  workspaces_list: 'Listed the workspaces',
+  conversations_list: 'Listed the conversations',
+  load_conversation: 'Opened a conversation',
+  library_folders: 'Browsed the library',
+  get_source_file_info: 'Opened a document',
+  get_pdf_info: 'Opened a document',
+  read_source_page: 'Read a page',
+  read_source_text: 'Read a document',
+  read_source_table: 'Read a table',
+};
+
+function phoneLink(p: Record<string, unknown>): EventSentence {
+  const device = str(p.device) ?? 'A phone';
+  const command = str(p.command);
+  const did =
+    command && Object.prototype.hasOwnProperty.call(PHONE_COMMANDS, command)
+      ? PHONE_COMMANDS[command]
+      : 'Tried something phones cannot do';
+  const outcome = str(p.outcome);
+  const reason = str(p.reason);
+  const details: Segment[][] = [[strong(did)]];
+  if (outcome === 'refused') details.push([text(reason ? `Refused: ${clip(reason)}` : 'Refused')]);
+  if (outcome === 'failed') details.push([text('Did not work')]);
+  if (command === 'remove') return sentence('phone', 'You removed a phone', [strong(device)]);
+  return sentence('phone', `From ${device}`, join(details));
+}
+
 function modelChange(p: Record<string, unknown>): EventSentence {
   const from = modelLabel(p.from_model, p.from);
   const to = modelLabel(p.to_model, p.to) ?? 'a new model';
@@ -734,6 +774,8 @@ export function describeEvent(row: DescribedEvent): EventSentence {
       const reason = str(p.reason);
       return sentence('scope', 'Made available everywhere', join([[strong(parts.join(', ') || 'Nothing')], reason ? [text(humanize(reason).toLowerCase())] : []]));
     }
+    case 'phone_link':
+      return phoneLink(p);
     default:
       return sentence('other', humanize(row.eventType || 'event'), [], false);
   }

@@ -168,7 +168,25 @@ const ENTRIES: readonly DescribedEvent[] = [
   { eventType: 'code_change', payload: { action: 'discarded', branch: 'shodh/notes', base: 'main', folder: 'C:/code/app' } },
   { eventType: 'citation_corrected', payload: { from: [2], to: 3, score: 0.82 } },
   { eventType: 'scope_change', payload: { moved: { memories: 2, snippets: 0, results: 1, others: 0 }, reason: 'workspace deleted' } },
+  // The phone link
+  { eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'pair', outcome: 'done' } },
+  { eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'agent_send', outcome: 'done' } },
+  { eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'agent_approve', outcome: 'refused', reason: 'Approve this on your computer' } },
+  { eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'clear_all_documents', outcome: 'refused', reason: 'Your phone cannot do this. Use Shodh on your computer.' } },
+  { eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'read_source_page', outcome: 'failed' } },
+  { eventType: 'phone_link', payload: { device: 'Pixel 8', command: 'remove', outcome: 'done' } },
 ];
+
+test('a phone link entry names the phone and never a command id', () => {
+  const said = (payload: Record<string, unknown>) => sentenceText(describeEvent({ eventType: 'phone_link', payload }));
+  assert.equal(said({ device: 'Pixel 8', command: 'agent_send', outcome: 'done' }), 'From Pixel 8 · Asked a question');
+  assert.equal(
+    said({ device: 'Pixel 8', command: 'agent_approve', outcome: 'refused', reason: 'Approve this on your computer' }),
+    'From Pixel 8 · Answered an approval · Refused: Approve this on your computer',
+  );
+  assert.equal(said({ device: 'Pixel 8', command: 'constructor', outcome: 'refused' }), 'From Pixel 8 · Tried something phones cannot do · Refused');
+  assert.equal(said({ device: 'Pixel 8', command: 'remove', outcome: 'done' }), 'You removed a phone · Pixel 8');
+});
 
 /** What no sentence may show: ids, JSON, or values that were never filled in. */
 function unreadable(text: string): string | null {

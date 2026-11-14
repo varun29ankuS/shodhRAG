@@ -8,7 +8,7 @@ name: Release
 # existing tag, to retry a release that failed.
 #   plan            the tag's commit is on master and CI passed on it
 #                   (scripts/release/ci-gate.mjs), and the tag equals the
-#                   version in all six files that carry it at that commit
+#                   version in all seven files that carry it at that commit
 #                   (scripts/release/versions.mjs).
 #   create-release  a draft release named after the tag (body from
 #                   .github/release-notes.md); a re-run reuses its draft.

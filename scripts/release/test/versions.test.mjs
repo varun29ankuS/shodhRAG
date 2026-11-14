@@ -45,7 +45,7 @@ test('every place in the repository has the same version', () => {
   assert.match(version, /^\d+\.\d+\.\d+$/);
 });
 
-test('set changes exactly the eight version strings of the real files', () => {
+test('set changes exactly the ten version strings of the real files', () => {
   const texts = repoTexts();
   const current = agreedVersion(readVersions(texts));
   const next = bump(current);
@@ -75,6 +75,37 @@ test('the CLI sets and checks a copy of the repository files', () => {
   assert.match(out, new RegExp(`Version ${next.replace(/\./g, '\\.')}, matches v${next}`));
   assert.throws(() => execFileSync(process.execPath, [script, 'check', '--tag', `v${current}`, '--root', root], { stdio: 'pipe' }));
   assert.throws(() => execFileSync(process.execPath, [script, 'set', current, '--root', root], { stdio: 'pipe' }));
+});
+
+test('a release from before a location was added checks without it; from its version on it is required', () => {
+  const added = LOCATIONS.filter((l) => l.since !== undefined);
+  assert.ok(added.length > 0);
+  // The tree without the added locations: no manifest file, no Cargo.lock entry.
+  const without = (texts) => {
+    const old = new Map(texts);
+    for (const l of added) {
+      if (l.kind === 'manifest') old.delete(l.file);
+      if (l.kind === 'lock') {
+        const lock = old.get(l.file);
+        const start = lock.indexOf(`[[package]]\nname = "${l.package}"\n`);
+        assert.ok(start >= 0, `${l.package} is in Cargo.lock`);
+        const next = lock.indexOf('\n[[package]]', start + 1);
+        old.set(l.file, next < 0 ? lock.slice(0, start) : lock.slice(0, start) + lock.slice(next + 1));
+      }
+    }
+    return old;
+  };
+  const texts = repoTexts();
+  const current = agreedVersion(readVersions(texts));
+  for (const { since } of added) {
+    if (compareVersions(current, since) < 0) {
+      assert.equal(agreedVersion(readVersions(without(texts))), current, 'an older tree checks without it');
+      const at = applyVersion(texts, since).texts;
+      assert.throws(() => readVersions(without(at)), VersionError, `required from ${since}`);
+    } else {
+      assert.throws(() => readVersions(without(texts)), VersionError, `required from ${since}`);
+    }
+  }
 });
 
 test('versions must be X.Y.Z and greater than the current one', () => {

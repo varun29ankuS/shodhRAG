@@ -123,10 +123,13 @@ pub enum AuditEventType {
     /// another: a workspace was deleted, or the app settled scopes no run could see.
     /// Scopes, classes and counts only, never statement text.
     ScopeChange,
+    /// A paired phone called the desktop (or paired, or was removed): the
+    /// phone's name, the command and how it ended, never its arguments.
+    PhoneLink,
 }
 
 impl AuditEventType {
-    pub const ALL: [AuditEventType; 16] = [
+    pub const ALL: [AuditEventType; 17] = [
         AuditEventType::Question,
         AuditEventType::ToolCall,
         AuditEventType::Approval,
@@ -143,6 +146,7 @@ impl AuditEventType {
         AuditEventType::CodeChange,
         AuditEventType::CitationCorrected,
         AuditEventType::ScopeChange,
+        AuditEventType::PhoneLink,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -163,6 +167,7 @@ impl AuditEventType {
             AuditEventType::CodeChange => "code_change",
             AuditEventType::CitationCorrected => "citation_corrected",
             AuditEventType::ScopeChange => "scope_change",
+            AuditEventType::PhoneLink => "phone_link",
         }
     }
 }
@@ -405,6 +410,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(AuditEventType::ScopeChange).unwrap(),
             Value::String("scope_change".into())
+        );
+        assert_eq!(
+            "phone_link".parse::<AuditEventType>().unwrap(),
+            AuditEventType::PhoneLink
         );
     }
 

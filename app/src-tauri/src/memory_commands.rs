@@ -436,7 +436,8 @@ pub fn error_text(error: MemoryError) -> String {
 }
 
 /// Longest the memory recall may delay the start of an answer (it waits for the engine
-/// while indexing holds it). On timeout the answer starts without memories.
+/// while indexing holds it). On timeout the answer starts without the recalled memories.
+/// The core memories are not bounded by it: reading them never waits for the engine.
 pub const RECALL_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 /// The memories put in front of one run's question.
@@ -454,21 +455,35 @@ pub struct RunMemories {
 
 /// The memories for the start of an agent run: the scope's core memories (standing
 /// context, selected by class: [`MemoryService::core_for_run`]) and those relevant to
-/// `text` (recall), read-only within one [`RECALL_TIMEOUT`]. A memory in the core block is
-/// not repeated among the recalled ones. Nothing is reinforced here: being put in front of
-/// a question is not use, for core memories as for the others. Only the memories the answer
-/// used are reinforced, when the run completes ([`MemoryState::track_run`],
-/// [`MemoryState::observe`]). `None` when there is nothing to inject; the core and the
-/// recalled memories fail open on their own (no search models, an error or the shared
-/// deadline passing leaves the other in place), and the answer goes on.
+/// `text` (recall), read-only. Opening the memory and recall wait at most
+/// [`RECALL_TIMEOUT`] together (both can wait for the engine while indexing holds it);
+/// reading the core does not count against it, since it needs neither the engine nor the
+/// search models, so a busy machine never drops the user's standing rules from a question.
+/// A memory in the core block is not repeated among the recalled ones. Nothing is
+/// reinforced here: being put in front of a question is not use, for core memories as for
+/// the others. Only the memories the answer used are reinforced, when the run completes
+/// ([`MemoryState::track_run`], [`MemoryState::observe`]). `None` when there is nothing to
+/// inject; the core and the recalled memories fail open on their own (no search models, an
+/// error or the recall deadline passing leaves the core in place), and the answer goes on.
 pub async fn recall_for_run(
     memory: &MemoryState,
     text: &str,
     workspace: Option<&str>,
     actor: &Actor,
 ) -> Option<RunMemories> {
-    let scope = Scope::for_workspace(workspace);
     let deadline = tokio::time::Instant::now() + RECALL_TIMEOUT;
+    recall_for_run_until(memory, text, workspace, actor, deadline).await
+}
+
+/// [`recall_for_run`] with the deadline of opening the memory and of recall given.
+async fn recall_for_run_until(
+    memory: &MemoryState,
+    text: &str,
+    workspace: Option<&str>,
+    actor: &Actor,
+    deadline: tokio::time::Instant,
+) -> Option<RunMemories> {
+    let scope = Scope::for_workspace(workspace);
     let service = match tokio::time::timeout_at(deadline, memory.service()).await {
         Ok(Ok(service)) => service,
         Ok(Err(e)) => {
@@ -480,15 +495,13 @@ pub async fn recall_for_run(
             return None;
         }
     };
-    // The core needs no search models: it fails open on its own, and so does recall.
-    let core = match tokio::time::timeout_at(deadline, service.core_for_run(&scope)).await {
-        Ok(Ok(core)) => core,
-        Ok(Err(e)) => {
+    // The core needs no search models and never waits for the engine (its reads wait only
+    // while a purge deletes old table files), so the recall deadline does not bound it: it
+    // fails open on its own, and so does recall.
+    let core = match service.core_for_run(&scope).await {
+        Ok(core) => core,
+        Err(e) => {
             tracing::warn!(target: "shodh::memory", error = %e, "core memories not read; none injected");
-            Vec::new()
-        }
-        Err(_) => {
-            tracing::warn!(target: "shodh::memory", "core memories timed out; none injected");
             Vec::new()
         }
     };
@@ -1211,6 +1224,27 @@ mod tests {
             .await
             .expect("a failing recall leaves the core");
         assert_eq!(given.ids, vec![rule]);
+        assert!(!given.block.contains("Invoices"));
+    }
+
+    /// The recall deadline (opening the memory, waiting for the engine) does not bound the
+    /// core: a core read finishing after it, as on a machine busy indexing, still gives the
+    /// question its core. The deadline here has passed before the call, so any core read
+    /// that is not ready at its first poll would be cut off if it were bounded by it.
+    #[tokio::test]
+    async fn core_is_still_injected_when_the_recall_deadline_passes_first() {
+        use crate::agent_tools::testing::Embedder;
+        let dir = tempfile::tempdir().unwrap();
+        let (memory, switch, rule, _) = rule_and_note(dir.path()).await;
+        switch.set(Embedder::Failing);
+        let actor = Actor::agent("local-owner", "conv-1", "assistant", "run-1");
+        let passed = tokio::time::Instant::now();
+        let given = recall_for_run_until(&memory, "Invoices go to Priya?", None, &actor, passed)
+            .await
+            .expect("the core is read whatever the recall deadline");
+        assert_eq!(given.ids, vec![rule.clone()]);
+        assert_eq!(given.core_ids, vec![rule]);
+        assert!(given.block.contains("Keep answers short"));
         assert!(!given.block.contains("Invoices"));
     }
 

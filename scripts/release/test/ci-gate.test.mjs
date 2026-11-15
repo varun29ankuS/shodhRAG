@@ -105,7 +105,7 @@ test('a job skipped by the Changes job is decided by its own output', () => {
     filtered.push(job.id);
   }
   assert.deepEqual([...outputs].sort(), [...filtered].sort());
-  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds']);
+  assert.deepEqual([...filtered].sort(), ['android', 'eval-recall', 'eval-retrieval', 'eval-retrieval-int8', 'footprint', 'release-builds', 'upgrade']);
   // The script's own list of the jobs it decides is the same set.
   const heavy = changes.block.match(/^ +heavy=\((.+)\)$/m)[1].split(/\s+/);
   assert.deepEqual([...heavy].sort(), [...filtered].sort());

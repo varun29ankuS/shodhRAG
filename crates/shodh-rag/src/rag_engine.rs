@@ -8827,3 +8827,9 @@ mod secret_tests {
         }
     }
 }
+
+// A library written by 0.0.10 opens with everything in it (CI's Upgrade from
+// 0.0.10 job writes it with that release's code; see upgrade/v0_0_10/).
+#[cfg(test)]
+#[path = "upgrade_tests.rs"]
+mod upgrade_tests;

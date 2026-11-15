@@ -44,8 +44,8 @@ env:
 # minutes at a time).
 #
 # Heavy jobs run on a pull request only when it changes a file they read:
-# Retrieval eval, Retrieval eval (int8, Apple silicon), Footprint budget, the
-# release builds (release.yml: the Windows and macOS installers, built and
+# Upgrade from 0.0.10, Retrieval eval, Retrieval eval (int8, Apple silicon),
+# Footprint budget, the release builds (release.yml: the Windows and macOS installers, built and
 # verified as a release would be, without publishing) and the Android phone
 # app (its debug APK, launched on an emulator) are skipped when every
 # changed file is in their known-irrelevant set (the Changes job; an unknown
@@ -79,6 +79,7 @@ jobs:
       footprint: ${{ steps.filter.outputs.footprint }}
       release-builds: ${{ steps.filter.outputs.release-builds }}
       android: ${{ steps.filter.outputs.android }}
+      upgrade: ${{ steps.filter.outputs.upgrade }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -92,7 +93,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          heavy=(eval-retrieval eval-retrieval-int8 eval-recall footprint release-builds android)
+          heavy=(eval-retrieval eval-retrieval-int8 eval-recall footprint release-builds android upgrade)
           run_all() {
             for job in "${heavy[@]}"; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
             echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -184,6 +185,9 @@ jobs:
           decide footprint "$footprint_skip" ''
           decide release-builds "$release_skip" ''
           decide android "$android_skip" "$android_keep"
+          # The upgrade test builds shodh-rag only (0.0.10's from its tag, which
+          # no change here alters, and this tree's library tests), like the evals.
+          decide upgrade "$eval_skip" "$eval_keep"
           echo "::${token}::"
 
   # actionlint (workflow syntax, expressions, shellcheck on run scripts) and
@@ -414,6 +418,85 @@ jobs:
 
       - name: Command runner tests (shodh-rag)
         run: cargo test --package shodh-rag --lib run_command
+
+      - name: ONNX Runtime came from the cache
+        run: python -I scripts/ci/ort_archive.py verify
+
+  # A library written by 0.0.10 opens in this build with its documents,
+  # chunks, searches and memories (crates/shodh-rag/src/upgrade_tests.rs). The
+  # upgrade is one-way (lancedb 0.26 to 0.41 rewrites the table files; the
+  # chunker raise reads files again), so it is checked against a library
+  # 0.0.10 itself wrote: the v0.0.10 tag is checked out beside this tree,
+  # crates/shodh-rag/upgrade/v0_0_10/ is copied into it as an example and run
+  # with that tree's own lockfile (lancedb 0.26, Lance 2.0, Tantivy 0.22),
+  # and the test opens what it wrote. Nothing in this tree builds the writer
+  # (Cargo never looks in upgrade/), so 0.0.10's dependencies stay out of
+  # Cargo.lock. Windows, where the other Rust tests run; the Changes job
+  # decides it like the evals (it builds shodh-rag only).
+  upgrade:
+    name: Upgrade from 0.0.10
+    needs: changes
+    if: needs.changes.outputs.upgrade == 'true'
+    runs-on: windows-latest
+    # No run history yet: two debug builds of shodh-rag (0.0.10's example and
+    # this tree's library tests), each about as long as the Tests job's build
+    # of it on a cold cache.
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 0.0.10 as released: its own workspace, lockfile and toolchain file.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: v0.0.10
+          path: upgrade-from/v0.0.10
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml (0.0.10's is the same)
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          workspaces: |
+            . -> target
+            upgrade-from/v0.0.10 -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install Protobuf compiler
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
+
+      # 0.0.10 links the same ort-sys (2.0.0-rc.13, the same features), so the
+      # archive this provides serves both builds, and the check at the end
+      # fails if either downloaded its own.
+      - uses: ./.github/actions/onnxruntime
+
+      # The fixture folder is the same for the writer and the test: the
+      # library's sources are absolute paths under it.
+      - name: Write a library with 0.0.10
+        shell: bash
+        env:
+          SHODH_UPGRADE_FIXTURE: ${{ runner.temp }}/upgrade-0.0.10
+        run: |
+          set -euo pipefail
+          example=upgrade-from/v0.0.10/crates/shodh-rag/examples/write_upgrade_library
+          mkdir -p "$example"
+          cp crates/shodh-rag/upgrade/v0_0_10/write_library.rs "$example/main.rs"
+          cp crates/shodh-rag/upgrade/v0_0_10/library.rs "$example/library.rs"
+          cd upgrade-from/v0.0.10 || exit 1
+          cargo run --locked --package shodh-rag --example write_upgrade_library -- "$SHODH_UPGRADE_FIXTURE"
+
+      - name: This build opens it
+        env:
+          SHODH_UPGRADE_FIXTURE: ${{ runner.temp }}/upgrade-0.0.10
+        run: >
+          cargo test --locked --package shodh-rag --lib -- --ignored --exact
+          rag_engine::upgrade_tests::a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories
 
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify
@@ -1560,7 +1643,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [changes, lint, scripts, fmt, check, test, macos, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
+    needs: [changes, lint, scripts, fmt, check, test, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

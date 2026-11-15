@@ -30,6 +30,7 @@ export const REQUIRED_CHECKS = [
   'Check + Clippy',
   'Tests',
   'macOS build + OCR tests (shodh-rag)',
+  'Upgrade from 0.0.10',
   'Retrieval eval',
   'Retrieval eval (int8, Apple silicon)',
   'Recall scorecard',

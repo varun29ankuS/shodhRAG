@@ -1,7 +1,7 @@
 name: Release
 
-# Unsigned desktop installers on GitHub Releases, published only once they
-# are verified.
+# Unsigned desktop installers and the signed Android app on GitHub Releases,
+# published only once they are verified.
 #
 # Publishing runs: a tag push of v*; a call from tag-release.yml when a
 # release PR merges; or Run workflow (workflow_dispatch) from master with an
@@ -9,7 +9,7 @@ name: Release
 #   plan            the tag's commit is on master and CI passed on it
 #                   (scripts/release/ci-gate.mjs), and the tag equals the
 #                   version in every file that carries it at that commit
-#                   (scripts/release/versions.mjs).
+#                   (scripts/release/versions.mjs, which also lists the files).
 #   create-release  a draft release named after the tag (body from
 #                   .github/release-notes.md); a re-run reuses its draft.
 #   build           the Windows NSIS installer and the Apple Silicon dmg, built
@@ -18,6 +18,20 @@ name: Release
 #                   (tauri bundle), the only step that sees the key. In the
 #                   `release` environment. Uploaded as workflow artifacts; the
 #                   build has no write token.
+#   android         Shodh for Android (mobile/), a release build for arm64
+#                   phones (one APK, the name the phone's one-tap update
+#                   downloads), built without any key, then signed in two
+#                   separate steps, each the only one to see its key: the
+#                   Android key (apksigner, v2 and v3; Android updates an
+#                   installed app only with the same certificate), then the
+#                   release key's .sig, which the phone's one-tap update checks
+#                   (crates/shodh-link/src/update.rs). Checked before upload
+#                   (scripts/release/android.mjs check): the certificate, the
+#                   package, versionName and versionCode, not debuggable, the
+#                   ABIs and size; the manifest checks of ci.yml's android job
+#                   (.github/actions/android-apk-manifest); no debug-only code
+#                   in its frontend or native library. In the `release`
+#                   environment; no write token.
 #   launch-macos    the dmg installed as a tester installs it (quarantined, copied
 #                   out of the mounted image), its signature, architectures,
 #                   minimum macOS and libraries checked, Gatekeeper's refusal
@@ -26,13 +40,14 @@ name: Release
 #                   ready, kept up and quit. Publishing waits for it.
 #   publish         (environment `release`, one at a time across releases)
 #                   checks the artifacts' signatures with the release key,
-#                   stages the six release files with latest.json, uploads them
+#                   stages the eight release files with latest.json, uploads them
 #                   to the draft, downloads the draft and verifies it
 #                   (scripts/release/verify.mjs release): exactly the expected
 #                   files, none empty; latest.json parses, is this version and
-#                   points each platform at this release's update bundle; every
-#                   signature verifies against the updater public key in
-#                   tauri.conf.json. Then adds the SHA-256 of each file to the
+#                   points each platform at this release's update bundle (the
+#                   desktop's only: the phone finds its app by name); every
+#                   signature, the Android app's included, verifies against the
+#                   updater public key in tauri.conf.json. Then adds the SHA-256 of each file to the
 #                   notes and publishes. It becomes the latest release only if
 #                   it is newer than the current latest (an older release
 #                   finishing last never takes "latest" back). Then the URL
@@ -48,10 +63,12 @@ name: Release
 #     wrong: a tag is never moved.
 #
 # Build-only runs (called by ci.yml without a tag: on pull requests whose
-# changed files can affect the installers, on every master push and in the
-# nightly run): plan, build and launch-macos, then verify checks the installers
-# the builds uploaded, with update bundles signed by a throwaway key made for
-# that run (pr-key): pull requests never see the release key. verify also
+# changed files can affect the installers or the phone app, on every master
+# push and in the nightly run): plan, build, android and launch-macos, then
+# verify checks the installers the builds uploaded, with update bundles signed
+# by a throwaway key made for that run (pr-key), and the APK signed by a
+# throwaway Android key the android job makes for itself: pull requests never
+# see a release key, and they sign through the same steps a release does. verify also
 # stages them as a release and runs the publish-time checks on the result.
 # published-release runs the publish and smoke checks, read-only, against the
 # latest published release. No release is created or changed. ci.yml's
@@ -65,6 +82,14 @@ name: Release
 # secrets, which tag-release.yml passes to this workflow; once moved, the
 # environment's secrets take precedence and the repository copies can be
 # deleted. A publishing run without the key fails before bundling.
+#
+# Android key: ANDROID_KEYSTORE_BASE64 (a PKCS12 keystore), its password
+# ANDROID_KEYSTORE_PASSWORD (the store's and the key's) and ANDROID_KEY_ALIAS,
+# secrets of the `release` environment only. The android job's signing step
+# decodes the keystore into a private folder of its own and removes it when
+# the step ends, whatever its outcome; the password reaches apksigner through
+# the environment, never the command line. A publishing run without them
+# fails before signing.
 #
 # No Intel Mac build, and so no universal one: ONNX Runtime is linked
 # statically from ort-sys's prebuilt libraries, and ort 2.0.0-rc.13 has none
@@ -89,6 +114,15 @@ on:
       TAURI_SIGNING_PRIVATE_KEY:
         required: false
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      # The Android key: secrets of the `release` environment only, which the
+      # android job reads from there. Declared so the secrets this workflow
+      # reads are all listed; no caller passes them.
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
         required: false
   workflow_dispatch:
     inputs:
@@ -181,8 +215,17 @@ jobs:
             echo "::error::${tag} points at ${sha}, which is not on master (compare: ${status}); only master commits are released."
             exit 1
           fi
-          # The version in every file, as committed at the tag.
-          files=(app/package.json app/package-lock.json app/src-tauri/tauri.conf.json app/src-tauri/Cargo.toml crates/shodh-rag/Cargo.toml Cargo.lock)
+          # The version in every file, as committed at the tag: the files
+          # versions.mjs reads (its own list, so a version location added
+          # there is checked here too). One that a tag predates is left out,
+          # and versions.mjs decides whether that tag may lack it.
+          # A failure of the listing stops here (set -e), never an empty list.
+          listing=$(node scripts/release/versions.mjs files)
+          mapfile -t listed <<< "$listing"
+          files=()
+          for f in "${listed[@]}"; do
+            if git cat-file -e "refs/tags/${tag}:${f}" 2>/dev/null; then files+=("$f"); fi
+          done
           mkdir "$RUNNER_TEMP/tagged"
           git archive "refs/tags/${tag}" "${files[@]}" | tar -x -C "$RUNNER_TEMP/tagged"
           node scripts/release/versions.mjs check --tag "$tag" --root "$RUNNER_TEMP/tagged" --github-output
@@ -696,6 +739,267 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # Shodh for Android (mobile/): the release build of the phone app, one APK
+  # for arm64 phones. One file because the phone's one-tap update downloads
+  # exactly Shodh_<version>_android.apk and its .sig (crates/shodh-link/src/
+  # update.rs), and arm64 only because every phone Shodh supports is 64-bit
+  # ARM: a universal APK would add the x86_64 library (emulators only) and
+  # roughly double the download. Built as ci.yml's android job builds the
+  # debug APK (the same NDK, toolchain and generated project), but with the
+  # real identifier, com.shodhrag.mobile (no tauri.dev.conf.json), and
+  # without any key. Then signed in two steps, each the only one that sees
+  # its key, and checked before it is uploaded.
+  android:
+    name: Build (android-arm64)
+    needs: [plan, pr-key, create-release]
+    # pr-key runs on pull requests only, create-release on publishing runs only.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success'
+      && (needs.pr-key.result == 'success' || needs.pr-key.result == 'skipped')
+      && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    # No run history yet: a cold release build of the phone app's Rust
+    # library for one target, the Gradle build and the checks; ci.yml's
+    # android job builds two debug targets and boots an emulator in 90.
+    timeout-minutes: 90
+    # The Android key and the release key are read from here on publishing
+    # runs only.
+    environment: ${{ needs.plan.outputs.publish == 'true' && 'release' || '' }}
+    permissions:
+      contents: read
+    env:
+      # The workflow's builds set their own RUSTFLAGS; Android links its C
+      # library dynamically whatever -crt-static says.
+      RUSTFLAGS: ''
+      # The same NDK as ci.yml's android job (r27c, long-term support).
+      NDK_VERSION: 27.2.12479018
+      BUILD_TOOLS: 35.0.0
+      PUBLISH: ${{ needs.plan.outputs.publish }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Install the phone app's dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4.0.4
+        with:
+          packages: platform-tools platforms;android-36 build-tools;${{ env.BUILD_TOOLS }} ndk;${{ env.NDK_VERSION }}
+          log-accepted-android-sdk-licenses: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+          targets: aarch64-linux-android
+
+      # Saved by master runs only (ci.yml calls this workflow on every
+      # push), restored by pull requests and releases: the release profile's
+      # entry, apart from ci.yml's debug one.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2  # zizmor: ignore[cache-poisoning]
+        with:
+          workspaces: mobile/src-tauri -> target
+          shared-key: android-release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Generate the Android project
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          ndk="$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ndk" || { echo "::error::NDK $NDK_VERSION is not at $ndk"; exit 1; }
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          # The real app's identifier, com.shodhrag.mobile: no
+          # tauri.dev.conf.json, which only test builds use.
+          NDK_HOME="$ndk" npx tauri android init --ci
+          # The elephant launcher icons replace the template's, as in ci.yml.
+          cp -R src-tauri/icons/android/. src-tauri/gen/android/app/src/main/res/
+
+      # Gradle's release build, unsigned: no keystore is configured, so the
+      # build itself (Gradle, cargo, every build script) never sees a key.
+      - name: Build the release APK (unsigned)
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          npx tauri android build --apk --target aarch64
+          seconds=$(( $(date +%s) - start ))
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk')
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected one APK, found ${#apks[@]}: ${apks[*]}"
+            exit 1
+          fi
+          case "${apks[0]}" in
+            *-release-unsigned.apk) ;;
+            *) echo "::error::Expected an unsigned release APK, found ${apks[0]}"; exit 1 ;;
+          esac
+          out="$RUNNER_TEMP/android"
+          mkdir -p "$out"
+          cp "${apks[0]}" "$out/unsigned.apk"
+          echo "- release APK (unsigned) \`$(basename "${apks[0]}")\`: $(du -h "$out/unsigned.apk" | cut -f1), built in ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+
+      # The only step that sees the Android key. A publishing run decodes the
+      # release keystore (the `release` environment's secrets) into a folder
+      # only this step's user can read, and removes the folder when the step
+      # ends, whatever its outcome. A build-only run makes a throwaway key
+      # here instead, with a random password, and records its certificate for
+      # the check below: pull requests sign through this same step and never
+      # see the release key. The password reaches keytool and apksigner
+      # through the environment (:env, env:), never on a command line.
+      # Signature schemes v2 and v3 (minSdkVersion 24 reads v2; v1, the JAR
+      # signature, is for Android 6 and older); no v4 (.idsig) file.
+      - name: Sign the APK with the Android key
+        env:
+          KEYSTORE_BASE64: ${{ needs.plan.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_KEY_PASSWORD: ${{ needs.plan.outputs.publish == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          KEY_ALIAS: ${{ needs.plan.outputs.publish == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keys=$(mktemp -d "$RUNNER_TEMP/android-key.XXXXXXXX")
+          trap 'rm -rf "$keys"' EXIT
+          keystore="$keys/shodh.p12"
+          if [ "$PUBLISH" = true ]; then
+            if [ -z "$KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+              echo "::error::Publishing needs the ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS secrets of the release environment: without the release key, Android would not update an installed Shodh with this APK."
+              exit 1
+            fi
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+            alias="$KEY_ALIAS"
+          else
+            ANDROID_KEY_PASSWORD=$(openssl rand -hex 32)
+            export ANDROID_KEY_PASSWORD
+            alias=shodh
+            keytool -genkeypair -noprompt -keystore "$keystore" -storetype PKCS12 \
+              -storepass:env ANDROID_KEY_PASSWORD -keypass:env ANDROID_KEY_PASSWORD \
+              -alias "$alias" -keyalg RSA -keysize 3072 -validity 2 \
+              -dname 'CN=Shodh throwaway key (build-only run)'
+            keytool -exportcert -keystore "$keystore" -storetype PKCS12 \
+              -storepass:env ANDROID_KEY_PASSWORD -alias "$alias" -file "$keys/throwaway.der"
+            # A certificate's SHA-256 digest (what apksigner prints) is the
+            # SHA-256 of its DER encoding.
+            echo "THROWAWAY_CERT_SHA256=$(sha256sum "$keys/throwaway.der" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+          fi
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" sign \
+            --ks "$keystore" --ks-type PKCS12 --ks-key-alias "$alias" \
+            --ks-pass env:ANDROID_KEY_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+            --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
+            --out "$RUNNER_TEMP/android/signed.apk" "$RUNNER_TEMP/android/unsigned.apk"
+
+      # Under its release name: the phone's one-tap update downloads
+      # Shodh_<version>_android.apk (crates/shodh-link/src/update.rs apk_name).
+      - name: Name it for the release
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/android/dist"
+          mkdir -p "$dist"
+          apk="$dist/Shodh_${VERSION}_android.apk"
+          mv "$RUNNER_TEMP/android/signed.apk" "$apk"
+          echo "APK=$apk" >> "$GITHUB_ENV"
+
+      # The signed APK as the phone gets it. Publishing runs expect the
+      # release key's certificate (android.mjs RELEASE_CERT_SHA256), build-only
+      # runs this run's throwaway one.
+      - name: Check the signed APK
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign" -c 4 "$APK"
+          if [ "$PUBLISH" = true ]; then cert=(--release-cert); else cert=(--cert-sha256 "$THROWAWAY_CERT_SHA256"); fi
+          node scripts/release/android.mjs check --apk "$APK" --version "$VERSION" \
+            --build-tools "$ANDROID_HOME/build-tools/$BUILD_TOOLS" "${cert[@]}"
+          echo "- signed APK \`$(basename "$APK")\`: $(du -h "$APK" | cut -f1), versionCode $(node scripts/release/android.mjs version-code "$VERSION")" >> "$GITHUB_STEP_SUMMARY"
+
+      # allow_backup_is_off and no_emoji_compat, as ci.yml's android job
+      # checks the debug APK.
+      - name: The built app keeps its data on the phone and off Play Services' fonts
+        uses: ./.github/actions/android-apk-manifest
+        with:
+          apk: ${{ env.APK }}
+          build-tools: ${{ env.BUILD_TOOLS }}
+
+      # The screenshot tour and the scripted computer of the screenshots are
+      # debug builds' only. Checked on what this APK carries: the frontend
+      # the release build embedded (mobile/dist, written by its
+      # beforeBuildCommand) and the native library inside the signed APK.
+      # ci.yml's android job checks that a debug build has them, so this
+      # check is not vacuous.
+      - name: No debug-only code in the release APK
+        run: |
+          set -euo pipefail
+          lib="$RUNNER_TEMP/android/lib/libshodh_mobile_lib.so"
+          mkdir -p "$(dirname "$lib")"
+          unzip -p "$APK" lib/arm64-v8a/libshodh_mobile_lib.so > "$lib"
+          node scripts/release/android.mjs debug-markers --build release --dist mobile/dist --lib "$lib"
+
+      # The release key's (the desktop updater's) minisign signature over the
+      # signed APK, which the phone's one-tap update verifies before it hands
+      # the APK to Android. Publishing runs use the release key (the `release`
+      # environment, or what tag-release.yml passes), build-only runs this
+      # run's throwaway key (pr-key). verify.mjs checks the .sig against the
+      # matching public key.
+      - name: The throwaway signing key (pull requests)
+        if: needs.plan.outputs.publish != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: pr-updater-key
+          path: ${{ runner.temp }}/pr-key
+
+      # The only step that sees the release key.
+      - name: Sign it for the one-tap update
+        working-directory: mobile
+        env:
+          RELEASE_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          RELEASE_KEY_PASSWORD: ${{ needs.plan.outputs.publish == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH" = true ]; then
+            if [ -z "$RELEASE_KEY" ]; then
+              echo "::error::Publishing needs the TAURI_SIGNING_PRIVATE_KEY secret (in the release environment, or passed by tag-release.yml): without it no phone accepts this APK as an update."
+              exit 1
+            fi
+            TAURI_SIGNING_PRIVATE_KEY="$RELEASE_KEY"
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+          else
+            TAURI_SIGNING_PRIVATE_KEY=$(cat "$RUNNER_TEMP/pr-key/updater.key")
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+          fi
+          export TAURI_SIGNING_PRIVATE_KEY
+          # A key without a password says so, or the CLI asks for one.
+          password=()
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            unset TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            password=(--password "")
+          else
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+          npx tauri signer sign ${password[@]+"${password[@]}"} "$APK"
+          test -s "$APK.sig" || { echo "::error::tauri signer wrote no $(basename "$APK").sig"; exit 1; }
+
+      # For verify (build-only runs) or publish: the APK and its .sig, under
+      # their release names.
+      - name: Upload the APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: shodh-android-arm64
+          path: |
+            ${{ env.APK }}
+            ${{ env.APK }}.sig
+          retention-days: 14
+          if-no-files-found: error
+
   # The macOS app installed and started the way a tester gets it: the dmg the
   # build uploaded (the file users download), quarantined as a browser marks a
   # download, copied out of the mounted image into an Applications folder,
@@ -1145,12 +1449,13 @@ jobs:
 
   verify:
     name: Verify the installers
-    needs: [plan, build]
+    needs: [plan, build, android]
     # build runs after create-release, which is skipped on pull requests; a skipped
     # ancestor makes the implicit success() false, so the result is checked directly.
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success'
       && needs.build.result == 'success'
+      && needs.android.result == 'success'
       && needs.plan.outputs.publish != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1175,7 +1480,9 @@ jobs:
           path: ${{ runner.temp }}/pr-key
 
       # The artifacts, then the release publish would make of them, checked
-      # as publish checks it (with this run's throwaway key).
+      # as publish checks it (with this run's throwaway key). shodh-* also
+      # matches ci.yml's debug APK artifact in the same run: the checks take
+      # each file by its exact release name, so it is never staged.
       - name: Every installer present, named for the version, and signed
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -1217,20 +1524,38 @@ jobs:
           echo "Latest release: ${tag}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           bash scripts/release/download-assets.sh "$RUNNER_TEMP/release.json" "$RUNNER_TEMP/assets"
-          # The files as they were at the tag: its version and updater key.
+          # The files as they were at the tag: its version (every file
+          # versions.mjs reads that the tag has, as the plan job extracts
+          # them) and updater key (app/src-tauri/tauri.conf.json, one of them).
           git fetch --no-tags --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}"
+          # A failure of the listing stops here (set -e), never an empty list.
+          listing=$(node scripts/release/versions.mjs files)
+          mapfile -t listed <<< "$listing"
+          files=()
+          for f in "${listed[@]}"; do
+            if git cat-file -e "refs/tags/${tag}:${f}" 2>/dev/null; then files+=("$f"); fi
+          done
           mkdir "$RUNNER_TEMP/tagged"
-          git archive "refs/tags/${tag}" app/package.json app/package-lock.json app/src-tauri/tauri.conf.json \
-            app/src-tauri/Cargo.toml crates/shodh-rag/Cargo.toml Cargo.lock | tar -x -C "$RUNNER_TEMP/tagged"
+          git archive "refs/tags/${tag}" "${files[@]}" | tar -x -C "$RUNNER_TEMP/tagged"
+          # Releases carry the Android app from the first tag whose release
+          # workflow builds it (the tag has scripts/release/android.mjs): one
+          # made before must not have it, one made since must.
+          if git cat-file -e "refs/tags/${tag}:scripts/release/android.mjs" 2>/dev/null; then android=true; else android=false; fi
+          echo "The Android app is part of ${tag}: ${android}"
+          echo "android=${android}" >> "$GITHUB_OUTPUT"
 
       - name: Verify it as a release
         env:
           TAG: ${{ steps.latest.outputs.tag }}
+          ANDROID: ${{ steps.latest.outputs.android }}
         run: |
           set -euo pipefail
           node scripts/release/versions.mjs check --tag "$TAG" --root "$RUNNER_TEMP/tagged"
+          flags=()
+          if [ "$ANDROID" != true ]; then flags+=(--no-android); fi
           node scripts/release/verify.mjs release --config "$RUNNER_TEMP/tagged/app/src-tauri/tauri.conf.json" \
-            --release-json "$RUNNER_TEMP/release.json" --dir "$RUNNER_TEMP/assets" --tag "$TAG" --repo "$GITHUB_REPOSITORY"
+            --release-json "$RUNNER_TEMP/release.json" --dir "$RUNNER_TEMP/assets" --tag "$TAG" --repo "$GITHUB_REPOSITORY" \
+            ${flags[@]+"${flags[@]}"}
 
       - name: What installed apps fetch
         env:
@@ -1240,7 +1565,7 @@ jobs:
 
   publish:
     name: Verify and publish
-    needs: [plan, create-release, build, launch-macos]
+    needs: [plan, create-release, build, android, launch-macos]
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1275,8 +1600,9 @@ jobs:
           pattern: shodh-*
           path: ${{ runner.temp }}/installers
 
-      # Signed with the release key (tauri.conf.json), staged under the
-      # release names with latest.json, and attached to the draft.
+      # Signed with the release key (tauri.conf.json), the Android app's
+      # .sig included, staged under the release names with latest.json, and
+      # attached to the draft.
       - name: Attach the installers to the draft
         run: |
           set -euo pipefail

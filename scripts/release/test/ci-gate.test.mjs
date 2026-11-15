@@ -295,6 +295,10 @@ test('the android job runs for the phone app and what it reads; a phone-only cha
     'rust-toolchain.toml',
     '.github/workflows/ci.yml',
     '.github/workflows/nightly.yml',
+    // The manifest checks it shares with the release APK, and the debug-only
+    // code check it runs (the one release script it reads).
+    '.github/actions/android-apk-manifest/action.yml',
+    'scripts/release/android.mjs',
   ];
   for (const path of phone) assert.ok(!skippable(path, android_skip, android_keep), `the android job skips ${path}`);
   const desktopOnly = [
@@ -308,14 +312,29 @@ test('the android job runs for the phone app and what it reads; a phone-only cha
     'Cargo.lock',
     'Cargo.toml',
     'scripts/release/versions.mjs',
+    'scripts/release/verify.mjs',
+    'scripts/release/test/android.test.mjs',
     '.github/workflows/release.yml',
   ];
   for (const path of desktopOnly) assert.ok(skippable(path, android_skip, android_keep), `the android job runs for ${path}`);
-  // The desktop's heavy jobs never build the phone app.
+  // The evals and the footprint build never build the phone app.
   for (const path of ['mobile/src/App.tsx', 'mobile/src-tauri/Cargo.lock', 'mobile/package-lock.json']) {
     assert.ok(skippable(path, eval_skip, eval_keep), `the evals run for ${path}`);
     assert.ok(skippable(path, footprint_skip), `Footprint budget runs for ${path}`);
-    assert.ok(skippable(path, release_skip), `the release builds run for ${path}`);
+  }
+  // The release builds do: release.yml's android job builds the release APK,
+  // which the android job (a debug build) never does.
+  for (const path of [
+    'mobile/src/App.tsx',
+    'mobile/src-tauri/Cargo.lock',
+    'mobile/package-lock.json',
+    'mobile/src-tauri/src/tour.rs',
+    'mobile/src-tauri/tauri.conf.json',
+    'mobile/plugins/shodh-android/android/src/main/AndroidManifest.xml',
+    '.github/actions/android-apk-manifest/action.yml',
+    'scripts/release/android.mjs',
+  ]) {
+    assert.ok(!skippable(path, release_skip), `the release builds skip ${path}`);
   }
   // The phone link is built into the desktop app too.
   assert.ok(!skippable('crates/shodh-link/src/client.rs', footprint_skip));

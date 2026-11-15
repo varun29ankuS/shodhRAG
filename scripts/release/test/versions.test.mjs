@@ -77,6 +77,39 @@ test('the CLI sets and checks a copy of the repository files', () => {
   assert.throws(() => execFileSync(process.execPath, [script, 'set', current, '--root', root], { stdio: 'pipe' }));
 });
 
+test('files lists every file that carries the version, once each', () => {
+  const out = execFileSync(process.execPath, [script, 'files'], { encoding: 'utf8' });
+  assert.deepEqual(out.trim().split('\n'), files);
+  assert.equal(new Set(files).size, files.length);
+});
+
+test('a tree of only the listed files checks, as release.yml extracts a tag', () => {
+  // copyRepoFiles copies exactly `files`: what the plan and published-release
+  // jobs archive from a tag.
+  const root = copyRepoFiles();
+  const current = agreedVersion(readVersions(repoTexts()));
+  const out = execFileSync(process.execPath, [script, 'check', '--tag', `v${current}`, '--root', root], { encoding: 'utf8' });
+  assert.match(out, /matches v/);
+});
+
+test('release.yml extracts the files versions.mjs lists, never a list of its own', () => {
+  const workflow = readFileSync(join(repo, '.github', 'workflows', 'release.yml'), 'utf8');
+  // The plan job (publishing) and the published-release job (every pull request).
+  assert.equal(workflow.match(/node scripts\/release\/versions\.mjs files/g)?.length, 2);
+  for (const archive of workflow.match(/git archive [^\n|]+/g) ?? []) {
+    assert.match(archive, /^git archive "refs\/tags\/\$\{tag\}" "\$\{files\[@\]\}"/, archive);
+  }
+  // A version file left out of the extraction fails the check once the tag is
+  // as new as the location (what a fixed list of the older files did to 0.0.11).
+  const since = LOCATIONS.find((l) => l.since !== undefined);
+  const texts = repoTexts();
+  const current = agreedVersion(readVersions(texts));
+  const atSince = compareVersions(current, since.since) < 0 ? applyVersion(texts, since.since).texts : texts;
+  const partial = new Map(atSince);
+  partial.delete(since.file);
+  assert.throws(() => readVersions(partial), VersionError);
+});
+
 test('a release from before a location was added checks without it; from its version on it is required', () => {
   const added = LOCATIONS.filter((l) => l.since !== undefined);
   assert.ok(added.length > 0);

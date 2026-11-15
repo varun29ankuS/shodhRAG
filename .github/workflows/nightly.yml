@@ -31,6 +31,12 @@ jobs:
       checks: read
       actions: read
 
+  # The nightly run failed when its CI gate did, the check a release reads
+  # (scripts/release/ci-gate.mjs, NIGHTLY_CHECK): not when the call of ci.yml
+  # did, which also fails for a job CI gate does not wait for (a job that is
+  # not required). The call's result only spares the look when everything
+  # passed. scripts/release/nightly-verdict.mjs decides; a verdict that could
+  # not be reached opens the issue too.
   report:
     name: Open an issue when the nightly run failed
     needs: ci
@@ -39,12 +45,31 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: read  # this run's jobs
+      contents: read  # the checkout of the verdict script
       issues: write
     steps:
-      - name: Open or update the issue
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Did the CI gate pass?
+        id: verdict
         env:
           GH_TOKEN: ${{ github.token }}
-          RESULT: ${{ needs.ci.result }}
+        run: |
+          set -euo pipefail
+          gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs > "$RUNNER_TEMP/jobs.json"
+          node scripts/release/nightly-verdict.mjs --jobs "$RUNNER_TEMP/jobs.json" --github-output
+
+      - name: Open or update the issue
+        if: ${{ !cancelled() && steps.verdict.outputs.failed != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ steps.verdict.outputs.gate || 'not determined' }}
         run: |
           set -euo pipefail
           title="Nightly CI is failing on master"
@@ -52,7 +77,7 @@ jobs:
           jobs=$(gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs \
             --jq '.jobs[] | select(.conclusion != null and .conclusion != "success" and .conclusion != "skipped") | "- \(.name): \(.conclusion) (\(.url))"')
           body=$(printf '%s\n' \
-            "The latest nightly CI run on master did not pass: ${RESULT}." \
+            "The latest nightly CI run on master did not pass: its CI gate (CI / CI gate, the check a release reads) is ${RESULT}." \
             "" \
             "Commit: ${GITHUB_SHA}" \
             "Run: ${run_url}" \

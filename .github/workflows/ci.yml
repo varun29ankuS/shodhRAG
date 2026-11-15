@@ -1189,6 +1189,494 @@ jobs:
       # mobile/src-tauri/tauri.dev.conf.json), so they never replace the
       # real one (com.shodhrag.mobile) on a phone.
       ANDROID_PACKAGE: com.shodhrag.mobile.dev
+      # The emulator, pinned rather than the latest the action would take
+      # (it moves: 37.2.13 in the runs where the emulator died, 37.3.9 by
+      # 2026-11-15). 35.4.9, build 13025442 (March 2025), the long-lived
+      # 35.x line from before 37.x, well within the API 34 image's
+      # minimum (29.1.11). The launch test fails unless the running
+      # emulator says it is this build.
+      EMULATOR_BUILD: '13025442'
+      # The launch test (both passes of the emulator steps below).
+      LAUNCH_TEST: |
+        now_ms() { date +%s%3N; }
+        # PASS is which tour this is (the step sets it): "blur", the app as
+        # it is, whose screenshots are the ones people see, or "noblur",
+        # the same tour with every backdrop-filter off (debug.shodh.noblur,
+        # tour.rs), which measures what the frosted glass costs this
+        # emulator's software renderer.
+        case "$PASS" in
+          blur) noblur=0; screens_artifact=android-screens ;;
+          noblur) noblur=1; screens_artifact=android-screens-noblur ;;
+          *) echo "::error::PASS is blur or noblur, not ${PASS:-unset}"; exit 1 ;;
+        esac
+        evidence="$RUNNER_TEMP/android-launch-$PASS"
+        mkdir -p "$evidence"
+        echo "### Android tour, pass $PASS" >> "$GITHUB_STEP_SUMMARY"
+
+        # The emulator is the pinned build (emulator-build below), not the
+        # latest one the action installs first and then unzips it over.
+        emulator_version=$(timeout -k 5 30 "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tr -d '\r' | grep -m 1 'emulator version' || true)
+        emulator_revision=$(sed -n 's/^Pkg.Revision=//p' "$ANDROID_HOME/emulator/source.properties" | tr -d '\r')
+        echo "$emulator_version; Pkg.Revision=$emulator_revision" | tee "$evidence/emulator-version.txt"
+        if ! grep -qF "build_id $EMULATOR_BUILD)" <<< "$emulator_version"; then
+          echo "::error::The emulator is not the pinned build $EMULATOR_BUILD: ${emulator_version:-no version line}"
+          exit 1
+        fi
+        echo "- emulator: \`$emulator_version\`, Pkg.Revision $emulator_revision" >> "$GITHUB_STEP_SUMMARY"
+
+        # The emulator's process on the runner, sampled every 2 s into
+        # emulator-load.txt: its CPU over each interval (utime + stime
+        # from /proc, as % of one core; ps's pcpu is a lifetime average
+        # and would hide a rise), its resident memory and threads, and
+        # the runner's available memory and load. Each shot below writes
+        # its name into the same file, so the load is read against the
+        # screens, and the last sample before "gone" dates the
+        # emulator's end. At most 3600 samples (2 hours), so the file is
+        # bounded whatever happens. comm is "qemu-system-x86" (15
+        # characters) for the windowed and the headless binary alike;
+        # -f would also match this script, whose text names it.
+        qemu_pid=$(pgrep -o -x 'qemu-system-x86' || true)
+        if [ -z "$qemu_pid" ]; then
+          echo "::error::No qemu-system-x86 process on the runner, so the emulator's load cannot be sampled"
+          pgrep -a -f 'qemu|emulator' || true
+          exit 1
+        fi
+        load="$evidence/emulator-load.txt"
+        sample_emulator() {
+          local pid=$1 clk last_ticks="" last_ms now_ms_ stat rest ticks cpu rss threads avail
+          local -a f
+          clk=$(getconf CLK_TCK)
+          echo "# qemu pid $pid; cpu is % of one core over the interval"
+          for (( i = 0; i < 3600; i++ )); do
+            if ! stat=$(cat "/proc/$pid/stat" 2>/dev/null); then
+              echo "$(date +%T.%3N) gone: the emulator's process (pid $pid) has ended"
+              return 0
+            fi
+            now_ms_=$(now_ms)
+            # Fields after the command's name, whose parentheses may hold
+            # spaces: f[11] is utime and f[12] stime (fields 14 and 15).
+            rest=${stat##*) }
+            read -r -a f <<< "$rest"
+            ticks=$(( f[11] + f[12] ))
+            if [ -n "$last_ticks" ] && [ "$now_ms_" -gt "$last_ms" ]; then
+              cpu=$(( (ticks - last_ticks) * 100000 / (clk * (now_ms_ - last_ms)) ))
+            else
+              cpu=-
+            fi
+            last_ticks=$ticks
+            last_ms=$now_ms_
+            rss=$(awk '/^VmRSS:/ { print int($2 / 1024) }' "/proc/$pid/status" 2>/dev/null || echo -)
+            threads=$(awk '/^Threads:/ { print $2 }' "/proc/$pid/status" 2>/dev/null || echo -)
+            avail=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
+            echo "$(date +%T.%3N) cpu=${cpu}% rss=${rss}MB threads=${threads} runner_available=${avail}MB load=$(cut -d ' ' -f 1 /proc/loadavg)"
+            sleep 2
+          done
+          echo "$(date +%T.%3N) sampling stopped after 3600 samples"
+        }
+        sample_emulator "$qemu_pid" >> "$load" 2>&1 &
+        sampler=$!
+
+        # How the emulator's process ends, from the kernel (no emulator
+        # line, crash report or out-of-memory kill has said so before):
+        # fatal signals sent to any process, with their sender, and each
+        # process's exit_group code, kept in the kernel's ring buffer
+        # (the newest kept when it fills) and read at the end. Evidence
+        # only: when the runner has no tracefs it is noted and skipped.
+        tracing=/sys/kernel/tracing
+        # The signals: SIGHUP, INT, QUIT, ILL, ABRT, BUS, FPE, KILL, SEGV,
+        # TERM, XCPU, XFSZ and SYS.
+        traced=0
+        if sudo -n test -w "$tracing/trace" && sudo -n test -d "$tracing/events/syscalls/sys_enter_exit_group" && sudo -n sh -euc "
+            echo 0 > $tracing/tracing_on
+            echo > $tracing/trace
+            echo 8192 > $tracing/buffer_size_kb
+            echo 1 > $tracing/options/record-tgid
+            echo 'sig == 1 || sig == 2 || sig == 3 || sig == 4 || sig == 6 || sig == 7 || sig == 8 || sig == 9 || sig == 11 || sig == 15 || sig == 24 || sig == 25 || sig == 31' > $tracing/events/signal/signal_generate/filter
+            echo 1 > $tracing/events/signal/signal_generate/enable
+            echo 1 > $tracing/events/syscalls/sys_enter_exit_group/enable
+            echo 1 > $tracing/tracing_on
+          "; then
+          traced=1
+        else
+          echo "The runner's tracefs could not be set up: how the emulator ends is not traced" | tee "$evidence/emulator-end.txt"
+        fi
+        trace_end() {
+          [ "$traced" -eq 1 ] || return 0
+          {
+            echo "== fatal signals (all processes), then exit_group calls of the emulator's process ($qemu_pid)"
+            sudo -n cat "$tracing/trace" | grep -E "signal_generate|\( *$qemu_pid\)" | tail -n 400
+          } > "$evidence/emulator-end.txt" 2>&1 || true
+          sudo -n sh -c "echo 0 > $tracing/tracing_on; echo 0 > $tracing/events/signal/signal_generate/enable; echo 0 > $tracing/events/syscalls/sys_enter_exit_group/enable; echo 0 > $tracing/events/signal/signal_generate/filter; echo > $tracing/trace" || true
+        }
+
+        # Each shot's frames as the app's renderer counted them (dumpsys
+        # gfxinfo, then reset, so each row is that screen alone): frames,
+        # janky frames and the frame-time percentiles.
+        frames="$evidence/gfxinfo.md"
+        {
+          echo "| shot | frames | janky | p50 | p90 | p95 | p99 |"
+          echo "| --- | --- | --- | --- | --- | --- | --- |"
+        } > "$frames"
+        frame_stats() {
+          local name=$1 out="$evidence/gfxinfo-$1.txt" total janky
+          adb_within 30 shell dumpsys gfxinfo "$ANDROID_PACKAGE" reset | tr -d '\r' > "$out"
+          pick() { grep -m 1 -E "^ *$1" "$out" | sed -E "s/^ *$1:? *//" || true; }
+          total=$(pick 'Total frames rendered')
+          janky=$(pick 'Janky frames')
+          echo "| $name | ${total:-none} | ${janky:-none} | $(pick '50th percentile') | $(pick '90th percentile') | $(pick '95th percentile') | $(pick '99th percentile') |" >> "$frames"
+        }
+        # The numbers in the step's summary, whether the tour ends well or not.
+        summarize_load() {
+          {
+            echo
+            echo "Frames per shot (dumpsys gfxinfo), pass $PASS:"
+            echo
+            cat "$frames"
+            echo
+            awk -v pass="$PASS" '
+              /cpu=/ {
+                n++
+                for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+                c = v["cpu"]; sub("%", "", c); r = v["rss"]; sub("MB", "", r)
+                if (c != "-" && c + 0 > cpu) cpu = c + 0
+                if (r + 0 > rss) rss = r + 0
+                last = $1
+              }
+              /gone/ { gone = $1 }
+              END {
+                printf "- emulator process, pass %s: %d samples, peak CPU %d%% of one core, peak RSS %d MB, last sample %s", pass, n, cpu, rss, last
+                if (gone) printf ", gone at %s", gone
+                printf "\n"
+              }' "$load"
+          } >> "$GITHUB_STEP_SUMMARY" || true
+        }
+        # Every adb call is bounded. A call that outlives its limit means
+        # the emulator or adb is wedged: the call fails, the step ends at
+        # once (bash -e) and the evidence below is kept. With unbounded
+        # adb calls, this step once hung for 70 minutes after the
+        # emulator went offline, until the job's limit cancelled it and
+        # no evidence was uploaded.
+        # -k 5: an adb that ignores the TERM is killed 5 s later.
+        adb_within() { local seconds=$1; shift; timeout -k 5 "$seconds" adb "$@"; }
+        # The log streams to the runner from the start, so it is kept
+        # even when the emulator dies or goes offline (a dump at the end
+        # cannot be read from an offline emulator). The stream ends
+        # with the emulator, or at the end of this script.
+        # Room for the whole launch, and nothing from before it: the
+        # ready line read below is this launch's. 10 s: each is one
+        # request to logd.
+        adb_within 10 logcat -G 16M
+        adb_within 10 logcat -b main,system,crash -c
+        adb logcat -v threadtime -b main,system,crash > "$evidence/logcat.txt" 2>&1 &
+        log_stream=$!
+        # On a failure, what the runner saw too: whether adb still sees
+        # the emulator, whether its process lives, the runner's memory
+        # and the kernel's log (an out-of-memory kill of the emulator is
+        # there), and every death of the app in the streamed log.
+        on_exit() {
+          local status=$?
+          kill "$log_stream" "$sampler" 2>/dev/null || true
+          trace_end
+          summarize_load
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "== adb devices"; timeout -k 5 15 adb devices -l
+              echo "== emulator processes"; pgrep -a -f 'qemu-system|emulator' || echo "none"
+              echo "== runner memory"; free -m
+              echo "== kernel log"; timeout -k 5 15 sudo -n dmesg -T | tail -n 200
+              # The emulator's own crash reports: at its start it prints
+              # "Storing crashdata in: /tmp/android-runner/emu-crash-<version>.db".
+              # A minidump there names the emulator thread that died.
+              echo "== emulator crash reports"; ls -laR /tmp/android-runner/emu-crash-*.db || echo "none"
+            } > "$evidence/host.txt" 2>&1 || true
+            cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
+            echo "::group::Evidence (all of it is in the android-launch-evidence-$PASS artifact)"
+            tail -n 80 "$evidence/host.txt" || true
+            echo "== the app's deaths in the streamed log"
+            grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
+            echo "::endgroup::"
+          fi
+        }
+        trap on_exit EXIT
+
+        # The phone's screen is the AVD's own (profile pixel_6 below:
+        # 1080x2400 at 420 dpi), never a runtime override. With no
+        # profile the panel was 320x640, and `wm size 1080x2400` on it
+        # became 1080x1920 (the system caps the override at 3x the panel),
+        # left the touch digitizer at 320x640, and on the second relaunch
+        # under it the emulator's renderer printed "Failed to find
+        # ColorBuffer" and its process was gone seconds later.
+        display_size=$(adb_within 30 shell wm size | tr -d '\r')
+        display_density=$(adb_within 30 shell wm density | tr -d '\r')
+        if [ "$display_size" != "Physical size: 1080x2400" ] || [ "$display_density" != "Physical density: 420" ]; then
+          echo "::error::The emulator's screen is not the pixel_6 profile's 1080x2400 at 420 dpi, with no override: $display_size; $display_density"
+          exit 1
+        fi
+
+        start=$(now_ms)
+        # 180 s: the universal debug APK installs in about 15 s here.
+        adb_within 180 install -r "$APK" | tr -d '\r' | tee "$evidence/install.txt"
+        installed_ms=$(( $(now_ms) - start ))
+        # 30 s for each quick shell command: they take well under a second.
+        component=$(adb_within 30 shell cmd package resolve-activity --brief "$ANDROID_PACKAGE" | tr -d '\r' | tail -n 1)
+        case "$component" in
+          "$ANDROID_PACKAGE"/*) ;;
+          *) echo "::error::$ANDROID_PACKAGE has no launcher activity: $component"; exit 1 ;;
+        esac
+
+        # What the screen shows, for people to look at (not a gate): a
+        # recording of the launch and screenshots in both themes.
+        screens="$RUNNER_TEMP/$screens_artifact"
+        mkdir -p "$screens"
+
+        # The phone starts in light mode (read, not set): the app's own
+        # start below is in the phone's theme, and the tour's last shots
+        # turn the phone dark once to check the app follows it.
+        night=$(adb_within 30 shell cmd uimode night | tr -d '\r')
+        if [ "$night" != "Night mode: no" ]; then
+          echo "::error::The emulator does not start in light mode: $night"
+          exit 1
+        fi
+        # The launcher in light mode, with Shodh's icon (for the user's
+        # review), before Shodh first runs: its home screen, then the list
+        # of all apps (a swipe up). The dark ones are taken at the end,
+        # after the phone turns dark. The pauses only let the launcher
+        # settle for the picture, and decide no result.
+        launcher_shots() {
+          adb_within 30 shell input keyevent KEYCODE_HOME
+          sleep 3
+          adb_within 20 exec-out screencap -p > "$screens/launcher-home-$1.png"
+          adb_within 30 shell input swipe 540 2000 540 500 300
+          sleep 3
+          adb_within 20 exec-out screencap -p > "$screens/launcher-apps-$1.png"
+          adb_within 30 shell input keyevent KEYCODE_HOME
+        }
+        launcher_shots light
+
+        # 45 s: the recording stops itself at 30 s, then writes its file.
+        adb_within 45 shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
+        recorder=$!
+
+        # The screenshot tour's watcher starts only when this is set at
+        # launch (tour.rs), so a tester's debug build never runs it.
+        adb_within 30 shell setprop debug.shodh.tour.on 1
+        # Set in both passes (0 or 1), so neither reads a value it did not set.
+        adb_within 30 shell setprop debug.shodh.noblur "$noblur"
+        start=$(now_ms)
+        # 120 s, the same as the ready line's wait below: am start -W
+        # returns at the first frame, which comes before that line.
+        adb_within 120 shell am start -W -n "$component" | tr -d '\r' | tee "$evidence/am-start.txt"
+        # 120 s: the slowest first start a tester would wait through
+        # without calling the app hung. On this emulator the first start
+        # includes the WebView's first start with software rendering, the
+        # Keystore generating the link's key and the app's first run.
+        # logcat ends at the first ready (or not-ready) line.
+        status=0
+        adb_within 120 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$evidence/ready.txt" || status=$?
+        ready_ms=$(( $(now_ms) - start ))
+        if [ "$status" -eq 124 ]; then
+          echo "::error::Shodh did not report ready within 120 s of its launch"
+          exit 1
+        elif [ "$status" -ne 0 ]; then
+          echo "::error::Reading logcat failed (status $status) while waiting for ready"
+          exit 1
+        fi
+        # logcat prints a "--------- beginning of main" header before the
+        # first line it matches; the ready line is the first Shodh line.
+        ready_line=$(tr -d '\r' < "$evidence/ready.txt" | grep -E 'Shodh (not )?ready' | head -n 1 || true)
+        echo "$ready_line"
+        if ! grep -q 'Shodh ready: the pair screen is shown' <<< "$ready_line"; then
+          echo "::error::Shodh did not reach its pair screen: $ready_line"
+          exit 1
+        fi
+        pid=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
+        if [ -z "$pid" ]; then
+          echo "::error::Shodh reported ready but is not running"
+          exit 1
+        fi
+
+        # system_bars_reach_the_page: the app draws edge to edge, and the
+        # WebView reports no system bars to the page (env() is 0 in it), so
+        # the plugin measures them and tells the page (ShodhPlugin.watchInsets).
+        # Its measure, logged before the first screen, must have the
+        # pixel_6's status bar and gesture bar, or every screen's bar sits
+        # under the clock and the tab bar's labels under the gesture bar.
+        adb_within 30 logcat -d -v brief -s Shodh:I | tr -d '\r' > "$evidence/system-bars.txt"
+        bars_line=$(grep -F 'Shodh system bars:' "$evidence/system-bars.txt" | tail -n 1 || true)
+        echo "${bars_line:-no system bars line}"
+        bars_top=$(sed -nE 's/.*Shodh system bars: top ([0-9.]+) dp.*/\1/p' <<< "$bars_line")
+        bars_bottom=$(sed -nE 's/.*Shodh system bars: .* bottom ([0-9.]+) dp.*/\1/p' <<< "$bars_line")
+        if [ -z "$bars_top" ] || ! awk -v t="$bars_top" 'BEGIN { exit !(t > 0) }'; then
+          echo "::error::The page was not told where the status bar is: ${bars_line:-no 'Shodh system bars' line in logcat}"
+          exit 1
+        fi
+        if [ -z "$bars_bottom" ] || ! awk -v b="$bars_bottom" 'BEGIN { exit !(b > 0) }'; then
+          echo "::error::The page was not told where the gesture bar is: ${bars_line:-no 'Shodh system bars' line in logcat}"
+          exit 1
+        fi
+
+        # 15 s after ready covers the start's background work: the link's
+        # first relay connection and address lookup, which run after the
+        # endpoint is bound. A crash of the app ends the wait at once.
+        status=0
+        adb_within 15 logcat -b crash -v threadtime -e "$ANDROID_PACKAGE" -m 1 > "$evidence/crash-wait.txt" || status=$?
+        if [ "$status" -ne 124 ]; then
+          if [ -s "$evidence/crash-wait.txt" ]; then
+            echo "::error::Shodh crashed within 15 s of being ready"
+            cat "$evidence/crash-wait.txt"
+          else
+            echo "::error::Reading the crash log ended (status $status) before the 15 s were up"
+          fi
+          exit 1
+        fi
+        now_pid=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
+        if [ "$now_pid" != "$pid" ]; then
+          echo "::error::Shodh is not the process it was at ready (pid $pid, now ${now_pid:-none})"
+          exit 1
+        fi
+        errors=$(adb_within 30 logcat -d -s Shodh:E | tr -d '\r')
+        if grep -q 'Shodh panicked' <<< "$errors"; then
+          echo "::error::Shodh panicked"
+          echo "$errors"
+          exit 1
+        fi
+        echo "Still running 15 s after ready, no crash"
+
+        # The pass is what it says: the app logs at its start that it draws
+        # the tour without blur (tour.rs) in the noblur pass, and only there.
+        if grep -qF 'Shodh tour: the screens are drawn without backdrop blur' "$evidence/system-bars.txt"; then
+          drawn_without_blur=1
+        else
+          drawn_without_blur=0
+        fi
+        if [ "$drawn_without_blur" != "$noblur" ]; then
+          echo "::error::Pass $PASS set debug.shodh.noblur to $noblur, but the app's start says otherwise (its line without blur: $drawn_without_blur)"
+          exit 1
+        fi
+
+        wait "$recorder" || true
+        adb_within 30 pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
+
+        # Every main screen in light and dark, for review, on the AVD's
+        # phone-sized screen (checked above), all in the one run of the
+        # app started above. Force-stopping and relaunching the app for
+        # each picture killed the emulator process itself, whatever its
+        # renderer (runs 43624325353, 43662536425, 43670793908). So a
+        # debug build takes requests from the system property
+        # debug.shodh.tour, "<number> <screen> <phone|light|dark>"
+        # (src-tauri/src/tour.rs and src/lib/tour.ts; a release build has
+        # neither), and opens that screen again from its start in the same
+        # process, in the theme asked for: the app's own theme setting,
+        # not the phone's. With no computer paired, the plain names show
+        # each screen as it is while not connected; demo-* screens show a
+        # scripted computer (src/lib/demo.ts, debug builds only) so the
+        # connected screens can be seen. Each shot waits for the app's own
+        # ready line, which names the screen and the theme shown, and the
+        # app must still be the process that started (pid above). A wrong
+        # theme fails the job after every picture is taken. The 3 s pause
+        # only lets the data and the springs settle for the picture, and
+        # decides no result.
+        requests=0
+        themes_wrong=()
+        # name, the screen asked for ("start": the app's own start), the
+        # screen the ready line names, the theme asked for, the theme the
+        # ready line must name.
+        shoot() {
+          local name=$1 request=$2 screen=$3 theme=$4 expect=$5 status=0 line state now ready="$evidence/ready-$1-$5.txt"
+          requests=$(( requests + 1 ))
+          echo "$(date +%T.%3N) shot $requests: $name ($expect) asked for" >> "$load"
+          adb_within 10 logcat -b main -c
+          # Quoted for the phone's shell, so the three words are one value.
+          adb_within 30 shell setprop debug.shodh.tour "'$requests $request $theme'"
+          # 60 s: the app reads the property every 0.2 s and opens the
+          # screen in a few seconds here.
+          adb_within 60 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$ready" || status=$?
+          line=$(tr -d '\r' < "$ready" | grep -m 1 'Shodh' || true)
+          if [ "$status" -ne 0 ] || ! grep -q "Shodh ready: the $screen screen is shown" <<< "$line"; then
+            if [ "$status" -eq 124 ]; then
+              echo "::error::$name ($expect) did not report ready within 60 s"
+            elif [ "$status" -ne 0 ]; then
+              # logcat ends early when the emulator goes away.
+              state=$(timeout -k 5 15 adb get-state 2>&1 | tr -d '\r' || true)
+              echo "::error::$name ($expect): reading logcat ended (status $status) before the ready line; the emulator is ${state:-unknown}"
+            else
+              echo "::error::$name ($expect) did not reach its screen: $line"
+            fi
+            adb_within 20 exec-out screencap -p > "$screens/$name-$expect-not-ready.png" || true
+            return 1
+          fi
+          # pidof fails when there is no such process: that is "none" here.
+          now=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r' || true)
+          if [ "$now" != "$pid" ]; then
+            echo "::error::$name ($expect): Shodh is not the process the tour started with (pid $pid, now ${now:-none})"
+            return 1
+          fi
+          if ! grep -q "in the $expect theme" <<< "$line"; then
+            themes_wrong+=("$name, asked for $theme, should be $expect: $line")
+          fi
+          sleep 3
+          # 20 s: a screenshot is one PNG of the screen, under a second here.
+          adb_within 20 exec-out screencap -p > "$screens/$name-$expect.png"
+          frame_stats "$name-$expect"
+        }
+        # The launch's frames, from the app's start to here, so each shot's
+        # row is that shot's alone.
+        frame_stats launch
+        # name, the screen asked for, the screen the ready line names
+        shots=(
+          "pair:start:pair"
+          "home:home:home"
+          "conversations:conversations:conversations"
+          "library:library:library"
+          "approvals:approvals:approvals"
+          "menu:menu:menu"
+          "settings:settings:settings"
+          "tasks:tasks:tasks"
+          "connected-home:demo-home:demo-home"
+          "connected-answer:demo-answer:demo-answer"
+          "connected-conversations:demo-conversations:demo-conversations"
+          "connected-conversations-research:demo-conversations-research:demo-conversations-research"
+          "connected-conversations-code:demo-conversations-code:demo-conversations-code"
+          "connected-conversations-creator:demo-conversations-creator:demo-conversations-creator"
+          "connected-code:demo-code:demo-code"
+          "connected-library:demo-library:demo-library"
+          "connected-reader:demo-reader:demo-reader"
+          "connected-approvals:demo-approvals:demo-approvals"
+          "connected-approval-sheet:demo-sheet:demo-sheet"
+          "connected-workspaces:demo-workspaces:demo-workspaces"
+          "connected-menu:demo-menu:demo-menu"
+        )
+        for theme in light dark; do
+          for shot in "${shots[@]}"; do
+            IFS=: read -r name request screen <<< "$shot"
+            shoot "$name" "$request" "$screen" "$theme" "$theme"
+          done
+        done
+        # the_app_follows_the_phones_theme: the app's default theme
+        # setting (Phone) shows the phone's, light while the phone is
+        # light; then the phone turns dark, once, and the home screen
+        # opened again must be dark. The phone's theme is changed only
+        # here, with the app running (it is not relaunched): a relaunch
+        # just after `cmd uimode night yes` is where run 43662536425's
+        # emulator died. If the emulator dies here, the shot's error names
+        # it and the pictures before it are kept.
+        shoot follows-phone home home phone light
+        adb_within 30 shell cmd uimode night yes
+        shoot follows-phone home home phone dark
+        launcher_shots dark
+        echo "- ${#shots[@]} screens, each in light and dark, and the home screen following the phone from light to dark, all in one run of the app (pid ${pid}), are in the \`${screens_artifact}\` artifact" >> "$GITHUB_STEP_SUMMARY"
+        if [ "${#themes_wrong[@]}" -gt 0 ]; then
+          printf '::error::A screen was not in the theme it should be: %s\n' "${themes_wrong[@]}"
+          exit 1
+        fi
+        {
+          echo
+          echo "Launch on the emulator (API 34, x86_64, first run, pass $PASS):"
+          echo
+          echo "- installed in ${installed_ms} ms"
+          echo "- pair screen ready ${ready_ms} ms after launch: \`${ready_line}\`"
+          echo "- still running 15 s after ready (pid ${pid}), no crash in logcat"
+        } >> "$GITHUB_STEP_SUMMARY"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1228,7 +1716,7 @@ jobs:
           set -euo pipefail
           TAURI_ENV_DEBUG=true npx vite build --outDir "$RUNNER_TEMP/js-debug" --logLevel warn
           TAURI_ENV_DEBUG=false npx vite build --outDir "$RUNNER_TEMP/js-release" --logLevel warn
-          for marker in 'The sample computer has no' 'shodh://tour'; do
+          for marker in 'The sample computer has no' 'shodh://tour' 'shodh-tour-noblur'; do
             grep -rqF "$marker" "$RUNNER_TEMP/js-debug" || { echo "::error::The debug build lacks \"$marker\""; exit 1; }
             if grep -rlF "$marker" "$RUNNER_TEMP/js-release"; then
               echo "::error::A release build contains \"$marker\""
@@ -1406,8 +1894,22 @@ jobs:
 
       # The launch test runs inside the emulator action (the emulator stops
       # when the action ends), which runs each line of `script` on its own,
-      # so the test is one bash program, in LAUNCH_TEST.
-      - name: Launch it on an emulator (the_app_reaches_its_pair_screen)
+      # so the test is one bash program, in LAUNCH_TEST (the job's env, so
+      # both passes below run the same program).
+      #
+      # It runs twice, each pass in its own new AVD and boot (the action
+      # makes the AVD again each time: force-avd-creation is true by
+      # default). The emulator process died mid-tour in four runs, silently
+      # (no emulator error, empty crash reports, no out-of-memory kill), the
+      # last one (43677129675) at the sixth shot with no relaunch at all,
+      # while the app's frames took 1.2 s on average and 5.5 s at worst.
+      # Pass "blur" is the app as it is, and its screenshots are the ones
+      # people see; pass "noblur" is the same tour with every
+      # backdrop-filter off (debug.shodh.noblur, a debug build only), so the
+      # frosted glass's cost on this software renderer is measured, not
+      # guessed. Each pass logs every shot's frames (dumpsys gfxinfo) and
+      # the emulator process's CPU and memory every 2 s.
+      - name: Launch it on an emulator, tour with blur (the_app_reaches_its_pair_screen)
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
         # The backstop for anything outside the script's bounded calls (the
         # action's own boot wait and emulator shutdown): the boot's 10-minute
@@ -1415,316 +1917,7 @@ jobs:
         # room. Past it the step fails, and the evidence is uploaded.
         timeout-minutes: 30
         env:
-          LAUNCH_TEST: |
-            now_ms() { date +%s%3N; }
-            evidence="$RUNNER_TEMP/android-launch"
-            mkdir -p "$evidence"
-            # Every adb call is bounded. A call that outlives its limit means
-            # the emulator or adb is wedged: the call fails, the step ends at
-            # once (bash -e) and the evidence below is kept. With unbounded
-            # adb calls, this step once hung for 70 minutes after the
-            # emulator went offline, until the job's limit cancelled it and
-            # no evidence was uploaded.
-            # -k 5: an adb that ignores the TERM is killed 5 s later.
-            adb_within() { local seconds=$1; shift; timeout -k 5 "$seconds" adb "$@"; }
-            # The log streams to the runner from the start, so it is kept
-            # even when the emulator dies or goes offline (a dump at the end
-            # cannot be read from an offline emulator). The stream ends
-            # with the emulator, or at the end of this script.
-            # Room for the whole launch, and nothing from before it: the
-            # ready line read below is this launch's. 10 s: each is one
-            # request to logd.
-            adb_within 10 logcat -G 16M
-            adb_within 10 logcat -b main,system,crash -c
-            adb logcat -v threadtime -b main,system,crash > "$evidence/logcat.txt" 2>&1 &
-            log_stream=$!
-            # On a failure, what the runner saw too: whether adb still sees
-            # the emulator, whether its process lives, the runner's memory
-            # and the kernel's log (an out-of-memory kill of the emulator is
-            # there), and every death of the app in the streamed log.
-            on_exit() {
-              local status=$?
-              kill "$log_stream" 2>/dev/null || true
-              if [ "$status" -ne 0 ]; then
-                {
-                  echo "== adb devices"; timeout -k 5 15 adb devices -l
-                  echo "== emulator processes"; pgrep -a -f 'qemu-system|emulator' || echo "none"
-                  echo "== runner memory"; free -m
-                  echo "== kernel log"; timeout -k 5 15 sudo -n dmesg -T | tail -n 200
-                  # The emulator's own crash reports: at its start it prints
-                  # "Storing crashdata in: /tmp/android-runner/emu-crash-<version>.db".
-                  # A minidump there names the emulator thread that died.
-                  echo "== emulator crash reports"; ls -laR /tmp/android-runner/emu-crash-*.db || echo "none"
-                } > "$evidence/host.txt" 2>&1 || true
-                cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
-                echo "::group::Evidence (all of it is in the android-launch-evidence artifact)"
-                tail -n 80 "$evidence/host.txt" || true
-                echo "== the app's deaths in the streamed log"
-                grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
-                echo "::endgroup::"
-              fi
-            }
-            trap on_exit EXIT
-
-            # The phone's screen is the AVD's own (profile pixel_6 below:
-            # 1080x2400 at 420 dpi), never a runtime override. With no
-            # profile the panel was 320x640, and `wm size 1080x2400` on it
-            # became 1080x1920 (the system caps the override at 3x the panel),
-            # left the touch digitizer at 320x640, and on the second relaunch
-            # under it the emulator's renderer printed "Failed to find
-            # ColorBuffer" and its process was gone seconds later.
-            display_size=$(adb_within 30 shell wm size | tr -d '\r')
-            display_density=$(adb_within 30 shell wm density | tr -d '\r')
-            if [ "$display_size" != "Physical size: 1080x2400" ] || [ "$display_density" != "Physical density: 420" ]; then
-              echo "::error::The emulator's screen is not the pixel_6 profile's 1080x2400 at 420 dpi, with no override: $display_size; $display_density"
-              exit 1
-            fi
-
-            start=$(now_ms)
-            # 180 s: the universal debug APK installs in about 15 s here.
-            adb_within 180 install -r "$APK" | tr -d '\r' | tee "$evidence/install.txt"
-            installed_ms=$(( $(now_ms) - start ))
-            # 30 s for each quick shell command: they take well under a second.
-            component=$(adb_within 30 shell cmd package resolve-activity --brief "$ANDROID_PACKAGE" | tr -d '\r' | tail -n 1)
-            case "$component" in
-              "$ANDROID_PACKAGE"/*) ;;
-              *) echo "::error::$ANDROID_PACKAGE has no launcher activity: $component"; exit 1 ;;
-            esac
-
-            # What the screen shows, for people to look at (not a gate): a
-            # recording of the launch and screenshots in both themes.
-            screens="$RUNNER_TEMP/android-screens"
-            mkdir -p "$screens"
-
-            # The phone starts in light mode (read, not set): the app's own
-            # start below is in the phone's theme, and the tour's last shots
-            # turn the phone dark once to check the app follows it.
-            night=$(adb_within 30 shell cmd uimode night | tr -d '\r')
-            if [ "$night" != "Night mode: no" ]; then
-              echo "::error::The emulator does not start in light mode: $night"
-              exit 1
-            fi
-            # The launcher in light mode, with Shodh's icon (for the user's
-            # review), before Shodh first runs: its home screen, then the list
-            # of all apps (a swipe up). The dark ones are taken at the end,
-            # after the phone turns dark. The pauses only let the launcher
-            # settle for the picture, and decide no result.
-            launcher_shots() {
-              adb_within 30 shell input keyevent KEYCODE_HOME
-              sleep 3
-              adb_within 20 exec-out screencap -p > "$screens/launcher-home-$1.png"
-              adb_within 30 shell input swipe 540 2000 540 500 300
-              sleep 3
-              adb_within 20 exec-out screencap -p > "$screens/launcher-apps-$1.png"
-              adb_within 30 shell input keyevent KEYCODE_HOME
-            }
-            launcher_shots light
-
-            # 45 s: the recording stops itself at 30 s, then writes its file.
-            adb_within 45 shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
-            recorder=$!
-
-            # The screenshot tour's watcher starts only when this is set at
-            # launch (tour.rs), so a tester's debug build never runs it.
-            adb_within 30 shell setprop debug.shodh.tour.on 1
-            start=$(now_ms)
-            # 120 s, the same as the ready line's wait below: am start -W
-            # returns at the first frame, which comes before that line.
-            adb_within 120 shell am start -W -n "$component" | tr -d '\r' | tee "$evidence/am-start.txt"
-            # 120 s: the slowest first start a tester would wait through
-            # without calling the app hung. On this emulator the first start
-            # includes the WebView's first start with software rendering, the
-            # Keystore generating the link's key and the app's first run.
-            # logcat ends at the first ready (or not-ready) line.
-            status=0
-            adb_within 120 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$evidence/ready.txt" || status=$?
-            ready_ms=$(( $(now_ms) - start ))
-            if [ "$status" -eq 124 ]; then
-              echo "::error::Shodh did not report ready within 120 s of its launch"
-              exit 1
-            elif [ "$status" -ne 0 ]; then
-              echo "::error::Reading logcat failed (status $status) while waiting for ready"
-              exit 1
-            fi
-            # logcat prints a "--------- beginning of main" header before the
-            # first line it matches; the ready line is the first Shodh line.
-            ready_line=$(tr -d '\r' < "$evidence/ready.txt" | grep -E 'Shodh (not )?ready' | head -n 1 || true)
-            echo "$ready_line"
-            if ! grep -q 'Shodh ready: the pair screen is shown' <<< "$ready_line"; then
-              echo "::error::Shodh did not reach its pair screen: $ready_line"
-              exit 1
-            fi
-            pid=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
-            if [ -z "$pid" ]; then
-              echo "::error::Shodh reported ready but is not running"
-              exit 1
-            fi
-
-            # system_bars_reach_the_page: the app draws edge to edge, and the
-            # WebView reports no system bars to the page (env() is 0 in it), so
-            # the plugin measures them and tells the page (ShodhPlugin.watchInsets).
-            # Its measure, logged before the first screen, must have the
-            # pixel_6's status bar and gesture bar, or every screen's bar sits
-            # under the clock and the tab bar's labels under the gesture bar.
-            adb_within 30 logcat -d -v brief -s Shodh:I | tr -d '\r' > "$evidence/system-bars.txt"
-            bars_line=$(grep -F 'Shodh system bars:' "$evidence/system-bars.txt" | tail -n 1 || true)
-            echo "${bars_line:-no system bars line}"
-            bars_top=$(sed -nE 's/.*Shodh system bars: top ([0-9.]+) dp.*/\1/p' <<< "$bars_line")
-            bars_bottom=$(sed -nE 's/.*Shodh system bars: .* bottom ([0-9.]+) dp.*/\1/p' <<< "$bars_line")
-            if [ -z "$bars_top" ] || ! awk -v t="$bars_top" 'BEGIN { exit !(t > 0) }'; then
-              echo "::error::The page was not told where the status bar is: ${bars_line:-no 'Shodh system bars' line in logcat}"
-              exit 1
-            fi
-            if [ -z "$bars_bottom" ] || ! awk -v b="$bars_bottom" 'BEGIN { exit !(b > 0) }'; then
-              echo "::error::The page was not told where the gesture bar is: ${bars_line:-no 'Shodh system bars' line in logcat}"
-              exit 1
-            fi
-
-            # 15 s after ready covers the start's background work: the link's
-            # first relay connection and address lookup, which run after the
-            # endpoint is bound. A crash of the app ends the wait at once.
-            status=0
-            adb_within 15 logcat -b crash -v threadtime -e "$ANDROID_PACKAGE" -m 1 > "$evidence/crash-wait.txt" || status=$?
-            if [ "$status" -ne 124 ]; then
-              if [ -s "$evidence/crash-wait.txt" ]; then
-                echo "::error::Shodh crashed within 15 s of being ready"
-                cat "$evidence/crash-wait.txt"
-              else
-                echo "::error::Reading the crash log ended (status $status) before the 15 s were up"
-              fi
-              exit 1
-            fi
-            now_pid=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r')
-            if [ "$now_pid" != "$pid" ]; then
-              echo "::error::Shodh is not the process it was at ready (pid $pid, now ${now_pid:-none})"
-              exit 1
-            fi
-            errors=$(adb_within 30 logcat -d -s Shodh:E | tr -d '\r')
-            if grep -q 'Shodh panicked' <<< "$errors"; then
-              echo "::error::Shodh panicked"
-              echo "$errors"
-              exit 1
-            fi
-            echo "Still running 15 s after ready, no crash"
-
-            wait "$recorder" || true
-            adb_within 30 pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
-
-            # Every main screen in light and dark, for review, on the AVD's
-            # phone-sized screen (checked above), all in the one run of the
-            # app started above. Force-stopping and relaunching the app for
-            # each picture killed the emulator process itself, whatever its
-            # renderer (runs 43624325353, 43662536425, 43670793908). So a
-            # debug build takes requests from the system property
-            # debug.shodh.tour, "<number> <screen> <phone|light|dark>"
-            # (src-tauri/src/tour.rs and src/lib/tour.ts; a release build has
-            # neither), and opens that screen again from its start in the same
-            # process, in the theme asked for: the app's own theme setting,
-            # not the phone's. With no computer paired, the plain names show
-            # each screen as it is while not connected; demo-* screens show a
-            # scripted computer (src/lib/demo.ts, debug builds only) so the
-            # connected screens can be seen. Each shot waits for the app's own
-            # ready line, which names the screen and the theme shown, and the
-            # app must still be the process that started (pid above). A wrong
-            # theme fails the job after every picture is taken. The 3 s pause
-            # only lets the data and the springs settle for the picture, and
-            # decides no result.
-            requests=0
-            themes_wrong=()
-            # name, the screen asked for ("start": the app's own start), the
-            # screen the ready line names, the theme asked for, the theme the
-            # ready line must name.
-            shoot() {
-              local name=$1 request=$2 screen=$3 theme=$4 expect=$5 status=0 line state now ready="$evidence/ready-$1-$5.txt"
-              requests=$(( requests + 1 ))
-              adb_within 10 logcat -b main -c
-              # Quoted for the phone's shell, so the three words are one value.
-              adb_within 30 shell setprop debug.shodh.tour "'$requests $request $theme'"
-              # 60 s: the app reads the property every 0.2 s and opens the
-              # screen in a few seconds here.
-              adb_within 60 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$ready" || status=$?
-              line=$(tr -d '\r' < "$ready" | grep -m 1 'Shodh' || true)
-              if [ "$status" -ne 0 ] || ! grep -q "Shodh ready: the $screen screen is shown" <<< "$line"; then
-                if [ "$status" -eq 124 ]; then
-                  echo "::error::$name ($expect) did not report ready within 60 s"
-                elif [ "$status" -ne 0 ]; then
-                  # logcat ends early when the emulator goes away.
-                  state=$(timeout -k 5 15 adb get-state 2>&1 | tr -d '\r' || true)
-                  echo "::error::$name ($expect): reading logcat ended (status $status) before the ready line; the emulator is ${state:-unknown}"
-                else
-                  echo "::error::$name ($expect) did not reach its screen: $line"
-                fi
-                adb_within 20 exec-out screencap -p > "$screens/$name-$expect-not-ready.png" || true
-                return 1
-              fi
-              # pidof fails when there is no such process: that is "none" here.
-              now=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r' || true)
-              if [ "$now" != "$pid" ]; then
-                echo "::error::$name ($expect): Shodh is not the process the tour started with (pid $pid, now ${now:-none})"
-                return 1
-              fi
-              if ! grep -q "in the $expect theme" <<< "$line"; then
-                themes_wrong+=("$name, asked for $theme, should be $expect: $line")
-              fi
-              sleep 3
-              # 20 s: a screenshot is one PNG of the screen, under a second here.
-              adb_within 20 exec-out screencap -p > "$screens/$name-$expect.png"
-            }
-            # name, the screen asked for, the screen the ready line names
-            shots=(
-              "pair:start:pair"
-              "home:home:home"
-              "conversations:conversations:conversations"
-              "library:library:library"
-              "approvals:approvals:approvals"
-              "menu:menu:menu"
-              "settings:settings:settings"
-              "tasks:tasks:tasks"
-              "connected-home:demo-home:demo-home"
-              "connected-answer:demo-answer:demo-answer"
-              "connected-conversations:demo-conversations:demo-conversations"
-              "connected-conversations-research:demo-conversations-research:demo-conversations-research"
-              "connected-conversations-code:demo-conversations-code:demo-conversations-code"
-              "connected-conversations-creator:demo-conversations-creator:demo-conversations-creator"
-              "connected-code:demo-code:demo-code"
-              "connected-library:demo-library:demo-library"
-              "connected-reader:demo-reader:demo-reader"
-              "connected-approvals:demo-approvals:demo-approvals"
-              "connected-approval-sheet:demo-sheet:demo-sheet"
-              "connected-workspaces:demo-workspaces:demo-workspaces"
-              "connected-menu:demo-menu:demo-menu"
-            )
-            for theme in light dark; do
-              for shot in "${shots[@]}"; do
-                IFS=: read -r name request screen <<< "$shot"
-                shoot "$name" "$request" "$screen" "$theme" "$theme"
-              done
-            done
-            # the_app_follows_the_phones_theme: the app's default theme
-            # setting (Phone) shows the phone's, light while the phone is
-            # light; then the phone turns dark, once, and the home screen
-            # opened again must be dark. The phone's theme is changed only
-            # here, with the app running (it is not relaunched): a relaunch
-            # just after `cmd uimode night yes` is where run 43662536425's
-            # emulator died. If the emulator dies here, the shot's error names
-            # it and the pictures before it are kept.
-            shoot follows-phone home home phone light
-            adb_within 30 shell cmd uimode night yes
-            shoot follows-phone home home phone dark
-            launcher_shots dark
-            echo "- ${#shots[@]} screens, each in light and dark, and the home screen following the phone from light to dark, all in one run of the app (pid ${pid}), are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
-            if [ "${#themes_wrong[@]}" -gt 0 ]; then
-              printf '::error::A screen was not in the theme it should be: %s\n' "${themes_wrong[@]}"
-              exit 1
-            fi
-            {
-              echo
-              echo "Launch on the emulator (API 34, x86_64, first run):"
-              echo
-              echo "- installed in ${installed_ms} ms"
-              echo "- pair screen ready ${ready_ms} ms after launch: \`${ready_line}\`"
-              echo "- still running 15 s after ready (pid ${pid}), no crash in logcat"
-            } >> "$GITHUB_STEP_SUMMARY"
+          PASS: blur
         with:
           api-level: 34
           # The plain Android image, without Google Play Services. On the
@@ -1744,6 +1937,9 @@ jobs:
           # 320x640, and the runtime `wm size` the tour used on it is where
           # the emulator died (see the check in LAUNCH_TEST).
           profile: pixel_6
+          # The emulator is pinned (EMULATOR_BUILD, the job's env), and the
+          # launch test checks the running one is that build.
+          emulator-build: ${{ env.EMULATOR_BUILD }}
           # The action's default, kept explicit: a cold boot of this image
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
@@ -1753,8 +1949,28 @@ jobs:
           # on a relaunch, sooner (run 43670793908, the second relaunch,
           # against 22 good ones with swiftshader_indirect in run
           # 43662536425), with no out-of-memory kill in the kernel's log and
-          # no crash report. The relaunches were the cause, and the tour no
-          # longer makes them.
+          # no crash report.
+          script: bash -euo pipefail -c "$LAUNCH_TEST"
+
+      # The same tour without blur, in its own boot. It runs after the pass
+      # with blur whatever that pass's result (not when the run is
+      # cancelled), so a death in one is compared with the other. It is not
+      # continue-on-error: a failure of either pass fails this job.
+      - name: Launch it on an emulator, tour without blur (measurement)
+        if: ${{ !cancelled() && env.APK != '' }}
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
+        timeout-minutes: 30
+        env:
+          PASS: noblur
+        # The same emulator, image, screen and options as the pass with
+        # blur, so the blur is the one thing that differs.
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          profile: pixel_6
+          emulator-build: ${{ env.EMULATOR_BUILD }}
+          emulator-boot-timeout: 600
           script: bash -euo pipefail -c "$LAUNCH_TEST"
 
       - name: Upload the screenshots and launch recording
@@ -1766,12 +1982,34 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Upload the emulator's log
-        if: failure()
+      # The pass without blur's pictures, kept apart: they are a
+      # measurement, not how the app looks.
+      - name: Upload the screenshots without blur (measurement)
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: android-launch-evidence
-          path: ${{ runner.temp }}/android-launch
+          name: android-screens-noblur-measurement
+          path: ${{ runner.temp }}/android-screens-noblur
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Each pass's evidence, passed or not: the frames per shot and the
+      # emulator's load are the comparison between the two passes.
+      - name: Upload the emulator's log, frames and load (with blur)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-launch-evidence-blur
+          path: ${{ runner.temp }}/android-launch-blur
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload the emulator's log, frames and load (without blur)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-launch-evidence-noblur
+          path: ${{ runner.temp }}/android-launch-noblur
           retention-days: 14
           if-no-files-found: warn
 

@@ -10,6 +10,12 @@
 //! without the other ("start" asks for the app's own start, as a tester
 //! first sees it). The window opens that screen again from the start
 //! (src/lib/tour.ts) and writes its ready line for it, as at launch.
+//!
+//! `debug.shodh.noblur`, set to "1" before the app starts, is CI's
+//! measurement of what the frosted glass costs the emulator's software
+//! renderer: every screen the tour opens is then drawn without
+//! `backdrop-filter`, on the same translucent fill. The screenshots shown to
+//! people come from the tour with the blur, as the app is.
 
 use std::time::Duration;
 
@@ -25,6 +31,10 @@ const TOUR_PROPERTY: &std::ffi::CStr = c"debug.shodh.tour";
 /// [`POLL`] for the whole run.
 const TOUR_ON_PROPERTY: &std::ffi::CStr = c"debug.shodh.tour.on";
 
+/// Set to "1" by CI before the app starts: the tour's screens are drawn
+/// without `backdrop-filter` (src/lib/tour.ts).
+const NO_BLUR_PROPERTY: &std::ffi::CStr = c"debug.shodh.noblur";
+
 /// The window's event for each request (src/lib/tour.ts).
 const TOUR_EVENT: &str = "shodh://tour";
 
@@ -33,11 +43,14 @@ const TOUR_EVENT: &str = "shodh://tour";
 const POLL: Duration = Duration::from_millis(200);
 
 /// A screen the tour asks for, and the theme to show it in ("phone" follows
-/// the phone's own setting, as the app does by default).
+/// the phone's own setting, as the app does by default), and whether to draw
+/// it without `backdrop-filter` (`debug.shodh.noblur`, read once at start).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Request {
     screen: String,
     theme: &'static str,
+    no_blur: bool,
 }
 
 /// A request from the property's value, or `None` when it is not one: only
@@ -63,6 +76,7 @@ fn parse(value: &str) -> Option<Request> {
     Some(Request {
         screen: screen.to_string(),
         theme,
+        no_blur: false,
     })
 }
 
@@ -72,6 +86,12 @@ fn parse(value: &str) -> Option<Request> {
 pub fn follow(app: AppHandle) {
     if system_property(TOUR_ON_PROPERTY) != "1" {
         return;
+    }
+    let no_blur = system_property(NO_BLUR_PROPERTY) == "1";
+    if no_blur {
+        // CI reads this line: its pass without blur fails without it, and
+        // its pass with blur fails with it.
+        tracing::info!("Shodh tour: the screens are drawn without backdrop blur (debug build)");
     }
     let spawned = std::thread::Builder::new()
         .name("shodh-tour".to_string())
@@ -84,10 +104,11 @@ pub fn follow(app: AppHandle) {
                     continue;
                 }
                 last = value;
-                let Some(request) = parse(&last) else {
+                let Some(mut request) = parse(&last) else {
                     tracing::warn!("Shodh tour: not a request, so it is ignored");
                     continue;
                 };
+                request.no_blur = no_blur;
                 tracing::info!(
                     "Shodh tour: the {} screen in the {} theme (debug build)",
                     request.screen,

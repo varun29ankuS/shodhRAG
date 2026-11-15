@@ -1195,11 +1195,12 @@ jobs:
       # real one (com.shodhrag.mobile) on a phone.
       ANDROID_PACKAGE: com.shodhrag.mobile.dev
       # The emulator, pinned rather than the latest the action would take
-      # (it moves: 37.2.13 in the runs where the emulator died, 37.3.9 by
-      # 2026-11-15). 35.4.9, build 13025442 (March 2025), the long-lived
-      # 35.x line from before 37.x, well within the API 34 image's
-      # minimum (29.1.11). The launch test fails unless the installed
-      # emulator is this build: EMULATOR_REVISION is the Pkg.Revision of
+      # (it moves: 37.2.13 in the first runs where the emulator died, 37.3.9
+      # by 2026-11-15). It died mid-tour on this pin too (runs 43689345770
+      # and 43701191529; see android-tour). 35.4.9, build 13025442 (March
+      # 2025), the long-lived 35.x line from before 37.x, well within the
+      # API 34 image's minimum (29.1.11). The launch test fails unless the
+      # installed emulator is this build: EMULATOR_REVISION is the Pkg.Revision of
       # build 13025442 (its boot banner in run 43683199614: "Android
       # emulator version 35.4.9.0 (build_id 13025442)").
       EMULATOR_BUILD: '13025442'
@@ -1970,9 +1971,9 @@ jobs:
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
         # The backstop for anything outside the script's bounded calls (the
         # action's own boot wait and emulator shutdown): the boot's 10-minute
-        # limit plus the launch, a few minutes here, with room. Past it the
+        # limit, the image's download and the launch, with room. Past it the
         # step fails, and the evidence is uploaded.
-        timeout-minutes: 20
+        timeout-minutes: 30
         env:
           PASS: blur
           TOUR: 0

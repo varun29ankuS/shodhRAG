@@ -56,7 +56,9 @@ env:
 # footprint build that pull requests compare against, and saves the caches
 # pull requests restore. CI gate is the one check that stands for all of
 # them: it fails when any job failed, was cancelled or was skipped without
-# the Changes job saying it was not needed.
+# the Changes job saying it was not needed. One job is not required, by CI
+# gate or by a release: the Android screenshot tour (android-tour, where the
+# reason is).
 
 jobs:
   # Which heavy jobs this change needs: each output is 'true' or 'false' and
@@ -1170,6 +1172,9 @@ jobs:
   # Android Keystore-backed storage (made on this first start) and the link's
   # iroh endpoint is bound. The Android project (gen/android) is generated
   # here by the pinned Tauri CLI from mobile/src-tauri; it is not committed.
+  # The screenshot tour is its own job, below (android-tour), which CI gate
+  # does not wait for; both share this job's env (its YAML anchor), so the
+  # tour runs the same launch test, the same emulator and the same APK.
   android:
     name: Android build + launch
     needs: changes
@@ -1179,7 +1184,7 @@ jobs:
     # or Gradle cache, two Android targets, the Gradle build and an emulator
     # boot of up to 10 minutes.
     timeout-minutes: 90
-    env:
+    env: &android_env
       # The workflow's -crt-static is for the desktop's builds; Android links
       # its C library dynamically whatever the flag says.
       RUSTFLAGS: ""
@@ -1199,7 +1204,8 @@ jobs:
       # emulator version 35.4.9.0 (build_id 13025442)").
       EMULATOR_BUILD: '13025442'
       EMULATOR_REVISION: '35.4.9'
-      # The launch test (both passes of the emulator steps below).
+      # The launch test of both jobs (TOUR, set by each step, says how far
+      # it goes).
       LAUNCH_TEST: |
         now_ms() { date +%s%3N; }
         # PASS is which tour this is (the step sets it): "blur", the app as
@@ -1212,9 +1218,19 @@ jobs:
           noblur) noblur=1; screens_artifact=android-screens-noblur ;;
           *) echo "::error::PASS is blur or noblur, not ${PASS:-unset}"; exit 1 ;;
         esac
+        # TOUR is how far this goes (the step sets it): 0, the launch
+        # checks alone (Android build + launch, which CI gate requires),
+        # ending at "Still running 15 s after ready" and the recording; 1,
+        # the same launch, then the screenshot tour and the theme
+        # following the phone (Android screenshot tour, which it does not).
+        case "${TOUR:-}" in
+          0) screens_artifact=android-launch-screens; evidence_artifact=android-launch-evidence; title="Android launch" ;;
+          1) evidence_artifact="android-launch-evidence-$PASS"; title="Android tour" ;;
+          *) echo "::error::TOUR is 0 or 1, not ${TOUR:-unset}"; exit 1 ;;
+        esac
         evidence="$RUNNER_TEMP/android-launch-$PASS"
         mkdir -p "$evidence"
-        echo "### Android tour, pass $PASS" >> "$GITHUB_STEP_SUMMARY"
+        echo "### $title, pass $PASS" >> "$GITHUB_STEP_SUMMARY"
 
         # The emulator is the pinned build (emulator-build below), not the
         # latest one the action installs first and then unzips it over.
@@ -1361,10 +1377,13 @@ jobs:
         # The numbers in the step's summary, whether the tour ends well or not.
         summarize_load() {
           {
-            echo
-            echo "Frames per shot (dumpsys gfxinfo), pass $PASS:"
-            echo
-            cat "$frames"
+            # TOUR=0 takes no shots, so it has no frames to show.
+            if [ "$TOUR" = 1 ]; then
+              echo
+              echo "Frames per shot (dumpsys gfxinfo), pass $PASS:"
+              echo
+              cat "$frames"
+            fi
             echo
             awk -v pass="$PASS" '
               /cpu=/ {
@@ -1423,7 +1442,7 @@ jobs:
               echo "== emulator crash reports"; ls -laR /tmp/android-runner/emu-crash-*.db || echo "none"
             } > "$evidence/host.txt" 2>&1 || true
             cp -r /tmp/android-runner/emu-crash-*.db "$evidence/" 2>/dev/null || true
-            echo "::group::Evidence (all of it is in the android-launch-evidence-$PASS artifact)"
+            echo "::group::Evidence (all of it is in the $evidence_artifact artifact)"
             tail -n 80 "$evidence/host.txt" || true
             echo "== the app's deaths in the streamed log"
             grep -E "Killing [0-9]+:$ANDROID_PACKAGE|Process $ANDROID_PACKAGE .*has died|FATAL EXCEPTION|Fatal signal" "$evidence/logcat.txt" | tail -n 20 || true
@@ -1589,6 +1608,22 @@ jobs:
 
         wait "$recorder" || true
         adb_within 30 pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
+        launch_summary() {
+          {
+            echo
+            echo "Launch on the emulator (API 34, x86_64, first run, pass $PASS):"
+            echo
+            echo "- installed in ${installed_ms} ms"
+            echo "- pair screen ready ${ready_ms} ms after launch: \`${ready_line}\`"
+            echo "- still running 15 s after ready (pid ${pid}), no crash in logcat"
+          } >> "$GITHUB_STEP_SUMMARY"
+        }
+        # TOUR=0 ends here: the launch is checked. The tour is the other job's.
+        if [ "$TOUR" = 0 ]; then
+          echo "- the launcher in light mode and the launch's recording are in the \`${screens_artifact}\` artifact" >> "$GITHUB_STEP_SUMMARY"
+          launch_summary
+          exit 0
+        fi
 
         # Every main screen in light and dark, for review, on the AVD's
         # phone-sized screen (checked above), all in the one run of the
@@ -1702,14 +1737,7 @@ jobs:
           printf '::error::A screen was not in the theme it should be: %s\n' "${themes_wrong[@]}"
           exit 1
         fi
-        {
-          echo
-          echo "Launch on the emulator (API 34, x86_64, first run, pass $PASS):"
-          echo
-          echo "- installed in ${installed_ms} ms"
-          echo "- pair screen ready ${ready_ms} ms after launch: \`${ready_line}\`"
-          echo "- still running 15 s after ready (pid ${pid}), no crash in logcat"
-        } >> "$GITHUB_STEP_SUMMARY"
+        launch_summary
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1927,27 +1955,30 @@ jobs:
 
       # The launch test runs inside the emulator action (the emulator stops
       # when the action ends), which runs each line of `script` on its own,
-      # so the test is one bash program, in LAUNCH_TEST (the job's env).
+      # so the test is one bash program, in LAUNCH_TEST (the job's env,
+      # shared with the tour job). Here TOUR=0: the launch checks only, up
+      # to "Still running 15 s after ready, no crash" and the recording.
       #
-      # The emulator process died mid-tour in five runs. Run 43689345770's
-      # kernel trace caught it: a segfault (SIGSEGV) in the emulator's own
-      # RenderThread, the host-side renderer of -gpu swiftshader_indirect.
-      # In that run the tour with blur passed in full on the pinned build
-      # and the same tour without backdrop-filter died at its first shot,
-      # so the frosted glass is not the cause. The guest renders here
-      # (-gpu guest, below), so that host renderer is not used. Each shot
-      # logs its frames (dumpsys gfxinfo), and the emulator process's CPU
-      # and memory are sampled every 2 s.
-      - name: Launch it on an emulator and tour its screens (the_app_reaches_its_pair_screen)
+      # The emulator process died mid-tour. The kernel traces of runs
+      # 43689345770 (-gpu swiftshader_indirect) and 43701191529 (-gpu
+      # guest) caught it both times: a segfault (SIGSEGV) in the emulator's
+      # own RenderThread, on the pinned 35.4.9 as on 37.x. In run 43689345770 the tour with blur passed in full and the
+      # same tour without backdrop-filter died at its first shot, so the
+      # frosted glass is not the cause. The tour is therefore its own job
+      # (android-tour, below), which does not gate.
+      - name: Launch it on an emulator (the_app_reaches_its_pair_screen)
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
         # The backstop for anything outside the script's bounded calls (the
         # action's own boot wait and emulator shutdown): the boot's 10-minute
-        # limit plus the launch and the tour, about 10 minutes here, with
-        # room. Past it the step fails, and the evidence is uploaded.
-        timeout-minutes: 30
+        # limit plus the launch, a few minutes here, with room. Past it the
+        # step fails, and the evidence is uploaded.
+        timeout-minutes: 20
         env:
           PASS: blur
-        with:
+          TOUR: 0
+        # The tour job's emulator is this one: the same mapping, by its
+        # YAML anchor.
+        with: &android_emulator
           api-level: 34
           # The plain Android image, without Google Play Services. On the
           # google_apis image, Play Services updates its modules after a cold
@@ -1973,14 +2004,111 @@ jobs:
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
-          # The guest renders (Android's own software renderer, in the
-          # phone), not the emulator's host-side renderer, whose
-          # RenderThread segfaulted in run 43689345770. -gpu guest was
-          # tried once before on emulator 37.2.13 (run 43670793908), when
-          # the tour still relaunched the app; that died on a relaunch.
-          # The other options are the action's defaults.
-          emulator-options: -no-window -gpu guest -no-snapshot -noaudio -no-boot-anim
+          # The action's default options, kept explicit, with its default
+          # renderer (-gpu swiftshader_indirect). -gpu guest bought nothing:
+          # its emulator's RenderThread segfaulted mid-tour too (run
+          # 43701191529), as swiftshader_indirect's did (run 43689345770).
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash -euo pipefail -c "$LAUNCH_TEST"
+
+      - name: Upload the launcher shots and launch recording
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-launch-screens
+          path: ${{ runner.temp }}/android-launch-screens
+          retention-days: 14
+          if-no-files-found: warn
+
+      # The evidence, passed or not: the emulator's log and load.
+      - name: Upload the emulator's log and load
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android-launch-evidence
+          path: ${{ runner.temp }}/android-launch-blur
+          retention-days: 14
+          if-no-files-found: warn
+
+  # The screenshot tour of the phone app: the APK the Android job built,
+  # launched on an emulator of the same settings by the same launch test
+  # (TOUR=1), then every main screen in light and dark and the home screen
+  # following the phone from light to dark (the_app_follows_the_phones_theme),
+  # with all their checks.
+  #
+  # Not required: CI gate does not wait for it, nor does a release
+  # (NOT_REQUIRED_CHECKS, scripts/release/ci-gate.mjs). GitHub's Android
+  # emulator segfaults in its own RenderThread mid-tour, whatever the app
+  # does: the kernel traces of runs 43689345770 (-gpu swiftshader_indirect)
+  # and 43701191529 (-gpu guest), on emulator 35.4.9 as on 37.x, while the
+  # app passes every check whenever the emulator lives. The user decided on
+  # 2026-11-15 that a test on a real phone covers the theme check. It has no
+  # continue-on-error: when the emulator dies the job fails, red; it only
+  # does not block a merge.
+  #
+  # No if: of its own: it needs the Android job, so it is skipped whenever
+  # that job is (the same Changes output, android) or fails.
+  android-tour:
+    name: Android screenshot tour (not required)
+    needs: android
+    runs-on: ubuntu-latest
+    # This job has no run history yet: the emulator's boot of up to 10
+    # minutes and the tour's 30-minute step limit, with room.
+    timeout-minutes: 45
+    # The Android job's env, the same mapping: the emulator pins, the
+    # package and LAUNCH_TEST.
+    env: *android_env
+    steps:
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The same platform tools (adb) as the Android job.
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd  # v4.0.4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - name: Download the debug APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: shodh-android-debug-apk
+          path: ${{ runner.temp }}/shodh-android-debug-apk
+
+      - name: The one APK the Android job built
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find "$RUNNER_TEMP/shodh-android-debug-apk" -name '*.apk')
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected one APK in the shodh-android-debug-apk artifact, found ${#apks[@]}: ${apks[*]}"
+            exit 1
+          fi
+          echo "APK=${apks[0]}" >> "$GITHUB_ENV"
+
+      # The emulator runs with KVM: without it an x86_64 image boots in tens
+      # of minutes, if at all.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # LAUNCH_TEST with TOUR=1: the launch, then the tour. Each shot logs
+      # its frames (dumpsys gfxinfo), and the emulator process's CPU and
+      # memory are sampled every 2 s.
+      - name: Launch it on an emulator and tour its screens (the_app_follows_the_phones_theme)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
+        # The backstop for anything outside the script's bounded calls (the
+        # action's own boot wait and emulator shutdown): the boot's 10-minute
+        # limit plus the launch and the tour, about 10 minutes here, with
+        # room. Past it the step fails, and the evidence is uploaded.
+        timeout-minutes: 30
+        env:
+          PASS: blur
+          TOUR: 1
+        # The Android job's emulator, the same mapping.
+        with: *android_emulator
 
       - name: Upload the screenshots and launch recording
         if: always()
@@ -2018,7 +2146,9 @@ jobs:
       contents: write
       checks: read
 
-  # The one check that stands for every job above: branch protection requires
+  # The one check that stands for every job above but the Android screenshot
+  # tour (not required; it is not in needs, so the gate neither waits for it
+  # nor reads its result): branch protection requires
   # it (with the fast checks). It is named CI gate, a name no workflow here
   # has used before, so no older check run on a commit can stand in for it.
   # It always runs, so it is never skipped (a skipped required check would
@@ -2029,7 +2159,8 @@ jobs:
   # did not ask for (Changes itself failed). The release builds count as one
   # job (a reusable workflow's result is a failure when any of its jobs
   # failed). scripts/release/test/ci-gate.test.mjs checks that needs lists
-  # every other job.
+  # every other job but the NOT_REQUIRED_CHECKS (scripts/release/ci-gate.mjs),
+  # and that this job never names one of those.
   ci-gate:
     name: CI gate
     if: always()

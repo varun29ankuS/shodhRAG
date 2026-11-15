@@ -39,7 +39,7 @@ use super::*;
 use crate::audit::AuditLog;
 use crate::embeddings::e5::E5Variant;
 use crate::embeddings::index_model;
-use crate::folder_sync::{upgrade_unowned, ManifestStore};
+use crate::folder_sync::{sync_folder, upgrade_unowned, ManifestStore};
 use crate::statements::testing::FixedEmbedder;
 use crate::statements::{DynamicsStore, Scope, StatementStore, SystemClock};
 use crate::user_memory::{Actor, ListRequest, MemoryService, RecallMode, RecallRequest};
@@ -420,6 +420,14 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
         "0.0.10's L2 IVF-PQ index: {:?}",
         manifest.indices
     );
+    // Rows the index covers, and the late file's, which it does not.
+    let (indexed, unindexed) = manifest.vector_index_rows;
+    assert_eq!(indexed + unindexed, manifest.chunks.len());
+    assert!(
+        indexed > 0 && unindexed > 0,
+        "{:?}",
+        manifest.vector_index_rows
+    );
     assert_eq!(manifest.keyword_documents, manifest.chunks.len());
     assert_eq!(manifest.memories.len(), library::memories().len());
     let source_of = sources(&manifest, &files_dir);
@@ -486,8 +494,13 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
     .await;
     assert_memories(&data_dir, &manifest).await;
 
-    // 2. The maintenance pass rewrites the files in this build's format.
+    // 2. The maintenance pass rewrites the files in this build's format. A
+    // failed compaction is only logged and leaves the table marked changed.
     engine.store_maintenance().run().await.unwrap();
+    assert!(
+        !engine.store_maintenance().changed(),
+        "the maintenance pass compacted the table"
+    );
     let now = stored(&data_dir).await;
     assert_eq!(
         rows_only(&now),
@@ -521,16 +534,41 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
     );
     drop(purge);
     let rag = tokio::sync::RwLock::new(engine);
+    // The Library folder source, synced with the manifest 0.0.10's folder
+    // sync left: its files of window chunks are read again, its Markdown
+    // only gets this build's chunker version.
+    let manifests = ManifestStore::in_dir(data_dir.join(library::FOLDER_MANIFESTS));
+    let synced = sync_folder(
+        &files_dir.join(library::FOLDER).to_string_lossy(),
+        library::FOLDER_SOURCE,
+        &manifests,
+        &rag,
+        || false,
+    )
+    .await
+    .unwrap();
+    let window_in_folder = files
+        .iter()
+        .filter(|f| f.in_folder() && f.kind() == Kind::Window)
+        .count();
+    assert!(window_in_folder > 0);
+    assert_eq!(synced.indexed, window_in_folder, "{synced:?}");
+    assert_eq!(synced.rechunked, window_in_folder, "{synced:?}");
+    assert_eq!(synced.removed, 0, "{synced:?}");
+    assert_eq!(synced.scans_kept, 0, "{synced:?}");
+    assert!(synced.failures.is_empty(), "{synced:?}");
+    assert!(synced.unreadable.is_empty(), "{synced:?}");
+    // Everything else: files indexed one by one and the note.
     let report = upgrade_unowned(
         &rag,
-        &BTreeSet::new(),
-        &ManifestStore::in_dir(work.path().join("manifests")),
+        &BTreeSet::from([library::FOLDER_SOURCE.to_string()]),
+        &manifests,
     )
     .await
     .unwrap();
     let window: Vec<&library::LibraryFile> = files
         .iter()
-        .filter(|f| f.kind() == Kind::Window && !f.removed)
+        .filter(|f| f.kind() == Kind::Window && !f.removed && !f.in_folder())
         .collect();
     assert_eq!(report.reindexed, window.len(), "{report:?}");
     assert_eq!(report.in_place, 0, "{report:?}");
@@ -660,7 +698,14 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
     assert_memories(&data_dir, &manifest).await;
 
     // 4. Another pass, then the app opened again.
-    rag.read().await.store_maintenance().run().await.unwrap();
+    {
+        let maintenance = rag.read().await.store_maintenance();
+        maintenance.run().await.unwrap();
+        assert!(
+            !maintenance.changed(),
+            "the second pass compacted the table"
+        );
+    }
     drop(rag);
     let engine = open(&data_dir).await;
     let reopened = stored(&data_dir).await;
@@ -672,6 +717,69 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
     assert!(engine.stale_sources().await.unwrap().is_empty());
     assert_searchable(&engine, &reopened, &tokens).await;
     assert_memories(&data_dir, &manifest).await;
+
+    // 5. What a library of 0.0.10 past 20,000 chunks meets: its L2 index
+    // replaced by the cosine index. Built here from 1,000 rows, so this
+    // library's index is replaced the same way.
+    let (documents, _) = index_model::tables(&data_dir).unwrap();
+    let lance = data_dir.join(crate::embeddings::model_switch::LANCE_DIR);
+    let db = lancedb::connect(&lance.to_string_lossy())
+        .execute()
+        .await
+        .unwrap();
+    crate::storage::StoreMaintenance::new(db.clone(), &documents)
+        .index_from(1_000)
+        .index_vectors()
+        .await
+        .unwrap();
+    let table = db.open_table(&documents).execute().await.unwrap();
+    let index = table
+        .list_indices()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|i| i.columns.iter().any(|c| c == "vector"))
+        .expect("a vector index");
+    assert_eq!(index.index_type, lancedb::index::IndexType::IvfHnswSq);
+    let stats = table
+        .index_stats(&index.name)
+        .await
+        .unwrap()
+        .expect("index statistics");
+    assert_eq!(stats.distance_type, Some(lancedb::DistanceType::Cosine));
+    assert_eq!(stats.num_indexed_rows, reopened.len());
+    assert_eq!(stats.num_unindexed_rows, 0);
+    let reindexed = stored(&data_dir).await;
+    assert_eq!(
+        rows_only(&reindexed),
+        rows_only(&reopened),
+        "the index build changes no chunk"
+    );
+    // Through the approximate index, each sampled chunk is among its own ten
+    // nearest neighbours (not necessarily first: the graph is approximate).
+    for (i, (id, chunk)) in reindexed.iter().enumerate() {
+        if i % 20 != 0 && chunk.row.source.contains("/archive/") {
+            continue;
+        }
+        let hits = engine
+            .store
+            .vector_search(&chunk.vector, 10, None)
+            .await
+            .unwrap();
+        assert!(
+            hits.iter().any(|h| &h.id == id),
+            "chunk {id} is found by its own vector through the cosine index"
+        );
+    }
+    for (token, source) in &tokens {
+        let results = engine.search(token, 5).await.unwrap();
+        if let Some(source) = source {
+            assert!(
+                results.iter().any(|r| &r.source == source),
+                "a search for {token} returns {source} through the cosine index"
+            );
+        }
+    }
 }
 
 /// Before the startup upgrade the file that may hold secrets is still in the

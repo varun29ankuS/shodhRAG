@@ -9,14 +9,17 @@
 //!
 //!   cargo run --locked -p shodh-rag --example write_upgrade_library -- <fixture folder>
 //!
-//! It indexes the files of [`library::files`] the way the app does (by path,
-//! with their library source), adds a note without a file, builds 0.0.10's
-//! vector index (`optimize`, an L2 IVF-PQ index from 1,000 rows), indexes one
-//! file after the index and removes another (rows outside the index and a
-//! deletion on disk, as a library in use has), and saves memories in the
-//! memory store the app uses. Then it reads everything back through 0.0.10
-//! (every column of every chunk, searches, memories) into `manifest.json`:
-//! what 0.0.10 saw, which the reader compares with what 0.0.11 sees.
+//! It indexes the files of [`library::files`] the way the app does: a Library
+//! folder source through 0.0.10's folder sync (which records each file's
+//! chunker version in its manifest), the other files by path with their
+//! library source. It adds a note without a file, builds 0.0.10's vector
+//! index (`optimize`, an L2 IVF-PQ index from 1,000 rows), removes a file
+//! (0.0.10 compacts after every removal), indexes one more file (rows the
+//! index does not cover, recorded in the manifest), and saves memories in
+//! the memory store the app uses. Then it reads everything back through
+//! 0.0.10 (every column of every chunk, the index's statistics, searches,
+//! memories) into `manifest.json`: what 0.0.10 saw, which the reader
+//! compares with what 0.0.11 sees.
 //!
 //! Chunk and document ids are random (0.0.10 draws them), so two runs give
 //! the same library under other ids; the manifest is written by the same run
@@ -39,6 +42,7 @@ use sha2::{Digest, Sha256};
 
 use shodh_rag::audit::AuditLog;
 use shodh_rag::embeddings::EmbeddingModel;
+use shodh_rag::folder_sync::{sync_folder, ManifestStore};
 use shodh_rag::rag_engine::normalize_source_path;
 use shodh_rag::statements::{
     DynamicsStore, EmbedderSource, Scope, StatementResult, StatementStore, SystemClock,
@@ -113,7 +117,29 @@ async fn main() -> Result<()> {
     let mut engine = RAGEngine::new(config(&data_dir)).await?;
     engine.attach_search_models(SearchModels::from_embedder(embedder.clone()))?;
 
-    for f in files.iter().filter(|f| !f.late) {
+    // The Library folder source, synced by 0.0.10's folder sync, which keeps
+    // its manifest (each file's stamp and chunker version) in the data folder.
+    let rag = tokio::sync::RwLock::new(engine);
+    let report = sync_folder(
+        &files_dir.join(library::FOLDER).to_string_lossy(),
+        library::FOLDER_SOURCE,
+        &ManifestStore::in_dir(data_dir.join(library::FOLDER_MANIFESTS)),
+        &rag,
+        || false,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("syncing the folder source: {e}"))?;
+    let in_folder = files.iter().filter(|f| f.in_folder()).count();
+    if report.indexed != in_folder {
+        bail!(
+            "the folder sync indexed {} of {in_folder} files",
+            report.indexed
+        );
+    }
+    let mut engine = rag.into_inner();
+
+    // The other files one by one, as the Library's single files are.
+    for f in files.iter().filter(|f| !f.late && !f.in_folder()) {
         index_file(&mut engine, &files_dir, f).await?;
     }
     let note_metadata = HashMap::from([
@@ -140,10 +166,8 @@ async fn main() -> Result<()> {
         .await
         .context("building 0.0.10's vector index")?;
 
-    // Rows the index does not cover, and a deletion still on disk.
-    for f in files.iter().filter(|f| f.late) {
-        index_file(&mut engine, &files_dir, f).await?;
-    }
+    // A removal (0.0.10 compacts the table and updates its index after each),
+    // then rows its index does not cover.
     for f in files.iter().filter(|f| f.removed) {
         let path = files_dir.join(&f.path);
         let removed = engine
@@ -153,6 +177,9 @@ async fn main() -> Result<()> {
         if removed == 0 {
             bail!("removing {} removed no chunks", f.path);
         }
+    }
+    for f in files.iter().filter(|f| f.late) {
+        index_file(&mut engine, &files_dir, f).await?;
     }
 
     // Memories, in the memory store the app opens (lance_data and shodh.db
@@ -262,18 +289,26 @@ async fn main() -> Result<()> {
         .await?;
     let documents = db.open_table("documents").execute().await?;
     let chunks = read_chunks(&documents).await?;
-    let indices = documents
-        .list_indices()
-        .await?
-        .into_iter()
-        .map(|i| (i.name, format!("{:?}", i.index_type), i.columns))
-        .collect::<Vec<_>>();
-    if !indices
+    let configs = documents.list_indices().await?;
+    let indices = configs
         .iter()
-        .any(|(_, _, columns)| columns.iter().any(|c| c == "vector"))
-    {
-        bail!("0.0.10 built no vector index: {indices:?}");
-    }
+        .map(|i| {
+            (
+                i.name.clone(),
+                format!("{:?}", i.index_type),
+                i.columns.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let vector_index = configs
+        .iter()
+        .find(|i| i.columns.iter().any(|c| c == "vector"))
+        .with_context(|| format!("0.0.10 built no vector index: {indices:?}"))?;
+    let stats = documents
+        .index_stats(&vector_index.name)
+        .await?
+        .context("0.0.10's vector index has no statistics")?;
+    let vector_index_rows = (stats.num_indexed_rows, stats.num_unindexed_rows);
     let statement_rows = db
         .open_table("statements")
         .execute()
@@ -298,6 +333,7 @@ async fn main() -> Result<()> {
         files: stored_files,
         chunks,
         indices,
+        vector_index_rows,
         keyword_documents,
         searches,
         memories,

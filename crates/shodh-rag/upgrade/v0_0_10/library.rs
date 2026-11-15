@@ -24,6 +24,15 @@ pub const DATA_DIR: &str = "data";
 /// The indexed files in the fixture folder.
 pub const FILES_DIR: &str = "files";
 
+/// The Library folder source: its id (the `space_id` of its files), its
+/// folder under [`FILES_DIR`], and where folder sync keeps its manifests in
+/// the data folder (the app's `folder_sync`).
+pub const FOLDER_SOURCE: &str = "field-notes";
+pub const FOLDER: &str = "notes";
+pub const FOLDER_MANIFESTS: &str = "folder_sync";
+/// The source (`space_id`) of the files indexed one by one.
+pub const FILE_SOURCE: &str = "library-files";
+
 /// The pseudo-source of the note added without a file.
 pub const NOTE_SOURCE: &str = "note://upgrade-fixture";
 /// A word only the note holds.
@@ -47,9 +56,10 @@ pub struct LibraryFile {
     /// A word only this file holds, searched for after the upgrade.
     pub token: String,
     pub text: String,
-    /// Indexed after 0.0.10 built its vector index: rows the index does not cover.
+    /// Indexed after 0.0.10 built its vector index and removed a file: rows
+    /// its index does not cover.
     pub late: bool,
-    /// Removed by 0.0.10 after its index was built: a deletion still on disk.
+    /// Removed by 0.0.10 after its index was built.
     pub removed: bool,
 }
 
@@ -65,6 +75,11 @@ pub enum Kind {
 }
 
 impl LibraryFile {
+    /// In the folder source ([`FOLDER`]): indexed by folder sync.
+    pub fn in_folder(&self) -> bool {
+        self.path.starts_with(&format!("{FOLDER}/"))
+    }
+
     pub fn kind(&self) -> Kind {
         if self.path.ends_with(".md") {
             Kind::Structure
@@ -92,7 +107,7 @@ pub fn files() -> Vec<LibraryFile> {
     let mut files = vec![
         file(
             "notes/zephyrine-tides.md",
-            "field-notes",
+            FOLDER_SOURCE,
             "zephyrine",
             "# Zephyrine tides\n\n\
              The zephyrine tide arrives twice a lunar month at the northern estuary.\n\n\
@@ -105,7 +120,7 @@ pub fn files() -> Vec<LibraryFile> {
         ),
         file(
             "notes/quillwort-ferns.md",
-            "field-notes",
+            FOLDER_SOURCE,
             "quillwort",
             "# Quillwort survey\n\n\
              Quillwort grows submerged along the shallow margins of the upland lakes.\n\n\
@@ -117,8 +132,17 @@ pub fn files() -> Vec<LibraryFile> {
                 .to_string(),
         ),
         file(
+            "notes/tide-table.txt",
+            FOLDER_SOURCE,
+            "marigraph",
+            "Tide table for the northern estuary, read from the marigraph on the old \
+             pier. High water at twelve past six and twenty to seven; low water at five \
+             past midnight. The marigraph drum is changed every Monday."
+                .to_string(),
+        ),
+        file(
             "code/ledger.rs",
-            "code",
+            FILE_SOURCE,
             "grimthorpe",
             "/// Totals the grimthorpe ledger by account.\n\
              pub fn totals(entries: &[(String, i64)]) -> std::collections::BTreeMap<String, i64> {\n\
@@ -132,7 +156,7 @@ pub fn files() -> Vec<LibraryFile> {
         ),
         file(
             "code/route.ts",
-            "code",
+            FILE_SOURCE,
             "wombatize",
             "// Turns a list of stops into a route, wombatize style: nearest stop first.\n\
              export function wombatize(stops: { x: number; y: number }[]): number[] {\n\
@@ -154,7 +178,7 @@ pub fn files() -> Vec<LibraryFile> {
         ),
         file(
             "text/harbor-log.txt",
-            "field-notes",
+            FILE_SOURCE,
             "kestrelwick",
             "Harbor log, spring. The kestrelwick ferry ran on time all week. Fog on \
              Thursday delayed the morning crossing by forty minutes; the afternoon \
@@ -164,7 +188,7 @@ pub fn files() -> Vec<LibraryFile> {
         ),
         file(
             "drafts/obsolete-plan.txt",
-            "field-notes",
+            FILE_SOURCE,
             "brontide",
             "An old plan for the brontide recordings, replaced by the new schedule. \
              The brontide microphones were to be set on the ridge."
@@ -172,13 +196,13 @@ pub fn files() -> Vec<LibraryFile> {
         ),
         file(
             "config/.env",
-            "code",
+            FILE_SOURCE,
             "QUODDYWHISTLE",
             "QUODDYWHISTLE=not-a-real-token-0000\n".to_string(),
         ),
         file(
             "text/late-addition.txt",
-            "field-notes",
+            FILE_SOURCE,
             "sassafrine",
             "Added after the index was built: the sassafrine orchard flowers in late \
              spring and its fruit is picked in the first week of autumn."
@@ -370,6 +394,8 @@ pub struct Manifest {
     pub chunks: BTreeMap<String, ChunkRow>,
     /// The documents table's indices: (name, type, columns).
     pub indices: Vec<(String, String, Vec<String>)>,
+    /// The vector index's rows: (indexed, not indexed).
+    pub vector_index_rows: (usize, usize),
     /// Documents in the keyword index (Tantivy).
     pub keyword_documents: usize,
     pub searches: Vec<SearchRecord>,

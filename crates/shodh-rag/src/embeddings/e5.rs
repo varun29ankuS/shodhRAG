@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use super::tokenizer::SentencePieceTokenizer;
 use super::{EmbeddingModel, SearchModelsMissing};
 use crate::compute::calibration::{CalibrationKey, Calibrations};
-use crate::compute::choose::{self, Candidate, Learned};
+use crate::compute::choose::{self, Candidate, Chosen, Known, Learned};
 use crate::compute::provider::{self, Accelerator, ComputePreference, CpuReason, Device, GpuProbe};
 use crate::compute::speed;
 use crate::compute::status::{ComputeStatus, EmbedderReport};
@@ -534,8 +534,11 @@ struct Active {
     accelerator: Accelerator,
     device: Option<Device>,
     /// The CPU session small batches and queries run on while Core ML holds
-    /// `session` ([`runs_on_cpu`]); built when first needed.
+    /// `session` ([`runs_on_cpu`]); built when first needed, or the session
+    /// that served before Core ML was prepared.
     cpu: Option<Session>,
+    /// The model was dropped: a Core ML session prepared after is not used.
+    dropped: bool,
 }
 
 impl Active {
@@ -558,7 +561,10 @@ fn runs_on_cpu(rows: usize, mode: E5Mode) -> bool {
 }
 
 pub struct E5Embeddings {
-    active: Mutex<Active>,
+    /// Shared with the thread preparing Core ML ([`Prepare`]), which swaps
+    /// its session in.
+    active: Arc<Mutex<Active>>,
+    preparing: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// Calls embedding now (one runs, the others wait for the session).
     in_flight: AtomicUsize,
     tokenizer: Arc<SentencePieceTokenizer>,
@@ -664,10 +670,12 @@ fn core_ml(builder: SessionBuilder, cache: &Path) -> std::result::Result<Session
 
 /// Where Core ML keeps the model it compiled from the file at `model_path`:
 /// a folder named by the file's size and modification time, so a new model
-/// file (same graph, new weights) is compiled again, and by the shape, since
-/// sessions of two shapes sharing a folder share one compiled model and the
-/// second fails at its first run. Folders of earlier files and shapes are
-/// removed. Core ML itself recompiles only when the graph changes.
+/// file (same graph, new weights) is compiled again; by the OS build, since a
+/// model compiled by an earlier macOS can fail or slow down on a newer one;
+/// and by the shape, since sessions of two shapes sharing a folder share one
+/// compiled model and the second fails at its first run. Folders of earlier
+/// files, builds and shapes are removed. Core ML itself recompiles only when
+/// the graph changes.
 fn core_ml_cache(model_path: &Path) -> PathBuf {
     let root = model_path
         .parent()
@@ -683,7 +691,12 @@ fn core_ml_cache(model_path: &Path) -> PathBuf {
             format!("{}-{modified}", m.len())
         })
         .unwrap_or_else(|_| "unknown".to_string());
-    let stamp = format!("{stamp}-{}x{}", CORE_ML_SHAPE.rows, CORE_ML_SHAPE.tokens);
+    let stamp = format!(
+        "{stamp}-{}-{}x{}",
+        os_build(),
+        CORE_ML_SHAPE.rows,
+        CORE_ML_SHAPE.tokens
+    );
     if let Ok(entries) = std::fs::read_dir(&root) {
         for entry in entries.flatten() {
             if entry.file_name().to_string_lossy() != stamp {
@@ -692,6 +705,25 @@ fn core_ml_cache(model_path: &Path) -> PathBuf {
         }
     }
     root.join(stamp)
+}
+
+/// The macOS build (`kern.osversion`, e.g. `25A354`); `unknown` elsewhere or
+/// when it cannot be read.
+fn os_build() -> String {
+    #[cfg(target_os = "macos")]
+    if let Ok(out) = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "kern.osversion"])
+        .output()
+    {
+        let build = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.status.success()
+            && !build.is_empty()
+            && build.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return build;
+        }
+    }
+    "unknown".to_string()
 }
 
 /// [`CORE_ML_FILE`] in `model_dir`, written there when missing or stale,
@@ -709,10 +741,15 @@ fn core_ml_graph(model_dir: &Path) -> std::result::Result<PathBuf, String> {
     if std::fs::read(&path).is_ok_and(|bytes| bytes == CORE_ML_GRAPH) {
         return Ok(path);
     }
+    let started = Instant::now();
     let part = model_dir.join(format!("{CORE_ML_FILE}.part"));
     std::fs::write(&part, CORE_ML_GRAPH)
         .and_then(|()| std::fs::rename(&part, &path))
         .map_err(|e| format!("writing {CORE_ML_FILE}: {e}"))?;
+    tracing::info!(
+        write_ms = started.elapsed().as_millis() as u64,
+        "Core ML's graph written"
+    );
     Ok(path)
 }
 
@@ -750,7 +787,15 @@ fn measure(
 ) -> std::result::Result<f64, String> {
     let batch = as_slices(passages);
     let tokens: usize = passages.iter().map(Vec::len).sum();
+    let started = Instant::now();
     run_sequences(session, variant, shape, pad_id, false, &batch).map_err(|e| format!("{e:#}"))?;
+    if shape.is_some() {
+        // Core ML may finish compiling at its first run rather than at the build.
+        tracing::info!(
+            first_run_ms = started.elapsed().as_millis() as u64,
+            "Core ML's first run"
+        );
+    }
     let mut rates = Vec::with_capacity(CALIBRATION_RUNS);
     for _ in 0..CALIBRATION_RUNS {
         let (_, elapsed) = run_sequences(session, variant, shape, pad_id, false, &batch)
@@ -807,7 +852,21 @@ impl Candidate for E5Candidate<'_> {
             },
             _ => self.config.path_of(variant),
         };
+        let cached = self
+            .core_ml_cache
+            .filter(|_| accelerator == Some(Accelerator::CoreMl))
+            .map(|cache| std::fs::read_dir(cache).is_ok_and(|mut d| d.next().is_some()));
+        let started = Instant::now();
         let session = build_session(&path, self.core_ml_cache, device, self.threads)?;
+        if let Some(cached) = cached {
+            // Converting the graph to an ML Program and compiling it, or
+            // (cached) loading the compiled model.
+            tracing::info!(
+                build_ms = started.elapsed().as_millis() as u64,
+                cached,
+                "Core ML's session built"
+            );
+        }
         Ok(Built {
             session,
             variant,
@@ -822,6 +881,189 @@ impl Candidate for E5Candidate<'_> {
             self.pad_id,
             self.passages,
         )
+    }
+}
+
+/// A graphics card's sessions of `E5Candidate`, for [`Prepare`]: the CPU's
+/// session already serves and its speed is known, so none is built.
+struct GpuOnly<'a>(E5Candidate<'a>);
+
+impl Candidate for GpuOnly<'_> {
+    type Session = Option<Built>;
+    fn build(&mut self, device: Option<&Device>) -> std::result::Result<Option<Built>, String> {
+        match device {
+            Some(_) => self.0.build(device).map(Some),
+            None => Ok(None),
+        }
+    }
+    fn time(&mut self, built: &mut Option<Built>) -> std::result::Result<f64, String> {
+        match built {
+            Some(built) => self.0.time(built),
+            None => Err("the CPU was timed when the model loaded".to_string()),
+        }
+    }
+}
+
+/// Saves what `chosen` measured and returns when its speed was measured. A
+/// speed measured while OCR competed for the cores is used for this load but
+/// not kept; a card's failure is kept all the same.
+fn record<S>(
+    chosen: &Chosen<S>,
+    saved: &mut Calibrations,
+    path: Option<&Path>,
+    key: &CalibrationKey,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let competing = crate::compute::contention::ocr_active();
+    let keep: Vec<Learned> = chosen
+        .learned
+        .iter()
+        .filter(|l| {
+            !competing
+                || matches!(
+                    l,
+                    Learned::Rejected {
+                        reason: CpuReason::Failed { .. },
+                        ..
+                    }
+                )
+        })
+        .cloned()
+        .collect();
+    let calibrated_at = if chosen.tokens_per_second.is_some()
+        && chosen.learned.iter().any(|l| match (l, &chosen.device) {
+            (Learned::Kept { .. }, Some(_)) => true,
+            (Learned::Cpu { .. }, None) => true,
+            _ => false,
+        }) {
+        Some(now)
+    } else {
+        saved.measured_at(key, chosen.device.as_ref(), now)
+    };
+    if !keep.is_empty() {
+        saved.learn(key, &keep, now);
+        if let Some(path) = path {
+            if let Err(e) = saved.save(path) {
+                tracing::warn!(error = %e, "The search model's speed was not saved");
+            }
+        }
+    }
+    calibrated_at
+}
+
+/// The status report of `chosen`, running `model_file`.
+fn report<S>(
+    chosen: &Chosen<S>,
+    threads: usize,
+    model_file: &str,
+    calibrated_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> EmbedderReport {
+    EmbedderReport {
+        accelerator: chosen.accelerator,
+        device: chosen.device.as_ref().map(|d| d.name.clone()),
+        cpu_reason: chosen.cpu_reason.clone(),
+        threads: (!chosen.accelerator.is_gpu()).then_some(threads),
+        model_file: model_file.to_string(),
+        pages_per_minute: chosen.tokens_per_second.map(speed::pages_per_minute),
+        speed: chosen.tokens_per_second.map(speed::classify),
+        recent_pages_per_minute: None,
+        degraded: false,
+        calibrated_at: calibrated_at.map(|t| t.to_rfc3339()),
+        loaded: true,
+    }
+}
+
+/// Prepares Core ML on its own thread while the CPU serves: tries the cards
+/// as a load would ([`choose::choose`], against the CPU speed of the load)
+/// and swaps a kept card's session into the model, the CPU's staying for
+/// queries and small batches. Both run the fp16 export, so vectors made
+/// before and after the swap share an index.
+struct Prepare {
+    config: E5Config,
+    plan: Plan,
+    core_ml_model: PathBuf,
+    core_ml_cache: PathBuf,
+    threads: usize,
+    pad_id: u32,
+    passages: Vec<Vec<u32>>,
+    key: CalibrationKey,
+    cpu_speed: Option<f64>,
+    generation: u64,
+    active: std::sync::Weak<Mutex<Active>>,
+}
+
+impl Prepare {
+    fn spawn(self) -> Option<std::thread::JoinHandle<()>> {
+        std::thread::Builder::new()
+            .name("core-ml-prepare".to_string())
+            .spawn(move || self.run())
+            .map_err(|e| tracing::warn!(error = %e, "Core ML could not be prepared; the CPU runs search"))
+            .ok()
+    }
+
+    fn run(self) {
+        let started = Instant::now();
+        let now = chrono::Utc::now();
+        let path = self.config.calibration_file.as_deref();
+        let mut saved = path.map(Calibrations::load).unwrap_or_default();
+        let cpu_speed = self.cpu_speed;
+        let mut candidate = GpuOnly(E5Candidate {
+            config: &self.config,
+            plan: self.plan,
+            core_ml_model: Some(&self.core_ml_model),
+            core_ml_cache: Some(&self.core_ml_cache),
+            threads: self.threads,
+            pad_id: self.pad_id,
+            passages: &self.passages,
+        });
+        let chosen = choose::choose(
+            &mut candidate,
+            ComputePreference::Auto,
+            provider::probe_gpus,
+            &|device: Option<&Device>| match device {
+                None => cpu_speed.map(|cpu| Known::Cpu { cpu }),
+                Some(_) => saved.known(&self.key, device, now),
+            },
+        );
+        let mut chosen = match chosen {
+            Ok(chosen) => chosen,
+            Err(error) => {
+                tracing::warn!(%error, "Core ML could not be prepared; the CPU runs search");
+                return;
+            }
+        };
+        let calibrated_at = record(&chosen, &mut saved, path, &self.key, now);
+        let Some(active) = self.active.upgrade() else {
+            return;
+        };
+        let mut active = active.lock();
+        if active.dropped || active.on_gpu {
+            return;
+        }
+        let model_file = match chosen.session.take() {
+            Some(built) if chosen.accelerator.is_gpu() => {
+                active.cpu = Some(std::mem::replace(&mut active.session, built.session));
+                active.on_gpu = true;
+                active.accelerator = chosen.accelerator;
+                active.device = chosen.device.clone();
+                CORE_ML_FILE
+            }
+            _ => self.plan.cpu.file_name(),
+        };
+        tracing::info!(
+            provider = chosen.accelerator.label(),
+            cpu_reason = ?chosen.cpu_reason,
+            prepare_ms = started.elapsed().as_millis() as u64,
+            pages_per_minute = chosen.tokens_per_second.map(|t| speed::pages_per_minute(t).round()),
+            "Core ML prepared"
+        );
+        if let Some(status) = &self.config.status {
+            status.embedder_replaced(
+                self.generation,
+                report(&chosen, self.threads, model_file, calibrated_at),
+                chosen.tokens_per_second,
+            );
+        }
     }
 }
 
@@ -1062,29 +1304,45 @@ impl E5Embeddings {
                 config.compute == ComputePreference::Auto,
             ),
         };
-        let mut chosen = choose::choose(
-            &mut candidate,
-            preference,
-            // Without its graph Core ML is not tried, so no failure is kept
-            // for it and the next load tries again. Not asked for, it is not
-            // offered at all: Apple silicon then runs on the CPU, as before it.
-            || match core_ml_model {
-                _ if core_ml_platform() && !config.core_ml => GpuProbe::Unsupported,
-                Err(error) => GpuProbe::Failed(error),
-                Ok(_) => provider::probe_gpus(),
-            },
-            &|device: Option<&Device>| saved.known(&key, device, now),
-        )
+        // Core ML compiles the model for minutes the first time and takes
+        // seconds even from its cache: the CPU serves while a thread prepares
+        // it ([`Prepare`]) and swaps it in.
+        let prepare = core_ml_path.is_some() && preference == ComputePreference::Auto;
+        let known = |device: Option<&Device>| saved.known(&key, device, now);
+        let mut chosen = if prepare {
+            choose::choose(
+                &mut candidate,
+                ComputePreference::Cpu,
+                || GpuProbe::Unsupported,
+                &known,
+            )
+        } else {
+            choose::choose(
+                &mut candidate,
+                preference,
+                // Without its graph Core ML is not tried, so no failure is
+                // kept for it and the next load tries again. Not asked for, it
+                // is not offered at all: Apple silicon then runs on the CPU.
+                || match core_ml_model {
+                    _ if core_ml_platform() && !config.core_ml => GpuProbe::Unsupported,
+                    Err(error) => GpuProbe::Failed(error),
+                    Ok(_) => provider::probe_gpus(),
+                },
+                &known,
+            )
+        }
         .map_err(|e| anyhow!("Failed to load model: {e}"))?;
         if cpu_model {
             chosen.cpu_reason = Some(CpuReason::CpuModel);
+        }
+        if prepare {
+            chosen.cpu_reason = Some(CpuReason::Preparing);
         }
         let variant = chosen.session.variant;
         let model_file = match chosen.accelerator {
             Accelerator::CoreMl => CORE_ML_FILE,
             _ => variant.file_name(),
-        }
-        .to_string();
+        };
         if variant == E5Variant::Int8 && !int8_exact() {
             // An int8 index made elsewhere (or the only export installed):
             // queries stay in its export, but this processor's kernels round
@@ -1094,43 +1352,13 @@ impl E5Embeddings {
                 "The int8 search model runs on a processor without VNNI; its vectors differ slightly from an exact processor's"
             );
         }
-
-        // A speed measured while OCR competed for the cores is used for this
-        // load but not kept; a card's failure is kept all the same.
-        let competing = crate::compute::contention::ocr_active();
-        let keep: Vec<Learned> = chosen
-            .learned
-            .iter()
-            .filter(|l| {
-                !competing
-                    || matches!(
-                        l,
-                        Learned::Rejected {
-                            reason: CpuReason::Failed { .. },
-                            ..
-                        }
-                    )
-            })
-            .cloned()
-            .collect();
-        let calibrated_at = if chosen.tokens_per_second.is_some()
-            && chosen.learned.iter().any(|l| match (l, &chosen.device) {
-                (Learned::Kept { .. }, Some(_)) => true,
-                (Learned::Cpu { .. }, None) => true,
-                _ => false,
-            }) {
-            Some(now)
-        } else {
-            saved.measured_at(&key, chosen.device.as_ref(), now)
-        };
-        if !keep.is_empty() {
-            saved.learn(&key, &keep, now);
-            if let Some(path) = &config.calibration_file {
-                if let Err(e) = saved.save(path) {
-                    tracing::warn!(error = %e, "The search model's speed was not saved");
-                }
-            }
-        }
+        let calibrated_at = record(
+            &chosen,
+            &mut saved,
+            config.calibration_file.as_deref(),
+            &key,
+            now,
+        );
 
         tracing::info!(
             provider = chosen.accelerator.label(),
@@ -1144,33 +1372,41 @@ impl E5Embeddings {
         );
         let generation = match &config.status {
             Some(status) => status.embedder_loaded(
-                EmbedderReport {
-                    accelerator: chosen.accelerator,
-                    device: chosen.device.as_ref().map(|d| d.name.clone()),
-                    cpu_reason: chosen.cpu_reason.clone(),
-                    threads: (!chosen.accelerator.is_gpu()).then_some(threads),
-                    model_file,
-                    pages_per_minute: chosen.tokens_per_second.map(speed::pages_per_minute),
-                    speed: chosen.tokens_per_second.map(speed::classify),
-                    recent_pages_per_minute: None,
-                    degraded: false,
-                    calibrated_at: calibrated_at.map(|t| t.to_rfc3339()),
-                    loaded: true,
-                },
+                report(&chosen, threads, model_file, calibrated_at),
                 chosen.tokens_per_second,
             ),
             None => 0,
         };
 
         let model_path = config.path_of(variant);
+        let active = Arc::new(Mutex::new(Active {
+            session: chosen.session.session,
+            on_gpu: chosen.accelerator.is_gpu(),
+            accelerator: chosen.accelerator,
+            device: chosen.device,
+            cpu: None,
+            dropped: false,
+        }));
+        let preparing = match (prepare, core_ml_path, core_ml_cache) {
+            (true, Some(core_ml_model), Some(core_ml_cache)) => Prepare {
+                config: config.clone(),
+                plan,
+                core_ml_model,
+                core_ml_cache,
+                threads,
+                pad_id: tokenizer.pad_id(),
+                passages,
+                key: key.clone(),
+                cpu_speed: chosen.tokens_per_second,
+                generation,
+                active: Arc::downgrade(&active),
+            }
+            .spawn(),
+            _ => None,
+        };
         Ok(Self {
-            active: Mutex::new(Active {
-                session: chosen.session.session,
-                on_gpu: chosen.accelerator.is_gpu(),
-                accelerator: chosen.accelerator,
-                device: chosen.device,
-                cpu: None,
-            }),
+            active,
+            preparing: Mutex::new(preparing),
             in_flight: AtomicUsize::new(0),
             tokenizer: Arc::new(tokenizer),
             status: config.status.clone(),
@@ -1184,6 +1420,22 @@ impl E5Embeddings {
             threads,
             key,
         })
+    }
+
+    /// Waits until a graphics card being prepared ([`CpuReason::Preparing`])
+    /// has taken over or been turned down.
+    pub fn wait_until_prepared(&self) {
+        let handle = self.preparing.lock().take();
+        if let Some(handle) = handle {
+            let _ = handle.join();
+        }
+    }
+
+    /// Whether Core ML runs the model now: its session costs a compile to
+    /// build again, so it is kept loaded when idle.
+    pub fn holds_core_ml(&self) -> bool {
+        let active = self.active.lock();
+        active.on_gpu && active.accelerator == Accelerator::CoreMl
     }
 
     /// What runs the model now.
@@ -1398,6 +1650,10 @@ impl E5Embeddings {
 
 impl Drop for E5Embeddings {
     fn drop(&mut self) {
+        // Under the lock, so a Core ML session prepared now is not reported
+        // as loaded after this.
+        let mut active = self.active.lock();
+        active.dropped = true;
         if let Some(status) = &self.status {
             status.embedder_unloaded(self.generation);
         }
@@ -1870,6 +2126,7 @@ mod tests {
             variant_config(E5Variant::Fp16).with_compute(ComputePreference::Auto),
         )
         .expect("load");
+        gpu.wait_until_prepared();
         assert!(gpu.accelerator().is_gpu(), "no graphics card ran the model");
         // Enough rows for Core ML to run them rather than hand them to the CPU.
         let texts = [
@@ -1900,6 +2157,24 @@ mod tests {
         assert!(!dir.path().join(CORE_ML_FILE).exists());
     }
 
+    /// Core ML's compiled model is kept per OS build: a macOS update compiles
+    /// it again.
+    #[test]
+    fn the_core_ml_cache_is_named_by_the_os_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join(CORE_ML_FILE);
+        std::fs::write(&model, b"graph").unwrap();
+        let stale = dir.path().join("coreml-cache").join("5-0-OLDBUILD-8x512");
+        std::fs::create_dir_all(&stale).unwrap();
+        let cache = core_ml_cache(&model);
+        let name = cache.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.contains(&format!("-{}-", os_build())), "{name}");
+        assert!(!stale.exists(), "an earlier build's model is removed");
+        if cfg!(target_os = "macos") {
+            assert_ne!(os_build(), "unknown");
+        }
+    }
+
     /// Core ML runs O4's weights through its own graph at 8 x 512: a run of
     /// more rows than one batch (a full batch on Core ML and a remainder of
     /// two on the CPU) comes back in input order with vectors matching the
@@ -1922,6 +2197,17 @@ mod tests {
             .with_core_ml(true);
         auto.status = Some(status.clone());
         let gpu = E5Embeddings::new(auto).expect("load");
+        assert_eq!(
+            status.embedder().and_then(|r| r.cpu_reason),
+            Some(CpuReason::Preparing),
+            "the CPU serves while Core ML is prepared"
+        );
+        gpu.wait_until_prepared();
+        assert!(
+            gpu.holds_core_ml(),
+            "Core ML was not kept: {:?}",
+            status.embedder()
+        );
         assert_eq!(
             gpu.accelerator(),
             Accelerator::CoreMl,

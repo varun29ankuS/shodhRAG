@@ -24,6 +24,7 @@ afterEach(() => {
     // No storage: nothing kept.
   }
   delete document.documentElement.dataset.theme;
+  for (const side of ['top', 'right', 'bottom', 'left']) document.documentElement.style.removeProperty(`--system-inset-${side}`);
 });
 
 if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {

@@ -13,6 +13,7 @@ import { LinkProvider, NavProvider, NoteProvider, ThemeProvider, MenuShown, useL
 import { DataProvider, useData } from './lib/data';
 import type { LinkSource } from './lib/link';
 import { tauriDevice, type Device } from './lib/device';
+import { useSystemInsets } from './lib/insets';
 import { DeviceProvider, QueueProvider } from './lib/queue';
 import { IncomingProvider, useOffers } from './lib/incoming';
 import { SendSheet } from './components/SendSheet';
@@ -46,6 +47,8 @@ export interface Start {
 export function App({ source, start = null, device = tauriDevice }: { source: LinkSource; start?: Start | null; device?: Device }) {
   const [pairing, setPairing] = useState(start?.screen === 'pair');
   const openPairing = useCallback(() => setPairing(true), []);
+  // Where Android's status bar and gesture bar are, for every edge of the app (theme.css --inset-*).
+  useSystemInsets(device.insets);
   return (
     <MotionConfig reducedMotion="user">
       <ThemeProvider systemBars={device.systemBars}>

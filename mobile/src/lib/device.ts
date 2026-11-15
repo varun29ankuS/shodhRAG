@@ -9,6 +9,7 @@ import { addPluginListener, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { tauriOutbox, type OutboxSource, type QueuedFile } from './outbox';
 import type { PhoneEvent } from './calsync';
+import type { Insets, SystemInsets } from './insets';
 
 /** What looking for the phone's update found (`update_check`). */
 export type UpdateCheck = { state: 'ready'; version: string; size: number } | { state: 'unavailable'; message: string };
@@ -147,6 +148,8 @@ export interface Device {
   sealed: Sealed;
   /** Android's status and navigation bars: light icons on the dark theme, dark icons on the light. */
   systemBars(theme: 'light' | 'dark'): Promise<void>;
+  /** Where the status bar and the gesture bar cover the app (lib/insets.ts). */
+  insets: SystemInsets;
   notifications: PhoneNotifications;
   lock: PhoneLock;
   voice: PhoneVoice;
@@ -231,6 +234,15 @@ export const tauriDevice: Device = {
     write: (name, value) => invoke<void>('sealed_write', { name, value }),
   },
   systemBars: theme => invoke<void>('system_bars', { theme }),
+  insets: {
+    current: () => invoke<Insets>('system_insets'),
+    onChanged: async handler => {
+      const listener = await addPluginListener<Insets>(PLUGIN, 'insets', insets => handler(insets));
+      return () => {
+        void listener.unregister();
+      };
+    },
+  },
   notifications: {
     mode: () => invoke<NotifyMode>('notifications_mode'),
     set: (mode, distributor) => invoke<NotifyMode>('notifications_set', { mode, distributor: distributor ?? null }),

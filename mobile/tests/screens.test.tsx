@@ -18,6 +18,7 @@ import type { FakeLink } from './fakeLink';
 import { CODE_CONVERSATION } from './codeFixture';
 import { memoryDevice, type MemoryDevice } from './device';
 import { queuedQuestion } from '../src/lib/outbox';
+import { checkLayers } from './insets';
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 
@@ -976,12 +977,14 @@ describe('every control', () => {
         await new Promise(resolve => setTimeout(resolve, 0));
       });
       checkTargets(name);
+      checkLayers(name);
     }
     hide();
     source = fakeSource(silentComputer(), { state: 'unpaired' });
     const { unmount } = render(<App source={source} device={memoryDevice()} />);
     await screen.findByRole('heading', { name: 'Pair with your computer' });
     checkTargets('pair');
+    checkLayers('pair');
     unmount();
 
     // The lock, both ways it shows.
@@ -992,6 +995,7 @@ describe('every control', () => {
       const lock = render(<App source={source} device={locked} />);
       await screen.findByRole('dialog', { name: hasPin ? 'Shodh is locked' : 'Set a PIN' });
       checkTargets(name);
+      checkLayers(name);
       lock.unmount();
     }
 
@@ -1002,12 +1006,14 @@ describe('every control', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Ask about a photo' }));
     await screen.findByRole('dialog', { name: 'Ask about your photo' });
     checkTargets('photo ask');
+    checkLayers('photo ask');
     const briefing = memoryDevice();
     briefing.calendar.current = { enabled: true, chosen: [1], shodhCalendar: 9, useWithShodh: true };
     show(connectedComputer({ meeting_brief: { eventId: 'e1', title: 'Reading group', conversations: [{ id: 'c1', title: 'Reading group notes', updatedAt: ago(60) }], sources: [{ n: 1, file: 'self-rag.pdf', path: '/papers/self-rag.pdf', page: '3', text: 'Reading group: Self-RAG.', kind: 'document' }] } }), CONNECTED, initialNav('tasks'), briefing);
     fireEvent.click(await screen.findByRole('button', { name: 'Brief' }));
     await screen.findByText('Reading group notes');
     checkTargets('brief');
+    checkLayers('brief');
     hide();
   });
 });

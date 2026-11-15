@@ -99,6 +99,7 @@ pub fn run() {
             calendar::sealed_read,
             calendar::sealed_write,
             bars::system_bars,
+            bars::system_insets,
             notify::notifications_mode,
             notify::notifications_set,
             notify::push_distributors,

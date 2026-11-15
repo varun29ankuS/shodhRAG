@@ -3,9 +3,13 @@ package com.shodhrag.android
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.util.Log
+import android.view.View
 import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.core.content.FileProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import app.tauri.PermissionState
 import app.tauri.annotation.ActivityCallback
 import app.tauri.annotation.Command
@@ -40,6 +44,15 @@ class PathArgs {
     lateinit var path: String
 }
 
+/** Where the status bar, the navigation bar and a camera cutout cover the window, in CSS pixels (dp). */
+data class SystemInsets(val top: Float, val right: Float, val bottom: Float, val left: Float) {
+    fun toJS(): JSObject = JSObject()
+        .put("top", top.toDouble())
+        .put("right", right.toDouble())
+        .put("bottom", bottom.toDouble())
+        .put("left", left.toDouble())
+}
+
 /** The app's own FileProvider (a subclass, so it never clashes with another library's). */
 class ShodhFileProvider : FileProvider()
 
@@ -63,11 +76,19 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
     /** Watches the phone's calendars while the app runs (once it may read them). */
     private var calendarWatch: android.database.ContentObserver? = null
 
+    /** The app's WebView, whose window insets the page is told. */
+    private var webView: WebView? = null
+
+    /** The system bars' insets as the window last reported them (UI thread only). */
+    private var insets = SystemInsets(0f, 0f, 0f, 0f)
+
     override fun load(webView: WebView) {
         super.load(webView)
+        this.webView = webView
         Incoming.listener = { trigger("incoming", JSObject()) }
         watchCalendar()
         briefFrom(activity.intent)
+        watchInsets(webView)
     }
 
     /** A brief's notification was tapped: the app opens at that brief. */
@@ -121,6 +142,48 @@ class ShodhPlugin(private val activity: Activity) : Plugin(activity) {
             bars.isAppearanceLightStatusBars = !dark
             bars.isAppearanceLightNavigationBars = !dark
             invoke.resolve()
+        }
+    }
+
+    /**
+     * The app draws edge to edge (MainActivity's enableEdgeToEdge), under the
+     * status bar and the gesture bar, and the WebView does not report those
+     * bars to the page: env(safe-area-inset-*) is 0 in it. So the page is
+     * told here, in CSS pixels: on each change (an "insets" event) and when
+     * it asks (systemInsets). The WebView's own handling of the insets is
+     * kept, so a WebView that does report them still can.
+     */
+    private fun watchInsets(webView: WebView) {
+        activity.runOnUiThread {
+            ViewCompat.setOnApplyWindowInsetsListener(webView) { view, windowInsets ->
+                val next = measureInsets(view, windowInsets)
+                if (next != insets) {
+                    insets = next
+                    Log.i(
+                        "Shodh",
+                        "Shodh system bars: top ${next.top} dp, right ${next.right} dp, bottom ${next.bottom} dp, left ${next.left} dp",
+                    )
+                    trigger("insets", next.toJS())
+                }
+                ViewCompat.onApplyWindowInsets(view, windowInsets)
+            }
+            ViewCompat.requestApplyInsets(webView)
+        }
+    }
+
+    /** The status bar, the navigation bar and a cutout, from the window's own insets, in dp. */
+    private fun measureInsets(view: View, dispatched: WindowInsetsCompat?): SystemInsets {
+        val window = ViewCompat.getRootWindowInsets(view) ?: dispatched ?: return insets
+        val bars = window.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        val density = view.resources.displayMetrics.density
+        return SystemInsets(bars.top / density, bars.right / density, bars.bottom / density, bars.left / density)
+    }
+
+    @Command
+    fun systemInsets(invoke: Invoke) {
+        activity.runOnUiThread {
+            val now = webView?.let { measureInsets(it, null) } ?: insets
+            invoke.resolve(now.toJS())
         }
     }
 

@@ -7,6 +7,7 @@
  */
 import type { CalendarChoice, CalendarWrite, Device, LockStatus, NotifyMode, PhoneLock, PhoneNotifications, PhoneVoice, FileAdded, Incoming, PhoneCalendar, PhoneCalendarInfo, PhoneFiles, Picked, PhotoRead, Sealed, SealedName, UpdateCheck } from '../src/lib/device';
 import type { PhoneEvent } from '../src/lib/calsync';
+import type { Insets, SystemInsets } from '../src/lib/insets';
 import type { OutboxSource, QueuedFile, QueuedItem, QueueState, Work } from '../src/lib/outbox';
 
 const STEPS: Record<QueueState, QueueState[]> = {
@@ -69,6 +70,29 @@ export class MemoryOutbox implements OutboxSource {
   }
 }
 
+/** The phone's system bars in tests: their insets now, and a change sent to every listener. */
+export class MemoryInsets implements SystemInsets {
+  private handlers = new Set<(insets: Insets) => void>();
+
+  constructor(public now: Insets = { top: 0, right: 0, bottom: 0, left: 0 }) {}
+
+  async current() {
+    return { ...this.now };
+  }
+
+  async onChanged(handler: (insets: Insets) => void) {
+    this.handlers.add(handler);
+    return () => {
+      this.handlers.delete(handler);
+    };
+  }
+
+  change(next: Insets) {
+    this.now = next;
+    for (const handler of [...this.handlers]) handler({ ...next });
+  }
+}
+
 export interface MemoryDevice extends Device {
   /** Every theme the system bars were set to. */
   bars: Array<'light' | 'dark'>;
@@ -79,11 +103,12 @@ export interface MemoryDevice extends Device {
   lock: MemoryLock;
   notifications: MemoryNotifications;
   voice: MemoryVoice;
+  insets: MemoryInsets;
   checks: number;
   installs: number;
 }
 
-export function memoryDevice(options: { update?: UpdateCheck; install?: () => Promise<boolean> } = {}): MemoryDevice {
+export function memoryDevice(options: { update?: UpdateCheck; install?: () => Promise<boolean>; insets?: Insets } = {}): MemoryDevice {
   const device: MemoryDevice = {
     outbox: new MemoryOutbox(),
     files: new MemoryFiles(),
@@ -92,6 +117,7 @@ export function memoryDevice(options: { update?: UpdateCheck; install?: () => Pr
     lock: new MemoryLock(),
     notifications: new MemoryNotifications(),
     voice: new MemoryVoice(),
+    insets: new MemoryInsets(options.insets),
     bars: [],
     systemBars: async theme => {
       device.bars.push(theme);

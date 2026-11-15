@@ -19,6 +19,15 @@
 
 :root {
   --font: 'Inter Variable', system-ui, sans-serif;
+  /* Where Android's status bar, gesture bar and a camera cutout cover the app,
+     which draws edge to edge under them. The WebView reports none of them
+     (env() is 0 in it), so the phone writes its own measure to <html> as
+     --system-inset-* (lib/insets.ts); a WebView that does report them is
+     taken at its word. Every edge of the app keeps these clear. */
+  --inset-top: max(env(safe-area-inset-top, 0px), var(--system-inset-top, 0px));
+  --inset-right: max(env(safe-area-inset-right, 0px), var(--system-inset-right, 0px));
+  --inset-bottom: max(env(safe-area-inset-bottom, 0px), var(--system-inset-bottom, 0px));
+  --inset-left: max(env(safe-area-inset-left, 0px), var(--system-inset-left, 0px));
   --mono: ui-monospace, 'Cascadia Mono', Menlo, monospace;
   /* The elephant's red: the count of approvals waiting. White text on it is 4.8:1. */
   --brand-red: #d92b2b;
@@ -158,16 +167,18 @@ h3 {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
   background: var(--background);
 }
 
+/* A screen fills the window, under the status bar, and starts below it. (Its
+   layers are absolute, so a padding on .app would not move them.) */
 .view {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding: var(--inset-top) var(--inset-right) 0 var(--inset-left);
 }
 
 /* Room at the end for the tab bar (50px) and a little more. */
@@ -1244,7 +1255,7 @@ strong {
   display: flex;
   flex-direction: column;
   background: var(--background);
-  padding-top: env(safe-area-inset-top);
+  padding: var(--inset-top) var(--inset-right) 0 var(--inset-left);
 }
 
 .reader-bar {
@@ -1390,6 +1401,8 @@ strong {
   position: absolute;
   inset: 0;
   z-index: 30;
+  /* A tall sheet stops under the status bar. */
+  padding-top: var(--inset-top);
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -1481,7 +1494,7 @@ strong {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: calc(28px + env(safe-area-inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
+  padding: calc(28px + var(--inset-top)) 12px calc(24px + env(safe-area-inset-bottom));
   background: var(--background);
   box-shadow: 0 0 0 0.5px var(--separator), 24px 0 60px var(--shadow);
   overflow-y: auto;
@@ -1666,7 +1679,7 @@ strong {
 
 .note {
   position: absolute;
-  top: calc(22px + env(safe-area-inset-top));
+  top: calc(22px + var(--inset-top));
   left: 50%;
   z-index: 40;
   width: 300px;
@@ -2169,7 +2182,7 @@ strong {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 24px 20px;
+  padding: calc(24px + var(--inset-top)) calc(20px + var(--inset-right)) 24px calc(20px + var(--inset-left));
   background: var(--background);
   color: var(--label);
   text-align: center;

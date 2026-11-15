@@ -686,40 +686,42 @@ impl LanceStore {
         Ok(extract_hits_from_batches(&batches, 0.0))
     }
 
-    /// Fetch neighboring chunks (±window) for a given doc_id and chunk_index.
-    /// Used for parent-child context expansion: after selecting top-k results,
-    /// we expand each with adjacent chunks from the same document to provide
-    /// the LLM with more surrounding context.
+    /// The chunks within `window` of each of `chunks` (doc_id, chunk_index),
+    /// those chunks included, each row once, in no particular order. Used to
+    /// expand search results with the text around them.
     pub async fn get_neighbors(
         &self,
-        doc_id: &str,
-        chunk_index: u32,
+        chunks: &[(String, u32)],
         window: u32,
     ) -> Result<Vec<SearchHit>> {
+        let ranges = neighbor_ranges(chunks, window);
+        if ranges.is_empty() {
+            return Ok(Vec::new());
+        }
         let table = self.db.open_table(&self.table_name).execute().await?;
-
-        let low = chunk_index.saturating_sub(window);
-        let high = chunk_index.saturating_add(window);
-
-        let predicate = format!(
-            "doc_id = '{}' AND chunk_index >= {} AND chunk_index <= {} AND chunk_index != {}",
-            doc_id.replace('\'', "''"),
-            low,
-            high,
-            chunk_index
-        );
-
-        let results = table
-            .query()
-            .only_if(predicate)
-            .execute()
-            .await
-            .context("LanceDB neighbor lookup failed")?;
-
-        let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
-        let mut hits = extract_hits_from_batches(&batches, 0.0);
-        // Sort by chunk_index for proper reading order
-        hits.sort_by_key(|h| h.chunk_index);
+        let mut hits = Vec::new();
+        // There is no scalar index on doc_id, so each query scans the table:
+        // the ranges share queries instead of taking one each.
+        for group in ranges.chunks(50) {
+            let predicate = group
+                .iter()
+                .map(|(doc_id, low, high)| {
+                    format!(
+                        "(doc_id = '{}' AND chunk_index >= {low} AND chunk_index <= {high})",
+                        doc_id.replace('\'', "''")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let results = table
+                .query()
+                .only_if(predicate)
+                .execute()
+                .await
+                .context("LanceDB neighbor lookup failed")?;
+            let batches: Vec<RecordBatch> = futures::TryStreamExt::try_collect(results).await?;
+            hits.extend(extract_hits_from_batches(&batches, 0.0));
+        }
         Ok(hits)
     }
 
@@ -753,6 +755,34 @@ impl LanceStore {
 
         Ok(all_hits)
     }
+}
+
+/// The chunk ranges within `window` of `chunks`, with the overlapping or
+/// adjacent ranges of a document merged, so no row lies in two of them.
+fn neighbor_ranges(chunks: &[(String, u32)], window: u32) -> Vec<(&str, u32, u32)> {
+    let mut ranges: Vec<(&str, u32, u32)> = chunks
+        .iter()
+        .map(|(doc_id, index)| {
+            (
+                doc_id.as_str(),
+                index.saturating_sub(window),
+                index.saturating_add(window),
+            )
+        })
+        .collect();
+    ranges.sort_unstable();
+    let mut merged: Vec<(&str, u32, u32)> = Vec::with_capacity(ranges.len());
+    for (doc_id, low, high) in ranges {
+        match merged.last_mut() {
+            Some((last_doc, _, last_high))
+                if *last_doc == doc_id && low <= last_high.saturating_add(1) =>
+            {
+                *last_high = (*last_high).max(high);
+            }
+            _ => merged.push((doc_id, low, high)),
+        }
+    }
+    merged
 }
 
 /// `text` for a LanceDB SQL `LIKE` pattern: the wildcards (`%`, `_`) and the
@@ -872,4 +902,78 @@ fn extract_hits_from_batches(batches: &[RecordBatch], default_score: f32) -> Vec
         }
     }
     hits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIMENSION: usize = 16;
+
+    fn chunk(doc_id: &str, chunk_index: u32) -> ChunkRecord {
+        ChunkRecord {
+            id: format!("{doc_id}-{chunk_index}"),
+            doc_id: doc_id.into(),
+            chunk_index,
+            text: format!("{doc_id} chunk {chunk_index}"),
+            title: String::new(),
+            source: format!("/docs/{doc_id}.txt"),
+            heading: String::new(),
+            vector: (0..DIMENSION)
+                .map(|d| ((chunk_index as usize + d) % 5) as f32 - 2.0)
+                .collect(),
+            space_id: "main".into(),
+            metadata_json: "{}".into(),
+            citation_json: "{}".into(),
+            created_at: 0,
+        }
+    }
+
+    fn wants(chunks: &[(&str, u32)]) -> Vec<(String, u32)> {
+        chunks.iter().map(|(d, i)| (d.to_string(), *i)).collect()
+    }
+
+    #[test]
+    fn overlapping_and_adjacent_ranges_of_a_document_merge() {
+        let chunks = wants(&[
+            ("o'b", 3),
+            ("a", 9),
+            ("a", 2),
+            ("a", 0),
+            ("a", 5),
+            ("c", u32::MAX),
+            ("c", 0),
+        ]);
+        assert_eq!(
+            neighbor_ranges(&chunks, 1),
+            [
+                ("a", 0, 6),
+                ("a", 8, 10),
+                ("c", 0, 1),
+                ("c", u32::MAX - 1, u32::MAX),
+                ("o'b", 2, 4),
+            ]
+        );
+        assert!(neighbor_ranges(&[], 1).is_empty());
+    }
+
+    #[tokio::test]
+    async fn neighbors_of_several_chunks_come_back_once_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LanceStore::open(dir.path().to_str().unwrap(), DIMENSION, "documents")
+            .await
+            .unwrap();
+        let mut records: Vec<ChunkRecord> = (0..8).map(|i| chunk("a", i)).collect();
+        records.extend((0..5).map(|i| chunk("o'b", i)));
+        store.upsert_chunks(records).await.unwrap();
+
+        let hits = store
+            .get_neighbors(&wants(&[("a", 0), ("a", 2), ("o'b", 4), ("absent", 1)]), 1)
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = hits.iter().map(|hit| hit.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["a-0", "a-1", "a-2", "a-3", "o'b-3", "o'b-4"]);
+        assert!(store.get_neighbors(&[], 1).await.unwrap().is_empty());
+    }
 }

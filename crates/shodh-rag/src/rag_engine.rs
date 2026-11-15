@@ -1432,6 +1432,23 @@ fn excluding_sources(filter: Option<&str>, sources: &[String]) -> String {
 /// The vector hits with `extra` (the search that leaves out crowded files)
 /// added, skipping chunks already there. The extra search only widens the
 /// pool: when it fails, the query goes on with the first search's hits.
+/// Whether the Jaccard similarity of two word sets exceeds `threshold`. It is at
+/// most the smaller set's size over the larger's, so a pair whose sizes differ
+/// enough is decided without counting the shared words.
+fn jaccard_exceeds(
+    a: &std::collections::HashSet<&str>,
+    b: &std::collections::HashSet<&str>,
+    threshold: f32,
+) -> bool {
+    let (small, large) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if large.is_empty() || small.len() as f32 / large.len() as f32 <= threshold {
+        return false;
+    }
+    let shared = small.iter().filter(|word| large.contains(*word)).count();
+    let union = small.len() + large.len() - shared;
+    shared as f32 / union as f32 > threshold
+}
+
 fn add_extra_hits(
     hits: &mut Vec<crate::storage::SearchHit>,
     extra: Result<Vec<crate::storage::SearchHit>>,
@@ -3872,37 +3889,57 @@ impl RAGEngine {
     /// the snippet keeps the chunk that matched. Structure chunks are left as
     /// they are (see [`wants_neighbor_expansion`]).
     async fn expand_with_neighbors(&self, results: &mut [ComprehensiveResult], window: u32) {
-        for result in results.iter_mut() {
-            if !wants_neighbor_expansion(&result.metadata) {
+        let chunks: Vec<(usize, (String, u32))> = results
+            .iter()
+            .enumerate()
+            .filter(|(_, result)| wants_neighbor_expansion(&result.metadata))
+            .filter_map(|(at, result)| {
+                let doc_id = result.metadata.get("doc_id").filter(|id| !id.is_empty())?;
+                let chunk_index: u32 = result
+                    .metadata
+                    .get("chunk_index")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                Some((at, (doc_id.clone(), chunk_index)))
+            })
+            .collect();
+        if chunks.is_empty() {
+            return;
+        }
+        let wanted: Vec<(String, u32)> = chunks.iter().map(|(_, chunk)| chunk.clone()).collect();
+        let hits = match self.store.get_neighbors(&wanted, window).await {
+            Ok(hits) => hits,
+            Err(e) => {
+                tracing::debug!("Neighbor expansion failed: {}", e);
+                return;
+            }
+        };
+        let mut by_doc: HashMap<&str, Vec<&crate::storage::SearchHit>> = HashMap::new();
+        for hit in &hits {
+            by_doc.entry(hit.doc_id.as_str()).or_default().push(hit);
+        }
+
+        for (at, (doc_id, chunk_index)) in chunks {
+            let range = chunk_index.saturating_sub(window)..=chunk_index.saturating_add(window);
+            let neighbors: Vec<crate::storage::SearchHit> = by_doc
+                .get(doc_id.as_str())
+                .into_iter()
+                .flatten()
+                .filter(|hit| hit.chunk_index != chunk_index && range.contains(&hit.chunk_index))
+                .map(|hit| (*hit).clone())
+                .collect();
+            if neighbors.is_empty() {
                 continue;
             }
-            let doc_id = match result.metadata.get("doc_id") {
-                Some(id) if !id.is_empty() => id.clone(),
-                _ => continue,
-            };
-            let chunk_index: u32 = result
-                .metadata
-                .get("chunk_index")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-
-            match self.store.get_neighbors(&doc_id, chunk_index, window).await {
-                Ok(neighbors) if !neighbors.is_empty() => {
-                    let (expanded, parts) =
-                        join_neighbors(&result.snippet, chunk_index, &neighbors);
-                    // Without its parts a cut would keep the snippet's start, the
-                    // chunk before the match: the result stays unexpanded then.
-                    match serde_json::to_string(&parts) {
-                        Ok(json) => {
-                            result.metadata.insert(SNIPPET_PARTS_KEY.to_string(), json);
-                            result.snippet = expanded;
-                        }
-                        Err(e) => {
-                            tracing::debug!("Neighbor expansion failed for doc {}: {}", doc_id, e);
-                        }
-                    }
+            let result = &mut results[at];
+            let (expanded, parts) = join_neighbors(&result.snippet, chunk_index, &neighbors);
+            // Without its parts a cut would keep the snippet's start, the
+            // chunk before the match: the result stays unexpanded then.
+            match serde_json::to_string(&parts) {
+                Ok(json) => {
+                    result.metadata.insert(SNIPPET_PARTS_KEY.to_string(), json);
+                    result.snippet = expanded;
                 }
-                Ok(_) => {} // No neighbors found
                 Err(e) => {
                     tracing::debug!("Neighbor expansion failed for doc {}: {}", doc_id, e);
                 }
@@ -5183,51 +5220,31 @@ impl RAGEngine {
     /// boilerplate (e.g. invoices with the same company header).
     fn deduplicate_results(results: &mut Vec<ComprehensiveResult>, threshold: f32) {
         use std::collections::HashSet;
-        let word_sets: Vec<HashSet<&str>> = results
-            .iter()
-            .map(|r| r.snippet.split_whitespace().collect::<HashSet<_>>())
-            .collect();
-
-        let sources: Vec<String> = results
-            .iter()
-            .map(|r| r.metadata.get("source_file").cloned().unwrap_or_default())
-            .collect();
-
-        let mut keep = Vec::new();
-        for i in 0..results.len() {
-            let mut is_dup = false;
-            for &j in &keep {
-                // Only dedup within the same source file
-                if sources[i] != sources[j] {
-                    continue;
-                }
-                let intersection = word_sets[i].intersection(&word_sets[j]).count();
-                let union = word_sets[i].union(&word_sets[j]).count();
-                if union > 0 && (intersection as f32 / union as f32) > threshold {
-                    is_dup = true;
-                    break;
-                }
-            }
-            if !is_dup {
-                keep.push(i);
-            }
-        }
-
-        // Remove duplicates in reverse index order to preserve positions.
-        let keep_set: HashSet<usize> = keep.into_iter().collect();
-        let mut i = results.len();
-        while i > 0 {
-            i -= 1;
-            if !keep_set.contains(&i) {
-                results.swap_remove(i);
-            }
-        }
-        // Restore original order by score (descending)
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let keep: Vec<bool> = {
+            let word_sets: Vec<HashSet<&str>> = results
+                .iter()
+                .map(|r| r.snippet.split_whitespace().collect::<HashSet<_>>())
+                .collect();
+            let mut kept_by_source: HashMap<&str, Vec<usize>> = HashMap::new();
+            results
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let source = r.metadata.get("source_file").map_or("", String::as_str);
+                    let kept = kept_by_source.entry(source).or_default();
+                    let is_dup = kept
+                        .iter()
+                        .any(|&j| jaccard_exceeds(&word_sets[i], &word_sets[j], threshold));
+                    if !is_dup {
+                        kept.push(i);
+                    }
+                    !is_dup
+                })
+                .collect()
+        };
+        let mut flags = keep.into_iter();
+        results.retain(|_| flags.next().unwrap_or(true));
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
     }
 
     /// On a query about citations (the only queries that see bibliography
@@ -5572,6 +5589,53 @@ mod page_metadata_tests {
             citation: Citation::default(),
             snippet: format!("{source} chunk {chunk_index}"),
             source_index: "hybrid".to_string(),
+        }
+    }
+
+    #[test]
+    fn deduplication_keeps_the_order_of_the_results_it_keeps() {
+        let with_text = |source: &str, score: f32, text: &str| {
+            let mut r = chunk_of(source, 0, score);
+            r.snippet = text.to_string();
+            r
+        };
+        let overlap = "the tenant gives two months notice before the lease ends";
+        let mut results = vec![
+            with_text("a.txt", 1.0, overlap),
+            with_text("a.txt", 0.9, &format!("{overlap} today")),
+            with_text("b.txt", 0.5, "parking is on the street"),
+            with_text("c.txt", 0.5, "quiet hours start at ten"),
+            with_text("d.txt", 0.5, overlap),
+            with_text("a.txt", 0.5, "rent is due on the first"),
+        ];
+        let ids: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        RAGEngine::deduplicate_results(&mut results, 0.75);
+        let kept: Vec<Uuid> = results.iter().map(|r| r.id).collect();
+        assert_eq!(kept, [ids[0], ids[2], ids[3], ids[4], ids[5]]);
+    }
+
+    #[test]
+    fn jaccard_matches_the_set_definition() {
+        use std::collections::HashSet;
+        let words = |s: &'static str| s.split_whitespace().collect::<HashSet<&str>>();
+        let cases = [
+            ("a b c d", "a b c d", 0.75, true),
+            ("a b c d", "a b c d e", 0.75, true),
+            ("a b c", "a b c d", 0.75, false),
+            ("a b c d", "a b c x", 0.5, true),
+            ("a b", "a b c d e f g h", 0.2, true),
+            ("a", "a b c d e f g h i j", 0.1, false),
+            ("", "", 0.0, false),
+            ("", "a", -1.0, true),
+        ];
+        for (a, b, threshold, expected) in cases {
+            let (a, b) = (words(a), words(b));
+            let shared = a.intersection(&b).count();
+            let union = a.union(&b).count();
+            let by_definition = union > 0 && (shared as f32 / union as f32) > threshold;
+            assert_eq!(by_definition, expected, "{a:?} {b:?} {threshold}");
+            assert_eq!(jaccard_exceeds(&a, &b, threshold), expected);
+            assert_eq!(jaccard_exceeds(&b, &a, threshold), expected);
         }
     }
 

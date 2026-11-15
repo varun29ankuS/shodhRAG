@@ -325,13 +325,15 @@ fn insert_path(map: &mut serde_json::Map<String, Value>, key: &str, value: Value
 /// Launch flags of a Code session. Unlike Research sessions, omp's dialog
 /// channel stays on (no `--no-ui`): approvals travel over it. Reasoning
 /// follows the same setting as Research sessions ([`Thinking`]). A session
-/// that only reads (`reads_only`) gets only omp's reading tools.
+/// that only reads (`reads_only`) gets only omp's reading tools. The system
+/// prompt travels in a file ([`super::sidecar::SystemPromptFile`]): only its
+/// path is on the command line.
 pub fn code_launch_args(
     model_arg: &str,
     base_overlay: &Path,
     code_overlay: &Path,
     guard_hook: &Path,
-    system_prompt: &str,
+    system_prompt_file: &Path,
     thinking: Thinking,
     reads_only: bool,
 ) -> Vec<String> {
@@ -356,7 +358,7 @@ pub fn code_launch_args(
     args.push(format!("--model={model_arg}"));
     args.push(format!("--config={}", base_overlay.display()));
     args.push(format!("--config={}", code_overlay.display()));
-    args.push(format!("--system-prompt={system_prompt}"));
+    args.push(format!("--system-prompt={}", system_prompt_file.display()));
     args
 }
 

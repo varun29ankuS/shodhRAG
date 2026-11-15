@@ -61,7 +61,7 @@ use super::run_command::{
     self, asked_timeout, CommandExecutor, CommandLimits, CommandOutcome, CommandSpec, RunControl,
     RUN_COMMAND,
 };
-use super::sidecar::{self, LaunchSpec};
+use super::sidecar::{self, LaunchSpec, SystemPromptFile};
 use super::tools::plan::UPDATE_PLAN;
 use super::tools::search::{truncate_query, SEARCH_DOCUMENTS};
 use super::tools::{
@@ -663,6 +663,9 @@ struct Inner {
     closed: AtomicBool,
     close_writer: Arc<Notify>,
     child: tokio::sync::Mutex<Option<Child>>,
+    /// The file omp read its system prompt from: removed when the session
+    /// ends (omp exited or was shut down), at the latest when this is dropped.
+    system_prompt: Mutex<Option<SystemPromptFile>>,
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
     secrets: Vec<String>,
     code: Option<Arc<CodeRuntime>>,
@@ -1857,6 +1860,8 @@ impl Inner {
             code.commands_ended();
         }
         lock(&self.pending).clear();
+        // omp is gone: its system prompt file is removed.
+        drop(lock(&self.system_prompt).take());
         if !self.closing.load(Ordering::SeqCst) {
             tracing::warn!(target: "shodh::harness", session = %self.session_id, "omp exited unexpectedly");
         }
@@ -2636,6 +2641,7 @@ impl OmpSession {
             closed: AtomicBool::new(false),
             close_writer: close_writer.clone(),
             child: tokio::sync::Mutex::new(Some(process.child)),
+            system_prompt: Mutex::new(Some(process.system_prompt)),
             stderr_tail: stderr_tail.clone(),
             secrets,
             code,
@@ -2803,6 +2809,8 @@ impl OmpSession {
                 }
             }
         }
+        // The session has ended: its system prompt file is removed.
+        drop(lock(&inner.system_prompt).take());
         inner.abort_inflight();
         tracing::info!(target: "shodh::harness", session = %inner.session_id, "omp session closed");
     }
@@ -3113,6 +3121,7 @@ mod tests {
             closed: AtomicBool::new(false),
             close_writer: Arc::new(Notify::new()),
             child: tokio::sync::Mutex::new(None),
+            system_prompt: Mutex::new(None),
             stderr_tail: Arc::new(Mutex::new(VecDeque::new())),
             secrets: Vec::new(),
             code,

@@ -431,6 +431,10 @@ pub struct OmpLayout {
     pub temp: PathBuf,
     pub overlay: PathBuf,
     pub sessions: PathBuf,
+    /// The private folder of the sessions' system prompt files
+    /// ([`SystemPromptFile`]): outside every session's working folder and
+    /// every code folder, readable by the user only.
+    pub prompts: PathBuf,
     /// Code mode's overlay and guard hook (outside every code folder).
     pub code_overlay: PathBuf,
     pub guard_hook: PathBuf,
@@ -447,6 +451,7 @@ impl OmpLayout {
             temp: root.join("tmp"),
             overlay: root.join("overlay.yml"),
             sessions: root.join("sessions"),
+            prompts: root.join("prompts"),
             code_overlay: code.join("overlay.yml"),
             guard_hook: code.join("guard.js"),
             home,
@@ -528,6 +533,119 @@ impl OmpLayout {
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
     }
+
+    /// Write one session's system prompt to a new file of the private
+    /// [`prompts`](Self::prompts) folder; omp is given its path, never the
+    /// text (Windows limits a command line to 32,767 characters, and the
+    /// prompt can be longer). The file is removed when the returned value is
+    /// dropped. Files a previous run of the app left behind (it stopped before
+    /// its sessions ended) are removed before this process writes its first
+    /// ([`sweep_left_prompts_once`]).
+    pub fn write_system_prompt(&self, text: &str) -> Result<SystemPromptFile, HarnessError> {
+        super::run_command::prepare_scratch(&self.prompts).map_err(HarnessError::Spawn)?;
+        sweep_left_prompts_once(&self.prompts);
+        SystemPromptFile::create(&self.prompts, text)
+    }
+}
+
+/// Prompt folders this process has swept ([`sweep_left_prompts_once`]).
+static SWEPT_PROMPT_DIRS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// How old a prompt file of another process must be before a sweep removes
+/// it: omp reads its prompt file as it starts, well within this time, so an
+/// older file is no longer needed by any omp (another app instance's
+/// included), while a newer one may be about to be read.
+const LEFT_PROMPT_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Remove the files of `dir` older than [`LEFT_PROMPT_AGE`] the first time
+/// this process writes a prompt there. Before that first write no session of
+/// this process has a file in it, so they were left by an earlier run (it
+/// stopped before its sessions ended). The lock is held through the sweep,
+/// so a concurrent first write waits for it.
+fn sweep_left_prompts_once(dir: &Path) {
+    let mut swept = SWEPT_PROMPT_DIRS.lock().unwrap_or_else(|e| e.into_inner());
+    if !swept.insert(dir.to_path_buf()) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let left = entry.metadata().is_ok_and(|meta| {
+            meta.is_file()
+                && meta
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.elapsed().ok())
+                    .is_some_and(|age| age > LEFT_PROMPT_AGE)
+        });
+        if !left {
+            continue;
+        }
+        let path = entry.path();
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::warn!(target: "shodh::harness", path = %path.display(), error = %e, "a system prompt file left by an earlier run could not be removed");
+        }
+    }
+}
+
+/// A session's system prompt in a file of the layout's private prompts
+/// folder, passed to omp as `--system-prompt=<path>`. omp 18.4.10 documents
+/// the flag as `--system-prompt <text|file>` (docs/cli-reference.md); its
+/// resolver reads a value without a line break as a file path and keeps
+/// the value as the prompt text only when the file cannot be read. So the
+/// path is absolute (omp's working folder differs by mode) and has no line
+/// break, and the file exists from before omp starts until the session
+/// ends: dropping this value removes it. Its content is never logged.
+#[derive(Debug)]
+pub struct SystemPromptFile {
+    path: PathBuf,
+}
+
+impl SystemPromptFile {
+    fn create(dir: &Path, text: &str) -> Result<Self, HarnessError> {
+        use std::io::Write;
+        let name = format!("system-prompt-{}.txt", uuid::Uuid::new_v4().simple());
+        let path = std::path::absolute(dir.join(name))?;
+        if path.as_os_str().to_string_lossy().contains(['\n', '\r']) {
+            return Err(HarnessError::Spawn(format!(
+                "the folder {} has a line break in its path, so omp would read the path as \
+                 the prompt",
+                dir.display()
+            )));
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut handle = options.open(&path)?;
+        // The file is new and the guard owns it: a failed write removes it.
+        let file = Self { path };
+        handle.write_all(text.as_bytes())?;
+        handle.flush()?;
+        Ok(file)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SystemPromptFile {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(target: "shodh::harness", path = %self.path.display(), error = %e, "a session's system prompt file could not be removed");
+            }
+        }
+    }
 }
 
 fn write_if_changed(path: &Path, content: &str) -> Result<(), HarnessError> {
@@ -598,11 +716,12 @@ pub fn provider_overlay_config(provider: &str) -> Value {
     json!({ "disabledProviders": disabled })
 }
 
-/// Full argument list for one session.
+/// Full argument list for one session. The system prompt travels in a file
+/// ([`SystemPromptFile`]): only its path is on the command line.
 pub fn launch_args(
     model_arg: &str,
     overlay: &Path,
-    system_prompt: &str,
+    system_prompt_file: &Path,
     thinking: Thinking,
 ) -> Vec<String> {
     let mut args: Vec<String> = BASE_FLAGS.iter().map(|s| s.to_string()).collect();
@@ -610,7 +729,7 @@ pub fn launch_args(
     args.push(thinking.flag().to_string());
     args.push(format!("--model={model_arg}"));
     args.push(format!("--config={}", overlay.display()));
-    args.push(format!("--system-prompt={system_prompt}"));
+    args.push(format!("--system-prompt={}", system_prompt_file.display()));
     args
 }
 
@@ -760,22 +879,24 @@ impl LaunchSpec {
             .map_or(self.model.model_arg.as_str(), |(provider, _)| provider)
     }
 
-    /// The process's arguments and working directory. A Code session works in
-    /// its folder; a Research session gets an empty one of its own. The
+    /// The process's arguments and working directory, and the file holding
+    /// the system prompt (kept until the session ends). A Code session works
+    /// in its folder; a Research session gets an empty one of its own. The
     /// provider overlay is written here and loaded last in both.
-    fn command_line(&self) -> Result<(Vec<String>, PathBuf), HarnessError> {
+    fn command_line(&self) -> Result<(Vec<String>, PathBuf, SystemPromptFile), HarnessError> {
         let provider = self.omp_provider();
         let providers = self.layout.provider_overlay(provider);
         write_if_changed(
             &providers,
             &serde_json::to_string_pretty(&provider_overlay_config(provider))?,
         )?;
+        let prompt = self.layout.write_system_prompt(&self.system_prompt)?;
         let (mut args, cwd) = match &self.code {
             None => (
                 launch_args(
                     &self.model.model_arg,
                     &self.layout.overlay,
-                    &self.system_prompt,
+                    prompt.path(),
                     self.thinking,
                 ),
                 self.layout.session_dir(&self.session_id)?,
@@ -786,7 +907,7 @@ impl LaunchSpec {
                     &self.layout.overlay,
                     &self.layout.code_overlay,
                     &self.layout.guard_hook,
-                    &self.system_prompt,
+                    prompt.path(),
                     self.thinking,
                     self.code_reads_only,
                 ),
@@ -802,7 +923,7 @@ impl LaunchSpec {
             args.push(format!("--config={}", overlay.display()));
         }
         args.push(format!("--config={}", providers.display()));
-        Ok((args, cwd))
+        Ok((args, cwd, prompt))
     }
 
     /// The child's environment: [`child_env`], plus the guard's folder and
@@ -838,12 +959,14 @@ impl LaunchSpec {
     }
 }
 
-/// A running omp process with its pipes.
+/// A running omp process with its pipes, and the file its system prompt is
+/// in (keep it until the session ends: dropping it removes the file).
 pub struct SidecarProcess {
     pub child: Child,
     pub stdin: ChildStdin,
     pub stdout: ChildStdout,
     pub stderr: ChildStderr,
+    pub system_prompt: SystemPromptFile,
 }
 
 /// omp's settings as `omp config list --json` reports them in an empty folder
@@ -923,7 +1046,7 @@ pub async fn spawn(spec: &LaunchSpec) -> Result<SidecarProcess, HarnessError> {
         let settings = omp_settings(&spec.binary, &spec.layout).await?;
         spec.layout.prepare_code(&settings)?;
     }
-    let (args, cwd) = spec.command_line()?;
+    let (args, cwd, system_prompt) = spec.command_line()?;
 
     let mut command = Command::new(&spec.binary);
     command
@@ -965,6 +1088,7 @@ pub async fn spawn(spec: &LaunchSpec) -> Result<SidecarProcess, HarnessError> {
         stdin,
         stdout,
         stderr,
+        system_prompt,
     })
 }
 
@@ -1198,7 +1322,7 @@ mod tests {
         let args = launch_args(
             "openai/gpt-5-mini",
             Path::new("/data/omp/overlay.yml"),
-            "Be brief.",
+            Path::new("/data/omp/prompts/system-prompt-1.txt"),
             Thinking::Off,
         );
         assert_eq!(&args[..10], &BASE_FLAGS.map(String::from));
@@ -1207,7 +1331,164 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--tools"));
         assert!(args.contains(&"--model=openai/gpt-5-mini".to_string()));
         assert!(args.contains(&"--config=/data/omp/overlay.yml".to_string()));
-        assert!(args.contains(&"--system-prompt=Be brief.".to_string()));
+        // The prompt's file, never its text.
+        assert!(args.contains(&"--system-prompt=/data/omp/prompts/system-prompt-1.txt".to_string()));
+        assert_eq!(
+            args.iter()
+                .filter(|a| a.starts_with("--system-prompt"))
+                .count(),
+            1
+        );
+    }
+
+    /// Characters CreateProcess gets for `binary` and `args`: each argument
+    /// with a separating space and the quotes it may need.
+    fn command_line_chars(binary: &Path, args: &[String]) -> usize {
+        binary.display().to_string().chars().count()
+            + 2
+            + args.iter().map(|a| a.chars().count() + 3).sum::<usize>()
+    }
+
+    /// Windows' limit on a whole command line (CreateProcess), in characters.
+    const WINDOWS_COMMAND_LINE_LIMIT: usize = 32_767;
+
+    /// A system prompt longer than Windows allows on a command line, with
+    /// line breaks, non-ASCII text and a final marker, as workspace
+    /// instructions and skills make it.
+    fn long_prompt() -> String {
+        let mut prompt = String::from("You are Shodh.\n");
+        let mut n = 0;
+        while prompt.chars().count() <= 45_000 {
+            n += 1;
+            prompt.push_str(&format!(
+                "Rule {n}: cite every claim with its passage number — \"quoted\" & <tagged> ✓\n"
+            ));
+        }
+        prompt.push_str("END-OF-PROMPT-MARKER");
+        prompt
+    }
+
+    #[test]
+    fn a_long_system_prompt_travels_in_a_private_file_not_on_the_command_line() {
+        let data = tempfile::tempdir().unwrap();
+        let code = tempfile::tempdir().unwrap();
+        let prompt = long_prompt();
+        assert!(prompt.chars().count() > 40_000);
+        for folder in [None, Some(CodeFolder::open(code.path()).unwrap())] {
+            let label = if folder.is_some() { "code" } else { "research" };
+            let launch = LaunchSpec {
+                system_prompt: prompt.clone(),
+                host_tools: vec!["load_skill".to_string()],
+                ..spec(data.path(), folder.clone())
+            };
+            let (args, cwd, file) = launch.command_line().unwrap();
+            let chars = command_line_chars(&launch.binary, &args);
+            assert!(chars < 8_000, "{label}: {chars} characters");
+            assert!(chars < WINDOWS_COMMAND_LINE_LIMIT / 4);
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.contains("Rule 1:") || a.contains("END-OF-PROMPT")),
+                "{label}: prompt text on the command line"
+            );
+            // The one --system-prompt names the file, by an absolute path
+            // (omp's working folder differs by mode) without a line break
+            // (omp would read it as the prompt itself).
+            let flags: Vec<&String> = args
+                .iter()
+                .filter(|a| a.starts_with("--system-prompt"))
+                .collect();
+            assert_eq!(flags.len(), 1, "{label}");
+            let path = PathBuf::from(flags[0].trim_start_matches("--system-prompt="));
+            assert_eq!(path, file.path());
+            assert!(path.is_absolute(), "{label}: {}", path.display());
+            assert!(!flags[0].contains(['\n', '\r']));
+            // In the private prompts folder: never in omp's working folder,
+            // the code folder, or where omp looks for its own prompt files.
+            assert!(path.starts_with(&launch.layout.prompts), "{label}");
+            assert!(!path.starts_with(&cwd), "{label}");
+            assert!(!path.starts_with(code.path()), "{label}");
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(name.starts_with("system-prompt-") && name.ends_with(".txt"));
+            // Exactly the prompt, byte for byte.
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), prompt, "{label}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode(&path), 0o600, "{label}");
+                assert_eq!(mode(&launch.layout.prompts), 0o700, "{label}");
+            }
+            // The session's end removes it.
+            drop(file);
+            assert!(
+                !path.exists(),
+                "{label}: the prompt file outlived its session"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_command_lines_stay_far_below_the_windows_limit() {
+        let data = tempfile::tempdir().unwrap();
+        let code = tempfile::tempdir().unwrap();
+        let prompt = long_prompt();
+        for folder in [None, Some(CodeFolder::open(code.path()).unwrap())] {
+            for system_prompt in ["Be brief.".to_string(), prompt.clone()] {
+                for host_tools in [
+                    Vec::new(),
+                    vec!["enola__explore".to_string(), "load_skill".to_string()],
+                ] {
+                    let launch = LaunchSpec {
+                        system_prompt: system_prompt.clone(),
+                        host_tools,
+                        ..spec(data.path(), folder.clone())
+                    };
+                    let (args, _, _file) = launch.command_line().unwrap();
+                    let chars = command_line_chars(&launch.binary, &args);
+                    assert!(
+                        chars < 8_000,
+                        "code: {}, prompt of {} characters: {chars} on the command line",
+                        folder.is_some(),
+                        system_prompt.chars().count()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_sessions_get_their_own_prompt_files_and_leftovers_are_swept() {
+        let data = tempfile::tempdir().unwrap();
+        let layout = OmpLayout::new(data.path());
+        // A file an earlier run left (it stopped before its session ended),
+        // and one another app instance just wrote for an omp still starting.
+        std::fs::create_dir_all(&layout.prompts).unwrap();
+        let left = layout.prompts.join("system-prompt-left.txt");
+        std::fs::write(&left, "old instructions").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&left)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - 2 * LEFT_PROMPT_AGE)
+            .unwrap();
+        let starting = layout.prompts.join("system-prompt-starting.txt");
+        std::fs::write(&starting, "another instance's instructions").unwrap();
+        let first = layout.write_system_prompt("first").unwrap();
+        assert!(!left.exists(), "a leftover prompt file was kept");
+        assert!(
+            starting.exists(),
+            "a file an omp may still read was removed"
+        );
+        // Later sessions never remove a live session's file.
+        let second = layout.write_system_prompt("second").unwrap();
+        assert_ne!(first.path(), second.path());
+        assert_eq!(std::fs::read_to_string(first.path()).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(second.path()).unwrap(), "second");
+        let first_path = first.path().to_path_buf();
+        drop(first);
+        assert!(!first_path.exists());
+        assert_eq!(std::fs::read_to_string(second.path()).unwrap(), "second");
     }
 
     #[test]
@@ -1224,7 +1505,7 @@ mod tests {
                     thinking: Thinking::from_setting(setting),
                     ..spec(data.path(), folder.clone())
                 };
-                let (args, _) = launch.command_line().unwrap();
+                let (args, _, _) = launch.command_line().unwrap();
                 let at = args.iter().position(|a| a == "--thinking").unwrap();
                 assert_eq!(args[at + 1], flag, "code: {}", folder.is_some());
                 assert_eq!(args.iter().filter(|a| *a == "--thinking").count(), 1);
@@ -1321,7 +1602,7 @@ mod tests {
     fn research_sessions_run_without_tools_in_an_empty_folder() {
         let data = tempfile::tempdir().unwrap();
         let spec = spec(data.path(), None);
-        let (args, cwd) = spec.command_line().unwrap();
+        let (args, cwd, _prompt) = spec.command_line().unwrap();
         assert_eq!(&args[..10], &BASE_FLAGS.map(String::from));
         assert!(!args
             .iter()
@@ -1344,7 +1625,7 @@ mod tests {
         let spec = spec(data.path(), Some(folder.clone()));
         let settings = crate::harness::code_mode::tests::omp_settings_fixture();
         spec.layout.prepare_code(&settings).unwrap();
-        let (args, cwd) = spec.command_line().unwrap();
+        let (args, cwd, _prompt) = spec.command_line().unwrap();
         // omp's shell is off: commands run through Shodh's run_command.
         assert!(args.contains(&"--tools=read,grep,glob,ast_grep,edit,write".to_string()));
         for tool in crate::harness::code_mode::OMP_EXECUTION_TOOLS {
@@ -1418,7 +1699,7 @@ mod tests {
             host_tools: host.clone(),
             ..spec(data.path(), Some(CodeFolder::open(code.path()).unwrap()))
         };
-        let (args, _) = launch.command_line().unwrap();
+        let (args, _, _) = launch.command_line().unwrap();
         let overlay = launch.layout.host_tools_overlay(&host);
         let flag = format!("--config={}", overlay.display());
         let code_overlay = format!("--config={}", launch.layout.code_overlay.display());
@@ -1434,13 +1715,13 @@ mod tests {
             .any(|(k, v)| k == HOST_TOOLS_ENV && v.as_str() == "enola__explore,load_skill"));
         // Without host tools there is no overlay; Research sessions never get one.
         let plain = spec(data.path(), Some(CodeFolder::open(code.path()).unwrap()));
-        let (args, _) = plain.command_line().unwrap();
+        let (args, _, _) = plain.command_line().unwrap();
         assert!(!args.iter().any(|a| a.contains("host-tools-")));
         let research = LaunchSpec {
             host_tools: host,
             ..spec(data.path(), None)
         };
-        let (args, _) = research.command_line().unwrap();
+        let (args, _, _) = research.command_line().unwrap();
         assert!(!args.iter().any(|a| a.contains("host-tools-")));
         assert!(!research
             .environment()

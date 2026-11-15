@@ -149,6 +149,29 @@ impl ComputeStatus {
         self.changed();
     }
 
+    /// What runs the model of load `generation` changed without a reload (a
+    /// graphics card prepared in the background took over from the CPU, or
+    /// was not kept): `report` replaces the report, at `tokens_per_second`.
+    pub fn embedder_replaced(
+        &self,
+        generation: u64,
+        mut report: EmbedderReport,
+        tokens_per_second: Option<f64>,
+    ) {
+        if *self.generation.lock() != generation {
+            return;
+        }
+        report.loaded = true;
+        report.recent_pages_per_minute = None;
+        report.degraded = false;
+        *self.watch.lock() = tokens_per_second.map(|rate| Watch {
+            throughput: ThroughputWatch::new(rate),
+            last_batch: None,
+        });
+        *self.embedder.write() = Some(report);
+        self.changed();
+    }
+
     /// The model of load `generation` was dropped from memory; its report
     /// stays, not loaded and with the recent speed forgotten. A model of an
     /// older load changes nothing.
@@ -258,6 +281,32 @@ mod tests {
             calibrated_at: Some("2026-11-01T00:00:00Z".to_string()),
             loaded: false,
         }
+    }
+
+    #[test]
+    fn a_replaced_report_applies_to_its_own_load_only() {
+        let status = ComputeStatus::default();
+        let first = status.embedder_loaded(report(), Some(1000.0));
+        let gpu = EmbedderReport {
+            accelerator: Accelerator::CoreMl,
+            device: Some("Apple M2".to_string()),
+            cpu_reason: None,
+            threads: None,
+            model_file: "model_O4.coreml.onnx".to_string(),
+            ..report()
+        };
+        status.embedder_replaced(first, gpu.clone(), Some(9000.0));
+        let now = status.embedder().expect("report");
+        assert_eq!(now.accelerator, Accelerator::CoreMl);
+        assert!(now.loaded);
+
+        let second = status.embedder_loaded(report(), Some(1000.0));
+        status.embedder_replaced(first, gpu, Some(9000.0));
+        assert_eq!(
+            status.embedder().expect("report").accelerator,
+            Accelerator::Cpu
+        );
+        status.embedder_unloaded(second);
     }
 
     fn slow_batches(status: &ComputeStatus, start: Instant) -> Instant {

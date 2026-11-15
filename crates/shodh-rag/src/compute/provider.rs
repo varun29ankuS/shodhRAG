@@ -101,6 +101,9 @@ pub enum CpuReason {
     /// The library was indexed with the search model made for the CPU
     /// (int8), which no graphics card runs; no card was tried.
     CpuModel,
+    /// The graphics card is being prepared (Core ML compiles the model for
+    /// it); the CPU runs search until it is ready.
+    Preparing,
 }
 
 /// Whether a graphics card that embeds at `gpu` tokens a second is kept

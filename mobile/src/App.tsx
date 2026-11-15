@@ -23,6 +23,7 @@ import { Background } from './components/Background';
 import { AgendaProvider } from './lib/agenda';
 import { Tasks } from './screens/Tasks';
 import { askScreen, type Nav } from './lib/nav';
+import type { ThemeChoice } from './lib/theme';
 import { Approvals, ApprovalSheet } from './screens/Approvals';
 import { Ask } from './screens/Ask';
 import { ComingSoon } from './screens/ComingSoon';
@@ -37,11 +38,13 @@ import { Workspaces } from './screens/Workspaces';
 
 /**
  * Where a debug build was asked to open (CI's screenshots, lib/start.ts): the
- * screen's name for the ready line, and where the app is.
+ * screen's name for the ready line, where the app is, and the theme the tour
+ * asked for (lib/tour.ts; otherwise the user's own choice).
  */
 export interface Start {
   screen: string;
   nav: Nav | null;
+  theme?: ThemeChoice;
 }
 
 export function App({ source, start = null, device = tauriDevice }: { source: LinkSource; start?: Start | null; device?: Device }) {
@@ -51,7 +54,7 @@ export function App({ source, start = null, device = tauriDevice }: { source: Li
   useSystemInsets(device.insets);
   return (
     <MotionConfig reducedMotion="user">
-      <ThemeProvider systemBars={device.systemBars}>
+      <ThemeProvider systemBars={device.systemBars} pinned={start?.theme}>
         <DeviceProvider device={device}>
           <LockGate source={source} skip={start !== null}>
         <LinkProvider source={source} openPairing={openPairing}>

@@ -362,7 +362,7 @@ impl Link {
 }
 
 /// An Android system property's value ("" when it is not set).
-fn system_property(name: &std::ffi::CStr) -> String {
+pub(crate) fn system_property(name: &std::ffi::CStr) -> String {
     let mut value: [c_char; libc::PROP_VALUE_MAX as usize] = [0; libc::PROP_VALUE_MAX as usize];
     // SAFETY: the name is NUL-terminated and the buffer has the
     // PROP_VALUE_MAX bytes the call may write.

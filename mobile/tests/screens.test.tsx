@@ -877,6 +877,22 @@ describe('the theme', () => {
     await waitFor(() => expect(device.bars).toEqual(['dark', 'light', 'dark']));
   });
 
+  it("opens in the theme CI's screenshot tour asks for, and keeps the user's saved choice", async () => {
+    window.localStorage.setItem('shodh.theme', 'dark');
+    shown?.unmount();
+    source = fakeSource(connectedComputer(), CONNECTED);
+    device = memoryDevice();
+    shown = render(<App source={source} start={{ screen: 'test', nav: initialNav('settings'), theme: 'light' }} device={device} />);
+    await screen.findByText('Theme');
+    expect(document.documentElement.dataset.theme).toBe('light');
+    await waitFor(() => expect(source.readies).toEqual([['test', 'light']]));
+    // The phone's setting does not move a theme the tour pinned.
+    act(() => setPhoneTheme('dark'));
+    act(() => setPhoneTheme('light'));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(window.localStorage.getItem('shodh.theme')).toBe('dark');
+  });
+
   it('the menu has the same choice', async () => {
     show(connectedComputer(), CONNECTED, { ...initialNav('ask'), drawer: true });
     const menu = await screen.findByRole('navigation', { name: 'All sections' });

@@ -18,6 +18,8 @@ mod logcat;
 mod notify;
 mod queue;
 mod store;
+#[cfg(debug_assertions)]
+mod tour;
 mod update;
 mod vault;
 mod voice;
@@ -61,6 +63,9 @@ pub fn run() {
         .manage(queue::Queue::default())
         .manage(update::Updates::default())
         .setup(|app| {
+            // CI's screenshot tour (tour.rs): a debug build only.
+            #[cfg(debug_assertions)]
+            tour::follow(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle.state::<link::Link>().start(&handle).await;

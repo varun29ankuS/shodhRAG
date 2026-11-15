@@ -1216,22 +1216,25 @@ jobs:
         working-directory: mobile
         run: npx tsc --noEmit
 
-      # The scripted computer of the screenshots (src/lib/demo.ts) is in a
-      # debug build only: vite.config.ts sets __SHODH_DEMO__ from the Tauri
-      # CLI's TAURI_ENV_DEBUG. Both builds are checked, so the release check
-      # is not vacuous.
-      - name: The screenshots' scripted computer is not in a release build
+      # The scripted computer of the screenshots (src/lib/demo.ts) and the
+      # screenshot tour's listener (src/lib/tour.ts, its event shodh://tour)
+      # are in a debug build only: vite.config.ts sets __SHODH_DEMO__ from
+      # the Tauri CLI's TAURI_ENV_DEBUG. (The tour's Rust side, tour.rs, is
+      # compiled only with debug assertions.) Both builds are checked, so the
+      # release check is not vacuous.
+      - name: The screenshots' scripted computer and tour are not in a release build
         working-directory: mobile
         run: |
           set -euo pipefail
-          marker='The sample computer has no'
           TAURI_ENV_DEBUG=true npx vite build --outDir "$RUNNER_TEMP/js-debug" --logLevel warn
-          grep -rqF "$marker" "$RUNNER_TEMP/js-debug" || { echo "::error::The debug build lacks the scripted computer"; exit 1; }
           TAURI_ENV_DEBUG=false npx vite build --outDir "$RUNNER_TEMP/js-release" --logLevel warn
-          if grep -rlF "$marker" "$RUNNER_TEMP/js-release"; then
-            echo "::error::A release build contains the scripted computer"
-            exit 1
-          fi
+          for marker in 'The sample computer has no' 'shodh://tour'; do
+            grep -rqF "$marker" "$RUNNER_TEMP/js-debug" || { echo "::error::The debug build lacks \"$marker\""; exit 1; }
+            if grep -rlF "$marker" "$RUNNER_TEMP/js-release"; then
+              echo "::error::A release build contains \"$marker\""
+              exit 1
+            fi
+          done
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
@@ -1492,6 +1495,31 @@ jobs:
             # recording of the launch and screenshots in both themes.
             screens="$RUNNER_TEMP/android-screens"
             mkdir -p "$screens"
+
+            # The phone starts in light mode (read, not set): the app's own
+            # start below is in the phone's theme, and the tour's last shots
+            # turn the phone dark once to check the app follows it.
+            night=$(adb_within 30 shell cmd uimode night | tr -d '\r')
+            if [ "$night" != "Night mode: no" ]; then
+              echo "::error::The emulator does not start in light mode: $night"
+              exit 1
+            fi
+            # The launcher in light mode, with Shodh's icon (for the user's
+            # review), before Shodh first runs: its home screen, then the list
+            # of all apps (a swipe up). The dark ones are taken at the end,
+            # after the phone turns dark. The pauses only let the launcher
+            # settle for the picture, and decide no result.
+            launcher_shots() {
+              adb_within 30 shell input keyevent KEYCODE_HOME
+              sleep 3
+              adb_within 20 exec-out screencap -p > "$screens/launcher-home-$1.png"
+              adb_within 30 shell input swipe 540 2000 540 500 300
+              sleep 3
+              adb_within 20 exec-out screencap -p > "$screens/launcher-apps-$1.png"
+              adb_within 30 shell input keyevent KEYCODE_HOME
+            }
+            launcher_shots light
+
             # 45 s: the recording stops itself at 30 s, then writes its file.
             adb_within 45 shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
             recorder=$!
@@ -1580,98 +1608,109 @@ jobs:
             adb_within 30 pull /sdcard/shodh-launch.mp4 "$screens/launch.mp4" || true
 
             # Every main screen in light and dark, for review, on the AVD's
-            # phone-sized screen (checked above). A debug build opens at the screen named by the system
-            # property debug.shodh.screen (start_screen in link.rs; a release
-            # build never reads it). With no computer paired, the plain names
-            # show each screen as it is while not connected; demo-* screens
-            # show a scripted computer (src/lib/demo.ts, debug builds only) so
-            # the connected screens can be seen. Each launch waits for the
-            # app's own ready line, which names the theme shown: it must be
-            # the phone's (cmd uimode night), or the job fails after taking
-            # every picture. The 3 s pause only lets the data and the springs
-            # settle for the picture, and decides no result.
+            # phone-sized screen (checked above), all in the one run of the
+            # app started above. Force-stopping and relaunching the app for
+            # each picture killed the emulator process itself, whatever its
+            # renderer (runs 43624325353, 43662536425, 43670793908). So a
+            # debug build takes requests from the system property
+            # debug.shodh.tour, "<number> <screen> <phone|light|dark>"
+            # (src-tauri/src/tour.rs and src/lib/tour.ts; a release build has
+            # neither), and opens that screen again from its start in the same
+            # process, in the theme asked for: the app's own theme setting,
+            # not the phone's. With no computer paired, the plain names show
+            # each screen as it is while not connected; demo-* screens show a
+            # scripted computer (src/lib/demo.ts, debug builds only) so the
+            # connected screens can be seen. Each shot waits for the app's own
+            # ready line, which names the screen and the theme shown, and the
+            # app must still be the process that started (pid above). A wrong
+            # theme fails the job after every picture is taken. The 3 s pause
+            # only lets the data and the springs settle for the picture, and
+            # decides no result.
+            requests=0
             themes_wrong=()
+            # name, the screen asked for (and named by the ready line), the
+            # theme asked for, the theme the ready line must name.
             shoot() {
-              local name=$1 property=$2 screen=$3 theme=$4 status=0 line state ready="$evidence/ready-$1-$4.txt"
-              adb_within 30 shell am force-stop "$ANDROID_PACKAGE"
-              if [ "$theme" = dark ]; then adb_within 30 shell cmd uimode night yes; else adb_within 30 shell cmd uimode night no; fi
-              # Quoted for the phone's shell, so an empty value (the app's own start) is one.
-              adb_within 30 shell setprop debug.shodh.screen "'$property'"
+              local name=$1 screen=$2 theme=$3 expect=$4 status=0 line state now ready="$evidence/ready-$1-$4.txt"
+              requests=$(( requests + 1 ))
               adb_within 10 logcat -b main -c
-              # 60 s, the same as the ready line's wait: the first frame comes before it.
-              adb_within 60 shell am start -W -n "$component" > /dev/null
-              # 60 s: a warm start of this app on this emulator is a few seconds.
+              # Quoted for the phone's shell, so the three words are one value.
+              adb_within 30 shell setprop debug.shodh.tour "'$requests $screen $theme'"
+              # 60 s: the app reads the property every 0.2 s and opens the
+              # screen in a few seconds here.
               adb_within 60 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$ready" || status=$?
               line=$(tr -d '\r' < "$ready" | grep -m 1 'Shodh' || true)
               if [ "$status" -ne 0 ] || ! grep -q "Shodh ready: the $screen screen is shown" <<< "$line"; then
                 if [ "$status" -eq 124 ]; then
-                  echo "::error::$name ($theme) did not report ready within 60 s"
+                  echo "::error::$name ($expect) did not report ready within 60 s"
                 elif [ "$status" -ne 0 ]; then
                   # logcat ends early when the emulator goes away.
                   state=$(timeout -k 5 15 adb get-state 2>&1 | tr -d '\r' || true)
-                  echo "::error::$name ($theme): reading logcat ended (status $status) before the ready line; the emulator is ${state:-unknown}"
+                  echo "::error::$name ($expect): reading logcat ended (status $status) before the ready line; the emulator is ${state:-unknown}"
                 else
-                  echo "::error::$name ($theme) did not reach its screen: $line"
+                  echo "::error::$name ($expect) did not reach its screen: $line"
                 fi
-                adb_within 20 exec-out screencap -p > "$screens/$name-$theme-not-ready.png" || true
+                adb_within 20 exec-out screencap -p > "$screens/$name-$expect-not-ready.png" || true
                 return 1
               fi
-              if ! grep -q "in the $theme theme" <<< "$line"; then
-                themes_wrong+=("$name with the phone $theme: $line")
+              # pidof fails when there is no such process: that is "none" here.
+              now=$(adb_within 30 shell pidof "$ANDROID_PACKAGE" | tr -d '\r' || true)
+              if [ "$now" != "$pid" ]; then
+                echo "::error::$name ($expect): Shodh is not the process the tour started with (pid $pid, now ${now:-none})"
+                return 1
+              fi
+              if ! grep -q "in the $expect theme" <<< "$line"; then
+                themes_wrong+=("$name, asked for $theme, should be $expect: $line")
               fi
               sleep 3
               # 20 s: a screenshot is one PNG of the screen, under a second here.
-              adb_within 20 exec-out screencap -p > "$screens/$name-$theme.png"
+              adb_within 20 exec-out screencap -p > "$screens/$name-$expect.png"
             }
-            # name, property, the screen the ready line names
+            # name, the screen
             shots=(
-              "pair::pair"
-              "home:home:home"
-              "conversations:conversations:conversations"
-              "library:library:library"
-              "approvals:approvals:approvals"
-              "menu:menu:menu"
-              "settings:settings:settings"
-              "tasks:tasks:tasks"
-              "connected-home:demo-home:demo-home"
-              "connected-answer:demo-answer:demo-answer"
-              "connected-conversations:demo-conversations:demo-conversations"
-              "connected-conversations-research:demo-conversations-research:demo-conversations-research"
-              "connected-conversations-code:demo-conversations-code:demo-conversations-code"
-              "connected-conversations-creator:demo-conversations-creator:demo-conversations-creator"
-              "connected-code:demo-code:demo-code"
-              "connected-library:demo-library:demo-library"
-              "connected-reader:demo-reader:demo-reader"
-              "connected-approvals:demo-approvals:demo-approvals"
-              "connected-approval-sheet:demo-sheet:demo-sheet"
-              "connected-workspaces:demo-workspaces:demo-workspaces"
-              "connected-menu:demo-menu:demo-menu"
+              "pair:pair"
+              "home:home"
+              "conversations:conversations"
+              "library:library"
+              "approvals:approvals"
+              "menu:menu"
+              "settings:settings"
+              "tasks:tasks"
+              "connected-home:demo-home"
+              "connected-answer:demo-answer"
+              "connected-conversations:demo-conversations"
+              "connected-conversations-research:demo-conversations-research"
+              "connected-conversations-code:demo-conversations-code"
+              "connected-conversations-creator:demo-conversations-creator"
+              "connected-code:demo-code"
+              "connected-library:demo-library"
+              "connected-reader:demo-reader"
+              "connected-approvals:demo-approvals"
+              "connected-approval-sheet:demo-sheet"
+              "connected-workspaces:demo-workspaces"
+              "connected-menu:demo-menu"
             )
             for theme in light dark; do
               for shot in "${shots[@]}"; do
-                IFS=: read -r name property screen <<< "$shot"
-                shoot "$name" "$property" "$screen" "$theme"
+                IFS=: read -r name screen <<< "$shot"
+                shoot "$name" "$screen" "$theme" "$theme"
               done
             done
-            adb_within 30 shell setprop debug.shodh.screen "''"
-            # The launcher, with Shodh's icon, in light and dark (for the user's review):
-            # the home screen, then the list of all apps (a swipe up). The pauses only
-            # let the launcher settle for the picture, and decide no result.
-            adb_within 30 shell am force-stop "$ANDROID_PACKAGE"
-            for theme in light dark; do
-              if [ "$theme" = dark ]; then adb_within 30 shell cmd uimode night yes; else adb_within 30 shell cmd uimode night no; fi
-              adb_within 30 shell input keyevent KEYCODE_HOME
-              sleep 3
-              adb_within 20 exec-out screencap -p > "$screens/launcher-home-$theme.png"
-              adb_within 30 shell input swipe 540 2000 540 500 300
-              sleep 3
-              adb_within 20 exec-out screencap -p > "$screens/launcher-apps-$theme.png"
-              adb_within 30 shell input keyevent KEYCODE_HOME
-            done
-            adb_within 30 shell cmd uimode night no
-            echo "- ${#shots[@]} screens, each in light and dark, are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
+            # the_app_follows_the_phones_theme: the app's default theme
+            # setting (Phone) shows the phone's, light while the phone is
+            # light; then the phone turns dark, once, and the home screen
+            # opened again must be dark. The phone's theme is changed only
+            # here, with the app running (it is not relaunched): a relaunch
+            # just after `cmd uimode night yes` is where run 43662536425's
+            # emulator died. If the emulator dies here, the shot's error names
+            # it and the pictures before it are kept.
+            shoot follows-phone home phone light
+            adb_within 30 shell cmd uimode night yes
+            shoot follows-phone home phone dark
+            launcher_shots dark
+            echo "- ${#shots[@]} screens, each in light and dark, and the home screen following the phone from light to dark, all in one run of the app (pid ${pid}), are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
             if [ "${#themes_wrong[@]}" -gt 0 ]; then
-              printf '::error::The app did not follow the phone'"'"'s theme: %s\n' "${themes_wrong[@]}"
+              printf '::error::A screen was not in the theme it should be: %s\n' "${themes_wrong[@]}"
               exit 1
             fi
             {
@@ -1705,15 +1744,13 @@ jobs:
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
-          # The action's default options, with -gpu guest in place of
-          # swiftshader_indirect. With the renderer on the host side, the
-          # emulator process died on a relaunch after a display change three
-          # times: after a runtime `wm size` ("Failed to find ColorBuffer:
-          # 251", run 43624325353) and after `cmd uimode night yes` (run
-          # 43662536425, on the first dark shot after 22 light ones). With
-          # -gpu guest the guest renders in software itself, so that host
-          # renderer is not in the path.
-          emulator-options: -no-window -gpu guest -no-snapshot -noaudio -no-boot-anim
+          # The action's default emulator options (-gpu swiftshader_indirect).
+          # -gpu guest was tried and bought nothing: the emulator still died
+          # on a relaunch, sooner (run 43670793908, the second relaunch,
+          # against 22 good ones with swiftshader_indirect in run
+          # 43662536425), with no out-of-memory kill in the kernel's log and
+          # no crash report. The relaunches were the cause, and the tour no
+          # longer makes them.
           script: bash -euo pipefail -c "$LAUNCH_TEST"
 
       - name: Upload the screenshots and launch recording

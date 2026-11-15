@@ -61,9 +61,13 @@ export interface ThemeState {
   choose: (choice: ThemeChoice) => void;
 }
 
-/** The theme, kept on `<html data-theme>` and following the phone while the choice is "phone". */
-export function useTheme(systemBars?: (theme: Theme) => Promise<void>): ThemeState {
-  const [choice, setChoice] = useState<ThemeChoice>(savedChoice);
+/**
+ * The theme, kept on `<html data-theme>` and following the phone while the
+ * choice is "phone". `pinned` opens it at a choice without saving it (CI's
+ * screenshot tour, a debug build only); the user's own choice is kept.
+ */
+export function useTheme(systemBars?: (theme: Theme) => Promise<void>, pinned?: ThemeChoice): ThemeState {
+  const [choice, setChoice] = useState<ThemeChoice>(() => pinned ?? savedChoice());
   const [phone, setPhone] = useState<Theme>(phoneTheme);
 
   useEffect(() => {

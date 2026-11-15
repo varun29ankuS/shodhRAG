@@ -9,7 +9,7 @@ import { createShim, type Shim } from './invoke';
 import { errorText, isConnected, type LinkSource, type LinkStatus } from './link';
 import { canGoBack, initialNav, navigate, type Nav, type NavAction, type Section } from './nav';
 import { Subscriptions } from './subscriptions';
-import { useTheme, type Theme, type ThemeState } from './theme';
+import { useTheme, type Theme, type ThemeChoice, type ThemeState } from './theme';
 
 export interface Linked {
   source: LinkSource;
@@ -155,8 +155,16 @@ export function useGo(): (section: Section) => void {
 
 const ThemeContext = createContext<ThemeState | null>(null);
 
-export function ThemeProvider({ children, systemBars }: { children: ReactNode; systemBars?: (theme: Theme) => Promise<void> }) {
-  const theme = useTheme(systemBars);
+export function ThemeProvider({
+  children,
+  systemBars,
+  pinned,
+}: {
+  children: ReactNode;
+  systemBars?: (theme: Theme) => Promise<void>;
+  pinned?: ThemeChoice;
+}) {
+  const theme = useTheme(systemBars, pinned);
   return <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>;
 }
 

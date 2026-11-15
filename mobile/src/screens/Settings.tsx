@@ -7,6 +7,9 @@ import { motion } from 'framer-motion';
 import { LoaderCircle, RefreshCw, Smartphone } from 'lucide-react';
 import { TopBar } from '../components/Bars';
 import { connectionWords, Dot } from '../components/Connection';
+import { UpdatePanel } from '../components/Update';
+import { CalendarSettings } from '../components/CalendarSettings';
+import { LockSettings, NotificationSettings } from '../components/PrivacySettings';
 import { useLink, useThemeChoice } from '../lib/context';
 import { errorText } from '../lib/link';
 import { viewIn } from '../lib/motion';
@@ -32,14 +35,14 @@ export function Settings() {
   return (
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
-        <h1 className="title serif pad">Settings</h1>
+        <TopBar />
+        <h1 className="title pad">Settings</h1>
 
         <div className="label">This phone</div>
         <div className="card">
           <div className="setting">
             <span className="row-title">Your computer</span>
-            <span className="connection" style={{ fontSize: 14 }}>
+            <span className="connection">
               <Dot status={status} small />
               {words.line}
             </span>
@@ -59,6 +62,16 @@ export function Settings() {
             {error && <span className="row-sub">{error}</span>}
           </div>
         </div>
+        {status.state === 'update' && <UpdatePanel desktop={status.desktop} />}
+
+        <div className="label">Notifications</div>
+        <NotificationSettings />
+
+        <div className="label">Lock</div>
+        <LockSettings />
+
+        <div className="label">Calendar</div>
+        <CalendarSettings />
 
         <div className="label">Appearance</div>
         <div className="card">

@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use tantivy::collector::TopDocs;
-use tantivy::query::QueryParser;
-use tantivy::schema::{self, Schema, Value as TantivyValue, STORED, STRING, TEXT};
-use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
+use tantivy::collector::{DocSetCollector, TopDocs};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, TermQuery};
+use tantivy::schema::{
+    self, IndexRecordOption, Schema, Value as TantivyValue, STORED, STRING, TEXT,
+};
+use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
 pub struct TextSearch {
     index: Index,
@@ -267,37 +269,55 @@ impl TextSearch {
         Ok(())
     }
 
+    /// Documents that hold every token of `source` in their source field: a superset
+    /// of the documents whose source is exactly `source`, found from the postings
+    /// instead of by reading every stored document.
+    fn source_candidates(&self, source: &str) -> Result<Box<dyn Query>> {
+        let mut analyzer = self.index.tokenizer_for_field(self.source_field)?;
+        let mut stream = analyzer.token_stream(source);
+        let mut tokens = Vec::new();
+        while stream.advance() {
+            tokens.push(stream.token().text.clone());
+        }
+        tokens.sort_unstable();
+        tokens.dedup();
+        // A source with no indexable token (empty, or only tokens the length filter
+        // drops) has nothing to look up, so every document is a candidate.
+        if tokens.is_empty() {
+            return Ok(Box::new(AllQuery));
+        }
+        let clauses = tokens
+            .iter()
+            .map(|token| {
+                let term = Term::from_field_text(self.source_field, token);
+                let query: Box<dyn Query> =
+                    Box::new(TermQuery::new(term, IndexRecordOption::Basic));
+                (Occur::Must, query)
+            })
+            .collect();
+        Ok(Box::new(BooleanQuery::new(clauses)))
+    }
+
     /// Delete every document whose source is `source`.
     pub fn delete_by_source(&self, source: &str) -> Result<()> {
-        // Reload reader first to get the latest committed state
         self.reader.reload().ok();
         let searcher = self.reader.searcher();
+        let candidates = searcher.search(&*self.source_candidates(source)?, &DocSetCollector)?;
         let mut writer = self.writer.lock();
         let mut deleted_count = 0usize;
 
-        // Iterate all segments to find matching docs by source field
-        for segment_reader in searcher.segment_readers() {
-            let store_reader = segment_reader.get_store_reader(64)?;
-            for doc_id in 0..segment_reader.max_doc() {
-                if segment_reader.is_deleted(doc_id) {
-                    continue;
-                }
-                if let Ok(doc) = store_reader.get::<TantivyDocument>(doc_id) {
-                    if let Some(source_val) = doc.get_first(self.source_field) {
-                        if let Some(source_text) = source_val.as_str() {
-                            if source_text == source {
-                                if let Some(id_val) = doc.get_first(self.id_field) {
-                                    if let Some(id_text) = id_val.as_str() {
-                                        let term =
-                                            tantivy::Term::from_field_text(self.id_field, id_text);
-                                        writer.delete_term(term);
-                                        deleted_count += 1;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        for address in candidates {
+            let doc = searcher.doc::<TantivyDocument>(address)?;
+            let same_source = doc
+                .get_first(self.source_field)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == source);
+            if !same_source {
+                continue;
+            }
+            if let Some(id_text) = doc.get_first(self.id_field).and_then(|v| v.as_str()) {
+                writer.delete_term(Term::from_field_text(self.id_field, id_text));
+                deleted_count += 1;
             }
         }
 
@@ -377,5 +397,42 @@ mod tests {
         index.commit().unwrap();
         index.clear().unwrap();
         assert!(index.is_empty());
+    }
+
+    /// The source lookup matches tokens, so sources sharing every token of the
+    /// deleted one must survive; a source with no indexable token still deletes.
+    #[test]
+    fn delete_by_source_removes_that_source_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = TextSearch::new(dir.path().to_str().unwrap()).unwrap();
+        let sources = [
+            ("c1", "a/lease.txt"),
+            ("c2", "a/lease.txt"),
+            ("c3", "b/a/lease.txt"),
+            ("c4", "a/lease.txt.bak"),
+            ("c5", "A/Lease.TXT"),
+            ("c6", "a/txt/lease"),
+            ("c7", "—"),
+            ("c8", "–"),
+        ];
+        for (id, source) in sources {
+            index
+                .index_chunk(id, "the lease notice period", "lease", source)
+                .unwrap();
+        }
+        index.commit().unwrap();
+
+        index.delete_by_source("a/lease.txt").unwrap();
+        index.delete_by_source("—").unwrap();
+        index.delete_by_source("absent.txt").unwrap();
+
+        let mut left: Vec<String> = index
+            .search("lease", 10)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        left.sort();
+        assert_eq!(left, ["c3", "c4", "c5", "c6", "c8"]);
     }
 }

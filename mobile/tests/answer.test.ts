@@ -80,9 +80,9 @@ describe("the answer's structure", () => {
     expect(blocks.map(b => b.kind)).toEqual(['p', 'h', 'li', 'li', 'quote', 'code', 'table']);
     expect(blocks[0]).toEqual({
       kind: 'p',
-      inlines: [{ kind: 'text', text: 'It decides itself ', strong: false, em: false, code: false }, { kind: 'cite', n: 1 }, { kind: 'text', text: '.', strong: false, em: false, code: false }],
+      inlines: [{ kind: 'text', text: 'It decides itself', strong: false, em: false, code: false }, { kind: 'cite', n: 1 }, { kind: 'text', text: '.', strong: false, em: false, code: false }],
     });
-    expect(blocks[2]).toMatchObject({ kind: 'li', marker: '', inlines: [{ kind: 'text', text: 'Retrieve.', strong: true }, { kind: 'text', text: ' On demand ' }, { kind: 'cite', n: 1 }] });
+    expect(blocks[2]).toMatchObject({ kind: 'li', marker: '', inlines: [{ kind: 'text', text: 'Retrieve.', strong: true }, { kind: 'text', text: ' On demand' }, { kind: 'cite', n: 1 }] });
     expect(blocks[3]).toMatchObject({ kind: 'li', marker: '2.' });
     expect(blocks[5]).toEqual({ kind: 'code', text: 'let x = 1;' });
     expect(blocks[6]).toMatchObject({ kind: 'table' });
@@ -95,14 +95,32 @@ describe("the answer's structure", () => {
     expect(parseInline('**Retr')).toEqual([{ kind: 'text', text: 'Retr', strong: false, em: false, code: false }]);
     expect(parseInline('`code')).toEqual([{ kind: 'text', text: '`code', strong: false, em: false, code: false }]);
     expect(parseInline('see [the paper](https://x.org) [1, 2]')).toEqual([
-      { kind: 'text', text: 'see the paper ', strong: false, em: false, code: false },
+      { kind: 'text', text: 'see the paper', strong: false, em: false, code: false },
       { kind: 'cite', n: 1 },
       { kind: 'cite', n: 2 },
     ]);
   });
 
+  it('joins a citation to the word before it and the punctuation after it: "question¹."', () => {
+    const text = (parts: ReturnType<typeof parseInline>) => parts.map(p => (p.kind === 'cite' ? `^${p.n}` : p.text)).join('');
+    expect(text(parseInline('every question [1].'))).toBe('every question^1.');
+    expect(text(parseInline('every question [1] .'))).toBe('every question^1.');
+    expect(text(parseInline('every question  [1]  , then'))).toBe('every question^1, then');
+    expect(text(parseInline('it does [1]; it grades [2] [3]!'))).toBe('it does^1; it grades^2^3!');
+    expect(text(parseInline('(see this [2])'))).toBe('(see this^2)');
+    // A word after a citation keeps its space.
+    expect(text(parseInline('the claim [1] and the answer [2].'))).toBe('the claim^1 and the answer^2.');
+    // Across bold: the space after the bold is the word's, and goes.
+    expect(text(parseInline('**Retrieve token** [1].'))).toBe('Retrieve token^1.');
+    // Inline code keeps its own spaces.
+    expect(text(parseInline('`a b ` [1]'))).toBe('a b ^1');
+  });
+
   it('makes a plain snippet', () => {
-    expect(snippet('## Title\n\nIt **retrieves** on demand [1].', 60)).toBe('Title It retrieves on demand.');
+    expect(snippet('## Title\n\nIt **retrieves** on demand [1].', 60)).toBe('It retrieves on demand.');
+    // The first paragraph only: a heading is never run into the text after it.
+    expect(snippet('It decides itself [1].\n\n## How it works\n\n- **Retrieve token.** Only when needed [1].', 140)).toBe('It decides itself.');
+    expect(snippet('## Steps\n\n- First do this.\n- Then that.', 140)).toBe('First do this.');
     expect(snippet('a'.repeat(200), 20)).toHaveLength(20);
   });
 });

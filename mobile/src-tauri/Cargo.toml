@@ -20,6 +20,8 @@ crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.5", features = [] }
+# Reads the release key from the desktop's tauri.conf.json (build.rs).
+serde_json = "1"
 
 [dependencies]
 tauri = { version = "2.12", features = [] }
@@ -38,8 +40,16 @@ android-native-keyring-store = "=1.0.0"
 keyring-core = "1"
 # Scanning the pairing QR code (the official plugin); MIT OR Apache-2.0.
 tauri-plugin-barcode-scanner = "=2.5.3"
+# Shodh's own Android glue (Kotlin where Android requires it).
+tauri-plugin-shodh-android = { path = "../plugins/shodh-android" }
 # The phone's model name (Android's system properties), and logcat.
 libc = "0.2"
+# Content-free notifications posted through the plugin's Notifier from any thread
+# (notify.rs): the JVM and the app's context, as Tauri's runtime set them up.
+jni = "0.21"
+ndk-context = "0.1"
+# The lock's fingerprint (the official plugin); Apache-2.0 OR MIT.
+tauri-plugin-biometric = "=2.5.0"
 
 # Line tables only (file:line in panics and backtraces): a full-debuginfo
 # library makes a debug APK several times larger.

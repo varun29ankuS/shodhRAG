@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Pin, Search } from 'lucide-react';
+import { ChevronRight, Pin, Search } from 'lucide-react';
 import { BackBar } from '../components/Bars';
 import { NotConnected } from '../components/Connection';
 import { ModeIcon } from '../components/ModeIcon';
@@ -72,9 +72,7 @@ export function Conversations({ filter = 'all', now = () => new Date() }: { filt
     <motion.div className="view" variants={pushIn} initial="hidden" animate="shown" exit="gone">
       <BackBar label="Ask" />
       <div className="scroll">
-        <h1 className="title serif pad" style={{ marginTop: 6 }}>
-          Conversations
-        </h1>
+        <h1 className="title pad">Conversations</h1>
         <div className="search">
           <Search aria-hidden="true" className="icon-small" />
           <label htmlFor="conversation-search" className="visually-hidden">
@@ -108,21 +106,19 @@ export function Conversations({ filter = 'all', now = () => new Date() }: { filt
         {groups === null && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading your conversations">
             {[88, 72, 80, 64].map(width => (
-              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 44, borderRadius: 14 }} />
+              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 44, borderRadius: 12 }} />
             ))}
           </div>
         )}
         {groups !== null && groups.length === 0 && (
-          <p className="panel-text pad" style={{ marginTop: 16 }}>
+          <p className="panel-text panel-quiet" style={{ marginTop: 24 }}>
             {emptyWords(list?.length ?? 0, ofKind, query, filter)}
           </p>
         )}
         {groups?.map(group => (
           <section key={group.label} aria-label={group.label}>
-            <div className="label" style={{ paddingTop: 14, paddingBottom: 4 }}>
-              {group.label}
-            </div>
-            <div className="rows">
+            <div className="label">{group.label}</div>
+            <div className="rows rows-icons">
               {group.items.map(c => {
                 const where = workspaceName(c.workspaceId);
                 const when = ago(c.updatedAt, today);
@@ -134,11 +130,12 @@ export function Conversations({ filter = 'all', now = () => new Date() }: { filt
                     onClick={() => dispatch({ type: 'push', screen: { kind: 'answer', conversationId: c.id, question: null, workspaceId: c.workspaceId } })}
                   >
                     <ModeIcon kind={conversationKind(c)} />
-                    <span className="row-text" style={{ gap: 5 }}>
-                      <span className="row-title-serif">{c.title}</span>
+                    <span className="row-text">
+                      <span className="row-title">{c.title}</span>
                       <span className="row-sub">{where === null ? when : `${where} · ${when}`}</span>
                     </span>
                     {c.pinned && <Pin aria-label="Pinned" className="icon-small faint" />}
+                    <ChevronRight aria-hidden="true" className="chevron" />
                   </button>
                 );
               })}

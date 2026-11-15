@@ -22,6 +22,14 @@ getrandom = "0.4"
 subtle = "2"
 thiserror = "1"
 tracing = "0.1"
+# The phone's sealed files (ChaCha20-Poly1305) and the update's SHA-256: the
+# ring iroh's TLS already uses. Apache-2.0 AND ISC.
+ring = "0.17"
+# The one-tap update's signature check, against the release key the desktop's
+# updater trusts. MIT.
+minisign-verify = "0.3"
 
 [dev-dependencies]
+# Prehashed minisign signatures in the update tests. MIT OR Apache-2.0.
+blake2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

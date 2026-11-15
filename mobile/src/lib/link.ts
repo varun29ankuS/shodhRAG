@@ -16,7 +16,7 @@ export type LinkStatus =
   | { state: 'connected' }
   | { state: 'offline'; message: string }
   | { state: 'refused'; message: string }
-  | { state: 'update'; message: string }
+  | { state: 'update'; message: string; desktop: string }
   | { state: 'failed'; message: string };
 
 export const STATUS_EVENT = 'link://status';

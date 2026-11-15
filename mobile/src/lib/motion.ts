@@ -9,9 +9,6 @@
  */
 import type { Variants } from 'framer-motion';
 
-/** Quick and firm: presses, chips, the tab indicator. */
-export const snappy = { type: 'spring', stiffness: 520, damping: 34, mass: 0.8 } as const;
-
 /** Screens and sheets moving in. */
 export const glide = { type: 'spring', stiffness: 340, damping: 32, mass: 1 } as const;
 

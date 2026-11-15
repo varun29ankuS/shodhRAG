@@ -14,17 +14,23 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowUp, Square, TriangleAlert } from 'lucide-react';
+import { ArrowUp, Camera, LibraryBig, Square, TriangleAlert } from 'lucide-react';
 import { AnswerBlocks, AnswerSources, whereOf, type CiteHandler } from '../components/AnswerView';
 import { BackBar } from '../components/Bars';
 import { CodeNote, CodeWorkView, CreatorPreview } from '../components/CodeWork';
 import { connectionWords, Dot, NotConnected } from '../components/Connection';
 import { Sheet } from '../components/Sheet';
 import { answerText, citedNumbers, isLive, savedAnswer, startingAnswer, type AnswerState, type Passage } from '../lib/answer';
-import { ask, AskStopped } from '../lib/ask';
+import { ask, asPassage, AskStopped, historyOf } from '../lib/ask';
+import type { AskContext } from '../lib/nav';
+import { isPhotoPath, photoIdOf } from '../lib/photo';
 import { codeWork, NO_WORK, type CodeWork } from '../lib/code';
-import { useLink, useNav } from '../lib/context';
-import { abortAnswer, CONVERSATION_CHANGED, loadConversation, type HistoryTurn, type SavedConversation } from '../lib/desktop';
+import { useLink, useNav, useNote } from '../lib/context';
+import { QueuedRows } from '../components/Queued';
+import { MicButton, ReadAloud } from '../components/Voice';
+import { queuedQuestion } from '../lib/outbox';
+import { canQueue, useQueue } from '../lib/queue';
+import { abortAnswer, CONVERSATION_CHANGED, loadConversation, workspacesList, type HistoryTurn, type SavedConversation } from '../lib/desktop';
 import { errorText } from '../lib/link';
 import { conversationKind } from '../lib/modes';
 import { pushIn } from '../lib/motion';
@@ -68,13 +74,6 @@ export function creationWork(turns: Turn[]): CodeWork {
   return { ...NO_WORK, files: [...files.values()], finished };
 }
 
-function historyOf(conversation: SavedConversation | null | undefined): HistoryTurn[] {
-  return (conversation?.messages ?? [])
-    .filter((m): m is SavedConversation['messages'][number] & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
-    .map(m => ({ role: m.role, content: m.role === 'assistant' ? answerText(savedAnswer(m.content, m.transcript)) : m.content }))
-    .filter(t => t.content.trim() !== '');
-}
-
 interface Live {
   question: string;
   answer: AnswerState;
@@ -83,24 +82,49 @@ interface Live {
   stopped: string | null;
 }
 
-export function Ask({ conversationId, question, workspaceId }: { conversationId: string; question: string | null; workspaceId: string | null }) {
+export function Ask({
+  conversationId,
+  question,
+  workspaceId,
+  context,
+}: {
+  conversationId: string;
+  question: string | null;
+  workspaceId: string | null;
+  /** What the first question is about besides its words (a photo, shared text). */
+  context?: AskContext;
+}) {
   const { desktop, subscriptions, connected, status } = useLink();
   const { dispatch } = useNav();
+  const queue = useQueue();
+  const { show } = useNote();
+  const queueable = canQueue(status);
   const saved = useRemote(`conversation:${conversationId}`, d => loadConversation(d, conversationId), [CONVERSATION_CHANGED]);
+  // The workspace's name heads the screen; none for a conversation outside a workspace, or one not read yet.
+  const workspaces = useRemote('workspaces', workspacesList);
+  const workspaceName = workspaceId === null ? null : (workspaces.data?.find(w => w.id === workspaceId)?.name ?? null);
   const [live, setLive] = useState<Live | null>(null);
   const [followUp, setFollowUp] = useState('');
   const [web, setWeb] = useState<Passage | null>(null);
+  const [photo, setPhoto] = useState<Passage | null>(null);
+  const [kept, setKept] = useState<string | null>(null);
+  const keep = (photoId: string) => {
+    desktop
+      .invoke<{ added: boolean; reason: string | null }>('phone_photo_keep', { photoId })
+      .then(answer => setKept(answer.added ? 'Added to your library, in From my phone.' : `Not added: ${answer.reason ?? 'your computer did not add it.'}`))
+      .catch(e => setKept(errorText(e)));
+  };
   const stop = useRef<AbortController | null>(null);
   const asked = useRef(false);
   const liveRef = useRef<HTMLDivElement>(null);
 
   const start = useCallback(
-    (text: string, history: HistoryTurn[]) => {
+    (text: string, history: HistoryTurn[], about?: AskContext) => {
       stop.current?.abort();
       const controller = new AbortController();
       stop.current = controller;
       setLive({ question: text, answer: startingAnswer(), sessionId: null, stopped: null });
-      ask(desktop, subscriptions, { conversationId, text, history, workspaceId }, {
+      ask(desktop, subscriptions, { conversationId, text, history, workspaceId, attached: about?.attached, passages: about?.passages }, {
         signal: controller.signal,
         onSession: sessionId => setLive(l => (l && l.question === text ? { ...l, sessionId } : l)),
         onAnswer: answer => setLive(l => (l && l.question === text ? { ...l, answer } : l)),
@@ -124,8 +148,8 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   useEffect(() => {
     if (question === null || asked.current || !connected) return;
     asked.current = true;
-    start(question, []);
-  }, [question, connected, start]);
+    start(question, [], context);
+  }, [question, connected, start, context]);
 
   // The phone stops waiting when the connection ends or the screen goes.
   useEffect(() => {
@@ -137,7 +161,13 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
     if (live && live.answer.status === 'starting') liveRef.current?.scrollIntoView({ block: 'start' });
   }, [live]);
 
-  const turns = savedTurns(saved.data);
+  // The first question's own passages ("Your photo") stay its sources once it is saved.
+  const carried = (context?.passages ?? []).map(asPassage);
+  const turns = savedTurns(saved.data).map(turn =>
+    carried.length > 0 && turn.question === question
+      ? { ...turn, answer: { ...turn.answer, passages: [...carried.filter(c => !turn.answer.passages.some(p => p.n === c.n)), ...turn.answer.passages] } }
+      : turn,
+  );
   // The live answer, until the saved conversation holds it.
   const lastSaved = turns[turns.length - 1];
   const liveSaved =
@@ -146,6 +176,11 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   const running = live !== null && isLive(live.answer) && live.stopped === null;
 
   const onCite: CiteHandler = (passage, origin) => {
+    if (isPhotoPath(passage.path)) {
+      // The photo is on the phone, not in the library: its text, and "Keep in library".
+      setPhoto(passage);
+      return;
+    }
     if (passage.web) {
       setWeb(passage);
       return;
@@ -156,26 +191,41 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = followUp.trim();
-    if (!text || !connected || running) return;
-    setFollowUp('');
-    start(text, historyOf(saved.data));
+    if (!text || running) return;
+    if (connected) {
+      setFollowUp('');
+      start(text, historyOf(saved.data));
+      return;
+    }
+    if (!queueable) return;
+    // The computer is asleep: kept on the phone, sent in order when it wakes.
+    queue
+      .add(queuedQuestion({ conversationId, text, workspaceId }))
+      .then(() => setFollowUp(''))
+      .catch(e => show(errorText(e), 'problem'));
   };
+
+  // This conversation's questions waiting for the computer, until the saved conversation holds them.
+  const savedIds = new Set((saved.data?.messages ?? []).map(m => m.id));
+  const queuedHere = queue.items.filter(
+    i => i.work.kind === 'question' && i.work.conversationId === conversationId && i.state !== 'answered' && !savedIds.has(i.work.questionId),
+  );
 
   const words = connectionWords(status);
   // Older records have no mode: Research, the reading layout.
   const kind = saved.data ? conversationKind(saved.data) : 'research';
   return (
     <motion.div className="view" variants={pushIn} initial="hidden" animate="shown" exit="gone">
-      <BackBar label="Ask">
-        <span className="connection" style={{ paddingRight: 8 }}>
+      <BackBar label="Ask" title={workspaceName}>
+        <span className="connection" style={{ paddingRight: 12 }}>
           <Dot status={status} small />
           {words.short}
         </span>
       </BackBar>
-      <div className={kind === 'code' ? 'scroll layout-code' : 'scroll'} data-layout={kind}>
+      <div className={kind === 'code' ? 'scroll scroll-with-composer layout-code' : 'scroll scroll-with-composer'} data-layout={kind}>
         {kind === 'code' && <CodeNote />}
         {kind === 'creator' && <CreatorPreview work={creationWork(turns)} />}
-        {saved.data === undefined && !showLive && !connected && <NotConnected what="this conversation" />}
+        {saved.data === undefined && !showLive && !connected && queuedHere.length === 0 && <NotConnected what="this conversation" />}
         {saved.data === undefined && !showLive && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading the conversation">
             <div className="skeleton skeleton-line" style={{ width: '90%', height: 28 }} />
@@ -183,22 +233,29 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
             <div className="skeleton skeleton-line" style={{ width: '70%' }} />
           </div>
         )}
-        {saved.data === null && !showLive && <p className="panel-text pad">This conversation is no longer on your computer.</p>}
+        {saved.data === null && !showLive && <p className="panel-text panel-quiet">This conversation is no longer on your computer.</p>}
         {turns.map(turn => (
           <section key={turn.id} className="turn">
-            {turn.question !== '' && <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{turn.question}</h1>}
+            {turn.question !== '' && <h1 className="question">{turn.question}</h1>}
             <TurnStatus answer={turn.answer} />
             <AnswerBlocks answer={turn.answer} onCite={onCite} />
             {kind === 'code' && <CodeWorkView work={turn.work} />}
             <AnswerSources answer={turn.answer} onCite={onCite} />
+            <ReadAloud answer={turn.answer} />
           </section>
         ))}
+        {queuedHere.length > 0 && (
+          <section className="turn">
+            <div className="label">Waiting for your computer</div>
+            <QueuedRows items={queuedHere} />
+          </section>
+        )}
         {showLive && live && (
           <section className="turn" ref={liveRef}>
-            <h1 className={kind === 'code' ? 'question mono' : 'question serif'}>{live.question}</h1>
+            <h1 className="question">{live.question}</h1>
             <TurnStatus answer={live.answer} />
             {live.stopped !== null && (
-              <div className="callout" role="status" style={{ margin: '18px 24px 0' }}>
+              <div className="callout" role="status" style={{ margin: '16px 20px 0' }}>
                 <TriangleAlert aria-hidden="true" className="icon" />
                 <p>{live.stopped}</p>
               </div>
@@ -215,7 +272,7 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
               live.answer.waiting.map(step => (
                 <div key={step.stepId} className="waiting">
                   <span className="approval-context">The assistant is waiting for your answer</span>
-                  <span className="approval-title serif">{step.label}</span>
+                  <span className="approval-title">{step.label}</span>
                   <button
                     type="button"
                     className="button button-primary"
@@ -226,6 +283,7 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
                 </div>
               ))}
             <AnswerSources answer={live.answer} onCite={onCite} />
+            <ReadAloud answer={live.answer} />
           </section>
         )}
       </div>
@@ -238,10 +296,13 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
           id="follow-up"
           value={followUp}
           onChange={event => setFollowUp(event.target.value)}
-          placeholder={!connected ? 'Connect to your computer to ask' : kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up'}
+          placeholder={
+            connected ? (kind === 'code' ? 'Ask a question about this code' : 'Ask a follow-up') : queueable ? 'Ask now. It is sent when your computer wakes' : 'Connect to your computer to ask'
+          }
           enterKeyHint="send"
           autoComplete="off"
         />
+        <MicButton onHeard={text => setFollowUp(text)} disabled={running} />
         {running ? (
           <button
             type="button"
@@ -254,7 +315,7 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
             <Square aria-hidden="true" className="icon-small" />
           </button>
         ) : (
-          <button type="submit" className="send" aria-label="Send" disabled={!connected || followUp.trim() === ''}>
+          <button type="submit" className="send" aria-label="Send" disabled={!(connected || queueable) || followUp.trim() === ''}>
             <ArrowUp aria-hidden="true" className="icon" />
           </button>
         )}
@@ -265,13 +326,43 @@ export function Ask({ conversationId, question, workspaceId }: { conversationId:
           <Sheet label="Web source" onClose={() => setWeb(null)}>
             <span className="approval-context">{`Source ${web.n}, from the web`}</span>
             <div className="sheet-card">
-              <span className="sheet-card-title serif">{web.title}</span>
-              {web.text && <span className="sheet-card-text serif">{web.text}</span>}
+              <span className="sheet-card-title">{web.title}</span>
+              {web.text && <span className="sheet-card-text">{web.text}</span>}
               <span className="passage-label">{whereOf(web)}</span>
             </div>
             <button type="button" className="button button-wide" onClick={() => setWeb(null)}>
               Close
             </button>
+          </Sheet>
+        )}
+        {photo && (
+          <Sheet label="Your photo" onClose={() => setPhoto(null)}>
+            <span className="approval-context">
+              <Camera aria-hidden="true" className="icon-small" /> {`Source ${photo.n}, the photo you took`}
+            </span>
+            <div className="sheet-card">
+              <span className="sheet-card-title">Your photo</span>
+              {photo.text && <span className="sheet-card-text">{photo.text}</span>}
+              <span className="passage-label">Read by Shodh on your computer. It is not in your library.</span>
+            </div>
+            {kept && <p className="panel-text">{kept}</p>}
+            <div className="sheet-actions">
+              <button type="button" className="button" onClick={() => setPhoto(null)}>
+                Close
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={!connected || kept !== null}
+                onClick={() => {
+                  const id = photoIdOf(photo.path);
+                  if (id) keep(id);
+                }}
+              >
+                <LibraryBig aria-hidden="true" className="icon-small" />
+                Keep in library
+              </button>
+            </div>
           </Sheet>
         )}
       </AnimatePresence>

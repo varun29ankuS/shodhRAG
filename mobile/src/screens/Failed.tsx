@@ -19,8 +19,8 @@ export function Failed({ message }: { message: string }) {
   return (
     <div className="view">
       <div className="scroll">
-        <div className="pair" style={{ paddingTop: 48 }}>
-          <h1 className="title serif">Shodh could not start</h1>
+        <div className="pair" style={{ paddingTop: 24 }}>
+          <h1 className="title">Shodh could not start</h1>
           <div className="callout callout-error" role="alert">
             <TriangleAlert aria-hidden="true" className="icon" />
             <p>{message}</p>

@@ -4,7 +4,7 @@ import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-import { GateError, NIGHTLY_CHECK, REQUIRED_CHECKS, evaluateChecks, waitForCi } from '../ci-gate.mjs';
+import { GateError, NIGHTLY_CHECK, NOT_REQUIRED_CHECKS, REQUIRED_CHECKS, evaluateChecks, waitForCi } from '../ci-gate.mjs';
 
 const SHA = 'a'.repeat(40);
 let nextId = 1;
@@ -42,7 +42,9 @@ test("the required checks are exactly ci.yml's jobs (a reusable workflow call's 
     .filter((j) => !j.calls)
     .map((j) => j.name);
   assert.ok(!names.includes(undefined), 'every ci.yml job has a name');
-  assert.deepEqual([...names].sort(), [...REQUIRED_CHECKS].sort());
+  // Every job is required but the named few, and none is both.
+  assert.deepEqual([...names].sort(), [...REQUIRED_CHECKS, ...NOT_REQUIRED_CHECKS].sort());
+  for (const name of NOT_REQUIRED_CHECKS) assert.ok(!REQUIRED_CHECKS.includes(name), `${name} is both required and not`);
   // The one call: the release builds, counted through CI gate.
   assert.deepEqual(
     ciJobs()
@@ -61,7 +63,7 @@ test("no other workflow has a job named like one of ci.yml's checks", () => {
   assert.ok(files.length >= 4, 'the other workflows are found');
   for (const file of files) {
     for (const { name } of jobsOf(file)) {
-      if (name) assert.ok(!REQUIRED_CHECKS.includes(name), `${file} has a job named ${name}`);
+      if (name) assert.ok(![...REQUIRED_CHECKS, ...NOT_REQUIRED_CHECKS].includes(name), `${file} has a job named ${name}`);
     }
   }
   // Nor is the aggregate the old name, which older check runs still carry.
@@ -75,7 +77,7 @@ test("the nightly check the gate reads is nightly.yml's call of ci.yml", () => {
   assert.equal(NIGHTLY_CHECK, `${ci.name} / CI gate`);
 });
 
-test('CI gate waits for every other job of ci.yml', () => {
+test('CI gate waits for every other job of ci.yml but the not-required ones', () => {
   const jobs = ciJobs();
   const aggregate = jobs.find((j) => j.id === 'ci-gate');
   assert.ok(aggregate, 'ci.yml has a ci-gate job');
@@ -85,8 +87,15 @@ test('CI gate waits for every other job of ci.yml', () => {
     .match(/^ {4}needs: \[(.+)\]$/m)[1]
     .split(',')
     .map((s) => s.trim());
-  const others = jobs.map((j) => j.id).filter((id) => id !== 'ci-gate');
+  const notRequired = jobs.filter((j) => NOT_REQUIRED_CHECKS.includes(j.name)).map((j) => j.id);
+  assert.equal(notRequired.length, NOT_REQUIRED_CHECKS.length, 'every not-required check is a ci.yml job');
+  const others = jobs.map((j) => j.id).filter((id) => id !== 'ci-gate' && !notRequired.includes(id));
   assert.deepEqual([...needs].sort(), [...others].sort());
+  // The gate neither waits for a not-required job nor reads its result:
+  // its block never names one.
+  for (const id of notRequired) {
+    assert.ok(!new RegExp(`(^|[^A-Za-z0-9_-])${id}($|[^A-Za-z0-9_-])`).test(aggregate.block), `CI gate names ${id}`);
+  }
 });
 
 test('a job skipped by the Changes job is decided by its own output', () => {

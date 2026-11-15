@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only the app's own outgoing files are ever handed to the camera. -->
+<paths>
+    <cache-path name="outgoing" path="outgoing/" />
+</paths>

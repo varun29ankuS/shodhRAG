@@ -51,7 +51,7 @@ export function Reader({ target }: { target: ReaderTarget }) {
     >
       <div className="reader-bar">
         <button type="button" className="back" onClick={back}>
-          <ChevronLeft aria-hidden="true" className="icon" />
+          <ChevronLeft aria-hidden="true" className="icon-back" />
           <span>{target.back}</span>
         </button>
         <span className="reader-where">{where}</span>

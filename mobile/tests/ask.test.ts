@@ -55,6 +55,8 @@ describe('a question to the computer', () => {
       text: 'What does Self-RAG retrieve?',
       requestId: 'id-1',
       history: [{ role: 'user', content: 'Earlier' }],
+      // The user typed it: their own words, as the desktop's composer sends them.
+      textOrigin: 'typed',
       turn: {
         conversationId: 'conv-1',
         question: { id: 'id-2', role: 'user', content: 'What does Self-RAG retrieve?', timestamp: '2026-11-13T10:00:00.000Z' },

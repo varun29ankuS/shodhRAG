@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A release is built only from a commit on which CI passed: every job of
-// ci.yml (REQUIRED_CHECKS) has a successful check run on that commit, and so
-// has the nightly run of that commit when there is one (NIGHTLY_CHECK).
+// ci.yml (REQUIRED_CHECKS; not the NOT_REQUIRED_CHECKS) has a successful
+// check run on that commit, and so has the nightly run of that commit when
+// there is one (NIGHTLY_CHECK).
 //
 //   node scripts/release/ci-gate.mjs --repo O/R --sha SHA [--timeout-minutes N] [--interval-seconds S]
 //
@@ -39,6 +40,15 @@ export const REQUIRED_CHECKS = [
   'Android build + launch',
   'CI gate',
 ];
+
+// ci.yml's jobs that neither a release nor CI gate waits for. The Android
+// screenshot tour: GitHub's Android emulator segfaults in its own
+// RenderThread mid-tour (runs 43689345770 and 43701191529) whatever the app
+// does, and a test on a real phone covers the theme check the tour makes
+// (decided 2026-11-15). It still runs, and shows red when it fails; it only
+// does not block. test/ci-gate.test.mjs fails when a name here is also
+// required, is not a ci.yml job, or is waited for by CI gate.
+export const NOT_REQUIRED_CHECKS = ['Android screenshot tour (not required)'];
 
 // nightly.yml's aggregate on the same commit (its job "CI" calls ci.yml). It
 // is not required, since most commits are never measured by a nightly run,

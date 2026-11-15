@@ -360,10 +360,14 @@ pub struct StoredFile {
     pub removed: bool,
 }
 
-/// What a search for a word returned in 0.0.10: the sources, best first.
+/// What a search for a word returned in 0.0.10, best first: the chunk ids,
+/// and the source each result showed. A result's source is its citation's,
+/// which a document added without a file (the note) leaves empty; the
+/// chunk id leads to the row and the source it is stored under.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchRecord {
     pub query: String,
+    pub chunk_ids: Vec<String>,
     pub sources: Vec<String>,
 }
 

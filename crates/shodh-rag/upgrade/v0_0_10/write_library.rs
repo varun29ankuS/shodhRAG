@@ -268,6 +268,7 @@ async fn main() -> Result<()> {
         let results = engine.search(&query, 5).await?;
         searches.push(SearchRecord {
             query,
+            chunk_ids: results.iter().map(|r| r.id.to_string()).collect(),
             sources: results.into_iter().map(|r| r.source).collect(),
         });
     }

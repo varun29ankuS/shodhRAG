@@ -279,7 +279,7 @@ async fn assert_searchable(
             .collect();
         let found: BTreeSet<&str> = found.iter().map(String::as_str).collect();
         let results = engine.search(token, 5).await.unwrap();
-        let returned: Vec<&str> = results.iter().map(|r| r.source.as_str()).collect();
+        let returned = stored_sources(stored, &results);
         match source {
             Some(source) => {
                 // Every chunk holding the word is found, and only chunks of its
@@ -311,6 +311,34 @@ async fn assert_searchable(
             }
         }
     }
+}
+
+/// The source each search result's chunk is stored under, best first. A
+/// result shows its citation's source, which a document added without a
+/// file (the note, `note://…`) leaves empty in 0.0.10 and in this build
+/// alike; a file's result shows its stored source. Each result's chunk is
+/// in the table.
+fn stored_sources<'a>(
+    stored: &'a BTreeMap<String, Stored>,
+    results: &[crate::types::SimpleSearchResult],
+) -> Vec<&'a str> {
+    results
+        .iter()
+        .map(|r| {
+            let id = r.id.to_string();
+            let row = &stored
+                .get(&id)
+                .unwrap_or_else(|| panic!("a search returned chunk {id}, which is not stored"))
+                .row;
+            assert!(
+                r.source == row.source || (row.source.contains("://") && r.source.is_empty()),
+                "chunk {id} of {} is shown as {:?}",
+                row.source,
+                r.source
+            );
+            row.source.as_str()
+        })
+        .collect()
 }
 
 /// The memories as the app opens them, equal to what 0.0.10 listed, each
@@ -445,13 +473,43 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
             .iter()
             .find(|(token, _)| token == &search.query)
             .unwrap_or_else(|| panic!("a search for an unknown word {}", search.query));
-        if let Some(source) = &expected.1 {
-            assert!(
-                search.sources.contains(source),
-                "0.0.10 found {source} for {}: {:?}",
-                search.query,
-                search.sources
-            );
+        // By chunk id, to the source the row is stored under (the note's
+        // results show an empty source: see `stored_sources`).
+        assert_eq!(search.chunk_ids.len(), search.sources.len());
+        let found: Vec<&str> = search
+            .chunk_ids
+            .iter()
+            .zip(&search.sources)
+            .map(|(id, shown)| {
+                let row = manifest.chunks.get(id).unwrap_or_else(|| {
+                    panic!("0.0.10 returned chunk {id}, which it did not store")
+                });
+                assert!(
+                    shown == &row.source || (row.source.contains("://") && shown.is_empty()),
+                    "0.0.10 showed chunk {id} of {} as {shown:?}",
+                    row.source
+                );
+                row.source.as_str()
+            })
+            .collect();
+        match &expected.1 {
+            Some(source) => assert!(
+                found.contains(&source.as_str()),
+                "0.0.10 found {source} for {}: {found:?}",
+                search.query
+            ),
+            None => {
+                let removed = files
+                    .iter()
+                    .find(|f| f.token == search.query)
+                    .map(|f| source_of[&f.path].as_str())
+                    .expect("the removed file's word");
+                assert!(
+                    !found.contains(&removed),
+                    "0.0.10 found the removed file for {}: {found:?}",
+                    search.query
+                );
+            }
         }
     }
     // The secret file is in 0.0.10's library; 0.0.11 removes it.
@@ -773,9 +831,10 @@ async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories()
     }
     for (token, source) in &tokens {
         let results = engine.search(token, 5).await.unwrap();
+        let returned = stored_sources(&reindexed, &results);
         if let Some(source) = source {
             assert!(
-                results.iter().any(|r| &r.source == source),
+                returned.contains(&source.as_str()),
                 "a search for {token} returns {source} through the cosine index"
             );
         }

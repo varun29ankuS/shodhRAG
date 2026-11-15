@@ -1347,6 +1347,19 @@ jobs:
             echo "::error::the built app still starts EmojiCompat (androidx.emoji2.text.EmojiCompatInitializer)"
             exit 1
           fi
+          # Nor anything else of the app's own: no downloadable font named for
+          # preloading, no Play Services font provider or its certificates.
+          # (The WebView itself still fetches Google Sans and Noto Color Emoji
+          # Compat from that provider at each start, in this process: Chromium's
+          # AndroidFontLookupImpl, which no app setting turns off.)
+          resources=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump resources "$APK")
+          for name in preloaded_fonts com.google.android.gms.fonts font_certs com_google_android_gms_fonts_certs; do
+            if grep -qF "$name" <<< "$manifest$resources"; then
+              echo "::error::the built app refers to Play Services' downloadable fonts: $name"
+              grep -F "$name" <<< "$manifest$resources" | head -n 5
+              exit 1
+            fi
+          done
 
       # The launcher icon is an adaptive icon: the whole elephant inside the safe zone
       # (its layer scaled to 0.66, not full bleed), a white background with the phone

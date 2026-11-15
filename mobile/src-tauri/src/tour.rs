@@ -20,6 +20,11 @@ use crate::link::{is_screen_name, system_property};
 
 const TOUR_PROPERTY: &std::ffi::CStr = c"debug.shodh.tour";
 
+/// Set to "1" by CI before the app starts. Without it the watcher never
+/// starts, so a debug build on a tester's phone does not wake every
+/// [`POLL`] for the whole run.
+const TOUR_ON_PROPERTY: &std::ffi::CStr = c"debug.shodh.tour.on";
+
 /// The window's event for each request (src/lib/tour.ts).
 const TOUR_EVENT: &str = "shodh://tour";
 
@@ -65,6 +70,9 @@ fn parse(value: &str) -> Option<Request> {
 /// run's (properties last until the phone restarts), so only a change is a
 /// request, and the app opens as it always does.
 pub fn follow(app: AppHandle) {
+    if system_property(TOUR_ON_PROPERTY) != "1" {
+        return;
+    }
     let spawned = std::thread::Builder::new()
         .name("shodh-tour".to_string())
         .spawn(move || {

@@ -1524,6 +1524,9 @@ jobs:
             adb_within 45 shell screenrecord --time-limit 30 /sdcard/shodh-launch.mp4 &
             recorder=$!
 
+            # The screenshot tour's watcher starts only when this is set at
+            # launch (tour.rs), so a tester's debug build never runs it.
+            adb_within 30 shell setprop debug.shodh.tour.on 1
             start=$(now_ms)
             # 120 s, the same as the ready line's wait below: am start -W
             # returns at the first frame, which comes before that line.

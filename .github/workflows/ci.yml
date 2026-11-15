@@ -1234,8 +1234,16 @@ jobs:
         # emulator's end. At most 3600 samples (2 hours), so the file is
         # bounded whatever happens. comm is "qemu-system-x86" (15
         # characters) for the windowed and the headless binary alike;
-        # -f would also match this script, whose text names it.
+        # -f with the name would also match this script, whose text names
+        # it. The fallback, the binary's expanded path, cannot: the
+        # script's text has the literal "$ANDROID_HOME".
+        qemu_found_by="its name"
         qemu_pid=$(pgrep -o -x 'qemu-system-x86' || true)
+        if [ -z "$qemu_pid" ]; then
+          qemu_found_by="its path"
+          qemu_pid=$(pgrep -o -f "$ANDROID_HOME/emulator/qemu/" || true)
+        fi
+        echo "The emulator's process: pid ${qemu_pid:-none}, found by $qemu_found_by"
         if [ -z "$qemu_pid" ]; then
           echo "::error::No qemu-system-x86 process on the runner, so the emulator's load cannot be sampled"
           pgrep -a -f 'qemu|emulator' || true
@@ -1303,6 +1311,11 @@ jobs:
         trace_end() {
           [ "$traced" -eq 1 ] || return 0
           {
+            # How many exit_group calls the buffer holds at all, so an
+            # empty list below means "none from the emulator", not "no
+            # trace". The TERMs this script sends its log stream and
+            # sampler at its end are in the signals: tracing works.
+            echo "== exit_group calls in the buffer, of every process: $(sudo -n cat "$tracing/trace" | grep -c 'sys_exit_group' || true)"
             echo "== fatal signals (all processes), then exit_group calls of the emulator's process ($qemu_pid)"
             sudo -n cat "$tracing/trace" | grep -E "signal_generate|\( *$qemu_pid\)" | tail -n 400
           } > "$evidence/emulator-end.txt" 2>&1 || true
@@ -1319,7 +1332,8 @@ jobs:
         } > "$frames"
         frame_stats() {
           local name=$1 out="$evidence/gfxinfo-$1.txt" total janky
-          adb_within 30 shell dumpsys gfxinfo "$ANDROID_PACKAGE" reset | tr -d '\r' > "$out"
+          adb_within 30 shell dumpsys gfxinfo "$ANDROID_PACKAGE" | tr -d '\r' > "$out"
+          adb_within 30 shell dumpsys gfxinfo "$ANDROID_PACKAGE" reset > /dev/null
           pick() { grep -m 1 -E "^ *$1" "$out" | sed -E "s/^ *$1:? *//" || true; }
           total=$(pick 'Total frames rendered')
           janky=$(pick 'Janky frames')
@@ -1956,6 +1970,13 @@ jobs:
       # with blur whatever that pass's result (not when the run is
       # cancelled), so a death in one is compared with the other. It is not
       # continue-on-error: a failure of either pass fails this job.
+      # adb's server is stopped first: after run 43677129675's emulator
+      # died, adb still listed emulator-5554 as offline, and the second
+      # boot is on the same port.
+      - name: Stop adb's server before the second boot
+        if: ${{ !cancelled() && env.APK != '' }}
+        run: timeout -k 5 30 adb kill-server || true
+
       - name: Launch it on an emulator, tour without blur (measurement)
         if: ${{ !cancelled() && env.APK != '' }}
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0

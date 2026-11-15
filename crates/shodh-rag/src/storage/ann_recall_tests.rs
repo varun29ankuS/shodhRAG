@@ -152,7 +152,10 @@ fn row_of(id: &str) -> usize {
     id.trim_start_matches("chunk-").parse().unwrap()
 }
 
+// Run by CI's Library store job, with Lance's index code optimised: in an
+// unoptimised build the index over 24,000 vectors takes minutes.
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "minutes in an unoptimised build: CI's Library store job runs it with Lance optimised"]
 async fn ann_search_past_the_index_threshold_recalls_the_exact_neighbours() {
     assert!(ROWS > VECTOR_INDEX_MIN_ROWS, "{ROWS} rows");
     let (rows, queries) = data();

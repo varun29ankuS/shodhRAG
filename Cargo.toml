@@ -82,18 +82,6 @@ opt-level = 3
 [profile.dev.package.tokenizers]
 opt-level = 3
 
-# A library past 20,000 chunks has its vectors indexed (IVF-HNSW-SQ, built by
-# the store's maintenance pass), and the chunk store's tests build that index
-# over 24,000 768-dimensional vectors (storage/ann_recall_tests.rs).
-# Unoptimized, the graph build and the distance kernels are many times slower,
-# so a dev build's index (and the recall CI measures) would take minutes, not
-# seconds.
-[profile.dev.package.lance-index]
-opt-level = 3
-
-[profile.dev.package.lance-linalg]
-opt-level = 3
-
 # llama-cpp-sys-2's build script links `msvcrtd` (the debug CRT) whenever the build
 # script itself was compiled with debug assertions, even though it builds llama.cpp
 # as Release /MD. In dev/test builds that pulled the debug CRT into every binary

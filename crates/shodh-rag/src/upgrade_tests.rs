@@ -1,7 +1,7 @@
 //! A library written by Shodh 0.0.10 opens in this build with everything in it.
 //!
-//! The library is written by 0.0.10's own code: CI's "Upgrade from 0.0.10"
-//! job builds `upgrade/v0_0_10/write_library.rs` against the `v0.0.10` tag
+//! The library is written by 0.0.10's own code: CI's "Library store (0.0.10
+//! upgrade, ANN recall)" job builds `upgrade/v0_0_10/write_library.rs` against the `v0.0.10` tag
 //! (lancedb 0.26, Lance 2.0, Tantivy 0.22) and runs it, then runs this test
 //! with `SHODH_UPGRADE_FIXTURE` naming its output. The writer read the library
 //! back through 0.0.10 into `manifest.json`; this test opens a copy of it the
@@ -414,7 +414,7 @@ async fn assert_memories(data_dir: &Path, manifest: &Manifest) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs the library 0.0.10 wrote (SHODH_UPGRADE_FIXTURE): CI's Upgrade from 0.0.10 job"]
+#[ignore = "needs the library 0.0.10 wrote (SHODH_UPGRADE_FIXTURE): CI's Library store job"]
 async fn a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories() {
     let fixture = PathBuf::from(std::env::var(library::FIXTURE_ENV).unwrap_or_else(|_| {
         panic!(

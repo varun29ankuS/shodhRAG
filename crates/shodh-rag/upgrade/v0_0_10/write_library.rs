@@ -2,8 +2,8 @@
 //! 0.0.11 (`src/upgrade_tests.rs`).
 //!
 //! This file is not built with this version of the crate: nothing in Cargo's
-//! target discovery reaches `upgrade/`. CI's "Upgrade from 0.0.10" job checks
-//! out the `v0.0.10` tag, copies this file and `library.rs` there as the
+//! target discovery reaches `upgrade/`. CI's "Library store (0.0.10 upgrade,
+//! ANN recall)" job checks out the `v0.0.10` tag, copies this file and `library.rs` there as the
 //! example `write_upgrade_library` of that tree's shodh-rag, and runs it with
 //! that tree's lockfile (lancedb 0.26, Lance 2.0, Tantivy 0.22):
 //!

@@ -44,9 +44,10 @@ env:
 # minutes at a time).
 #
 # Heavy jobs run on a pull request only when it changes a file they read:
-# Upgrade from 0.0.10, Retrieval eval, Retrieval eval (int8, Apple silicon),
-# Footprint budget, the release builds (release.yml: the Windows and macOS installers, built and
-# verified as a release would be, without publishing) and the Android phone
+# Library store (0.0.10 upgrade, ANN recall), Retrieval eval, Retrieval eval
+# (int8, Apple silicon), Footprint budget, the release builds (release.yml:
+# the Windows and macOS installers, built and verified as a release would
+# be, without publishing) and the Android phone
 # app (its debug APK, launched on an emulator) are skipped when every
 # changed file is in their known-irrelevant set (the Changes job; an unknown
 # or new path always runs them). Every other job runs on every pull request.
@@ -310,10 +311,15 @@ jobs:
         shell: bash
         run: python -I scripts/ci/ort_archive.py verify
 
+  # The workspace's tests but the app's, which run in parallel in App tests
+  # (with the doc tests and the agent runtime test). Master pushes of
+  # 2026-11-14 and 15 took 23 to 54 minutes here with everything in one job
+  # (the test step 38 minutes at most, the agent runtime test 6, the doc tests
+  # 5, the cache save 2): too close to the limit (#162).
   test:
     name: Tests
     runs-on: windows-latest
-    timeout-minutes: 60  # slowest 31 minutes with library tests only
+    timeout-minutes: 60  # slowest 54 minutes before the app's tests, doc tests and agent runtime test moved out
     env:
       # Line tables only (file:line in backtraces): smaller debug builds and
       # caches. Dev and test profiles only; the release profile is untouched.
@@ -344,24 +350,58 @@ jobs:
       - name: Build the sandbox probe
         run: cargo build --package sandbox-probe
 
-      # Every test target of every workspace crate: library and binary unit
-      # tests, each tests/*.rs integration test (log_privacy.rs runs in its
-      # own binary, so its capturing subscriber is global before anything
-      # logs), and the examples are built. A crate or test file added later
-      # is included without editing this job.
+      # Every test target of every workspace crate but the app (App tests):
+      # library and binary unit tests, each tests/*.rs integration test
+      # (log_privacy.rs runs in its own binary, so its capturing subscriber is
+      # global before anything logs), and the examples are built. A crate or
+      # test file added later is included without editing this job.
       # Model-backed tests stay ignored here: SHODH_TEST_MODELS is not set in CI.
-      - name: Tests (workspace, all targets)
-        run: cargo test --workspace --all-targets
+      - name: Tests (workspace but the app, all targets)
+        run: cargo test --workspace --exclude shodh-rag-app --all-targets
+
+      - name: ONNX Runtime came from the cache
+        run: python -I scripts/ci/ort_archive.py verify
+
+  # The app's tests, the workspace's doc tests and the agent runtime test, in
+  # parallel with Tests, which runs every other crate's.
+  test-app:
+    name: App tests, doc tests and agent runtime
+    runs-on: windows-latest
+    # No run history yet: these steps took 38 minutes at most inside Tests
+    # (the app's share of its test step, the doc tests 5, the agent runtime
+    # test 6), with their own build here.
+    timeout-minutes: 60
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # master, 2026-10-16
+        with:
+          toolchain: 1.97.1  # keep in sync with rust-toolchain.toml
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install Protobuf compiler
+        shell: pwsh
+        run: ./scripts/ci/install-protoc.ps1
+
+      - uses: ./.github/actions/onnxruntime
+
+      - name: App tests (all targets)
+        run: cargo test --package shodh-rag-app --all-targets
 
       # Against the real agent runtime, on Windows, where a command line is
       # limited to 32,767 characters: a system prompt longer than that must
       # reach omp whole through its file (it failed with os error 206 while
       # it was passed on the command line). The test downloads the pinned omp
       # release as setup does, checked against the pinned SHA-256.
-      # --workspace selects the packages (and so the features) of the step
-      # above, so its builds are reused; the other crates match no test.
       - name: Long system prompt against the agent runtime
-        run: cargo test --workspace --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
+        run: cargo test --package shodh-rag --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
 
       - name: Doc tests (workspace)
         run: cargo test --workspace --doc
@@ -435,8 +475,15 @@ jobs:
   # (Cargo never looks in upgrade/), so 0.0.10's dependencies stay out of
   # Cargo.lock. Windows, where the other Rust tests run; the Changes job
   # decides it like the evals (it builds shodh-rag only).
+  #
+  # The same test build then measures the recall of the chunk table's
+  # approximate vector search past 20,000 rows against an exact scan
+  # (crates/shodh-rag/src/storage/ann_recall_tests.rs), kept out of Tests for
+  # its time. Lance's index code is optimised for both test runs here
+  # (--config): unoptimised, building the index over 24,000 vectors takes
+  # minutes. Both runs pass the same flags, so they share one build.
   upgrade:
-    name: Upgrade from 0.0.10
+    name: Library store (0.0.10 upgrade, ANN recall)
     needs: changes
     if: needs.changes.outputs.upgrade == 'true'
     runs-on: windows-latest
@@ -497,8 +544,19 @@ jobs:
         env:
           SHODH_UPGRADE_FIXTURE: ${{ runner.temp }}/upgrade-0.0.10
         run: >
-          cargo test --locked --package shodh-rag --lib -- --ignored --exact
+          cargo test --locked
+          --config profile.dev.package.lance-index.opt-level=3
+          --config profile.dev.package.lance-linalg.opt-level=3
+          --package shodh-rag --lib -- --ignored --exact
           rag_engine::upgrade_tests::a_library_written_by_0_0_10_keeps_its_documents_searches_and_memories
+
+      - name: ANN recall past the vector index threshold
+        run: >
+          cargo test --locked
+          --config profile.dev.package.lance-index.opt-level=3
+          --config profile.dev.package.lance-linalg.opt-level=3
+          --package shodh-rag --lib -- --ignored --exact --nocapture
+          storage::ann_recall_tests::ann_search_past_the_index_threshold_recalls_the_exact_neighbours
 
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify
@@ -2248,7 +2306,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [changes, lint, scripts, fmt, check, test, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
+    needs: [changes, lint, scripts, fmt, check, test, test-app, macos, upgrade, eval-retrieval, eval-retrieval-int8, eval-recall, frontend, footprint, release-builds, android]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

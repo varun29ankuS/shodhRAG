@@ -2,8 +2,8 @@
 //! the deterministic embedder, the memories and the manifest format.
 //!
 //! Shared by the writer (`write_library.rs`, built and run against the
-//! `v0.0.10` tag by CI's "Upgrade from 0.0.10" job) and the reader
-//! (`src/upgrade_tests.rs`, this build). It uses only `std` and `serde`, which
+//! `v0.0.10` tag by CI's "Library store (0.0.10 upgrade, ANN recall)" job)
+//! and the reader (`src/upgrade_tests.rs`, this build). It uses only `std` and `serde`, which
 //! both versions of the crate depend on, so the same file compiles on both.
 
 use std::collections::BTreeMap;

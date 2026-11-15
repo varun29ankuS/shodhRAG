@@ -11,6 +11,11 @@ After the update, Shodh reads some files again, once, in the background:
 
 Your conversations and memories are kept.
 
+Two other things change on the update:
+
+- **Pick a mode for each workspace.** The approval level a workspace had in 0.0.10 (such as Trusted) is replaced by the modes Ask, Accept edits, Plan and Auto, and the saved level is ignored: every workspace starts in **Ask**, which asks before every change, until you choose its mode. The commands you allowed stay allowed, as extra commands Auto runs (#121).
+- **The preview opens in a window of its own.** A page the assistant builds (Artifacts) now opens in a separate, normal window when you click **Preview**, no longer inside the main window, so it cannot reach the app (#124).
+
 ## What's new in 0.0.11
 
 - **Asking works on Windows however long the instructions are.** The assistant's instructions now reach the agent runtime in a file, so a long set of rules and skills no longer stops a question with "The filename or extension is too long" (#179).

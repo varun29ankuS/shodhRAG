@@ -77,6 +77,26 @@ test("the nightly check the gate reads is nightly.yml's call of ci.yml", () => {
   assert.equal(NIGHTLY_CHECK, `${ci.name} / CI gate`);
 });
 
+test("the Tests job's slow steps run in parallel jobs (#162)", () => {
+  // Tests ran into its 60-minute limit with everything in one job: the app's
+  // tests, the doc tests and the agent runtime test run in App tests, and the
+  // ANN recall test in the Library store job, each in parallel.
+  const jobs = ciJobs();
+  const block = (id) => {
+    const job = jobs.find((j) => j.id === id);
+    assert.ok(job, `ci.yml has a ${id} job`);
+    return job.block;
+  };
+  const tests = block('test');
+  assert.match(tests, /cargo test --workspace --exclude shodh-rag-app --all-targets$/m);
+  assert.doesNotMatch(tests, /--doc|omp_live_tests|ann_recall_tests/);
+  const app = block('test-app');
+  assert.match(app, /cargo test --package shodh-rag-app --all-targets$/m);
+  assert.match(app, /cargo test --workspace --doc$/m);
+  assert.match(app, /harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole$/m);
+  assert.match(block('upgrade'), /storage::ann_recall_tests::ann_search_past_the_index_threshold_recalls_the_exact_neighbours$/m);
+});
+
 test('CI gate waits for every other job of ci.yml but the not-required ones', () => {
   const jobs = ciJobs();
   const aggregate = jobs.find((j) => j.id === 'ci-gate');

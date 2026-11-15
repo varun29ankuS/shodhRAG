@@ -1193,9 +1193,12 @@ jobs:
       # (it moves: 37.2.13 in the runs where the emulator died, 37.3.9 by
       # 2026-11-15). 35.4.9, build 13025442 (March 2025), the long-lived
       # 35.x line from before 37.x, well within the API 34 image's
-      # minimum (29.1.11). The launch test fails unless the running
-      # emulator says it is this build.
+      # minimum (29.1.11). The launch test fails unless the installed
+      # emulator is this build: EMULATOR_REVISION is the Pkg.Revision of
+      # build 13025442 (its boot banner in run 43683199614: "Android
+      # emulator version 35.4.9.0 (build_id 13025442)").
       EMULATOR_BUILD: '13025442'
+      EMULATOR_REVISION: '35.4.9'
       # The launch test (both passes of the emulator steps below).
       LAUNCH_TEST: |
         now_ms() { date +%s%3N; }
@@ -1215,14 +1218,30 @@ jobs:
 
         # The emulator is the pinned build (emulator-build below), not the
         # latest one the action installs first and then unzips it over.
-        emulator_version=$(timeout -k 5 30 "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tr -d '\r' | grep -m 1 'emulator version' || true)
+        # The unzip writes the pinned build's source.properties, so its
+        # Pkg.Revision is the installed version, and it must be the pinned
+        # build's (EMULATOR_REVISION). `emulator -version` exited at once
+        # with no version line on this runner (run 43683199614, whose check
+        # kept only a matching line), so its whole output and exit status
+        # are kept as evidence, and a build_id it prints must be the pinned one.
         emulator_revision=$(sed -n 's/^Pkg.Revision=//p' "$ANDROID_HOME/emulator/source.properties" | tr -d '\r')
-        echo "$emulator_version; Pkg.Revision=$emulator_revision" | tee "$evidence/emulator-version.txt"
-        if ! grep -qF "build_id $EMULATOR_BUILD)" <<< "$emulator_version"; then
-          echo "::error::The emulator is not the pinned build $EMULATOR_BUILD: ${emulator_version:-no version line}"
+        version_status=0
+        version_output=$(timeout -k 5 30 "$ANDROID_HOME/emulator/emulator" -version 2>&1 | tr -d '\r') || version_status=$?
+        {
+          echo "Pkg.Revision=$emulator_revision"
+          echo "emulator -version (exit status $version_status):"
+          printf '%s\n' "$version_output"
+        } | tee "$evidence/emulator-version.txt"
+        if [ "$emulator_revision" != "$EMULATOR_REVISION" ]; then
+          echo "::error::The emulator is not the pinned build $EMULATOR_BUILD ($EMULATOR_REVISION): Pkg.Revision is ${emulator_revision:-missing}"
           exit 1
         fi
-        echo "- emulator: \`$emulator_version\`, Pkg.Revision $emulator_revision" >> "$GITHUB_STEP_SUMMARY"
+        version_build=$(sed -n 's/.*(build_id \([0-9][0-9]*\)).*/\1/p' <<< "$version_output" | sed -n 1p)
+        if [ -n "$version_build" ] && [ "$version_build" != "$EMULATOR_BUILD" ]; then
+          echo "::error::The emulator is not the pinned build $EMULATOR_BUILD: -version says build_id $version_build"
+          exit 1
+        fi
+        echo "- emulator: Pkg.Revision $emulator_revision, build_id ${version_build:-not printed by -version (exit status $version_status)}" >> "$GITHUB_STEP_SUMMARY"
 
         # The emulator's process on the runner, sampled every 2 s into
         # emulator-load.txt: its CPU over each interval (utime + stime

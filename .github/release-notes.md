@@ -5,7 +5,7 @@ The first time 0.0.11 opens your library, it moves it to a new storage format. A
 After the update, Shodh reads some files again, once, in the background:
 
 - **Read and indexed again:** Word, PowerPoint, plain text and code files, web pages, emails, e-books, notebooks and spreadsheets. Their passages are now cut to fit what the search model reads, so the end of a long code or data passage is no longer left out of search. Code and data files make more passages than before, so this can take a while on a large library; search keeps working meanwhile.
-- **Kept as they are:** PDFs, Markdown, LaTeX and images. Nothing is read again or re-run through OCR.
+- **Kept as they are:** Markdown, LaTeX, images and most PDFs. They are not read again, and scans are not run through OCR again. A PDF with form fields, or one Shodh could not split into sections, is read again like the files above (a scan whose reading was not kept keeps its passages instead).
 - **Removed:** files that may hold passwords or keys (such as `.env` files and key files) that an earlier version indexed. Shodh no longer indexes them at all.
 - A library of more than 20,000 passages gets a new search index once, so large libraries search faster.
 

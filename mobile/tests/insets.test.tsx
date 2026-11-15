@@ -26,7 +26,7 @@ describe('the system bars in the stylesheet', () => {
     }
     // Nothing else reads env(): it is 0 in the phone's WebView, and an edge
     // written with it alone ends up under the bar.
-    for (const side of ['top'] as const) {
+    for (const side of SIDES) {
       const uses = stylesheet.split(`env(safe-area-inset-${side}`).length - 1;
       expect(uses, `env(safe-area-inset-${side}) outside the --inset-${side} definition`).toBe(1);
     }
@@ -43,6 +43,12 @@ describe('the system bars in the stylesheet', () => {
         expect(withBars, `${where} clears the ${edge} inset`).toBeGreaterThanOrEqual(SIMULATED[edge] + reserve.beyond);
       }
     }
+  });
+
+  it('leave the tab bar 50px of tabs above the gesture bar', () => {
+    expect(reserved('.tabbar', 'height', NONE)).toBe(50);
+    expect(reserved('.tabbar', 'height', SIMULATED)).toBe(50 + SIMULATED.bottom);
+    expect(reserved('.tab', 'min-height', NONE)).toBe(50);
   });
 
   it('put the bars 16px under the status bar, and the large titles after them', () => {

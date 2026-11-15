@@ -36,27 +36,50 @@ export interface Reserve {
  */
 export const LAYERS: Record<string, Partial<Record<Edge, Reserve>>> = {
   // A screen: its bar and large title start below the status bar.
+  // Its end scrolls clear of the tab bar and the gesture bar under it.
   view: {
     top: { rule: '.view', property: 'padding-top', beyond: 0 },
+    right: { rule: '.view', property: 'padding-right', beyond: 0 },
+    bottom: { rule: '.scroll', property: 'padding-bottom', beyond: 50 },
+    left: { rule: '.view', property: 'padding-left', beyond: 0 },
   },
   reader: {
     top: { rule: '.reader', property: 'padding-top', beyond: 0 },
+    right: { rule: '.reader', property: 'padding-right', beyond: 0 },
+    bottom: { rule: '.reader-body', property: 'padding-bottom', beyond: 0 },
+    left: { rule: '.reader', property: 'padding-left', beyond: 0 },
   },
   drawer: {
     top: { rule: '.drawer', property: 'padding-top', beyond: 0 },
+    bottom: { rule: '.drawer', property: 'padding-bottom', beyond: 0 },
+    left: { rule: '.drawer', property: 'padding-left', beyond: 0 },
   },
   // A sheet rises from the bottom; a tall one stops under the status bar.
   overlay: {
     top: { rule: '.overlay', property: 'padding-top', beyond: 0 },
+    bottom: { rule: '.sheet', property: 'padding-bottom', beyond: 0 },
   },
   lock: {
     top: { rule: '.lock', property: 'padding-top', beyond: 0 },
+    right: { rule: '.lock', property: 'padding-right', beyond: 0 },
+    bottom: { rule: '.lock', property: 'padding-bottom', beyond: 0 },
+    left: { rule: '.lock', property: 'padding-left', beyond: 0 },
   },
   note: {
     top: { rule: '.note', property: 'top', beyond: 0 },
   },
-  tabbar: {},
-  'askbox-floating': {},
+  // The tabs sit above the gesture bar: the bar's padding is the inset.
+  tabbar: {
+    right: { rule: '.tabbar', property: 'padding-right', beyond: 0 },
+    bottom: { rule: '.tabbar', property: 'padding-bottom', beyond: 0 },
+    left: { rule: '.tabbar', property: 'padding-left', beyond: 0 },
+  },
+  // The follow-up field floats above the tab bar (50px) and the gesture bar.
+  'askbox-floating': {
+    right: { rule: '.askbox-floating', property: 'right', beyond: 0 },
+    bottom: { rule: '.askbox-floating', property: 'bottom', beyond: 50 },
+    left: { rule: '.askbox-floating', property: 'left', beyond: 0 },
+  },
 };
 
 const SELECTOR = Object.keys(LAYERS)

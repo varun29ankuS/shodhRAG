@@ -1533,13 +1533,19 @@ jobs:
             # WebView reports no system bars to the page (env() is 0 in it), so
             # the plugin measures them and tells the page (ShodhPlugin.watchInsets).
             # Its measure, logged before the first screen, must have the
-            # pixel_6's status bar, or every screen's bar sits under the clock.
+            # pixel_6's status bar and gesture bar, or every screen's bar sits
+            # under the clock and the tab bar's labels under the gesture bar.
             adb_within 30 logcat -d -v brief -s Shodh:I | tr -d '\r' > "$evidence/system-bars.txt"
             bars_line=$(grep -F 'Shodh system bars:' "$evidence/system-bars.txt" | tail -n 1 || true)
             echo "${bars_line:-no system bars line}"
             bars_top=$(sed -nE 's/.*Shodh system bars: top ([0-9.]+) dp.*/\1/p' <<< "$bars_line")
+            bars_bottom=$(sed -nE 's/.*Shodh system bars: .* bottom ([0-9.]+) dp.*/\1/p' <<< "$bars_line")
             if [ -z "$bars_top" ] || ! awk -v t="$bars_top" 'BEGIN { exit !(t > 0) }'; then
               echo "::error::The page was not told where the status bar is: ${bars_line:-no 'Shodh system bars' line in logcat}"
+              exit 1
+            fi
+            if [ -z "$bars_bottom" ] || ! awk -v b="$bars_bottom" 'BEGIN { exit !(b > 0) }'; then
+              echo "::error::The page was not told where the gesture bar is: ${bars_line:-no 'Shodh system bars' line in logcat}"
               exit 1
             fi
 

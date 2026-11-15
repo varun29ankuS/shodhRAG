@@ -229,6 +229,17 @@ impl FilePreparer {
         self.prepare_with_progress(path, metadata, &|_, _| {})
     }
 
+    /// The text of the file at `path` as the indexer reads it (an image through
+    /// OCR), without chunking, embedding or storing it (blocking): a photo a
+    /// phone asks about is read, and indexed only if the user keeps it. A file
+    /// that may hold secrets is never read.
+    pub fn read_text(&self, path: &Path) -> Result<String> {
+        if let Some(reason) = crate::indexing::secret_file_reason(path) {
+            return Err(crate::indexing::SecretFileKeptBack { reason }.into());
+        }
+        Ok(self.parser.parse_file(path)?.content)
+    }
+
     /// [`Self::prepare`], reporting OCR's progress through a scanned PDF.
     pub fn prepare_with_progress(
         &self,
@@ -2173,7 +2184,11 @@ impl RAGEngine {
             store,
             text_search,
             embeddings: None,
-            embedder: Arc::new(LazyModel::new("embedder")),
+            embedder: Arc::new(
+                // A Core ML session costs a compile to build again, and the
+                // search it serves stalls on the CPU meanwhile.
+                LazyModel::new("embedder").keep_loaded_while(E5Embeddings::holds_core_ml),
+            ),
             embedder_e5: false,
             index_model_settled: Arc::new(std::sync::atomic::AtomicBool::new(settled)),
             compute_status: Default::default(),

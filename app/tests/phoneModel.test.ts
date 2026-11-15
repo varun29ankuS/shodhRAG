@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { errorText, PHONE_DEVICES_CHANGED, whenSeen } from '../src/features/phone/phoneModel.ts';
+import { errorText, PHONE_DEVICES_CHANGED, PHONE_STAY_CHANGED, stayWords, whenSeen, type StayStatus } from '../src/features/phone/phoneModel.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -40,4 +40,20 @@ test('the Phone page writes no text under 12px and puts icons before labels', ()
     const label = body.search(/\n\s*[A-Z][a-z]+(?: [a-z]+)*\s*\n/);
     if (icon >= 0 && label >= 0) assert.ok(icon < label, `icon after label in: ${body.trim().slice(0, 80)}`);
   }
+});
+
+test('"Stay available for my phone" says what it does now', () => {
+  const on: StayStatus = { enabled: true, supported: true, onAc: true, holding: true, localOnly: false, paired: true };
+  assert.match(stayWords(on), /stays awake while it is plugged in/);
+  assert.match(stayWords({ ...on, holding: false, onAc: false }), /on battery/);
+  assert.match(stayWords({ ...on, holding: false, onAc: null }), /cannot tell/);
+  assert.match(stayWords({ ...on, enabled: false, holding: false }), /^Off\./);
+  assert.match(stayWords({ ...on, holding: false, localOnly: true }), /Local-only mode/);
+  assert.match(stayWords({ ...on, holding: false, paired: false }), /pair a phone/);
+  assert.match(stayWords({ ...on, supported: false, holding: false }), /cannot keep this computer awake/);
+});
+
+test('the stay-available event is the one the desktop sends', () => {
+  const rust = readFileSync(join(here, '..', 'src-tauri', 'src', 'phone_link', 'stay_available.rs'), 'utf8');
+  assert.match(rust, new RegExp(`STAY_EVENT: &str = "${PHONE_STAY_CHANGED}"`));
 });

@@ -54,6 +54,10 @@ pub const CONVERSATION_CHANGED: &str = "conversation_changed";
 /// Approvals reread [`PENDING_APPROVALS`]. It says nothing of what changed.
 pub const INBOX_CHANGED: &str = "inbox-changed";
 
+/// The desktop's tasks or calendar changed (sent with no payload): every paired
+/// phone reads them again (`load_tasks`, `load_events`).
+pub const CALENDAR_CHANGED: &str = "calendar-changed";
+
 /// The bridge-only read of the approvals waiting on the desktop: a list of
 /// `{ sessionId, stepId, tool, … }`. The steps it lists may be answered by the
 /// connection that read them, with the same checks as the steps it was sent;
@@ -530,11 +534,14 @@ impl<H: LinkHost> Link<H> {
                 Ok(_) => Outcome::Done,
                 Err(error) => refusal_message(error).map_or(Outcome::Failed, Outcome::Refused),
             };
-            host.record(CallRecord {
-                caller,
-                command,
-                outcome,
-            });
+            // Each part of a file is recorded only when it goes wrong (allowlist::QUIET).
+            if !(outcome == Outcome::Done && allowlist::quiet(&command)) {
+                host.record(CallRecord {
+                    caller,
+                    command,
+                    outcome,
+                });
+            }
             let _ = out
                 .send(Outgoing::Frame(Response::Result { call_id, value }))
                 .await;
@@ -630,6 +637,13 @@ fn forward(
         return Some(Response::Event {
             name: event.name.clone(),
             payload: event.payload.clone(),
+        });
+    }
+    if event.name == CALENDAR_CHANGED {
+        // That they changed, never what: the phone reads them with the allowlisted loads.
+        return Some(Response::Event {
+            name: event.name.clone(),
+            payload: Value::Null,
         });
     }
     if event.name != AGENT_EVENT {
@@ -830,6 +844,23 @@ mod tests {
             frame,
             Response::Event {
                 name: INBOX_CHANGED.to_string(),
+                payload: Value::Null,
+            }
+        );
+    }
+
+    #[test]
+    fn a_calendar_change_is_announced_to_every_phone_without_what_changed() {
+        let mut pending = HashMap::new();
+        let changed = LinkEvent {
+            name: CALENDAR_CHANGED.to_string(),
+            payload: json!({ "kind": "event", "event": { "title": "Meet Asha" } }),
+        };
+        let frame = forward(&changed, &HashSet::new(), &mut pending).expect("sent");
+        assert_eq!(
+            frame,
+            Response::Event {
+                name: CALENDAR_CHANGED.to_string(),
                 payload: Value::Null,
             }
         );

@@ -1,30 +1,55 @@
 /**
  * The Library as on the computer: the linked folders, then their folders and
- * files at any depth, with a path of breadcrumbs back up. Files show their
- * first page, rendered on the computer; a tap opens the Reader, zooming
+ * files at any depth, with a path of breadcrumbs back up, in one grouped
+ * list. Folders are tinted outlines; a file shows its first page, rendered
+ * on the computer, as a small paper page; a tap opens the Reader, zooming
  * from the page.
  */
 import { Fragment, type MouseEvent } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronRight, Folder } from 'lucide-react';
+import { Camera, ChevronRight, Folder, Plus, Smartphone } from 'lucide-react';
 import { TopBar } from '../components/Bars';
 import { NotConnected } from '../components/Connection';
 import { PageThumb } from '../components/PageThumb';
-import { useLink, useNav } from '../lib/context';
+import { extensionOf } from '../lib/pages';
+import { useLink, useNav, useNote } from '../lib/context';
 import { libraryFolders, type FolderEntry } from '../lib/desktop';
 import { pushIn, viewIn } from '../lib/motion';
 import type { Folder as Opened } from '../lib/nav';
 import { useRemote } from '../lib/remote';
+import { INBOX } from '../components/SendSheet';
+import { useOffers } from '../lib/incoming';
+import { errorText } from '../lib/link';
+import { canQueue, useDevice } from '../lib/queue';
 
 export function Library() {
-  const { connected } = useLink();
+  const { connected, status } = useLink();
+  const { files } = useDevice();
+  const { offerSend } = useOffers();
+  const { show } = useNote();
+  const paired = connected || canQueue(status);
+  const add = () =>
+    files
+      .pick()
+      .then(picked => {
+        if (picked.length > 0) offerSend(picked);
+      })
+      .catch(e => show(errorText(e), 'problem'));
+  const photo = () =>
+    files
+      .takePhoto()
+      .then(taken => {
+        if (taken) offerSend([taken]);
+      })
+      .catch(e => show(errorText(e), 'problem'));
   const { nav, dispatch } = useNav();
   const here: Opened | null = nav.library[nav.library.length - 1] ?? null;
   const listing = useRemote(`library:${here?.path ?? ''}`, desktop => libraryFolders(desktop, here?.path ?? null));
   const data = listing.data;
 
   const openFile = (file: FolderEntry, event: MouseEvent<HTMLElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    // The Reader zooms from the file's page in its row.
+    const rect = (event.currentTarget.querySelector('.paper') ?? event.currentTarget).getBoundingClientRect();
     dispatch({
       type: 'read',
       target: {
@@ -41,7 +66,7 @@ export function Library() {
   return (
     <motion.div key={here?.path ?? ''} className="view" variants={here ? pushIn : viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
+        <TopBar />
         <nav className="crumbs" aria-label="Folder path">
           {[{ name: 'Library', path: '' }, ...nav.library].map((crumb, depth, all) => (
             <Fragment key={`${depth}:${crumb.path}`}>
@@ -57,18 +82,30 @@ export function Library() {
             </Fragment>
           ))}
         </nav>
-        <h1 className="title serif pad">{here?.name ?? 'Library'}</h1>
+        <h1 className="title pad">{here?.name ?? 'Library'}</h1>
+        {paired && here === null && (
+          <div className="toolbar">
+            <button type="button" className="button" onClick={add}>
+              <Plus aria-hidden="true" className="icon-small" />
+              Add
+            </button>
+            <button type="button" className="button" onClick={photo}>
+              <Camera aria-hidden="true" className="icon-small" />
+              Photo
+            </button>
+          </div>
+        )}
 
         {data === undefined && !connected && <NotConnected what="your folders and files" />}
         {data === undefined && connected && listing.error === null && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading the folder">
             {[70, 55, 62].map(width => (
-              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 48, borderRadius: 14 }} />
+              <div key={width} className="skeleton" style={{ width: `${width}%`, height: 48, borderRadius: 12 }} />
             ))}
           </div>
         )}
         {listing.error !== null && data === undefined && (
-          <p className="panel-text pad" style={{ marginTop: 16 }}>
+          <p className="panel-text panel-quiet" style={{ marginTop: 24 }}>
             {listing.error}
           </p>
         )}
@@ -83,8 +120,8 @@ export function Library() {
           </section>
         )}
 
-        {data !== undefined && data.folders.length > 0 && (
-          <div className="rows" style={{ marginTop: 12 }}>
+        {data !== undefined && data.folders.length + data.files.length > 0 && (
+          <div className="rows rows-icons" style={{ marginTop: 24 }}>
             {data.folders.map(folder => (
               <button
                 key={folder.path}
@@ -92,27 +129,26 @@ export function Library() {
                 className="row"
                 onClick={() => dispatch({ type: 'folder', folder: { path: folder.path, name: folder.name } })}
               >
-                <span className="row-icon">
-                  <Folder aria-hidden="true" className="icon" />
+                <span className="row-icon folder-icon">
+                  {!here && folder.name === INBOX ? <Smartphone aria-hidden="true" className="icon" /> : <Folder aria-hidden="true" className="icon" />}
                 </span>
                 <span className="row-text">
-                  <span className="row-title" style={{ fontSize: 16 }}>
-                    {folder.name}
-                  </span>
-                  {!here && <span className="row-sub">Linked folder</span>}
+                  <span className="row-title">{folder.name}</span>
+                  {!here && <span className="row-sub">{folder.name === INBOX ? 'Files you sent from this phone' : 'Linked folder'}</span>}
                 </span>
-                <ChevronRight aria-hidden="true" className="icon-small faint" />
+                <ChevronRight aria-hidden="true" className="chevron" />
               </button>
             ))}
-          </div>
-        )}
-
-        {data !== undefined && data.files.length > 0 && (
-          <div className="files">
             {data.files.map(file => (
-              <button key={file.path} type="button" className="tile" aria-label={`Open ${file.name}`} onClick={event => openFile(file, event)}>
-                <PageThumb path={file.path} />
-                <span className="tile-name">{file.name}</span>
+              <button key={file.path} type="button" className="row" aria-label={`Open ${file.name}`} onClick={event => openFile(file, event)}>
+                <span className="row-icon row-thumb">
+                  <PageThumb path={file.path} small />
+                </span>
+                <span className="row-text">
+                  <span className="row-title row-title-one-line">{file.name}</span>
+                  <span className="row-sub">{extensionOf(file.path).toUpperCase() || 'File'}</span>
+                </span>
+                <ChevronRight aria-hidden="true" className="chevron" />
               </button>
             ))}
           </div>

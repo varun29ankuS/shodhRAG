@@ -122,11 +122,92 @@ pub const ALLOWED: &[Entry] = &[
         "Reader: the sheets of a spreadsheet or CSV file. Only indexed files inside the \
          linked folders.",
     ),
+    // Files from the phone (transfer.rs)
+    bridge_only(
+        "phone_file_begin",
+        "Library and Ask: send a file from the phone (the share sheet, Add, a camera photo) to \
+         \"From my phone\" or a workspace. The computer applies every upload rule before a \
+         byte is sent (the file name, files that may hold secrets, file kinds, size limits) \
+         and says how much of it it already has, so a broken transfer resumes.",
+    ),
+    bridge_only(
+        "phone_file_chunk",
+        "Library and Ask: one part (at most 512 KiB) of a file being sent, appended only at \
+         the offset the computer has, and only to this phone's own transfer.",
+    ),
+    bridge_only(
+        "phone_file_finish",
+        "Library and Ask: the file is complete. The computer checks its size and SHA-256, then \
+         adds it through the chat upload path (secret files blocked, size limits, legacy \
+         Office in the guarded worker, skipped reasons), or reads a photo to ask about \
+         without adding it to the library.",
+    ),
+    bridge_only(
+        "phone_photo_keep",
+        "Ask: \"Keep in library\" for a photo the user asked about: moved to \"From my phone\" \
+         and added through the chat upload path. Until then the photo is never indexed.",
+    ),
+    // Tasks and the calendar: the user's own edits, which need no approval (the
+    // assistant's go through its approval gate on the computer).
+    command(
+        "load_tasks",
+        "Tasks: the task list, shown on the phone and kept as its sealed offline copy. Read \
+         only.",
+    ),
+    command(
+        "load_events",
+        "Tasks and Today: the agenda, shown on the phone, kept as its sealed offline copy, and \
+         mirrored into the phone's own \"Shodh\" calendar when the user turns that on. Read only.",
+    ),
+    command(
+        "create_task",
+        "Tasks: add a task. Saved as made on the phone (source \"phone\"); the phone may name \
+         only its own reference, so a resend after the app was killed is recognised.",
+    ),
+    command(
+        "update_task",
+        "Tasks: tick a task off, rename it or reschedule it, as the desktop's Tasks view does.",
+    ),
+    command(
+        "create_event",
+        "Tasks and Today: add an event, or (only while \"Let Shodh use my calendar\" is on) an \
+         event of the phone's own calendar. Saved as made on the phone.",
+    ),
+    command(
+        "update_event",
+        "Today and the phone's calendar: move or rename an event, from the phone's agenda or \
+         from an edit in the phone's own calendar app (calendar sync).",
+    ),
+    command(
+        "delete_event",
+        "Today and the phone's calendar: remove an event, only after the user confirmed it on \
+         the phone (an event deleted in the phone's calendar asks first).",
+    ),
+    bridge_only(
+        "meeting_brief",
+        "Today: a short brief before a meeting (the conversations and the notes and documents \
+         about it, each cited), asked only while calendar sync and \"Let Shodh use my \
+         calendar\" are on. Read only, retrieval only; nothing for an event nothing matches.",
+    ),
+    bridge_only(
+        "phone_push_register",
+        "Settings, Notifications: the phone's UnifiedPush address (or none, to stop), kept in \n         the computer's credential store and never logged. The computer posts it only a \n         content-free word (an approval, an answer, a reminder); never in Local-only mode.",
+    ),
 ];
 
 /// Whether a phone may call `command`.
 pub fn allowed(command: &str) -> bool {
     ALLOWED.iter().any(|e| e.command == command)
+}
+
+/// Calls recorded in Activity only when refused or when they fail: each part of
+/// a file being sent. The file itself is recorded when it begins and when it is
+/// added.
+pub const QUIET: &[&str] = &["phone_file_chunk"];
+
+/// Whether a call that went well is left out of Activity ([`QUIET`]).
+pub fn quiet(command: &str) -> bool {
+    QUIET.contains(&command)
 }
 
 /// The argument of each allowlisted command that names a file or folder on
@@ -222,6 +303,9 @@ mod tests {
         for refused in [
             "save_conversation",
             "delete_conversation",
+            "delete_task",
+            "delete_subtask",
+            "add_subtask",
             "clear_all_documents",
             "reset_database",
             "set_app_policy",
@@ -257,6 +341,9 @@ mod tests {
         }
         for (command, _) in PATH_ARGS {
             assert!(allowed(command), "{command} has a path but is not allowed");
+        }
+        for command in QUIET {
+            assert!(allowed(command), "{command} is quiet but not allowed");
         }
     }
 

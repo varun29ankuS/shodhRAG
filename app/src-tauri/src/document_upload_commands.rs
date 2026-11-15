@@ -168,7 +168,7 @@ const RESERVED_NAMES: [&str; 22] = [
 /// A name with a separator, `..`, a drive or stream colon, a control
 /// character or a device name is refused, so the file is always written
 /// inside its own upload folder.
-fn upload_file_name(file_name: &str) -> Result<&str, String> {
+pub(crate) fn upload_file_name(file_name: &str) -> Result<&str, String> {
     let refused = || {
         Err(format!(
             "The file name \"{}\" cannot be used. Rename the file and drop it again.",

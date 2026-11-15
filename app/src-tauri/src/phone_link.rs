@@ -81,6 +81,7 @@ fn devices_changed(app: &AppHandle) {
     if let Err(e) = app.emit(PHONE_DEVICES_EVENT, ()) {
         tracing::warn!(target: "shodh::link", error = %e, "the window was not told the paired phones changed");
     }
+    refresh_stay(app);
 }
 
 const LOCAL_ONLY: &str =
@@ -176,6 +177,8 @@ pub struct PhoneLinkState {
     /// The desktop's `agent_event`s, for the bridge's connections.
     events: broadcast::Sender<LinkEvent>,
     running: AsyncMutex<Option<Running>>,
+    /// "Stay available for my phone": the thread that keeps the computer awake.
+    stay: stay_available::StayAvailable,
 }
 
 impl PhoneLinkState {
@@ -193,7 +196,12 @@ impl PhoneLinkState {
 /// events, which conversation the desktop saved, and that the Inbox changed.
 pub fn manage(app: &AppHandle) {
     let (events, _) = broadcast::channel(EVENT_BUFFER);
-    for name in [AGENT_EVENT, CONVERSATION_CHANGED_EVENT, INBOX_CHANGED_EVENT] {
+    for name in [
+        AGENT_EVENT,
+        CONVERSATION_CHANGED_EVENT,
+        INBOX_CHANGED_EVENT,
+        crate::calendar_commands::CALENDAR_CHANGED_EVENT,
+    ] {
         let forward = events.clone();
         app.listen_any(name, move |event| {
             // Parsed only while a phone is connected.
@@ -213,11 +221,13 @@ pub fn manage(app: &AppHandle) {
             }
         });
     }
+    push::start(app);
     app.manage(PhoneLinkState {
         devices: OnceCell::new(),
         pairing: Arc::new(PendingPairing::default()),
         events,
         running: AsyncMutex::new(None),
+        stay: stay_available::StayAvailable::start(),
     });
 }
 
@@ -253,6 +263,7 @@ pub fn start_saved(app: &AppHandle) {
                 tracing::warn!(target: "shodh::link", error = %e, "the phone link did not start");
             }
         }
+        apply_stay(&app).await;
     });
 }
 
@@ -261,10 +272,85 @@ pub fn start_saved(app: &AppHandle) {
 pub fn settings_changed(app: &AppHandle, settings: &crate::app_settings::AppSettings) {
     if settings.policy.local_only {
         let app = app.clone();
-        tauri::async_runtime::spawn(async move { stop(&app).await });
+        tauri::async_runtime::spawn(async move {
+            stop(&app).await;
+            apply_stay(&app).await;
+        });
     } else {
         start_saved(app);
     }
+}
+
+// ── "Stay available for my phone" ─────────────────────────────────
+
+/// Apply "Stay available for my phone" to what is true now: the setting,
+/// Local-only mode and whether a phone is paired (the thread adds the
+/// power source). Returns what it did, and tells the window.
+async fn apply_stay(app: &AppHandle) -> Option<stay_available::StayStatus> {
+    let state = app.try_state::<PhoneLinkState>()?;
+    let data_dir = crate::profile::app_data_dir(app).ok();
+    let paired = match state.devices().await {
+        Ok(devices) => !devices.is_empty(),
+        Err(_) => false,
+    };
+    let conditions = stay_available::Conditions {
+        enabled: data_dir
+            .as_deref()
+            .is_some_and(stay_available::load_enabled),
+        local_only: local_only(app),
+        paired,
+    };
+    let handle = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .try_state::<PhoneLinkState>()
+            .map(|state| state.stay.apply(conditions))
+    })
+    .await
+    .ok()
+    .flatten()?;
+    if let Err(e) = app.emit(stay_available::STAY_EVENT, &status) {
+        tracing::warn!(target: "shodh::link", error = %e, "the window was not told whether the computer stays available");
+    }
+    Some(status)
+}
+
+/// [`apply_stay`] in the background (from code that is not async).
+fn refresh_stay(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        apply_stay(&app).await;
+    });
+}
+
+/// Let the computer sleep again as the app closes.
+pub fn release_stay(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PhoneLinkState>() {
+        state.stay.stop();
+    }
+}
+
+/// "Stay available for my phone" and what it does now (Settings → Phone).
+#[tauri::command]
+pub async fn phone_stay_available(app: AppHandle) -> Result<stay_available::StayStatus, String> {
+    apply_stay(&app)
+        .await
+        .ok_or_else(|| "The phone link is still starting. Try again in a moment.".to_string())
+}
+
+/// Turn "Stay available for my phone" on or off. Only the user, in
+/// Settings → Phone: neither the assistant nor a phone may keep the computer
+/// awake.
+#[tauri::command]
+pub async fn phone_stay_available_set(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<stay_available::StayStatus, String> {
+    let data_dir = crate::profile::app_data_dir(&app)
+        .map_err(|e| format!("The app data folder is unavailable: {e}"))?;
+    stay_available::save_enabled(&data_dir, enabled)?;
+    tracing::info!(target: "shodh::link", enabled, "\"Stay available for my phone\" changed");
+    phone_stay_available(app).await
 }
 
 async fn ensure_running(app: &AppHandle) -> Result<Arc<Link<TauriHost>>, String> {
@@ -430,6 +516,10 @@ pub async fn phone_device_remove(
             }));
     }
     if removed {
+        // Its push address goes with it: a removed phone is never woken again.
+        if let Err(e) = api_key_store::remove_secret(&push::push_user(&node_id)) {
+            tracing::warn!(target: "shodh::link", error = %e, "a removed phone's push address could not be forgotten");
+        }
         devices_changed(&app);
     }
     stop_if_idle(&app).await;
@@ -475,13 +565,14 @@ struct TauriHost {
 impl LinkHost for TauriHost {
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         command: &str,
         args: Value,
     ) -> impl std::future::Future<Output = Result<Value, Value>> + Send {
         let app = self.app.clone();
+        let caller = caller.clone();
         let command = command.to_string();
-        async move { dispatch(&app, &command, args).await }
+        async move { dispatch(&app, &caller, &command, args).await }
     }
 
     fn approval_kind(&self, session_id: &str, step: &PendingStep) -> ApprovalKind {
@@ -736,6 +827,102 @@ struct ApproveArgs {
     approved: bool,
 }
 
+/// Where a task or an event made on a phone says it came from (the desktop's
+/// Tasks view shows it, and the assistant's calendar tools read it).
+pub const PHONE_SOURCE: &str = "phone";
+
+/// The most characters of a phone's own reference for what it made.
+const MAX_SOURCE_REF: usize = 200;
+
+/// A phone's own reference for a task or event it makes, or none. Only two
+/// shapes: `phone:<id>` (the outbox item that made it, so a resend after the
+/// app was killed is recognised) and `phone-calendar:<calendar>:<event>` (an
+/// event of the phone's own calendar, which the phone sends only while "Let
+/// Shodh use my calendar" is on). Nothing a phone sends can claim to be the
+/// assistant's or a connector's.
+pub fn phone_source_ref(raw: Option<&str>) -> Result<Option<String>, Value> {
+    let Some(raw) = raw.map(str::trim).filter(|r| !r.is_empty()) else {
+        return Ok(None);
+    };
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    let shaped = match raw.split(':').collect::<Vec<_>>().as_slice() {
+        ["phone", id] => plain(id),
+        ["phone-calendar", calendar, event] => plain(calendar) && plain(event),
+        _ => false,
+    };
+    if !shaped || raw.len() > MAX_SOURCE_REF {
+        return Err(invalid("This reference is not one a phone makes."));
+    }
+    Ok(Some(raw.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewTaskArgs {
+    title: String,
+    description: Option<String>,
+    due_date: Option<String>,
+    priority: Option<String>,
+    tags: Option<Vec<String>>,
+    project: Option<String>,
+    workspace_id: Option<String>,
+    reminder: Option<String>,
+    source_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskPatchArgs {
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    due_date: Option<String>,
+    priority: Option<String>,
+    status: Option<String>,
+    tags: Option<Vec<String>>,
+    project: Option<String>,
+    workspace_id: Option<String>,
+    reminder: Option<String>,
+    clear: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewEventArgs {
+    title: String,
+    start_time: String,
+    end_time: Option<String>,
+    all_day: Option<bool>,
+    description: Option<String>,
+    color: Option<String>,
+    location: Option<String>,
+    source_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EventPatchArgs {
+    id: String,
+    title: Option<String>,
+    description: Option<String>,
+    start_time: Option<String>,
+    end_time: Option<String>,
+    all_day: Option<bool>,
+    color: Option<String>,
+    location: Option<String>,
+    clear: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IdArgs {
+    id: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConversationArgs {
@@ -764,13 +951,23 @@ struct PageArgs {
     width: u32,
 }
 
+/// The folders a phone may browse and open files in: the user's linked folders,
+/// and "From my phone" once a file was sent from one (Shodh's own folder of the
+/// files phones sent, phone_link/files.rs).
 async fn linked_roots(app: &AppHandle) -> Result<Vec<PathBuf>, Value> {
-    IndexedRoots {
+    let mut roots = IndexedRoots {
         rag: app.state::<RagState>().rag.clone(),
     }
     .folders()
     .await
-    .map_err(|e| json!({ "code": "unavailable", "message": e.to_string() }))
+    .map_err(|e| json!({ "code": "unavailable", "message": e.to_string() }))?;
+    if let Ok(data_dir) = crate::profile::app_data_dir(app) {
+        let inbox = files::inbox_dir(&data_dir);
+        if inbox.is_dir() && !roots.contains(&inbox) {
+            roots.push(inbox);
+        }
+    }
+    Ok(roots)
 }
 
 /// The file a phone named, admitted only inside a linked folder.
@@ -834,7 +1031,12 @@ pub fn phone_approval(item: &InboxItem, facts: Option<RemoteFacts>) -> Value {
 }
 
 /// Run an allowlisted command for a phone with the desktop's own handler.
-async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, Value> {
+async fn dispatch(
+    app: &AppHandle,
+    caller: &Caller,
+    command: &str,
+    raw: Value,
+) -> Result<Value, Value> {
     use crate::source_viewer_commands as viewer;
     match command {
         "agent_start" => {
@@ -873,6 +1075,9 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
         "agent_send" => {
             let a: SendArgs = args(raw)?;
             check_session(app.state::<AgentSessions>().remote_facts(&a.session_id))?;
+            // Only this phone hears (by push) that this session's answer is ready.
+            app.state::<push::Askers>()
+                .asked(&a.session_id, &caller.node_id);
             if a.review_action == Some(true) {
                 return Err(shodh_link::bridge::refused(CODE_ON_COMPUTER));
             }
@@ -940,6 +1145,93 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
                 })
                 .collect();
             Ok(Value::Array(list))
+        }
+        // Tasks and the calendar: the user's own edits on the phone, saved as the
+        // desktop's Tasks view saves them, always as made on the phone.
+        "load_tasks" => reply(crate::calendar_commands::load_tasks(app.clone()).await),
+        "load_events" => reply(crate::calendar_commands::load_events(app.clone()).await),
+        "create_task" => {
+            let a: NewTaskArgs = args(raw)?;
+            let source_ref = phone_source_ref(a.source_ref.as_deref())?;
+            reply(
+                crate::calendar_commands::create_task(
+                    app.clone(),
+                    app.state(),
+                    a.title,
+                    a.description,
+                    a.due_date,
+                    a.priority,
+                    a.tags,
+                    a.project,
+                    a.workspace_id,
+                    Some(PHONE_SOURCE.to_string()),
+                    source_ref,
+                    a.reminder,
+                )
+                .await,
+            )
+        }
+        "update_task" => {
+            let a: TaskPatchArgs = args(raw)?;
+            reply(
+                crate::calendar_commands::update_task(
+                    app.clone(),
+                    app.state(),
+                    a.id,
+                    a.title,
+                    a.description,
+                    a.due_date,
+                    a.priority,
+                    a.status,
+                    a.tags,
+                    a.project,
+                    a.workspace_id,
+                    a.reminder,
+                    a.clear,
+                )
+                .await,
+            )
+        }
+        "create_event" => {
+            let a: NewEventArgs = args(raw)?;
+            let source_ref = phone_source_ref(a.source_ref.as_deref())?;
+            reply(
+                crate::calendar_commands::create_event(
+                    app.clone(),
+                    a.title,
+                    a.start_time,
+                    a.end_time,
+                    a.all_day,
+                    a.description,
+                    a.color,
+                    Some(PHONE_SOURCE.to_string()),
+                    source_ref,
+                    a.location,
+                )
+                .await,
+            )
+        }
+        "update_event" => {
+            let a: EventPatchArgs = args(raw)?;
+            reply(
+                crate::calendar_commands::update_event(
+                    app.clone(),
+                    a.id,
+                    a.title,
+                    a.description,
+                    a.start_time,
+                    a.end_time,
+                    a.all_day,
+                    a.color,
+                    a.location,
+                    a.clear,
+                )
+                .await,
+            )
+        }
+        "delete_event" => {
+            let a: IdArgs = args(raw)?;
+            reply(crate::calendar_commands::delete_event(app.clone(), a.id).await)
         }
         "workspaces_list" => reply(
             crate::workspace_commands::workspaces_list(app.clone(), app.state(), Some(false)).await,
@@ -1041,6 +1333,24 @@ async fn dispatch(app: &AppHandle, command: &str, raw: Value) -> Result<Value, V
                 .await
                 .map_err(|e| json!({ "code": "runtime_error", "message": e.to_string() }))?
         }
+        // Files from the phone (phone_link/files.rs): every upload rule applies.
+        "phone_file_begin" => files::begin(app, caller, raw).await,
+        "phone_file_chunk" => files::chunk(app, caller, raw).await,
+        "phone_file_finish" => files::finish(app, caller, raw).await,
+        // "Keep in library" for a photo asked about (phone_link/photos.rs).
+        "phone_photo_keep" => photos::keep(app, caller, raw).await,
+        // A brief before a meeting (phone_link/brief.rs): retrieval only, cited.
+        "meeting_brief" => brief::meeting_brief(app, raw).await,
+        // Notifications by UnifiedPush (phone_link/push.rs): the phone's endpoint, kept
+        // in the credential store, never logged; `null` forgets it.
+        "phone_push_register" => {
+            if local_only(app) {
+                return Err(shodh_link::bridge::refused(LOCAL_ONLY));
+            }
+            let endpoint = raw.get("endpoint").and_then(Value::as_str);
+            push::register(&caller.node_id, endpoint).map_err(shodh_link::bridge::refused)?;
+            Ok(Value::Bool(endpoint.is_some()))
+        }
         other => Err(shodh_link::bridge::refused(format!(
             "Your phone cannot do this ({other}). Use Shodh on your computer."
         ))),
@@ -1107,6 +1417,12 @@ fn render_page(path: &str, kind: &str, page: usize, width: u32) -> Result<Value,
     }))
 }
 
+pub mod brief;
+pub mod files;
+pub mod photos;
+pub mod push;
+pub mod stay_available;
+
 #[cfg(test)]
 mod end_to_end;
 
@@ -1141,6 +1457,42 @@ mod tests {
             "approvals_pending",
             "the bridge remembers the steps of the read the desktop serves"
         );
+    }
+
+    /// Tasks and events from a phone: always saved as the phone's, with only the two
+    /// references a phone makes.
+    #[test]
+    fn a_task_or_event_from_a_phone_names_only_the_phone_as_its_source() {
+        assert_eq!(PHONE_SOURCE, "phone");
+        assert_eq!(phone_source_ref(None), Ok(None));
+        assert_eq!(phone_source_ref(Some("  ")), Ok(None));
+        assert_eq!(
+            phone_source_ref(Some("phone:7f3a-item_1")),
+            Ok(Some("phone:7f3a-item_1".to_string()))
+        );
+        assert_eq!(
+            phone_source_ref(Some("phone-calendar:12:3456")),
+            Ok(Some("phone-calendar:12:3456".to_string()))
+        );
+        for claimed in [
+            "agent:run-1",
+            "slack:C123:1700000000.1",
+            "phone:",
+            "phone:a:b",
+            "phone-calendar:12",
+            "phone:../../x",
+            "phone:a b",
+            "calendar://task/1",
+        ] {
+            assert!(phone_source_ref(Some(claimed)).is_err(), "{claimed}");
+        }
+        assert!(phone_source_ref(Some(&format!("phone:{}", "a".repeat(MAX_SOURCE_REF)))).is_err());
+        // The dispatch forces the source: no argument a phone sends is read for it.
+        let source = include_str!("phone_link.rs");
+        let body = &source[source.find("\"create_task\" =>").unwrap()
+            ..source.find("\"workspaces_list\" =>").unwrap()];
+        assert_eq!(body.matches("Some(PHONE_SOURCE.to_string())").count(), 2);
+        assert!(!body.contains("a.source,"));
     }
 
     /// The phone's Conversations: each summary says the conversation's mode and agent
@@ -1371,6 +1723,73 @@ mod tests {
             check_session(None).is_ok(),
             "the command reports a closed session"
         );
+    }
+
+    /// "From my phone" is Shodh's own folder inside the app data folder: as a root a
+    /// phone may browse, it opens only itself, never the app data around it.
+    #[test]
+    fn from_my_phone_opens_only_itself_not_the_app_data_around_it() {
+        let data = tempfile::tempdir().unwrap();
+        let inbox = files::inbox_dir(data.path());
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("scan.pdf"), b"%PDF").unwrap();
+        for (folder, name) in [
+            ("", "settings.json"),
+            ("", "conversations.json"),
+            (photos::PHOTO_FOLDER, "0123456789abcdef0123456789abcdef.jpg"),
+            ("phone_transfers", "0123456789abcdef0123456789abcdef.part"),
+        ] {
+            let dir = data.path().join(folder);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let roots = vec![inbox.clone()];
+        let shown = |p: std::path::PathBuf| p.display().to_string();
+        assert!(within_linked(&shown(inbox.join("scan.pdf")), &roots).is_ok());
+        for refused in [
+            data.path().join("settings.json"),
+            data.path().join("conversations.json"),
+            data.path()
+                .join(photos::PHOTO_FOLDER)
+                .join("0123456789abcdef0123456789abcdef.jpg"),
+            data.path()
+                .join("phone_transfers")
+                .join("0123456789abcdef0123456789abcdef.part"),
+        ] {
+            assert_eq!(
+                within_linked(&shown(refused.clone()), &roots),
+                Err(PathRefusal::OutsideLinkedFolders),
+                "{}",
+                refused.display()
+            );
+        }
+        // Climbing out of it by name is refused before the disk is looked at.
+        let climbed = format!(
+            "{}{}..{}settings.json",
+            inbox.display(),
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        );
+        assert!(within_linked(&climbed, &roots).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(data.path().join("settings.json"), inbox.join("link.json"))
+                .unwrap();
+            assert!(within_linked(&shown(inbox.join("link.json")), &roots).is_err());
+        }
+    }
+
+    /// `phone_push_register`: refused in Local-only mode before anything is kept, and only
+    /// an https address is kept (push.rs).
+    #[test]
+    fn a_push_address_is_kept_only_outside_local_only_and_only_https() {
+        let source = include_str!("phone_link.rs");
+        let arm = &source[source.find("\"phone_push_register\" =>").unwrap()..];
+        let arm = &arm[..arm.find("Ok(Value::Bool").unwrap()];
+        let local = arm.find("local_only(app)").expect("checks Local-only mode");
+        let kept = arm.find("push::register(").expect("keeps the address");
+        assert!(local < kept, "Local-only mode is checked first");
+        assert!(push::register("phone", Some("http://ntfy.example/x")).is_err());
     }
 
     #[test]

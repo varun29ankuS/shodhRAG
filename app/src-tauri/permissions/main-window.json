@@ -186,6 +186,8 @@
           "phone_device_remove",
           "phone_devices",
           "phone_pairing_start",
+          "phone_stay_available",
+          "phone_stay_available_set",
           "pin_conversation",
           "process_image_from_base64",
           "process_image_from_file",

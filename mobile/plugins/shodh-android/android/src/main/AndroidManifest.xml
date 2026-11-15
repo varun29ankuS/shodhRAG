@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The one-tap update: a verified Shodh app handed to Android's installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- A photo to send or to ask about (asked for when the user first takes one). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- The phone's own calendar, only when the user turns on calendar sync. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <!-- Notifications (Settings, Notifications): content-free, and "Stay connected". -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Voice: asking by speaking, only while the user holds Talk. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Android 11 and later: the apps Shodh may find (speech, text to speech, UnifiedPush). -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+    </queries>
+
+    <!--
+      Nothing of Shodh leaves this phone in a backup or a move to a new phone: its
+      link key and sealed files are kept with a key of this phone's Keystore, which a
+      restored copy could not open (and the pairing must not travel).
+    -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/shodh_data_extraction_rules"
+        android:fullBackupContent="false">
+        <!-- Android's installer reports here (it first asks the user to confirm). -->
+        <receiver
+            android:name="com.shodhrag.android.InstallResult"
+            android:exported="false" />
+
+        <!-- "Send to Shodh" in Android's share sheet: files, or text and links to ask about. -->
+        <activity
+            android:name="com.shodhrag.android.IncomingActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="Shodh"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- "Open in Shodh" on an event Shodh put in the phone's calendar. -->
+            <intent-filter>
+                <action android:name="android.provider.calendar.action.HANDLE_CUSTOM_EVENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="vnd.android.cursor.item/event" />
+            </intent-filter>
+        </activity>
+
+        <!-- "Stay connected": keeps the link to the user's computer open. -->
+        <service
+            android:name="com.shodhrag.android.ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the encrypted link to the user's own computer open, to tell them when an approval or an answer waits." />
+        </service>
+
+        <!-- UnifiedPush: the user's distributor app (for example ntfy) wakes Shodh. -->
+        <receiver
+            android:name="com.shodhrag.android.PushReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- A brief before a meeting: its alarm. -->
+        <receiver
+            android:name="com.shodhrag.android.BriefAlarm"
+            android:exported="false" />
+
+        <!-- The camera writes a photo into the app's own cache through this. -->
+        <provider
+            android:name="com.shodhrag.android.ShodhFileProvider"
+            android:authorities="${applicationId}.shodh.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shodh_file_paths" />
+        </provider>
+
+        <!--
+          No EmojiCompat. AppCompat brings it, and at start it fetches its emoji font
+          from Play Services' font provider, which ties Shodh's process to Play
+          Services': when Play Services restarts (it does after updating itself),
+          Android kills Shodh with it, in the foreground ("depends on provider
+          com.google.android.gms/.fonts.provider.FontsProvider in dying proc").
+          Shodh draws its text in the WebView, which never uses EmojiCompat.
+          CI checks the built app's manifest has no EmojiCompatInitializer.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:node="remove" />
+        </provider>
+    </application>
+</manifest>

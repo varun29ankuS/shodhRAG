@@ -10,6 +10,7 @@
  */
 import { VIEW_TABS, VIEW_TAB_LABELS, type ViewTab } from '../../../app/src/lib/viewTabs.ts';
 import type { KindFilter } from './modes';
+import type { Attached, CarriedPassage } from './ask';
 
 export type Section = ViewTab | 'approvals';
 
@@ -31,7 +32,15 @@ export type AskScreen =
   /** Every conversation, or only those of one kind. */
   | { kind: 'conversations'; filter?: KindFilter }
   /** A conversation: saved, and (with `question`) asking a new question in it. */
-  | { kind: 'answer'; conversationId: string; question: string | null; workspaceId: string | null };
+  | { kind: 'answer'; conversationId: string; question: string | null; workspaceId: string | null; context?: AskContext };
+
+/** What a new question is about besides its words: a photo's text (cited as "Your photo"), or text shared from another app. */
+export interface AskContext {
+  attached: Attached[];
+  passages: CarriedPassage[];
+  /** The photo asked about, for "Keep in library". */
+  photoId?: string;
+}
 
 /** A folder of the Library: its path on the computer and its name. */
 export interface Folder {

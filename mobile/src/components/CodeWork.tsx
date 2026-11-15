@@ -29,7 +29,7 @@ export function CodeWorkView({ work }: { work: CodeWork }) {
     <div className="code-work">
       {work.files.length > 0 && (
         <section aria-label="Files changed">
-          <div className="code-label">{work.files.length === 1 ? '1 file changed' : `${work.files.length} files changed`}</div>
+          <div className="code-label">{`Files changed (${work.files.length})`}</div>
           <ul className="code-files">
             {work.files.map(file => (
               <li key={file.path} className="code-file">
@@ -46,7 +46,7 @@ export function CodeWorkView({ work }: { work: CodeWork }) {
       )}
       {work.commands.length > 0 && (
         <section aria-label="Commands run">
-          <div className="code-label">{work.commands.length === 1 ? '1 command' : `${work.commands.length} commands`}</div>
+          <div className="code-label">{`Commands (${work.commands.length})`}</div>
           {work.commands.map(command => {
             const ok = commandOk(command);
             return (
@@ -93,7 +93,7 @@ export function CreatorPreview({ work }: { work: CodeWork }) {
         <Sparkles aria-hidden="true" className="icon-small" />
         <span>{CREATOR_PREVIEW_ELSEWHERE}</span>
       </div>
-      {work.finished && <p className="creator-summary serif">{work.finished}</p>}
+      {work.finished && <p className="creator-summary">{work.finished}</p>}
       {work.files.length > 0 && (
         <p className="creator-files">{work.files.length === 1 ? '1 file made' : `${work.files.length} files made`}</p>
       )}

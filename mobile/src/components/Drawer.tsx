@@ -6,7 +6,8 @@
  */
 import { motion, type PanInfo } from 'framer-motion';
 import { Activity, BookOpen, ListChecks, MessageCircle, Layers, Plug, Settings, Shapes, ShieldCheck, type LucideIcon } from 'lucide-react';
-import { useLink, useNav, useThemeChoice } from '../lib/context';
+import { useContext } from 'react';
+import { MenuShown, useLink, useNav, useThemeChoice } from '../lib/context';
 import { fade, glide } from '../lib/motion';
 import { SECTIONS, SECTION_LABELS, type Section } from '../lib/nav';
 import { THEME_CHOICES } from '../lib/theme';
@@ -30,6 +31,7 @@ const CLOSE_DISTANCE = 80;
 const CLOSE_SPEED = 500;
 
 export function Drawer({ waiting }: { waiting: number }) {
+  const shown = useContext(MenuShown);
   const { nav, dispatch, back } = useNav();
   const { status } = useLink();
   const { choice, choose } = useThemeChoice();
@@ -44,6 +46,7 @@ export function Drawer({ waiting }: { waiting: number }) {
         aria-label="All sections"
         initial={{ x: -320 }}
         animate={{ x: 0 }}
+        onAnimationComplete={() => shown?.()}
         exit={{ x: -320 }}
         transition={glide}
         drag="x"
@@ -52,9 +55,9 @@ export function Drawer({ waiting }: { waiting: number }) {
         onDragEnd={released}
       >
         <div className="drawer-head">
-          <img src={logo} alt="" className="brand-logo" width={40} height={40} />
+          <img src={logo} alt="" className="brand-logo" width={34} height={34} />
           <span className="row-text">
-            <span className="drawer-name serif">Shodh</span>
+            <span className="drawer-name">Shodh</span>
             <span className="drawer-line connection">
               <Dot status={status} small />
               {connectionWords(status).short}

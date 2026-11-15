@@ -151,23 +151,32 @@ describe('motion', () => {
 });
 
 describe('a citation chip', () => {
-  it('is small on the line and 44px to the finger', () => {
+  it('is small on the line and 44px to the finger, centred on it', () => {
     const chip = /\.chip\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
     const before = /\.chip::before\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-    const size = Number(/\bwidth:\s*(\d+)px/.exec(chip)?.[1]);
-    const height = Number(/\bheight:\s*(\d+)px/.exec(chip)?.[1]);
-    const inset = Math.abs(Number(/inset:\s*(-?\d+)px/.exec(before)?.[1]));
-    expect(size + 2 * inset).toBeGreaterThanOrEqual(44);
-    expect(height + 2 * inset).toBeGreaterThanOrEqual(44);
+    expect(Number(/\bheight:\s*(\d+)px/.exec(chip)?.[1])).toBeLessThanOrEqual(18);
+    const width = Number(/\bwidth:\s*(\d+)px/.exec(before)?.[1]);
+    const height = Number(/\bheight:\s*(\d+)px/.exec(before)?.[1]);
+    expect(width).toBeGreaterThanOrEqual(44);
+    expect(height).toBeGreaterThanOrEqual(44);
+    // Centred: from the chip's middle, back by half its size.
+    expect(before).toMatch(/left:\s*50%/);
+    expect(before).toMatch(/top:\s*50%/);
+    expect(/\bmargin:\s*([^;]+);/.exec(before)?.[1].trim()).toBe(`-${height / 2}px 0 0 -${width / 2}px`);
     expect(chip).toMatch(/position:\s*relative/);
     expect(before).toMatch(/position:\s*absolute/);
   });
 
-  it('sits flush with the punctuation after it: "question ①." not "question ① ."', () => {
+  it('sits flush with the word before it and the punctuation after it: "question¹." not "question ¹ ."', () => {
     const chip = /\.chip\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    // As wide as its digits: no empty box on either side of the number.
+    expect(/\bwidth:\s*([^;]+);/.exec(chip)?.[1].trim()).toBe('auto');
+    expect(/\bpadding:\s*([^;]+);/.exec(chip)?.[1].trim()).toBe('0');
+    expect(chip).not.toMatch(/min-width/);
     const margin = /\bmargin:\s*([^;]+);/.exec(chip)?.[1].trim().split(/\s+/) ?? [];
-    // margin: top right bottom left; the right one is 0.
+    // margin: top right bottom left; nothing on the right, a hair on the left.
     expect(margin[1] ?? margin[0]).toBe('0');
+    expect(Number(/^(\d+)px$/.exec(margin[3] ?? margin[1] ?? margin[0])?.[1] ?? 0)).toBeLessThanOrEqual(1);
   });
 });
 

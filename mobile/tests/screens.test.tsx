@@ -212,6 +212,14 @@ describe('Ask', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'How does Self-RAG decide when to retrieve?' })).toBeTruthy();
     expect(await screen.findByText('Retrieve token.')).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Source 1: self-rag.pdf' })).toHaveLength(2);
+    // "itself¹." as written: no space between a word, its citation and the full stop.
+    expect(screen.getByText((_, element) => element?.tagName === 'P' && element.textContent === 'It decides itself1.')).toBeTruthy();
+    const chips = document.querySelectorAll('.blocks .chip');
+    expect(chips).toHaveLength(2);
+    for (const chip of chips) {
+      expect(chip.previousSibling?.textContent ?? '', 'the text before a citation').toMatch(/\S$/);
+      expect(chip.nextSibling?.textContent ?? '', 'the text after a citation').toMatch(/^[.,;:!?)]/);
+    }
     expect(screen.getByText('Answered from 1 passage in your library')).toBeTruthy();
     expect(screen.getByText('From your library')).toBeTruthy();
     expect(await screen.findByAltText('self-rag.pdf, page 3')).toBeTruthy();

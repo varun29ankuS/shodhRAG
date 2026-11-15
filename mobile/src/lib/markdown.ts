@@ -130,9 +130,18 @@ export function parseInline(source: string): Inline[] {
     const rest = source.slice(i);
     const cite = CITE.exec(rest);
     if (cite) {
+      // A citation sits on the word it cites, and punctuation after it
+      // follows it at once: "question [1] ." reads "question¹.".
+      buffer = buffer.replace(/\s+$/, '');
+      const last = out[out.length - 1];
+      if (buffer === '' && last?.kind === 'text' && !last.code) {
+        last.text = last.text.replace(/\s+$/, '');
+        if (last.text === '') out.pop();
+      }
       flush();
       for (const part of cite[1].split(/[,;]/)) out.push({ kind: 'cite', n: Number(part.trim()) });
       i += cite[0].length;
+      i += /^\s+(?=[.,;:!?)])/.exec(source.slice(i))?.[0].length ?? 0;
       continue;
     }
     const link = LINK.exec(rest);

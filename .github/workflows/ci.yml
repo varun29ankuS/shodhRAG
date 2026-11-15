@@ -1927,22 +1927,18 @@ jobs:
 
       # The launch test runs inside the emulator action (the emulator stops
       # when the action ends), which runs each line of `script` on its own,
-      # so the test is one bash program, in LAUNCH_TEST (the job's env, so
-      # both passes below run the same program).
+      # so the test is one bash program, in LAUNCH_TEST (the job's env).
       #
-      # It runs twice, each pass in its own new AVD and boot (the action
-      # makes the AVD again each time: force-avd-creation is true by
-      # default). The emulator process died mid-tour in four runs, silently
-      # (no emulator error, empty crash reports, no out-of-memory kill), the
-      # last one (43677129675) at the sixth shot with no relaunch at all,
-      # while the app's frames took 1.2 s on average and 5.5 s at worst.
-      # Pass "blur" is the app as it is, and its screenshots are the ones
-      # people see; pass "noblur" is the same tour with every
-      # backdrop-filter off (debug.shodh.noblur, a debug build only), so the
-      # frosted glass's cost on this software renderer is measured, not
-      # guessed. Each pass logs every shot's frames (dumpsys gfxinfo) and
-      # the emulator process's CPU and memory every 2 s.
-      - name: Launch it on an emulator, tour with blur (the_app_reaches_its_pair_screen)
+      # The emulator process died mid-tour in five runs. Run 43689345770's
+      # kernel trace caught it: a segfault (SIGSEGV) in the emulator's own
+      # RenderThread, the host-side renderer of -gpu swiftshader_indirect.
+      # In that run the tour with blur passed in full on the pinned build
+      # and the same tour without backdrop-filter died at its first shot,
+      # so the frosted glass is not the cause. The guest renders here
+      # (-gpu guest, below), so that host renderer is not used. Each shot
+      # logs its frames (dumpsys gfxinfo), and the emulator process's CPU
+      # and memory are sampled every 2 s.
+      - name: Launch it on an emulator and tour its screens (the_app_reaches_its_pair_screen)
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
         # The backstop for anything outside the script's bounded calls (the
         # action's own boot wait and emulator shutdown): the boot's 10-minute
@@ -1977,40 +1973,13 @@ jobs:
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
-          # The action's default emulator options (-gpu swiftshader_indirect).
-          # -gpu guest was tried and bought nothing: the emulator still died
-          # on a relaunch, sooner (run 43670793908, the second relaunch,
-          # against 22 good ones with swiftshader_indirect in run
-          # 43662536425), with no out-of-memory kill in the kernel's log and
-          # no crash report.
-          script: bash -euo pipefail -c "$LAUNCH_TEST"
-
-      # The same tour without blur, in its own boot. It runs after the pass
-      # with blur whatever that pass's result (not when the run is
-      # cancelled), so a death in one is compared with the other. It is not
-      # continue-on-error: a failure of either pass fails this job.
-      # adb's server is stopped first: after run 43677129675's emulator
-      # died, adb still listed emulator-5554 as offline, and the second
-      # boot is on the same port.
-      - name: Stop adb's server before the second boot
-        if: ${{ !cancelled() && env.APK != '' }}
-        run: timeout -k 5 30 adb kill-server || true
-
-      - name: Launch it on an emulator, tour without blur (measurement)
-        if: ${{ !cancelled() && env.APK != '' }}
-        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
-        timeout-minutes: 30
-        env:
-          PASS: noblur
-        # The same emulator, image, screen and options as the pass with
-        # blur, so the blur is the one thing that differs.
-        with:
-          api-level: 34
-          target: default
-          arch: x86_64
-          profile: pixel_6
-          emulator-build: ${{ env.EMULATOR_BUILD }}
-          emulator-boot-timeout: 600
+          # The guest renders (Android's own software renderer, in the
+          # phone), not the emulator's host-side renderer, whose
+          # RenderThread segfaulted in run 43689345770. -gpu guest was
+          # tried once before on emulator 37.2.13 (run 43670793908), when
+          # the tour still relaunched the app; that died on a relaunch.
+          # The other options are the action's defaults.
+          emulator-options: -no-window -gpu guest -no-snapshot -noaudio -no-boot-anim
           script: bash -euo pipefail -c "$LAUNCH_TEST"
 
       - name: Upload the screenshots and launch recording
@@ -2022,34 +1991,13 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # The pass without blur's pictures, kept apart: they are a
-      # measurement, not how the app looks.
-      - name: Upload the screenshots without blur (measurement)
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: android-screens-noblur-measurement
-          path: ${{ runner.temp }}/android-screens-noblur
-          retention-days: 14
-          if-no-files-found: warn
-
-      # Each pass's evidence, passed or not: the frames per shot and the
-      # emulator's load are the comparison between the two passes.
-      - name: Upload the emulator's log, frames and load (with blur)
+      # The evidence, passed or not: the frames per shot and the emulator's load.
+      - name: Upload the emulator's log, frames and load
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: android-launch-evidence-blur
           path: ${{ runner.temp }}/android-launch-blur
-          retention-days: 14
-          if-no-files-found: warn
-
-      - name: Upload the emulator's log, frames and load (without blur)
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
-        with:
-          name: android-launch-evidence-noblur
-          path: ${{ runner.temp }}/android-launch-noblur
           retention-days: 14
           if-no-files-found: warn
 

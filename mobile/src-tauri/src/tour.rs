@@ -7,7 +7,8 @@
 //! `<request> <screen> <theme>` ("7 demo-library dark"): a new request
 //! number for each, so asking for the same screen twice is still a change,
 //! and the screen and theme in one value, so the window never sees one
-//! without the other. The window opens that screen again from the start
+//! without the other ("start" asks for the app's own start, as a tester
+//! first sees it). The window opens that screen again from the start
 //! (src/lib/tour.ts) and writes its ready line for it, as at launch.
 
 use std::time::Duration;

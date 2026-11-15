@@ -22,14 +22,14 @@ interface Opening {
  * for a screen (CI's screenshots). `demo-` screens show a scripted computer;
  * `__SHODH_DEMO__` is false in a release build, so that code is not in it.
  */
-async function opening(screen: string | null, theme?: ThemeChoice): Promise<Opening> {
+async function opening(screen: string | null): Promise<Opening> {
   if (!screen) return { source: tauriLink, start: null };
   if (__SHODH_DEMO__ && screen.startsWith('demo-')) {
     const { demoLink, demoNav } = await import('./lib/demo');
     // The ready line is still the app's own, so CI waits for it as for any screen.
-    return { source: { ...demoLink(), ready: tauriLink.ready }, start: { screen, theme, nav: demoNav(screen.slice('demo-'.length)) } };
+    return { source: { ...demoLink(), ready: tauriLink.ready }, start: { screen, nav: demoNav(screen.slice('demo-'.length)) } };
   }
-  return { source: tauriLink, start: { screen, theme, nav: startNav(screen) } };
+  return { source: tauriLink, start: { screen, nav: startNav(screen) } };
 }
 
 const element = document.getElementById('root');
@@ -39,22 +39,22 @@ const root = createRoot(element);
 // Each opening is a new App (its key), so a screen the tour asks for starts
 // as fresh as at launch: the splash, the link's state and the ready line.
 let openings = 0;
-function show({ source, start }: Opening) {
+function show({ source, start }: Opening, theme?: ThemeChoice) {
   openings += 1;
   root.render(
     <StrictMode>
-      <App key={openings} source={source} start={start} />
+      <App key={openings} source={source} start={start} theme={theme} />
     </StrictMode>,
   );
 }
 
 // CI's screenshot tour (lib/tour.ts): every screen in one run of the app.
 if (__SHODH_DEMO__) {
-  void import('./lib/tour').then(({ followTour }) => followTour((screen, theme) => opening(screen, theme).then(show)));
+  void import('./lib/tour').then(({ followTour }) => followTour((screen, theme) => opening(screen).then(next => show(next, theme))));
 }
 
 void tauriLink
   .startScreen()
   .catch(() => null)
-  .then(screen => opening(screen))
-  .then(show);
+  .then(opening)
+  .then(next => show(next));

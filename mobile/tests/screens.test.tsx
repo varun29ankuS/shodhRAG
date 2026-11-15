@@ -882,7 +882,7 @@ describe('the theme', () => {
     shown?.unmount();
     source = fakeSource(connectedComputer(), CONNECTED);
     device = memoryDevice();
-    shown = render(<App source={source} start={{ screen: 'test', nav: initialNav('settings'), theme: 'light' }} device={device} />);
+    shown = render(<App source={source} start={{ screen: 'test', nav: initialNav('settings') }} device={device} theme="light" />);
     await screen.findByText('Theme');
     expect(document.documentElement.dataset.theme).toBe('light');
     await waitFor(() => expect(source.readies).toEqual([['test', 'light']]));

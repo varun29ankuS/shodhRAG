@@ -1628,14 +1628,15 @@ jobs:
             # decides no result.
             requests=0
             themes_wrong=()
-            # name, the screen asked for (and named by the ready line), the
-            # theme asked for, the theme the ready line must name.
+            # name, the screen asked for ("start": the app's own start), the
+            # screen the ready line names, the theme asked for, the theme the
+            # ready line must name.
             shoot() {
-              local name=$1 screen=$2 theme=$3 expect=$4 status=0 line state now ready="$evidence/ready-$1-$4.txt"
+              local name=$1 request=$2 screen=$3 theme=$4 expect=$5 status=0 line state now ready="$evidence/ready-$1-$5.txt"
               requests=$(( requests + 1 ))
               adb_within 10 logcat -b main -c
               # Quoted for the phone's shell, so the three words are one value.
-              adb_within 30 shell setprop debug.shodh.tour "'$requests $screen $theme'"
+              adb_within 30 shell setprop debug.shodh.tour "'$requests $request $theme'"
               # 60 s: the app reads the property every 0.2 s and opens the
               # screen in a few seconds here.
               adb_within 60 logcat -v brief -s Shodh:I -e 'Shodh (not )?ready' -m 1 > "$ready" || status=$?
@@ -1666,34 +1667,34 @@ jobs:
               # 20 s: a screenshot is one PNG of the screen, under a second here.
               adb_within 20 exec-out screencap -p > "$screens/$name-$expect.png"
             }
-            # name, the screen
+            # name, the screen asked for, the screen the ready line names
             shots=(
-              "pair:pair"
-              "home:home"
-              "conversations:conversations"
-              "library:library"
-              "approvals:approvals"
-              "menu:menu"
-              "settings:settings"
-              "tasks:tasks"
-              "connected-home:demo-home"
-              "connected-answer:demo-answer"
-              "connected-conversations:demo-conversations"
-              "connected-conversations-research:demo-conversations-research"
-              "connected-conversations-code:demo-conversations-code"
-              "connected-conversations-creator:demo-conversations-creator"
-              "connected-code:demo-code"
-              "connected-library:demo-library"
-              "connected-reader:demo-reader"
-              "connected-approvals:demo-approvals"
-              "connected-approval-sheet:demo-sheet"
-              "connected-workspaces:demo-workspaces"
-              "connected-menu:demo-menu"
+              "pair:start:pair"
+              "home:home:home"
+              "conversations:conversations:conversations"
+              "library:library:library"
+              "approvals:approvals:approvals"
+              "menu:menu:menu"
+              "settings:settings:settings"
+              "tasks:tasks:tasks"
+              "connected-home:demo-home:demo-home"
+              "connected-answer:demo-answer:demo-answer"
+              "connected-conversations:demo-conversations:demo-conversations"
+              "connected-conversations-research:demo-conversations-research:demo-conversations-research"
+              "connected-conversations-code:demo-conversations-code:demo-conversations-code"
+              "connected-conversations-creator:demo-conversations-creator:demo-conversations-creator"
+              "connected-code:demo-code:demo-code"
+              "connected-library:demo-library:demo-library"
+              "connected-reader:demo-reader:demo-reader"
+              "connected-approvals:demo-approvals:demo-approvals"
+              "connected-approval-sheet:demo-sheet:demo-sheet"
+              "connected-workspaces:demo-workspaces:demo-workspaces"
+              "connected-menu:demo-menu:demo-menu"
             )
             for theme in light dark; do
               for shot in "${shots[@]}"; do
-                IFS=: read -r name screen <<< "$shot"
-                shoot "$name" "$screen" "$theme" "$theme"
+                IFS=: read -r name request screen <<< "$shot"
+                shoot "$name" "$request" "$screen" "$theme" "$theme"
               done
             done
             # the_app_follows_the_phones_theme: the app's default theme
@@ -1704,9 +1705,9 @@ jobs:
             # just after `cmd uimode night yes` is where run 43662536425's
             # emulator died. If the emulator dies here, the shot's error names
             # it and the pictures before it are kept.
-            shoot follows-phone home phone light
+            shoot follows-phone home home phone light
             adb_within 30 shell cmd uimode night yes
-            shoot follows-phone home phone dark
+            shoot follows-phone home home phone dark
             launcher_shots dark
             echo "- ${#shots[@]} screens, each in light and dark, and the home screen following the phone from light to dark, all in one run of the app (pid ${pid}), are in the \`android-screens\` artifact" >> "$GITHUB_STEP_SUMMARY"
             if [ "${#themes_wrong[@]}" -gt 0 ]; then

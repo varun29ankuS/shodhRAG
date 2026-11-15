@@ -12,12 +12,18 @@ import type { ThemeChoice } from './theme';
 
 const TOUR_EVENT = 'shodh://tour';
 
-/** Open each requested screen with `open`, one after another, in the order asked. */
-export function followTour(open: (screen: string, theme: ThemeChoice) => Promise<void>): Promise<() => void> {
+/** The request for the app's own start, as a tester first sees it (the pair screen on a new phone). */
+const OWN_START = 'start';
+
+/**
+ * Open each requested screen with `open`, one after another, in the order
+ * asked: a screen's name, or null for the app's own start.
+ */
+export function followTour(open: (screen: string | null, theme: ThemeChoice) => Promise<void>): Promise<() => void> {
   let queue = Promise.resolve();
   return listen<{ screen: string; theme: ThemeChoice }>(TOUR_EVENT, ({ payload }) => {
     queue = queue
-      .then(() => open(payload.screen, payload.theme))
+      .then(() => open(payload.screen === OWN_START ? null : payload.screen, payload.theme))
       .catch(error => {
         // No ready line follows, so the tour fails on its wait and keeps this in the log.
         console.error('Shodh tour: the screen could not be opened', error);

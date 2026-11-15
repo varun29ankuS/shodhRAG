@@ -38,23 +38,35 @@ import { Workspaces } from './screens/Workspaces';
 
 /**
  * Where a debug build was asked to open (CI's screenshots, lib/start.ts): the
- * screen's name for the ready line, where the app is, and the theme the tour
- * asked for (lib/tour.ts; otherwise the user's own choice).
+ * screen's name for the ready line, and where the app is.
  */
 export interface Start {
   screen: string;
   nav: Nav | null;
-  theme?: ThemeChoice;
 }
 
-export function App({ source, start = null, device = tauriDevice }: { source: LinkSource; start?: Start | null; device?: Device }) {
+/**
+ * `theme` opens the app at that theme choice without saving it (CI's screenshot
+ * tour, lib/tour.ts); otherwise the user's own choice applies.
+ */
+export function App({
+  source,
+  start = null,
+  device = tauriDevice,
+  theme,
+}: {
+  source: LinkSource;
+  start?: Start | null;
+  device?: Device;
+  theme?: ThemeChoice;
+}) {
   const [pairing, setPairing] = useState(start?.screen === 'pair');
   const openPairing = useCallback(() => setPairing(true), []);
   // Where Android's status bar and gesture bar are, for every edge of the app (theme.css --inset-*).
   useSystemInsets(device.insets);
   return (
     <MotionConfig reducedMotion="user">
-      <ThemeProvider systemBars={device.systemBars} pinned={start?.theme}>
+      <ThemeProvider systemBars={device.systemBars} pinned={theme}>
         <DeviceProvider device={device}>
           <LockGate source={source} skip={start !== null}>
         <LinkProvider source={source} openPairing={openPairing}>

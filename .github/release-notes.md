@@ -36,8 +36,6 @@ If macOS says the app "is damaged", or the steps above do not offer **Open Anywa
 xattr -dr com.apple.quarantine /Applications/Shodh.app
 ```
 
-<!-- Android install section (feat/android-release). Kept as its own block at the end so it merges cleanly with other edits to this file. -->
-
 ## Android: install the APK
 
 Shodh for Android is not in Google Play yet. Install it from this release:

@@ -9,7 +9,7 @@ import { createShim, type Shim } from './invoke';
 import { errorText, isConnected, type LinkSource, type LinkStatus } from './link';
 import { canGoBack, initialNav, navigate, type Nav, type NavAction, type Section } from './nav';
 import { Subscriptions } from './subscriptions';
-import { useTheme, type ThemeState } from './theme';
+import { useTheme, type Theme, type ThemeChoice, type ThemeState } from './theme';
 
 export interface Linked {
   source: LinkSource;
@@ -32,7 +32,7 @@ export function useLink(): Linked {
 }
 
 /** The link's state, kept current: listen first, then read, so no change is missed. */
-function useLinkStatus(source: LinkSource): LinkStatus {
+export function useLinkStatus(source: LinkSource): LinkStatus {
   const [status, setStatus] = useState<LinkStatus>({ state: 'starting' });
   useEffect(() => {
     let alive = true;
@@ -155,8 +155,16 @@ export function useGo(): (section: Section) => void {
 
 const ThemeContext = createContext<ThemeState | null>(null);
 
-export function ThemeProvider({ children }: { children: ReactNode }) {
-  const theme = useTheme();
+export function ThemeProvider({
+  children,
+  systemBars,
+  pinned,
+}: {
+  children: ReactNode;
+  systemBars?: (theme: Theme) => Promise<void>;
+  pinned?: ThemeChoice;
+}) {
+  const theme = useTheme(systemBars, pinned);
   return <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>;
 }
 
@@ -196,3 +204,6 @@ export function useNote() {
   if (!notes) throw new Error('useNote outside NoteProvider');
   return notes;
 }
+
+/** The menu finished opening: the ready line of a screen that opens with the menu waits for it (CI screenshots). */
+export const MenuShown = createContext<(() => void) | null>(null);

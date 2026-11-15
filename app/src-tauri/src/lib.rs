@@ -962,6 +962,8 @@ pub fn run() {
             phone_link::phone_pairing_start,
             phone_link::phone_devices,
             phone_link::phone_device_remove,
+            phone_link::phone_stay_available,
+            phone_link::phone_stay_available_set,
             github::github_status,
             github::github_sign_in_start,
             github::github_sign_in_cancel,

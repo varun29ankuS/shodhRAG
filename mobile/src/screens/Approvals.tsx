@@ -34,27 +34,27 @@ export function Approvals({ now = () => new Date() }: { now?: () => Date }) {
   return (
     <motion.div className="view" variants={viewIn} initial="hidden" animate="shown" exit="gone">
       <div className="scroll">
-        <TopBar brand={false} />
-        <h1 className="title serif pad">Approvals</h1>
+        <TopBar />
+        <h1 className="title pad">Approvals</h1>
         {list === undefined && !connected && <NotConnected what="what the assistant is waiting on" />}
         {list === undefined && connected && (
           <div className="skeleton-lines" aria-busy="true" aria-label="Loading approvals">
             <div className="skeleton skeleton-line" style={{ width: '50%' }} />
             <div className="skeleton skeleton-line" style={{ width: '88%', height: 24 }} />
-            <div className="skeleton" style={{ width: 120, height: 44, borderRadius: 22 }} />
+            <div className="skeleton" style={{ width: 96, height: 44, borderRadius: 12 }} />
           </div>
         )}
         {list !== undefined && list.length === 0 && (
-          <p className="panel-text serif pad" style={{ marginTop: 20, fontSize: 19 }}>
+          <p className="panel-text panel-quiet" style={{ marginTop: 24 }}>
             Nothing needs you right now. When the assistant wants a yes, it asks here.
           </p>
         )}
         {list !== undefined && list.length > 0 && (
-          <div className="pad">
+          <div className="card" style={{ marginTop: 24 }}>
             {list.map(approval => (
               <article key={`${approval.sessionId}:${approval.stepId}`} className="approval">
                 <span className="approval-context">{context(approval, conversations.data, today)}</span>
-                <span className="approval-title serif">{approval.title}</span>
+                <span className="approval-title">{approval.title}</span>
                 {approval.phoneMay && approval.sessionId && approval.stepId ? (
                   <button
                     type="button"
@@ -111,8 +111,8 @@ export function ApprovalSheet({ target }: { target: SheetTarget }) {
         {approval ? context(approval, conversations.data, new Date()) : 'The assistant is waiting for your answer'}
       </span>
       <div className="sheet-card">
-        <span className="sheet-card-title serif">{approval?.title ?? 'Approve a step'}</span>
-        <span className="sheet-card-text serif">
+        <span className="sheet-card-title">{approval?.title ?? 'Approve a step'}</span>
+        <span className="sheet-card-text">
           Allow it and the assistant goes on with this step on your computer. Decline it and the assistant is told, and asks how to continue.
         </span>
       </div>

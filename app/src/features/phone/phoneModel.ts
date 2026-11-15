@@ -53,3 +53,30 @@ export function whenSeen(phone: PairedPhone, locale?: string): string {
   if (seen) parts.push(`last connected ${seen}`);
   return parts.join(' · ');
 }
+
+/** The event the desktop sends when "Stay available for my phone" or what it does changed. */
+export const PHONE_STAY_CHANGED = 'phone_stay_available_changed';
+
+/** `phone_stay_available`: the setting and what it does now (`stay_available.rs`). */
+export interface StayStatus {
+  enabled: boolean;
+  /** This computer can be kept awake by Shodh (Windows and macOS). */
+  supported: boolean;
+  /** Mains power: `null` when the computer cannot tell. */
+  onAc: boolean | null;
+  /** The computer is being kept awake now. */
+  holding: boolean;
+  localOnly: boolean;
+  paired: boolean;
+}
+
+/** What "Stay available for my phone" does now, in one sentence. */
+export function stayWords(status: StayStatus): string {
+  if (!status.supported) return 'Shodh cannot keep this computer awake on this system.';
+  if (!status.enabled) return 'Off. This computer sleeps as usual, and your phone waits until it wakes.';
+  if (status.localOnly) return 'Paused: Local-only mode is on, so your phone cannot reach this computer.';
+  if (!status.paired) return 'Starts when you pair a phone.';
+  if (status.holding) return 'On. This computer stays awake while it is plugged in.';
+  if (status.onAc === false) return 'Paused while on battery. It stays awake again when you plug it in.';
+  return 'Paused: Shodh cannot tell whether this computer is plugged in.';
+}

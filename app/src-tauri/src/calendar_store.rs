@@ -135,6 +135,11 @@ pub struct CalendarEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
     pub created_at: String,
+    /// When it last changed (RFC 3339, UTC): a phone's calendar sync keeps the
+    /// latest of two edits made on both sides. Events saved before it was kept
+    /// have none (their `created_at` stands in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
 }
 
 fn default_priority() -> String {
@@ -845,6 +850,7 @@ impl CalendarData {
             .map(|e| check_moment("end", e))
             .transpose()?;
         check_order(&start, end.as_deref())?;
+        let created = now();
         let event = CalendarEvent {
             id: Uuid::new_v4().to_string(),
             title,
@@ -856,7 +862,8 @@ impl CalendarData {
             location: optional_text(new.location),
             source: new.source.unwrap_or_else(default_source),
             source_ref: new.source_ref,
-            created_at: now(),
+            created_at: created.clone(),
+            updated_at: Some(created),
         };
         self.events.push(event.clone());
         Ok(event)
@@ -870,6 +877,9 @@ impl CalendarData {
         let event = self.event_mut(id)?;
         let before = event.clone();
         let changes = apply_event_patch(event, patch)?;
+        if !changes.is_empty() {
+            event.updated_at = Some(now());
+        }
         Ok((before, event.clone(), changes))
     }
 

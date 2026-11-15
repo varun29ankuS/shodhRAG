@@ -49,6 +49,43 @@ describe('text', () => {
   });
 });
 
+describe('fonts', () => {
+  const INTER = "'Inter Variable', system-ui, sans-serif";
+  const MONO = "ui-monospace, 'Cascadia Mono', Menlo, monospace";
+  const raw = readFileSync(resolve(process.cwd(), 'src/theme.css'), 'utf8');
+
+  it('are Inter for everything, and one monospace stack for code', () => {
+    expect(/--font:\s*([^;]+);/.exec(css)?.[1].trim()).toBe(INTER);
+    expect(/--mono:\s*([^;]+);/.exec(css)?.[1].trim()).toBe(MONO);
+    const families = [...css.matchAll(/font-family:\s*([^;]+);/g)].map(m => m[1].trim());
+    expect(families.length).toBeGreaterThan(0);
+    for (const family of families) expect(['var(--font)', 'var(--mono)'], `font-family: ${family}`).toContain(family);
+    // The `font` shorthand only inherits.
+    for (const font of css.matchAll(/(?:^|[;{\s])font:\s*([^;]+);/g)) expect(font[1].trim()).toBe('inherit');
+    for (const { file, text } of code) {
+      expect(text, `${file}: a font family written in the code`).not.toMatch(/fontFamily\s*:/);
+      // A canvas draws in Inter too (the scripted pages of CI's screenshots).
+      for (const font of text.matchAll(/\.font\s*=\s*`([^`]*)`/g)) expect(font[1], file).toContain(INTER);
+    }
+  });
+
+  it('name no other face: no Newsreader, Literata, Geist or serif anywhere in the phone app', () => {
+    const pkg = readFileSync(resolve(process.cwd(), 'package.json'), 'utf8');
+    const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+    const OTHERS = /newsreader|literata|geist|georgia|\bserif\b|times new roman/i;
+    expect(raw.replace(/sans-serif/g, ''), 'src/theme.css').not.toMatch(OTHERS);
+    expect(html, 'index.html').not.toMatch(OTHERS);
+    for (const { file, text } of code) expect(text.replace(/sans-serif/g, ''), file).not.toMatch(OTHERS);
+    // The only font the app bundles is Inter, and its licence (SIL OFL 1.1) is kept with the app.
+    const fonts = Object.keys(JSON.parse(pkg).dependencies).filter(name => name.startsWith('@fontsource'));
+    expect(fonts).toEqual(['@fontsource-variable/inter']);
+    const licence = readFileSync(resolve(process.cwd(), 'licenses/Inter-OFL-1.1.txt'), 'utf8');
+    expect(licence).toContain('SIL OPEN FONT LICENSE Version 1.1');
+    expect(licence).toContain('The Inter Project Authors');
+    expect(readFileSync(resolve(process.cwd(), '../NOTICE'), 'utf8')).toContain('mobile/licenses/Inter-OFL-1.1.txt');
+  });
+});
+
 describe('motion', () => {
   it('in the stylesheet, transitions and keyframes move only transform and opacity', () => {
     const transitions = [...css.matchAll(/transition(?:-property)?:\s*([^;]+);/g)].map(m => m[1].trim());
@@ -114,15 +151,78 @@ describe('motion', () => {
 });
 
 describe('a citation chip', () => {
-  it('is small on the line and 44px to the finger', () => {
+  it('is small on the line and 44px to the finger, centred on it', () => {
     const chip = /\.chip\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
     const before = /\.chip::before\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
-    const size = Number(/\bwidth:\s*(\d+)px/.exec(chip)?.[1]);
-    const height = Number(/\bheight:\s*(\d+)px/.exec(chip)?.[1]);
-    const inset = Math.abs(Number(/inset:\s*(-?\d+)px/.exec(before)?.[1]));
-    expect(size + 2 * inset).toBeGreaterThanOrEqual(44);
-    expect(height + 2 * inset).toBeGreaterThanOrEqual(44);
+    expect(Number(/\bheight:\s*(\d+)px/.exec(chip)?.[1])).toBeLessThanOrEqual(18);
+    const width = Number(/\bwidth:\s*(\d+)px/.exec(before)?.[1]);
+    const height = Number(/\bheight:\s*(\d+)px/.exec(before)?.[1]);
+    expect(width).toBeGreaterThanOrEqual(44);
+    expect(height).toBeGreaterThanOrEqual(44);
+    // Centred: from the chip's middle, back by half its size.
+    expect(before).toMatch(/left:\s*50%/);
+    expect(before).toMatch(/top:\s*50%/);
+    expect(/\bmargin:\s*([^;]+);/.exec(before)?.[1].trim()).toBe(`-${height / 2}px 0 0 -${width / 2}px`);
     expect(chip).toMatch(/position:\s*relative/);
     expect(before).toMatch(/position:\s*absolute/);
+  });
+
+  it('sits flush with the word before it and the punctuation after it: "question¹." not "question ¹ ."', () => {
+    const chip = /\.chip\s*\{([^}]*)\}/.exec(css)?.[1] ?? '';
+    // As wide as its digits: no empty box on either side of the number.
+    expect(/\bwidth:\s*([^;]+);/.exec(chip)?.[1].trim()).toBe('auto');
+    expect(/\bpadding:\s*([^;]+);/.exec(chip)?.[1].trim()).toBe('0');
+    expect(chip).not.toMatch(/min-width/);
+    const margin = /\bmargin:\s*([^;]+);/.exec(chip)?.[1].trim().split(/\s+/) ?? [];
+    // margin: top right bottom left; nothing on the right, a hair on the left.
+    expect(margin[1] ?? margin[0]).toBe('0');
+    expect(Number(/^(\d+)px$/.exec(margin[3] ?? margin[1] ?? margin[0])?.[1] ?? 0)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('the follow-up composer', () => {
+  const rule = (selector: string) => new RegExp(`\\n${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  const pixels = (value: string) => [...value.matchAll(/(\d+)px/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+  const declared = (body: string, property: string) => pixels(new RegExp(`(?:^|[\\s;])${property}:\\s*([^;]+);`).exec(body)?.[1] ?? '');
+
+  it('sits above the tab bar, and leaves the answer\'s last line and the Code output readable above both', () => {
+    const bar = declared(rule('.tabbar'), 'height');
+    expect(bar).toBeGreaterThanOrEqual(44);
+    const box = rule('.askbox-floating');
+    const bottom = declared(box, 'bottom');
+    const above = bottom + declared(box, 'min-height');
+    // The field clears the tab bar, with a gap between them.
+    expect(bottom).toBeGreaterThanOrEqual(bar + 8);
+    const room = declared(rule('.scroll-with-composer'), 'padding-bottom');
+    expect(room).toBeGreaterThanOrEqual(above + 16);
+    // Every other screen's end clears the tab bar.
+    expect(declared(rule('.scroll'), 'padding-bottom')).toBeGreaterThanOrEqual(bar + 16);
+    const ask = readFileSync(resolve(process.cwd(), 'src/screens/Ask.tsx'), 'utf8');
+    expect(ask).toContain('scroll scroll-with-composer');
+  });
+});
+
+describe('the launcher icon', () => {
+  const res = resolve(process.cwd(), 'src-tauri/icons/android');
+  const read = (path: string) => readFileSync(join(res, path), 'utf8');
+
+  it('is adaptive: the whole elephant inside the safe zone, white or black behind it, and a monochrome layer', () => {
+    for (const name of ['ic_launcher', 'ic_launcher_round']) {
+      const icon = read(`mipmap-anydpi-v26/${name}.xml`);
+      expect(icon).toContain('@color/shodh_icon_background');
+      expect(icon).toContain('@drawable/shodh_icon_foreground');
+      expect(icon).toContain('<monochrome android:drawable="@drawable/shodh_icon_monochrome"');
+    }
+    const foreground = read('drawable/shodh_icon_foreground.xml');
+    // The elephant's layer is scaled into the central 66% of the icon, never full bleed.
+    const scale = Number(/android:scaleX="([\d.]+)"/.exec(foreground)?.[1]);
+    expect(scale).toBeGreaterThan(0.5);
+    expect(scale).toBeLessThanOrEqual(0.7);
+    // The elephant itself is unchanged: every shape of the logo is there.
+    const svg = readFileSync(resolve(process.cwd(), '../app/public/shodh_logo_nobackground.svg'), 'utf8');
+    expect(foreground.match(/<path /g)?.length).toBe(svg.match(/<path\b/g)?.length);
+    expect(read('drawable/shodh_icon_monochrome.xml').match(/<path /g)?.length).toBe(svg.match(/<path\b/g)?.length);
+    expect(read('values/shodh_icon.xml')).toMatch(/shodh_icon_background">#FFFFFF</);
+    expect(read('values-night/shodh_icon.xml')).toMatch(/shodh_icon_background">#000000</);
   });
 });

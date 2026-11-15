@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The launcher icon's background with the phone in light mode. -->
+    <color name="shodh_icon_background">#FFFFFF</color>
+</resources>

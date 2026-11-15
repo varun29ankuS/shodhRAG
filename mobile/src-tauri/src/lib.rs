@@ -9,9 +9,20 @@ compile_error!(
      (vault.rs). Build it with `npm run tauri android build`."
 );
 
+mod bars;
+mod calendar;
+mod files;
 mod link;
+mod lock;
 mod logcat;
+mod notify;
+mod queue;
+mod store;
+#[cfg(debug_assertions)]
+mod tour;
+mod update;
 mod vault;
+mod voice;
 
 use tauri::Manager;
 
@@ -44,11 +55,21 @@ pub fn run() {
     tracing::info!("Shodh {} is starting", env!("CARGO_PKG_VERSION"));
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_shodh_android::init())
+        .plugin(tauri_plugin_biometric::init())
+        .manage(lock::LockGate::default())
         .manage(link::Link::new(link::device_name()))
+        .manage(store::Store::default())
+        .manage(queue::Queue::default())
+        .manage(update::Updates::default())
         .setup(|app| {
+            // CI's screenshot tour (tour.rs): a debug build only.
+            #[cfg(debug_assertions)]
+            tour::follow(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 handle.state::<link::Link>().start(&handle).await;
+                notify::resume(&handle).await;
             });
             Ok(())
         })
@@ -61,6 +82,45 @@ pub fn run() {
             link::link_reset,
             link::app_ready,
             link::start_screen,
+            queue::outbox_list,
+            queue::outbox_add,
+            queue::outbox_mark,
+            queue::outbox_remove,
+            update::update_check,
+            update::update_install,
+            files::files_pick,
+            files::photo_take,
+            files::incoming_take,
+            files::file_details,
+            files::file_discard,
+            files::file_send,
+            files::photo_send,
+            calendar::calendar_access,
+            calendar::calendar_list,
+            calendar::calendar_choice,
+            calendar::calendar_choose,
+            calendar::calendar_events,
+            calendar::calendar_write,
+            calendar::sealed_read,
+            calendar::sealed_write,
+            bars::system_bars,
+            bars::system_insets,
+            notify::notifications_mode,
+            notify::notifications_set,
+            notify::push_distributors,
+            notify::push_sync,
+            notify::briefs_schedule,
+            lock::lock_status,
+            lock::lock_set_pin,
+            lock::lock_unlock,
+            lock::lock_unlock_biometric,
+            lock::lock_configure,
+            lock::lock_hidden,
+            lock::lock_shown,
+            voice::voice_listen,
+            voice::voice_stop_listening,
+            voice::voice_speak,
+            voice::voice_stop,
         ])
         .run(tauri::generate_context!());
     if let Err(e) = result {

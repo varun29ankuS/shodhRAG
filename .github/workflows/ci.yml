@@ -1705,6 +1705,15 @@ jobs:
           # without a snapshot takes a few minutes on these runners, and a
           # boot not done in 10 minutes is a broken image or runner.
           emulator-boot-timeout: 600
+          # The action's default options, with -gpu guest in place of
+          # swiftshader_indirect. With the renderer on the host side, the
+          # emulator process died on a relaunch after a display change three
+          # times: after a runtime `wm size` ("Failed to find ColorBuffer:
+          # 251", run 43624325353) and after `cmd uimode night yes` (run
+          # 43662536425, on the first dark shot after 22 light ones). With
+          # -gpu guest the guest renders in software itself, so that host
+          # renderer is not in the path.
+          emulator-options: -no-window -gpu guest -no-snapshot -noaudio -no-boot-anim
           script: bash -euo pipefail -c "$LAUNCH_TEST"
 
       - name: Upload the screenshots and launch recording

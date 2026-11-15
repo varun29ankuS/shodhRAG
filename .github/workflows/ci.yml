@@ -1684,7 +1684,17 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
         with:
           api-level: 34
-          target: google_apis
+          # The plain Android image, without Google Play Services. On the
+          # google_apis image, Play Services updates its modules after a cold
+          # boot and restarts itself; Android then kills every process bound
+          # to its font provider, and the WebView (Chromium's
+          # AndroidFontLookupImpl, in our process) binds to it when each page
+          # starts. That killed Shodh mid-tour at random (run 43659263042:
+          # "depends on provider ...FontsProvider in dying proc"). It is not
+          # in the app's APK (the font check above proves it), and on a phone
+          # it happens only on a Play Services restart, so the tour runs where
+          # that restart cannot occur.
+          target: default
           arch: x86_64
           # A phone's screen from the AVD's creation: 1080x2400 at 420 dpi
           # (the launch test checks it). Without a profile the AVD's panel is

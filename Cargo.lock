@@ -10148,7 +10148,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-link"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "data-encoding",
  "getrandom 0.4.1",
@@ -10176,7 +10176,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-rag"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -10245,7 +10245,7 @@ dependencies = [
 
 [[package]]
 name = "shodh-rag-app"
-version = "0.0.10"
+version = "0.0.11"
 dependencies = [
  "anyhow",
  "async-trait",

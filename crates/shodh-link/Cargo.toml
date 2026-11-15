@@ -2,7 +2,7 @@
 name = "shodh-link"
 # The phone and the desktop must be the same Shodh version (LINK_VERSION is
 # this version), so it is set with the app's: scripts/release/versions.mjs.
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 description = "The phone link: pairing, identity and the allowlisted bridge between Shodh's phone app and the desktop"
 publish = false

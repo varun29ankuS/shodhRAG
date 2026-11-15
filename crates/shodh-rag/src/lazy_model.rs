@@ -41,6 +41,7 @@ struct State<T> {
 pub struct LazyModel<T> {
     name: &'static str,
     state: Mutex<State<T>>,
+    keep_loaded: Option<fn(&T) -> bool>,
 }
 
 impl<T> std::fmt::Debug for LazyModel<T> {
@@ -61,7 +62,14 @@ impl<T> LazyModel<T> {
                 model: None,
                 last_used: Instant::now(),
             }),
+            keep_loaded: None,
         }
+    }
+
+    /// A loaded model for which `keep` holds is not dropped when idle.
+    pub fn keep_loaded_while(mut self, keep: fn(&T) -> bool) -> Self {
+        self.keep_loaded = Some(keep);
+        self
     }
 
     fn lock(&self) -> MutexGuard<'_, State<T>> {
@@ -133,6 +141,13 @@ impl<T> LazyModel<T> {
             // Loading or in use right now: not idle.
             return false;
         };
+        let kept = match (&state.model, self.keep_loaded) {
+            (Some(model), Some(keep)) => keep(model),
+            _ => false,
+        };
+        if kept {
+            return false;
+        }
         if state.model.is_some() && state.last_used.elapsed() >= idle {
             state.model = None;
             tracing::info!(model = self.name, "Idle model unloaded");
@@ -171,6 +186,19 @@ impl<T: Send + Sync> IdleUnload for LazyModel<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn a_model_kept_loaded_is_not_dropped_when_idle() {
+        let model = LazyModel::<String>::new("test").keep_loaded_while(|s| s == "pinned");
+        model.set_loader(|| Ok("pinned".to_string()));
+        assert!(model.get().is_some());
+        assert!(!model.unload_if_idle(Duration::ZERO));
+        assert!(model.is_loaded());
+
+        model.set_loader(|| Ok("free".to_string()));
+        assert!(model.get().is_some());
+        assert!(model.unload_if_idle(Duration::ZERO));
+    }
 
     #[test]
     fn loads_on_first_use_once_and_unloads_when_idle() {

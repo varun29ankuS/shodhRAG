@@ -21,7 +21,8 @@ export type CpuReason =
   | { kind: 'noGpu' }
   | { kind: 'failed'; device: string | null; error: string }
   | { kind: 'slowerThanCpu'; device: string; gpuTokensPerSecond: number; cpuTokensPerSecond: number }
-  | { kind: 'cpuModel' };
+  | { kind: 'cpuModel' }
+  | { kind: 'preparing' };
 
 /** `compute::status::EmbedderReport`. */
 export interface SearchReport {
@@ -141,6 +142,7 @@ export function readCpuReason(value: unknown): CpuReason | null {
     case 'noProvider':
     case 'noGpu':
     case 'cpuModel':
+    case 'preparing':
       return { kind: value.kind };
     case 'failed':
       return { kind: 'failed', device: text(value.device), error: text(value.error) ?? 'unknown error' };
@@ -455,6 +457,8 @@ export function cpuReasonText(reason: CpuReason | null): string {
       return `${reason.device} ran the search model slower than the processor.`;
     case 'cpuModel':
       return 'Your library was indexed with the search model made for the processor, which runs only there.';
+    case 'preparing':
+      return 'The graphics card is being prepared; the processor runs search until it is ready.';
   }
 }
 
@@ -470,6 +474,8 @@ export function cpuAdvice(reason: CpuReason | null): string {
       return 'Turn on "Use the graphics card for search" to try it again.';
     case 'failed':
       return 'Update the graphics driver; Shodh tries the card again after a driver or app update.';
+    case 'preparing':
+      return 'Nothing to do: search moves to the graphics card when it is ready. The first time takes a few minutes.';
     case 'noGpu':
     case 'noProvider':
     case 'slowerThanCpu':

@@ -731,6 +731,39 @@ impl Tally<'_> {
     }
 }
 
+/// Files of a folder run embedded and not yet stored.
+struct Embedded {
+    paths: Vec<PathBuf>,
+    files: Vec<crate::rag_engine::PreparedFile>,
+}
+
+/// Stores `embedded` and counts each file done. Returns the name of the last
+/// file, for the progress event.
+async fn commit_embedded(
+    rag: &RwLock<RAGEngine>,
+    embedded: Embedded,
+    tally: &mut Tally<'_>,
+    done: &std::sync::atomic::AtomicUsize,
+) -> String {
+    let committed = rag.write().await.commit_files(embedded.files).await;
+    for (path, result) in embedded.paths.iter().zip(committed) {
+        tally.finish(
+            path,
+            result
+                .map(|ids| ids.len())
+                .map_err(|e| format!("Failed to process file: {e:#}")),
+        );
+    }
+    done.fetch_add(embedded.paths.len(), std::sync::atomic::Ordering::Relaxed);
+    embedded
+        .paths
+        .last()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// [`index_folder`] for a Library folder source, given its folder manifests
 /// (`adoption`). With `options.skip_indexed`, the files of the folder that
 /// are already indexed under another source, unchanged and in the current
@@ -1019,10 +1052,41 @@ pub(crate) async fn index_folder_observed(
         }
     };
 
+    let report_indexed = |current: &str, indexed: usize| {
+        let finished = done.load(std::sync::atomic::Ordering::Relaxed);
+        emit_rated_progress(
+            emitter,
+            space_id,
+            current,
+            (finished, total_files),
+            &format!("Indexed {finished} of {total_files}"),
+            rate_since(indexing_started, indexed),
+        );
+    };
+
+    // Batch N is stored while batch N+1 is embedded: embedding does not take
+    // the engine lock, and the files of one run are distinct sources.
     let batches = async {
         let mut rx = rx;
         let mut stopped = false;
-        while let Some(first) = rx.recv().await {
+        let mut pending: Option<Embedded> = None;
+        loop {
+            let first = match rx.try_recv() {
+                Ok(read) => read,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    // Nothing read yet (a scan, say): the embedded batch is
+                    // not held for it.
+                    if let Some(embedded) = pending.take() {
+                        let current = commit_embedded(rag, embedded, &mut tally, &done).await;
+                        report_indexed(&current, tally.files_processed);
+                    }
+                    match rx.recv().await {
+                        Some(read) => read,
+                        None => break,
+                    }
+                }
+            };
             // Only the files read already: the batch is not held for a file
             // still being read.
             let reads = fill_batch(
@@ -1044,13 +1108,27 @@ pub(crate) async fn index_folder_observed(
             if batch.is_empty() {
                 continue;
             }
+            if run.is_paused() {
+                if let Some(embedded) = pending.take() {
+                    let current = commit_embedded(rag, embedded, &mut tally, &done).await;
+                    report_indexed(&current, tally.files_processed);
+                }
+            }
             if run.wait_while_paused().await {
                 stopped = true;
                 break;
             }
             let (paths, chunked): (Vec<PathBuf>, Vec<_>) = batch.into_iter().unzip();
             let embedder = preparer.clone();
-            let embedded = tokio::task::spawn_blocking(move || embedder.embed_all(chunked)).await;
+            let embedding = tokio::task::spawn_blocking(move || embedder.embed_all(chunked));
+            let previous = pending.take();
+            let storing = async {
+                if let Some(embedded) = previous {
+                    let current = commit_embedded(rag, embedded, &mut tally, &done).await;
+                    report_indexed(&current, tally.files_processed);
+                }
+            };
+            let (embedded, ()) = futures::join!(embedding, storing);
             let embedded = match embedded {
                 Ok(results) => results,
                 Err(e) => {
@@ -1079,32 +1157,18 @@ pub(crate) async fn index_folder_observed(
                     }
                 }
             }
-            if !ready.is_empty() {
-                let committed = rag.write().await.commit_files(ready).await;
-                for (path, result) in ready_paths.iter().zip(committed) {
-                    tally.finish(
-                        path,
-                        result
-                            .map(|ids| ids.len())
-                            .map_err(|e| format!("Failed to process file: {e:#}")),
-                    );
-                }
-                done.fetch_add(ready_paths.len(), std::sync::atomic::Ordering::Relaxed);
+            if ready.is_empty() {
+                report_indexed("", tally.files_processed);
+            } else {
+                pending = Some(Embedded {
+                    paths: ready_paths,
+                    files: ready,
+                });
             }
-            let finished = done.load(std::sync::atomic::Ordering::Relaxed);
-            let current = ready_paths
-                .last()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            emit_rated_progress(
-                emitter,
-                space_id,
-                current,
-                (finished, total_files),
-                &format!("Indexed {finished} of {total_files}"),
-                rate_since(indexing_started, tally.files_processed),
-            );
+        }
+        if let Some(embedded) = pending.take() {
+            let current = commit_embedded(rag, embedded, &mut tally, &done).await;
+            report_indexed(&current, tally.files_processed);
         }
         stopped || run.stopped()
     };

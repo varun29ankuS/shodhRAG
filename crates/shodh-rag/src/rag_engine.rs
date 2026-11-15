@@ -2167,7 +2167,11 @@ impl RAGEngine {
             store,
             text_search,
             embeddings: None,
-            embedder: Arc::new(LazyModel::new("embedder")),
+            embedder: Arc::new(
+                // A Core ML session costs a compile to build again, and the
+                // search it serves stalls on the CPU meanwhile.
+                LazyModel::new("embedder").keep_loaded_while(E5Embeddings::holds_core_ml),
+            ),
             embedder_e5: false,
             index_model_settled: Arc::new(std::sync::atomic::AtomicBool::new(settled)),
             compute_status: Default::default(),

@@ -314,16 +314,16 @@ jobs:
         shell: bash
         run: python -I scripts/ci/ort_archive.py verify
 
-  # The workspace's tests but the app's, which run in parallel in App tests
-  # (with the doc tests), and the agent runtime test. Master pushes of
-  # 2026-11-14 and 15 took 23 to 54 minutes here with everything in one job
-  # (the test step 38 minutes at most, the agent runtime test 6, the doc tests
-  # 5, the cache save 2): too close to the limit (#162). Without the app's
-  # tests, the doc tests and the agent runtime test, run 43740319109 took 34.
+  # The workspace's tests, doc tests and the agent runtime test, but the
+  # app's, which run in parallel in App tests. Master pushes of 2026-11-14
+  # and 15 took 23 to 54 minutes here with everything in one job (the test
+  # step 38 minutes at most, the agent runtime test 6, the doc tests 5, the
+  # cache save 2): too close to the limit (#162). With no cache (run
+  # 43788930095) the test step here took 36 minutes and the app's 38.
   test:
     name: Tests
     runs-on: windows-latest
-    timeout-minutes: 60  # slowest 54 minutes before the app's tests and doc tests moved out
+    timeout-minutes: 60  # slowest 54 minutes before the app's tests moved out
     env:
       # Line tables only (file:line in backtraces): smaller debug builds and
       # caches. Dev and test profiles only; the release profile is untouched.
@@ -363,28 +363,32 @@ jobs:
       - name: Tests (workspace but the app, all targets)
         run: cargo test --workspace --exclude shodh-rag-app --all-targets
 
+      # The next two steps select the same packages as the step above
+      # (--workspace --exclude shodh-rag-app), so Cargo resolves the same
+      # features and reuses its build. Selecting other packages (--package
+      # shodh-rag, or --workspace with the app) resolves other features and
+      # builds shodh-rag again: 21 and 19 minutes in run 43788930095.
+      - name: Doc tests (workspace but the app)
+        run: cargo test --workspace --exclude shodh-rag-app --doc
+
       # Against the real agent runtime, on Windows, where a command line is
       # limited to 32,767 characters: a system prompt longer than that must
       # reach omp whole through its file (it failed with os error 206 while
       # it was passed on the command line). The test downloads the pinned omp
-      # release as setup does, checked against the pinned SHA-256. It runs
-      # here, where shodh-rag's test build already exists: in App tests it
-      # built shodh-rag's tests again and took 21 minutes, against 6 here
-      # (run 43740319109).
+      # release as setup does, checked against the pinned SHA-256.
       - name: Long system prompt against the agent runtime
-        run: cargo test --package shodh-rag --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
+        run: cargo test --workspace --exclude shodh-rag-app --lib -- --ignored --exact harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole
 
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify
 
-  # The app's tests and the workspace's doc tests, in parallel with Tests,
-  # which runs every other crate's.
+  # The app's tests and doc tests, in parallel with Tests, which runs every
+  # other crate's.
   test-app:
     name: App tests and doc tests
     runs-on: windows-latest
-    # Run 43740319109, with no cache for this new job yet: the app's tests
-    # took 30 minutes, their own build included; the doc tests were 5 inside
-    # Tests.
+    # With no cache (run 43788930095), the app's tests took 38 minutes, their
+    # own build included.
     timeout-minutes: 60
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -410,8 +414,10 @@ jobs:
       - name: App tests (all targets)
         run: cargo test --package shodh-rag-app --all-targets
 
-      - name: Doc tests (workspace)
-        run: cargo test --workspace --doc
+      # The same package as the step above, so its build is reused (see
+      # Tests: the workspace's doc tests here built everything again).
+      - name: Doc tests (the app)
+        run: cargo test --package shodh-rag-app --doc
 
       - name: ONNX Runtime came from the cache
         run: python -I scripts/ci/ort_archive.py verify

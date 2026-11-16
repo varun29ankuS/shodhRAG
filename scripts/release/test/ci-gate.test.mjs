@@ -79,24 +79,32 @@ test("the nightly check the gate reads is nightly.yml's call of ci.yml", () => {
 
 test("the Tests job's slow steps run in parallel jobs (#162)", () => {
   // Tests ran into its 60-minute limit with everything in one job: the app's
-  // tests and the doc tests run in App tests, and the ANN recall test in the
-  // Library store job, each in parallel. The agent runtime test stays in
-  // Tests, which already builds shodh-rag's tests (in App tests it built them
-  // again: 21 minutes against 6).
+  // tests and doc tests run in App tests, and the ANN recall test in the
+  // Library store job, each in parallel. Within a job every cargo test selects
+  // the same packages, so Cargo resolves the same features and reuses the
+  // job's build: run 43788930095 built shodh-rag again for a step selecting
+  // other packages (21 minutes) and for the workspace's doc tests (19).
   const jobs = ciJobs();
   const block = (id) => {
     const job = jobs.find((j) => j.id === id);
     assert.ok(job, `ci.yml has a ${id} job`);
     return job.block;
   };
+  const cargoTests = (text) => text.split('\n').filter((l) => /^\s*run: cargo test /.test(l));
   const tests = block('test');
   assert.match(tests, /cargo test --workspace --exclude shodh-rag-app --all-targets$/m);
-  assert.doesNotMatch(tests, /--doc|ann_recall_tests/);
+  assert.match(tests, /cargo test --workspace --exclude shodh-rag-app --doc$/m);
   assert.match(tests, /harness::omp_live_tests::a_system_prompt_longer_than_a_command_line_reaches_omp_whole$/m);
+  assert.doesNotMatch(tests, /ann_recall_tests/);
+  for (const line of cargoTests(tests)) {
+    assert.match(line, /cargo test --workspace --exclude shodh-rag-app /, line);
+  }
   const app = block('test-app');
   assert.match(app, /cargo test --package shodh-rag-app --all-targets$/m);
-  assert.match(app, /cargo test --workspace --doc$/m);
-  assert.doesNotMatch(app, /omp_live_tests/);
+  assert.match(app, /cargo test --package shodh-rag-app --doc$/m);
+  for (const line of cargoTests(app)) {
+    assert.match(line, /cargo test --package shodh-rag-app /, line);
+  }
   assert.match(block('upgrade'), /storage::ann_recall_tests::ann_search_past_the_index_threshold_recalls_the_exact_neighbours$/m);
 });
 

@@ -153,9 +153,11 @@ jobs:
           # it never builds shodh-eval, the sandbox probe or the phone app.
           footprint_skip="$docs|$release_files|^(mobile/|crates/shodh-eval/|crates/sandbox-probe/)"
           # The installers are the app too, bundled with release.yml and its
-          # scripts, so only documentation and the crates the app never
-          # builds are skippable.
-          release_skip="$docs|^(mobile/|crates/shodh-eval/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
+          # scripts, and so is the phone app's release APK (release.yml's
+          # android job builds mobile/ as a release, which the android job
+          # below never does), so only documentation and the crates neither
+          # app builds are skippable.
+          release_skip="$docs|^(crates/shodh-eval/|crates/sandbox-probe/|scripts/measure-footprint\.ps1$)"
           # The phone app (android job) is mobile/, its own Cargo workspace
           # and lockfile, with the crates it uses (shodh-link), the toolchain
           # and this workflow. From the desktop it reads only its colour
@@ -163,9 +165,10 @@ jobs:
           # sections' names and order (app/src/lib/viewTabs.ts, the phone's
           # menu) and the shared components (app/src/shared/). The rest of
           # the desktop, its crates, its Cargo workspace files and its CI
-          # helpers are skippable.
+          # helpers are skippable. Of the release scripts it runs one, the
+          # debug-only code check (scripts/release/android.mjs).
           android_skip="$docs|$release_files|^(app/|crates/shodh-rag/|crates/shodh-eval/|crates/shodh-ontology/|crates/sandbox-probe/|Cargo\.toml$|Cargo\.lock$|scripts/ci/|scripts/measure-footprint\.ps1$|\.github/actions/onnxruntime/)"
-          android_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$|app/src/lib/viewTabs\.ts$)'
+          android_keep='^(app/src/shared/|app/src/index\.css$|app/src/lib/contrast\.ts$|app/src/lib/viewTabs\.ts$|scripts/release/android\.mjs$)'
 
           decide() {
             local job=$1 skip=$2 keep=$3 f
@@ -1919,13 +1922,10 @@ jobs:
           set -euo pipefail
           TAURI_ENV_DEBUG=true npx vite build --outDir "$RUNNER_TEMP/js-debug" --logLevel warn
           TAURI_ENV_DEBUG=false npx vite build --outDir "$RUNNER_TEMP/js-release" --logLevel warn
-          for marker in 'The sample computer has no' 'shodh://tour' 'shodh-tour-noblur'; do
-            grep -rqF "$marker" "$RUNNER_TEMP/js-debug" || { echo "::error::The debug build lacks \"$marker\""; exit 1; }
-            if grep -rlF "$marker" "$RUNNER_TEMP/js-release"; then
-              echo "::error::A release build contains \"$marker\""
-              exit 1
-            fi
-          done
+          # The markers are scripts/release/android.mjs's: release.yml checks
+          # the release APK's own frontend against the same list.
+          node ../scripts/release/android.mjs debug-markers --build debug --dist "$RUNNER_TEMP/js-debug"
+          node ../scripts/release/android.mjs debug-markers --build release --dist "$RUNNER_TEMP/js-release"
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
@@ -2004,56 +2004,24 @@ jobs:
             echo "- debug APK \`$(basename "$apk")\`: $(du -h "$apk" | cut -f1), built in ${seconds} s; libraries: ${abis}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # allow_backup_is_off: nothing of Shodh leaves the phone in a backup or a move
-      # to a new phone (its link key and sealed files belong to this phone's
-      # Keystore). Read from the built app's merged manifest, so a template or a
-      # library that turned backup back on fails here.
-      - name: Android backup is off in the built app
-        run: |
-          set -euo pipefail
-          manifest=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
-          if ! grep -Eq 'allowBackup\(0x[0-9a-f]+\)=false' <<< "$manifest"; then
-            echo "::error::android:allowBackup is not false in the built app"
-            grep -i backup <<< "$manifest" || true
-            exit 1
-          fi
-          if ! grep -q 'dataExtractionRules' <<< "$manifest"; then
-            echo "::error::the built app has no dataExtractionRules (Android 12 and later would move its data to a new phone)"
-            exit 1
-          fi
+      # allow_backup_is_off and no_emoji_compat, read from the built app's
+      # merged manifest and resources: the same checks as the release APK's
+      # (release.yml), in one place.
+      - name: The built app keeps its data on the phone and off Play Services' fonts
+        uses: ./.github/actions/android-apk-manifest
+        with:
+          apk: ${{ env.APK }}
 
-      # no_emoji_compat: AppCompat's EmojiCompat fetches its font from Play Services'
-      # font provider at start, and Android then kills Shodh whenever Play Services
-      # restarts (seen on the emulator: "depends on provider
-      # com.google.android.gms/.fonts.provider.FontsProvider in dying proc"). The
-      # plugin's manifest removes its initializer. Read from the built app's merged
-      # manifest, which must still have the startup provider that held it (so the
-      # check reads the right manifest and is not vacuous).
-      - name: The built app does not tie itself to Play Services' font provider
+      # The debug build's native library has the screenshot tour and the
+      # first-screen property (tour.rs, link.rs), so the release build's check
+      # that it has none of them (release.yml) is not vacuous.
+      - name: The debug build's native library has the tour
         run: |
           set -euo pipefail
-          manifest=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
-          if ! grep -q '"androidx.startup.InitializationProvider"' <<< "$manifest"; then
-            echo "::error::the built app's manifest has no androidx.startup.InitializationProvider: this check reads the wrong manifest"
-            exit 1
-          fi
-          if grep -q 'androidx.emoji2.text.EmojiCompatInitializer' <<< "$manifest"; then
-            echo "::error::the built app still starts EmojiCompat (androidx.emoji2.text.EmojiCompatInitializer)"
-            exit 1
-          fi
-          # Nor anything else of the app's own: no downloadable font named for
-          # preloading, no Play Services font provider or its certificates.
-          # (The WebView itself still fetches Google Sans and Noto Color Emoji
-          # Compat from that provider at each start, in this process: Chromium's
-          # AndroidFontLookupImpl, which no app setting turns off.)
-          resources=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump resources "$APK")
-          for name in preloaded_fonts com.google.android.gms.fonts font_certs com_google_android_gms_fonts_certs; do
-            if grep -qF "$name" <<< "$manifest$resources"; then
-              echo "::error::the built app refers to Play Services' downloadable fonts: $name"
-              grep -F "$name" <<< "$manifest$resources" | head -n 5
-              exit 1
-            fi
-          done
+          lib="$RUNNER_TEMP/debug-lib/libshodh_mobile_lib.so"
+          mkdir -p "$(dirname "$lib")"
+          unzip -p "$APK" lib/arm64-v8a/libshodh_mobile_lib.so > "$lib"
+          node scripts/release/android.mjs debug-markers --build debug --lib "$lib"
 
       # The launcher icon is an adaptive icon: the whole elephant inside the safe zone
       # (its layer scaled to 0.66, not full bleed), a white background with the phone

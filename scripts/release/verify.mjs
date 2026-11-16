@@ -6,7 +6,9 @@
 //              every file present and non-empty, named for the version, and
 //              each update bundle's signature valid for the key it was signed
 //              with.
-//   stage      artifacts, then the release's six files in one folder under
+//              The Android app (Shodh_<version>_android.apk, checked by
+//              android.mjs when it was signed) and its .sig likewise.
+//   stage      artifacts, then the release's eight files in one folder under
 //              their release names, with the latest.json installed apps read
 //              (the same shape tauri-action writes), and a local record of
 //              them in the form of GitHub's release API (release.json).
@@ -14,8 +16,11 @@
 //              exactly the expected files, non-empty and complete; latest.json
 //              parses, names this version, points each platform at this
 //              release's update bundle, and carries that bundle's .sig; every
-//              signature verifies against the updater public key. Writes the
-//              SHA-256 table for the release notes.
+//              signature verifies against the updater public key, the Android
+//              app's included (the phone's one-tap update checks it with that
+//              key: crates/shodh-link/src/update.rs). --no-android: a release
+//              published before Shodh shipped its Android app, which must not
+//              have one. Writes the SHA-256 table for the release notes.
 //   is-newer   Prints true when --tag is newer than --than (or --than is
 //              empty): only then may a release be marked the latest.
 //   smoke      After publishing: the latest.json installed apps poll serves
@@ -27,7 +32,7 @@
 //
 //   node scripts/release/verify.mjs artifacts --dir D --version X.Y.Z [--pubkey-file F]
 //   node scripts/release/verify.mjs stage --dir D --out O --tag vX.Y.Z --repo O/R [--pubkey-file F]
-//   node scripts/release/verify.mjs release --release-json F --dir D --tag vX.Y.Z --repo O/R [--pubkey-file F] [--checksums-out F]
+//   node scripts/release/verify.mjs release --release-json F --dir D --tag vX.Y.Z --repo O/R [--pubkey-file F] [--checksums-out F] [--no-android]
 //   node scripts/release/verify.mjs is-newer --tag vX.Y.Z --than vA.B.C
 //   node scripts/release/verify.mjs smoke --tag vX.Y.Z --repo O/R [--not-latest]
 // Common: --config app/src-tauri/tauri.conf.json (product name, updater key);
@@ -40,6 +45,7 @@ import { join, relative } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
+import { MAX_APK_BYTES } from './android.mjs';
 import { SignatureError, verifyTauriSignature } from './minisign.mjs';
 import { compareVersions } from './versions.mjs';
 
@@ -59,6 +65,9 @@ export const REQUIRED_PLATFORMS = ['windows-x86_64', 'darwin-aarch64'];
 export function releaseAssetNames(product, version) {
   const windows = `${product}_${version}_x64-setup.exe`;
   const macos = `${product}_${version}_aarch64.app.tar.gz`;
+  // The phone's one-tap update downloads exactly this name and its .sig
+  // (crates/shodh-link/src/update.rs apk_name; a test keeps them equal).
+  const android = `${product}_${version}_android.apk`;
   return {
     'windows-installer': windows,
     'windows-updater': windows,
@@ -66,8 +75,23 @@ export function releaseAssetNames(product, version) {
     'macos-dmg': `${product}_${version}_aarch64.dmg`,
     'macos-updater': macos,
     'macos-signature': `${macos}.sig`,
+    'android-apk': android,
+    'android-signature': `${android}.sig`,
     'latest-json': 'latest.json',
   };
+}
+
+// The Android app's roles: not in releases published before it shipped.
+export const ANDROID_ROLES = ['android-apk', 'android-signature'];
+
+/** The names a release must have, exactly; without the Android app for `android: false`. */
+export function expectedAssetNames(product, version, { android = true } = {}) {
+  const names = releaseAssetNames(product, version);
+  return new Set(
+    Object.entries(names)
+      .filter(([role]) => android || !ANDROID_ROLES.includes(role))
+      .map(([, name]) => name),
+  );
 }
 
 export function readConfig(path, pubkeyFile) {
@@ -117,7 +141,7 @@ export function tagVersion(tag) {
  * Finds and checks the installers and signed update bundles under dir (the
  * build jobs' artifacts, in any folder layout). Returns their paths.
  */
-export async function verifyArtifacts({ dir, version, product, pubkey }) {
+export async function verifyArtifacts({ dir, version, product, pubkey, maxApkBytes = MAX_APK_BYTES }) {
   const files = listFiles(dir);
   const errors = [];
   const one = (label, test) => {
@@ -134,15 +158,20 @@ export async function verifyArtifacts({ dir, version, product, pubkey }) {
   // tauri bundles the update archive as <product>.app.tar.gz; the release
   // names it with the version and architecture (stage).
   const macos = one(`${product}.app.tar.gz`, (f) => f.endsWith(`/${product}.app.tar.gz`));
-  for (const file of [windows, dmg, macos].filter(Boolean)) {
+  // The Android job uploads it under its release name.
+  const android = one(names['android-apk'], (f) => f.endsWith(`/${names['android-apk']}`));
+  for (const file of [windows, dmg, macos, android].filter(Boolean)) {
     const size = statSync(file).size;
     if (size === 0) errors.push(`${relative(dir, file)} is empty`);
     else console.log(`  ${String(size).padStart(12)}  ${relative(dir, file)}`);
   }
+  if (android && statSync(android).size > maxApkBytes) {
+    errors.push(`${relative(dir, android)} is larger than the ${maxApkBytes} bytes the phone's one-tap update downloads`);
+  }
   if (errors.length) throw new ReleaseError(`The build artifacts are incomplete:\n  ${errors.join('\n  ')}`);
 
   if (!pubkey) throw new ReleaseError('No updater public key, so the update bundles cannot be checked');
-  for (const file of [windows, macos]) {
+  for (const file of [windows, macos, android]) {
     let signature;
     try {
       signature = readFileSync(`${file}.sig`, 'utf8');
@@ -151,7 +180,7 @@ export async function verifyArtifacts({ dir, version, product, pubkey }) {
     }
     await checkSignature(file, signature, pubkey, relative(dir, file));
   }
-  return { windows, dmg, macos };
+  return { windows, dmg, macos, android };
 }
 
 /** latest.json as tauri-action writes it, with download URLs of this release. */
@@ -175,7 +204,7 @@ export function latestJson({ repo, tag, product, windowsSignature, macosSignatur
 }
 
 /**
- * Writes the six release files to `out` under their release names, plus
+ * Writes the eight release files to `out` under their release names, plus
  * release.json (a local record of them shaped like GitHub's release API).
  */
 export async function stageRelease({ dir, out, tag, repo, product, pubkey, pubDate = new Date().toISOString() }) {
@@ -189,6 +218,8 @@ export async function stageRelease({ dir, out, tag, repo, product, pubkey, pubDa
     [found.dmg, names['macos-dmg']],
     [found.macos, names['macos-updater']],
     [`${found.macos}.sig`, names['macos-signature']],
+    [found.android, names['android-apk']],
+    [`${found.android}.sig`, names['android-signature']],
   ];
   for (const [from, name] of copies) copyFileSync(from, join(out, name));
   const latest = latestJson({
@@ -237,12 +268,12 @@ function assetForUrl(url, release, repo, tag) {
  * Verifies a release (its API JSON and its assets downloaded into dir, under
  * their asset names). Returns [{ name, size, sha256 }] for the release notes.
  */
-export async function verifyRelease({ release, dir, tag, repo, product, pubkey }) {
+export async function verifyRelease({ release, dir, tag, repo, product, pubkey, android = true, maxApkBytes = MAX_APK_BYTES }) {
   const version = tagVersion(tag);
   if (release.tag_name !== tag) throw new ReleaseError(`The release is for ${release.tag_name}, not ${tag}`);
   if (!pubkey) throw new ReleaseError('No updater public key: installed apps could not verify this release');
   const names = releaseAssetNames(product, version);
-  const expected = new Set(Object.values(names));
+  const expected = expectedAssetNames(product, version, { android });
   const present = new Map(release.assets.map((a) => [a.name, a]));
   const errors = [];
   if (present.size !== release.assets.length) errors.push('two assets have the same name');
@@ -251,6 +282,10 @@ export async function verifyRelease({ release, dir, tag, repo, product, pubkey }
   for (const asset of release.assets) {
     if (asset.state !== undefined && asset.state !== 'uploaded') errors.push(`${asset.name} is ${asset.state}, not uploaded`);
     if (!(asset.size > 0)) errors.push(`${asset.name} is empty`);
+  }
+  const apk = present.get(names['android-apk']);
+  if (android && apk && apk.size > maxApkBytes) {
+    errors.push(`${apk.name} is larger than the ${maxApkBytes} bytes the phone's one-tap update downloads`);
   }
   if (errors.length) throw new ReleaseError(`The release assets of ${tag} are wrong:\n  ${errors.join('\n  ')}`);
 
@@ -267,8 +302,9 @@ export async function verifyRelease({ release, dir, tag, repo, product, pubkey }
     rows.push({ name: asset.name, size, sha256: await sha256File(path) });
   }
 
-  for (const role of ['windows', 'macos']) {
-    const file = names[`${role}-updater`];
+  const signed = [names['windows-updater'], names['macos-updater']];
+  if (android) signed.push(names['android-apk']);
+  for (const file of signed) {
     await checkSignature(join(dir, file), readFileSync(join(dir, `${file}.sig`), 'utf8'), pubkey, file);
   }
 
@@ -442,6 +478,7 @@ async function main(argv) {
       'release-json': { type: 'string' },
       'checksums-out': { type: 'string' },
       'not-latest': { type: 'boolean', default: false },
+      'no-android': { type: 'boolean', default: false },
     },
   });
   const need = (name) => {
@@ -475,7 +512,15 @@ async function main(argv) {
   }
   if (command === 'release') {
     const release = JSON.parse(readFileSync(need('release-json'), 'utf8'));
-    const rows = await verifyRelease({ release, dir: need('dir'), tag: need('tag'), repo: need('repo'), product, pubkey });
+    const rows = await verifyRelease({
+      release,
+      dir: need('dir'),
+      tag: need('tag'),
+      repo: need('repo'),
+      product,
+      pubkey,
+      android: !values['no-android'],
+    });
     const markdown = checksumsMarkdown(rows);
     console.log(markdown);
     if (values['checksums-out']) writeFileSync(values['checksums-out'], markdown);

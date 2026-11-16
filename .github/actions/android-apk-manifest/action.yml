@@ -1,0 +1,78 @@
+name: Android APK manifest checks
+description: >-
+  What the built Shodh for Android declares in its merged manifest and
+  resources: no backup or device-to-device move of its data, and no tie to
+  Play Services' downloadable fonts. The same checks for the debug APK
+  (ci.yml's android job) and the release APK (release.yml's android job).
+
+inputs:
+  apk:
+    description: The APK to check
+    required: true
+  build-tools:
+    description: The Android SDK build-tools version whose aapt2 reads it
+    required: false
+    default: '35.0.0'
+
+runs:
+  using: composite
+  steps:
+    # allow_backup_is_off: nothing of Shodh leaves the phone in a backup or a move
+    # to a new phone (its link key and sealed files belong to this phone's
+    # Keystore). Read from the built app's merged manifest, so a template or a
+    # library that turned backup back on fails here.
+    - name: Android backup is off in the built app
+      shell: bash
+      env:
+        APK: ${{ inputs.apk }}
+        BUILD_TOOLS: ${{ inputs.build-tools }}
+      run: |
+        set -euo pipefail
+        manifest=$("$ANDROID_HOME/build-tools/$BUILD_TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK")
+        if ! grep -Eq 'allowBackup\(0x[0-9a-f]+\)=false' <<< "$manifest"; then
+          echo "::error::android:allowBackup is not false in the built app"
+          grep -i backup <<< "$manifest" || true
+          exit 1
+        fi
+        if ! grep -q 'dataExtractionRules' <<< "$manifest"; then
+          echo "::error::the built app has no dataExtractionRules (Android 12 and later would move its data to a new phone)"
+          exit 1
+        fi
+
+    # no_emoji_compat: AppCompat's EmojiCompat fetches its font from Play Services'
+    # font provider at start, and Android then kills Shodh whenever Play Services
+    # restarts (seen on the emulator: "depends on provider
+    # com.google.android.gms/.fonts.provider.FontsProvider in dying proc"). The
+    # plugin's manifest removes its initializer. Read from the built app's merged
+    # manifest, which must still have the startup provider that held it (so the
+    # check reads the right manifest and is not vacuous).
+    - name: The built app does not tie itself to Play Services' font provider
+      shell: bash
+      env:
+        APK: ${{ inputs.apk }}
+        BUILD_TOOLS: ${{ inputs.build-tools }}
+      run: |
+        set -euo pipefail
+        aapt2="$ANDROID_HOME/build-tools/$BUILD_TOOLS/aapt2"
+        manifest=$("$aapt2" dump xmltree --file AndroidManifest.xml "$APK")
+        if ! grep -q '"androidx.startup.InitializationProvider"' <<< "$manifest"; then
+          echo "::error::the built app's manifest has no androidx.startup.InitializationProvider: this check reads the wrong manifest"
+          exit 1
+        fi
+        if grep -q 'androidx.emoji2.text.EmojiCompatInitializer' <<< "$manifest"; then
+          echo "::error::the built app still starts EmojiCompat (androidx.emoji2.text.EmojiCompatInitializer)"
+          exit 1
+        fi
+        # Nor anything else of the app's own: no downloadable font named for
+        # preloading, no Play Services font provider or its certificates.
+        # (The WebView itself still fetches Google Sans and Noto Color Emoji
+        # Compat from that provider at each start, in this process: Chromium's
+        # AndroidFontLookupImpl, which no app setting turns off.)
+        resources=$("$aapt2" dump resources "$APK")
+        for name in preloaded_fonts com.google.android.gms.fonts font_certs com_google_android_gms_fonts_certs; do
+          if grep -qF "$name" <<< "$manifest$resources"; then
+            echo "::error::the built app refers to Play Services' downloadable fonts: $name"
+            grep -F "$name" <<< "$manifest$resources" | head -n 5
+            exit 1
+          fi
+        done
